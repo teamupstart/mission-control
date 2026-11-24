@@ -149,14 +149,14 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     const env = process.env;
     const matches = require("node:crypto").createHash("sha256").update(env.FIXTURE_TOKEN ?? "").digest("hex") === ${JSON.stringify(digest)};
     process.exitCode = matches && !env.MISSION_TERMINAL_HANDOFF_TICKET && !env.MISSION_API_TOKEN && !env.MISSION_SCOUT_SESSION_LOCATOR
-      && env.MISSION_PORT !== "spoofed-port" && !env.MISSING_NAME && env.TMUX_PANE === "%real" ? 0 : 1;
+      && env.MISSION_PORT !== "spoofed-port" && env.MISSING_NAME === undefined && env.TMUX_PANE === "%real" ? 0 : 1;
   `);
   const agent = [process.execPath, probe];
   const pane = { ...process.env, MISSING_NAME: "stale", TMUX_PANE: "%real" };
   // Check dispatch wrapper entry as well as the final agent, before the wrapper can repair its environment.
   const checkEntry = 'if [ -n "${FIXTURE_TOKEN+x}${MISSION_API_TOKEN:-}${MISSION_SCOUT_SESSION_LOCATOR:-}" ] || [ "${MISSION_PORT:-}" = spoofed-port ]; then exit 42; fi; exec "$@"';
 
-  for (const kind of ["dispatch wrapper", "managed resume guard"] as const) {
+  for (const kind of ["dispatch wrapper", "managed resume guard replaces a stale prepared value and removes a newly missing name"] as const) {
     await t.test(kind, async (t) => {
       let stateHome: string;
       let launchFile: string;
@@ -180,7 +180,9 @@ test("terminal handoff enforces SDK isolation before either launch command execu
         const lease = createResumeLease(root, "test", new Set());
         stateHome = lease.home;
         launchFile = join(stateHome, "launch.json");
-        writeResumeRecord(launchFile, { argv: agent, env: { MISSION_HOME: stateHome }, cwd: dir });
+        writeResumeRecord(launchFile, { argv: agent, cwd: dir, env: {
+          MISSION_HOME: stateHome, FIXTURE_TOKEN: "old-prepared-value", MISSING_NAME: "previously-present",
+        } });
         beginResumeLaunch(lease);
         const handoff = await openTerminalEnvironmentHandoff({ cwd: dir, stateHome }, named);
         t.after(handoff.dispose);

@@ -54,6 +54,8 @@ async function main(): Promise<number> {
   for (const key of ["FLEET_HOME", "HARNESS_HOME", "MISSION_SESSION_ID", "FLEET_SESSION_ID", "HARNESS_SESSION_ID",
     "MISSION_AGENT_SESSION_ID", "MISSION_API_TOKEN", "MISSION_SCOUT_SUBMISSION_CREDENTIAL", WORK_UNIT_ENV_VAR])
     delete env[key];
+  // Start with the prepared environment so the launch-time handoff can replace or remove stale values.
+  Object.assign(env, input.env);
   writeResumeRecord(join(lease.home, "terminal-launch.json"), { pid: process.pid, startMs });
   const before = await processInventory();
   const restoreSignals = keepGuardInForeground();
@@ -64,8 +66,6 @@ async function main(): Promise<number> {
       completeResumeLease(lease, process.pid, startMs);
       return 1;
     }
-    // The prepared isolation and launch identities remain authoritative for the child.
-    Object.assign(env, input.env);
     delete env.ELECTRON_RUN_AS_NODE;
     const code = await waitForAgent(executable, input.argv.slice(1), env, input.cwd).catch(() => 127);
     const after = await processInventory();

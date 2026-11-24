@@ -193,6 +193,42 @@ test.describe("Agent environment Settings failures", () => {
     });
   }
 
+  test("a multiline paste is rejected without changing the draft or saved list", async ({ daemon, dashboard: page }) => {
+    await page.goto(daemon.baseURL + "/#/settings/harnesses");
+    const panel = page.getByRole("region", { name: "Agent environment" });
+    const input = panel.getByRole("textbox", { name: "Variable name" });
+    await expectVariables(panel, [savedRow]);
+    await input.fill("E2E_DRAFT");
+    await page.context().grantPermissions(["clipboard-write"], { origin: daemon.baseURL });
+    await page.evaluate(() => navigator.clipboard.writeText("E2E_FIRST\nE2E_SECOND"));
+    await input.press("ControlOrMeta+v");
+
+    await expectError(panel, "Add one variable name at a time.", "multiline-paste.png");
+    await expect(input).toHaveValue("E2E_DRAFT");
+    await expectVariables(panel, [savedRow]);
+    await page.reload();
+    await expectVariables(panel, [savedRow]);
+  });
+
+  test("a form with 32 saved names rejects a 33rd and preserves the full list", async ({ daemon, dashboard: page }) => {
+    const savedNames = Array.from({ length: 32 }, (_, i) => `E2E_LIMIT_${i + 1}`);
+    await expect(await page.request.put(daemon.baseURL + "/api/agent-environment", { data: { names: savedNames } })).toBeOK();
+    if (process.env.MC_E2E_EVIDENCE) await page.setViewportSize({ width: 1280, height: 1800 });
+    await page.goto(daemon.baseURL + "/#/settings/harnesses");
+    const panel = page.getByRole("region", { name: "Agent environment" });
+    const names = panel.getByRole("listitem").locator("code");
+    const input = panel.getByRole("textbox", { name: "Variable name" });
+    await expect(names).toHaveText(savedNames);
+    await input.fill("E2E_LIMIT_33");
+    await panel.getByRole("button", { name: "Add variable" }).click();
+
+    await expectError(panel, "You can add up to 32 variable names.", "name-limit.png");
+    await expect(input).toHaveValue("E2E_LIMIT_33");
+    await expect(names).toHaveText(savedNames);
+    await page.reload();
+    await expect(names).toHaveText(savedNames);
+  });
+
   test("an older tab cannot overwrite a completed save and can edit again after reloading the winner", async ({ daemon, dashboard: page }) => {
     const endpoint = daemon.baseURL + "/api/agent-environment";
     const other = await page.context().newPage();

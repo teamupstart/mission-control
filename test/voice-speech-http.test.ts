@@ -7,7 +7,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import { text } from "node:stream/consumers";
 import test, { afterEach } from "node:test";
-import { mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { Hono } from "hono";
@@ -199,8 +199,10 @@ test("delayed utterances are logged within the playback history window and disca
   const send = (time: number, text: string) => holder.request(utterancePath(), { ...capture(text), capturedAt: time });
   assert.deepEqual(await (await send(early, "Steve delayed")).json(), { accepted: false });
   assert.equal((await readHeard())[0]?.text, "Steve delayed");
+  const recentJob = await audition();
   const recent = Date.now();
-  await holder.event(await audition(), "ended");
+  t.mock.timers.tick(1); // Capture strictly within playback, before the new grant.
+  await holder.event(recentJob, "ended");
   t.mock.timers.tick(1);
   const before = await readHeard();
   assert.deepEqual(await (await send(early, "Steve too late")).json(), { accepted: false });
@@ -209,6 +211,26 @@ test("delayed utterances are logged within the playback history window and disca
   assert.equal((await readHeard())[0]?.rule, "while-speaking");
   assert.equal((await readHeard())[0]?.text, "Steve recent playback");
   assert.equal((await (await send(Date.now(), "Steve fresh capture")).json()).accepted, true);
+});
+
+test("a fresh capture grant accepts the release millisecond while a delayed playback revision is ignored", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const before = await holder.poll();
+  const id = await audition();
+  await holder.event(id, "started");
+  const playing = await holder.poll();
+  t.mock.timers.tick(10);
+  await holder.event(id, "ended");
+  const fresh = await holder.poll();
+  assert.equal(fresh.capture, true);
+  const send = (revision: string, text: string) => holder.request(utterancePath(revision), capture(text));
+  for (const revision of [playing.revision, before.revision]) {
+    assert.deepEqual(await (await send(revision, "Steve delayed")).json(), { accepted: false });
+    assert.equal((await readHeard())[0]?.rule, "while-speaking");
+  }
+  assert.deepEqual(await (await send(fresh.revision, "Steve fresh")).json(), { accepted: true });
 });
 
 test("a start that cannot be recorded grants no speech authority", async () => {
@@ -686,6 +708,34 @@ test("a supervised same-account child cannot read or change the daemon's recover
   assert.equal((await peer.poll(instance)).capture, false);
   assert.equal((await peer.report("exited", instance, signer.exitProof(instance))).status, 200);
   assert.equal((await peer.poll(instance)).capture, true);
+});
+
+test("a symlinked voice directory cannot receive a signed start or replace the sandbox target during announcement", async t => {
+  const root = mkdtempSync(join(home, "symlink-policy-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const voice = join(root, "voice"), backing = join(root, "backing");
+  mkdirSync(backing);
+  symlinkSync(backing, voice, "dir");
+  let announcements = 0;
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  const launch = (announce: () => Promise<void>) => signer.launch(root, process.execPath, ["--version"], {}, announce);
+  await assert.rejects(launch(async () => { announcements++; }), /real directories/);
+  assert.equal(announcements, 0);
+  rmSync(voice);
+  mkdirSync(voice);
+  for (const target of [backing, join(root, "missing-models")]) {
+    const models = join(voice, "models");
+    symlinkSync(target, models, "dir");
+    await assert.rejects(launch(async () => { announcements++; }), /real directories/);
+    assert.equal(announcements, 0);
+    rmSync(models);
+  }
+  await assert.rejects(launch(async () => {
+    announcements++;
+    renameSync(voice, join(root, "original"));
+    symlinkSync(backing, voice, "dir");
+  }), /real directories/);
+  assert.equal(announcements, 1);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

@@ -117,9 +117,12 @@ export class VoiceSpeechManager {
     }
     if (count) this.history.splice(0, count);
   }
-  captureConflict(time: number): "while-speaking" | "stale" | null {
+  captureConflict(time: number, grantTime?: number): "while-speaking" | "stale" | null {
     this.pruneHistory(this.deps.now());
-    if (this.items().some(i => i.hold && time >= i.since) || this.history.some(h => time >= h.from && time <= h.until)) return "while-speaking";
+    if (this.items().some(i => i.hold && time >= i.since)) return "while-speaking";
+    // At millisecond precision the first captured frame and the playback confirmation
+    // can share a timestamp. Only a valid capture grant issued at that boundary counts.
+    if (this.history.some(h => time >= h.from && (time < h.until || (time === h.until && grantTime !== time)))) return "while-speaking";
     return time <= this.discardedThrough ? "stale" : null;
   }
   private holds() { return this.items().flatMap(item => item.hold ? [item.hold] : []); }

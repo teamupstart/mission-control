@@ -215,7 +215,9 @@ to its own temporary directory. It cannot read the other voice records or
 write the daemon's ledger, launch inventory, receipts or exit evidence.
 The macOS launcher uses `/usr/bin/sandbox-exec`. The Linux launcher requires
 `/usr/bin/bwrap` and user namespaces. If confinement fails the player cannot
-run. The supervisor uses the instance it announced to report the child's exit
+run. The launcher rejects a symlinked voice or model directory before announcing
+the child and rechecks the directories before spawn. The supervisor uses the
+instance it announced to report the child's exit
 or a confirmed failure to spawn. It retains that instance until the daemon
 accepts the exit. A capture-only listener can keep its existing launch path.
 

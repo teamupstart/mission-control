@@ -373,7 +373,10 @@ export function registerVoiceUtteranceRoutes(
     if (disabled) return disabled;
     const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
-    const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt);
+    const state = voiceStateStore.state();
+    let directive = voiceStateStore.directive(state);
+    const revision = c.req.query("revision");
+    const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt, voiceStateStore.captureGrantTime(revision));
     if (conflict === "stale") return c.json({ accepted: false });
     if (conflict === "while-speaking") {
       const { id, capturedAt, text } = parsed.data;
@@ -381,9 +384,6 @@ export function registerVoiceUtteranceRoutes(
         pauseMs: null, rule: "while-speaking", detail: "Heard while speaking" });
       return c.json({ accepted: false });
     }
-    const state = voiceStateStore.state();
-    let directive = voiceStateStore.directive(state);
-    const revision = c.req.query("revision");
     if (state.mode === "push-to-talk" && directive.capture && revision === directive.revision) {
       // The physical key may already be up. Sending to the router here would make
       // delivery irreversible before the shell has confirmed the audio boundary.

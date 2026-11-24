@@ -1024,7 +1024,10 @@ including after a daemon restart. A supervisor can still retire its recorded lau
 after the last playback hold ends. New speech jobs require the preview to be on.
 Recently heard records playback-time utterances only from the capture lease owner.
 The daemon keeps completed playback intervals for three minutes to identify delayed
-utterances. It discards captures at or before the end of an expired interval.
+utterances. A frame captured in the same millisecond playback ended can be routed
+under the newly issued capture revision. A delayed frame from the playback revision
+is still logged as heard while speaking. The daemon discards captures at or before
+the end of an expired interval.
 
 After a restart, the daemon asks each recorded holder to stop. If the speech
 ledger is missing or unreadable, it checks the launch inventory and supervisor

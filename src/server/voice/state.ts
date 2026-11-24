@@ -82,8 +82,8 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
-  private releases = new Map<string, { pressedAtUs: number; at: number }>();
+  private lastDirective?: { issuedAt: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private releases = new Map<string, { issuedAt: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
@@ -153,7 +153,8 @@ export class VoiceStateStore {
     if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
+    const issuedAt = (this.deps.wallNow ?? Date.now)();
+    this.lastDirective = { issuedAt, holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
     return directive;
   }
 
@@ -166,10 +167,17 @@ export class VoiceStateStore {
 
   drainingRevisions() { return [...this.releases.keys()]; }
 
+  captureGrantTime(revision: string | undefined): number | undefined {
+    if (!revision) return;
+    const last = this.lastDirective;
+    if (last?.directive.capture && last.directive.revision === revision) return last.issuedAt;
+    return this.releases.get(revision)?.issuedAt;
+  }
+
   releasedCapture(revision = this.latestRelease) {
     if (!revision) return undefined;
     const bounds = this.releases.get(revision);
-    return bounds && { revision, ...bounds };
+    return bounds && { revision, pressedAtUs: bounds.pressedAtUs, at: bounds.at };
   }
 
   /**
@@ -365,11 +373,12 @@ export class VoiceStateStore {
     this.report = { at: observedAt, keyChangedHostUs, report: { ...report, pushToTalk: down } };
     if (report.microphone) this.microphone.shell = { at: observedAt, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
+      const issuedAt = this.lastDirective!.issuedAt;
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.
       if (this.releases.size >= 8) this.releases.delete(this.releases.keys().next().value!);
       // Only the wire cutoff rounds down. Event ordering keeps the full host timestamp.
-      this.releases.set(held.revision, { pressedAtUs: heldSince, at: Math.floor(eventAt / 1000) });
+      this.releases.set(held.revision, { issuedAt, pressedAtUs: heldSince, at: Math.floor(eventAt / 1000) });
       this.latestRelease = held.revision;
     }
     this.publish();

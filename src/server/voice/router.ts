@@ -1,4 +1,5 @@
 import {
+  addressedCommand,
   routeUtterance,
   type HeardEntry,
   type VoiceAddressedCommand,
@@ -48,7 +49,7 @@ interface OpenCard {
   message: string;
   pickTargets?: readonly SpokenName[];
   splitPicks?: Map<string, VoiceSplitPoint>;
-  command?: VoiceAddressedCommand;
+  modelStep?: AbortController;
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -93,8 +94,10 @@ export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtteranc
     if (decision.match === "exact") return [];
     return [{ kind: "who", text: utterance.text, candidates: decision.candidates.map(choiceOf) }];
   }
-  if (decision.ambiguousSplitTarget) return [];
-  return decision.splits.map((split) => ({
+  // An earlier split can settle the sentence before a name shared by several agents.
+  const ambiguous = decision.splits.findIndex(split => split.ambiguousTarget);
+  const decidable = ambiguous < 0 ? decision.splits : decision.splits.slice(0, ambiguous);
+  return decidable.map((split) => ({
     kind: "split", text: utterance.text, first: choiceOf(decision.target), second: choiceOf(split.target),
     ...(decision.splits.length > 1 ? { nameOffset: split.at } : {}),
   }));
@@ -116,6 +119,7 @@ export function resolveVoiceDecision(
   }
   if (decision.splits.length === 0) return { state: "unsure" };
   for (const [index, split] of decision.splits.entries()) {
+    if (split.ambiguousTarget) return { state: "unsure" };
     const choice = result.answers[index]?.choice ?? null;
     if (choice === "mention") continue;
     if (choice !== "split") return { state: "unsure" };
@@ -206,7 +210,7 @@ export class VoiceRouter {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
-    await this.openCard({ card, entry, receivedAt, message: decision.text, command: decision.command }, capturedAt);
+    await this.openCard({ card, entry, receivedAt, message: decision.text }, capturedAt);
     return true;
   }
 
@@ -224,11 +228,12 @@ export class VoiceRouter {
     entry.matchedName = decision.reason === "second-name" ? decision.target.name : null;
     entry.outcome = "resolving";
     const candidates: VoiceCard["candidates"] = decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role }));
+    const modelStep = new AbortController();
     const item: OpenCard = {
       entry,
       receivedAt,
       message: decision.text,
-      command: decision.reason === "ambiguous-name" ? decision.command : undefined,
+      modelStep,
       card: { id, state: "resolving", deadline: null, openQuestions: 0, reason: decision.reason, candidates,
         parts: [{ target: decision.reason === "second-name" ? decision.target : null, text: utterance.text }] },
     };
@@ -241,12 +246,13 @@ export class VoiceRouter {
       let result: VoiceDecisionResult;
       try {
         const questions = voiceQuestionsFor(decision, utterance);
-        result = questions.length ? await this.decider.ask(questions, { agents })
+        result = questions.length ? await this.decider.ask(questions, { agents, signal: modelStep.signal })
           : { rung: "none", answers: [], detail: "multiple agents share the spoken name" };
       } catch (error) {
         result = { rung: "none", answers: [], detail: error instanceof Error ? error.message : String(error) };
       }
       if (this.open.get(id) !== item) return;
+      delete item.modelStep;
       clearTimeout(item.timer);
       const resolved = resolveVoiceDecision(decision, result);
       const verdict = resolved.state === "unsure" ? "not sure" : resolved.reason;
@@ -268,7 +274,7 @@ export class VoiceRouter {
       await this.openCard({ ...item, timer: undefined,
         card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } }, entry.time);
     };
-    const done = settle().finally(() => { this.resolutions.delete(id); });
+    const done = settle().finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
     this.resolutions.set(id, done);
   }
 
@@ -311,6 +317,7 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (!item) return false;
     this.take(item);
+    item.modelStep?.abort();
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;
     this.publish({ ...item.card, state: "cancelled", deadline: null });
@@ -358,7 +365,10 @@ export class VoiceRouter {
       const target = selected && selectedSession(state.roster, selected);
       let result: DeliveryResult = "not-running";
       try {
-        if (target) result = await this.deliverer.deliver(target, part.text, index === 0 ? id : `${id}#${index + 1}`, item.command);
+        if (target) {
+          const partId = index === 0 ? id : `${id}#${index + 1}`;
+          result = await this.deliverer.deliver(target, part.text, partId, addressedCommand(part.text));
+        }
       } catch (error) {
         result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
       }
@@ -377,7 +387,10 @@ export class VoiceRouter {
   }
 
   clearActionsAndHistory(): void {
-    for (const item of this.open.values()) clearTimeout(item.timer);
+    for (const item of this.open.values()) {
+      clearTimeout(item.timer);
+      item.modelStep?.abort();
+    }
     this.open.clear();
     this.resolutions.clear();
     this.delivering.clear();

@@ -369,6 +369,22 @@ test("a split queues each part to its own agent", async () => {
   assert.equal(cards.at(-1)?.state, "queued");
 });
 
+test("split delivery interrupts on each bare stop and queues quoted stop verbatim", async () => {
+  decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  for (const [text, interrupted, messaged] of [
+    ['Steve, "stop", and Will, Stop!', "Will", "Steve"],
+    ['Steve, Stop!, and Will, "stop"', "Steve", "Will"],
+  ] as const) {
+    const before = interrupts.length;
+    const id = randomUUID();
+    await say(text, id);
+    await resolved(id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual(interrupts.slice(before), ["sdk:" + interrupted]);
+    assert.equal(queued(messaged).at(-1), '"stop"');
+  }
+});
+
 test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
   decide = (questions) => ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" });
   await say("Steven tell Will something", "ambiguous");

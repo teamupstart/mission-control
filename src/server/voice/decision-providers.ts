@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
+import { readCappedBody } from "../origin-fetch.ts";
 import { envVar } from "../../shared/harness-runtime.mjs";
 import type { VoiceKeyProvider, VoiceQuestion } from "@shared/voice-decide.ts";
 import { VOICE_NOT_SURE, voiceChoiceId, voiceChoiceValues, voiceQuestionInstructions, voiceQuestionName } from "./decide-prompt.ts";
@@ -11,8 +13,8 @@ import { VOICE_NOT_SURE, voiceChoiceId, voiceChoiceValues, voiceQuestionInstruct
 // Wire formats, as each provider documents them (read 2026-11-23):
 // - OpenAI Decisions: `POST https://api.openai.com/v1/decisions` with a bearer key; body
 //   `{ model, input, questions: [{ type: "choice", name, instructions, choices: [{ value,
-//   description }] }] }`; answers come back in question order as `{ type: "choice", choice,
-//   confidence, probabilities }` or `{ type: "refusal" }`. `gpt-6-luna` is the only model.
+//   description }] }] }`; answers come back in question order as `{ name, type: "choice", choice,
+//   confidence, probabilities }` or `{ name, type: "refusal" }`. `gpt-6-luna` is the only model.
 // - Jev: `POST https://api.typesafe.ai/v1/systemone` with a bearer key; body `{ model, state,
 //   questions: { <name>: { type: "choice", instructions, criteria: { <value>: <description> } } } }`;
 //   answers come back keyed by name as `{ type: "choice", choice, confidence, probabilities }`.
@@ -64,6 +66,7 @@ export class DecisionProviderError extends Error {
   }
 }
 
+const MAX_DECISION_REPLY_BYTES = 256 * 1024;
 const NOT_SURE_DESCRIPTION = "The words do not settle it.";
 
 /** What both providers are told the shared content is: the speech, once. */
@@ -84,10 +87,14 @@ async function post(
   body: unknown,
   call: DecisionProviderCall,
 ): Promise<unknown> {
+  const url = `${decisionProviderBaseUrl(provider)}${path}`;
+  if (!validateEndpoint(url, { hasCredential: true }).ok) {
+    throw new DecisionProviderError(provider, "invalid gateway: use HTTPS or loopback HTTP");
+  }
   const doFetch = call.fetch ?? fetch;
   let response: Response;
   try {
-    response = await doFetch(`${decisionProviderBaseUrl(provider)}${path}`, {
+    response = await doFetch(url, {
       method: "POST",
       redirect: "error",
       headers: { "content-type": "application/json", authorization: `Bearer ${call.key}` },
@@ -103,8 +110,11 @@ async function post(
     throw new DecisionProviderError(provider, `HTTP ${response.status}`, response.status);
   }
   try {
-    return await response.json();
-  } catch {
+    const body = await readCappedBody(response, MAX_DECISION_REPLY_BYTES);
+    if (!body.ok) throw new DecisionProviderError(provider, "the reply exceeds the size limit", response.status);
+    return JSON.parse(new TextDecoder().decode(body.bytes));
+  } catch (error) {
+    if (error instanceof DecisionProviderError) throw error;
     throw new DecisionProviderError(provider, "the reply is not JSON", response.status);
   }
 }
@@ -144,6 +154,9 @@ export const openAiDecisions: DecisionProviderAdapter = {
     const parsed = OpenAiReplySchema.safeParse(reply);
     if (!parsed.success || parsed.data.answers.length !== questions.length) {
       throw new DecisionProviderError("openai", "the reply does not answer every question");
+    }
+    if (parsed.data.answers.some((answer, index) => answer.name !== voiceQuestionName(index))) {
+      throw new DecisionProviderError("openai", "the reply does not match the question names in order");
     }
     return questions.map((question, index) => readChoice("openai", question, parsed.data.answers[index]!));
   },

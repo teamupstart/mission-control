@@ -104,6 +104,34 @@ test("on Claude through the Agent SDK: thinking disabled, the system prompt repl
   assert.ok(seen.outputFormat, "the schema is enforced by the provider");
 });
 
+test("cancelling a voice job waiting for a slot prevents it from starting a provider", async (t) => {
+  let calls = 0;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const restore = configureClaudeRunnerTransport(() => "sdk", {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({}),
+    query: async () => {
+      calls++;
+      await held;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "result", subtype: "success", is_error: false, result: "", structured_output: ANSWER } as ClaudeSdkMessage;
+        },
+      };
+    },
+  });
+  t.after(restore);
+  const run = (signal?: AbortSignal) => runVoiceRoutingJob([QUESTION], { runner: "claude", timeoutMs: 10_000, signal });
+  const inFlight = Promise.all([run(), run()]);
+  const card = new AbortController();
+  const queued = run(card.signal);
+  card.abort();
+  release();
+  await Promise.all([inFlight, assert.rejects(queued, { name: "AbortError" })]);
+  assert.equal(calls, 2);
+});
+
 test("on Claude through claude -p: MAX_THINKING_TOKENS=0 and --system-prompt", async () => {
   const restore = configureClaudeRunnerTransport(() => "print");
   try {

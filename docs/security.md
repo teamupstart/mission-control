@@ -60,7 +60,8 @@ requests. Audio stays with the listener.
   use and says what is sent to it, so a key picked up from the environment is not hidden. Choose
   **Off** there to stop it; nothing is sent to either provider while it is Off, whatever keys
   exist. A provider chosen by name is only ever sent its own key. The daemon rejects HTTP
-  redirects from the provider or its configured gateway.
+  redirects from the provider or its configured gateway. A gateway must use HTTPS unless its
+  address is loopback, where plain HTTP is allowed for a local stand-in.
 - **The `voice-routing` job** runs on the provider the agents use, through the CLI already logged
   in on this machine, the same way every background job does, with tools disabled.
 

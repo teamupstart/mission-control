@@ -44,6 +44,7 @@ import { getVoiceConfig } from "./config.ts";
 export interface VoiceAskOptions {
   /** The harness of every agent the questions are about: it chooses the job's provider. */
   agents: readonly AgentType[];
+  signal?: AbortSignal;
 }
 
 export interface VoiceDecider {
@@ -62,7 +63,7 @@ export function voiceRoutingRunner(agents: readonly AgentType[], jobRunner: LlmR
 /** What the job is handed: the provider it runs on, and the time left in the step. */
 export type VoiceRoutingJob = (
   questions: readonly VoiceQuestion[],
-  run: { runner: LlmRunnerId; timeoutMs: number },
+  run: { runner: LlmRunnerId; timeoutMs: number; signal?: AbortSignal },
 ) => Promise<RawVoiceAnswers>;
 
 /** The job's whole reply. Choices are free strings here; membership is checked after mapping. */
@@ -80,7 +81,10 @@ const jobLimit = createLimiter(2);
  */
 export const runVoiceRoutingJob: VoiceRoutingJob = (questions, run) => {
   const until = Date.now() + run.timeoutMs;
-  return jobLimit(() => runVoiceRoutingJobNow(questions, run.runner, until - Date.now()));
+  return jobLimit(() => {
+    run.signal?.throwIfAborted();
+    return runVoiceRoutingJobNow(questions, run.runner, until - Date.now());
+  });
 };
 
 async function runVoiceRoutingJobNow(
@@ -128,18 +132,32 @@ export interface VoiceDeciderDeps {
 class Expired extends Error {}
 
 /** Race `work` against the absolute deadline `at`; at the deadline it rejects with `Expired`. */
-function within<T>(work: () => Promise<T>, at: number, now: () => number): Promise<T> {
+function within<T>(work: () => Promise<T>, at: number, now: () => number, signal?: AbortSignal): Promise<T> {
   const left = at - now();
   if (left <= 0) return Promise.reject(new Expired());
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
   const expiry = new Promise<never>((_, reject) => {
+    if (signal) {
+      onAbort = () => reject(new Error("cancelled"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     timer = setTimeout(() => reject(new Expired()), left);
     timer.unref?.();
   });
-  return Promise.race([Promise.resolve().then(work), expiry]).then((value) => {
+  const start = () => {
+    signal?.throwIfAborted();
+    if (now() >= at) throw new Expired();
+    return work();
+  };
+  return Promise.race([Promise.resolve().then(start), expiry]).then((value) => {
+    signal?.throwIfAborted();
     if (now() >= at) throw new Expired();
     return value;
-  }).finally(() => clearTimeout(timer));
+  }).finally(() => {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  });
 }
 
 function describe(error: unknown): string {
@@ -162,6 +180,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
       if (questions.length === 0) return { rung: "none", answers: [], detail: "no questions" };
       const deadline = now() + (deps.deadlineMs ?? VOICE_MODEL_STAGE_DEADLINE_MS);
       const notes: string[] = [];
+      const { signal } = options;
 
       const saved = deps.savedKeys();
       const env = deps.env();
@@ -170,14 +189,16 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
       if (provider && key) {
         const label = VOICE_KEY_PROVIDER_LABEL[provider];
         const controller = new AbortController();
+        const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
         const providerDeadline = Math.min(deadline, now() + (deps.providerTimeoutMs ?? VOICE_DECISION_PROVIDER_TIMEOUT_MS));
         const timer = setTimeout(() => controller.abort(), Math.max(0, providerDeadline - now()));
         timer.unref?.();
         try {
           const raw = await within(
-            () => deps.providers[provider].ask(questions, { key, signal: controller.signal, fetch: deps.fetch }),
+            () => deps.providers[provider].ask(questions, { key, signal: requestSignal, fetch: deps.fetch }),
             providerDeadline,
             now,
+            signal,
           );
           return { rung: provider, answers: accept(questions, raw, VOICE_CONFIDENCE_FLOOR), detail: `${label} answered` };
         } catch (error) {
@@ -188,6 +209,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         }
       }
 
+      if (signal?.aborted) return { rung: "none", answers: voiceAnswersUnsure(questions), detail: "cancelled" };
       const runner = voiceRoutingRunner(options.agents, deps.jobRunner());
       const rung = rungs[runner];
       if (!rung.enabled) {
@@ -195,7 +217,9 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; ") };
       }
       try {
-        const raw = await within(() => deps.job(questions, { runner, timeoutMs: Math.max(0, Math.floor(deadline - now())) }), deadline, now);
+        const raw = await within(() => deps.job(questions, {
+          runner, timeoutMs: Math.max(0, Math.floor(deadline - now())), signal,
+        }), deadline, now, signal);
         notes.push(`job on ${runner} answered`);
         return { rung: "job", answers: accept(questions, raw, rung.floor), detail: notes.join("; ") };
       } catch (error) {

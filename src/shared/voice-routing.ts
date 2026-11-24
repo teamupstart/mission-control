@@ -48,6 +48,8 @@ export interface VoiceSplitPoint {
   target: SpokenName;
   /** Character offset of this name in the original utterance. */
   at: number;
+  /** More than one captured target has the spoken name at this offset. */
+  ambiguousTarget?: true;
   head: string;
   tail: string;
 }
@@ -74,7 +76,7 @@ type Decision =
       /** The fixed first target: the model never chooses it (the first-word rule, spike S3). */
       target: SpokenName; match: "exact" | "phonetic";
       /** Each later name that could start a message of its own, in the order it was said. */
-      splits: VoiceSplitPoint[]; ambiguousSplitTarget: boolean }
+      splits: VoiceSplitPoint[] }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
 const BOUNDARY_PUNCTUATION = /^[\p{P}\s]+|[\p{P}\s]+$/gu;
@@ -85,6 +87,10 @@ function normalized(text: string): string {
 
 function barePhrase(text: string): string {
   return normalizeSpokenName(text).replace(/[\p{Sentence_Terminal}…]+$/u, "").trimEnd();
+}
+
+export function addressedCommand(text: string): VoiceAddressedCommand | undefined {
+  return barePhrase(text) === "stop" ? "stop" : undefined;
 }
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
@@ -199,13 +205,12 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = barePhrase(body) === "stop" ? { command: "stop" as const } : {};
-  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...command };
+  const command = addressedCommand(body);
+  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...(command && { command }) };
   const target = candidates[0]!;
   // A later roster name may start a message of its own or only be talked about. The first
   // target stays fixed whichever it is: the model is asked split or mention, never who.
   const splitCandidates = new Set([target]);
-  let ambiguousSplitTarget = false;
   const splits: VoiceSplitPoint[] = [];
   for (let i = count; i < tokens.length; i++) {
     const at = tokens[i]!;
@@ -219,17 +224,16 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const tail = messageAfterAddress(text, at.index, end.index + end[0].length).replace(/^[\s;:–—-]+/u, "").trim();
       if (head && tail) {
         for (const other of matches) {
-          splits.push({ target: other.target, at: at.index, head, tail });
+          splits.push({ target: other.target, at: at.index, head, tail, ...(matches.length > 1 && { ambiguousTarget: true }) });
           splitCandidates.add(other.target);
         }
-        if (matches.length > 1) ambiguousSplitTarget = true;
       }
       i += length - 1;
       break;
     }
   }
   if (splits.length) {
-    return { kind: "needs-model", reason: "second-name", candidates: [...splitCandidates], text: body, pauseMs, target, match, splits, ambiguousSplitTarget };
+    return { kind: "needs-model", reason: "second-name", candidates: [...splitCandidates], text: body, pauseMs, target, match, splits };
   }
-  return { kind: "addressed", target, text: body, match, pauseMs, ...command };
+  return { kind: "addressed", target, text: body, match, pauseMs, ...(command && { command }) };
 }

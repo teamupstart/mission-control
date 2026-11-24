@@ -3273,6 +3273,34 @@ test("a grant retains the superseding head across restart without sending failed
   } finally { await manager.stop(); }
 });
 
+test("after restart a grant selects the newer durable PR head on a recheck without a new observation", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    // The read preceded the grant. Its result reaches the ledger before shutdown,
+    // but the gate receives no notification for it.
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 9,
+      headSha: "current", cleanReviewHeadSha: "historical", reviewPosture: "live" }, now + 11);
+  } finally { await manager.stop(); }
+
+  const gate = store.getRun(ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+  assert.equal(gate.observedHeadSha, "historical");
+  assert.equal(store.latestSubmission(ids.run)?.round, 2);
+
+  const restarted = new WorkflowManager(registry, new WorkflowStore(db), {
+    resolveCommit: async (_root, head) => head,
+  });
+  try {
+    restarted.start();
+    assert.ok(restarted.recheckInspector(ids.run, "after-restart").ok);
+    await restarted.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.mode, s.prHeadSha]),
+      [[3, "inspector_only", "current"]]);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+  } finally { await restarted.stop(); }
+});
+
 test("grant waits through absent, failed, foreign and old observations and a closed PR before accepting a new head", async () => {
   const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
   try {

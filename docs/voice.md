@@ -105,7 +105,9 @@ returns `{ accepted: false }` for a missing or superseded revision before the ut
 Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
 Reassigning a spoken name or changing its target task or session issues a fresh revision,
 even when the list of names sent to the recognizer stays the same.
-Use a fresh ID per capture and epoch milliseconds for `capturedAt`.
+Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix milliseconds
+on the host clock shared by the listener and daemon. A recognizer using its own clock
+converts its timestamps to host time at capture.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
@@ -161,8 +163,9 @@ timestamps when listener requests arrive out of order. For equal timestamps, the
 opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
 An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
 Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
-timestamp. For a pick through the card API, the daemon estimates the pick time on the listener
-clock by adding the time the card has been open to its capture timestamp.
+timestamp. For a pick through the card API, the daemon records the host time when it applies
+the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
+arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 

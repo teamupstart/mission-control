@@ -356,6 +356,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     await until(() => connects === 2);
     assert.equal(refusals, 3);
     assert.equal((await read()).mode, "off");
+    await click("right-click");
+    assert.equal((await read()).labels[3], "Voice: reconnecting");
+    assert.equal((await read()).captures.at(-1), images[1], "reconnect uses the approved struck microphone");
+    const opens = (await read()).opens;
+    await click("click");
+    await until(async () => (await read()).labels.includes("Mute not confirmed. Try again."));
+    assert.equal((await read()).opens, opens, "a voice click during reconnect does not open the dashboard");
     const duringReconnect = await app.evaluate(async () => {
       const f = (globalThis as unknown as {fixture: Fixture}).fixture;
       const before = f.calls.length;
@@ -373,7 +380,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     events!.write("data: " + JSON.stringify({ type: "voice_state", state: early }) + "\n\n");
     events!.write("data: " + JSON.stringify({ type: "snapshot", voice: ready }) + "\n\n");
     await until(() => pids().length === 2);
-    assert.equal((await read()).captures.length, imagesBeforeSnapshot + 1, "only the snapshot updated the tray");
+    assert.equal((await read()).captures.length, imagesBeforeSnapshot, "the early update never showed a listening glyph");
     assert.doesNotMatch(readFileSync(join(root, "daemon.log"), "utf8"), /modelRevision="pre-snapshot-model"/);
     const second = pids()[1]!;
     assert.notEqual(second, first);

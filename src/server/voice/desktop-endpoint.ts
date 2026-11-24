@@ -9,6 +9,13 @@ import { HOST } from "../../shared/harness-runtime.mjs";
 const routes = new Set(["/events", "/api/voice/mute", "/voice/shell-report",
   "/voice/listener/hello", "/voice/listener/directive", "/voice/utterances"]);
 
+export const DESKTOP_VOICE_DAEMON_STOPPING = Symbol("desktop voice daemon stopping");
+
+export function removeDesktopVoiceEndpoint(file: string) {
+  try { rmSync(file, { force: true }); }
+  catch (error) { console.warn("[voice] Could not remove private desktop endpoint:", error); }
+}
+
 /** Publish the public certificate only after binding. The private key dies with this server. */
 export async function serveDesktopVoice(
   handle: RequestListener, file: string, signal: AbortSignal,
@@ -32,10 +39,22 @@ export async function serveDesktopVoice(
   });
   const temp = file + "." + randomUUID();
   let published = false;
+  function publish(value: object) {
+    try {
+      writeFileSync(temp, JSON.stringify(value), { mode: 0o600, flag: "wx" });
+      renameSync(temp, file);
+    } finally { rmSync(temp, { force: true }); }
+  }
   function close() {
     server.close();
     server.closeAllConnections();
-    if (published) rmSync(file, { force: true });
+    if (!published) return;
+    // A surviving shell can distinguish a daemon restart from an explicit flag-off.
+    // The marker has no port or certificate and cannot authorize a connection.
+    if (signal.reason === DESKTOP_VOICE_DAEMON_STOPPING) {
+      try { publish({ enabled: true }); }
+      catch (error) { console.warn("[voice] Could not publish desktop reconnect marker:", error); }
+    } else removeDesktopVoiceEndpoint(file);
   }
   try {
     server.listen(0, HOST);
@@ -44,15 +63,12 @@ export async function serveDesktopVoice(
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing desktop voice port");
     const certificate = new X509Certificate(identity.cert).raw.toString("base64");
-    writeFileSync(temp, JSON.stringify({ port: address.port, certificate }), { mode: 0o600, flag: "wx" });
-    renameSync(temp, file);
+    publish({ port: address.port, certificate });
     published = true;
     signal.addEventListener("abort", close, { once: true });
     return server;
   } catch (error) {
     close();
     throw error;
-  } finally {
-    rmSync(temp, { force: true });
   }
 }

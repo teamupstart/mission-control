@@ -5,6 +5,8 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
+import { desktopVoiceEndpointPath } from "../shared/harness-runtime.mjs";
+import type { TrayVoiceState } from "./voice-tray.ts";
 import { logMain } from "./main-log.ts";
 import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
@@ -23,7 +25,7 @@ const ShellVoiceStateSchema = z.object({
 export type ShellVoiceState = z.infer<typeof ShellVoiceStateSchema>;
 
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
-export function startShellVoice(binary: string, onState: (state: ShellVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS) {
+export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS) {
   let connection: ReturnType<typeof desktopVoiceConnection>;
   const listener = nativeVoiceListener(binary, () => {
     if (!connection) throw new Error("Voice listener has no daemon connection");
@@ -35,6 +37,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
   let state: ShellVoiceState = voiceStateOff();
+  let lastEnabledMute: boolean | undefined;
   let nextPromptAt = 0;
   let retryDelay = 5000;
   let prompt: Promise<boolean> | undefined;
@@ -113,6 +116,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   }
   function update(next: ShellVoiceState) {
     state = next;
+    lastEnabledMute = next.mode === "off" ? undefined : (next.muted ?? next.mode === "muted");
     onState(state);
     void sync();
   }
@@ -135,7 +139,10 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   }
   function requestSnapshot() {
     disconnect();
-    update(voiceStateOff());
+    state = voiceStateOff();
+    if (!existsSync(desktopVoiceEndpointPath())) lastEnabledMute = undefined;
+    onState(lastEnabledMute === undefined ? state : { mode: "reconnecting", muted: lastEnabledMute });
+    void sync();
     reconnect = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
   }
@@ -166,6 +173,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   function connect() {
     const current = connection = desktopVoiceConnection();
     if (!current) {
+      if (lastEnabledMute !== undefined && !existsSync(desktopVoiceEndpointPath())) update(voiceStateOff());
       reconnect = setTimeout(connect, 1000);
       return;
     }

@@ -295,6 +295,8 @@ export function resolveLlmEffort(
 }
 
 export interface LlmRunOptions {
+  /** Cancel this call, including any running provider process. */
+  signal?: AbortSignal;
   /**
    * The model id. Omit to inherit whatever the provider defaults to, which is both the
    * priciest and the least predictable choice - every cheap caller should name one.
@@ -307,6 +309,18 @@ export interface LlmRunOptions {
    * rather than checking it again.
    */
   effort?: ThinkingLevel;
+  /**
+   * `off` asks the provider to answer without a reasoning pass: Claude's thinking disabled,
+   * Codex's reasoning effort `none`. Omit for the provider's default. For a short classification
+   * whose budget is a few seconds, the thinking is most of the delay (voice routing, Phase 4).
+   */
+  thinking?: "off";
+  /**
+   * A system prompt that REPLACES the provider's own default one, for a call that needs no agent
+   * framing. A runner whose provider has no system prompt slot puts it ahead of the prompt.
+   * Omit for the provider's default, which is every other caller's behaviour.
+   */
+  systemPrompt?: string;
   /** Wall-clock budget for the whole call. Omit to take the runner's own default. */
   timeoutMs?: number;
   /**

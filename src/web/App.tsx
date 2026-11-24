@@ -5,7 +5,7 @@ import { FeatureFlagsContext } from "./useFeatureFlag.ts";
 import { MACOS_TERMINAL_FLAG_ID } from "@shared/feature-flag-registry.ts";
 
 import { resolveFeatureFlag } from "@shared/feature-flags.ts";
-import { IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { IDLE_RAIL_SECTION_COUNTS_FLAG_ID, IDLE_STALLED_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
@@ -126,6 +126,7 @@ import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
+import { idleRailFocusFallback, idleRailSections, type IdleRailSections } from "./lib/idle-rail-sections.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
@@ -408,6 +409,7 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
+    voiceCards,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -1071,10 +1073,35 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
+  const committedIdleSections = useRef<IdleRailSections["sections"] | undefined>(undefined);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
-    if (el) sessionEls.current.set(id, el);
-    else sessionEls.current.delete(id);
+    if (el) {
+      sessionEls.current.set(id, el);
+      return;
+    }
+    const previous = sessionEls.current.get(id);
+    sessionEls.current.delete(id);
+    const idleSectionRow = ".has-idle-sections .rail-row";
+    if (previous !== document.activeElement || !previous?.matches(idleSectionRow)) return;
+    const rail = previous.closest(".has-idle-sections");
+    // A status update can remount a session under a different heading. Let React attach
+    // the replacement ref and keep any focus the operator has already moved elsewhere.
+    queueMicrotask(() => {
+      if (document.activeElement !== document.body) return;
+      const replacement = sessionEls.current.get(id);
+      if (replacement?.matches(idleSectionRow)) {
+        replacement.focus({ preventScroll: true });
+        replacement.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+      const destination = committedIdleSections.current?.find((section) =>
+        !section.expanded && section.sessionIds.includes(id));
+      const heading = destination && rail?.querySelector<HTMLButtonElement>(
+        `.idle-rail-section-toggle[data-idle-section="${CSS.escape(destination.key)}"]`,
+      );
+      (heading ?? idleRailFocusFallback(rail))?.focus();
+    });
   }, []);
 
   const registerWorkflowDisclosure = useCallback(
@@ -1096,8 +1123,13 @@ export function App(): React.JSX.Element {
     // A folded rail draws no rows, so no row is registered for the id. The strip that stands
     // in for them takes the keyboard instead: leaving the reader must still leave it, or every
     // Escape would land back inside the reader and the next one could never peel further.
-    (sessionEls.current.get(id) ?? document.querySelector<HTMLElement>(".session-rail-strip"))
-      ?.focus({ preventScroll: true });
+    const target = sessionEls.current.get(id)
+      ?? document.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
+      ?? document.querySelector<HTMLElement>(".session-rail-strip");
+    target?.focus({ preventScroll: true });
+    if (target?.closest(".has-idle-sections")) {
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   }, []);
 
   const focusReaderBody = useCallback(() => {
@@ -2678,6 +2710,18 @@ export function App(): React.JSX.Element {
     },
     [],
   );
+  const previousVoiceCards = useRef(voiceCards);
+  useEffect(() => {
+    const messages: string[] = [];
+    for (const card of voiceCards.values()) {
+      if ((card.state === "not-running" || card.state === "failed") && card.detail) {
+        const previous = previousVoiceCards.current.get(card.id);
+        if (previous?.state !== card.state || previous.detail !== card.detail) messages.push(card.detail);
+      }
+    }
+    previousVoiceCards.current = voiceCards;
+    if (messages.length) showFleetActionError(messages.join(" "));
+  }, [voiceCards, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
@@ -3347,20 +3391,48 @@ export function App(): React.JSX.Element {
   // Navigation follows the overview that BoardView renders until a detail is visible again.
   const boardDetailOpen = layout === "board" && boardOpen && selected !== null;
   const allSessionsRail = boardDetailOpen && boardSidebarAllSessions;
+  const idleRailCountsEnabled = resolveFeatureFlag(IDLE_RAIL_SECTION_COUNTS_FLAG_ID, featureFlags);
+  const idleColumn = boardDetailOpen && !allSessionsRail && idleRailCountsEnabled
+    ? fleet.columns.find((column) => column.id === "idle" && column.sessions.some((session) => session.id === detailId))
+    : undefined;
+  const idleSectionRows = useMemo(() => idleColumn && idleRailSections(idleColumn), [idleColumn]);
+  const selectedIdleSectionKey = idleSectionRows?.find((section) => detailId && section.sessionIds.includes(detailId))?.key;
+  const [idleSectionState, setIdleSectionState] = useState({
+    detailId,
+    selectedSectionKey: selectedIdleSectionKey,
+    overrides: new Map<string, boolean>(),
+  });
+  if (idleSectionState.detailId !== detailId || idleSectionState.selectedSectionKey !== selectedIdleSectionKey) {
+    // An explicit collapse applies to the current conversation. When a session opens
+    // or moves to another section, reveal its row before the rail renders.
+    const overrides = new Map(idleSectionState.overrides);
+    if (selectedIdleSectionKey) overrides.delete(selectedIdleSectionKey);
+    setIdleSectionState({ detailId, selectedSectionKey: selectedIdleSectionKey, overrides });
+  }
+  const idleSections = useMemo(() => idleSectionRows?.map((section, index) => ({
+    ...section,
+    expanded: idleSectionState.overrides.get(section.key) ?? (index === 0 || section.key === selectedIdleSectionKey),
+  })), [idleSectionRows, idleSectionState.overrides, selectedIdleSectionKey]);
+  useLayoutEffect(() => {
+    committedIdleSections.current = idleSections;
+  }, [idleSections]);
   const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   // The folded At the top of Idle frame hides its cards on the Board overview only, like a
   // collapsed column: the rails always list the Blocked group in full.
   const hideFoldedBlocked = layout === "board" && !boardDetailOpen && blockedFrameCollapsed
     && fleet.blockedPlacement === "idle";
   const foldedIds = useMemo(() => {
-    const folded = hiddenSessionIds(fleet.groups, collapsedRepoKeys);
+    const folded = new Set(hiddenSessionIds(fleet.groups, collapsedRepoKeys));
+    for (const section of idleSections ?? []) {
+      if (!section.expanded) for (const id of section.sessionIds) folded.add(id);
+    }
     const inStrips = hideCollapsedColumns
       ? collapsedColumnSessionIds(fleet.columns, new Set(collapsedColumns))
       : new Set<string>();
     const inFrame = hideFoldedBlocked ? fleet.blocked : [];
     if (inStrips.size === 0 && inFrame.length === 0) return folded;
     return new Set([...folded, ...inStrips, ...inFrame.map((s) => s.id)]);
-  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked]);
+  }, [fleet, collapsedRepoKeys, hideCollapsedColumns, collapsedColumns, hideFoldedBlocked, idleSections]);
 
   // One array per drawn column, in Board order, so a Blocked lane or frame is walked as part
   // of the column that draws it and the Own column placement adds a sixth array.
@@ -3815,6 +3887,13 @@ export function App(): React.JSX.Element {
 
   const viewProps: SessionViewProps = {
     sessions: visible,
+    idleRailSections: idleSections && {
+      sections: idleSections,
+      onToggle: (key, expanded) => setIdleSectionState((previous) => ({
+        ...previous,
+        overrides: new Map(previous.overrides).set(key, expanded),
+      })),
+    },
     restoringSessions: visibleRestoringSessions,
     tasks,
     backlog: visibleBacklog,
@@ -4331,7 +4410,18 @@ export function App(): React.JSX.Element {
       // it natively. Without this they would act as they do on a rail row: Tab dives into the
       // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
       // never get from Intake to Backlog.
-      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock")) return;
+      // In the Idle preview, Tab enters a section's controls and rows natively.
+      // Once a row has focus, Tab and Shift+Tab keep their session shortcuts.
+      const inIdleSections = Boolean(target?.closest(".has-idle-sections"));
+      if (chord === "Home" && inIdleSections && target?.closest(".rail-row")) {
+        e.preventDefault();
+        target.closest(".idle-rail-section")
+          ?.querySelector<HTMLButtonElement>(".idle-rail-section-toggle")?.focus();
+        return;
+      }
+      if ((chord === "Tab" || chord === "shift+Tab") && (
+        target?.closest(".line-dock") || (inIdleSections && !target?.closest(".rail-row"))
+      )) return;
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
@@ -4442,7 +4532,10 @@ export function App(): React.JSX.Element {
       const detailResident = residentKeysRef.current.detailResidentId;
       // The drawer's Needs you group keeps the review chord live on a fleet with no rows.
       const drawerReview = chord === bindings.review && residentKeysRef.current.drawerAsking.length > 0;
-      if (ids.length === 0 && !residentOpen && !drawerReview) return;
+      // The selected session's section can hide the last row while its reader stays open.
+      const escapingDetail = chord === "Escape" && readerSession
+        && (boardDetailOpen || target?.closest(".cdetail"));
+      if (ids.length === 0 && !residentOpen && !drawerReview && !escapingDetail) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
@@ -4514,7 +4607,7 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail || inIdleSections) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.

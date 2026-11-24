@@ -143,6 +143,31 @@ Node prefix, an explicit `node-gyp rebuild` in its package directory, then
 That command does not start a microphone stream. Its native build warning reports no
 arm64 slice in the bundled PortAudio dylib. Do not adopt it as a proven capture package.
 
+## Phase 4 Haiku retest
+
+`routing-retest.ts` measures the `voice-routing` job rung as the daemon runs it, through
+`runVoiceRoutingJob` (prompt, system prompt, strict schema, thinking off, tools disabled, one
+attempt, the configured Claude transport). It spends usage through your own `claude` login, so it
+refuses to run without `--yes`; daemon modules are imported under a throwaway state home.
+
+```sh
+node --import tsx scripts/voice-spike/routing-retest.ts --yes --cases scripts/voice-spike/routing-tuning.json --label tune1-sdk
+node --import tsx scripts/voice-spike/routing-retest.ts --yes --cases scripts/voice-spike/routing-holdout.json --label holdout-claude
+node --import tsx scripts/voice-spike/routing-retest.ts --summarize holdout-claude
+```
+
+`--runner codex` runs Luna using the Codex transport selected for the run. Set
+`MISSION_CODEX_TRANSPORT` to `sdk` or `exec` to select it in the disposable state home.
+Each row records that transport. Resuming with a different transport requires a fresh label.
+`--transport print` measures `claude -p`. Use `--start` and `--limit` to select cases.
+Results append to `.tmp/voice-spike/retest-<label>.jsonl`.
+Each row records the SHA-256 digests of the corpus file and the prompts and response schemas
+generated for that corpus. Use a fresh label when either digest changes or the old rows lack it.
+One process owns a label until its run finishes. Resume the next slice after it exits.
+`routing-tuning.json` is the spike's corpus recast as Phase 4's questions and is the tuning set;
+`routing-holdout.json` was written before tuning and is the only pass evidence. The results are
+in `docs/voice-spike-findings.md`, "S7 addendum: Haiku retest".
+
 ## Adopted first-word policy
 
 The operator removed the pause requirement: an exact first-word name establishes the

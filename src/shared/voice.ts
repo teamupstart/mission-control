@@ -118,6 +118,21 @@ export const VoiceConfigPatchSchema = z.object({
 }).partial().strict().refine((patch) => Object.keys(patch).length > 0, { message: "empty voice config update" });
 export type VoiceConfigPatch = z.infer<typeof VoiceConfigPatchSchema>;
 
+// Allow the existing one-minute delayed reservation to complete within a single edit.
+export const VOICE_PROVIDER_EDIT_TIMEOUT_MS = 75_000;
+export const VoiceProviderGestureSchema = z.object({ group: z.uuid(), order: z.int().positive() }).strict();
+export const VoiceProviderIntentSchema = z.object({
+  writer: z.uuid(),
+  observedRevision: z.string().min(1).max(80),
+  expiresAt: z.int().positive().optional(),
+  optOut: z.boolean().optional(),
+  edit: z.int().positive().optional(),
+  gesture: VoiceProviderGestureSchema.optional(),
+  observedIntent: z.string().min(1).max(128).optional(),
+  unchangedSince: z.string().min(1).max(80).optional(),
+}).strict();
+export type VoiceProviderIntent = z.infer<typeof VoiceProviderIntentSchema>;
+
 /** Apply a patch over a config: fields replace, and `cancelWindow` merges per key. */
 export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPatch): VoiceConfig {
   return VoiceConfigSchema.parse({

@@ -3,6 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
+import { unseenReportsNote } from "@shared/reports.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
@@ -50,7 +51,7 @@ import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { desktopVoiceEndpointPath, envVar } from "@shared/harness-runtime.mjs";
-import { serveDesktopVoice } from "./voice/desktop-endpoint.ts";
+import { DESKTOP_VOICE_DAEMON_STOPPING, removeDesktopVoiceEndpoint, serveDesktopVoice } from "./voice/desktop-endpoint.ts";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
@@ -314,7 +315,9 @@ const pauses: PauseManager = new PauseManager({
 });
 pauses.start();
 const sdkSessions: SdkSupervisor = new SdkSupervisor(registry, { pause: pauses });
-const pendingTurns = new PendingTurnManager(registry, sdkSessions);
+const pendingTurns = new PendingTurnManager(registry, sdkSessions, {
+  unseenReports: session => unseenReportsNote(reports.openReportsBy(reports.authorFor(session).key)),
+});
 // The portable archive library and its disposable index. CONSTRUCTED here, above `TaskManager`,
 // and that ordering is load-bearing rather than tidy: the TaskManager constructor's startup
 // reconciliation reclaims the worktree of every task whose agent did not survive the restart,
@@ -937,6 +940,7 @@ if (hasDist) {
 
 let stopDesktopVoice = () => {};
 function watchDesktopVoice() {
+  const endpointFile = desktopVoiceEndpointPath();
   let active: AbortController | undefined;
   let retry: NodeJS.Timeout | undefined;
   function reconcile() {
@@ -944,7 +948,7 @@ function watchDesktopVoice() {
     if (featureEnabled(VOICE_FLAG)) {
       if (active) return;
       const controller = active = new AbortController();
-      void serveDesktopVoice(getRequestListener(app.fetch, { overrideGlobalObjects: false }), desktopVoiceEndpointPath(), controller.signal).catch(error => {
+      void serveDesktopVoice(getRequestListener(app.fetch, { overrideGlobalObjects: false }), endpointFile, controller.signal).catch(error => {
         if (controller.signal.aborted) return;
         console.error("[voice] Could not start private desktop endpoint:", error);
         active = undefined;
@@ -953,11 +957,12 @@ function watchDesktopVoice() {
     } else {
       active?.abort();
       active = undefined;
+      removeDesktopVoiceEndpoint(endpointFile);
     }
   }
   const unsubscribe = onFeatureFlagsChanged(reconcile);
   reconcile();
-  return () => { unsubscribe(); clearTimeout(retry); active?.abort(); };
+  return () => { unsubscribe(); clearTimeout(retry); active?.abort(DESKTOP_VOICE_DAEMON_STOPPING); };
 }
 
 let shutdownStarted = false;

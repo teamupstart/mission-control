@@ -104,9 +104,9 @@ export function taskKindTakesCallSign(kind: TaskKind): boolean {
 export const RESIDENT_CALL_SIGN_REFUSAL =
   "A resident is addressed by the reference name on its profile, so its task takes no call sign.";
 
-/** A name as it is compared: trimmed, whitespace collapsed, lowercase. */
+/** A name as it is compared: trimmed, whitespace collapsed, lowercase and in Unicode NFC. */
 export function normalizeSpokenName(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLowerCase();
+  return name.trim().replace(/\s+/g, " ").toLowerCase().normalize("NFC");
 }
 
 // ---- what a name sounds like ----

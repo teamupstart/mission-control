@@ -293,6 +293,16 @@ test("a stopped task's name leaves at once when another agent takes it", () => {
   assert.ok(!brief(names.roster()).includes("task:t-x1 Max not-running"));
 });
 
+test("a resident taking a canonically equivalent spelling retires the stopped task", () => {
+  const { sources, names, clock } = harness();
+  sources.upsertTask(callSignTask("old", "José", { status: "done", completedAt: clock.now }));
+  const spelling = "Jose\u0301";
+  sources.upsertProfile(profile("resident", { name: spelling }));
+  assert.deepEqual(names.roster().map((entry) => entry.name), [spelling]);
+  sources.removeProfile("resident");
+  assert.deepEqual(names.roster(), []);
+});
+
 test("a resident releasing a reused name never restores the stopped task, cached or evicted", () => {
   for (const evict of [false, true]) {
     const { sources, names, clock } = harness();

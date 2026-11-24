@@ -268,7 +268,8 @@ taskId, sessionId, role, colorId, agent, state }`:
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
-stopped later. The displaced name stays off the roster even if the other agent gives it up or the
+stopped later. Schema 52 adds the nullable `tasks.retired_call_sign` column to record displacement
+without changing the configured call sign. The displaced name stays off the roster even if the other agent gives it up or the
 daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
 A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
 phase can say "<name> isn't running".
@@ -303,6 +304,7 @@ called by it on the inbox, the review modal, question cards, alert titles, the A
 report's author, and a resident by its reference name in its board colour. They are voice's names,
 so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameInput` takes the flag
 as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
+Schema 53 adds nullable `author_spoken_name` columns to `reports` and `report_mutes`.
 New reports capture both author labels when posted. Switching Voice changes which label is shown,
 even after the session exits. Older reports with a single recorded label keep that attribution.
 Away previews and return digests also select the label for buffered session events when read.

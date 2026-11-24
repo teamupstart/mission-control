@@ -310,7 +310,8 @@ export class VoiceNameRegistry {
     const tasks = [...inMemory, ...[...this.retained.values()].filter((task) => !ids.has(task.id))];
     for (const task of tasks) {
       if (task.callSign && !this.retiredNames.has(task.id)) {
-        this.retiredNames.set(task.id, this.deps.retirement?.read(task.id) ?? null);
+        const stored = this.deps.retirement?.read(task.id);
+        this.retiredNames.set(task.id, stored ? normalizeSpokenName(stored) : null);
       }
     }
     const stoppedNow = new Set<string>();

@@ -14,6 +14,23 @@ const handoffTicket = process.env.MISSION_TERMINAL_HANDOFF_TICKET;
 delete process.env.MISSION_TERMINAL_HANDOFF_TICKET;
 const inventoryOptions = { timeoutMs: 5_000, env: { ...process.env, LC_ALL: "C", LANG: "C" } };
 
+function waitForAgent(executable: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string): Promise<number> {
+  const child = spawn(executable, args, { cwd, env, stdio: "inherit" });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code ?? 1));
+  });
+}
+
+// The terminal signals the entire foreground group. Let the agent handle those signals
+// while its guard stays alive until the child exits.
+function keepGuardInForeground(): () => void {
+  const signals = ["SIGHUP", "SIGINT", "SIGQUIT"] as const;
+  const stayAlive = () => {};
+  for (const signal of signals) process.on(signal, stayAlive);
+  return () => { for (const signal of signals) process.off(signal, stayAlive); };
+}
+
 // A separate packaged process, deliberately independent of the daemon's exit handlers.
 // No config read and no agent spawn precedes the immutable claim/revoke decision.
 async function main(): Promise<number> {
@@ -39,12 +56,7 @@ async function main(): Promise<number> {
     delete env[key];
   writeResumeRecord(join(lease.home, "terminal-launch.json"), { pid: process.pid, startMs });
   const before = await processInventory();
-  // The terminal signals the foreground group, including both guard and agent. Stay alive
-  // to observe child exit; the spawned agent keeps its default signal handling. A signal
-  // never authorizes cleanup by itself, and SIGKILL still leaves the environment protected.
-  const terminalSignals = ["SIGHUP", "SIGINT", "SIGQUIT"] as const;
-  const stayAlive = () => {};
-  for (const signal of terminalSignals) process.on(signal, stayAlive);
+  const restoreSignals = keepGuardInForeground();
   try {
     const socketPath = readResumeEnvironmentSocket(lease);
     if (socketPath && !await applyEnvironmentPatch(socketPath, env)) {
@@ -55,11 +67,7 @@ async function main(): Promise<number> {
     // The prepared isolation and launch identities remain authoritative for the child.
     Object.assign(env, input.env);
     delete env.ELECTRON_RUN_AS_NODE;
-    const child = spawn(executable, input.argv.slice(1), { cwd: input.cwd, env, stdio: "inherit" });
-    const code = await new Promise<number>((resolve) => {
-      child.once("error", () => resolve(127));
-      child.once("exit", (code) => resolve(code ?? 1));
-    });
+    const code = await waitForAgent(executable, input.argv.slice(1), env, input.cwd).catch(() => 127);
     const after = await processInventory();
     // Detached children can leave the process group and double-forked children lose their
     // original parent. Unavailable inventory or ambiguous ancestry cannot authorize deletion.
@@ -68,7 +76,7 @@ async function main(): Promise<number> {
     }
     return code;
   } finally {
-    for (const signal of terminalSignals) process.off(signal, stayAlive);
+    restoreSignals();
   }
 }
 
@@ -114,7 +122,7 @@ async function applyEnvironmentPatch(socketPath: string, env: NodeJS.ProcessEnv)
   return true;
 }
 
-/** Apply the patch only on the exec that replaces the reader with the final agent. */
+/** Supply the selected environment only when starting the final agent. */
 async function execWithAgentEnvironment(): Promise<void> {
   const [socketPath, ...command] = process.argv.slice(3);
   if (!socketPath || !process.execve) throw new Error("Unavailable environment handoff");
@@ -139,14 +147,19 @@ async function execWithAgentEnvironment(): Promise<void> {
     writeFileSync(dispatch.outcomePath, fits ? "shaped" : "original", { mode: 0o600 });
   }
   if (!argv[0]) throw new Error("Missing agent command");
+  if (!dispatch) return process.execve(argv[0], [...argv], env);
+  const restoreSignals = keepGuardInForeground();
   try {
-    return process.execve(argv[0], [...argv], env);
-  } catch (error) {
-    // The original dispatch shell runs executable text without a shebang as a shell
-    // program. Only ENOEXEC selects that interpreter; retain normal permission errors.
-    if (!dispatch || (error as NodeJS.ErrnoException).code !== "ENOEXEC") throw error;
-    const shell = FIXED_OS_EXECUTABLES.sh;
-    return process.execve(shell, [shell, ...argv], env);
+    try {
+      process.exitCode = await waitForAgent(argv[0], argv.slice(1), env);
+    } catch (error) {
+      // Node 24 aborts on a failed process.execve. spawn reports the kernel error,
+      // so only executable text refused with ENOEXEC falls back to the shell.
+      if ((error as NodeJS.ErrnoException).code !== "ENOEXEC") throw error;
+      process.exitCode = await waitForAgent(FIXED_OS_EXECUTABLES.sh, [...argv], env);
+    }
+  } finally {
+    restoreSignals();
   }
 }
 

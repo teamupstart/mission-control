@@ -124,7 +124,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/terminal/resume-guard.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "fixed shell probes the final argument size with an empty environment before dispatch chooses a shaped prompt" },
-    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "absolute harness executable provisioned by managed resume preparation before the lease claim" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "prepared terminal agent executable or the fixed shell interpreter for an executable text shim" },
   ],
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },

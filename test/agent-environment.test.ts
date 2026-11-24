@@ -176,6 +176,29 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     assert.equal(existsSync(stateHome), false, "the owning wrapper cleaned up");
   });
 
+  await t.test("named dispatch respects execute permission and preserves a shim's exit status", async (t) => {
+    for (const executable of [false, true]) {
+      const stateHome = mkdtempSync(join(dir, "shim-status-"));
+      const shim = join(dir, executable ? "returns-126" : "no-execute-permission");
+      const marker = shim + ".starts";
+      writeFileSync(shim, 'echo started >> "$1"\nexit 126\n', { mode: executable ? 0o700 : 0o600 });
+      const handoff = await terminalEnvironmentArgv([shim, marker], { cwd: dir, stateHome }, named, {
+        wrap: (reader) => isolatedAgentArgv(reader, { stateHome }), fallbackArgv: null,
+      });
+      t.after(handoff.dispose);
+      const code = await new Promise((resolve) => {
+        execFile(handoff.argv[0]!, handoff.argv.slice(1), { env: pane }, (error) => resolve(error?.code ?? 0));
+      });
+      if (executable) {
+        assert.equal(code, 126);
+        assert.equal(readFileSync(marker, "utf8"), "started\n");
+      } else {
+        assert.notEqual(code, 0);
+        assert.equal(existsSync(marker), false);
+      }
+    }
+  });
+
   await t.test("a named dispatch probes the final agent size and records only the command that ran", async (t) => {
     for (const fits of [true, false]) {
       const stateHome = mkdtempSync(join(dir, "dispatch-fit-"));

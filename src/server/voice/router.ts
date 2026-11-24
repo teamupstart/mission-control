@@ -1,5 +1,6 @@
 import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type VoiceCard, type VoiceDeliveryOutcome, type VoiceUtterance } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
+import { voiceHostTimeUs } from "./host-clock.ts";
 import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
@@ -14,7 +15,7 @@ interface ActionTime {
 }
 
 // Captures on the shared host timeline retain their physical order across clock
-// adjustments. Dashboard actions and Unix-only clients supply the wall time.
+// adjustments. Use Unix time when either participant only supplies wall time.
 function offsetUs(time: ActionTime, reference: ActionTime): number {
   return time.openedAtHostUs !== undefined && reference.openedAtHostUs !== undefined
     ? time.openedAtHostUs - reference.openedAtHostUs : (time.openedAt - reference.openedAt) * 1000;
@@ -65,6 +66,7 @@ export class VoiceRouter {
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly publish: (card: VoiceCard) => void,
+    private readonly hostNowUs: () => number = voiceHostTimeUs,
   ) {}
 
   activeCards(): VoiceCard[] {
@@ -91,7 +93,11 @@ export class VoiceRouter {
     if (!(voiceCaptures(mode) || (mode === "auto-muted" && heldBeforeRelease)) || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
     // Released holds already passed the route's monotonic key-down/key-up bounds.
-    if (!heldBeforeRelease && capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
+    if (!heldBeforeRelease) {
+      const aheadUs = startHostUs !== undefined
+        ? startHostUs - this.hostNowUs() : (capturedAt - Date.now()) * 1000;
+      if (aheadUs > MAX_CAPTURE_CLOCK_SKEW_MS * 1000) return false;
+    }
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     const time = { openedAt: capturedAt, openedAtHostUs: startHostUs };
     const unsureCards = Array.from(this.open.values())
@@ -180,15 +186,17 @@ export class VoiceRouter {
     return true;
   }
 
-  async pick(id: string, candidateId: string, time: ActionTime = { openedAt: Date.now() }): Promise<boolean> {
+  async pick(id: string, candidateId: string, time?: ActionTime): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
     const target = this.state().roster.find((c) => c.key === candidateId);
     if (!target) return false;
+    const pickedAt = time ?? { openedAt: Date.now(), openedAtHostUs: this.hostNowUs() };
     this.take(item);
     item.entry.matchedName = target.name;
     item.entry.detail = "picked";
-    this.openCard({ ...item, time, card: { ...item.card, state: "pending", reason: "picked",
+    this.openCard({ ...item, time: pickedAt,
+      card: { ...item.card, state: "pending", reason: "picked",
       candidates: [], parts: [{ target: { ...target }, text: item.message }] } });
     return true;
   }

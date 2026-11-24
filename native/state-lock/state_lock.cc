@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
@@ -651,10 +652,27 @@ napi_value ProcessArguments(napi_env env, napi_callback_info info) {
 #endif
 }
 
+napi_value HostTimeUs(napi_env env, napi_callback_info) {
+#if defined(__APPLE__)
+  // The Core Audio host clock (mach_absolute_time) excludes system sleep.
+  const auto micros = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000;
+#else
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    return ThrowSystemError(env, "ECLOCK", std::strerror(errno));
+  }
+  const auto micros = now.tv_sec * INT64_C(1000000) + now.tv_nsec / 1000;
+#endif
+  napi_value value;
+  if (napi_create_int64(env, micros, &value) != napi_ok) return nullptr;
+  return value;
+}
+
 }  // namespace
 
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
+      {"hostTimeUs", nullptr, HostTimeUs, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"acquire", nullptr, AcquireStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"release", nullptr, ReleaseStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"linkSymlinkNoReplace", nullptr, LinkSymlinkNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},

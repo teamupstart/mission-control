@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, afterEach, beforeEach, test } from "node:test";
+import { after, afterEach, before, beforeEach, test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +8,10 @@ import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
 import type { HeardEntry, VoiceCard } from "../src/shared/voice-routing.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
+
+before(() => { ensureNativeStateLockAddon(); });
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
 process.env.MISSION_HOME = home;
@@ -724,6 +728,26 @@ test("a picked card's new cancel window follows the time of the pick", async (t)
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
   await post(utterancePath(), { ...capture("cancel"), capturedAt: now - 100 }, token);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+});
+
+test("ordinary speech and dashboard picks use the native host clock after wall time moves backward", async (t) => {
+  const unix = Date.now();
+  let wallNow = unix;
+  t.mock.method(Date, "now", () => wallNow);
+  const speak = async (id: string, text: string, capturedAt: number, startUs: number) =>
+    (await app.request(utterancePath(), { method: "POST", headers: {
+      "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      "x-voice-capture-start-host-us": String(startUs),
+    }, body: JSON.stringify({ ...capture(text, id), capturedAt }) })).json();
+  assert.deepEqual(await speak("choice", "Steven ask Will", unix, voiceHostTimeUs()), { accepted: true });
+  const beforePick = voiceHostTimeUs() - 1;
+  assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
+  wallNow -= 60_000;
+  assert.deepEqual(await speak("before", "cancel", unix, beforePick), { accepted: true });
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.deepEqual(await speak("after", "cancel", wallNow, voiceHostTimeUs()), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.equal((await readHeard()).find(entry => entry.id === "before")?.time, unix);
 });
 
 test("an API pick and a spoken cancel use the shared host clock", async (t) => {

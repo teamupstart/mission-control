@@ -166,9 +166,11 @@ the daemon accepts the same owner's held revision for segments contained within 
 The listener rounds the first sample down to host microseconds in `x-voice-capture-start-host-us`.
 It clips on 16 kHz sample boundaries and rounds the exclusive end up to host milliseconds
 for `x-voice-capture-end-host-ms`. A clipped prefix containing only quiet lead-in is discarded.
-The router orders spoken commands, picks and cancels by their monotonic start timestamps when
-both are available. Recently heard displays the original Unix `capturedAt`. Comparisons with
-dashboard picks or Unix-only captures use their Unix times. If a POST races key-up
+The daemon timestamps dashboard picks on the listener's host clock. On macOS it reads
+`CLOCK_UPTIME_RAW`, the Core Audio clock in nanoseconds, and converts it to microseconds.
+On Linux the host clock is `CLOCK_MONOTONIC`. The router uses these timestamps to order
+commands, picks and cancels. Comparisons involving Unix-only captures use wall time.
+Recently heard displays the original Unix `capturedAt`. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. Successive key presses during the
 same call preserve the release exception. Manual mute, a change of recipient, listener or input,
@@ -177,7 +179,8 @@ With the window off the daemon acknowledges the capture as soon as it claims del
 The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. During ordinary listening the daemon drops captures dated more than
-one second ahead of its clock. For released holds it checks the monotonic key interval,
+one second ahead of its host clock, or its wall clock for Unix-only clients.
+For released holds it checks the monotonic key interval,
 so a backward wall-clock adjustment still lets pre-release speech reach the queue.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
 The listener posts captures in spoken order, waiting for each response before posting the next

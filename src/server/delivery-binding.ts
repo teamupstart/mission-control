@@ -55,6 +55,8 @@ export interface DeliveryConversation {
 
 /** One table's persistence, and who its rows would be credited to. */
 export interface DeliveryStore<Row extends BindableDelivery> {
+  /** Conversations whose rows an outbox transaction removed outside this ledger. */
+  takeInvalidatedKeys?(): readonly string[] | undefined;
   /** Optional byte boundary for a transcript proven to have been created after reservation. */
   newTranscriptAfter?(transcript: SessionMessages, deliveredAt: number): boolean;
   /** For log lines: "a delegated turn". */
@@ -312,6 +314,14 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   ) {}
 
   rows(noteKey: string): Row[] {
+    for (const key of this.store.takeInvalidatedKeys?.() ?? []) {
+      for (const row of this.cache.get(key) ?? []) {
+        this.scanned.delete(row.id);
+        this.expired.delete(row.id);
+        this.twins.delete(row.id);
+      }
+      this.cache.delete(key);
+    }
     let rows = this.cache.get(noteKey);
     if (!rows) {
       rows = this.store.load(noteKey);

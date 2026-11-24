@@ -284,6 +284,34 @@ test("settled text-only attempts cannot claim later typed messages across retrie
   }
 });
 
+test("immediate retry after discarding a warm text-only reservation discloses only the confirmed spoken turn", async () => {
+  const { noteOtherSend, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const words = "inspect the build";
+  for (const action of ["retry", "discard"] as const) {
+    const key = "warm-reservation-" + action;
+    const transcript = fakeTranscript();
+    const conversation = transcript.conversation(key);
+    const original = claimSpoken(key, words, words);
+    reserveSpokenTurn(conversation, words, words, false, original);
+    assert.throws(() => db.inTransaction(() => {
+      db.clearPendingTurns(key);
+      throw new Error("roll back discard");
+    }), /roll back discard/);
+    assert.deepEqual(spokenLedger.rows(key).map(row => row.id), [original.reservationId]);
+    const uncertain = db.markPendingTurnUncertain(original.id, original.revision, "handoff unknown", Date.now())!;
+    noteOtherSend(conversation, words);
+    const typed = transcript.append("typed", words, Date.now());
+    if (action === "retry") db.retryPendingTurn(original.id, uncertain.revision, Date.now());
+    else db.clearPendingTurns(key);
+    const replay = claimSpoken(key, words, words);
+    const reserved = reserveSpokenTurn(conversation, words, words, false, replay);
+    assert.equal(reserved.contested, false);
+    const spoken = transcript.append("confirmed-spoken", words, Date.now());
+    assert.ok(db.retireDeliveredPendingTurn(replay.id, replay.revision, Date.now(), replay.reservationId));
+    assert.deepEqual([...spokenLedger.bound(conversation, [typed, spoken]).rows.keys()], [spoken.id]);
+  }
+});
+
 test("abandoning an uncertain native-ID attempt preserves its exact-match disclosure", async () => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const key = "retain-native-attempt";

@@ -13351,8 +13351,21 @@ export function deleteSpokenTurn(id: string): void {
 
 /** Settling an outbox attempt can release its private payload only if it has no native ID or runtime receipt. */
 function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: string | null): void {
-  if (reservationId) d.prepare(`DELETE FROM session_spoken_turns
-    WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL`).run(reservationId);
+  if (!reservationId) return;
+  const row = d.prepare(`DELETE FROM session_spoken_turns
+    WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL RETURNING note_key`)
+    .get(reservationId) as { note_key: string } | undefined;
+  if (row) discardedSpokenKeys.add(row.note_key);
+}
+
+const discardedSpokenKeys = new Set<string>();
+
+/** Reload the committed view on the next ledger read. A rolled-back deletion just reloads the original rows. */
+export function takeDiscardedSpokenKeys(): string[] | undefined {
+  if (!discardedSpokenKeys.size || openDb().isTransaction) return;
+  const keys = [...discardedSpokenKeys];
+  discardedSpokenKeys.clear();
+  return keys;
 }
 
 export function contestSpokenTurn(id: string, contested: boolean): void {
@@ -15649,11 +15662,12 @@ export function recoverSendingPendingTurns(now: number): number {
                 last_error = 'Mission Control restarted during delivery; confirm before retrying.'
           WHERE state = 'sending'`).run(now);
     // Earlier builds could leave unbindable rows behind after their outbox attempts were removed.
-    d.exec(`DELETE FROM session_spoken_turns
+    const removed = d.prepare(`DELETE FROM session_spoken_turns
       WHERE message_id IS NULL AND runtime_confirmed_at IS NULL AND NOT EXISTS (
         SELECT 1 FROM pending_turns p WHERE p.id = session_spoken_turns.outbox_turn_id
           AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain')
-      )`);
+      ) RETURNING note_key`).all() as { note_key: string }[];
+    for (const row of removed) discardedSpokenKeys.add(row.note_key);
     return Number(updated.changes);
   };
   return d.isTransaction ? recover() : inTransaction(recover);

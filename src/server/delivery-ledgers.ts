@@ -17,6 +17,7 @@ import {
   loadReviewDeliveries,
   loadSpokenTurns,
   moveSpokenTurns,
+  takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
   type SpokenTurnRow,
@@ -84,6 +85,7 @@ onSend(settleSteerEchoesBeforeSend(reviewLedger));
 
 export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   label: "a spoken message",
+  takeInvalidatedKeys: takeDiscardedSpokenKeys,
   newTranscriptAfter(transcript, deliveredAt) {
     try {
       const created = statSync(transcript.path).birthtimeMs;

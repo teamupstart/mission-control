@@ -115,9 +115,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       let res = sendProvider && order && !order.ticket ? order
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
-      // An explicit opt-out still applies if another window changed providers since our read.
-      // Obtain a fresh ticket so a new selection made here during the retry still wins.
-      if (decisionProvider === "off" && !superseded() && res.status === 409 && res.providerRevision) {
+      // Retry an opt-out blocked by a stale read before a ticket was issued. Once the
+      // selection has a place in the write order, a newer writer wins the conflict.
+      if (decisionProvider === "off" && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision) {
         const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision);
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }

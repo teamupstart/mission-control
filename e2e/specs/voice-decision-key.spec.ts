@@ -341,6 +341,47 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "23-stale-window-opts-out");
   });
 
+  test("a delayed ticketed Off cannot overwrite another window's later Jev selection", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await saveKey(page, "Jev", SAVED_JEV);
+    await providerMenu(page).selectOption("openai");
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const other = await context.newPage();
+    await openVoiceSettings(other, daemon);
+    await expect(providerMenu(other)).toHaveValue("openai");
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let reservations = 0;
+    page.on("request", req => { if (req.url().endsWith("/provider-intent")) reservations++; });
+    await page.route("**/api/voice/config", async route => {
+      if (route.request().method() === "PUT") {
+        held.resolve();
+        await release.promise;
+      }
+      await route.continue();
+    });
+    const conflict = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.status() === 409);
+    try {
+      await providerMenu(page).selectOption("off");
+      await held.promise;
+      await providerMenu(other).selectOption("jev");
+      await expect(line(other)).toHaveText(using("Jev"));
+    } finally {
+      release.resolve();
+    }
+    await conflict;
+    await expect(providerMenu(page)).toHaveValue("jev", { timeout: 1_500 });
+    await expect(line(page)).toHaveText(using("Jev"));
+    expect(reservations).toBe(1);
+    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("Jev answered: split");
+    expect(decisions.requests).toHaveLength(1);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "27-newer-jev-selection");
+    await providerMenu(page).selectOption("off");
+    await expect(line(page)).toHaveText(NOT_SET);
+  });
+
   for (const heldAt of ["request", "response"] as const) {
     test(`Off supersedes an earlier provider selection with a stalled ${heldAt}`, async ({ dashboard: page, daemon, decisions }) => {
       await turnVoiceOn(daemon);

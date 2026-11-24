@@ -2826,12 +2826,16 @@ times, PR creation time, and count of updates checked.
 [GitHub repository activity API](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
 Ordinary polling and recheck leave the mismatch blocked. A successful recovery records `inspector_stale_grant_recovered` and
 re-enters the repair wait pinned to the verified replacement head. After resolving the
-prior commits, the evaluator twice checks the receipt's ref update ID and reads the
-PR from GitHub. The final PR response confirms the open state, source branch and head
-after the last activity read. A push or closure visible on GitHub can therefore block
-the replacement even while the Inspector ledger still shows the old open tip. An
-unavailable read leaves the round available for the next evaluation. Subsequent changes
-on GitHub are subject to the submission's ordinary exact-head review.
+prior commits, the evaluator checks the receipt's ref update ID and reads the PR from
+GitHub twice. Each PR response includes its state, source branch, head, and timeline
+of force pushes, branch deletions or restorations, and PR closures or reopenings
+since the verified update. This includes its timestamp bucket. A return to the
+same SHA or a closure during the final read can therefore block the replacement
+even while the local ledger still shows the old open tip. A confirmed mismatch
+blocks immediately. An unavailable read leaves the round available for the next
+evaluation. The insertion transaction also checks for a conversation transfer hold.
+Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.
+[GitHub pull request timeline](https://docs.github.com/en/graphql/reference/pulls)
 The stale submission keeps its head and round. Its
 replacement round must fit within the granted cap and requires the usual exact-head review
 and resolution of open findings. A stranded submission already at the cap stays blocked. Retrying the same request returns the run idempotently.

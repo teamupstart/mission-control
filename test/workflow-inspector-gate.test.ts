@@ -37,16 +37,37 @@ const branchActivity = join(home, "branch-activity.json");
 const recoveryPr = join(home, "recovery-pr.json");
 const holdActivity = join(home, "hold-activity");
 const activityPending = join(home, "activity-pending");
+const holdRecoveryPull = join(home, "hold-recovery-pull");
+const pullPending = join(home, "recovery-pull-pending");
 const fakeGh = join(home, "gh");
 writeFileSync(fakeGh, `#!${process.execPath}
 const fs = require("node:fs");
 const target = process.argv.find(arg => arg.startsWith("repos/"));
+const recoveryGraph = process.argv.some(arg => arg.startsWith("query=query RecoveryPull("));
 const activityQuery = "repos/author/fork/activity?ref=refs%2Fheads%2Ffeature&direction=desc&per_page=";
 if (target?.includes("/activity?") && ![activityQuery + "1", activityQuery + "100"].includes(target)) process.exit(1);
 const fixture = target?.includes("/activity?") ? ${JSON.stringify(branchActivity)}
-  : target?.includes("/pulls/") ? ${JSON.stringify(recoveryPr)} : ${JSON.stringify(ghSnapshot)};
+  : target?.includes("/pulls/") || recoveryGraph ? ${JSON.stringify(recoveryPr)} : ${JSON.stringify(ghSnapshot)};
 try {
+  if (fixture === ${JSON.stringify(recoveryPr)} && fs.existsSync(${JSON.stringify(holdRecoveryPull)})) {
+    if (fs.readFileSync(${JSON.stringify(holdRecoveryPull)}, "utf8") === "hold second read") {
+      fs.writeFileSync(${JSON.stringify(holdRecoveryPull)}, "");
+    } else {
+      fs.writeFileSync(${JSON.stringify(pullPending)}, "");
+      while (fs.existsSync(${JSON.stringify(holdRecoveryPull)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
   const contents = fs.readFileSync(fixture, "utf8");
+  if (recoveryGraph) {
+    const pull = JSON.parse(contents);
+    const query = process.argv.find(arg => arg.startsWith("query=query RecoveryPull("));
+    if (!["HEAD_REF_FORCE_PUSHED_EVENT","HEAD_REF_DELETED_EVENT","HEAD_REF_RESTORED_EVENT","CLOSED_EVENT","REOPENED_EVENT"].every(type => query.includes(type))
+        || !process.argv.some(arg => arg.startsWith("since="))) process.exit(1);
+    process.stdout.write(JSON.stringify({ errors: pull.graphErrors, data: { repository: { nameWithOwner: pull.base.repo.full_name,
+      pullRequest: { number: pull.number, state: pull.state.toUpperCase(), headRefName: pull.head.ref, headRefOid: pull.head.sha,
+        headRepository: { nameWithOwner: pull.head.repo.full_name }, timelineItems: { nodes: pull.rewrites ?? [] } } } } }));
+    return;
+  }
   const response = target === activityQuery + "1" ? JSON.stringify(JSON.parse(contents).slice(0, 1)) : contents;
   if (fixture === ${JSON.stringify(branchActivity)} && fs.existsSync(${JSON.stringify(holdActivity)})) {
     if (fs.readFileSync(${JSON.stringify(holdActivity)}, "utf8") === "hold second read") {
@@ -3687,6 +3708,79 @@ for (const change of ["new ref update on the same SHA", "PR closes during the fi
     }
   });
 }
+
+for (const race of ["return to the verified SHA", "conversation transfer hold"] as const) {
+  test(`legacy recovery preserves the round during the final PR read: ${race}`, async () => {
+    let pause = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (pause && head === "historical") {
+        pause = false;
+        writeFileSync(holdRecoveryPull, "hold second read");
+      }
+      return head;
+    } });
+    const { manager, store, ids, key } = seeded;
+    try {
+      await strandLegacyGrant(seeded, "current");
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      pause = true;
+      assert.equal((await recover()).status, 200);
+      await waitFor(() => existsSync(pullPending), "the final PR read did not start");
+      if (race === "return to the verified SHA") {
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        const [previous, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+        writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 2, before: "later" },
+          { ...previous, id: previous.id + 1, before: "current", after: "later" }, previous, ...history]));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites: [{ __typename: "HeadRefForcePushedEvent" }] }));
+      } else {
+        const { reserveSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+        const binding = store.getBinding(store.getRun(ids.run)!.bindingId)!;
+        reserveSessionTransfer({ sourceSessionId: ids.session, noteKey: binding.noteKey, taskId: null, facts: {
+          agent: "claude", nativeId: binding.noteKey, sourceName: "Transfer", sourceRuntime: "sdk", sourceEpisodeId: null,
+          cwd: home, repoRoot: home, taskIdentity: null, taskEpisodeId: null, bindings: [], leaseRoot: home,
+          leaseId: "lease", backend: null, home: null, sourceStopped: false, stopStarted: false, sourceProcess: null,
+          launchAt: null, launchOutcome: "not_started", canEnd: false,
+        } });
+      }
+      rmSync(holdRecoveryPull);
+      await manager.settleBackgroundWork();
+      assert.equal(getInspectorPr(key)?.observedHeadSha, "current");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.getRun(ids.run)?.status, race === "conversation transfer hold" ? "waiting_for_new_head" : "blocked");
+      assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally {
+      rmSync(holdRecoveryPull, { force: true });
+      rmSync(pullPending, { force: true });
+      db.prepare("DELETE FROM session_runtime_transfers WHERE source_session_id = ?").run(ids.session);
+      await manager.stop();
+    }
+  });
+}
+
+test("a confirmed ref mismatch still blocks recovery when the final PR read is unavailable", async () => {
+  let changeRef = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (changeRef && head === "historical") {
+      changeRef = false;
+      const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+      writeFileSync(branchActivity, JSON.stringify([{ ...tip, id: tip.id + 1 }, ...history]));
+      rmSync(recoveryPr);
+    }
+    return head;
+  } });
+  const { manager, store, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    changeRef = true;
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+  } finally { await manager.stop(); }
+});
 
 test("legacy recovery reads eligibility from the workflow store's own database", async () => {
   const seeded = await spentInspectorGrant();

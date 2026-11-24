@@ -8132,6 +8132,8 @@ export class WorkflowStore {
       ) return null;
       const currentGate = inspectorGateState(run);
       if (!currentGate || JSON.stringify(currentGate) !== JSON.stringify(input.expectedState)) return null;
+      const binding = this.getBinding(run.bindingId);
+      if (!binding || transferForNote(binding.noteKey, this.db)) return null;
       this.insertSubmissionInTransaction({
         id: input.id,
         runId: run.id,

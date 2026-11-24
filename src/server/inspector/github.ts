@@ -277,9 +277,9 @@ function verifyRefHistory(
   return null;
 }
 
-async function readRecoveryApi(endpoint: string): Promise<unknown> {
+async function readRecoveryApi(endpoint: string, ...args: string[]): Promise<unknown> {
   try {
-    const response = await run(ghBin(), ["api", "--hostname", "github.com", "-H", "Cache-Control: no-cache", endpoint], { timeoutMs: GH_TIMEOUT_MS });
+    const response = await run(ghBin(), ["api", "--hostname", "github.com", "-H", "Cache-Control: no-cache", endpoint, ...args], { timeoutMs: GH_TIMEOUT_MS });
     return response.code === 0 && !response.overflowed ? JSON.parse(response.stdout) : null;
   } catch { return null; }
 }
@@ -302,23 +302,49 @@ const recoveryTip = z.object({
   ref: z.string().startsWith("refs/heads/"), activityId: z.number().int().positive(), changedAt: z.number(),
 });
 
-/** Require two matching ref/PR snapshots, ending on the open PR and its current head. */
+const recoveryPullQuery = `query RecoveryPull($owner:String!,$repo:String!,$number:Int!,$since:DateTime!){
+  repository(owner:$owner,name:$repo){nameWithOwner pullRequest(number:$number){
+    number state headRefName headRefOid headRepository{nameWithOwner}
+    timelineItems(first:1,since:$since,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT,HEAD_REF_DELETED_EVENT,HEAD_REF_RESTORED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){nodes{__typename}}
+  }}
+}`;
+
+const recoveryPullSnapshot = z.object({
+  errors: z.array(z.unknown()).length(0).optional(),
+  data: z.object({ repository: z.object({ nameWithOwner: z.string(), pullRequest: z.object({
+    number: z.number().int(), state: z.enum(["OPEN", "CLOSED", "MERGED"]), headRefName: z.string(), headRefOid: z.string(),
+    headRepository: z.object({ nameWithOwner: z.string() }),
+    timelineItems: z.object({ nodes: z.array(z.object({ __typename: z.string() })).max(1) }),
+  }) }) }),
+});
+
+/** Read the PR state, head and evidence of a ref rewrite together at final verification. */
 export async function recheckInspectorRecoveryTip(prUrl: string, head: string, receipt: unknown): Promise<boolean | null> {
   const pr = parsePrUrl(prUrl);
   const saved = recoveryTip.safeParse(receipt);
   if (!pr || !saved.success || saved.data.prKey !== pr.key || saved.data.headSha !== head) return false;
   const { repository, ref, activityId, changedAt } = saved.data;
-  // The second ref read catches a return to the SHA during the first PR read.
-  // Closing the PR doesn't move its ref, so each pair ends with the PR itself.
+  // Returning to the same commit requires a non-fast-forward update or recreating
+  // the ref. Ask about those events on the PR itself, including the tip's timestamp
+  // bucket. The activity endpoint and this lower bound both use GitHub's clock.
+  const since = new Date(changedAt - 1_000);
+  if (!Number.isFinite(since.getTime())) return false;
+  const queryArgs = ["-f", `query=${recoveryPullQuery}`, "-f", `owner=${pr.owner}`, "-f", `repo=${pr.repo}`,
+    "-F", `number=${pr.number}`, "-f", `since=${since.toISOString()}`];
   for (let sample = 0; sample < 2; sample++) {
     const tip = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
-    const pull = await readRecoveryPull(pr);
-    if (!pull) return null;
-    if (pull.state !== "open" || pull.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
-        || `refs/heads/${pull.head.ref}` !== ref || pull.head.sha !== head) return false;
+    if (tip.success) {
+      const [latest] = tip.data;
+      if (latest.ref !== ref || latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt) return false;
+    }
+    const response = recoveryPullSnapshot.safeParse(await readRecoveryApi("graphql", ...queryArgs));
+    if (!response.success) return null;
+    const base = response.data.data.repository;
+    const pull = base.pullRequest;
+    if (base.nameWithOwner.toLowerCase() !== `${pr.owner}/${pr.repo}`.toLowerCase() || pull.number !== pr.number
+        || pull.state !== "OPEN" || pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
+        || `refs/heads/${pull.headRefName}` !== ref || pull.headRefOid !== head || pull.timelineItems.nodes.length) return false;
     if (!tip.success) return null;
-    const [latest] = tip.data;
-    if (latest.ref !== ref || latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt) return false;
   }
   return true;
 }

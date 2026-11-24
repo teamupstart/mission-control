@@ -38,7 +38,8 @@ gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
-The card names a question that still blocks delivery. A plan already filed for a later answer
+Each Held card shows the spoken words its **Cancel message** button recalls and names
+a question that still blocks delivery. A plan already filed for a later answer
 can remain open while the agent receives the message.
 If the daemon takes more than two seconds to confirm a held message’s recall, the card
 shows that recall is unconfirmed and lets you retry or open the blocking question.

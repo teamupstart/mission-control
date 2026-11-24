@@ -560,6 +560,9 @@ function grantedHeadObservation(
     ? { prKey: ledger.key, observedAt, observedState, observedHeadSha, ledger }
     : incoming && { ...incoming, ledger };
   if (!current || current.observedState == null
+      // Only legacy recovery separately verifies the receipt's head on GitHub.
+      // A poll started in the grant's millisecond may have preceded the grant.
+      || (!boundary.verifiedHeadSha && current.observedAt <= boundary.requestedAt)
       || current.observedAt < boundary.minimumObservedAt || current.observedAt < state.enteredAt
       || current.observedAt < (state.lastObservedAt ?? 0)
       || (current.observedState === "OPEN" && !current.observedHeadSha)) return null;
@@ -3246,7 +3249,7 @@ export class WorkflowManager {
    * "this gave up" for a false "this is still working", which is worse than the dead end
    * this method exists to open. Restoring `waiting_for_new_head` puts it back where its own
    * gate re-enters it. The saved head may have moved while blocked, so selection starts
-   * with a newer durable observation or waits for a new read of the pinned PR.
+   * with a read of the pinned PR after the grant.
    *
    * `workflowRunGaveUp` reads the same inequality, so the veto downgrades to `pending` -
    * now truthfully - without this method knowing Shipping exists.
@@ -3331,7 +3334,10 @@ export class WorkflowManager {
       return { ok: false, reason: "conflict", message: "The run finished before the grant landed" };
     }
     this.publishRun(run.id);
-    if (restore?.status === "waiting_for_new_head") this.scheduleGateEvaluation(run.id, null);
+    if (restore?.status === "waiting_for_new_head") {
+      if (gate?.prKey) void this.reobserveGatePullRequest(run.id, gate.prKey, now);
+      this.scheduleGateEvaluation(run.id, null);
+    }
     return { ok: true, value: updated };
   }
 
@@ -3544,9 +3550,11 @@ export class WorkflowManager {
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
     this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback });
-    const prKey = this.gateState(run)?.prKey ?? null;
-    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
-      void this.reobserveGatePullRequest(run.id, prKey);
+    const gate = this.gateState(run);
+    const grant = gate?.grantObservation;
+    if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
+        || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
+      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt);
     }
     return { ok: true, value: run };
   }
@@ -3560,10 +3568,12 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveGatePullRequest(runId: string, prKey: string): Promise<boolean> {
+  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number): Promise<boolean> {
     const reobserve = this.options.reobservePullRequest;
     if (!reobserve) return Promise.resolve(false);
-    const task = Promise.resolve().then(() => reobserve(prKey))
+    // A read started in the same millisecond as a grant cannot prove ordering after restart.
+    const start = afterGrant === Date.now() ? new Promise<void>(resolve => setTimeout(resolve, 1)) : Promise.resolve();
+    const task = start.then(() => reobserve(prKey))
       .catch((error: unknown) => ({
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),

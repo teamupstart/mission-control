@@ -3257,9 +3257,41 @@ async function spentInspectorGrant(options: SeedOptions = {}) {
   return { ...seeded, stale, grant };
 }
 
-test("grant chooses a newer pre-grant durable head on a null evaluation and waits for its own clean review", async () => {
+test("grant reobserves the pinned PR after an unobserved push before spending the round", async () => {
+  const { manager, store, ids, key, now } = await spentInspectorGrant();
+  try {
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "pre-grant", observedAt: now + 9,
+      cleanReviewHeadSha: "pre-grant" }, now + 9);
+    scriptGitHub("OPEN", "already-pushed");
+    assert.ok(manager.grantRepairRounds(ids.run, { requestId: "confirm-live", rounds: 2 }).ok);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.prHeadSha]), [[3, "already-pushed"]]);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+  } finally { scriptGitHub(null); await manager.stop(); }
+});
+
+test("grant preserves the round after a failed post-grant read even with a positive read tied to the grant", async () => {
   const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
   try {
+    scriptGitHub(null);
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "same-millisecond", observedAt: now + 10 }, now + 10);
+    assert.ok(grant().ok);
+    registry.inspectionUpdated(key, "same-millisecond", "OPEN", now + 10);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    scriptGitHub("OPEN", "confirmed");
+    assert.ok(manager.recheckInspector(ids.run, "read-again").ok);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.prHeadSha]), [[3, "confirmed"]]);
+  } finally { scriptGitHub(null); await manager.stop(); }
+});
+
+test("grant confirms a newer pre-grant durable head and waits for its own clean review", async () => {
+  const seeded = await spentInspectorGrant({ reobservePullRequest: (prKey) => reobserveInspectorPr(seeded.registry, prKey, seeded.now + 11) });
+  const { manager, store, ids, key, now, grant, registry } = seeded;
+  try {
+    scriptGitHub("OPEN", "current");
     updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 9,
       headSha: "current", cleanReviewHeadSha: priorRefOid, reviewPosture: "live" }, now + 9);
     assert.ok(grant().ok);
@@ -3287,7 +3319,7 @@ test("grant chooses a newer pre-grant durable head on a null evaluation and wait
     await manager.settleBackgroundWork();
     assert.equal(store.getRun(ids.run)?.status, "completed");
     assert.equal(store.listEvents(ids.run).filter(e => e.kind === "repair_rounds_granted").length, 1);
-  } finally { await manager.stop(); }
+  } finally { scriptGitHub(null); await manager.stop(); }
 });
 
 test("a grant retains the superseding head across restart without sending failed-head feedback or spending a round", async () => {
@@ -3319,9 +3351,8 @@ test("after restart a grant selects the newer durable PR head on a recheck witho
   try {
     assert.ok(grant().ok);
     await manager.settleBackgroundWork();
-    // The read preceded the grant. Its result reaches the ledger before shutdown,
-    // but the gate receives no notification for it.
-    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 9,
+    // The post-grant read reaches the ledger before shutdown, but its notification is lost.
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 11,
       headSha: "current", cleanReviewHeadSha: priorRefOid, reviewPosture: "live" }, now + 11);
   } finally { await manager.stop(); }
 
@@ -3430,6 +3461,7 @@ test("a clean granted head superseded during verification cannot approve the run
     updateInspectorPr(seeded.key, { headSha: "clean", cleanReviewHeadSha: "clean", reviewPosture: "live",
       observedState: "OPEN", observedHeadSha: "clean", observedAt: seeded.now + 9 }, seeded.now + 9);
     assert.ok(seeded.grant().ok);
+    seeded.registry.inspectionUpdated(seeded.key, "clean", "OPEN", seeded.now + 11);
     await seeded.manager.settleBackgroundWork();
     assert.equal(seeded.store.latestSubmission(seeded.ids.run)?.prHeadSha, "clean");
     assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "inspector_head_mismatch");
@@ -3451,6 +3483,7 @@ test("later clean recheck rereads the durable head after resolving the immutable
     updateInspectorPr(key, { headSha: "repair", cleanReviewHeadSha: null, reviewPosture: "live",
       observedState: "OPEN", observedHeadSha: "repair", observedAt: now + 9 }, now + 9);
     assert.ok(seeded.grant().ok);
+    seeded.registry.inspectionUpdated(key, "repair", "OPEN", now + 11);
     await manager.settleBackgroundWork();
     const child = store.latestSubmission(ids.run);
     assert.equal(child?.prHeadSha, "repair");
@@ -3471,7 +3504,7 @@ for (const timing of ["tied", "newer"] as const) {
     const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
       if (head === "clean" && failRead) {
         failRead = false;
-        const at = seeded.now + (timing === "tied" ? 9 : 11);
+        const at = seeded.now + (timing === "tied" ? 11 : 12);
         updateInspectorPr(seeded.key, { observedState: null, observedHeadSha: null, observedAt: at }, at);
       }
       return head;
@@ -3481,6 +3514,7 @@ for (const timing of ["tied", "newer"] as const) {
       updateInspectorPr(key, { headSha: "clean", cleanReviewHeadSha: "clean", reviewPosture: "live",
         observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 9 }, now + 9);
       assert.ok(seeded.grant().ok);
+      registry.inspectionUpdated(key, "clean", "OPEN", now + 11);
       await manager.settleBackgroundWork();
       assert.equal(failRead, false);
       const child = store.latestSubmission(ids.run)!;
@@ -3488,8 +3522,8 @@ for (const timing of ["tied", "newer"] as const) {
       assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
       assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
 
-      updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 12 }, now + 12);
-      registry.inspectionUpdated(key, "clean", "OPEN", now + 12);
+      updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 13 }, now + 13);
+      registry.inspectionUpdated(key, "clean", "OPEN", now + 13);
       await manager.settleBackgroundWork();
       assert.equal(store.getRun(ids.run)?.status, "completed");
       assert.equal(store.latestSubmission(ids.run)?.id, child.id);

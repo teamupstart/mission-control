@@ -2245,11 +2245,12 @@ Every arm restores a status something watches, because nothing polls a blocked r
 - A **parked round on any other posture** keeps the number alone and stays blocked, correctly:
   a `manual` version or a `Preview` binding has no observer to be handed back to, so the next
   round is the operator's to start and the header says so.
-- A **GitHub Inspector-only gate run** resumes in `waiting_for_new_head`. The evaluator checks
-  the pinned PR for a durable observation newer than the saved one, including observations
-  made while the budget was exhausted. Otherwise it waits for a positive new read. A null
-  wakeup can trigger this lookup. The saved head alone cannot spend the grant. If the ledger
-  records a read with unknown PR state, a queued notification must be strictly newer than
+- A **GitHub Inspector-only gate run** resumes in `waiting_for_new_head` and requests a fresh
+  read of its pinned PR. Selection requires a positive observation dated strictly after the
+  grant. A read from the spent window or the grant's own millisecond leaves the round available.
+  A recheck can retry a failed grant read. After a restart, a qualifying durable read can
+  supply the head even if its notification was lost. If the ledger records a read with
+  unknown PR state, a queued notification must be strictly newer than
   that read to supply the head. After resolving the selected commit, the evaluator reads
   the ledger again. A failed read at or after the accepted observation keeps the submission
   waiting until a positive read confirms its head.

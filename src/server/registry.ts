@@ -162,7 +162,7 @@ import { driverDialog } from "./sdk/dialog.ts";
 import { listSdkSessions, type SdkSessionRow } from "./sdk/store.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor, sessionMessages } from "./harness/index.ts";
+import { hooksFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -9592,31 +9592,32 @@ export class Registry extends EventEmitter {
 
   pruneExpiredSpokenTurns(now: number, unavailableBefore?: number): number {
     if (!this.sweptSessions) return 0;
-    const byKey = new Map([...this.sessions.values()].map(session => [noteKeyFor(session), session]));
-    let persisted: Map<string | null, SdkSessionRow> | undefined;
-    return pruneExpiredSpokenTurns(now, (key, locator) => {
+    let persisted: SdkSessionRow[] | undefined;
+    return pruneExpiredSpokenTurns(now, (key, locators) => {
       // A runtime can move the native file and leave a readable copy behind. Look in every
       // known location for this exact conversation before absence can retire an unseen UUID.
       const sources = new Map<string | null, ReturnType<typeof sessionMessages>>();
       const add = (source: ReturnType<typeof sessionMessages>) => sources.set(source?.path ?? null, source);
-      const session = byKey.get(key);
-      const live = session?.agentSessionId === key ? sessionMessages(session) : null;
-      if (session?.agentSessionId === key) add(live);
-      persisted ??= new Map(listSdkSessions().map(row => [row.agentSessionId, row]));
-      const row = persisted.get(key);
-      if (row?.agent) {
+      for (const session of this.sessions.values()) {
+        if (session.agentSessionId === key) add(sessionMessages(session));
+      }
+      const hasLiveTranscript = [...sources.values()].some(Boolean);
+      persisted ??= listSdkSessions();
+      for (const row of persisted) {
+        if (row.agentSessionId !== key || !row.agent) continue;
         const fromSdk = sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,
           agentSessionId: key, startedAt: row.createdAt, transcriptPath: null });
-        if (fromSdk || !live) add(fromSdk);
+        if (fromSdk || !hasLiveTranscript) add(fromSdk);
       }
-      if (locator.transcriptAgent) {
+      for (const locator of locators) {
+        if (!locator.transcriptAgent) continue;
         const archived = { id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
-          agentSessionId: key, startedAt: null, transcriptPath: locator.transcriptPath };
-        add(sessionMessages(archived));
-        if (locator.transcriptPath) {
-          const relocated = sessionMessages({ ...archived, transcriptPath: null });
-          if (relocated) add(relocated);
-        }
+          agentSessionId: key, startedAt: null, transcriptPath: null };
+        const read = transcriptFor(archived)?.messages;
+        // A missing custom file remains an unread source even if the harness locates a default file.
+        if (locator.transcriptPath && read) add({ path: locator.transcriptPath, read });
+        const located = sessionMessages(archived);
+        if (located || !locator.transcriptPath || !read) add(located);
       }
       return [...sources.values()];
     }, unavailableBefore);

@@ -11,7 +11,7 @@ import {
   deleteExpiredSpokenReservations,
   deleteReviewDelivery,
   deleteSpokenTurn,
-  expiredSpokenReservations,
+  expiredSpokenConversationKeys,
   inTransaction,
   insertDelegatedTurn,
   insertReviewDelivery,
@@ -22,6 +22,7 @@ import {
   moveSpokenTurns,
   observeSpokenClientReceipt,
   recordSpokenHandoff,
+  spokenTranscriptLocators,
   takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
@@ -171,8 +172,9 @@ export function reserveSpokenHandoff(conversation: SpokenConversation, turn: Pen
   }
 }
 
-function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryConversation["transcript"]>,
-  now: number): "complete" | "unavailable" | "retry" {
+type SpokenTranscript = NonNullable<DeliveryConversation["transcript"]>;
+function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscript,
+  now: number): { transcript: SpokenTranscript; version: string } | "unavailable" | "retry" {
   const snapshot = transcript.read.snapshot?.(transcript.path);
   if (!snapshot) return "unavailable";
   try {
@@ -185,8 +187,7 @@ function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryC
       if (!spokenLedger.flushClientObservations(noteKey)) return "retry";
       if (page.start !== from) return "retry";
       if (page.atEnd) {
-        // Only a complete walk of the same file revision establishes absence.
-        return page.end === snapshot.size && transcript.read.snapshot?.(transcript.path)?.version === snapshot.version ? "complete" : "retry";
+        return page.end === snapshot.size ? { transcript, version: snapshot.version } : "retry";
       }
       if (page.end <= from || page.end >= snapshot.size) return "retry";
       from = page.end;
@@ -198,19 +199,23 @@ function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryC
 }
 
 /** Final transcript pass for abandoned attempts and confirmed deliveries still awaiting a native match. */
-export function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key: string, locator: SpokenTranscriptLocator) => DeliveryConversation["transcript"][],
+export function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key: string, locators: SpokenTranscriptLocator[]) => DeliveryConversation["transcript"][],
   unavailableBefore?: number): number {
   const cutoff = now - DELIVERY_LAG_MS;
   let removed = 0;
   spokenLedger.flushClientObservations();
-  for (const group of expiredSpokenReservations(cutoff)) {
-    if (!spokenLedger.flushClientObservations(group.noteKey)) continue;
-    const scans = transcriptsFor(group.noteKey, group).map(transcript =>
-      transcript ? reconcileSpokenTurns(group.noteKey, transcript, now) : "unavailable");
-    if (scans.length && scans.every(scan => scan === "complete")) removed += deleteExpiredSpokenReservations(group, cutoff, cutoff);
-    else if (!scans.includes("retry") && unavailableBefore !== undefined) {
+  for (const key of expiredSpokenConversationKeys(cutoff)) {
+    if (!spokenLedger.flushClientObservations(key)) continue;
+    const scans = transcriptsFor(key, spokenTranscriptLocators(key)).map(transcript =>
+      transcript ? reconcileSpokenTurns(key, transcript, now) : "unavailable");
+    // A receipt can arrive in the first file as we scan the last one. All completed
+    // scans must still describe their files before either expiry policy can use them.
+    if (scans.some(scan => scan === "retry" || (typeof scan === "object" &&
+      scan.transcript.read.snapshot?.(scan.transcript.path)?.version !== scan.version))) continue;
+    if (scans.length && !scans.includes("unavailable")) removed += deleteExpiredSpokenReservations(key, cutoff, cutoff);
+    else if (unavailableBefore !== undefined) {
       // Only confirmed, unbound text expires without a readable file. Exact SDK receipts can still arrive.
-      removed += deleteExpiredSpokenReservations(group, null, Math.min(cutoff, unavailableBefore));
+      removed += deleteExpiredSpokenReservations(key, null, Math.min(cutoff, unavailableBefore));
     }
   }
   return removed;

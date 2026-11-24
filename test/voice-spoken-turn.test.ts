@@ -895,6 +895,75 @@ test("cleanup checks live, persisted and handoff paths when a runtime moves its 
   }
 });
 
+test("after eviction cleanup searches later handoffs in the same conversation before expiring a spoken receipt", async t => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-handoff-paths-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(claudeTranscript, "locate", (s: Parameters<typeof resolveTranscriptPath>[0]) => resolveTranscriptPath(s, dir));
+  const key = "evicted-custom-files";
+  const cwd = "/archived";
+  const old = join(dir, "old-custom.jsonl");
+  const later = join(dir, "later-custom.jsonl");
+  const unrelated = join(dir, "another-conversation.jsonl");
+  for (const path of [old, later, unrelated]) writeFileSync(path, "");
+  const now = Date.now();
+  const expireAt = now + DELIVERY_LAG_MS + 1000;
+  const reserve = (key: string, path: string, words: string, at: number) => {
+    const attempt = claimSpoken(key, words, words);
+    const row = reserveSpokenTurn({ key, session: { agent: "claude", cwd, transcriptPath: path },
+      transcript: { path, read: claudeTranscript.messages! } }, words, words, true, attempt, at);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, at, row.id));
+    return row;
+  };
+  const moved = reserve(key, old, "inspect the moved receipt", now);
+  const absent = reserve(key, old, "inspect the missing receipt", now);
+  const duringSweep = reserve(key, old, "a receipt during cleanup", now);
+  const recent = reserve(key, later, "a later handoff", expireAt - 1);
+  reserve("another-key", unrelated, "another conversation", expireAt - 1);
+  const native = (row: typeof moved) => JSON.stringify({ type: "user", uuid: row.id, timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: row.received } }) + "\n";
+  writeFileSync(later, native(moved));
+  writeFileSync(unrelated, native(absent));
+  db.closeDb();
+  spokenLedger.forgetCaches();
+  const registry = new Registry();
+  registry.applyDiscovery([]);
+  mkdirSync(join(dir, "-archived"));
+  writeFileSync(join(dir, "-archived", key + ".jsonl"), "");
+  renameSync(later, later + ".away");
+  registry.pruneExpiredSpokenTurns(expireAt);
+  assert.ok(db.loadSpokenTurns(key).some(row => row.id === moved.id), "a readable default cannot stand in for a missing custom file");
+  renameSync(later + ".away", later);
+  // The writer can append a receipt to an already scanned file while the sweep reads a sibling.
+  let firstPath = "";
+  let appended = false;
+  const read = claudeTranscript.messages!;
+  const after = read.after.bind(read);
+  const walk = t.mock.method(read, "after", (...args: Parameters<typeof read.after>) => {
+    if (args[0] === old || args[0] === later) {
+      firstPath ||= args[0];
+      if (!appended && args[0] !== firstPath) {
+        appendFileSync(firstPath, native(duringSweep));
+        appended = true;
+      }
+    }
+    return after(...args);
+  });
+  registry.pruneExpiredSpokenTurns(expireAt);
+  walk.mock.restore();
+  assert.ok(appended);
+  assert.ok(db.loadSpokenTurns(key).some(row => row.id === duringSweep.id), "a changed file defers deletion");
+  registry.pruneExpiredSpokenTurns(expireAt);
+  const rows = db.loadSpokenTurns(key);
+  assert.equal(rows.find(row => row.id === moved.id)?.messageTs, now, "the later custom file contains this UUID");
+  assert.equal(rows.find(row => row.id === duringSweep.id)?.messageTs, now, "the next sweep observes the concurrent append");
+  assert.equal(rows.some(row => row.id === absent.id), false, "a UUID in another conversation cannot preserve this row");
+  assert.ok(rows.some(row => row.id === recent.id), "the later handoff itself is still inside its receipt window");
+});
+
 test("cleanup reopens an evicted terminal's native transcript before expiring its unread disclosure", async t => {
   const { Registry } = await import("../src/server/registry.ts");
   const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");

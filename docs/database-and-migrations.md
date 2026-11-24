@@ -263,8 +263,10 @@ At handoff each reservation records the harness, working directory and available
 After 24 hours the hourly sweep can reopen a terminal or SDK transcript even after eviction or
 restart. If the file appeared after handoff, the harness can locate it by the native conversation
 ID and working directory. Live bindings and persisted SDK sessions also cover older reservations.
-Only a complete read to a stable end permits deletion of that
-conversation's unmatched payloads. A missing, unreadable or changing file is retried later.
+Cleanup checks the distinct transcript locations from every saved handoff in that conversation,
+including newer handoffs still inside their receipt window. Before expiring an unobserved SDK
+payload it verifies that all scanned files still have the revisions it read. A missing,
+unreadable or changing file is retried later.
 Pending uncertain attempts remain available for the operator to resolve.
 
 For a confirmed transport without client identifiers, a file created after reservation

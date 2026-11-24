@@ -13406,24 +13406,26 @@ export function spokenTranscriptState(noteKey: string): { receipt: string | null
   return row ? { receipt: row.receipt as string | null } : null;
 }
 
-export function expiredSpokenReservations(cutoff: number) {
-  return openDb().prepare(`SELECT note_key AS noteKey, transcript_agent AS transcriptAgent,
-      transcript_cwd AS transcriptCwd, transcript_path AS transcriptPath FROM session_spoken_turns
+export function expiredSpokenConversationKeys(cutoff: number): string[] {
+  return openDb().prepare(`SELECT DISTINCT note_key FROM session_spoken_turns
     WHERE abandoned_at <= ? OR (message_id IS NULL AND runtime_confirmed_at <= ?)
-      OR (message_id = id AND message_ts IS NULL AND runtime_confirmed_at <= ?)
-    GROUP BY note_key, transcript_agent, transcript_cwd, transcript_path`)
-    .all(cutoff, cutoff, cutoff) as unknown as Array<SpokenTranscriptLocator & { noteKey: string }>;
+      OR (message_id = id AND message_ts IS NULL AND runtime_confirmed_at <= ?)`)
+    .all(cutoff, cutoff, cutoff).map(row => String(row.note_key));
 }
 
-export function deleteExpiredSpokenReservations(group: SpokenTranscriptLocator & { noteKey: string },
-  sdkCutoff: number | null, textCutoff: number | null): number {
+export function spokenTranscriptLocators(noteKey: string): SpokenTranscriptLocator[] {
+  return openDb().prepare(`SELECT DISTINCT transcript_agent AS transcriptAgent, transcript_cwd AS transcriptCwd,
+    transcript_path AS transcriptPath FROM session_spoken_turns WHERE note_key = ?`).all(noteKey) as unknown as SpokenTranscriptLocator[];
+}
+
+export function deleteExpiredSpokenReservations(noteKey: string, sdkCutoff: number | null, textCutoff: number | null): number {
   const removed = openDb().prepare(`DELETE FROM session_spoken_turns
-    WHERE note_key = ? AND transcript_agent IS ? AND transcript_cwd IS ? AND transcript_path IS ? AND message_ts IS NULL AND (
+    WHERE note_key = ? AND message_ts IS NULL AND (
       (abandoned_at <= ? AND runtime_confirmed_at IS NULL) OR
       (runtime_confirmed_at <= ? AND message_id = id) OR
       (runtime_confirmed_at <= ? AND message_id IS NULL))`)
-    .run(group.noteKey, group.transcriptAgent, group.transcriptCwd, group.transcriptPath, sdkCutoff, sdkCutoff, textCutoff);
-  if (removed.changes) discardedSpokenKeys.add(group.noteKey);
+    .run(noteKey, sdkCutoff, sdkCutoff, textCutoff);
+  if (removed.changes) discardedSpokenKeys.add(noteKey);
   return Number(removed.changes);
 }
 

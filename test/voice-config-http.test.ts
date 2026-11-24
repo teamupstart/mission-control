@@ -387,6 +387,19 @@ test("newer explicit provider tickets win across windows unless an intervening O
   assert.equal((await choose("jev", stale)).status, 409);
 });
 
+test("a card clock probe returns only daemon time while Voice is enabled", async () => {
+  const before = Date.now();
+  const response = await json("/api/voice/config", "HEAD");
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "");
+  const stamp = Number(response.headers.get("X-Voice-Server-Time-Ms"));
+  assert.ok(stamp >= before && stamp <= Date.now());
+  setFlag("voice", false);
+  const disabled = await json("/api/voice/config", "HEAD");
+  assert.equal(disabled.status, 404);
+  assert.equal(disabled.headers.get("X-Voice-Server-Time-Ms"), null);
+});
+
 test("a confirmed placement advances the selection revision without changing indicators", async () => {
   const write = async (confirmation: string) => (await json("/api/voice/confirmation", "PUT", { confirmation })).json();
   const start = await write("toast");

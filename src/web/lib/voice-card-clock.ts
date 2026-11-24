@@ -40,3 +40,8 @@ export function voiceCardDeadline(card: DashboardVoiceCard): number | null {
   if (card.deadline === null) return null;
   return card.localDeadline ?? card.deadline - performance.timeOrigin;
 }
+
+/** Release the buttons early enough to retry without withdrawing an in-transit request. */
+export function voiceCardRetryDelay(deadline: number | null): number {
+  return deadline === null ? 2000 : Math.min(2000, Math.max(1, (deadline - performance.now()) / 2));
+}

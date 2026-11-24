@@ -153,7 +153,7 @@ export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: stri
     for (;;) {
       let page;
       try {
-        page = transcript.read.after(transcript.path, from, 50);
+        page = transcript.read.after(transcript.path, from, 50, true);
       } catch (error) {
         console.warn("[voice] Could not reconcile abandoned spoken receipts:", error instanceof Error ? error.message : String(error));
         break;

@@ -553,16 +553,21 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
    * is the same choice `before` makes and the opposite of `initial`/`appended`, which a
    * live stream needs to hear about.
    */
-  const after = (path: string, offset: number, wantTurns = PAGE_LIMIT): TranscriptForwardPage => {
+  const after = (path: string, offset: number, wantTurns = PAGE_LIMIT, requireReadable = false): TranscriptForwardPage => {
     let size: number;
     try {
       size = statSync(path).size;
-    } catch {
+    } catch (error) {
+      if (requireReadable) throw error;
       const at = Math.max(0, offset);
       return { messages: [], start: at, end: at, atEnd: true };
     }
     const start = Math.max(0, Math.min(offset, size));
-    if (start >= size) return { messages: [], start, end: start, atEnd: true };
+    if (start >= size) {
+      // stat can succeed on an unreadable file. A real read at EOF must return zero bytes.
+      if (requireReadable && readRange(path, start, start + 1).length !== 0) throw new Error("Transcript grew during EOF check");
+      return { messages: [], start, end: start, atEnd: true };
+    }
     let finish = start;
     let reachedEof = false;
     const read = (bytes: number): TranscriptMessage[] => {
@@ -582,7 +587,8 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     let messages: TranscriptMessage[];
     try {
       ({ messages } = grow(size - start, wantTurns, PAGE_TAIL_BYTES, read));
-    } catch {
+    } catch (error) {
+      if (requireReadable) throw error;
       return { messages: [], start, end: start, atEnd: true };
     }
     if (finish <= start) {

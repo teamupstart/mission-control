@@ -329,9 +329,10 @@ export interface TranscriptMessages {
    * Chaining it - each page's `end` becoming the next call's `after` - walks forward from
    * a recorded boundary to the last complete turn without ever holding more than one page.
    * Returns an empty page with `atEnd` when the anchor is already past the last complete
-   * record.
+   * record. A caller that needs proof of a successful read can request `requireReadable`:
+   * an I/O failure then throws, including on an empty file.
    */
-  after(path: string, after: number, wantTurns?: number): TranscriptForwardPage;
+  after(path: string, after: number, wantTurns?: number, requireReadable?: boolean): TranscriptForwardPage;
   /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
   appended(path: string, pos: number): TranscriptStreamRead;
   /**

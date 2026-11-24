@@ -3,7 +3,8 @@ import test from "node:test";
 import { act, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk } from "./helpers/voice-http.ts";
 import { HibernationManager } from "../src/server/hibernation/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
-import { clearPendingTurns, listPendingTurns, openDb, recoverSendingPendingTurns } from "../src/server/db.ts";
+import { claimNextPendingTurn, clearPendingTurns, listPendingTurns, openDb, recoverSendingPendingTurns, retireDeliveredPendingTurn } from "../src/server/db.ts";
+import { reserveSpokenHandoff } from "../src/server/delivery-ledgers.ts";
 
 test("idle starts, busy queues and an addressed stop bypasses the enabled cancel window", async () => {
   registry.applyDriverEvent("sdk:Steve", { kind: "state", state: "idle", activity: null });
@@ -143,6 +144,42 @@ test("replaying a forgotten capture returns the same queued spoken row and track
   assert.deepEqual(registry.getSession("sdk:Steve")!.pendingTurns, [original]);
   registry.turnDelivered({ sessionId: "sdk:Steve", turnId: original.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
   assert.equal((await readHeard())[0]?.outcome, "sent");
+});
+
+test("a replay observes a receipt during submission before its queued card can publish", async t => {
+  const sessionId = "sdk:Steve";
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "working", activity: null });
+  for (const outcome of ["sent", "cancelled"] as const) {
+    const id = "replay-during-" + outcome;
+    await say("Steve, inspect the build", id);
+    await act(id, "send-now");
+    const turn = registry.getSession(sessionId)!.pendingTurns.at(-1)!;
+    const claim = outcome === "sent" ? claimNextPendingTurn(turn.noteKey, Date.now(), turn, words => words) : null;
+    const handoff = claim && reserveSpokenHandoff({ key: turn.noteKey, transcript: null }, claim, "inspect the build", true, 0, Date.now());
+    registry.voiceRouter!.reset();
+    await say("Steve, inspect the build", id);
+    const submit = pending.submitSpoken.bind(pending);
+    const replay = t.mock.method(pending, "submitSpoken", (...args: Parameters<typeof submit>) => {
+      const result = submit(...args);
+      assert.equal(result.pendingTurn?.id, turn.id);
+      if (outcome === "sent") {
+        assert.ok(claim && handoff);
+        assert.equal(result.pendingTurn?.state, "sending");
+        assert.ok(retireDeliveredPendingTurn(turn.id, claim.revision, Date.now(), handoff.id));
+        registry.refreshPendingTurns(turn.noteKey);
+        registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
+      } else {
+        assert.ok(pending.recall(sessionId, turn.id, turn.revision));
+      }
+      return result;
+    });
+    cards.length = 0;
+    await act(id, "send-now");
+    replay.mock.restore();
+    assert.equal((await readHeard())[0]?.outcome, outcome);
+    assert.equal(cards.at(-1)?.state, outcome);
+    assert.equal(cards.filter(card => card.state === "queued").length, 0);
+  }
 });
 
 test("resuming a session with a blocking review reports held on its card and in Recently heard", async t => {

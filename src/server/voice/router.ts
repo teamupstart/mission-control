@@ -8,7 +8,8 @@ type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed">
 
 export interface VoiceDeliverer {
   openQuestions?(sessionId: string): number;
-  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand, active?: () => boolean): Promise<DeliveryResult>;
+  deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand, active?: () => boolean,
+    onQueued?: (turnId: string) => void): Promise<DeliveryResult>;
 }
 
 export interface PendingVoiceAction {
@@ -42,12 +43,18 @@ interface OpenCard {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+interface OutboxReceipt {
+  card?: VoiceCard;
+  entry: WeakRef<HeardEntry>;
+  outcome?: "sent" | "cancelled";
+}
+
 export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
   // The outbox can outlive its Recently heard entry. Only the card is needed to publish the receipt.
-  private readonly outbox = new Map<string, { card: VoiceCard; entry: WeakRef<HeardEntry> }>();
+  private readonly outbox = new Map<string, OutboxReceipt>();
   private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
@@ -202,19 +209,27 @@ export class VoiceRouter {
     const target = selected && roster.find((name) => name.key === selected.key && name.sessionId === selected.sessionId);
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
+    const active = () => this.delivering.get(id) === inFlight;
+    const receipt: OutboxReceipt = { entry: new WeakRef(item.entry) };
+    let registeredId: string | undefined;
     let result: DeliveryResult = "not-running";
     try {
       if (target) {
         this.publish(inFlight);
-        result = await this.deliverer.deliver(target, part.text, id, item.command, () => this.delivering.get(id) === inFlight);
+        result = await this.deliverer.deliver(target, part.text, id, item.command, active, turnId => {
+          if (!active()) return;
+          registeredId = turnId;
+          this.outbox.set(turnId, receipt);
+        });
       }
     } catch (error) {
       result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };
     }
     // Disabling voice or shutting down discards even an in-flight interrupt's late card.
-    if (this.delivering.get(id) !== inFlight) return true;
+    if (registeredId !== undefined && this.outbox.get(registeredId) === receipt) this.outbox.delete(registeredId);
+    if (!active()) return true;
     this.delivering.delete(id);
-    const outcome = typeof result === "string" ? result : result.outcome;
+    const outcome = receipt.outcome ?? (typeof result === "string" ? result : result.outcome);
     if (typeof result !== "string" && result.outcome === "failed") item.entry.detail = result.detail;
     const recipient = target ?? part.target;
     if (outcome === "not-running" && !target) {
@@ -231,8 +246,9 @@ export class VoiceRouter {
         openQuestions: latest?.sessionId ? this.deliverer.openQuestions?.(latest.sessionId) ?? 0 : 0,
         ...(item.entry.detail && { detail: item.entry.detail }),
       };
-      if (typeof result !== "string" && "turnId" in result) {
-        this.outbox.set(result.turnId, { card, entry: new WeakRef(item.entry) });
+      if (!receipt.outcome && typeof result !== "string" && "turnId" in result) {
+        receipt.card = card;
+        this.outbox.set(result.turnId, receipt);
       }
       this.publish(card);
     }
@@ -243,9 +259,10 @@ export class VoiceRouter {
     const pending = this.outbox.get(turnId);
     if (!pending) return;
     this.outbox.delete(turnId);
+    pending.outcome = outcome;
     const entry = pending.entry.deref();
     if (entry) entry.outcome = outcome;
-    this.publish({ ...pending.card, state: outcome });
+    if (pending.card) this.publish({ ...pending.card, state: outcome });
   }
 
   clearActionsAndHistory(): void {

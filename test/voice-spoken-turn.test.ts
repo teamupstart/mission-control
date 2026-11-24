@@ -400,6 +400,29 @@ test("cleanup retains spoken payloads through missing, unreadable and incomplete
   assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, words);
 });
 
+test("cleanup distinguishes a verified empty transcript from a failed read at byte zero", async t => {
+  const { reserveSpokenTurn, pruneAbandonedSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const dir = mkdtempSync(join(tmpdir(), "zero-byte-spoken-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "rollout.jsonl");
+  const key = "zero-byte-failure";
+  const words = "inspect the build";
+  const row = reserveSpokenTurn({ key, transcript: null }, words, words, true, claimSpoken(key, words, words));
+  db.recoverSendingPendingTurns(Date.now());
+  db.clearPendingTurns(key);
+  const now = Date.now() + DELIVERY_LAG_MS + 10;
+  const read = { ...claudeTranscript.messages!, size: () => 0 };
+  const lookup = (k: string) => k === key ? { path, read } : null;
+  // The size probes report zero while the actual native reader cannot open the path.
+  assert.equal(pruneAbandonedSpokenTurns(now, lookup), 0);
+  assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
+  writeFileSync(path, "");
+  assert.equal(pruneAbandonedSpokenTurns(now, lookup), 1);
+  assert.equal(db.loadSpokenTurns(key).length, 0);
+});
+
 test("cleanup finds an evicted SDK conversation by its persisted binding and verifies an unread receipt", async t => {
   const { Registry } = await import("../src/server/registry.ts");
   const { upsertSdkSession } = await import("../src/server/sdk/store.ts");

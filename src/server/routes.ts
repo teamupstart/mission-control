@@ -9332,7 +9332,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   }
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
     openQuestions: sessionId => reviews.openAsks(sessionId).length,
-    async deliver(target, text, utteranceId, command, active) {
+    async deliver(target, text, utteranceId, command, active, onQueued) {
       if (target.state === "not-running") return "not-running";
       let sessionId = target.sessionId;
       if (target.state === "hibernated") {
@@ -9352,7 +9352,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
-      const result = pendingTurns.submitSpoken(session.id, text, utteranceId);
+      const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
       if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
       const held = session.pendingReviews > 0 || session.state === "awaiting_review";
       return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };

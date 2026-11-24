@@ -436,8 +436,8 @@ export class PendingTurnManager {
     return this.queueMessage(sessionId, text, "");
   }
 
-  submitSpoken(sessionId: string, words: string, utteranceId: string): PendingTurnSubmitResult {
-    return this.queueMessage(sessionId, words, VOICE_TURN_PREFIX, utteranceId);
+  submitSpoken(sessionId: string, words: string, utteranceId: string, onQueued?: (turnId: string) => void): PendingTurnSubmitResult {
+    return this.queueMessage(sessionId, words, VOICE_TURN_PREFIX, utteranceId, onQueued);
   }
 
   /**
@@ -451,7 +451,8 @@ export class PendingTurnManager {
   }
 
   /** The one queueing path both kinds of message share; `idPrefix` is the authorship mark. */
-  private queueMessage(sessionId: string, text: string, idPrefix: string, utteranceId?: string): PendingTurnSubmitResult {
+  private queueMessage(sessionId: string, text: string, idPrefix: string, utteranceId?: string,
+    onQueued?: (turnId: string) => void): PendingTurnSubmitResult {
     if (!this.started) {
       return {
         ok: false,
@@ -483,6 +484,8 @@ export class PendingTurnManager {
       text,
       now: this.deps.now(),
     });
+    // Replays can find a row already sending. Subscribe before registry observers or the drain can settle it.
+    onQueued?.(pendingTurn.id);
     this.registry.refreshPendingTurns(pendingTurn.noteKey);
     this.scheduleDrain(pendingTurn.noteKey);
     return {

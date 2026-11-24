@@ -80,6 +80,8 @@ export class VoiceStateStore {
 
   constructor(private readonly deps: VoiceStateDeps) {}
 
+  hostNowUs(): number { return (this.deps.hostNowUs ?? voiceHostTimeUs)(); }
+
   private backendSelected(backend: VoiceBackend): boolean {
     const configured = this.deps.config().backend;
     return configured === "auto" || configured === backend;
@@ -249,10 +251,13 @@ export class VoiceStateStore {
   /** Apply dated key events in capture order, independently of heartbeat or request arrival time. */
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
+    let observedAt = at;
     const order = report.reportedAtHostUs;
     if (this.lastReportHostUs >= 0 && (order === undefined || order <= this.lastReportHostUs)) return;
     if (order !== undefined) {
-      if (order > (this.deps.hostNowUs ?? voiceHostTimeUs)()) return;
+      const ageMs = (this.hostNowUs() - order) / 1000;
+      if (ageMs < 0 || ageMs >= VOICE_SHELL_REPORT_LAPSE_MS) return;
+      observedAt -= ageMs;
       this.lastReportHostUs = order;
     }
     // Apply a missed lapse before a new snapshot can restore the previous mode.
@@ -279,8 +284,8 @@ export class VoiceStateStore {
     if (!staleKey && eventAt !== undefined) keyChangedHostUs = eventAt;
     else if (down !== (heldSince !== null)) keyChangedHostUs = order ?? null;
     if (eventAt !== undefined && (!staleKey || ambiguousRelease)) this.lastPhysicalKeyHostUs = eventAt;
-    this.report = { at, keyChangedHostUs, report: { ...report, pushToTalk: down } };
-    if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
+    this.report = { at: observedAt, keyChangedHostUs, report: { ...report, pushToTalk: down } };
+    if (report.microphone) this.microphone.shell = { at: observedAt, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.

@@ -308,7 +308,8 @@ test("a future shell observation cannot change call state or block the next vali
   assert.equal((await report(voiceHostTimeUs(), false)).mode, "listening");
 });
 
-test("an unordered shell report cannot reopen capture or release a key after an ordered call snapshot", async () => {
+test("an unordered shell report cannot reopen capture or release a key after an ordered call snapshot", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const report = async (body: object) => (await (await post("/voice/shell-report", body, token)).json()).state;
   assert.equal((await report({ reportedAtHostUs: 100, callActive: true })).mode, "auto-muted");
   for (const reportedAtHostUs of [undefined, "invalid", -1]) {
@@ -324,6 +325,7 @@ test("an unordered shell report cannot reopen capture or release a key after an 
 });
 
 test("ordered shell reports ignore a delayed idle heartbeat and release on host time across a wall-clock step", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date"], now });
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
@@ -358,6 +360,7 @@ test("ordered shell reports ignore a delayed idle heartbeat and release on host 
 });
 
 test("a backward wall-clock step preserves verified held speech and its original capture time", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const capturedAt = Date.now();
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
@@ -379,7 +382,8 @@ test("a backward wall-clock step preserves verified held speech and its original
   assert.deepEqual(queued("Steve").slice(count), ["check the release"]);
 });
 
-test("released speech must start at or after physical key-down and end by key-up", async () => {
+test("released speech must start at or after physical key-down and end by key-up", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   await report({ reportedAtHostUs: 500_800, pushToTalk: true, pushToTalkPressedAtHostUs: 500_700 });
   const held = voiceStateStore.directive().revision;
@@ -399,6 +403,7 @@ test("released speech must start at or after physical key-down and end by key-up
 });
 
 test("released controls follow monotonic capture order when Unix times move backward", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
@@ -429,7 +434,9 @@ test("released controls follow monotonic capture order when Unix times move back
 });
 
 test("a fresh snapshot with a stale key event renews call state and applies permission without authorizing audio", async (t) => {
-  let elapsed = performance.now();
+  const start = performance.now();
+  let elapsed = start;
+  t.mock.method(voiceStateStore, "hostNowUs", () => 400_000 + Math.round((elapsed - start) * 1000));
   t.mock.method(performance, "now", () => elapsed);
   const report = async (body: object) => (await (await post("/voice/shell-report", { callActive: true, ...body }, token)).json()).state;
   await report({ reportedAtHostUs: 100_000, pushToTalk: true });
@@ -449,7 +456,9 @@ test("a fresh snapshot with a stale key event renews call state and applies perm
 });
 
 test("a new call cannot renew a released hold when the shell lease lapse timer is late", async t => {
-  let elapsed = performance.now();
+  const start = performance.now();
+  let elapsed = start;
+  t.mock.method(voiceStateStore, "hostNowUs", () => 400_000 + Math.round((elapsed - start) * 1000));
   t.mock.method(performance, "now", () => elapsed);
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   await report({ reportedAtHostUs: 100_000, pushToTalk: true });
@@ -467,7 +476,8 @@ test("a new call cannot renew a released hold when the shell lease lapse timer i
   assert.deepEqual(await readHeard(), []);
 });
 
-test("a newer idle report closes an inferred hold when key-up predates its first snapshot", async () => {
+test("a newer idle report closes an inferred hold when key-up predates its first snapshot", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   await report({ reportedAtHostUs: 300_000, pushToTalk: true });
   const held = voiceStateStore.directive();
@@ -481,7 +491,8 @@ test("a newer idle report closes an inferred hold when key-up predates its first
   }
 });
 
-test("a new press and an old release within the same millisecond keep their event order", async () => {
+test("a new press and an old release within the same millisecond keep their event order", async (t) => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   await report({ reportedAtHostUs: 450_000, pushToTalk: true, pushToTalkPressedAtHostUs: 449_000 });
   const first = voiceStateStore.directive().revision;

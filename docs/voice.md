@@ -103,7 +103,8 @@ The shell timestamps every snapshot, including idle heartbeats, at observation t
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
 monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
 across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
-older, duplicate and future-dated snapshots before applying state or renewing its 15-second lifetime.
+older, duplicate, future-dated and expired snapshots before applying state. A dated
+snapshot's 15-second lifetime starts when observed, including time spent in transit.
 Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.
 A fresh snapshot still renews that lifetime and updates call state, permissions and capabilities
 when it repeats a key event older than the daemon’s last key transition.
@@ -606,7 +607,8 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, hotkeyError }`,
-  sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
+  sent by the desktop shell. A dated report lapses 15 seconds after observation. An
+  accepted undated report lapses 15 seconds after arrival. Capability ids this build
   does not know are dropped rather than refused.
 
 ### Following it

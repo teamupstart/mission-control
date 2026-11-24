@@ -114,6 +114,7 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
   store.onChange((state) => published.push(state));
   return {
     store,
+    hostNowUs: () => now * 1000,
     flags,
     published,
     setConfig: (patch: Partial<VoiceConfig>) => { config = { ...config, ...patch }; },
@@ -198,10 +199,27 @@ test("mute, a call with auto-mute, and push-to-talk come from the config and the
   h.setConfig({ muted: false });
   h.store.acceptShellReport({ ...REPORT, callActive: true });
   assert.equal(h.store.state().mode, "auto-muted");
-  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true, reportedAtHostUs: 1000 });
+  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true, reportedAtHostUs: h.hostNowUs() });
   assert.equal(h.store.state().mode, "push-to-talk");
   h.setConfig({ autoMuteDuringCalls: false });
   assert.equal(h.store.state().mode, "listening");
+});
+
+test("a dated key-down can authorize capture only for the lease remaining since observation", () => {
+  const h = harness();
+  h.store.acceptHello(listenerId, HELLO);
+  h.store.acceptShellReport({ ...REPORT, callActive: true });
+  const down = { ...REPORT, callActive: true, pushToTalk: true };
+  const nowUs = h.hostNowUs();
+  h.store.acceptShellReport({ ...down, reportedAtHostUs: nowUs - VOICE_SHELL_REPORT_LAPSE_MS * 1000 });
+  assert.equal(h.store.state().mode, "auto-muted");
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptShellReport({ ...down, reportedAtHostUs: nowUs - (VOICE_SHELL_REPORT_LAPSE_MS - 2000) * 1000 });
+  assert.equal(h.store.state().mode, "push-to-talk");
+  h.advance(1999);
+  assert.equal(h.store.state().mode, "push-to-talk");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "listening");
 });
 
 test("a shell report's capabilities and hotkey error are copied, and lapse with it", () => {

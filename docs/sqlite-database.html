@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 130 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 131 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>130</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>131</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -553,7 +553,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Sessions, reviews, and operator state</strong><span>26 tables</span></summary>
+              <summary><strong>Sessions, reviews, and operator state</strong><span>27 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>pr_branch_update_attempts</code><p>Durable GitHub branch-update claims keyed by PR URL, head SHA, and target SHA, with attempt time, status, and refusal reason. Claims survive daemon restarts so refused or uncertain updates are not retried for the same commit pair.</p></div>
                 <div class="table-row"><code>reviews</code><p>Human review requests and resolutions, including kind, body, structured decisions, answer selections, status, response, and attribution.</p></div>
@@ -570,6 +570,7 @@ LIMIT 20;
                 <div class="table-row"><code>session_awaitings</code><p>A session idle on purpose while a background process it started finishes, per stable note key: the declaration's id (new for every declaration, re-declarations included, so a Clear sent from a view of an earlier one cannot end the current one), what it waits for in one line, how it expects to be woken (a background command, a monitor, a scheduled wakeup, or other), the deadline it declared, an optional http(s) reference link and Markdown details, its first and last declaration times, when the turn that declared it was seen to end, and one entry for each delivery Mission Control's own automation claimed into the session while the wait stood, or in the ten minutes before it was declared with its prompt not yet back from the session, that has not yet started its turn, with a fingerprint of the delivered text, so the turn whose prompt it is reads as that nudge rather than as the wake, even when deliveries overlap, another message starts a turn first, or the daemon restarts, and whether a turn that started while one was pending is still waiting for its prompt to say whose it was. It survives a daemon restart but not the agent process, and moves with the note key on every rotation: it is deleted on the session's next turn (the wake), when the session exits or has not been seen live for three minutes, when the session or a controller or the operator clears it, when the task it was declared for reaches a terminal status, when the session asks a question or reports a blocker, and for every session when the <code>session-awaiting</code> preview is switched off. While a row stands and its deadline has not passed, idle-triggered automation holds the session.</p></div>
                 <div class="table-row"><code>session_standing_instructions</code><p>What repository standing instructions one session actually received at launch, per stable note key: the whole composed block byte for byte, which channel carried it, and one provenance entry per contributing repository. The launch text and its provenance are written once and never amended - a session keeps the standing instructions it launched with, so this is what an assignment replays and what the session header reads, never a fresh resolution of live configuration. The one field that can be corrected afterwards is the mechanism, and only in one direction: a resumed Codex session that finds its developer-instructions channel unusable is sent the same stored block as prose instead, and the row is moved to <code>prompt-prefix</code> to say so - because that field is what decides whether a later assignment repeats the rule, and a prefix governs only the turn it rode in.</p></div>
                 <div class="table-row"><code>session_launch_work_units</code><p>The work unit each session&#39;s agent was started with, per stable note key: the <code>WORK_UNIT_ID</code> its environment carries, written by the launch that started it and moved with every key rotation, as the standing instructions are. Only a session whose agent carries a work unit has a row. Everything Mission Control emits for a session reads it, and the reuse guard refuses to hand that agent another work unit&#39;s task.</p></div>
+                <div class="table-row"><code>terminal_launch_warnings</code><p>Stores the names of variables missing at a terminal launch. The launch directory identifies the warning until discovery binds it to the agent process, so its session can show the same warning after a daemon restart.</p></div>
                 <div class="table-row"><code>sdk_sessions</code><p>Restorable daemon-owned session identity, runtime choices, lifecycle status, whether a turn was interrupted, and the measured resident native-compaction token limit replayed on resume.</p></div>
                 <div class="table-row"><code>session_runtime_transfers</code><p>Durable reservations for Continue in terminal: expected task and pinned workflow ownership, source process lifetime, prepared resume lease, launch proof, revision and recovery outcome. An unresolved row holds ownership across source removal and daemon restart until a proven successor is adopted or absence permits safe settlement. It contains neither credentials nor copied workflow evidence.</p></div>
                 <div class="table-row"><code>pending_turns</code><p>The durable operator outbox for human messages not yet accepted by a harness, with sequence, revision, claim, retry, and uncertainty state.</p></div>

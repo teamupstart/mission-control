@@ -1196,3 +1196,36 @@ test("a later stage sweeps the staging copies and backups an earlier run left, b
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a mod-calls verdict is shared with the closing doctor only after the build was published", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    // The plugin folder validates, then claude refuses the marketplace: nothing is published.
+    const refuseMarketplace = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+      if (args[1] === "validate" && !String(args[2]).endsWith("mission-control")) return { code: 1, stdout: "", stderr: "marketplace refused" };
+      return realExec(file, args, options);
+    };
+    const runCache: NonNullable<Parameters<typeof runModStep>[0]["deps"]>["runCache"] = {};
+    const deps = { env: r.env, exec: refuseMarketplace, runCache };
+    const mod = await runModStep({ live: false, deps });
+    assert.equal(mod.status, "failed");
+    assert.equal(runCache!.modCalls, undefined, "the verdict on a copy that was never published is not kept");
+    assert.equal(runCache!.installed, undefined);
+
+    // So the closing doctor step checks what is really there, and finds nothing published.
+    const doctor = await runDoctorStep({ live: false, deps: { env: r.env, runCache } });
+    const check = doctor.checks!.find((c) => c.name === "mod-calls")!;
+    assert.equal(check.status, "fail");
+    assert.match(check.message, /no mod bundle at/);
+
+    // A setup whose publish succeeds does keep it.
+    const ok = await runModStep({ live: false, deps: { env: r.env, runCache: {} } });
+    assert.equal(ok.status, "ok", ok.message);
+    const kept: NonNullable<Parameters<typeof runModStep>[0]["deps"]>["runCache"] = {};
+    await runModStep({ live: false, deps: { env: r.env, runCache: kept } });
+    assert.equal(kept!.modCalls?.status, "ok");
+  } finally {
+    await r.cleanup();
+  }
+});

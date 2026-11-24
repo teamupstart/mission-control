@@ -4,7 +4,7 @@ import { findClaude, type ClaudeCli } from "../claude-cli.ts";
 import { stageMod } from "../../server/mod-stage.ts";
 import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
-import type { SetupStepOptions, SetupStepResult } from "./types.ts";
+import type { DoctorCheck, SetupStepOptions, SetupStepResult } from "./types.ts";
 
 // Owner: P14. Finds `claude`, stages the built mod by rename, and installs it at user scope.
 export const id = "mod" as const;
@@ -55,6 +55,9 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   const modDir = join(deps.stateDir, "mod");
 
   let version: string;
+  // The verdict on the copy about to be published. It is kept for the closing doctor step only once
+  // the publish has succeeded: until then the published mod may still be the old build, or absent.
+  let certified: DoctorCheck | null = null;
   try {
     version = (
       await stageMod({
@@ -65,7 +68,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
         validate: async (staging) => {
           const check = await checkModCallsAt(claude, deps, join(staging, MOD_NAME));
           if (check.status === "fail") throw new Error(check.message + ". " + (check.fix ?? ""));
-          if (deps.runCache) deps.runCache.modCalls = check;
+          certified = check;
           // The marketplace is what `marketplace add` reads; let claude refuse it now, not after the swap.
           const market = await deps.exec(claude.path, ["plugin", "validate", staging], { timeoutMs: 30_000 });
           if (market.code !== 0) throw new Error("`claude plugin validate` refused the marketplace: " + describe(market) + ". Rebuild with `npm run build`, then run `mctl setup`.");
@@ -76,6 +79,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
     return failed("could not stage the mod; the mod already installed was left as it was: " + (error instanceof Error ? error.message : String(error)));
   }
 
+  if (deps.runCache && certified) deps.runCache.modCalls = certified;
   const before = await readInstalledMod(claude, deps);
   if ("error" in before) return installFailure(before.error, deps.stateDir, bin);
   const installed = before.mod;

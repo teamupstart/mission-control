@@ -200,7 +200,10 @@ test("a receipt proves the preceding pending intent and expires at the next sele
   assert.equal((await reserve(randomUUID(), false, intentReceipt)).status, 409);
   assert.equal((await choose("off", off.ticket)).status, 200);
   assert.equal((await choose("jev", jev)).status, 409);
-  assert.equal((await reserve(randomUUID(), false, off.intentReceipt)).status, 409);
+  assert.equal((await reserve(randomUUID(), false, intentReceipt)).status, 409);
+  const newer = await reserve(randomUUID(), false, off.intentReceipt);
+  assert.equal(newer.status, 200);
+  assert.equal((await choose("jev", (await newer.json()).ticket)).status, 200);
 });
 
 test("a provider ticket that observed a pending Off survives its commit", async () => {

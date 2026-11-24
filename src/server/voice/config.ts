@@ -26,7 +26,7 @@ let latestIntentAt = performance.now();
 let applied = 0;
 let lastOptOut = 0;
 let reservation: {
-  order: number; writer: string; edit: number; otherWriterOrder: number; optOut: boolean;
+  order: number; appliedAtReservation: number; writer: string; edit: number; otherWriterOrder: number; optOut: boolean;
   gesture: VoiceProviderIntent["gesture"]; otherGroupOrder: number;
 } | undefined;
 let lastWriter: string | undefined;
@@ -65,7 +65,7 @@ function signTicket(payload: string): string {
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
 export function reserveProviderWrite(intent: VoiceProviderIntent): string | null {
   const { writer, observedRevision: revision, optOut = false, edit = 0, unchangedSince, observedIntent, gesture } = intent;
-  let base = Number(revision.slice(instance.length + 1));
+  const base = Number(revision.slice(instance.length + 1));
   if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || base < 0 || base > applied) return null;
   const previous = reservation?.gesture;
   const sameGroup = gesture && previous && gesture.group === previous.group;
@@ -80,15 +80,18 @@ export function reserveProviderWrite(intent: VoiceProviderIntent): string | null
     if (writer !== reservation.writer || edit <= reservation.edit || reservation.otherWriterOrder > applied) return null;
   }
   if (!canApply(writer, base)) {
-    if (!optOut || !(followsGesture || (unchangedSince && observedLatest))) return null;
-    base = applied;
+    // The click saw the pending selection at its old revision. That same
+    // selection committing before the request arrives keeps their order intact.
+    const sawCommit = observedLatest && reservation?.order === applied && applied === issued &&
+      base === reservation.appliedAtReservation;
+    if (!sawCommit && !(optOut && (followsGesture || (unchangedSince && observedLatest)))) return null;
   }
   // A receipt establishes that this gesture followed the observed reservation,
   // even if that reservation's PUT has not updated the config yet.
   const observedOrder = observedLatest || followsGesture ? issued : base;
   const order = issueProviderOrder();
   const own = reservation?.writer === writer ? reservation : undefined;
-  reservation = { order, writer, optOut, gesture, otherGroupOrder,
+  reservation = { order, appliedAtReservation: applied, writer, optOut, gesture, otherGroupOrder,
     edit: Math.max(own?.edit ?? 0, edit),
     otherWriterOrder: own?.otherWriterOrder ?? reservation?.order ?? 0 };
   const payload = `${order}:${writer}:${observedOrder}:${optOut ? "off" : "switch"}`;

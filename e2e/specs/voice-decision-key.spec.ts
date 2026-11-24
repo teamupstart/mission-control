@@ -134,11 +134,11 @@ async function saveKey(page: Page, provider: string, key: string): Promise<void>
   await expect(keyField(page, provider), "the field empties once the key is kept").toHaveValue("");
 }
 
-async function holdProviderPut(page: Page) {
+async function holdProviderRequest(page: Page, stage: "write" | "reservation" = "write") {
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  await page.route("**/api/voice/config", async route => {
-    if (route.request().method() === "PUT" && route.request().postDataJSON().decisionProvider !== undefined) {
+  await page.route(stage === "write" ? "**/api/voice/config" : "**/api/voice/config/provider-intent", async route => {
+    if (stage === "reservation" || (route.request().method() === "PUT" && route.request().postDataJSON().decisionProvider !== undefined)) {
       held.resolve();
       await release.promise;
     }
@@ -415,7 +415,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
         await release.promise;
         await route.continue();
       }, { times: 1 });
-      const laterPut = await holdProviderPut(other);
+      const laterPut = await holdProviderRequest(other);
       const reservation = page.waitForResponse(r => r.url().endsWith("/provider-intent"));
       try {
         await providerMenu(page).selectOption(earlier);
@@ -534,7 +534,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     const other = await context.newPage();
     await openVoiceSettings(other, daemon);
     await expect(providerMenu(other)).toHaveValue("openai");
-    const off = await holdProviderPut(page);
+    const off = await holdProviderRequest(page);
     let reservations = 0;
     page.on("request", req => { if (req.url().endsWith("/provider-intent")) reservations++; });
     const conflict = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.status() === 409);
@@ -613,7 +613,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await other.clock.install();
     await openVoiceSettings(other, daemon);
     await expect(providerMenu(other)).toHaveValue("openai");
-    const jev = await holdProviderPut(page);
+    const jev = await holdProviderRequest(page);
     const responded = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     await other.route("**/api/voice/config/provider-intent", async route => {
@@ -650,8 +650,8 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     const other = await context.newPage();
     await openVoiceSettings(other, daemon);
     await expect(providerMenu(other)).toHaveValue("openai");
-    const jev = await holdProviderPut(page);
-    const off = await holdProviderPut(other);
+    const jev = await holdProviderRequest(page);
+    const off = await holdProviderRequest(other);
     try {
       await providerMenu(page).selectOption("jev");
       await jev.held;
@@ -670,8 +670,12 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), "28-newer-off-selection");
   });
 
-  for (const earlier of ["openai", "off"] as const) {
-    test(`a newer Jev ticket takes effect after an older ${earlier} selection commits`, async ({ dashboard: page, context, daemon, decisions }) => {
+  for (const [earlier, heldAt, screenshot] of [
+    ["openai", "write", "31-newer-provider-switch"],
+    ["off", "write", "36-observed-off-then-jev"],
+    ["off", "reservation", "38-observed-off-before-reservation"],
+  ] as const) {
+    test(`a later Jev ${heldAt} takes effect after the observed ${earlier} selection commits`, async ({ dashboard: page, context, daemon, decisions }) => {
       await turnVoiceOn(daemon);
       await codexAgents(daemon);
       await openVoiceSettings(page, daemon);
@@ -679,8 +683,8 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       const other = await context.newPage();
       await openVoiceSettings(other, daemon);
       await expect(providerMenu(other)).toHaveValue("auto");
-      const firstPut = await holdProviderPut(page);
-      const jev = await holdProviderPut(other);
+      const firstPut = await holdProviderRequest(page);
+      const jev = await holdProviderRequest(other, heldAt);
       try {
         await providerMenu(page).selectOption(earlier);
         await firstPut.held;
@@ -701,7 +705,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       await expect(line(other)).toHaveText(using("Jev"));
       expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("Jev answered: split");
       expect(decisions.requests).toHaveLength(1);
-      await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), earlier === "off" ? "36-observed-off-then-jev" : "31-newer-provider-switch");
+      await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), screenshot);
     });
   }
 

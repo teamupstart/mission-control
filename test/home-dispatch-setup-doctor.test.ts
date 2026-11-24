@@ -972,3 +972,33 @@ test("doctor always prints all six checks, saying so when one cannot run", async
     await r.cleanup();
   }
 });
+
+test("an installed mod whose staged copy is missing or unreadable fails mod-current instead of dropping it", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const staged = join(r.state, "mod");
+    const pluginJson = join(staged, "mission-control", ".claude-plugin", "plugin.json");
+
+    // Unreadable: the staged plugin.json is not JSON.
+    writeFileSync(pluginJson, "{ not json");
+    const unreadable = await r.run("doctor");
+    assert.equal(unreadable.code, 1);
+    assert.match(unreadable.out, /ok {4}mod-enabled: /, "the mod is installed and enabled");
+    assert.match(unreadable.out, new RegExp("FAIL {2}mod-current: no staged mod at " + staged.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(unreadable.out, /fix: Run `mctl setup`\./);
+
+    // Missing: the whole staged folder is gone.
+    rmSync(staged, { recursive: true, force: true });
+    const missing = await r.run("doctor");
+    assert.equal(missing.code, 1);
+    for (const name of ["claude", "daemon", "flag", "mod-enabled", "mod-current", "mod-calls"]) {
+      assert.ok(missing.out.split("\n").some((l) => l.includes(" " + name + ": ")), name + " is still reported");
+    }
+    assert.match(missing.out, /ok {4}mod-enabled: /);
+    assert.match(missing.out, /FAIL {2}mod-current: no staged mod at /);
+    assert.match(missing.err, /2 of 6 checks failed/, "mod-current and mod-calls both fail");
+  } finally {
+    await r.cleanup();
+  }
+});

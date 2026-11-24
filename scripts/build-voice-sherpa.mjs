@@ -1,27 +1,63 @@
 import { build } from "esbuild";
-import { mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { publishNativeAddon } from "./native-addon-publish.mjs";
+
+function probeRuntime(dir) {
+  // A fresh loader cannot satisfy a missing library from another runtime already in memory.
+  execFileSync(process.execPath, ["-e", "require(process.argv[1])", resolve(dir, "sherpa-onnx.node")], { stdio: "pipe" });
+}
+
+async function matchesStagedRuntime(staged, existing, files) {
+  try {
+    for (const name of files) {
+      const actual = await readFile(join(existing, name));
+      if (!actual.equals(await readFile(join(staged, name)))) return false;
+    }
+    probeRuntime(existing);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "EISDIR" || error.status || error.signal) return false;
+    throw error;
+  }
+}
+
+async function publishRuntime(staged, native, version, files) {
+  // Never rewrite the libraries a running listener may still have mapped. Concurrent
+  // rebuilds try the same names and converge on the first complete, loadable runtime.
+  for (let generation = 0; ; generation++) {
+    const name = generation ? `${version}-${generation}` : version;
+    const directory = join(native, name);
+    try {
+      await rename(staged, directory);
+      return name;
+    } catch (error) {
+      if (error.code !== "ENOTEMPTY" && error.code !== "EEXIST") throw error;
+    }
+    if (await matchesStagedRuntime(staged, directory, files)) return name;
+  }
+}
 
 if (["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(process.arch)) {
   const require = createRequire(import.meta.url);
   const dist = process.argv[2] ?? "dist";
   const pkg = `sherpa-onnx-${process.platform}-${process.arch}/package.json`;
   const source = dirname(require.resolve(pkg));
-  const runtime = `${process.platform}-${process.arch}-${require(pkg).version}`;
+  const version = `${process.platform}-${process.arch}-${require(pkg).version}`;
   const native = join(dist, "native", "sherpa-onnx");
   const entry = join(dist, "voice-listener", "sherpa.mjs");
   await mkdir(native, { recursive: true });
   await mkdir(dirname(entry), { recursive: true });
   const stage = await mkdtemp(join(dist, ".sherpa-"));
   try {
-    const libs = join(stage, runtime);
+    const libs = join(stage, version);
     await mkdir(libs);
-    for (const name of await readdir(source)) {
-      if (/\.node$|\.dylib$|\.so(?:\.|$)/.test(name)) await publishNativeAddon(join(source, name), join(libs, name));
-    }
-    require(resolve(libs, "sherpa-onnx.node"));
+    const files = (await readdir(source)).filter(name => /\.node$|\.dylib$|\.so(?:\.|$)/.test(name));
+    for (const name of files) await publishNativeAddon(join(source, name), join(libs, name));
+    probeRuntime(libs);
+    const runtime = await publishRuntime(libs, native, version, files);
     const bundle = join(stage, "sherpa.mjs");
     await build({
       entryPoints: ["src/voice-listener/sherpa.ts"], outfile: bundle,
@@ -32,9 +68,6 @@ if (["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(
           args.importer.includes("/sherpa-onnx-node/") ? { path: `../native/sherpa-onnx/${runtime}/sherpa-onnx.node`, external: true } : undefined);
       } }],
     });
-    // A build of this exact package version may already have published the complete directory.
-    try { await rename(libs, join(native, runtime)); }
-    catch (error) { if (error.code !== "ENOTEMPTY" && error.code !== "EEXIST") throw error; }
     await rename(bundle, entry);
   } finally {
     await rm(stage, { recursive: true, force: true });

@@ -75,6 +75,31 @@ test("a failed rebuild preserves the published sherpa entry and complete version
   assert.deepEqual(readdirSync(dist).sort(), ["native", "voice-listener"]);
 });
 
+test("rebuilds publish and reuse a complete replacement when a sherpa shared library is missing", {
+  skip: !["linux", "darwin"].includes(process.platform) || !["arm64", "x64"].includes(process.arch),
+}, async t => {
+  const dist = mkdtempSync(join(tmpdir(), "sherpa-repair-"));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  const build = () => promisify(execFile)(process.execPath, [resolve("scripts/build-voice-sherpa.mjs"), dist]);
+  await build();
+  const native = join(dist, "native", "sherpa-onnx");
+  const [original] = readdirSync(native);
+  assert.ok(original);
+  const libraries = readdirSync(join(native, original)).sort();
+  const missing = libraries.find(name => name.startsWith("libsherpa-onnx-c-api."));
+  assert.ok(missing);
+  rmSync(join(native, original, missing));
+
+  await Promise.all([build(), build()]);
+  const replacements = readdirSync(native).filter(name => name !== original);
+  assert.equal(replacements.length, 1);
+  assert.deepEqual(readdirSync(join(native, replacements[0]!)).sort(), libraries);
+  const entry = join(dist, "voice-listener", "sherpa.mjs");
+  const play = spawnSync(process.execPath, [entry], { encoding: "utf8" });
+  assert.equal(play.status, 1);
+  assert.match(play.stderr, /Sherpa currently requires --input-file/); // The bundled entry loaded the addon.
+});
+
 for (const selection of ["automatic", "explicit"] as const) {
   test(`the development launcher forwards the verified model and WAV to sherpa on ${selection} selection`, async t => {
     const cwd = mkdtempSync(join(realpathSync(tmpdir()), "voice-launch-"));

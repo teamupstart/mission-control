@@ -178,13 +178,21 @@ test("a bare multiword call sign can pick a card but sends no message to its pre
   const roster = ["Release", "Release Captain"];
   const unsure: VoiceCard = { id: "choice", state: "unsure", parts: [], deadline: null, reason: "ambiguous-name", openQuestions: 0,
     candidates: [{ kind: "agent", id: "captain", title: "Release Captain", detail: "" }] };
-  for (const text of ["Release Captain", "“RELEASE   Captain?”"]) {
+  for (const text of ["Release Captain", "RELEASE   Captain?"]) {
     assert.deepEqual(route(text, roster), { kind: "ignored", reason: "no-message" });
     assert.deepEqual(route(text, roster, [], [unsure]), {
       kind: "control", command: "pick", cardId: "choice", candidateId: "captain",
     });
   }
+  assert.deepEqual(route("“RELEASE   Captain?”", roster, [], [unsure]), { kind: "ignored", reason: "no-message" });
   assert.deepEqual(route("Release, Captain", roster), {
     kind: "addressed", target: agent("Release"), match: "exact", text: "Captain", pauseMs: null,
   });
+});
+
+test("an apostrophe inside a candidate name is part of an unquoted pick", () => {
+  const card: VoiceCard = { id: "open", state: "unsure", parts: [], deadline: null, reason: "ambiguous-name", openQuestions: 0,
+    candidates: [{ kind: "agent", id: "oneil", title: "O’Neil", detail: "" }] };
+  assert.deepEqual(route("O’Neil!", ["O’Neil"], [], [card]), { kind: "control", command: "pick", cardId: "open", candidateId: "oneil" });
+  assert.deepEqual(route("“O’Neil”!", ["O’Neil"], [], [card]), { kind: "ignored", reason: "no-message" });
 });

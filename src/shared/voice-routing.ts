@@ -78,9 +78,18 @@ type Decision =
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
 const QUOTATION_MARK = /\p{Quotation_Mark}/u;
+const BOUNDARY_PUNCTUATION = /^\p{P}+|\p{P}+$/gu;
 
 function normalized(text: string): string {
-  return normalizeSpokenName(text).replace(/^\p{P}+|\p{P}+$/gu, "").trim();
+  return normalizeSpokenName(text).replace(BOUNDARY_PUNCTUATION, "").trim();
+}
+
+function hasBoundaryQuote(text: string): boolean {
+  return text.trim().match(BOUNDARY_PUNCTUATION)?.some((boundary) => QUOTATION_MARK.test(boundary)) ?? false;
+}
+
+function bareCommand(text: string): string | undefined {
+  return /^(stop|cancel)\s*[\p{Sentence_Terminal}…]*$/u.exec(text.trim().toLowerCase())?.[1];
 }
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
@@ -142,9 +151,10 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
   const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, firstToken.index, token.index + token[0].length);
   const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
-  if (phrase === "cancel" && !QUOTATION_MARK.test(text)) return { kind: "control", command: "cancel" };
+  if (bareCommand(text) === "cancel") return { kind: "control", command: "cancel" };
+  const pickName = phrase !== null && !hasBoundaryQuote(text) ? phrase : null;
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
-    .filter((candidate) => normalized(candidate.title) === phrase)
+    .filter((candidate) => normalized(candidate.title) === pickName)
     .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
   if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
@@ -190,8 +200,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const stop = normalized(body) === "stop" && !QUOTATION_MARK.test(body);
-  const command = stop ? { command: "stop" as const } : {};
+  const command = bareCommand(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   // A later roster name may start a message of its own or only be talked about. The first

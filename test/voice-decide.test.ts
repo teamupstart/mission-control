@@ -921,6 +921,44 @@ test("a resolving card suppresses a spoken pick that could match two captures", 
   assert.deepEqual(cards.map(c => c.state), ["unsure", "unsure"]);
 });
 
+for (const phase of ["resolving", "settled"] as const) {
+  test(`a delayed ${phase} capture cannot invalidate a pick spoken before it arrived`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    let finish!: (result: VoiceDecisionResult) => void;
+    const later = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+    const { router, say, delivered } = routerRig(q => q[0]?.text.startsWith("Will,") ? later : answered(null));
+    t.after(() => router.reset());
+    await say(SPLIT.text, "original");
+    t.mock.timers.setTime(400);
+    const capture = (id: string, text: string, capturedAt: number) => router.accept(
+      VoiceUtteranceSchema.parse({ id, text, capturedAt, backend: "fluidaudio" }));
+    await capture("delayed", "Will, ask Alice about the build", 200);
+    if (phase === "settled") {
+      finish(answered("mention"));
+      await router.resolution("delayed");
+    }
+    await capture("pick", "Alice", 300);
+    finish(answered("mention"));
+    await router.resolution("delayed");
+    assert.ok(await router.sendNow("original"));
+    assert.deepEqual(delivered, [["Steve", "check the build", "original"], ["Alice", "review the PR", "original#2"]]);
+  });
+}
+
+test("a symbol-only instruction on either side of a split reaches its recipient", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const [head, tail] of [["check the build", "👍"], ["👍", "review the PR"], ["±", "👍🏽"], ["#️⃣", "✓"]]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${head}, and Alice, ${tail}`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", head, id], ["Alice", tail, id + "#2"]]);
+    }
+  }
+});
+
 test("a phonetic first choice and a later split share one deadline, including manual choices", async (t) => {
   for (const manual of [false, true]) {
     const starts: (number | undefined)[] = [];

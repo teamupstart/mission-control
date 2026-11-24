@@ -288,6 +288,7 @@ export class VoiceRouter {
     const item: OpenCard = {
       entry,
       message: decision.text,
+      choicesOfferedAt: Math.max(entry.time, Date.now()),
       modelStep,
       commands: decision.reason === "ambiguous-name" ? [decision.command] : undefined,
       card: { id, state: "resolving", deadline: null, openQuestions: 0, reason: decision.reason, candidates,

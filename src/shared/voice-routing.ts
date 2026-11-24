@@ -42,7 +42,7 @@ export interface HeardEntry {
 
 /**
  * Where a later name would split an utterance: the first target's message (`head`) and the later
- * name's (`tail`), each verbatim from the text. Only a name with words on both sides can split.
+ * name's (`tail`), each verbatim from the text. Both messages need content beyond separators.
  */
 export interface VoiceSplitPoint {
   target: SpokenName;
@@ -326,7 +326,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const head = splitHead(text.slice(offset, addressStart));
       const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
       const tail = second.body.trim();
-      if (/[\p{L}\p{N}]/u.test(head) && /[\p{L}\p{N}]/u.test(tail)) {
+      const content = /[\p{L}\p{N}\p{S}]|\p{Emoji}\uFE0F|[#*]\u20E3/u;
+      if (content.test(head) && content.test(tail)) {
         const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
         const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
         for (const other of matches) {

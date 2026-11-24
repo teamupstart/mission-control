@@ -64,6 +64,7 @@ export interface JobRunOptions {
 
 /** Structured-only options kept off `runJob`, whose callers ask for unconstrained text. */
 export interface StructuredJobRunOptions extends JobRunOptions {
+  signal?: AbortSignal;
   /** The already-rendered provider input schema. Caller-side parsing remains mandatory. */
   schema?: Record<string, unknown>;
   /** Trim the syntax retry only when this call site's rendered schema is faithful. */
@@ -151,6 +152,7 @@ export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = Ty
         model: execution.model,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
+        ...(opts.signal && { signal: opts.signal }),
         ...(opts.thinking ? { thinking: opts.thinking } : {}),
         ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
       }),

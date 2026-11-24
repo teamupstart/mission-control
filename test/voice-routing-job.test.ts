@@ -5,7 +5,7 @@
 // stand in for the providers; nothing here reaches a model.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeSdkMessage, ClaudeSdkOneShotDeps, ClaudeSdkOneShotQueryOptions } from "../src/server/harness/claude/sdk-types.ts";
@@ -32,6 +32,10 @@ for a in "$@"; do
   if [ "$a" = "--output-schema" ]; then want=1; fi
 done
 cat > "$VOICE_JOB_RECORD/codex-stdin"
+if [ -f "$VOICE_JOB_RECORD/block-codex" ]; then
+  touch "$VOICE_JOB_RECORD/codex-started"
+  sleep 30
+fi
 printf '%s\\n' '{"type":"thread.started","thread_id":"voice"}'
 printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":${JSON.stringify(JSON.stringify(ANSWER)).replace(/'/g, "")}}}'
 printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":90,"cached_input_tokens":0,"output_tokens":9}}'
@@ -47,6 +51,7 @@ chmodSync(claude, 0o755);
 
 const { runVoiceRoutingJob } = await import("../src/server/voice/decide.ts");
 const { VOICE_ROUTING_SYSTEM_PROMPT } = await import("../src/server/voice/decide-prompt.ts");
+const { configureCodexRunnerTransport } = await import("../src/server/llm/codex.ts");
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const { setLlmConfig } = await import("../src/server/llm/config.ts");
 
@@ -158,4 +163,53 @@ test("the caller's provider wins over the job's configured one, and the model st
   setLlmConfig({ models: { "voice-routing": "gpt-6-sol" } });
   await runVoiceRoutingJob([QUESTION], { runner: "codex", timeoutMs: 10_000 });
   assert.equal(codexModel(), "gpt-6-luna", "a stored override cannot substitute an unmeasured model");
+});
+
+test("cancelling active Luna jobs releases their slots, and clock rollback cannot start expired work", async (t) => {
+  let bothStarted!: () => void;
+  const started = new Promise<void>(resolve => { bothStarted = resolve; });
+  let calls = 0;
+  const restore = configureCodexRunnerTransport(() => "sdk", {
+    createClient: () => ({ startThread: () => ({
+      async run(_prompt, options) {
+        if (++calls === 2) bothStarted();
+        if (calls <= 2) {
+          const signal = options!.signal!;
+          await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+        }
+        return { finalResponse: JSON.stringify(ANSWER) };
+      },
+    }) }),
+  });
+  t.after(restore);
+  let elapsed = 100;
+  t.mock.method(performance, "now", () => elapsed);
+  const wall = t.mock.method(Date, "now", () => 10_000);
+  const card = new AbortController();
+  const run = (timeoutMs: number, signal?: AbortSignal) => runVoiceRoutingJob([QUESTION], { runner: "codex", timeoutMs, signal });
+  const active = [run(2000, card.signal), run(2000, card.signal)];
+  await started;
+  const expired = assert.rejects(run(100), /timed out waiting for a slot/);
+  elapsed += 101;
+  wall.mock.mockImplementation(() => 1000);
+  const next = run(1000);
+  card.abort();
+  await Promise.all([...active.map(job => assert.rejects(job, /aborted/)), expired]);
+  assert.deepEqual(await next, [{ choice: "split", confidence: 0.99 }]);
+  assert.equal(calls, 3);
+});
+
+test("cancelling a running Codex exec job stops the provider process", async (t) => {
+  const restore = configureCodexRunnerTransport(() => "exec");
+  t.after(restore);
+  writeFileSync(record("block-codex"), "");
+  t.after(() => rmSync(record("block-codex"), { force: true }));
+  const card = new AbortController();
+  const stopped = assert.rejects(runVoiceRoutingJob([QUESTION], { runner: "codex", timeoutMs: 10_000, signal: card.signal }), /aborted/);
+  try {
+    await t.waitFor(() => assert.ok(existsSync(record("codex-started"))), { timeout: 5000 });
+  } finally {
+    card.abort();
+    await stopped;
+  }
 });

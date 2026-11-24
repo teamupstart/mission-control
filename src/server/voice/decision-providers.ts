@@ -88,6 +88,7 @@ async function post(
   call: DecisionProviderCall,
 ): Promise<unknown> {
   const url = `${decisionProviderBaseUrl(provider)}${path}`;
+  if (/[?#]/u.test(url)) throw new DecisionProviderError(provider, "gateway URLs cannot include a query or fragment");
   if (!validateEndpoint(url, { hasCredential: true }).ok) {
     throw new DecisionProviderError(provider, "invalid gateway: use HTTPS or loopback HTTP");
   }
@@ -147,7 +148,7 @@ export const openAiDecisions: DecisionProviderAdapter = {
       questions: questions.map((question, index) => ({
         type: "choice",
         name: voiceQuestionName(index),
-        instructions: voiceQuestionInstructions(question),
+        instructions: voiceQuestionInstructions(question, false),
         choices: choicesFor(question),
       })),
     }, call);
@@ -170,7 +171,7 @@ export const jevDecisions: DecisionProviderAdapter = {
       state: decisionInput(questions),
       questions: Object.fromEntries(questions.map((question, index) => [voiceQuestionName(index), {
         type: "choice",
-        instructions: voiceQuestionInstructions(question),
+        instructions: voiceQuestionInstructions(question, false),
         criteria: Object.fromEntries(choicesFor(question).map((choice) => [choice.value, choice.description])),
       }])),
     }, call);

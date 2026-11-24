@@ -45,6 +45,8 @@ export interface VoiceAskOptions {
   /** The harness of every agent the questions are about: it chooses the job's provider. */
   agents: readonly AgentType[];
   signal?: AbortSignal;
+  /** Absolute monotonic deadline shared by dependent questions from one capture. */
+  deadline?: number;
 }
 
 export interface VoiceDecider {
@@ -80,10 +82,10 @@ const jobLimit = createLimiter(2);
  * and one whose budget ran out while it waited starts no process at all.
  */
 export const runVoiceRoutingJob: VoiceRoutingJob = (questions, run) => {
-  const until = Date.now() + run.timeoutMs;
+  const until = performance.now() + run.timeoutMs;
   return jobLimit(() => {
     run.signal?.throwIfAborted();
-    return runVoiceRoutingJobNow(questions, run.runner, until - Date.now());
+    return runVoiceRoutingJobNow(questions, run.runner, until - performance.now(), run.signal);
   });
 };
 
@@ -91,6 +93,7 @@ async function runVoiceRoutingJobNow(
   questions: readonly VoiceQuestion[],
   runner: LlmRunnerId,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<RawVoiceAnswers> {
   if (timeoutMs <= 0) throw new Error("timed out waiting for a slot");
   const result = await runJobStructured(
@@ -100,6 +103,7 @@ async function runVoiceRoutingJobNow(
     "Voice routing",
     {
       runner,
+      signal,
       timeoutMs,
       schema: voiceRoutingSchema(questions),
       shapeGuaranteed: true,
@@ -178,7 +182,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
   return {
     async ask(questions, options = { agents: [] }) {
       if (questions.length === 0) return { rung: "none", answers: [], detail: "no questions" };
-      const deadline = now() + (deps.deadlineMs ?? VOICE_MODEL_STAGE_DEADLINE_MS);
+      const deadline = Math.min(options.deadline ?? Infinity, now() + (deps.deadlineMs ?? VOICE_MODEL_STAGE_DEADLINE_MS));
       const notes: string[] = [];
       const { signal } = options;
 
@@ -223,7 +227,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         notes.push(`job on ${runner} answered`);
         return { rung: "job", answers: accept(questions, raw, rung.floor), detail: notes.join("; ") };
       } catch (error) {
-        notes.push(`job on ${runner} ${describe(error)}`);
+        notes.push(`job on ${runner} ${error instanceof Expired ? "timed out" : "failed"}`);
         return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; ") };
       }
     },

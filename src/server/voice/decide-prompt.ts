@@ -36,9 +36,15 @@ export function voiceChoiceValues(question: VoiceQuestion): { value: string; id:
       }));
   const counts = new Map<string, number>();
   for (const entry of raw) counts.set(entry.value.toLowerCase(), (counts.get(entry.value.toLowerCase()) ?? 0) + 1);
+  const reserved = new Set([...counts.keys(), VOICE_NOT_SURE]);
   return raw.map((entry, index) => {
     const clash = (counts.get(entry.value.toLowerCase()) ?? 0) > 1 || entry.value.toLowerCase() === VOICE_NOT_SURE;
-    return clash ? { ...entry, value: `${entry.value} (${index + 1})` } : entry;
+    if (!clash) return entry;
+    let n = index + 1;
+    let value: string;
+    do { value = `${entry.value} (${n++})`; } while (reserved.has(value.toLowerCase()));
+    reserved.add(value.toLowerCase());
+    return { ...entry, value };
   });
 }
 
@@ -65,14 +71,14 @@ export function voiceQuestionName(index: number): string {
  * What one question asks, without the list of choices: the decision providers send the choices
  * as typed values, and the job prompt lists them after this.
  */
-export function voiceQuestionInstructions(question: VoiceQuestion): string {
+export function voiceQuestionInstructions(question: VoiceQuestion, includeSpeech = true): string {
   switch (question.kind) {
     case "who":
       return [
         "The speech starts with a name the recognizer heard unclearly. Pick the agent whose name it is,",
         "judging only by how the heard words sound. Never pick by which agent's role suits the request.",
         `If the heard name could be more than one of them, or none of them, choose "${VOICE_NOT_SURE}".`,
-        `Speech: ${quoted(question.text)}`,
+        ...(includeSpeech ? [`Speech: ${quoted(question.text)}`] : []),
       ].join("\n");
     case "split": {
       const first = question.first.label;
@@ -87,7 +93,7 @@ export function voiceQuestionInstructions(question: VoiceQuestion): string {
         `- "mention": ${second} is only talked about inside the message to ${first}, as in "ask ${second} about the build",`,
         `  "tell ${second}", "with ${second}", "${second}'s branch" or "what ${second} said". Only ${first} gets a message.`,
         `- "${VOICE_NOT_SURE}": the words do not settle it.`,
-        `Speech: ${quoted(question.text)}`,
+        ...(includeSpeech ? [`Speech: ${quoted(question.text)}`] : []),
       ].join("\n");
     }
     case "option":
@@ -96,7 +102,7 @@ export function voiceQuestionInstructions(question: VoiceQuestion): string {
         "by its name, its number, its description, or as the recommended one when they say so.",
         `If the speech picks none of them, more than one, or something else, choose "${VOICE_NOT_SURE}".`,
         `Card question: ${quoted(question.prompt)}`,
-        `Speech: ${quoted(question.text)}`,
+        ...(includeSpeech ? [`Speech: ${quoted(question.text)}`] : []),
       ].join("\n");
   }
 }
@@ -113,13 +119,16 @@ export const VOICE_ROUTING_SYSTEM_PROMPT = [
 
 /** The job's user prompt: every question, each with its closed list of choices. */
 export function buildVoiceRoutingPrompt(questions: readonly VoiceQuestion[]): string {
+  const transcripts = new Set<string>();
   const blocks = questions.map((question, index) => {
     const choices = voiceChoiceValues(question).map((choice, n) => question.kind === "option"
       ? `- Option ${n + 1}: ${JSON.stringify(choice.value)}${choice.detail ? `, ${choice.detail}` : ""}`
       : `- ${JSON.stringify(choice.value)}${question.kind === "who" && choice.detail ? `: ${choice.detail}` : ""}`);
+    const includeSpeech = !transcripts.has(question.text);
+    transcripts.add(question.text);
     return [
       `Question ${voiceQuestionName(index)} (${question.kind}):`,
-      voiceQuestionInstructions(question),
+      voiceQuestionInstructions(question, includeSpeech),
       "Choices:",
       ...choices,
       `- ${JSON.stringify(VOICE_NOT_SURE)}`,
@@ -167,7 +176,7 @@ export function voiceRoutingSchema(questions: readonly VoiceQuestion[]): Record<
 
 /**
  * Read a job reply into one raw answer per question, each choice mapped back to its id. Null
- * when the reply is not the schema's shape at all. An unlisted choice has no matching id.
+ * when any requested answer is missing, malformed or outside its offered choices.
  */
 export function parseVoiceRoutingReply(
   raw: unknown,
@@ -176,13 +185,17 @@ export function parseVoiceRoutingReply(
   if (!raw || typeof raw !== "object") return null;
   const answers = (raw as { answers?: unknown }).answers;
   if (!answers || typeof answers !== "object") return null;
-  return questions.map((question, index) => {
+  if (Array.isArray(answers) || Object.keys(answers).length !== questions.length) return null;
+  const parsed = [];
+  for (const [index, question] of questions.entries()) {
     const answer = (answers as Record<string, unknown>)[voiceQuestionName(index)];
-    if (!answer || typeof answer !== "object") return { choice: null, confidence: 0 };
+    if (!answer || typeof answer !== "object") return null;
     const { choice, confidence } = answer as { choice?: unknown; confidence?: unknown };
-    return {
-      choice: typeof choice === "string" && choice !== VOICE_NOT_SURE ? voiceChoiceId(question, choice) : null,
-      confidence: typeof confidence === "number" ? confidence : 0,
-    };
-  });
+    if (typeof choice !== "string" || typeof confidence !== "number" || !Number.isFinite(confidence) ||
+        confidence < 0 || confidence > 1) return null;
+    const id = voiceChoiceId(question, choice);
+    if (id === null && choice !== VOICE_NOT_SURE) return null;
+    parsed.push({ choice: id, confidence });
+  }
+  return parsed;
 }

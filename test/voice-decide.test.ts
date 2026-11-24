@@ -1,4 +1,4 @@
-import { parseVoiceRoutingReply, voiceQuestionInstructions } from "../src/server/voice/decide-prompt.ts";
+import { buildVoiceRoutingPrompt, parseVoiceRoutingReply, voiceChoiceValues, voiceQuestionInstructions } from "../src/server/voice/decide-prompt.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -246,9 +246,12 @@ test("below the floor is not sure, a choice that is not one of the question's is
 
   const option: VoiceQuestion = { kind: "option", text: "neither of these", prompt: "Which database?",
     options: [{ id: "pg", label: "Postgres", detail: "server" }, { id: "lite", label: "SQLite", detail: "file" }] };
-  const outside = rig({ env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () => json({ ...recorded.openai.split,
+  const outside = rig({ job: async () => [{ choice: "lite", confidence: 0.99 }], env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () => json({ ...recorded.openai.split,
     answers: [{ type: "choice", name: "q1", choice: "neither of these", confidence: 1, probabilities: [] }] }) });
-  assert.deepEqual((await outside.ask(["claude"], [option])).answers, [{ choice: null, confidence: 1 }]);
+  const recovered = await outside.ask(["codex"], [option]);
+  assert.equal(recovered.rung, "job");
+  assert.deepEqual(outside.jobs.map(j => j.runner), ["codex"]);
+  assert.deepEqual(recovered.answers, [{ choice: "lite", confidence: 0.99 }]);
 
   const job = rig({ job: async () => [{ choice: "Atlas", confidence: 1 }] });
   const who: VoiceQuestion = { kind: "who", text: "Stevie, run it", candidates: [steve, alice] };
@@ -275,11 +278,15 @@ test("an internal ID is accepted only when its value was offered to the model", 
   for (const [question, id, label] of [[who, steve.id, steve.label], [option, "lite", "SQLite"]] as const) {
     for (const choice of [id, label]) {
       const answer = { type: "choice", choice, confidence: 1 };
-      const expected = [{ choice: choice === label ? id : null, confidence: 1 }];
+      const expected = choice === label ? [{ choice: id, confidence: 1 }] : null;
       for (const provider of ["openai", "jev"] as const) {
-        const { ask } = rig({ saved: { [provider]: "fixture-key" },
+        const { ask, jobs } = rig({ saved: { [provider]: "fixture-key" },
+          job: async () => [{ choice: id, confidence: 0.98 }],
           reply: () => json({ answers: provider === "openai" ? [{ ...answer, name: "q1" }] : { q1: answer } }) });
-        assert.deepEqual((await ask(["codex"], [question])).answers, expected, provider);
+        const result = await ask(["codex"], [question]);
+        assert.equal(result.rung, choice === label ? provider : "job");
+        assert.deepEqual(jobs.map(j => j.runner), choice === label ? [] : ["codex"]);
+        assert.deepEqual(result.answers, [{ choice: id, confidence: choice === label ? 1 : 0.98 }]);
       }
       assert.deepEqual(parseVoiceRoutingReply({ answers: { q1: answer } }, [question]), expected, "job");
     }
@@ -312,6 +319,7 @@ for (const provider of ["openai", "jev"] as const) {
     t.after(() => { if (original === undefined) delete process.env[variable]; else process.env[variable] = original; });
     for (const [base, allowed] of [
       ["http://gateway.invalid", false], ["file:///tmp/gateway", false],
+      ["https://gateway.invalid?key=value", false], ["https://gateway.invalid#section", false],
       ["https://gateway.invalid", true], ["http://127.0.0.1", true], ["http://[::1]", true],
     ] as const) {
       process.env[variable] = base;
@@ -445,7 +453,7 @@ test("each repeated name gets its own split question and only the later command 
   t.after(() => router.reset());
   await say(REPEATED_NAME, "repeat");
   assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice", "Alice"]);
-  assert.equal(new Set(asked[0]?.map(voiceQuestionInstructions)).size, 2);
+  assert.equal(new Set(asked[0]?.map(q => voiceQuestionInstructions(q))).size, 2);
   assert.equal(await router.sendNow("repeat"), true);
   assert.deepEqual(delivered, [["Steve", "ask Alice to check the build", "repeat"], ["Alice", "review the PR", "repeat#2"]]);
 });
@@ -654,9 +662,11 @@ test("a slow step shows resolving after a second, and a cancel then drops the la
   const { router, cards, delivered } = routerRig(() => new Promise((resolve) => { release = resolve; }));
   await router.accept(VoiceUtteranceSchema.parse({ id: "slow", text: "Steve, check the build, and Alice, review the PR", capturedAt: 1, backend: "fluidaudio" }));
   t.mock.timers.tick(999);
+  assert.deepEqual(router.activeCards(), []);
   assert.equal(cards.length, 0);
   t.mock.timers.tick(1);
   assert.deepEqual(cards.map((c) => c.state), ["resolving"]);
+  assert.deepEqual(router.activeCards(), cards);
   assert.deepEqual(router.pendingVoiceActions.map((a) => a.id), ["slow"]);
   router.pendingVoiceActions.at(-1)!.cancel();
   release(answered("split"));
@@ -716,3 +726,91 @@ for (const replaced of ["Steve", "Alice"]) {
     assert.deepEqual(delivered, [["Steve", "check the build", "pick"], ["Alice", "review the PR", "pick#2"]]);
   });
 }
+
+test("a partial job batch cannot return an actionable split", () => {
+  const first = { choice: "split", confidence: 1 };
+  for (const answers of [{ q1: first }, { q1: first, q3: first }, { q1: first, q2: { choice: "mention" } }, { q1: first, q2: { choice: "absent", confidence: 1 } }]) {
+    assert.equal(parseVoiceRoutingReply({ answers }, [SPLIT, SPLIT]), null);
+  }
+});
+
+test("generated wire labels avoid reserved and already numbered options", () => {
+  const labels = ["Review", "Review", "Review (1)", "not sure", "not sure (4)"];
+  const options = labels.map((label, i) => ({ label, id: String(i), detail: "" }));
+  const question: VoiceQuestion = { kind: "option", options, text: "first", prompt: "Which?" };
+  const values = voiceChoiceValues(question);
+  assert.equal(new Set([...values.map(v => v.value), "not sure"]).size, 6);
+  for (const v of values) assert.equal(parseVoiceRoutingReply({ answers: { q1: {choice: v.value, confidence: 1} } }, [question])?.[0]?.choice, v.id);
+});
+
+test("runner diagnostics stay out of voice history", async () => {
+  const { ask } = rig({ job: async () => { throw new Error("private runner path and payload"); } });
+  assert.equal((await ask(["codex"])).detail, "job on codex failed");
+});
+
+test("a repeated transcript appears once in a job or provider batch", async () => {
+  const q = { ...SPLIT, text: "unique transcript for multiple boundaries" };
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "test-key" } });
+    await ask(["codex"], [q, q]);
+    assert.equal(JSON.stringify(calls[0]?.body).split(q.text).length, 2);
+  }
+  assert.equal(buildVoiceRoutingPrompt([q, q]).split(q.text).length, 2);
+});
+
+test("an over-limit sentence keeps all manual split points without asking a model", async (t) => {
+  const { router, asked, cards, say } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  await say("Steve, ask " + "Alice about it and ".repeat(10) + "Alice, review the PR", "long");
+  assert.equal(asked.length, 0);
+  assert.equal(cards.at(-1)?.candidates.length, 12);
+});
+
+test("excluded duplicate-name candidates cannot change a Codex split to a mixed roster", async (t) => {
+  const ruby = name("Ruby");
+  const { router, say, cards } = routerRig((_q, opts) => {
+    assert.deepEqual(opts?.agents, ["codex", "codex"]);
+    return answered("split");
+  }, [name("Steve", "codex"), name("Alice", "codex"), ruby, { ...ruby, key: "other-ruby" }]);
+  t.after(() => router.reset());
+  await say("Steve, check the build, and Alice, ask Ruby about the tests");
+  assert.equal(cards.at(-1)?.reason, "split");
+});
+
+test("a resolving card suppresses a spoken pick that could match two captures", async (t) => {
+  let finish!: (result: VoiceDecisionResult) => void;
+  const pending = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+  let calls = 0;
+  const { router, say, cards } = routerRig(() => ++calls === 1 ? answered(null) : pending);
+  t.after(() => router.reset());
+  await say(SPLIT.text, "older");
+  await router.accept(VoiceUtteranceSchema.parse({ id: "newer", text: SPLIT.text, capturedAt: Date.now(), backend: "fluidaudio" }));
+  await say("Alice", "pick");
+  finish(answered(null));
+  await router.resolution("newer");
+  assert.equal(router.heard.list().find(e => e.id === "pick")?.rule, "ambiguous-pick");
+  assert.deepEqual(cards.map(c => c.state), ["unsure", "unsure"]);
+});
+
+test("a phonetic first choice and a later split share one deadline, including manual choices", async (t) => {
+  for (const manual of [false, true]) {
+    const deadlines: (number | undefined)[] = [];
+    const { router, say, asked, delivered } = routerRig((questions, opts) => {
+      deadlines.push(opts?.deadline);
+      return answered(manual ? null : questions[0]?.kind === "who" ? "task:Steve" : "split");
+    }, ["Steve", "Stevie", "Alice"].map(n => name(n, "codex")));
+    t.after(() => router.reset());
+    await say("Steven, check the build, and Alice, review the PR", "compound");
+    if (manual) {
+      assert.ok(await router.pick("compound", "task:Steve"));
+      assert.equal(await router.sendNow("compound"), false);
+      assert.ok(await router.pick("compound", "task:Alice"));
+    } else {
+      assert.deepEqual(asked.map(q => q[0]?.kind), ["who", "split"]);
+      assert.equal(typeof deadlines[0], "number");
+      assert.equal(deadlines[0], deadlines[1]);
+    }
+    assert.ok(await router.sendNow("compound"));
+    assert.deepEqual(delivered, [["Steve", "check the build", "compound"], ["Alice", "review the PR", "compound#2"]]);
+  }
+});

@@ -271,10 +271,10 @@ function rasterMimeType(bytes) {
  */
 function voiceRoutingAnswer(prompt) {
   const answers = {};
+  const speech = /^Speech: (".*")$/m.exec(prompt);
   for (const block of prompt.split(/\n(?=Question q\d+ \()/)) {
     const head = /^Question (q\d+) \((who|split|option)\):/m.exec(block);
     if (!head) continue;
-    const speech = /^Speech: (".*")$/m.exec(block);
     const second = /Later it names (.+?)\. Decide/.exec(block);
     const text = speech ? JSON.parse(speech[1]) : "";
     const split = head[2] === "split" && second && new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second[1]},`).test(text);

@@ -469,6 +469,20 @@ test("an unclosed address wrapper keeps stop as text for model and picked splits
   }
 });
 
+test("model and manual split delivery preserve stop punctuation and command-line flags", async () => {
+  for (const manual of [false, true]) {
+    decide = () => ({ rung: "job", answers: [{ choice: manual ? null : "split", confidence: 1 }], detail: "scripted" });
+    const id = randomUUID();
+    const before = interrupts.length;
+    await say("Steve, stop:, and Will, --force is the flag", id);
+    await resolved(id);
+    if (manual) assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(interrupts.length, before);
+    assert.deepEqual([queued("Steve").at(-1), queued("Will").at(-1)], ["stop:", "--force is the flag"]);
+  }
+});
+
 test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
   decide = (questions) => ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" });
   await say("Steven tell Will something", "ambiguous");
@@ -590,6 +604,7 @@ test("a replacement session receives neither a pending message nor a pending int
   await say("Will, stop", "stop-original");
   await say("Steven ask Will about the deployment", "picked-message");
   await say("Will.");
+  const firstQueue = queued("Steve");
   const replacementQueue = queued("Bill");
   const beforeInterrupts = [...interrupts];
   will.sessionId = "sdk:Bill";
@@ -597,11 +612,11 @@ test("a replacement session receives neither a pending message nor a pending int
   assert.equal((await act("stop-original", "send-now")).status, 200);
   t.mock.timers.tick(1000);
   await Promise.resolve();
+  assert.deepEqual(queued("Steve"), firstQueue);
   assert.deepEqual(queued("Bill"), replacementQueue);
   assert.deepEqual(interrupts, beforeInterrupts);
-  assert.deepEqual(cards.slice(-3).map(c => [c.id, c.reason === "delivering" ? c.reason : c.state, c.parts.map(p => p.target?.sessionId)]), [
+  assert.deepEqual(cards.slice(-2).map(c => [c.id, c.reason === "delivering" ? c.reason : c.state, c.parts.map(p => p.target?.sessionId)]), [
     ["stop-original", "not-running", ["sdk:Will"]],
-    ["picked-message", "delivering", ["sdk:Steve", "sdk:Will"]],
     ["picked-message", "not-running", ["sdk:Steve", "sdk:Will"]],
   ]);
   const deliveries = (await readHeard()).filter((entry) => entry.outcome !== "control");

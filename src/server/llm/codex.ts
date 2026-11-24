@@ -300,6 +300,7 @@ export const codexRunner: LlmRunner = {
       throw new Error(`codex runner refused the tool grant: ${refusal ?? "unsupported grant"}`);
     }
     const executable = await locateExecutable("codex");
+    opts.signal?.throwIfAborted();
     if (!executable) throw new Error('agent binary "codex" not found in the executable environment');
     // The typed transport, when the operator has selected it. Resolved per call for the
     // reason every other LLM config read is - a Settings edit must reach the next run
@@ -371,9 +372,16 @@ export const codexRunner: LlmRunner = {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          opts.signal?.removeEventListener("abort", onAbort);
           live.delete(child);
           cleanupAgentSubprocessEnv(env);
         };
+        const onAbort = (): void => {
+          killTree(child);
+          done();
+          reject(new Error("codex exec aborted"));
+        };
+        opts.signal?.addEventListener("abort", onAbort, { once: true });
         const timer = setTimeout(() => {
           killTree(child);
           done();

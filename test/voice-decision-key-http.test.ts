@@ -176,7 +176,17 @@ test("a refused key is not echoed in the error, and a bad provider is refused", 
   assert.equal(existsSync(decisionKeyPath()), false);
 });
 
+test("saving a key secures an existing voice directory before publishing", async () => {
+  const dir = join(home, "voice");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.chmodSync(dir, 0o755);
+  assert.equal((await report("/api/voice/decision-key", "PUT", { provider: "jev", key: JEV_KEY })).status, 200);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  assert.equal(statSync(decisionKeyPath()).mode & 0o777, 0o600);
+});
+
 test("an unreadable key file reads as none saved and says nothing about its content", async () => {
+  fs.mkdirSync(join(home, "voice"), { recursive: true, mode: 0o700 });
   writeFileSync(decisionKeyPath(), "not json " + OPENAI_KEY, { mode: 0o600 });
   const read = await report();
   assert.equal(read.body.provider, null);

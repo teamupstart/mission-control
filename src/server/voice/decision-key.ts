@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { stateDir } from "../../shared/harness-runtime.mjs";
@@ -60,6 +60,8 @@ function writeKeys(keys: SavedKeys, path: string): void {
   }
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!lstatSync(dir).isDirectory()) throw new Error("Invalid voice key directory");
+  chmodSync(dir, 0o700);
   // Written whole to a private temporary file and renamed over the old one, so a reader never
   // sees half a file and the key is never readable by anyone else, even for a moment.
   const temp = join(dir, `.decision-key.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);

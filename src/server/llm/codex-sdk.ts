@@ -175,6 +175,7 @@ export async function runCodexSdkOneShot(
     throw new Error("the codex SDK transport does not support images");
   }
 
+  opts.signal?.throwIfAborted();
   const env = agentSubprocessEnv(process.env, { loopbackAccess: true });
   const controller = new AbortController();
   liveRuns.add(controller);
@@ -204,7 +205,7 @@ export async function runCodexSdkOneShot(
     // it keeps a structured job answering the same shape on either transport; omitting it made
     // the two paths disagree for exactly the callers that care most.
     const run = runWithProviderEvents(thread, withSystemPrompt(prompt, opts.systemPrompt), {
-      signal: controller.signal,
+      signal: opts.signal ? AbortSignal.any([controller.signal, opts.signal]) : controller.signal,
       ...(opts.schema ? { outputSchema: opts.schema } : {}),
     });
     const result = opts.timeoutMs

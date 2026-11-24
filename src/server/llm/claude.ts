@@ -140,6 +140,7 @@ export const claudeRunner: LlmRunner = {
       model: opts.model,
       effort: opts.effort,
       thinking: opts.thinking,
+      signal: opts.signal,
       systemPrompt: opts.systemPrompt,
       timeoutMs: opts.timeoutMs,
       schema: opts.schema ? JSON.stringify(opts.schema) : undefined,

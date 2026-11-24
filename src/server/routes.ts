@@ -9333,6 +9333,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
+    available(sessionId) {
+      const session = registry.getSession(sessionId);
+      return !!session && session.state !== "exited";
+    },
     async deliver(target, text, _utteranceId, command) {
       if (target.state !== "running" || !target.sessionId) return "not-running";
       const session = registry.getSession(target.sessionId);

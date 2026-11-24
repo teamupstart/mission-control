@@ -57,7 +57,14 @@ test("a split point keeps each message verbatim and drops only what joins them",
   assert.deepEqual(splits('“Steve,” "check the build", and “Alice,” "review the PR"'), [
     ["Alice", '"check the build"', '"review the PR"'],
   ]);
-  assert.deepEqual(splits("Steve, check the build, and Alice, ,,,"), [["Alice", "check the build", ",,,"]]);
+  assert.equal(splits("Steve, check the build, and Alice, ,,,"), "addressed");
+  assert.equal(splits("Steve, ???, and Alice, check"), "addressed");
+  assert.deepEqual(splits("Steve, explain C plus plus, and Alice, --force is a flag"),
+    [["Alice", "explain C plus plus", "--force is a flag"]]);
+  const stop = route("Steve, stop:, and Alice, review the PR", names);
+  assert.ok(stop.kind === "needs-model" && stop.reason === "second-name");
+  assert.equal(stop.splits[0]?.head, "stop:");
+  assert.equal(stop.splits[0]?.commands?.[0], undefined);
   assert.equal(splits("Steve, check the build, and Release, Captain needs help"), "addressed");
   assert.deepEqual(splits("Ezra, check the disk alerts. Also Ruby, vacuum the old tables"),
     [["Ruby", "check the disk alerts.", "vacuum the old tables"]]);

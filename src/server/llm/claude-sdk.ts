@@ -133,6 +133,7 @@ export async function runClaudeSdkOneShot(
   // prompt untouched.
   const images = validateLlmImages(opts.images);
 
+  opts.signal?.throwIfAborted();
   const controller = new AbortController();
   let cancelError: Error | null = null;
   let rejectCancelled: (error: Error) => void = () => {};
@@ -148,6 +149,8 @@ export async function runClaudeSdkOneShot(
       rejectCancelled(error);
     },
   };
+  const onAbort = (): void => run.cancel(new Error("Claude Agent SDK run aborted"));
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
   live.add(run);
   hookExitOnce();
 
@@ -303,6 +306,7 @@ export async function runClaudeSdkOneShot(
     throw diagnostic(error, stderr);
   } finally {
     clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onAbort);
     live.delete(run);
     cleanupAgentSubprocessEnv(subprocessEnv);
   }

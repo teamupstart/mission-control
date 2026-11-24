@@ -16,7 +16,7 @@
 // `routing-tuning.json` (the spike's cases, recast) is the tuning set. `routing-holdout.json` was
 // written before any tuning run and is the only pass evidence.
 
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { VoiceQuestion } from "../../src/shared/voice-decide.ts";
@@ -81,6 +81,7 @@ function summarize(label: string): void {
   if (new Set(rows.map((r) => r.id)).size !== rows.length) {
     throw new Error("Repeated case IDs: choose a fresh run label or summarize a single pass.");
   }
+  if (new Set(rows.map(row => row.runner)).size > 1) throw new Error("Mixed runners: use a separate label for each runner.");
   const latencies = rows.map((r) => r.ms);
   const accepted = (r: Row, floor: number) => r.error === null && r.choice !== null && r.member && r.confidence >= floor;
   const byFloor = FLOORS.map((floor) => {
@@ -121,7 +122,16 @@ async function run(): Promise<void> {
     process.exit(2);
   }
   // Before any daemon module is evaluated: the state home they resolve is a throwaway one.
-  process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "voice-retest-"));
+  const home = mkdtempSync(join(tmpdir(), "voice-retest-"));
+  process.env.MISSION_HOME = home;
+  try {
+    await runCorpus();
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+async function runCorpus(): Promise<void> {
   const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
   // The daemon resolves Claude's transport from its config (default `sdk`); `--transport print`
   // measures `claude -p` instead, which is what the spike timed.

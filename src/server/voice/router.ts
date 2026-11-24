@@ -10,12 +10,13 @@ import {
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceBackend, VoiceConfig, VoiceState } from "@shared/voice.ts";
-import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
+import { VOICE_MODEL_STAGE_DEADLINE_MS, VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
 import type { VoiceDecider } from "./decide.ts";
 
 type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
 
 export interface VoiceDeliverer {
+  available?(sessionId: string): boolean;
   deliver(target: SpokenName, text: string, utteranceId: string, command?: VoiceAddressedCommand): Promise<DeliveryResult>;
 }
 
@@ -28,6 +29,7 @@ export interface PendingVoiceAction {
 
 const HISTORY_LIMIT = 50;
 const MAX_ACTIVE_CARDS = 50;
+const MAX_SPLIT_QUESTIONS = 8;
 const MAX_UNSURE_CARDS = 5;
 const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
@@ -49,6 +51,8 @@ interface OpenCard {
   pickTargets?: readonly SpokenName[];
   splitPicks?: Map<string, VoiceSplitPoint>;
   modelStep?: AbortController;
+  resolvingVisible?: boolean;
+  remainingSplits?: VoiceSplitPoint[];
   commands?: VoiceSplitPoint["commands"];
   timer?: ReturnType<typeof setTimeout>;
 }
@@ -78,6 +82,18 @@ function splitPickOptions(firstKey: string, splits: VoiceSplitPoint[]): Map<stri
   }));
 }
 
+function agentRow(target: SpokenName): VoiceCard["candidates"][number] {
+  return { kind: "agent", id: target.key, title: target.name, detail: target.role };
+}
+
+function setSplitPicks(item: OpenCard, card: VoiceCard, first: SpokenName, splits: VoiceSplitPoint[]): void {
+  item.splitPicks = splitPickOptions(first.key, splits);
+  card.candidates = [{ ...agentRow(first), detail: `${first.role} · Keep the whole message` }];
+  for (const [id, { target, tail }] of item.splitPicks) {
+    card.candidates.push({ ...agentRow(target), id, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
+  }
+}
+
 /** How bad each outcome is, for a split whose two parts ended differently: the card shows the worse. */
 const OUTCOME_SEVERITY: readonly VoiceDeliveryOutcome[] = ["failed", "not-running", "held", "queued", "sent"];
 
@@ -97,6 +113,7 @@ export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtteranc
   // An earlier split can settle the sentence before a name shared by several agents.
   const ambiguous = decision.splits.findIndex(split => split.ambiguousTarget);
   const decidable = ambiguous < 0 ? decision.splits : decision.splits.slice(0, ambiguous);
+  if (decidable.length > MAX_SPLIT_QUESTIONS) return [];
   return decidable.map((split) => ({
     kind: "split", text: utterance.text, first: choiceOf(decision.target), second: choiceOf(split.target),
     ...(decision.splits.length > 1 ? { nameOffset: split.at } : {}),
@@ -154,7 +171,8 @@ export class VoiceRouter {
   }
 
   activeCards(): VoiceCard[] {
-    return [...Array.from(this.open.values(), ({ card }) => card), ...this.delivering.values()];
+    const visible = [...this.open.values()].filter(item => item.card.state !== "resolving" || item.resolvingVisible);
+    return [...visible.map(item => item.card), ...this.delivering.values()];
   }
 
   private cancelLatestAt(capturedAt: number): string | undefined {
@@ -178,7 +196,7 @@ export class VoiceRouter {
     if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     const unsureCards = Array.from(this.open.values())
-      .filter(({ card, entry }) => card.state === "unsure" && entry.time <= capturedAt)
+      .filter(({ card, entry }) => (card.state === "unsure" || card.state === "resolving") && entry.time <= capturedAt)
       .map(({ card }) => card);
     // Bind every potential part to the roster session present when the utterance arrived.
     const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards });
@@ -236,7 +254,8 @@ export class VoiceRouter {
     entry.rule = decision.reason;
     entry.matchedName = decision.reason === "second-name" ? decision.target.name : null;
     entry.outcome = "resolving";
-    const candidates: VoiceCard["candidates"] = decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role }));
+    const possible = decision.reason === "ambiguous-name" ? new Set([...decision.candidates, ...decision.splits.map(s => s.target)]) : decision.candidates;
+    const candidates = [...possible].map(agentRow);
     const modelStep = new AbortController();
     const item: OpenCard = {
       entry,
@@ -248,33 +267,51 @@ export class VoiceRouter {
     };
     this.open.set(id, item);
     this.pendingVoiceActions.push({ id, kind: "card", openedAt: entry.time, cancel: () => this.cancel(id) });
-    item.timer = setTimeout(() => { if (this.open.get(id) === item) this.publish(item.card); }, VOICE_RESOLVING_AFTER_MS);
-    item.timer.unref?.();
-    const agents = decision.candidates.map((candidate) => candidate.agent);
-    const settle = async (): Promise<void> => {
-      let result: VoiceDecisionResult;
-      try {
-        const questions = voiceQuestionsFor(decision, utterance);
-        result = questions.length ? await this.decider.ask(questions, { agents, signal: modelStep.signal })
-          : { rung: "none", answers: [], detail: "multiple agents share the spoken name" };
-      } catch (error) {
-        result = { rung: "none", answers: [], detail: error instanceof Error ? error.message : String(error) };
-      }
+    item.timer = setTimeout(() => {
       if (this.open.get(id) !== item) return;
+      item.resolvingVisible = true;
+      this.publish(item.card);
+    }, VOICE_RESOLVING_AFTER_MS);
+    item.timer.unref?.();
+    const deadline = performance.now() + VOICE_MODEL_STAGE_DEADLINE_MS;
+    const ask = async (current: NeedsModel): Promise<VoiceDecisionResult> => {
+      const questions = voiceQuestionsFor(current, utterance);
+      if (!questions.length) return { rung: "none", answers: [], detail: "manual selection required" };
+      const involved = new Set(questions.flatMap(q => q.kind === "split" ? [q.first.id, q.second.id] :
+        q.kind === "who" ? q.candidates.map(c => c.id) : []));
+      const agents = current.candidates.filter(c => involved.has(c.key)).map(c => c.agent);
+      try {
+        return await this.decider.ask(questions, { agents, signal: modelStep.signal, deadline });
+      } catch {
+        return { rung: "none", answers: [], detail: "routing failed" };
+      }
+    };
+    const settle = async (): Promise<void> => {
+      let result = await ask(decision);
+      if (this.open.get(id) !== item) return;
+      if (decision.reason === "ambiguous-name" && decision.splits.length) {
+        const target = decision.candidates.find(c => c.key === result.answers[0]?.choice);
+        if (target) {
+          decision = { ...decision, target, reason: "second-name",
+            candidates: [...new Set([target, ...decision.splits.map(s => s.target)])] };
+          entry.matchedName = target.name;
+          item.card.parts[0]!.target = target;
+          item.card.candidates = decision.candidates.map(agentRow);
+          result = await ask(decision);
+          if (this.open.get(id) !== item) return;
+        } else {
+          item.remainingSplits = decision.splits;
+        }
+      }
       delete item.modelStep;
       clearTimeout(item.timer);
       const resolved = resolveVoiceDecision(decision, result);
       const verdict = resolved.state === "unsure" ? "not sure" : resolved.reason;
       entry.detail = `${result.detail}: ${verdict}`;
       if (resolved.state === "unsure") {
-        const card: VoiceCard = { ...item.card, state: "unsure" };
+        const card: VoiceCard = { ...item.card, state: "unsure", candidates: decision.candidates.map(agentRow) };
         if (decision.reason === "second-name") {
-          item.splitPicks = splitPickOptions(decision.target.key, decision.splits);
-          const first = candidates[0]!;
-          card.candidates = [{ ...first, detail: `${first.detail} · Keep the whole message` }];
-          for (const [id, { target, tail }] of item.splitPicks) {
-            card.candidates.push({ kind: "agent", id, title: target.name, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
-          }
+          setSplitPicks(item, card, decision.target, decision.splits);
         }
         this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates }, entry.time);
         return;
@@ -348,6 +385,16 @@ export class VoiceRouter {
       parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
     if (parts.some(part => !selectedSession(roster, part.target))) return false;
+    if (item.remainingSplits?.length) {
+      const card: VoiceCard = { ...item.card, reason: "second-name", parts };
+      setSplitPicks(item, card, target, item.remainingSplits);
+      delete item.remainingSplits;
+      item.card = card;
+      item.pickTargets = [target];
+      item.entry.matchedName = target.name;
+      this.publish(card);
+      return true;
+    }
     this.take(item);
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
@@ -360,8 +407,17 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
     this.take(item);
-    const { mode } = this.state();
+    const { mode, roster } = this.state();
     if (mode === "off") return false;
+    if (item.card.parts.some(({ target }) => {
+      const live = target && selectedSession(roster, target);
+      return !live?.sessionId || live.state !== "running" || this.deliverer.available?.(live.sessionId) === false;
+    })) {
+      item.entry.outcome = "not-running";
+      item.entry.detail = "The selected session is unavailable.";
+      this.publish({ ...item.card, state: "not-running", deadline: null });
+      return true;
+    }
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
     let announced = false;

@@ -276,6 +276,8 @@ export function llmRunInputBytes(
 }
 
 export interface LlmRunOptions {
+  /** Cancel this call, including any running provider process. */
+  signal?: AbortSignal;
   /**
    * The model id. Omit to inherit whatever the provider defaults to, which is both the
    * priciest and the least predictable choice - every cheap caller should name one.

@@ -112,13 +112,15 @@ for the whole of it, process start included. It asks only what is left in doubt:
   with only the joining “and” or “then” dropped. “Steve, ask Alice about the build” is a mention:
   the whole text goes to Steve and nothing to Alice. Each possible split is considered in spoken
   order, including repeated uses of the same name. The first split determines the two messages.
-  A “not sure” before that split leaves the card unsure.
+  A “not sure” before that split leaves the card unsure. More than eight split questions go
+  straight to manual selection, with every possible boundary available.
   On an unsure card, picking the first agent keeps the whole message with that agent. Picking a
   later occurrence confirms the split there, even when both messages go to the same agent.
   If several rows share a name, their details distinguish keeping the message whole from splitting
   at the words shown. Saying the shared name alone leaves the card unsure.
 - **Who.** A first word that sounds like two names (“Steven” with Steve and Stevie on the roster) asks
-  which was meant, judged by sound. When agents share an exact spoken name, the operator picks from the roster rows.
+  which was meant, judged by sound. If the rest of the sentence contains another possible command,
+  the router settles its split points after choosing the first agent, within the original deadline. When agents share an exact spoken name, the operator picks from the roster rows.
 - **Option** questions, a loosely worded answer to a card, are part of the same contract for the
   phase that answers cards by voice.
 
@@ -128,9 +130,8 @@ question's own choices before its confidence is read, since in the spike a model
 that was not on the card a confidence of 1.0.
 
 1. **A decision model**, when one is in use (see [Faster routing](#faster-routing)): one HTTPS
-   request to OpenAI Decisions (`POST /v1/decisions`, model `gpt-6-luna`) or Jev
-   (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying every question the sentence
-   needs as a typed choice. It may take up to two seconds. A valid “not sure”, a refusal, or
+   request per batch to OpenAI Decisions (`POST /v1/decisions`, model `gpt-6-luna`) or Jev
+   (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying each question as a typed choice. It may take up to two seconds. A valid “not sure”, a refusal, or
    confidence below 0.98 leaves routing unsure. An error, timeout, malformed reply, or choice
    outside the offered values falls to the next rung with the time remaining.
 2. **The `voice-routing` job**, with thinking off and its own short system prompt, on the time

@@ -89,6 +89,7 @@ test("delivery receives the routed stop decision across a cancel window and a ca
   try {
     await say("direct", "Steve, STOP!");
     await say("picked", "Steven, stop.");
+    await router.resolution("picked");
     assert.equal(await router.pick("picked", steve.key), true);
     await say("message", "Steve, stop the build");
     assert.deepEqual(deliveries, []);

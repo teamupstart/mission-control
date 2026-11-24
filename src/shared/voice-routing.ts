@@ -57,12 +57,9 @@ export interface VoiceSplitPoint {
 
 /** Drop what joins two commands from the end of the first: separators and a joining word. */
 function splitHead(text: string): string {
-  let head = text;
-  for (;;) {
-    const next = head.replace(/[\s,;:–—-]+$/u, "").replace(/\b(?:and then|and|then|also|plus)$/iu, "");
-    if (next === head) return head.trim();
-    head = next;
-  }
+  // A comma may separate independent commands, or introduce one joining phrase.
+  // Everything before that boundary belongs to the first message, including punctuation.
+  return text.trimEnd().replace(/(?:^|,\s*|\s+)(?:and then|and|then|also|plus)$|,$/iu, "").trim();
 }
 
 export type VoiceAddressedCommand = "stop";
@@ -72,7 +69,7 @@ type Decision =
   | { kind: "control"; command: "cancel" }
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
   | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
-  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name"; match: "exact" | "phonetic"; command?: VoiceAddressedCommand; pauseMs: number | null }
+  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name"; match: "exact" | "phonetic"; command?: VoiceAddressedCommand; splits: VoiceSplitPoint[]; pauseMs: number | null }
   | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "second-name"; pauseMs: number | null;
       /** The fixed first target: the model never chooses it (the first-word rule, spike S3). */
       target: SpokenName; match: "exact" | "phonetic";
@@ -205,9 +202,11 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const pickName = phrase !== null ? controlPhrase : null;
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === pickName)
-    .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
-  if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
-  if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
+    .map((candidate) => ({ card, candidateId: candidate.id })));
+  if (picks.length === 1 && picks[0]!.card.state === "unsure") {
+    return { kind: "control", command: "pick", cardId: picks[0]!.card.id, candidateId: picks[0]!.candidateId };
+  }
+  if (picks.length) return { kind: "ignored", reason: "ambiguous-pick" };
 
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
   if (names.some(({ name }) => name === phrase)) return { kind: "ignored", reason: "no-message" };
@@ -254,7 +253,6 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
   const command = addressedCommand(body, wrappersClosed);
-  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...(command && { command }) };
   const target = candidates[0]!;
   // A later roster name may start a message of its own or only be talked about. The first
   // target stays fixed whichever it is: the model is asked split or mention, never who.
@@ -273,8 +271,8 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const addressStart = at.index - wrappers.length;
       const head = splitHead(text.slice(text.length - body.length, addressStart));
       const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
-      const tail = second.body.replace(/^[\s;:–—-]+/u, "").trim();
-      if (head && tail) {
+      const tail = second.body.trim();
+      if (/[\p{L}\p{N}]/u.test(head) && /[\p{L}\p{N}]/u.test(tail)) {
         const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
         for (const other of matches) {
           splits.push({ target: other.target, at: at.index, head, tail,
@@ -286,6 +284,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       break;
     }
   }
+  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, splits, candidates, text: body, pauseMs, ...(command && { command }) };
   if (splits.length) {
     return { kind: "needs-model", reason: "second-name", candidates: [...splitCandidates], text: body, pauseMs, target, match, splits };
   }

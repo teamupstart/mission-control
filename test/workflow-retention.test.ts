@@ -463,6 +463,30 @@ test("stage two isolates a malformed run and deletes later eligible families", (
   assert.ok(store.getRun("delete-kept"));
 });
 
+test("retention preserves unconfirmed external workloads and local owners until cleanup", () => {
+  const run = "cancelled-repository-run", sub = "retention-sub", attempt = "retention-attempt";
+  insertRun(run, "cancelled", 1);
+  insertSubmission(sub, run);
+  insertCommandArtifact(run, sub, attempt);
+  store.insertLlmCall({
+    id: "retention-call", runId: run, submissionId: sub, nodeAttemptId: attempt, purpose: "persona_review",
+    runner: "claude", model: "fixture", attempt: 1, state: "cancelled", startedAt: 1, finishedAt: 2,
+    durationMs: 1, inputBytes: 0, outputBytes: 0, costUsd: null, errorCode: null,
+  });
+  db.prepare(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES('retention-call',?,'digest','cancellation_pending',1)`).run(attempt);
+  const sweep = () => store.runRetention({ rawEvidenceBefore: 0, completedRunsBefore: 10, maxCompletedRuns: 0, now: 10 }).deletedRunIds;
+  assert.equal(store.workflowStatusCounts().completedRunCount, 0);
+  assert.deepEqual(sweep(), []);
+  db.exec("INSERT INTO workflow_repository_local_owners(workload_id) VALUES('retention-call')");
+  db.exec("UPDATE workflow_repository_workloads SET state='failed' WHERE id='retention-call'");
+  assert.deepEqual(sweep(), []);
+  assert.ok(store.repositoryLocalOwner("retention-call"));
+  db.exec("DELETE FROM workflow_repository_local_owners WHERE workload_id='retention-call'");
+  assert.equal(store.workflowStatusCounts().completedRunCount, 1);
+  assert.deepEqual(sweep(), [run]);
+});
+
 test("stage two keeps the newest cap and never deletes failed or uncertain families", () => {
   seedReusableCatalog();
   for (let index = 1; index <= 102; index += 1) {

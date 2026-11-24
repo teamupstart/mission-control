@@ -353,6 +353,7 @@
   "POST /api/voice/cards/:id/pick": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /api/voice/cards/:id/send-now": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /api/voice/config/provider-intent": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
+  "POST /api/voice/hotkey-recording": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /api/voice/model/download": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /api/voice/mute": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /api/workflow-bindings": "503 {\"error\":\"Workflow manager unavailable\"}",

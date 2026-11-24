@@ -73,12 +73,13 @@ function selectedSession(roster: readonly SpokenName[], selected: SpokenName) {
 }
 
 /** The first target's roster id keeps the message whole. Repeated targets need a boundary id. */
-function splitPickOptions(firstKey: string, splits: VoiceSplitPoint[]): Map<string, VoiceSplitPoint> {
+function splitPickOptions(firstKey: string, splits: VoiceSplitPoint[], prefix: string): Map<string, VoiceSplitPoint> {
   const counts = new Map([[firstKey, 1]]);
   for (const { target } of splits) counts.set(target.key, (counts.get(target.key) ?? 0) + 1);
   return new Map(splits.map((split) => {
     const key = split.target.key;
-    return [counts.get(key) === 1 ? key : `split:${split.at}:${key}`, split];
+    const id = counts.get(key) === 1 ? key : `split:${split.at}:${key}`;
+    return [prefix + id, split];
   }));
 }
 
@@ -86,9 +87,9 @@ function agentRow(target: SpokenName): VoiceCard["candidates"][number] {
   return { kind: "agent", id: target.key, title: target.name, detail: target.role };
 }
 
-function setSplitPicks(item: OpenCard, card: VoiceCard, first: SpokenName, splits: VoiceSplitPoint[]): void {
-  item.splitPicks = splitPickOptions(first.key, splits);
-  card.candidates = [{ ...agentRow(first), detail: `${first.role} · Keep the whole message` }];
+function setSplitPicks(item: OpenCard, card: VoiceCard, first: SpokenName, splits: VoiceSplitPoint[], prefix = ""): void {
+  item.splitPicks = splitPickOptions(first.key, splits, prefix);
+  card.candidates = [{ ...agentRow(first), id: prefix + first.key, detail: `${first.role} · Keep the whole message` }];
   for (const [id, { target, tail }] of item.splitPicks) {
     card.candidates.push({ ...agentRow(target), id, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
   }
@@ -376,7 +377,8 @@ export class VoiceRouter {
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
     const roster = this.state().roster;
     const split = item.splitPicks?.get(candidateId);
-    const target = split?.target ?? item.pickTargets?.find(c => c.key === candidateId);
+    const target = item.splitPicks ? split?.target ?? item.card.parts[0]?.target
+      : item.pickTargets?.find(c => c.key === candidateId);
     if (!target) return false;
     let parts = [{ target, text: item.message }];
     if (split) {
@@ -387,10 +389,10 @@ export class VoiceRouter {
     if (parts.some(part => !selectedSession(roster, part.target))) return false;
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
-      setSplitPicks(item, card, target, item.remainingSplits);
+      setSplitPicks(item, card, target, item.remainingSplits, "boundary:");
       delete item.remainingSplits;
       item.card = card;
-      item.pickTargets = [target];
+      delete item.pickTargets;
       item.entry.matchedName = target.name;
       this.publish(card);
       return true;
@@ -403,16 +405,19 @@ export class VoiceRouter {
     return true;
   }
 
+  private deliveryTarget(roster: readonly SpokenName[], captured: SpokenName | null): SpokenName | undefined {
+    const target = captured && selectedSession(roster, captured);
+    return target?.state === "running" && target.sessionId && this.deliverer.available?.(target.sessionId) !== false
+      ? target : undefined;
+  }
+
   async sendNow(id: string): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
     this.take(item);
     const { mode, roster } = this.state();
     if (mode === "off") return false;
-    if (item.card.parts.some(({ target }) => {
-      const live = target && selectedSession(roster, target);
-      return !live?.sessionId || live.state !== "running" || this.deliverer.available?.(live.sessionId) === false;
-    })) {
+    if (item.card.parts.some(({ target }) => !this.deliveryTarget(roster, target))) {
       item.entry.outcome = "not-running";
       item.entry.detail = "The selected session is unavailable.";
       this.publish({ ...item.card, state: "not-running", deadline: null });
@@ -420,22 +425,16 @@ export class VoiceRouter {
     }
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
-    let announced = false;
+    this.publish(inFlight);
     // A split delivers each part in the order it was said; the card shows the worse outcome.
     let outcome: VoiceDeliveryOutcome | null = null;
     for (const [index, part] of item.card.parts.entries()) {
       const state = this.state();
       if (this.delivering.get(id) !== inFlight || state.mode === "off") return true;
-      const selected = part.target;
-      const target = selected && selectedSession(state.roster, selected);
+      const target = this.deliveryTarget(state.roster, part.target);
       let result: DeliveryResult = "not-running";
       try {
         if (target) {
-          if (!announced) {
-            this.publish(inFlight);
-            announced = true;
-            if (this.delivering.get(id) !== inFlight) return true;
-          }
           const partId = index === 0 ? id : `${id}#${index + 1}`;
           result = await this.deliverer.deliver(target, part.text, partId, item.commands?.[index]);
         }

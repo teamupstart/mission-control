@@ -107,7 +107,7 @@ async function post(
   }
   if (!response.ok) {
     // Provider diagnostics may include the supplied credential. Keep only the status.
-    await response.body?.cancel();
+    await response.body?.cancel().catch(() => undefined);
     throw new DecisionProviderError(provider, `HTTP ${response.status}`, response.status);
   }
   try {

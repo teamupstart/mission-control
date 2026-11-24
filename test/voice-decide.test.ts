@@ -105,7 +105,8 @@ test("no key: the job answers and no HTTPS request is made", async () => {
 
 test("OPENAI_API_KEY alone switches OpenAI Decisions on, with the pinned model and every question as a typed choice", async () => {
   const { ask, calls, jobs } = rig({ env: { OPENAI_API_KEY: OPENAI_ENV } });
-  const result = await ask();
+  const speech = "Steve, archive the release notes, and Alice, check the spelling";
+  const result = await ask(["claude"], [{ ...SPLIT, text: speech }]);
   assert.equal(calls.length, 1);
   assert.equal(jobs.length, 0);
   assert.equal(calls[0]!.url, "https://api.openai.com/v1/decisions");
@@ -115,7 +116,8 @@ test("OPENAI_API_KEY alone switches OpenAI Decisions on, with the pinned model a
   assert.equal(question!.type, "choice");
   assert.equal(question!.name, "q1");
   assert.deepEqual(question!.choices.map((c) => c.value), ["split", "mention", "not sure"]);
-  assert.match(question!.instructions, /Steve, check the build, and Alice, review the PR/);
+  assert.ok(String(calls[0]!.body.input).includes(speech));
+  assert.ok(!question!.instructions.includes(speech));
   assert.deepEqual(result, { rung: "openai", answers: [{ choice: "split", confidence: 0.99 }], detail: "OpenAI Decisions answered" });
 });
 
@@ -804,7 +806,10 @@ test("a phonetic first choice and a later split share one deadline, including ma
     if (manual) {
       assert.ok(await router.pick("compound", "task:Steve"));
       assert.equal(await router.sendNow("compound"), false);
-      assert.ok(await router.pick("compound", "task:Alice"));
+      assert.equal(await router.pick("compound", "task:Steve"), false);
+      const split = router.activeCards()[0]?.candidates.find(candidate => candidate.title === "Alice");
+      assert.ok(split);
+      assert.ok(await router.pick("compound", split.id));
     } else {
       assert.deepEqual(asked.map(q => q[0]?.kind), ["who", "split"]);
       assert.equal(typeof deadlines[0], "number");
@@ -814,3 +819,59 @@ test("a phonetic first choice and a later split share one deadline, including ma
     assert.deepEqual(delivered, [["Steve", "check the build", "compound"], ["Alice", "review the PR", "compound#2"]]);
   }
 });
+
+test("a retried first pick leaves the whole-message choice available", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null), ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await say("Steven, close the release, and Alice, update the docs", "choice");
+  assert.ok(await router.pick("choice", "task:Steve"));
+  const rows = router.activeCards()[0]!.candidates;
+  assert.equal(await router.pick("choice", "task:Steve"), false);
+  assert.deepEqual(router.activeCards()[0]?.candidates, rows);
+  assert.ok(await router.pick("choice", rows.find(row => row.title === "Steve")!.id));
+  assert.ok(await router.sendNow("choice"));
+  assert.deepEqual(delivered, [["Steve", "close the release, and Alice, update the docs", "choice"]]);
+});
+
+test("a late split boundary retains its surrounding speech in the job request", async (t) => {
+  const { router, say, asked } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  const text = "Steve, " + "check the build notes ".repeat(105) + "then ask Alice about the changelog";
+  await say(text, "long");
+  assert.equal(asked.length, 1);
+  assert.ok(buildVoiceRoutingPrompt(asked[0]!).includes("then ask Alice about the changelog"));
+});
+
+test("an errored provider body cannot replace its sanitized HTTP status", async () => {
+  const { ask, jobs } = rig({ env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () =>
+    new Response(new ReadableStream({ start(controller) { controller.error(new Error("private gateway diagnostic")); } }), { status: 401 }) });
+  const result = await ask(["codex"]);
+  assert.equal(result.rung, "job");
+  assert.equal(jobs.length, 1);
+  assert.match(result.detail, /OpenAI Decisions HTTP 401/);
+  assert.doesNotMatch(result.detail, /private gateway diagnostic/);
+});
+
+for (const change of ["not-running", "unavailable"] as const) {
+  test(`a later split part is withheld when its target becomes ${change} during the first delivery`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const calls: string[] = [];
+    let available = true;
+    const router = new VoiceRouter(() => ({ mode: "listening", roster, backend: "fluidaudio" }),
+      () => ({ enabled: true, seconds: 4 }), {
+        available: () => available,
+        deliver: async target => {
+          calls.push(target.name);
+          if (change === "unavailable") available = false;
+          else roster[1]!.state = "not-running";
+          return "queued";
+        },
+      }, () => {}, { ask: async () => answered("split") });
+    t.after(() => router.reset());
+    await router.accept(VoiceUtteranceSchema.parse({ text: SPLIT.text, id: "part", capturedAt: Date.now(), backend: "fluidaudio" }));
+    await router.resolution("part");
+    assert.ok(await router.sendNow("part"));
+    assert.deepEqual(calls, ["Steve"]);
+    assert.equal(router.heard.list()[0]?.outcome, "not-running");
+  });
+}

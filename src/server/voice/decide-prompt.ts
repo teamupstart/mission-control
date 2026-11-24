@@ -78,7 +78,7 @@ export function voiceQuestionInstructions(question: VoiceQuestion, includeSpeech
         "The speech starts with a name the recognizer heard unclearly. Pick the agent whose name it is,",
         "judging only by how the heard words sound. Never pick by which agent's role suits the request.",
         `If the heard name could be more than one of them, or none of them, choose "${VOICE_NOT_SURE}".`,
-        ...(includeSpeech ? [`Speech: ${quoted(question.text)}`] : []),
+        ...(includeSpeech ? [`Speech: ${JSON.stringify(question.text)}`] : []),
       ].join("\n");
     case "split": {
       const first = question.first.label;
@@ -93,7 +93,7 @@ export function voiceQuestionInstructions(question: VoiceQuestion, includeSpeech
         `- "mention": ${second} is only talked about inside the message to ${first}, as in "ask ${second} about the build",`,
         `  "tell ${second}", "with ${second}", "${second}'s branch" or "what ${second} said". Only ${first} gets a message.`,
         `- "${VOICE_NOT_SURE}": the words do not settle it.`,
-        ...(includeSpeech ? [`Speech: ${quoted(question.text)}`] : []),
+        ...(includeSpeech ? [`Speech: ${JSON.stringify(question.text)}`] : []),
       ].join("\n");
     }
     case "option":
@@ -102,7 +102,7 @@ export function voiceQuestionInstructions(question: VoiceQuestion, includeSpeech
         "by its name, its number, its description, or as the recommended one when they say so.",
         `If the speech picks none of them, more than one, or something else, choose "${VOICE_NOT_SURE}".`,
         `Card question: ${quoted(question.prompt)}`,
-        ...(includeSpeech ? [`Speech: ${quoted(question.text)}`] : []),
+        ...(includeSpeech ? [`Speech: ${JSON.stringify(question.text)}`] : []),
       ].join("\n");
   }
 }

@@ -253,3 +253,9 @@ test("an apostrophe inside a candidate name is part of an unquoted pick", () => 
   assert.deepEqual(route("O’Neil!", ["O’Neil"], [], [card]), { kind: "control", command: "pick", cardId: "open", candidateId: "oneil" });
   assert.deepEqual(route("“O’Neil”!", ["O’Neil"], [], [card]), { kind: "ignored", reason: "no-message" });
 });
+
+test("an unmatched address quote and trailing whitespace preserve the first split message", () => {
+  const decision = route('Steve", echo ok, and Alice, review    ', ["Steve", "Alice"]);
+  assert.ok(decision.kind === "needs-model" && decision.reason === "second-name");
+  assert.deepEqual(decision.splits.map(s => [s.head, s.tail]), [['", echo ok', "review"]]);
+});

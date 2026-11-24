@@ -654,6 +654,7 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  private readonly pendingInspectorRecoveryChecks = new Set<string>();
   private readonly inspectorFeedbackRefreshes = new Map<string, {
     pending: boolean;
     observationAfter: number;
@@ -4559,6 +4560,10 @@ export class WorkflowManager {
       refreshPreparedFeedback?: boolean; recoveryRequestId?: string;
     } = {},
   ): void {
+    const recoveryKey = recoveryRequestId === undefined ? undefined : JSON.stringify([runId, recoveryRequestId]);
+    // Claim the receipt before queueing behind the run lock. An outage leaves it eligible
+    // for a new request once this check finishes.
+    if (recoveryKey !== undefined && this.pendingInspectorRecoveryChecks.has(recoveryKey)) return;
     if (refreshPreparedFeedback) {
       if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
       const run = this.store.getRun(runId);
@@ -4568,6 +4573,7 @@ export class WorkflowManager {
         observationAfter: Math.max(Date.now(), prKey ? getInspectorPr(prKey)?.observedAt ?? 0 : 0),
       });
     }
+    if (recoveryKey !== undefined) this.pendingInspectorRecoveryChecks.add(recoveryKey);
     const task = this.withGateLock(runId, async () => {
       let keepRefreshHold = true;
       try {
@@ -4591,6 +4597,7 @@ export class WorkflowManager {
         }
         await this.evaluateInspectorGate(runId, event);
       } finally {
+        if (recoveryKey !== undefined) this.pendingInspectorRecoveryChecks.delete(recoveryKey);
         if (refreshPreparedFeedback) {
           const refresh = this.inspectorFeedbackRefreshes.get(runId);
           // Failure releases the read slot, not the packet. A later successful read or

@@ -39,6 +39,7 @@ const holdActivity = join(home, "hold-activity");
 const activityPending = join(home, "activity-pending");
 const holdRecoveryPull = join(home, "hold-recovery-pull");
 const pullPending = join(home, "recovery-pull-pending");
+const recoveryTimelineReads = join(home, "recovery-timeline-reads");
 const fakeGh = join(home, "gh");
 writeFileSync(fakeGh, `#!${process.execPath}
 const fs = require("node:fs");
@@ -49,6 +50,7 @@ if (target?.includes("/activity?") && ![activityQuery + "1", activityQuery + "10
 const fixture = target?.includes("/activity?") ? ${JSON.stringify(branchActivity)}
   : target?.includes("/pulls/") || recoveryGraph ? ${JSON.stringify(recoveryPr)} : ${JSON.stringify(ghSnapshot)};
 try {
+  if (recoveryGraph && fs.existsSync(${JSON.stringify(recoveryTimelineReads)})) fs.appendFileSync(${JSON.stringify(recoveryTimelineReads)}, "read\\n");
   if (fixture === ${JSON.stringify(recoveryPr)} && fs.existsSync(${JSON.stringify(holdRecoveryPull)})) {
     if (fs.readFileSync(${JSON.stringify(holdRecoveryPull)}, "utf8") === "hold second read") {
       fs.writeFileSync(${JSON.stringify(holdRecoveryPull)}, "");
@@ -3781,6 +3783,52 @@ for (const change of ["new ref update on the same SHA", "PR closes during the fi
     }
   });
 }
+
+test("concurrent replays share a pending recovery check and a later replay retries after an outage", async () => {
+  let pause = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (pause && head === priorRefOid) {
+      pause = false;
+      writeFileSync(holdRecoveryPull, "");
+    }
+    return head;
+  } });
+  const { manager, store, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const recover = await legacyRecoveryRoute(seeded);
+    const submissions = store.listSubmissions(ids.run);
+    const pull = readFileSync(recoveryPr);
+    writeFileSync(recoveryTimelineReads, "");
+    pause = true;
+    assert.equal((await recover()).status, 200);
+    await waitFor(() => existsSync(pullPending), "the pending receipt never reached its PR check");
+    rmSync(recoveryPr);
+    for (const replay of await Promise.all([recover(), recover(), recover()])) {
+      assert.equal(replay.status, 200);
+      assert.equal((await replay.json()).idempotent, true);
+    }
+    rmSync(holdRecoveryPull);
+    await manager.settleBackgroundWork();
+    assert.equal(readFileSync(recoveryTimelineReads, "utf8"), "read\n");
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+
+    writeFileSync(recoveryPr, pull);
+    const retry = await recover();
+    assert.equal(retry.status, 200);
+    assert.equal((await retry.json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+  } finally {
+    rmSync(holdRecoveryPull, { force: true });
+    rmSync(pullPending, { force: true });
+    await manager.stop();
+    rmSync(recoveryTimelineReads, { force: true });
+  }
+});
 
 test("an older recovery request cannot wake a different pending receipt for the same submission and head", async () => {
   let change: "mismatch" | "outage" | undefined;

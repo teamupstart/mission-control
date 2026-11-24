@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import type { VoiceCard } from "@shared/voice-routing.ts";
+import { voiceCardDeadline, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { useUiConfig } from "../lib/uiConfig.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, notify, sound, notifications, onDeadline }: {
-  card: VoiceCard; actions: VoiceCardActions; notify: boolean; sound: boolean; notifications: boolean;
-  onDeadline?: () => void;
+function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -30,7 +29,8 @@ function Card({ card, actions, notify, sound, notifications, onDeadline }: {
     announced.current = card.deadline;
     if (sound) playChime("info");
   }, [card, notify, sound]);
-  const { id: cardId, deadline, state } = card;
+  const { id: cardId, state } = card;
+  const deadline = voiceCardDeadline(card);
   const waiting = card.parts.filter(part => !part.immediateStop);
   const stops = card.parts.filter(part => part.immediateStop);
   const scope = waiting.length > 1 ? "both" : stops.length ? "remaining" : "single";
@@ -41,56 +41,96 @@ function Card({ card, actions, notify, sound, notifications, onDeadline }: {
   ].join("\n");
   useEffect(() => {
     if (!notify || !deadline || state !== "pending" || !waiting.length) return;
-    if (!notifications || document.hasFocus() || typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    try {
-      const seconds = Math.ceil(Math.max(0, deadline - Date.now()) / 1000);
-      if (seconds === 0) return;
-      const title = recipient + " · sending in " + seconds + "s";
-      const shell = window.missionDesktop;
-      if (shell?.showVoiceCardNotice) {
-        const id = newRequestId();
-        let active = true;
-        void shell.showVoiceCardNotice({ id, title, body, deadline, scope }).then(choice => {
-          if (!active || !choice) return;
-          const label = choice === "cancel" ? "Cancel" : "Send now";
-          void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
-        }).catch(() => {});
-        return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
-      }
-      const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
-      let timer: number | undefined;
-      const close = () => {
-        if (timer === undefined) return;
-        window.clearTimeout(timer);
-        timer = undefined;
-        note.onclick = null;
-        note.close();
-      };
-      timer = window.setTimeout(close, Math.max(0, deadline - Date.now()));
-      note.onclick = () => { window.focus(); close(); };
-      return close;
-    } catch { /* A browser may require a service worker for system notifications. */ }
+    if (!notifications || typeof Notification === "undefined") return;
+    let dismiss: (() => void) | undefined;
+    let blurCount = 0;
+    const showNotice = () => {
+      try {
+        const remaining = Math.max(0, deadline - performance.now());
+        const seconds = Math.ceil(remaining / 1000);
+        if (seconds === 0) return;
+        const title = recipient + " · sending in " + seconds + "s";
+        const shell = window.missionDesktop;
+        if (shell?.showVoiceCardNotice) {
+          const id = newRequestId();
+          let active = true;
+          const attempt = blurCount;
+          const allowRetry = () => {
+            if (!active) return;
+            dismiss = undefined;
+            // Another blur may have arrived before Electron replied to the first one.
+            if (blurCount !== attempt) notifyWhenAway();
+          };
+          void shell.showVoiceCardNotice({ id, title, body, deadline: Date.now() + Math.floor(remaining), scope }).then(choice => {
+            if (!active || !choice) return;
+            if (choice === "window-focused") return allowRetry();
+            const label = choice === "cancel" ? "Cancel" : "Send now";
+            void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
+          }, allowRetry);
+          return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
+        }
+        const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
+        let timer: number | undefined;
+        const close = () => {
+          if (timer === undefined) return;
+          window.clearTimeout(timer);
+          timer = undefined;
+          note.onclick = null;
+          note.close();
+        };
+        timer = window.setTimeout(close, Math.max(0, deadline - performance.now()));
+        note.onclick = () => { window.focus(); close(); };
+        return close;
+      } catch { /* A browser may require a service worker for system notifications. */ }
+    };
+    function notifyWhenAway() {
+      if (!dismiss && !document.hasFocus() && Notification.permission === "granted") dismiss = showNotice();
+    }
+    const onBlur = () => {
+      blurCount++;
+      notifyWhenAway();
+    };
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", notifyWhenAway);
+    notifyWhenAway();
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", notifyWhenAway);
+      dismiss?.();
+    };
   }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView card={card} actions={actions} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
+  return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 
-export function VoiceCardHost({ cards, actions, surface, sound, notifications }: {
-  cards: ReadonlyMap<string, VoiceCard>; actions: VoiceCardActions;
+export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, notifications }: {
+  cards: ReadonlyMap<string, DashboardVoiceCard>; fadingCards: ReadonlySet<string>; actions: VoiceCardActions;
   surface?: "pill" | "popover"; sound: boolean; notifications: boolean;
 }) {
   const { voice } = useUiConfig();
   const [, reselect] = useReducer((revision: number) => revision + 1, 0);
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  const newestFirst = [...cards.values()].reverse();
+  const now = performance.now();
+  const pending = surface ? newestFirst.filter(card => card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now) : [];
+  const choices = pending.length ? pending : newestFirst;
+  const selected = surface && (choices.find(card => card.id === chosenId) ?? choices.find(card => card.state === "unsure") ?? choices[0]);
+  const nextDeadline = pending.length ? Math.min(...pending.map(card => voiceCardDeadline(card)!)) : null;
+  useEffect(() => {
+    if (nextDeadline === null) return;
+    const timer = window.setTimeout(reselect, Math.max(0, Math.ceil(nextDeadline - performance.now())));
+    return () => window.clearTimeout(timer);
+  }, [nextDeadline]);
   // The dashboard owns the toast until the desktop opens the selected card window in Phase 12.
   if (surface && surface !== voice.confirmation) return null;
-  const newestFirst = [...cards.values()].reverse();
-  let visible = newestFirst;
-  if (surface) {
-    const now = Date.now();
-    const pending = newestFirst.find(card => card.state === "pending" && card.deadline !== null && card.deadline > now);
-    visible = pending ? [pending] : newestFirst.slice(0, 1);
-  }
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
-    {visible.map(card => <Card key={card.id} card={card} actions={actions}
-      notify={!surface} sound={sound} notifications={notifications} onDeadline={surface ? reselect : undefined} />)}
+    {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
+      fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
+    {choices.length > 1 && selected && <label className="vc-switch">Voice message
+      <select value={selected.id} onChange={event => setChosenId(event.target.value)}>
+        {choices.map(card => <option key={card.id} value={card.id}>
+          {card.parts.map(part => [part.target?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
+        </option>)}
+      </select>
+    </label>}
   </div>;
 }

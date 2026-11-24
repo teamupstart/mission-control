@@ -413,6 +413,7 @@ export function App(): React.JSX.Element {
     subscribeShaping,
     voice,
     voiceCards,
+    fadingVoiceCards,
     setVoiceCardInUse,
     acknowledgeVoiceMode,
     settingsStatus,
@@ -5087,7 +5088,7 @@ export function App(): React.JSX.Element {
           />
         );
 
-  const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards}
+  const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
     actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,

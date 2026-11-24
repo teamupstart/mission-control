@@ -2,6 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
+import { receiveVoiceCard, type DashboardVoiceCard } from "./lib/voice-card-clock.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -214,7 +215,8 @@ export interface MissionState {
    */
   voice: VoiceState | null;
   acknowledgeVoiceMode: (ack: VoiceState) => void;
-  voiceCards: Map<string, VoiceCard>;
+  voiceCards: Map<string, DashboardVoiceCard>;
+  fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardInUse: (id: string, inUse: boolean) => void;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
@@ -345,24 +347,40 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
-  const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
+  const [voiceCards, setVoiceCards] = useState(new Map<string, DashboardVoiceCard>());
+  const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
+  const setVoiceCardFading = useCallback((id: string, fading: boolean) => {
+    setFadingVoiceCards(current => {
+      if (current.has(id) === fading) return current;
+      const next = new Set(current);
+      if (fading) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   // A null timer holds an outcome while the operator is using it.
-  const voiceExpiry = useRef(new Map<string, { card: VoiceCard; timer: number | null }>()).current;
+  const voiceExpiry = useRef(new Map<string, { card: VoiceCard; timer: number | null; fadeTimer?: number }>()).current;
   const scheduleVoiceExpiry = useCallback((card: VoiceCard, inUse = voiceExpiry.get(card.id)?.timer === null) => {
-    window.clearTimeout(voiceExpiry.get(card.id)?.timer ?? undefined);
+    const previous = voiceExpiry.get(card.id);
+    window.clearTimeout(previous?.timer ?? undefined);
+    window.clearTimeout(previous?.fadeTimer);
+    setVoiceCardFading(card.id, false);
     voiceExpiry.delete(card.id);
     if (!voiceCardCanExpire(card)) return;
+    const readingMs = 8000;
+    const fadeTimer = inUse ? undefined : window.setTimeout(() => setVoiceCardFading(card.id, true), readingMs - 300);
     const timer = inUse ? null : window.setTimeout(() => {
       voiceExpiry.delete(card.id);
+      setVoiceCardFading(card.id, false);
       setVoiceCards(current => {
         if (current.get(card.id) !== card) return current;
         const next = new Map(current);
         next.delete(card.id);
         return next;
       });
-    }, 8000);
-    voiceExpiry.set(card.id, { card, timer });
-  }, [voiceExpiry]);
+    }, readingMs);
+    voiceExpiry.set(card.id, { card, timer, fadeTimer });
+  }, [voiceExpiry, setVoiceCardFading]);
   const setVoiceCardInUse = useCallback((id: string, inUse: boolean) => {
     const expiry = voiceExpiry.get(id);
     if (expiry && (expiry.timer === null) !== inUse) scheduleVoiceExpiry(expiry.card, inUse);
@@ -393,9 +411,14 @@ export function useEventStream(): MissionState {
   useEffect(() => {
     const es = new EventSource("/events");
     esRef.current = es;
+    let voiceClockOffset = Infinity;
     function clearVoiceTimers() {
-      for (const { timer } of voiceExpiry.values()) window.clearTimeout(timer ?? undefined);
+      for (const { timer, fadeTimer } of voiceExpiry.values()) {
+        window.clearTimeout(timer ?? undefined);
+        window.clearTimeout(fadeTimer);
+      }
       voiceExpiry.clear();
+      setFadingVoiceCards(new Set());
     }
 
     es.onopen = () => {
@@ -521,10 +544,21 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
-          // Absent while the flag is off, which reads as off.
-          clearVoiceTimers();
-          msg.voiceCards?.forEach(card => scheduleVoiceExpiry(card));
-          setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
+          if (msg.voice && msg.voice.mode !== "off") {
+            // The daemon snapshots active deliveries and held turns. Keep settled cards
+            // on their local timers, including timers paused for focus or a recovery action.
+            voiceClockOffset = performance.now() - (msg.voiceServerTime ?? Date.now());
+            const active = (msg.voiceCards ?? []).map(card => receiveVoiceCard(card, voiceClockOffset));
+            active.forEach(card => scheduleVoiceExpiry(card));
+            setVoiceCards(current => {
+              const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
+              for (const card of active) next.set(card.id, card);
+              return next;
+            });
+          } else {
+            clearVoiceTimers();
+            setVoiceCards(new Map());
+          }
           setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
           if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion, msg.voiceConfirmation);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
@@ -794,17 +828,21 @@ export function useEventStream(): MissionState {
         case "voice_indicators":
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
           break;
-        case "voice_card":
+        case "voice_card": {
+          // A slow frame cannot extend the deadline beyond an earlier clock sample.
+          const offset = Math.min(voiceClockOffset, performance.now() - (msg.voiceServerTime ?? Date.now()));
+          voiceClockOffset = offset;
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);
             next.delete(msg.card.id);
-            next.set(msg.card.id, msg.card);
+            next.set(msg.card.id, receiveVoiceCard(msg.card, offset, prev.get(msg.card.id)));
             const completed = [...next.values()].filter(card => voiceCardCanExpire(card) && voiceExpiry.get(card.id)?.timer !== null);
             if (completed.length > 50) next.delete(completed[0]!.id);
             return next;
           });
           break;
+        }
         // Who can be addressed moved: replace the roster inside the state. A frame that lands
         // while no state is held (voice was off at connect) has nothing to update; the frame
         // that switches voice on carries the roster itself.
@@ -980,6 +1018,7 @@ export function useEventStream(): MissionState {
     voice,
     acknowledgeVoiceMode,
     voiceCards,
+    fadingVoiceCards,
     setVoiceCardInUse,
     settingsStatus,
     keepAwakeStatus,

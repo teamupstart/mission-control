@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { askSentence, type VoiceSpeechState } from "@shared/voice-speech.ts";
+import { voiceCardDeadline, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
@@ -57,50 +58,51 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
   });
 }
 
-export function VoiceCardView({ card, actions, operation, onDeadline }: {
-  card: VoiceCard; actions: VoiceCardActions;
+export function VoiceCardView({ card, actions, operation, hidden = false, fading = false }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string): Promise<void> };
-  onDeadline?: () => void;
 }) {
-  const [now, setNow] = useState(Date.now);
+  const [now, setNow] = useState(() => performance.now());
   const launchIds = useRef(new Map<string, string>());
   const { busy, feedback, run } = operation;
   const article = useRef<HTMLElement>(null);
   const [focused, setFocused] = useState(false);
+  const deadline = voiceCardDeadline(card);
   const settled = voiceCardCanExpire(card);
   const { setVoiceCardInUse } = actions;
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
-    if (focused && !article.current?.contains(document.activeElement)) setFocused(false);
-    if (!settled || (!focused && !busy)) return;
+    if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
+    const unreadFeedback = hidden && feedback !== "";
+    if (!settled || !(focused || busy || unreadFeedback)) return;
     setVoiceCardInUse(card.id, true);
     return () => setVoiceCardInUse(card.id, false);
-  }, [card, settled, focused, busy, setVoiceCardInUse]);
+  }, [card, settled, focused, busy, hidden, feedback, setVoiceCardInUse]);
   useEffect(() => {
-    const deadline = card.deadline;
-    if (deadline === null) return;
+    if (hidden || deadline === null) return;
     let timer: number | undefined;
     const tick = () => {
-      const time = Date.now();
+      const time = performance.now();
       setNow(time);
       if (time < deadline) timer = window.setTimeout(tick, Math.min(100, deadline - time));
-      else onDeadline?.();
     };
     tick();
     return () => window.clearTimeout(timer);
-  }, [card.deadline, onDeadline]);
+  }, [deadline, hidden]);
+  // Standalone routes present one card at a time. Keep the operation and retry ID mounted.
+  if (hidden) return null;
   const button = (label: string, hint: string, click: () => void, style = "", disabled = false) =>
     <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click}>{label}</button></Tooltip>;
   const act = (action: "cancel" | "send-now") => {
-    const time = Date.now();
-    if (card.state === "pending" && (card.deadline === null || time >= card.deadline)) {
+    const time = performance.now();
+    if (card.state === "pending" && (deadline === null || time >= deadline)) {
       setNow(time);
       return;
     }
     void run(() => api.voiceCardAction(card.id, action));
   };
   const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost");
-  const remaining = Math.max(0, (card.deadline ?? 0) - now);
+  const remaining = Math.max(0, (deadline ?? 0) - now);
   const first = card.parts[0];
   const split = card.parts.length > 1;
   const sessionOf = (target?: SpokenName | null) => actions.sessions.find(s => s.id === target?.sessionId);
@@ -182,7 +184,7 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
           detail={p.immediateStop ? p.detail ?? p.text : mention ? messageWithMentions(p.text, card.mentions!) : p.text}
           state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
-        {card.deadline === null || remaining === 0 ? <span className="vc-meta">{card.deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
+        {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
             {cancel}{button(sendLabel, sendHint, () => act("send-now"), "btn-send")}</div></>}</>;
@@ -194,7 +196,7 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
   }
-  return <article ref={article} role="status" data-settled={(settled && !focused && !busy) || undefined}
+  return <article ref={article} role="status" data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>

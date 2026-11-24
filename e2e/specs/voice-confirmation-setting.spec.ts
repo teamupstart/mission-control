@@ -1,6 +1,6 @@
 import { expect, test } from "../fixtures/test.ts";
 import { enableVoice, say, voiceToken } from "../fixtures/voice.ts";
-import { allowStreamDisconnect, captureCard, setupCards } from "../fixtures/voice-cards.ts";
+import { allowStreamDisconnect, captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 
 test("three placement previews persist across reload, with a toast fallback and reserved card-only routes", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
@@ -33,6 +33,36 @@ test("three placement previews persist across reload, with a toast fallback and 
 });
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
+  test(`the ${label} keeps an unresolved recipient picker reachable ahead of a newer held result`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await runningAgent(page, daemon, "Steve");
+    const will = await runningAgent(page, daemon, "Will");
+    const question = "Which release should I inspect?";
+    expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question },
+    })).ok()).toBe(true);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
+    await page.goto(daemon.baseURL + "/#/voice/" + placement);
+    const card = page.getByRole("status");
+    await say(daemon, "Steven ask Will about the deployment");
+    await expect(card).toContainText("Who is this for?");
+    await say(daemon, "Will, inspect the release");
+    await expect(card).toContainText("inspect the release");
+    await card.getByRole("button", { name: "Send now" }).click();
+    await expect(card.getByRole("button", { name: /Steve/ })).toBeVisible({ timeout: 3000 });
+    await expect(card.getByRole("button", { name: /Will/ })).toBeVisible();
+    await captureCard(card, "picker-before-held-" + placement);
+    await card.getByRole("button", { name: /Steve/ }).click();
+    await expect(card).toContainText("Will is mentioned");
+    await page.clock.install();
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(card).toContainText("Cancelled");
+    await page.clock.fastForward(9000);
+    await expect(card).toContainText(question);
+    await expect(card.getByRole("button", { name: "Cancel message" })).toBeEnabled();
+  });
+
   test(`the ${label} route switches at the displayed deadline while disconnected`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     await allowStreamDisconnect(page);
@@ -40,20 +70,21 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
       identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
     } } })).ok()).toBe(true);
+    await page.clock.install({ time: new Date(Date.now() + 120_000) });
     await page.goto("about:blank");
     await page.goto(daemon.baseURL + "/#/voice/" + placement);
     const card = page.getByRole("status");
     await say(daemon, "Steve, inspect the long window", { id: "long-window" });
     await expect(card).toContainText("inspect the long window");
-    await page.clock.install();
-    await page.clock.pauseAt(new Date(Date.now() + 500));
+    await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
+    await page.reload();
+    await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
+    await page.clock.pauseAt(await page.evaluate(() => new Date(Date.now() + 500).toISOString()));
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 3 } } })).ok()).toBe(true);
     await say(daemon, "Steve, inspect the short window");
     await expect(card).toContainText("inspect the short window");
     await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
-    // Advance only one countdown tick past the short deadline, before unrelated dashboard polling.
-    await page.clock.setSystemTime(new Date(Date.now() + 5000));
-    await page.clock.runFor(101);
+    await page.clock.fastForward(3500);
     await expect(card).toContainText("inspect the long window", { timeout: 1500 });
     const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/long-window/cancel"));
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -114,6 +145,82 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     await expect(page).toHaveURL(daemon.baseURL + "/#/settings/voice");
   });
 }
+
+test("standalone held messages can be switched and recalled while a new countdown takes priority", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const will = await runningAgent(page, daemon, "Will");
+  const question = "Which release needs checking?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", { headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question } })).ok()).toBe(true);
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "popover" } })).ok()).toBe(true);
+  await page.goto(daemon.baseURL + "/#/voice/popover");
+  const card = page.getByRole("status");
+  const choose = page.getByRole("combobox", { name: "Voice message" });
+  for (const id of ["first", "second"]) {
+    await say(daemon, "Will, check the " + id + " release", { id });
+    await card.getByRole("button", { name: "Send now" }).click();
+    await expect(card).toContainText("Held for Will");
+  }
+  await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 3000 });
+  await choose.selectOption("first");
+  await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
+  await captureCard(page.locator(".voice-card-surface"), "standalone-held-switcher");
+  await say(daemon, "Will, another countdown", { id: "third" });
+  await expect(card).toContainText("another countdown");
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(choose).toHaveValue("first");
+  for (const id of ["first", "second"]) {
+    await choose.selectOption(id);
+    const recalled = page.waitForResponse(response => response.url().endsWith("/voice%3A" + id + "/recall"));
+    await card.getByRole("button", { name: "Cancel message" }).click();
+    expect(await (await recalled).json()).toEqual({ ok: true, text: "check the " + id + " release" });
+  }
+});
+
+test("a standalone relaunch keeps its feedback and retry ID while another card occupies the surface", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "pill" } })).ok()).toBe(true);
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const release = Promise.withResolvers<void>();
+  const launches: string[] = [];
+  await page.route("**/api/residents/profiles/*/launch", async route => {
+    launches.push(route.request().postDataJSON().requestId);
+    if (launches.length > 1) return route.continue();
+    await release.promise;
+    await route.fulfill({ status: 503, json: { error: "Try the launch again" } });
+  });
+  await page.goto(daemon.baseURL + "/#/voice/pill");
+  await page.clock.install();
+  const card = page.getByRole("status");
+  await say(daemon, "Marlowe, check the build");
+  await card.getByRole("button", { name: "Send now" }).click();
+  const relaunch = card.getByRole("button", { name: "Relaunch Marlowe" });
+  const failedLaunch = page.waitForResponse(response => response.url().endsWith("/launch") && response.status() === 503);
+  await relaunch.click();
+  try {
+    await expect(relaunch).toBeDisabled();
+    await say(daemon, "Marlowe, inspect another build");
+    await expect(card).toContainText("inspect another build");
+    await expect(relaunch).toHaveCount(0);
+  } finally {
+    release.resolve();
+  }
+  await (await failedLaunch).finished();
+  // Let the hidden failure outlast an ordinary outcome, then give the newer Cancelled card its interval.
+  await page.clock.fastForward(9000);
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(card).toContainText("Cancelled");
+  await page.clock.fastForward(9000);
+  await expect(card).toContainText("Try the launch again", { timeout: 3000 });
+  await expect(relaunch).toBeEnabled();
+  await captureCard(card, "standalone-relaunch-returned");
+  await relaunch.click();
+  await expect(card).toContainText("Relaunch requested.");
+  expect(launches).toHaveLength(2);
+  expect(launches[1]).toBe(launches[0]);
+});
 
 test("disabled voice links open Fleet and disabling voice closes an active standalone route", async ({ dashboard: page, daemon }) => {
   const fleet = page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Fleet" });

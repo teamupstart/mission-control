@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { createRequire } from "node:module";
 import { constants, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -11,17 +11,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { VoiceIndicatorButton } from "../src/web/components/VoiceIndicators.tsx";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 
-function installedSandbox(path: string | undefined): boolean {
-  if (!path) return false;
+function installedSandbox(path: string, t: TestContext): boolean {
   const helper = statSync(path, { throwIfNoEntry: false });
-  return !!helper?.isFile() && helper.uid === 0 && (helper.mode & 0o7777) === 0o4755;
+  const details = helper ? `uid=${helper.uid} mode=${(helper.mode & 0o7777).toString(8)}` : "absent";
+  t.diagnostic(`Electron sandbox helper ${path}: ${details}`);
+  // A system helper may be execute-only. It must be root-owned, setuid, executable
+  // by the test user and protected against writes by that user's group or others.
+  return !!helper?.isFile() && helper.uid === 0 && (helper.mode & 0o4001) === 0o4001 && !(helper.mode & 0o022);
 }
 
-function fixtureElectron(dir: string): string {
+function fixtureElectron(dir: string, t: TestContext): string {
   const electron = createRequire(import.meta.url)("electron") as string;
   const dist = dirname(electron);
-  if (process.platform !== "linux" || installedSandbox(join(dist, "chrome-sandbox"))) return electron;
-  const sandbox = [process.env.CHROME_DEVEL_SANDBOX, "/opt/google/chrome/chrome-sandbox", "/usr/lib/chromium/chrome-sandbox"].find(installedSandbox);
+  if (process.platform !== "linux" || installedSandbox(join(dist, "chrome-sandbox"), t)) return electron;
+  const sandbox = [
+    process.env.CHROME_DEVEL_SANDBOX, "/usr/local/sbin/chrome-devel-sandbox",
+    "/opt/google/chrome/chrome-sandbox", "/usr/lib/chromium/chrome-sandbox",
+    "/opt/microsoft/msedge/msedge-sandbox",
+  ].find((path): path is string => !!path && installedSandbox(path, t));
   if (!sandbox) return electron;
 
   // Chromium prefers the helper beside its executable, even when npm installed it without
@@ -37,7 +44,7 @@ function fixtureElectron(dir: string): string {
   return executable;
 }
 
-test("the status line leaves the last row visible at the minimum desktop size", () => {
+test("the status line leaves the last row visible at the minimum desktop size", (t) => {
   assertElectronGuiLaunchAllowed();
   const dir = mkdtempSync(join(tmpdir(), "mission-voice-geometry-"));
   try {
@@ -47,7 +54,7 @@ test("the status line leaves the last row visible at the minimum desktop size", 
     writeFileSync(path, `<style>${css}</style><div class="app app-console"><header class="topbar">Mission Control</header><main class="console"></main>${status}</div>`);
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const output = execFileSync(fixtureElectron(dir), [
+    const output = execFileSync(fixtureElectron(dir, t), [
       `--user-data-dir=${join(dir, "profile")}`,
       fileURLToPath(new URL("fixtures/voice-status-line-browser.cjs", import.meta.url)),
       "--pages", path,

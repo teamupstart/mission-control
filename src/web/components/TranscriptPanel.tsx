@@ -1618,11 +1618,10 @@ export function TranscriptPanel({
         {/* What pausing means for what you type, above the box it is about. */}
         {pauseControls.has("composer") && <ComposerPausedBand session={session} />}
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
-        {composerVoiceHint && <span hidden id={voiceHintId}>{composerVoiceHint}</span>}
+        {composerVoiceHint && <span className="vi-composer-hint" id={voiceHintId}>{composerVoiceHint}</span>}
         <div className="compose-row">
           <VoiceIndicator id="composer" />
-          {/* The decorative prompt shows the resolved Send binding. The text box keeps
-              its typing instructions even while its placeholder shows a voice hint. */}
+          {/* The decorative prompt shows the resolved Send binding. */}
           <span className="pty-prompt" aria-hidden="true">
             {`mission${sendChord ? ` (${sendChord})` : ""} >`}
           </span>
@@ -1639,7 +1638,7 @@ export function TranscriptPanel({
                 ? "No pane to send to"
                 : dialogOpen
                   ? "Waiting on a menu - pick an option above to answer it"
-                  : composerVoiceHint ?? replyPrompt
+                  : replyPrompt
             }
             rows={terminal ? 1 : 2}
             disabled={!canSend || dialogOpen}

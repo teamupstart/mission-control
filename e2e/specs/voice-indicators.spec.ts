@@ -95,7 +95,15 @@ test("five selected indicators follow the daemon and advertise only a registered
         await expect(control).toHaveAccessibleName("Voice: muted. Unmute");
         if (style === "composer") await test.step("The muted reply box keeps its typing instructions, describes the voice state and accepts a newline", async () => {
           await expect(reply).toHaveAccessibleDescription("Voice is muted");
-          await expect(reply).toHaveAttribute("placeholder", "Voice is muted");
+          await expect(reply).toHaveAttribute("placeholder", /Reply to this session.*Enter to send, Shift\+Enter for newline, drop or paste images/);
+          const composer = page.locator(".transcript-compose");
+          await expect(composer.getByText("Voice is muted", { exact: true })).toBeVisible();
+          if (capture) {
+            await page.mouse.move(1, 200);
+            await control.blur();
+            await expect(page.locator(".tooltip")).toHaveCount(0);
+            await composer.screenshot({ path: join(capture, "muted-reply-instructions.png") });
+          }
           await reply.fill("Typed while muted");
           await reply.press("Shift+Enter");
           await expect(reply).toHaveValue("Typed while muted\n");
@@ -237,5 +245,50 @@ test("the Action Bar fallback keeps its message label and typed draft across mut
   } finally {
     listener.stop();
     dev.stop();
+  }
+});
+
+test("failed window mute controls share one alert without moving the header, fleet, or status line", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    for (const name of ["Edge light", "Floating button", "Top-bar segment"]) {
+      await page.getByRole("checkbox", { name }).check();
+    }
+    await page.goto(daemon.baseURL);
+    await page.setViewportSize({ width: 720, height: 480 });
+    const header = page.locator("header.topbar");
+    const fleet = page.locator(".app .line").first();
+    const status = page.locator("button.vi-status-line");
+    await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    await expect(fleet).toBeVisible();
+    const geometry = () => Promise.all([header.boundingBox(), fleet.boundingBox(), status.boundingBox()]);
+    const before = await geometry();
+    expect(before[2]!.y + before[2]!.height).toBe(480);
+    const alert = page.getByRole("alert");
+    for (const kind of ["status-line", "edge", "floating", "topbar"]) {
+      const message = `The listener refused the ${kind} mute request.`;
+      await page.route("**/api/voice/mute", route => route.fulfill({ status: 503, json: { error: message } }), { times: 1 });
+      await page.locator(`button.vi-${kind}`).click();
+      await expect(alert).toHaveCount(1);
+      await expect(alert).toHaveText(message);
+      await expect(alert).toBeInViewport({ ratio: 1 });
+      expect(await geometry(), `layout after refusing ${kind}`).toEqual(before);
+    }
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await page.mouse.move(1, 200);
+      await page.locator("button.vi-topbar").blur();
+      await expect(page.locator(".tooltip")).toHaveCount(0);
+      await page.screenshot({ path: join(mkdtempSync(join(root, "window-feedback-")), "anchored.png") });
+    }
+    await page.getByRole("button", { name: "Dismiss voice error" }).click();
+    await expect(alert).toHaveCount(0);
+    await status.click();
+    await expect(status).toHaveAccessibleName("Voice: muted. Unmute");
+  } finally {
+    listener.stop();
   }
 });

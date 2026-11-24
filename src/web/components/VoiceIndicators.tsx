@@ -1,5 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   voiceCapable, VOICE_INDICATOR_IDS, type VoiceConfig, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
@@ -13,7 +12,7 @@ import { Tooltip } from "./Tooltip.tsx";
 export const VoiceWindow = createContext<{
   state: VoiceState;
   settings: VoiceConfigState;
-  topbarFeedback: RefObject<HTMLDivElement | null>;
+  setMuted(id: VoiceIndicatorId, muted: boolean): Promise<void>;
   openSetup(): void;
 } | null>(null);
 
@@ -21,19 +20,35 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
   state: VoiceState | null; enabled: boolean; openSetup(): void; children: ReactNode;
 }) {
   const { config, update, error } = useVoiceConfig(enabled);
-  const topbarFeedback = useRef<HTMLDivElement>(null);
+  const { voice: { indicators } } = useUiConfig();
+  const [failure, setFailure] = useState<{ id: VoiceIndicatorId; muted: boolean; message: string } | null>(null);
+  const latestRequest = useRef(0);
+  const setMuted = useCallback(async (id: VoiceIndicatorId, muted: boolean) => {
+    const request = ++latestRequest.current;
+    const result = await api.setVoiceMuted(muted);
+    if (request === latestRequest.current) {
+      setFailure(result.ok ? null : { id, muted, message: result.error ?? "Could not change voice mute." });
+    }
+  }, []);
+  const mode = state?.mode;
+  const showFailure = failure && enabled && mode && mode !== "off" && indicators.includes(failure.id)
+    && (mode === "unavailable" || (mode === "muted") !== failure.muted);
+  // Retire the alert when any window achieves the requested state. A later unmute must
+  // not resurrect an old mute failure.
+  useEffect(() => {
+    if (failure && !showFailure) setFailure(null);
+  }, [failure, showFailure]);
   const value = useMemo(() => enabled && state ? {
-    state, settings: { config, update, error }, openSetup, topbarFeedback,
-  } : null, [enabled, state, config, update, error, openSetup]);
-  return <VoiceWindow.Provider value={value}>{children}</VoiceWindow.Provider>;
-}
-
-/** The title bar measures every child. Its error belongs below that row. */
-export function VoiceTopbarFeedback() {
-  const voice = useContext(VoiceWindow);
-  const ui = useUiConfig();
-  if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes("topbar")) return null;
-  return <div ref={voice.topbarFeedback} className="vi-topbar-feedback" />;
+    state, settings: { config, update, error }, openSetup, setMuted,
+  } : null, [enabled, state, config, update, error, openSetup, setMuted]);
+  return <VoiceWindow.Provider value={value}>
+    {children}
+    {showFailure && <div className="vi-window-feedback">
+      <span role="alert">{failure.message}</span>
+      <Tooltip label="Dismiss voice error"><button type="button" className="btn btn-ghost"
+        aria-label="Dismiss voice error" onClick={() => setFailure(null)}>Dismiss</button></Tooltip>
+    </div>}
+  </VoiceWindow.Provider>;
 }
 
 export function hotkeyShown(state: VoiceState, config: VoiceConfig | null): boolean {
@@ -100,29 +115,14 @@ export function useVoiceComposerHint(sessionId: string): string | null {
 export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Element | null {
   const voice = useContext(VoiceWindow);
   const ui = useUiConfig();
-  const [error, setError] = useState<{ muted: boolean; message: string } | null>(null);
-  const mode = voice?.state.mode;
-  const selected = ui.voice.indicators.includes(id);
-  // An unavailable listener cannot confirm an unmute. Any active window can confirm a retry.
-  const confirmedMute = mode === "unavailable" ? undefined : mode === "muted";
-  useEffect(() => {
-    if (!error) return;
-    if (!selected || !mode || mode === "off" || confirmedMute === error.muted) {
-      setError(null);
-    }
-  }, [confirmedMute, error, mode, selected]);
-  if (!voice || voice.state.mode === "off" || !selected) return null;
-  const { state, settings, openSetup } = voice;
+  if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes(id)) return null;
+  const { state, settings, openSetup, setMuted } = voice;
   const chord = state.mode !== "unavailable" && hotkeyShown(state, settings.config) ? settings.config?.hotkey : null;
-  const activate = async () => {
-    if (state.mode === "unavailable") return openSetup();
-    const muted = state.mode !== "muted";
-    const response = await api.setVoiceMuted(muted);
-    setError(response.ok ? null : { muted, message: response.error ?? "Could not change voice mute." });
+  const activate = () => {
+    if (state.mode === "unavailable") openSetup();
+    else void setMuted(id, state.mode !== "muted");
   };
-  const alert = error && <span className="settings-error" role="alert">{error.message}</span>;
-  return <><VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={() => void activate()} />
-    {id === "topbar" && alert ? voice.topbarFeedback.current && createPortal(alert, voice.topbarFeedback.current) : alert}</>;
+  return <VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={activate} />;
 }
 
 const previewModes = ["listening", "muted", "auto-muted", "push-to-talk"] as const;

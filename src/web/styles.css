@@ -43139,8 +43139,14 @@ button.vi { cursor: pointer; }
   stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
 }
 .vi-topbar .tb-label { color: var(--muted); }
-.vi-topbar-feedback:empty { display: none; }
-.vi-topbar-feedback { flex: none; padding: 6px 14px; overflow-wrap: anywhere; }
+.vi-window-feedback {
+  position: fixed; top: calc(var(--topbar-h, 0px) + 4px); right: 8px; z-index: 11;
+  display: flex; align-items: center; gap: 10px; max-width: min(40rem, calc(100% - 16px));
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); box-shadow: var(--shadow); color: var(--attention);
+  font: 12px/1.4 var(--sans); overflow-wrap: anywhere; -webkit-app-region: no-drag;
+}
+.vi-composer-hint { color: var(--muted); font: 12px/1.4 var(--sans); }
 .vi-topbar:hover { background: color-mix(in oklab, var(--vi) 12%, transparent); }
 .vi-status-line {
   display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px;

@@ -9,7 +9,7 @@ import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { VoiceIndicator, VoiceTopbarFeedback, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
+import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
@@ -5041,7 +5041,6 @@ export function App(): React.JSX.Element {
           setAway={setAway}
           buffered={buffered}
         />
-        <VoiceTopbarFeedback />
 
         <UpdateBanner
           snapshot={desktopUpdates.snapshot}

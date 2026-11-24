@@ -6034,8 +6034,8 @@ export function fileReviewByVoice(id: string, at: number): ReviewItem | null {
 export function markReviewWaitAttached(id: string): boolean {
   const result = openDb()
     .prepare(
-      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL, filed_by_voice_at = NULL
-        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
+      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL
+        WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL AND filed_by_voice_at IS NULL`,
     )
     .run(id);
   return Number(result.changes) > 0;

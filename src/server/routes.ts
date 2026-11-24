@@ -5386,7 +5386,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       return created(review);
     } catch (error) {
-      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal) return c.json({ error: error.message }, 409);
+      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal || error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
       return planFailure(c, error);
     }
   }
@@ -5665,10 +5665,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
     const ended = new AbortController();
     const release = openEndedRequests.add(() => ended.abort());
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS,
-      AbortSignal.any([ended.signal, c.req.raw.signal]), c.req.query("convertible") === "1").finally(release);
-    if (!review) return c.json({ error: "no such review" }, 404);
-    return c.json(review);
+    try {
+      const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS,
+        AbortSignal.any([ended.signal, c.req.raw.signal]), c.req.query("convertible") === "1");
+      if (!review) return c.json({ error: "no such review" }, 404);
+      return c.json(review);
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    } finally {
+      release();
+    }
   });
 
   app.post("/mcp/reviews/:id/detach", async (c) => {

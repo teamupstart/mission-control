@@ -7,9 +7,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { asyncInputReceipt } from "../src/shared/async-input.ts";
 import { requestInputReview } from "../src/shared/request-input.ts";
-import { app, home, pending, registry, reviews, token } from "./helpers/voice-http.ts";
+import { app, home, pending, post, registry, reviews, token } from "./helpers/voice-http.ts";
 
-test("the MCP child recovers its dropped receipt when the operator answers before the retry", async t => {
+test("the MCP child recovers its dropped receipt after a legacy duplicate and operator answer before the retry", async t => {
   const sessionId = "sdk:Will";
   const question = "Which build?";
   const ask = requestInputReview({ question });
@@ -17,6 +17,8 @@ test("the MCP child recovers its dropped receipt when the operator answers befor
   reviews.startContinuationRecovery((review, text, kind) =>
     pending.submitReviewContinuation(review.id, review.sessionId, text, kind).ok,
   );
+  let legacyResponse: Response | undefined;
+  let legacyPollStatus: number | undefined;
   let polls = 0;
   const receipts: string[] = [];
   const listener = getRequestListener(app.fetch);
@@ -28,6 +30,12 @@ test("the MCP child recovers its dropped receipt when the operator answers befor
     const result = await (await waiting).json();
     receipts.push(result.converted?.receipt);
     if (polls === 1) {
+      legacyResponse = await post("/mcp/reviews", {
+        env: {}, sessionId, cwd: home, ...ask, snoozable: true,
+      }, token);
+      legacyPollStatus = (await app.request(`/mcp/reviews/${row.id}/wait`, {
+        headers: { "x-harness-token": token }, signal: AbortSignal.timeout(1000),
+      })).status;
       reviews.resolve(row.id, "answer", "Use the nightly build.");
       return res.destroy();
     }
@@ -47,6 +55,9 @@ test("the MCP child recovers its dropped receipt when the operator answers befor
   }));
   const result = await client.callTool({ name: "request_input", arguments: { question } });
   const receipt = asyncInputReceipt(row);
+  assert.equal(legacyPollStatus, 409);
+  assert.equal(legacyResponse?.status, 409);
+  assert.match((await legacyResponse.json()).error, /already filed by voice/);
   assert.deepEqual(result.content, [{ type: "text", text: receipt }]);
   assert.deepEqual(receipts, [receipt, receipt]);
   assert.equal(polls, 2);

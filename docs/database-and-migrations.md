@@ -226,7 +226,7 @@ process with a parent watchdog and verifies that the helper leaves no timer behi
 Schema 55 adds the nullable `reviews.filed_by_voice_at` timestamp. Filing a blocking ask by
 voice sets the timestamp, message wait mode and MCP detach stamp together. A compatible
 child can recover its receipt on a later poll, including after daemon restart. Existing
-reviews start with a null timestamp. Reattaching an older child clears the timestamp.
+reviews start with a null timestamp. A legacy duplicate receives a conflict once voice has filed the ask, preserving the receipt and its answer delivery.
 The migration also marks existing reviews
 with `voice_conversion_blocked` because an older daemon may already have promised a
 blocking answer. Issuing a call response or receiving a poll without the conversion

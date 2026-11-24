@@ -87,6 +87,11 @@ export type ReviewContinuationKind = "answer" | "snooze-instruction";
 type ContinuationDelivery = (review: ReviewItem, text: string, kind: ReviewContinuationKind) => boolean;
 
 export class ReviewResolutionError extends Error {}
+class VoiceFiledCallRefusal extends ReviewResolutionError {
+  constructor(id: string) {
+    super(`Review ${id} was already filed by voice. Its answer is delivered as a message in the conversation.`);
+  }
+}
 export class OpenQuestionLimitError extends Error {}
 
 /**
@@ -587,8 +592,9 @@ export class ReviewManager {
    * a session blocked in that call would read as still working past its question.
    */
   private attachCall(review: ReviewItem): ReviewItem {
+    if (review.filedByVoiceAt != null) throw new VoiceFiledCallRefusal(review.id);
     if (!markReviewWaitAttached(review.id)) return review;
-    const { filedByVoiceAt: _voice, waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
+    const { waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
     this.registry.upsertReview(call);
     return call;
   }
@@ -900,6 +906,7 @@ export class ReviewManager {
    */
   wait(id: string, timeoutMs: number, signal?: AbortSignal, convertible = false): Promise<ReviewWaitResponse | null> {
     const current = this.registry.getReview(id);
+    if (!convertible && current?.filedByVoiceAt != null) return Promise.reject(new VoiceFiledCallRefusal(id));
     if (convertible) {
       // A settled ask can be absent from the registry after restart. Its answer already
       // belongs to the outbox, so the retry still returns the original filing receipt.

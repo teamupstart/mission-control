@@ -518,6 +518,46 @@ test("immediate retry after discarding a warm text-only reservation discloses on
   }
 });
 
+test("withdrawing uncertain speech reconsiders delegated and review senders after commit and restart", async () => {
+  const { delegatedLedger, reviewLedger, reserveSpokenTurn, noteOtherSend } = await import("../src/server/delivery-ledgers.ts");
+  const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+  const { reserveReviewDelivery } = await import("../src/server/review-deliveries.ts");
+  const { wrapReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+  const now = Date.now();
+  const words = wrapReviewEnvelope("answer", ["b99fa7da-f9dd-4bab-9e44-691bac441a4c"], "Use the new build");
+  for (const action of ["discard", "retry", "mark-sent", "typed-rival", "two-senders"] as const) {
+    const key = "withdraw-racing-speech-" + action;
+    const fake = fakeTranscript();
+    const conversation = fake.conversation(key);
+    const attempt = claimSpoken(key, words, words);
+    reserveSpokenTurn(conversation, words, words, false, attempt, now);
+    const ledger = action === "retry" ? reviewLedger : delegatedLedger;
+    if (action !== "retry") delegatedLedger.reserve(conversation, words, base => ({
+      ...base, controllerId: "sdk:controller", controllerName: "Controller",
+    }), now);
+    if (action === "retry" || action === "two-senders") assert.ok(reserveReviewDelivery(conversation, words, undefined, now));
+    if (action === "typed-rival") noteOtherSend(conversation, words, now);
+    assert.equal(ledger.rows(key)[0]?.contested, true);
+    const uncertain = db.markPendingTurnUncertain(attempt.id, attempt.revision, "interrupted", now)!;
+    assert.throws(() => db.inTransaction(() => {
+      db.clearPendingTurns(key);
+      throw new Error("rollback");
+    }), /rollback/);
+    assert.equal(ledger.rows(key)[0]?.contested, true, "a rolled-back withdrawal cannot release the contest");
+    if (action === "retry") assert.ok(db.retryPendingTurn(attempt.id, uncertain.revision, now));
+    else if (action === "mark-sent") assert.ok(db.resolveUncertainPendingTurn(attempt.id, uncertain.revision));
+    else db.clearPendingTurns(key);
+    if (action === "retry") {
+      db.closeDb();
+      forgetDeliveryBindingState();
+    }
+    const onlyRival = action === "discard" || action === "retry";
+    assert.equal(ledger.rows(key)[0]?.contested, !onlyRival, action);
+    const native = fake.append("native-rival", words, now + 1);
+    assert.equal(ledger.bound(conversation, [native]).rows.has(native.id), onlyRival, action);
+  }
+});
+
 test("abandoning an uncertain native-ID attempt preserves its exact-match disclosure", async () => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const key = "retain-native-attempt";
@@ -565,15 +605,15 @@ test("confirmed and abandoned SDK reservations expire only after a verified nati
   }
   db.recoverSendingPendingTurns(now);
   const later = now + DELIVERY_LAG_MS;
-  assert.equal(pruneExpiredSpokenTurns(later - 1, () => []), 0);
+  assert.equal(await pruneExpiredSpokenTurns(later - 1, () => []), 0);
   db.closeDb();
   spokenLedger.forgetCaches();
   db.recoverSendingPendingTurns(later);
   for (const kind of cases) assert.equal(spokenLedger.rows("sdk-expiry-" + kind).length, 1);
-  assert.equal(pruneExpiredSpokenTurns(later + 60_000, key =>
+  assert.equal(await pruneExpiredSpokenTurns(later + 60_000, key =>
     key.startsWith("sdk-expiry-") && !key.endsWith("-previously-read") && !key.endsWith("-unavailable") ?
       [transcript.conversation(key).transcript] : []), 4);
-  pruneExpiredSpokenTurns(later + 60_000, () => [], now + 1);
+  await pruneExpiredSpokenTurns(later + 60_000, () => [], now + 1);
   for (const kind of cases) {
     const key = "sdk-expiry-" + kind;
     const retained = ["previously-read", "unread", "confirmed", "confirmed-unavailable", "uncertain"].includes(kind);
@@ -619,17 +659,17 @@ test("confirmed text-only payloads expire after the binding window while native 
   spokenLedger.forgetCaches();
   const lookup = (candidate: string) => candidate === key ? [conversation.transcript] : [];
   assert.equal(db.loadSpokenTurns(key).find(row => row.outboxTurnId === "unopened")?.messageId, null);
-  assert.equal(pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS - 1, lookup), 0);
+  assert.equal(await pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS - 1, lookup), 0);
   const d = db.openDb();
   d.exec(`CREATE TEMP TRIGGER refuse_text_binding BEFORE UPDATE OF message_id ON session_spoken_turns
     WHEN OLD.outbox_turn_id = 'unopened' BEGIN SELECT RAISE(ABORT, 'binding refused'); END`);
   try {
-    pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS + 10, lookup, confirmed + 1);
+    await pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS + 10, lookup, confirmed + 1);
     assert.ok(db.loadSpokenTurns(key).some(row => row.outboxTurnId === "unopened"));
   } finally {
     d.exec("DROP TRIGGER refuse_text_binding");
   }
-  assert.equal(pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS + 10, lookup), 2);
+  assert.equal(await pruneExpiredSpokenTurns(confirmed + DELIVERY_LAG_MS + 10, lookup), 2);
   const surviving = spokenLedger.rows(key);
   assert.deepEqual(surviving.map(r => [r.outboxTurnId, r.messageId]), [["bound", "bound"], ["unopened", "unopened"], ["recent", null]]);
   assert.ok(surviving.every(row => row.received.includes("One unseen report.")));
@@ -685,7 +725,7 @@ test("a failed SDK receipt write leaves the exact disclosure readable and cleanu
     try {
       assert.equal(spokenLedger.bound(convo, [native]).rows.get(native.id)?.received, payload);
       assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, null);
-      assert.equal(pruneExpiredSpokenTurns(now + 2 * DELIVERY_LAG_MS, k => k === key ? [convo.transcript] : []), 0);
+      assert.equal(await pruneExpiredSpokenTurns(now + 2 * DELIVERY_LAG_MS, k => k === key ? [convo.transcript] : []), 0);
       assert.equal(db.loadSpokenTurns(key)[0]?.received, payload);
       assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, null);
     } finally {
@@ -713,10 +753,10 @@ test("cleanup retries an unreadable prefix before deciding whether a matching te
   const native = conversation.transcript!;
   const unavailable = { ...native, read: { ...native.read, boundary: () => null } };
   const expiry = now + 8 * DELIVERY_LAG_MS;
-  pruneExpiredSpokenTurns(expiry, k => k === key ? [unavailable] : [], now + 1);
+  await pruneExpiredSpokenTurns(expiry, k => k === key ? [unavailable] : [], now + 1);
   assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
-  pruneExpiredSpokenTurns(expiry, k => k === key ? [native] : [], now + 1);
+  await pruneExpiredSpokenTurns(expiry, k => k === key ? [native] : [], now + 1);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, message.id);
 });
 
@@ -833,9 +873,9 @@ test("confirmed text-only payloads in unavailable transcripts expire at the orph
       db.clearPendingTurns(key);
     }
   }
-  pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 1, () => [], now - 1);
+  await pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 1, () => [], now - 1);
   assert.equal(spokenLedger.rows(terminalKey).length, 1);
-  pruneExpiredSpokenTurns(now + 7 * DELIVERY_LAG_MS + 1, () => [], now + 1);
+  await pruneExpiredSpokenTurns(now + 7 * DELIVERY_LAG_MS + 1, () => [], now + 1);
   assert.deepEqual(spokenLedger.rows(terminalKey), []);
   assert.equal(spokenLedger.rows(sdkKey).length, 1);
 });
@@ -856,10 +896,10 @@ test("cleanup retains spoken payloads through missing, unreadable and incomplete
   const read = conversation.transcript!.read;
   for (const unavailable of [null, { ...read, after: () => { throw new Error("disconnected"); } },
     { ...read, after: () => ({ messages: [], start: 0, end: 0, atEnd: true }) }]) {
-    pruneExpiredSpokenTurns(now, k => k === key && unavailable ? [{ path: "fake", read: unavailable }] : []);
+    await pruneExpiredSpokenTurns(now, k => k === key && unavailable ? [{ path: "fake", read: unavailable }] : []);
     assert.equal(db.loadSpokenTurns(key)[0]?.received, words);
   }
-  pruneExpiredSpokenTurns(now, k => k === key ? [conversation.transcript] : []);
+  await pruneExpiredSpokenTurns(now, k => k === key ? [conversation.transcript] : []);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, message.ts);
   assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, words);
 });
@@ -897,11 +937,11 @@ test("cleanup recovers an SDK receipt moved before its handoff offset by transcr
       if (when === "during") renameSync(replacement, path);
       return page;
     });
-    assert.equal(pruneExpiredSpokenTurns(expiry, lookup), 0, when);
+    assert.equal(await pruneExpiredSpokenTurns(expiry, lookup), 0, when);
     scan.mock.restore();
     if (when === "during") {
       assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, null);
-      assert.equal(pruneExpiredSpokenTurns(expiry, lookup), 0);
+      assert.equal(await pruneExpiredSpokenTurns(expiry, lookup), 0);
     }
     assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now, when);
   }
@@ -923,10 +963,10 @@ test("cleanup distinguishes a verified empty transcript from a failed read at by
   const read = { ...claudeTranscript.messages!, snapshot: () => ({ size: 0, version: "stable" }) };
   const lookup = (k: string) => k === key ? [{ path, read }] : [];
   // The size probes report zero while the actual native reader cannot open the path.
-  assert.equal(pruneExpiredSpokenTurns(now, lookup), 0);
+  assert.equal(await pruneExpiredSpokenTurns(now, lookup), 0);
   assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
   writeFileSync(path, "");
-  assert.equal(pruneExpiredSpokenTurns(now, lookup), 1);
+  assert.equal(await pruneExpiredSpokenTurns(now, lookup), 1);
   assert.equal(db.loadSpokenTurns(key).length, 0);
 });
 
@@ -958,7 +998,7 @@ test("cleanup finds an evicted SDK conversation by its persisted binding and ver
   const registry = new Registry();
   registry.applyDiscovery([]);
   assert.equal(registry.getSession("sdk:archived"), undefined);
-  registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
+  await registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now);
 });
 
@@ -997,7 +1037,7 @@ test("cleanup checks live, persisted and handoff paths when a runtime moves its 
       registry.registerSdkSession({ id, agent: "claude", name: key, cwd, agentSessionId: key });
       registry.applyDriverEvent(id, { kind: "bound", agentSessionId: key, transcriptPath: current, pid: null, modelId: null });
     }
-    registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
+    await registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
     assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now, location);
   }
 });
@@ -1041,9 +1081,11 @@ test("after eviction cleanup searches later handoffs in the same conversation be
   mkdirSync(join(dir, "-archived"));
   writeFileSync(join(dir, "-archived", key + ".jsonl"), "");
   renameSync(later, later + ".away");
-  registry.pruneExpiredSpokenTurns(expireAt);
+  await registry.pruneExpiredSpokenTurns(expireAt);
   assert.ok(db.loadSpokenTurns(key).some(row => row.id === moved.id), "a readable default cannot stand in for a missing custom file");
   renameSync(later + ".away", later);
+  // Make both custom paths fresh reads. An unchanged SDK-only file can reuse its last scan.
+  appendFileSync(old, "\n");
   // The writer can append a receipt to an already scanned file while the sweep reads a sibling.
   let firstPath = "";
   let appended = false;
@@ -1059,16 +1101,59 @@ test("after eviction cleanup searches later handoffs in the same conversation be
     }
     return after(...args);
   });
-  registry.pruneExpiredSpokenTurns(expireAt);
+  await registry.pruneExpiredSpokenTurns(expireAt);
   walk.mock.restore();
   assert.ok(appended);
   assert.ok(db.loadSpokenTurns(key).some(row => row.id === duringSweep.id), "a changed file defers deletion");
-  registry.pruneExpiredSpokenTurns(expireAt);
+  await registry.pruneExpiredSpokenTurns(expireAt);
   const rows = db.loadSpokenTurns(key);
   assert.equal(rows.find(row => row.id === moved.id)?.messageTs, now, "the later custom file contains this UUID");
   assert.equal(rows.find(row => row.id === duringSweep.id)?.messageTs, now, "the next sweep observes the concurrent append");
   assert.equal(rows.some(row => row.id === absent.id), false, "a UUID in another conversation cannot preserve this row");
   assert.ok(rows.some(row => row.id === recent.id), "the later handoff itself is still inside its receipt window");
+});
+
+test("hourly SDK cleanup yields between pages and reuses only complete scans of the same revision and receipt IDs", async t => {
+  const { reserveSpokenTurn, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const key = "paged-cleanup";
+  const fake = fakeTranscript();
+  const conversation = fake.conversation(key);
+  const source = conversation.transcript!;
+  const now = Date.now();
+  const reserve = (words: string) => {
+    const attempt = claimSpoken(key, words, words);
+    const row = reserveSpokenTurn(conversation, words, words, true, attempt, now);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+    return row;
+  };
+  reserve("unobserved SDK handoff");
+  for (let n = 0; n < 160; n++) fake.append("other-" + n, "unrelated record", now);
+  const original = source.read.after.bind(source.read);
+  let pages = 0;
+  let allowedNextPage = true;
+  t.mock.method(source.read, "after", (...args: Parameters<typeof original>) => {
+    assert.ok(allowedNextPage, "the daemon ran another event between pages");
+    pages++;
+    allowedNextPage = false;
+    setImmediate(() => { allowedNextPage = true; });
+    return original(...args);
+  });
+  let missingSibling = true;
+  const lookup = (candidate: string) => candidate !== key ? [] : missingSibling ? [source, null] : [source];
+  const sweep = () => pruneExpiredSpokenTurns(now + 2 * DELIVERY_LAG_MS, lookup);
+  assert.equal(await sweep(), 0);
+  assert.equal(pages, 4);
+  assert.equal(await sweep(), 0);
+  assert.equal(pages, 4, "a missing sibling did not rescan unchanged history");
+  const later = reserve("a newly eligible SDK handoff");
+  await sweep();
+  assert.equal(pages, 8, "a new UUID gets its own scan");
+  fake.append(later.id, later.received, now);
+  missingSibling = false;
+  assert.equal(await sweep(), 1);
+  assert.equal(pages, 12);
+  assert.deepEqual(db.loadSpokenTurns(key).map(row => [row.id, row.messageTs]), [[later.id, now]]);
 });
 
 test("cleanup reopens an evicted terminal's native transcript before expiring its unread disclosure", async t => {
@@ -1101,7 +1186,7 @@ test("cleanup reopens an evicted terminal's native transcript before expiring it
     spokenLedger.forgetCaches();
     const registry = new Registry();
     registry.applyDiscovery([]);
-    registry.pruneExpiredSpokenTurns(now + 8 * DELIVERY_LAG_MS, now + DELIVERY_LAG_MS);
+    await registry.pruneExpiredSpokenTurns(now + 8 * DELIVERY_LAG_MS, now + DELIVERY_LAG_MS);
     const archived = db.loadSpokenTurns(key)[0];
     assert.equal(archived?.messageId, "native-" + key);
     assert.equal(archived?.received, payload);

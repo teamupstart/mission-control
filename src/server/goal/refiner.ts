@@ -94,6 +94,7 @@ export function startGoalRefiner(registry: Registry): () => void {
    * holding every orphan the table ever accumulated.
    */
   let lastPrune = 0;
+  let spokenPrune: AbortController | undefined;
   const limit = createLimiter(GOAL_CONCURRENCY);
   const debounce = new EvaluationDebounce(GOAL_REFRESH_MS);
   /**
@@ -186,11 +187,11 @@ export function startGoalRefiner(registry: Registry): () => void {
         } catch (err) {
           console.error("[goal] review-message delivery prune failed:", err instanceof Error ? err.message : String(err));
         }
-        try {
-          const spoken = registry.pruneExpiredSpokenTurns(now, now - GOAL_PRUNE_AGE_MS);
-          if (spoken > 0) console.log(`[voice] pruned ${spoken} expired spoken reservation(s)`);
-        } catch (err) {
-          console.error("[voice] spoken reservation prune failed:", err instanceof Error ? err.message : String(err));
+        if (!spokenPrune) {
+          spokenPrune = new AbortController();
+          void registry.pruneExpiredSpokenTurns(now, now - GOAL_PRUNE_AGE_MS, spokenPrune.signal).then(count => {
+            if (count > 0) console.log(`[voice] pruned ${count} expired spoken reservation(s)`);
+          }).catch(err => console.error("[voice] spoken reservation prune failed:", err)).finally(() => { spokenPrune = undefined; });
         }
         // And the launch standing-instruction snapshots, which accumulate identically -
         // one row per session that ever received one, up to 8,000 characters each. Same
@@ -217,6 +218,7 @@ export function startGoalRefiner(registry: Registry): () => void {
   void tick();
   return () => {
     stopped = true;
+    spokenPrune?.abort();
     if (timer) clearTimeout(timer);
   };
 }

@@ -159,7 +159,7 @@ import type {
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
-import { listSdkSessions, type SdkSessionRow } from "./sdk/store.ts";
+import { listSdkSessions } from "./sdk/store.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
 import { hooksFor, sessionMessages, transcriptFor } from "./harness/index.ts";
@@ -9590,9 +9590,8 @@ export class Registry extends EventEmitter {
     return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
   }
 
-  pruneExpiredSpokenTurns(now: number, unavailableBefore?: number): number {
+  async pruneExpiredSpokenTurns(now: number, unavailableBefore?: number, signal?: AbortSignal): Promise<number> {
     if (!this.sweptSessions) return 0;
-    let persisted: SdkSessionRow[] | undefined;
     return pruneExpiredSpokenTurns(now, (key, locators) => {
       // A runtime can move the native file and leave a readable copy behind. Look in every
       // known location for this exact conversation before absence can retire an unseen UUID.
@@ -9602,9 +9601,8 @@ export class Registry extends EventEmitter {
         if (session.agentSessionId === key) add(sessionMessages(session));
       }
       const hasLiveTranscript = [...sources.values()].some(Boolean);
-      persisted ??= listSdkSessions();
-      for (const row of persisted) {
-        if (row.agentSessionId !== key || !row.agent) continue;
+      for (const row of listSdkSessions(key)) {
+        if (!row.agent) continue;
         const fromSdk = sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,
           agentSessionId: key, startedAt: row.createdAt, transcriptPath: null });
         if (fromSdk || !hasLiveTranscript) add(fromSdk);
@@ -9620,7 +9618,7 @@ export class Registry extends EventEmitter {
         if (located || !locator.transcriptPath || !read) add(located);
       }
       return [...sources.values()];
-    }, unavailableBefore);
+    }, unavailableBefore, signal);
   }
 
   /**

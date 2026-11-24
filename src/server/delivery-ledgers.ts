@@ -1,3 +1,4 @@
+import { setImmediate as yieldToDaemon } from "node:timers/promises";
 import { statSync } from "node:fs";
 import type { PendingTurn } from "@shared/types.ts";
 import {
@@ -22,6 +23,7 @@ import {
   moveSpokenTurns,
   observeSpokenClientReceipt,
   recordSpokenHandoff,
+  processSpokenReleases,
   spokenTranscriptLocators,
   takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
@@ -207,52 +209,91 @@ export function reserveSpokenHandoff(conversation: SpokenConversation, turn: Pen
 }
 
 type SpokenTranscript = NonNullable<DeliveryConversation["transcript"]>;
-function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscript,
-  now: number): { transcript: SpokenTranscript; version: string } | "unavailable" | "retry" {
+type ScanResult = { transcript: SpokenTranscript; version: string | null; complete: boolean } | "retry";
+
+// Only exact SDK identities can reuse a negative scan. A text binding also depends on other senders.
+const sdkScans = new Map<string, { version: string; ids: Set<string> }>();
+
+async function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscript, now: number, signal?: AbortSignal): Promise<ScanResult> {
   const snapshot = transcript.read.snapshot?.(transcript.path);
-  if (!snapshot) return "unavailable";
+  if (!snapshot) return { transcript, version: null, complete: false };
+  const rows = spokenLedger.rows(noteKey);
+  const textPending = rows.some(row => row.messageId === null);
+  const ids = rows.filter(row => row.messageId === row.id && row.messageTs === null).map(row => row.id);
+  const cacheKey = JSON.stringify([noteKey, transcript.path]);
+  const cached = sdkScans.get(cacheKey);
+  const verified = { transcript, version: snapshot.version, complete: true };
+  if (!textPending && cached?.version === snapshot.version && ids.every(id => cached.ids.has(id))) return verified;
   try {
-    spokenLedger.reconcileBeforePrune(noteKey, transcript, now);
-    // A rewritten native transcript can put a client UUID before the offset recorded at handoff.
-    let from = 0;
-    for (;;) {
+    if (textPending) await spokenLedger.reconcileBeforePrune(noteKey, transcript, now, snapshot.version, signal);
+    // A rewritten transcript can put an SDK UUID before its handoff offset. Exact IDs
+    // can be observed from each page without starting another whole-file binding walk.
+    for (let from = 0;;) {
+      await yieldToDaemon();
+      if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
       const page = transcript.read.after(transcript.path, from, 50, true);
-      spokenLedger.bound({ key: noteKey, transcript }, page.messages, now);
+      if (page.start !== from || transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
+      spokenLedger.bound({ key: noteKey, transcript: null }, page.messages, now);
       if (!spokenLedger.flushClientObservations(noteKey)) return "retry";
-      if (page.start !== from) return "retry";
       if (page.atEnd) {
-        return page.end === snapshot.size ? { transcript, version: snapshot.version } : "retry";
+        if (page.end !== snapshot.size) return "retry";
+        if (!textPending) {
+          sdkScans.delete(cacheKey);
+          if (sdkScans.size >= 32) sdkScans.delete(sdkScans.keys().next().value!);
+          sdkScans.set(cacheKey, { version: snapshot.version, ids: new Set(ids) });
+        }
+        return verified;
       }
       if (page.end <= from || page.end >= snapshot.size) return "retry";
       from = page.end;
     }
   } catch (error) {
     console.warn("[voice] Could not reconcile spoken receipts:", error instanceof Error ? error.message : String(error));
-    return error instanceof Error && "path" in error && error.path === transcript.path ? "unavailable" : "retry";
+    return error instanceof Error && "path" in error && error.path === transcript.path ? { ...verified, complete: false } : "retry";
   }
 }
 
 /** Final transcript pass for abandoned attempts and confirmed deliveries still awaiting a native match. */
-export function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key: string, locators: SpokenTranscriptLocator[]) => DeliveryConversation["transcript"][],
-  unavailableBefore?: number): number {
+export async function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key: string, locators: SpokenTranscriptLocator[]) => DeliveryConversation["transcript"][],
+  unavailableBefore?: number, signal?: AbortSignal): Promise<number> {
   const cutoff = now - DELIVERY_LAG_MS;
   let removed = 0;
   spokenLedger.flushClientObservations();
   for (const key of expiredSpokenConversationKeys(cutoff)) {
+    if (signal?.aborted) break;
     if (!spokenLedger.flushClientObservations(key)) continue;
-    const scans = transcriptsFor(key, spokenTranscriptLocators(key)).map(transcript =>
-      transcript ? reconcileSpokenTurns(key, transcript, now) : "unavailable");
-    // A receipt can arrive in the first file as we scan the last one. All completed
-    // scans must still describe their files before either expiry policy can use them.
-    if (scans.some(scan => scan === "retry" || (typeof scan === "object" &&
-      scan.transcript.read.snapshot?.(scan.transcript.path)?.version !== scan.version))) continue;
-    if (scans.length && !scans.includes("unavailable")) removed += deleteExpiredSpokenReservations(key, cutoff, cutoff);
+    const candidates = spokenLedger.rows(key).map(row => row.id);
+    const sources = transcriptsFor(key, spokenTranscriptLocators(key));
+    const scans: ScanResult[] = [];
+    for (const source of sources) {
+      if (source) scans.push(await reconcileSpokenTurns(key, source, now, signal));
+      if (signal?.aborted) return removed;
+    }
+    // Both the files and the conversation's locators can change while a sibling scan yields.
+    const paths = new Set(sources.map(s => s?.path));
+    const current = new Set(transcriptsFor(key, spokenTranscriptLocators(key)).map(s => s?.path));
+    if (current.size !== paths.size || [...current].some(path => !paths.has(path))) continue;
+    if (scans.some(scan => scan === "retry" ||
+      (scan.transcript.read.snapshot?.(scan.transcript.path)?.version ?? null) !== scan.version)) continue;
+    if (scans.length && scans.length === sources.length && scans.every(scan => scan !== "retry" && scan.complete)) removed += deleteExpiredSpokenReservations(key, candidates, cutoff, cutoff);
     else if (unavailableBefore !== undefined) {
-      // Only confirmed, unbound text expires without a readable file. Exact SDK receipts can still arrive.
-      removed += deleteExpiredSpokenReservations(key, null, Math.min(cutoff, unavailableBefore));
+      removed += deleteExpiredSpokenReservations(key, candidates, null, Math.min(cutoff, unavailableBefore));
     }
   }
   return removed;
 }
 
-registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger]);
+registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger], () => {
+  try {
+    processSpokenReleases(rows => {
+      for (const { noteKey, fingerprint } of rows) {
+        spokenLedger.forgetConversation(noteKey);
+        spokenLedger.reconsider(noteKey, fingerprint);
+      }
+    });
+  } catch (error) {
+    // Contest writes roll back together with the release acknowledgement.
+    forgetDeliveryBindingState();
+    throw error;
+  }
+});

@@ -1,3 +1,4 @@
+import { setImmediate as yieldToDaemon } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import type { TranscriptMessage } from "@shared/types.ts";
 import {
@@ -187,6 +188,7 @@ function recentSends(noteKey: string, fingerprint: string, now: number): OtherSe
  * the turn.
  */
 let ledgers: Array<DeliveryLedger<BindableDelivery>> = [];
+let beforeLedgerRead: (() => void) | undefined;
 
 /**
  * Name the ledgers that make up the claim space. Called once, by `delivery-ledgers.ts`, which
@@ -194,7 +196,8 @@ let ledgers: Array<DeliveryLedger<BindableDelivery>> = [];
  * complete before any reservation, binding or other send consults it.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each ledger has its own row type
-export function registerDeliveryLedgers(list: ReadonlyArray<DeliveryLedger<any>>): void {
+export function registerDeliveryLedgers(list: ReadonlyArray<DeliveryLedger<any>>, beforeRead: () => void): void {
+  beforeLedgerRead = beforeRead;
   ledgers = [...list] as Array<DeliveryLedger<BindableDelivery>>;
 }
 
@@ -217,9 +220,9 @@ function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
 type SpokenCandidate = (row: BindableDelivery) => boolean;
 
 /** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
-function bindAll(conversation: DeliveryConversation, now: number, requireReadable = false, candidate?: SpokenCandidate): void {
+function bindAll(conversation: DeliveryConversation, now: number, candidate?: SpokenCandidate): void {
   if (!conversation.transcript) return;
-  for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, requireReadable, candidate);
+  for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, { candidate });
 }
 
 /** What `withdrawOtherSend` needs to take one send back. */
@@ -332,6 +335,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   ) {}
 
   rows(noteKey: string): Row[] {
+    beforeLedgerRead?.();
     for (const key of this.store.takeInvalidatedKeys?.() ?? []) this.forgetConversation(key);
     let rows = this.cache.get(noteKey);
     if (!rows) {
@@ -461,7 +465,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   }
 
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
-  bindLanded(noteKey: string, transcript: SessionMessages, now: number, requireReadable = false, candidate?: SpokenCandidate): void {
+  bindLanded(noteKey: string, transcript: SessionMessages, now: number,
+    options: { candidate?: SpokenCandidate; pruneRow?: string } = {}): boolean {
     const rows = this.rows(noteKey);
     let version: string | undefined;
     if (rows.length && this.store.textBoundary) {
@@ -481,14 +486,25 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       }
     }
     const pending = rows.filter(row => row.messageId === null && !row.contested &&
-      (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !candidate || candidate(row)));
-    if (pending.length) this.bindPending(pending, transcript, now, requireReadable, version);
+      (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !options.candidate || options.candidate(row)) &&
+      (options.pruneRow === undefined || row.id === options.pruneRow));
+    return !pending.length || this.bindPending(pending, transcript, now, options.pruneRow !== undefined, version);
   }
 
   /** Recheck persisted rows before deletion, even if an earlier best-effort read found nothing. */
-  reconcileBeforePrune(noteKey: string, transcript: SessionMessages, now: number): void {
+  async reconcileBeforePrune(noteKey: string, transcript: SessionMessages, now: number, version: string, signal?: AbortSignal): Promise<void> {
     this.forgetConversation(noteKey);
-    bindAll({ key: noteKey, transcript }, now, true);
+    for (const ledger of ledgers) {
+      for (const row of ledger.rows(noteKey).filter(row => !row.contested && row.messageId === null)) {
+        // Re-enter the normal binding policy with fresh row ownership and claimed IDs after each yield.
+        do {
+          await yieldToDaemon();
+          if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== version) {
+            throw new Error("Spoken cleanup interrupted or transcript changed");
+          }
+        } while (!ledger.bindLanded(noteKey, transcript, now, { pruneRow: row.id }));
+      }
+    }
   }
 
   /** An open feed can finish a deferred binding even if the native writer has gone quiet. */
@@ -498,7 +514,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     const pending = this.rows(conversation.key).filter(row => this.deferredBindings.has(row.id));
     if (pending.length) {
       const fingerprints = new Set(pending.map(row => row.fingerprint));
-      bindAll(conversation, Date.now(), false, row => fingerprints.has(row.fingerprint));
+      bindAll(conversation, Date.now(), row => fingerprints.has(row.fingerprint));
     }
   }
 
@@ -564,7 +580,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Walk the transcript forward from each unbound row's offset, in reservation order, and bind
    * the row to the first user turn with its words that no earlier row has claimed.
    */
-  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, version?: string): void {
+  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, version?: string): boolean {
     // Claimed by id only: one walk reads ids consistently, and a timestamp two identical turns
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
@@ -597,6 +613,10 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           }
           if (found || closed || page.atEnd || page.end <= from) break;
           from = page.end;
+          if (requireReadable) {
+            this.scanned.set(row.id, from);
+            return false;
+          }
         }
       } catch (err) {
         if (this.store.textBoundary) this.deferredBindings.add(row.id);
@@ -631,6 +651,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       this.scanned.delete(row.id);
       claimed.add(found.id);
     }
+    return true;
   }
 
   /**
@@ -702,7 +723,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // candidate still searches forward from handoff, so a later visible copy cannot
     // steal an earlier native turn off screen. Reservations and pruning reconcile all rows.
     let times: Map<string, number[]> | undefined;
-    bindAll(conversation, now, false, row => {
+    bindAll(conversation, now, row => {
       if (!times) {
         times = new Map();
         const claimed = claimedTurns(conversation.key);

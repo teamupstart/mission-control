@@ -265,7 +265,8 @@ restart. If the file appeared after handoff, the harness can locate it by the na
 ID and working directory. Live bindings and persisted SDK sessions also cover older reservations.
 Cleanup checks the distinct transcript locations from every saved handoff in that conversation,
 including newer handoffs still inside their receipt window. Before expiring an unobserved SDK
-payload it verifies that all scanned files still have the revisions it read. A missing,
+payload it yields between pages, then rechecks the saved locations, file revisions and eligible rows.
+An unchanged SDK-only file can reuse a complete scan for the same receipt IDs. A missing,
 unreadable or changing file is retried later.
 Pending uncertain attempts remain available for the operator to resolve.
 
@@ -276,5 +277,8 @@ native message ID. For an existing file, the handoff hashes through its captured
 If the writer appends during the read, a second matching hash through that same offset
 confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
+The same transaction records the conversation and fingerprint in `session_spoken_releases`.
+The next ledger read rechecks competing deliveries and acknowledges that release atomically,
+including after restart. Marking a turn sent preserves uncertainty about who wrote those words.
 Startup also removes orphan payloads left by earlier builds. An older file of unknown
 size cannot establish which turn was spoken.

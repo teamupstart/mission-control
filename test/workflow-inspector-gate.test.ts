@@ -3474,6 +3474,41 @@ test("legacy recovery rechecks the durable head after a concurrent change during
   }
 });
 
+test("legacy recovery rechecks the open PR and its source after GitHub snapshots branch activity", async () => {
+  const seeded = await spentInspectorGrant();
+  const { store, manager, ids, key } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+    for (const changed of [null, { ...pull, state: "closed" }, { ...pull, number: pull.number + 1 },
+      { ...pull, head: { ...pull.head, sha: "newer" } }, { ...pull, head: { ...pull.head, ref: "another-branch" } },
+      { ...pull, head: { ...pull.head, repo: { full_name: "another/fork" } } }]) {
+      writeFileSync(recoveryPr, JSON.stringify(pull));
+      writeFileSync(holdActivity, "");
+      const pending = recover();
+      let response: Response;
+      try {
+        await waitFor(() => existsSync(activityPending), "the activity snapshot was never taken");
+        if (changed) writeFileSync(recoveryPr, JSON.stringify(changed));
+        else rmSync(recoveryPr);
+      } finally {
+        rmSync(holdActivity, { force: true });
+        response = await pending;
+        rmSync(activityPending, { force: true });
+      }
+      assert.equal(response.status, 409);
+      await manager.settleBackgroundWork();
+      assert.equal(getInspectorPr(key)?.observedHeadSha, "current");
+      assert.deepEqual(store.getRun(ids.run), before);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+  } finally { await manager.stop(); }
+});
+
 test("a push after the legacy recovery receipt cannot spend the replacement on an unverified head", async () => {
   let advanceBranch = false;
   const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {

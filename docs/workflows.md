@@ -2811,7 +2811,8 @@ that interval, or the Inspector ledger can retain the head and timestamp of its 
 For explicit recovery the daemon also reads the open PR from GitHub, resolves its source
 repository and ref (including forks), and checks the latest branch activity across all
 update types. Its resulting head must match the replacement, and its timestamp must fall
-unambiguously before the grant. A push back to an earlier reviewed head after the grant
+unambiguously before the grant. After reading activity, the daemon reads the PR again to
+confirm it is still open on the same source repository, branch and head. A push back to an earlier reviewed head after the grant
 therefore keeps the mismatch blocked. Recovery also stays blocked when the historical
 observation or branch history is unavailable. The recovery audit includes the source ref,
 activity ID, resulting head and time alongside the stored observation and round-limit event.

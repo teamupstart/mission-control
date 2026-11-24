@@ -251,11 +251,16 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   };
   try {
     const base = `${pr.owner}/${pr.repo}`;
-    const pull = recoveryPullRequest.safeParse(await read(`repos/${base}/pulls/${pr.number}`));
-    if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()
-        || pull.data.head.sha !== expectedHead) return null;
-    const repository = pull.data.head.repo.full_name;
-    const ref = `refs/heads/${pull.data.head.ref}`;
+    const readSource = async () => {
+      const pull = recoveryPullRequest.safeParse(await read(`repos/${base}/pulls/${pr.number}`));
+      if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()
+          || pull.data.head.sha !== expectedHead) return null;
+      return pull.data.head;
+    };
+    const source = await readSource();
+    if (!source) return null;
+    const repository = source.repo.full_name;
+    const ref = `refs/heads/${source.ref}`;
     // No activity_type filter: force pushes, merges and branch recreation also move the tip.
     const query = new URLSearchParams({ ref, direction: "desc", per_page: "1" });
     const rows = z.tuple([z.object({
@@ -266,6 +271,9 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
     const [activity] = rows.data;
     const timestamp = activity.timestamp ?? activity.pushed_at;
     if (!timestamp || (activity.pushed_at && activity.timestamp && activity.pushed_at !== activity.timestamp)) return null;
+    // GitHub can snapshot the activity before a push or a PR closure reaches the ledger.
+    const current = await readSource();
+    if (!current || current.repo.full_name.toLowerCase() !== repository.toLowerCase() || current.ref !== source.ref) return null;
     return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: activity.id, changedAt: Date.parse(timestamp) };
   } catch {
     return null;

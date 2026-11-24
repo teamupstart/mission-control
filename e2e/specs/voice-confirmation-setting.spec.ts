@@ -70,20 +70,21 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
       identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
     } } })).ok()).toBe(true);
+    await page.clock.install({ time: new Date(Date.now() + 120_000) });
     await page.goto("about:blank");
     await page.goto(daemon.baseURL + "/#/voice/" + placement);
     const card = page.getByRole("status");
     await say(daemon, "Steve, inspect the long window", { id: "long-window" });
     await expect(card).toContainText("inspect the long window");
-    await page.clock.install();
-    await page.clock.pauseAt(new Date(Date.now() + 500));
+    await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
+    await page.reload();
+    await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
+    await page.clock.pauseAt(await page.evaluate(() => new Date(Date.now() + 500).toISOString()));
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 3 } } })).ok()).toBe(true);
     await say(daemon, "Steve, inspect the short window");
     await expect(card).toContainText("inspect the short window");
     await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
-    // Advance only one countdown tick past the short deadline, before unrelated dashboard polling.
-    await page.clock.setSystemTime(new Date(Date.now() + 5000));
-    await page.clock.runFor(101);
+    await page.clock.fastForward(3500);
     await expect(card).toContainText("inspect the long window", { timeout: 1500 });
     const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/long-window/cancel"));
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -144,6 +145,37 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     await expect(page).toHaveURL(daemon.baseURL + "/#/settings/voice");
   });
 }
+
+test("standalone held messages can be switched and recalled while a new countdown takes priority", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const will = await runningAgent(page, daemon, "Will");
+  const question = "Which release needs checking?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", { headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question } })).ok()).toBe(true);
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "popover" } })).ok()).toBe(true);
+  await page.goto(daemon.baseURL + "/#/voice/popover");
+  const card = page.getByRole("status");
+  const choose = page.getByRole("combobox", { name: "Voice message" });
+  for (const id of ["first", "second"]) {
+    await say(daemon, "Will, check the " + id + " release", { id });
+    await card.getByRole("button", { name: "Send now" }).click();
+    await expect(card).toContainText("Held for Will");
+  }
+  await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 3000 });
+  await choose.selectOption("first");
+  await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
+  await captureCard(page.locator(".voice-card-surface"), "standalone-held-switcher");
+  await say(daemon, "Will, another countdown", { id: "third" });
+  await expect(card).toContainText("another countdown");
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(choose).toHaveValue("first");
+  for (const id of ["first", "second"]) {
+    await choose.selectOption(id);
+    const recalled = page.waitForResponse(response => response.url().endsWith("/voice%3A" + id + "/recall"));
+    await card.getByRole("button", { name: "Cancel message" }).click();
+    expect(await (await recalled).json()).toEqual({ ok: true, text: "check the " + id + " release" });
+  }
+});
 
 test("a standalone relaunch keeps its feedback and retry ID while another card occupies the surface", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);

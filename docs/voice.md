@@ -12,6 +12,7 @@ seconds count down together. Click Cancel, say “cancel”, or click Send now. 
 “Send both now” when both messages are waiting. With a mention or an already-issued stop,
 the send button names the agent who will receive the remaining message. With the cancel
 window off, delivery begins immediately. Sent and queued cards show the open question count.
+Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
 The Sound preference controls the pending chime. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
@@ -39,8 +40,11 @@ choices until the desktop implements the floating windows. It saves the selected
 for those windows. Their reserved routes are `#/voice/pill` and `#/voice/popover`. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.
-With no countdown open, an address awaiting a recipient choice appears ahead of delivery results,
-including messages held behind a question.
+With no countdown open or message selected, an address awaiting a recipient choice appears
+ahead of delivery results, including messages held behind a question.
+When several messages remain, the Voice message selector lets you revisit their cards,
+including individual turns held for the same agent. A new countdown takes priority, then
+the surface returns to your selection if the card is still available.
 If a countdown interrupts a relaunch, the standalone card keeps its result for you to read
 when it returns. Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.

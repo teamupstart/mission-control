@@ -3,6 +3,7 @@ import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
 import type { VoiceAnswer } from "@shared/voice-answers.ts";
+import { receiveVoiceCard, type DashboardVoiceCard } from "./lib/voice-card-clock.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -218,7 +219,7 @@ export interface MissionState {
   voiceWindowId?: string;
   voiceAnswers: Map<string, VoiceAnswer>;
   openVoiceQuestion: { sessionId: string; reviewId: string } | null;
-  voiceCards: Map<string, VoiceCard>;
+  voiceCards: Map<string, DashboardVoiceCard>;
   fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardInUse: (id: string, inUse: boolean) => void;
   /**
@@ -353,7 +354,7 @@ export function useEventStream(): MissionState {
   const [voiceWindowId, setVoiceWindowId] = useState<string>();
   const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, VoiceAnswer>());
   const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
-  const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
+  const [voiceCards, setVoiceCards] = useState(new Map<string, DashboardVoiceCard>());
   const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
   const setVoiceCardFading = useCallback((id: string, fading: boolean) => {
     setFadingVoiceCards(current => {
@@ -418,6 +419,7 @@ export function useEventStream(): MissionState {
     let windowId: string | undefined;
     const es = new EventSource("/events");
     esRef.current = es;
+    let voiceClockOffset = Infinity;
     function clearVoiceTimers() {
       for (const { timer, fadeTimer } of voiceExpiry.values()) {
         window.clearTimeout(timer ?? undefined);
@@ -556,7 +558,8 @@ export function useEventStream(): MissionState {
           if (msg.voice && msg.voice.mode !== "off") {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
-            const active = msg.voiceCards ?? [];
+            voiceClockOffset = performance.now() - (msg.voiceServerTime ?? Date.now());
+            const active = (msg.voiceCards ?? []).map(card => receiveVoiceCard(card, voiceClockOffset));
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
@@ -855,17 +858,21 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
-        case "voice_card":
+        case "voice_card": {
+          // A slow frame cannot extend the deadline beyond an earlier clock sample.
+          const offset = Math.min(voiceClockOffset, performance.now() - (msg.voiceServerTime ?? Date.now()));
+          voiceClockOffset = offset;
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);
             next.delete(msg.card.id);
-            next.set(msg.card.id, msg.card);
+            next.set(msg.card.id, receiveVoiceCard(msg.card, offset, prev.get(msg.card.id)));
             const completed = [...next.values()].filter(card => voiceCardCanExpire(card) && voiceExpiry.get(card.id)?.timer !== null);
             if (completed.length > 50) next.delete(completed[0]!.id);
             return next;
           });
           break;
+        }
         // Who can be addressed moved: replace the roster inside the state. A frame that lands
         // while no state is held (voice was off at connect) has nothing to update; the frame
         // that switches voice on carries the roster itself.

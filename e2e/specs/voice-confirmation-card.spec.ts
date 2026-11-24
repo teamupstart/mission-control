@@ -46,7 +46,7 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true,
       onOpenSettings: () => () => {},
-      showVoiceCardNotice: ({ title, body, scope }: { title: string; body: string; scope: string }) => {
+      showVoiceCardNotice: ({ title, body, scope, deadline }: { title: string; body: string; scope: string; deadline: number }) => {
         if (declineFirst) {
           declineFirst = false;
           document.documentElement.dataset.fixtureBlurred = "false";
@@ -56,12 +56,14 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
         }
         document.title = title + " | " + body;
         document.documentElement.dataset.noticeScope = scope;
+        document.documentElement.dataset.noticeRemaining = String(deadline - Date.now());
         document.documentElement.dataset.noticeCount = String(Number(document.documentElement.dataset.noticeCount ?? 0) + 1);
         return new Promise(resolve => window.addEventListener("fixture-native-action", event => resolve((event as CustomEvent).detail), { once: true }));
       },
       dismissVoiceCardNotice() {},
     } });
   });
+  await page.clock.install({ time: new Date(Date.now() + 60_000) });
   await page.reload();
   await runningAgent(page, daemon, "Steve");
   for (const choice of ["cancel", "send-now"]) {
@@ -71,7 +73,6 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
     if (choice === "cancel") {
       await expect(page.getByRole("status").filter({ hasText: words })).toBeVisible();
       await expect(page.locator("html")).not.toHaveAttribute("data-notice-count", /.+/);
-      await page.clock.install();
       await page.clock.fastForward(4000);
       await page.evaluate(() => {
         document.documentElement.dataset.fixtureBlurred = "true";
@@ -86,6 +87,9 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
       });
       await expect(page.locator("html")).toHaveAttribute("data-notice-count", "1", { timeout: 3000 });
       expect(Number((await page.title()).match(/sending in (\d+)s/)?.[1])).toBeLessThanOrEqual(26);
+      const remaining = Number(await page.locator("html").getAttribute("data-notice-remaining"));
+      expect(remaining).toBeGreaterThan(0);
+      expect(remaining).toBeLessThanOrEqual(26000);
     }
     await expect(page).toHaveTitle(new RegExp("To Steve · sending in \\d+s \\| " + words));
     const action = page.waitForResponse(response => response.url().endsWith("/cards/" + id + "/" + choice));

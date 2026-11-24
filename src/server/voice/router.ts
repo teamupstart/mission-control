@@ -833,6 +833,11 @@ export class VoiceRouter {
     return true;
   }
 
+  isHeldTurn(turnId: string): boolean {
+    const receipt = this.outbox.get(turnId);
+    return receipt?.delivery.results[receipt.index]?.outcome === "held";
+  }
+
   settleSpoken(turnId: string, outcome: SpokenSettlement): void {
     const receipt = this.outbox.get(turnId);
     if (!receipt) return;

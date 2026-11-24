@@ -28,6 +28,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   `, {mode: 0o755});
   let events: ServerResponse | undefined;
   let connects = 0;
+  let unavailableHandshakes = 1;
+  let refusals = 0;
   let reconnectSnapshot: string | undefined;
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
@@ -36,6 +38,12 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let heldReport: ServerResponse | undefined;
   const server = createServer(async (req, res) => {
     if (req.url === "/events") {
+      if (unavailableHandshakes > 0) {
+        unavailableHandshakes--;
+        refusals++;
+        res.writeHead(503).end();
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       events = res;
       connects++;
@@ -130,6 +138,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     }
   }
   await until(async () => !!events && (await read()).title === " 2");
+  assert.equal(refusals, 1, "the shell recovered from a 503 on its first handshake");
   assert.equal(reports.length, 0);
   await click("click");
   assert.equal((await read()).opens, 1);
@@ -283,12 +292,14 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     try { process.kill(pid, 0); return false; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
   };
-  await t.test("a broken stream terminates the active listener before a reconnect snapshot starts its replacement", async () => {
+  await t.test("capture stops on stream loss and a fresh snapshot restores it after two HTTP 503 handshakes", async () => {
     const [first] = pids();
     assert.equal(exited(first!), false);
+    unavailableHandshakes = 2;
     events!.destroy();
     await until(() => exited(first!));
     await until(() => connects === 2);
+    assert.equal(refusals, 3);
     assert.equal((await read()).mode, "off");
     assert.deepEqual(pids(), [first]);
     events!.write("data: " + JSON.stringify({ type: "snapshot", voice: ready }) + "\n\n");

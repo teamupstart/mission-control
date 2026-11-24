@@ -102,9 +102,12 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     onState(state);
     void sync();
   }
-  function requestSnapshot() {
+  function disconnect() {
     stream.onmessage = stream.onerror = null;
     stream.close();
+  }
+  function requestSnapshot() {
+    disconnect();
     update(voiceStateOff());
     reconnect = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
@@ -137,7 +140,11 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       fetch: (url, options) => fetch(url, { ...options, redirect: "error" }),
     });
     stream.onmessage = ({data}) => receive(data);
-    stream.onerror = () => update(voiceStateOff());
+    stream.onerror = () => {
+      // CONNECTING already owns a retry. A rejected HTTP handshake leaves it CLOSED.
+      if (stream.readyState === EventSource.CLOSED) requestSnapshot();
+      else update(voiceStateOff());
+    };
   }
   connect();
   const heartbeat = setInterval(() => void sync(), 5000);
@@ -162,7 +169,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     },
     stop() {
       clearTimeout(reconnect);
-      stream.close();
+      disconnect();
       lifetime.abort();
       clearInterval(heartbeat);
       state = voiceStateOff();

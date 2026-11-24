@@ -24,8 +24,7 @@ export interface VoiceConfigState {
   /** The provider the daemon currently acknowledges, independent of edits still queued. */
   confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
-   * Make an edit. It shows at once and is saved after every earlier edit has been answered;
-   * resolves to whether the daemon kept it. A refused edit leaves the panel, and nothing else.
+   * Show an edit immediately and resolve to whether the daemon kept it.
    */
   update: (patch: VoiceConfigPatch) => Promise<boolean>;
   /** Why the last edit didn't stick, or null. Cleared by an edit made after it that does. */
@@ -40,12 +39,8 @@ interface PendingEdit {
 /**
  * `enabled` is whether Settings > Voice is on screen: nothing is read or polled otherwise.
  *
- * Edits are saved one at a time, in the order they were made. Each controls a different field,
- * and the panel allows a second edit while the first is still being saved, so answers settling in
- * another order could otherwise put an older config over a newer one: a refused first edit rolling
- * the panel back over a second edit the daemon kept, or a late answer replacing a later one. In
- * order, every answer the panel adopts is the daemon's config as of that edit, and a refusal only
- * drops its own edit from what is drawn.
+ * Provider changes are ordered independently so an unrelated save cannot delay an opt-out.
+ * Other settings retain their edit order. A patch touching both waits for both queues.
  */
 export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
@@ -53,8 +48,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const [error, setError] = useState<string | null>(null);
   const confirmedRef = useRef<VoiceConfig | null>(null);
   const pendingRef = useRef<readonly PendingEdit[]>([]);
-  // The tail of the save queue: each edit's request starts once the one before it is answered.
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const queues = useRef({ provider: Promise.resolve(), settings: Promise.resolve() });
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
   // an edit already waiting behind the refused one cannot wipe the sentence before it is read.
@@ -91,10 +85,19 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     if (!confirmedRef.current) return Promise.resolve(false);
     const edit: PendingEdit = { id: ++nextEdit.current, patch };
     setPending([...pendingRef.current, edit]);
+    const changesProvider = patch.decisionProvider !== undefined;
+    const changesSettings = Object.keys(patch).some(key => key !== "decisionProvider");
     const save = async (): Promise<boolean> => {
       const res = await api.setVoiceConfig(patch);
       const kept = res.ok && res.config !== undefined;
-      if (kept) setConfirmed(res.config!);
+      const current = confirmedRef.current;
+      if (kept && current) {
+        // An older full response from the other queue can arrive after this edit.
+        setConfirmed({
+          ...(changesSettings ? res.config! : current),
+          decisionProvider: changesProvider ? res.config!.decisionProvider : current.decisionProvider,
+        });
+      }
       setPending(pendingRef.current.filter((candidate) => candidate !== edit));
       if (!kept) {
         errorAfter.current = nextEdit.current;
@@ -104,8 +107,13 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       return kept;
     };
-    const result = queue.current.then(save, save);
-    queue.current = result.catch(() => undefined);
+    const previous = [];
+    if (changesProvider) previous.push(queues.current.provider);
+    if (changesSettings) previous.push(queues.current.settings);
+    const result = Promise.all(previous).then(save);
+    const finished = result.then(() => {}, () => {});
+    if (changesProvider) queues.current.provider = finished;
+    if (changesSettings) queues.current.settings = finished;
     return result;
   }, [setConfirmed, setPending]);
 

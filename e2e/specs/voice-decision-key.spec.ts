@@ -235,6 +235,44 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     });
   }
 
+  test("Off takes effect while an unrelated Voice settings write is stalled", async ({ dashboard: page, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/config", async route => {
+      const req = route.request();
+      if (req.method() !== "PUT" || !req.postDataJSON().cancelWindow) return route.continue();
+      const earlier = await route.fetch();
+      held.resolve();
+      await release.promise;
+      await route.fulfill({ response: earlier });
+    });
+    const length = panel(page).getByRole("combobox", { name: "Cancel window length" });
+    const previousResponse = page.waitForResponse(r => r.url().endsWith("/api/voice/config") &&
+      r.request().method() === "PUT" && Boolean(r.request().postDataJSON().cancelWindow));
+    try {
+      await length.selectOption("8");
+      await held.promise;
+      await providerMenu(page).selectOption({ label: "Off" });
+      await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
+      const { entry } = await sayAndSettle(daemon, SPLIT);
+      expect(entry.detail).toBe("job on codex answered: split");
+      expect(decisions.requests).toHaveLength(0);
+      await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "20-off-during-config-write");
+    } finally {
+      release.resolve();
+      await (await previousResponse).finished();
+    }
+    await expect(length).toHaveValue("8");
+    await expect(providerMenu(page)).toHaveValue("off");
+    await expect(line(page)).toHaveText(NOT_SET);
+    const { config } = await api<{ config: { decisionProvider: string; cancelWindow: { seconds: number } } }>(daemon, "/api/voice/config");
+    expect([config.decisionProvider, config.cancelWindow.seconds]).toEqual(["off", 8]);
+  });
+
   for (const mutation of ["save", "remove"] as const) {
     test(`Off stops provider routing before a pending key ${mutation} completes`, async ({ dashboard: page, daemon, decisions }) => {
       await turnVoiceOn(daemon);

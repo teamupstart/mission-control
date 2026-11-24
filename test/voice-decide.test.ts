@@ -879,6 +879,22 @@ test("the split limit counts spoken positions across a duplicate name before ask
   }
 });
 
+test("manual split choices preserve overlapping one- and two-word names", async (t) => {
+  for (const [second, firstText, secondText] of [
+    ["Captain", "check the release", "review the PR"],
+    ["Release Captain", "check the", "review the PR"],
+    ["Release", "check the", "Captain, review the PR"],
+  ]) {
+    const { router, say, delivered, cards } = routerRig(() => answered(null), ["Steve", "Release Captain", "Captain", "Release"].map(n => name(n)));
+    t.after(() => router.reset());
+    await say("Steve, check the release Captain, review the PR", "overlap");
+    assert.equal(cards.at(-1)?.state, "unsure");
+    assert.ok(await router.pick("overlap", "task:" + second));
+    assert.ok(await router.sendNow("overlap"));
+    assert.deepEqual(delivered, [["Steve", firstText, "overlap"], [second, secondText, "overlap#2"]]);
+  }
+});
+
 test("excluded duplicate-name candidates cannot change a Codex split to a mixed roster", async (t) => {
   const ruby = name("Ruby");
   const { router, say, cards } = routerRig((_q, opts) => {

@@ -48,7 +48,7 @@ export interface VoiceSplitPoint {
   target: SpokenName;
   /** Character offset of this name in the original utterance. */
   at: number;
-  /** More than one captured target has the spoken name at this offset. */
+  /** More than one captured target could be addressed starting at this offset. */
   ambiguousTarget?: true;
   commands?: readonly (VoiceAddressedCommand | undefined)[];
   head: string;
@@ -309,6 +309,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   for (let i = count; i < tokens.length; i++) {
     const at = tokens[i]!;
     const laterNames = namesStartingAt(text, at, tokens[i + 1]);
+    const atStart = splits.length;
     for (let length = laterNames.length; length > 0; length--) {
       const end = tokens[i + length - 1]!;
       const heard = laterNames[length - 1];
@@ -329,13 +330,14 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
         const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
         const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
         for (const other of matches) {
-          splits.push({ target: other.target, at: nameOffset, head, tail,
-            ...(commands.some(Boolean) && { commands }), ...(matches.length > 1 && { ambiguousTarget: true }) });
+          splits.push({ target: other.target, at: nameOffset, head, tail, ...(commands.some(Boolean) && { commands }) });
           splitCandidates.add(other.target);
         }
       }
-      i += length - 1;
-      break;
+    }
+    // For example, both Release and Release Captain may start at this word.
+    if (splits.length > atStart + 1) {
+      for (let j = atStart; j < splits.length; j++) splits[j]!.ambiguousTarget = true;
     }
   }
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, splits, candidates, text: body, pauseMs, ...(command && { command }) };

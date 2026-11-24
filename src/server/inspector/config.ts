@@ -1,7 +1,7 @@
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
-import { INSPECTOR_MODEL_ENV, resolveInspectorModel } from "@shared/inspector.ts";
-import type { ResolvedInspectorModel } from "@shared/inspector.ts";
+import { INSPECTOR_MODEL_ENV, inspectorEffortChoice, resolveInspectorModel } from "@shared/inspector.ts";
+import type { InspectorCall, ResolvedInspectorModel } from "@shared/inspector.ts";
 import { providerOwningModel } from "@shared/model.ts";
 import { isLlmRunnerId, resolveLlmEffort } from "@shared/llm.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
@@ -79,12 +79,23 @@ export function inspectorModel(
   return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), runner);
 }
 
-export function inspectorExecution(cfg: InspectorConfig = getInspectorConfig()) {
+/**
+ * What one Inspector call spawns with.
+ *
+ * `call` matters only for effort. The operator's saved effort is read while the preview that
+ * shows its control is on; with the preview off nobody can have chosen, so the call takes its
+ * shipped default (`inspectorEffortChoice`). Either way the level is passed only when the
+ * provider offers it for the resolved model.
+ */
+export function inspectorExecution(
+  cfg: InspectorConfig = getInspectorConfig(),
+  call: InspectorCall = "review",
+) {
   const runner = inspectorRunner(cfg);
   const model = inspectorModel(cfg, runner.id);
-  const effort = backgroundReasoningEffortEnabled()
-    ? resolveLlmEffort(runner.id, model.id, cfg.effort).level ?? undefined
-    : undefined;
+  const saved = backgroundReasoningEffortEnabled() ? cfg.effort : undefined;
+  const effort =
+    resolveLlmEffort(runner.id, model.id, inspectorEffortChoice(saved, call)).level ?? undefined;
   return { runner, model, effort };
 }
 

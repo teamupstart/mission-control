@@ -1138,7 +1138,7 @@ server.registerTool(
         .optional()
         .describe(
           "What the human needs to answer without your context: what is being decided, why it " +
-            "came up, what you found, and the tradeoffs. Shown beneath the question.",
+            "came up, what you found, and the tradeoffs. Shown beneath the question. Write context as markdown.",
         ),
       options: z
         .array(

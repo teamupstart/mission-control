@@ -279,3 +279,30 @@ test("a draft the planner will not offer is listed apart, with no promise to pos
   assert.ok(!heldSection.includes("Mission Control posts it"));
   assert.ok(heldSection.includes("Mission Control will not post these"));
 });
+
+// Every round sends the whole diff, so a later round was a first read by a reviewer with no
+// memory of the earlier ones, and each push bought one or two more findings. The round is
+// now stated, and the bar it raises is spelled out.
+test("a first round carries no later-round bar", () => {
+  const prompt = buildReviewPrompt(input({ round: 1 }));
+  assert.ok(!prompt.includes("## This is review round"));
+});
+
+test("a later round names itself and raises the bar before the diff", () => {
+  const prompt = buildReviewPrompt(input({ round: 7 }));
+  const at = prompt.indexOf("## This is review round 7");
+  assert.ok(at >= 0);
+  assert.ok(at < prompt.indexOf("## The diff"));
+  const section = prompt.slice(at, prompt.indexOf("## The diff"));
+  assert.ok(section.includes("It is not another first"));
+  assert.ok(section.includes("Do not raise a narrower variant of an issue that was already fixed."));
+  assert.ok(section.includes("Returning no new findings is the expected result of a later round."));
+});
+
+// "Prefer saying less" held real findings back, and what a round holds back returns on the
+// next push. The policy still asks for few findings, and now asks for all of them at once.
+test("the policy asks for every finding that clears the bar in one review", () => {
+  const prompt = buildReviewPrompt(input());
+  assert.ok(prompt.includes("raise all of it in this review"));
+  assert.ok(!prompt.includes("Prefer saying less"));
+});

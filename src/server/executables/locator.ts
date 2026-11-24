@@ -686,8 +686,21 @@ export function executableChildEnv(
 
 export async function locateExecutable(
   id: Parameters<typeof executableSpec>[0],
+  signal?: AbortSignal,
 ): Promise<ResolvedExecutable | null> {
-  return await executableLocator.resolve(executableSpec(id));
+  const spec = executableSpec(id);
+  if (!signal) return executableLocator.resolve(spec);
+  signal.throwIfAborted();
+  // Discovery can share a login-shell refresh with other callers. Each waiter can leave independently.
+  let rejectCancelled!: (reason: unknown) => void;
+  const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
+  const abort = () => rejectCancelled(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    return await Promise.race([executableLocator.resolve(spec), cancelled]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 export function locateExecutableSync(

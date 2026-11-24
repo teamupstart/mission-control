@@ -326,9 +326,11 @@ let db: DatabaseSync | undefined;
 //     no task was given a spoken name before it existed.
 // 52: remember a stopped task's displaced roster name until it runs or changes names.
 // 53: reports and their mute records keep the spoken label alongside the fallback.
-// 54: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
-// 55: durable receipt replay for a blocking question filed by voice.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 55;
+// 54: content-addressed repository artifacts, durable cleanup intent and submission claims.
+//     Historical submissions acquire no claim. Readiness is checked on first activation.
+// 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
+// 56: durable receipt replay for a blocking question filed by voice.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 56;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -483,6 +485,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   // transactions.
   d.exec("BEGIN IMMEDIATE;");
   try {
+    // Earlier artifact previews installed a broader running-status guard. Replace it atomically
+    // with the current definition below, preserving existing claims and submissions.
+    if (databaseSchemaVersion(d) < 54) d.exec("DROP TRIGGER IF EXISTS repository_activation_required");
     createSchemaObjects(d);
     d.exec("COMMIT;");
   } catch (error) {
@@ -1510,6 +1515,46 @@ function createSchemaObjects(d: DatabaseSync): void {
     -- database. It lives beside its ALTER, which is the house rule for exactly this reason.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
+
+    CREATE TABLE IF NOT EXISTS workflow_repository_artifacts (
+      digest TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('creating','ready','failed','cleanup_pending')),
+      created_at INTEGER NOT NULL, verified_at INTEGER, verification_error TEXT, cleanup_requested_at INTEGER,
+      cleanup_attempted_at INTEGER, cleanup_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_snapshot_claims (
+      submission_id TEXT PRIMARY KEY REFERENCES workflow_submissions(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL REFERENCES workflow_repository_artifacts(digest) ON DELETE RESTRICT,
+      state TEXT NOT NULL CHECK(state IN ('provisional','active','release_pending','released')),
+      created_at INTEGER NOT NULL, activated_at INTEGER, released_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_repository_claim_digest
+      ON workflow_repository_snapshot_claims(digest,state);
+    -- Cascaded submission deletion and explicit release share the same durable cleanup intent.
+    CREATE TRIGGER IF NOT EXISTS repository_claim_removed AFTER DELETE ON workflow_repository_snapshot_claims
+    WHEN NOT EXISTS (SELECT 1 FROM workflow_repository_snapshot_claims WHERE digest=OLD.digest AND state!='released')
+    BEGIN
+      UPDATE workflow_repository_artifacts SET state='cleanup_pending',
+        cleanup_requested_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE digest=OLD.digest;
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_claim_released AFTER UPDATE OF state ON workflow_repository_snapshot_claims
+    WHEN NEW.state='released' AND NOT EXISTS (
+      SELECT 1 FROM workflow_repository_snapshot_claims WHERE digest=NEW.digest AND state!='released')
+    BEGIN
+      UPDATE workflow_repository_artifacts SET state='cleanup_pending',
+        cleanup_requested_at=NEW.released_at WHERE digest=NEW.digest;
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_capture_failed AFTER UPDATE OF status ON workflow_submissions
+    WHEN OLD.status='capturing' AND NEW.status IN ('cancelled','failed')
+    BEGIN
+      UPDATE workflow_repository_snapshot_claims SET state='released', released_at=NEW.updated_at
+        WHERE submission_id=NEW.id AND state='provisional';
+    END;
+    CREATE TRIGGER IF NOT EXISTS repository_activation_required BEFORE UPDATE OF status ON workflow_submissions
+    WHEN OLD.status='capturing' AND NEW.status='running' AND EXISTS (
+      SELECT 1 FROM workflow_repository_snapshot_claims c JOIN workflow_repository_artifacts a ON a.digest=c.digest
+       WHERE c.submission_id=NEW.id AND (c.state!='active' OR a.state!='ready'))
+    BEGIN SELECT RAISE(ABORT,'repository claim is not active'); END;
 
     -- Mutable, conversation-owned evidence remains separate from immutable submissions.
     -- Source roots and inline bodies are server-only. Child-supplied locators may enter the

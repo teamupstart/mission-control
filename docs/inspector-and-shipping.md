@@ -191,6 +191,17 @@ A repo with neither is reviewed against a built-in default brief instead - gener
 judgement, with the same insistence on a low noise floor - so the GitHub Inspector still works on a
 repo nobody has configured. It's read fresh each round, so editing it changes the next review.
 
+Every round sends the whole diff, so the review prompt tells a round after the first which
+round it is and raises its bar. A later round checks the repair: it raises a new finding only
+for a blocker or major on a path people ordinarily hit, or for a fix that broke something, and
+it leaves out narrower variants of an issue already fixed and cases that need unlikely timing,
+malformed input or a local machine failure unless the consequence cannot be undone. The first
+round is asked for every finding that clears the brief's bar at once, because one it holds
+back returns on a later push. The bar itself is "How far to dig", in this repository's brief
+and in the built-in default: judge likelihood against the kind of system the code belongs to,
+and raise an unlikely case only when its consequence cannot be undone. Neither names a
+product or a language.
+
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the GitHub Inspector judges a PR
 against the contract the repo actually asserts. Both names are consulted, at the repo root
 and in any directory the PR touched, but a document is loaded **once**: repos commonly ship
@@ -243,6 +254,14 @@ tier at roughly $2 a round - and nothing in the app recorded it or could show it
 A model is a **cost** choice here, not a latency one. The same 10KB PR measured 225s on
 Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
 `MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
+
+A full review runs at `xhigh` reasoning effort unless you choose otherwise, wherever the
+provider offers that level for the resolved model. It is the one thorough read a pull request
+gets: the first round is asked for every finding that clears the bar, and later rounds only
+check the repair. Follow-up replies keep the provider's default. The
+[Reasoning effort setting](models.md#reasoning-effort-for-background-work) overrides both. The
+timings above were measured at default effort, so a review now takes longer than they show,
+and the review timeout is 1200 seconds to allow for it.
 
 ### Whether a finding reached GitHub
 

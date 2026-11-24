@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  enqueueHistoryParents,
+  MAX_REPOSITORY_VIEW_ENTRIES,
+  RepositoryViewDescriptorSchema,
   RepositoryOperationSchemas,
   RepositoryRangeSchema,
   RepositoryQueryAuditMetadataSchema,
@@ -31,6 +34,21 @@ test("closed access, result kind and history policy remain the Phase 2/4 contrac
     }).success,
     false,
   );
+});
+test("status-only deletions accept the union of two independently bounded layers", () => {
+  const entries = Array.from({ length: MAX_REPOSITORY_VIEW_ENTRIES + 1 }, (_, i) => ({
+    path: "dir/" + i, classifications: ["staged", "deleted"],
+  }));
+  assert.equal(RepositoryViewDescriptorSchema.shape.statusDeletions.safeParse(entries).success, true);
+});
+test("history queue preserves discovery order, deduplicates merge parents and stops at the retained limit", () => {
+  const queue = ["head"];
+  const scheduled = new Set(queue);
+  enqueueHistoryParents(queue, scheduled, ["left", "left", "right"], 4);
+  enqueueHistoryParents(queue, scheduled, ["right", "base", "outside"], 4);
+  enqueueHistoryParents(queue, scheduled, ["another"], 4);
+  assert.deepEqual(queue, ["head", "left", "right", "base"]);
+  assert.deepEqual([...scheduled], queue);
 });
 test("every path input rejects traversal and host spellings", () => {
   for (const path of [

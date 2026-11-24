@@ -236,7 +236,8 @@ import { getInspectorConfig } from "../inspector/config.ts";
 import { parsePrUrl } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
-import { workflowLog } from "./log.ts";
+import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
+import { workflowErrorCode, workflowLog } from "./log.ts";
 import { WorkflowCommandArtifactService } from "./command-artifacts.ts";
 import { stackPrInstruction } from "../stacking/lineage.ts";
 import { resolveStackDiffBase } from "../stacking/diff-base.ts";
@@ -697,6 +698,9 @@ export class WorkflowManager {
   private lastRetentionCompacted = 0;
   private lastRetentionDeleted = 0;
   private orphanedEvidenceImages = 0;
+  get repositoryArtifacts(): WorkflowRepositoryArtifactService {
+    return WorkflowRepositoryArtifactService.forRoot(this.store);
+  }
 
   constructor(
     private readonly registry: Registry,
@@ -8331,6 +8335,14 @@ export class WorkflowManager {
       workflowLog("error", {
         event: "retention_failed",
         error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+    try {
+      await this.repositoryArtifacts.reconcile();
+    } catch (error) {
+      workflowLog("error", {
+        event: "repository_reconcile_failed",
+        error: workflowErrorCode(error),
       });
     } finally {
       this.retentionRunning = false;

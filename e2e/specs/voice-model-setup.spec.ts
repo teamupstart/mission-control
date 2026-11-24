@@ -194,6 +194,7 @@ test("the microphone row reads not checked until a listener reports, and the inp
     await capture(page, "microphone-not-checked");
 
     listener = await beListener(daemon, {
+      backend: "fluidaudio",
       devices: [
         { id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone", builtIn: true },
         { id: "usb-desk-mic", name: "Desk USB microphone", builtIn: false },

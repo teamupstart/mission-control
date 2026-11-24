@@ -210,27 +210,33 @@ export function transcriptStreamHandler(registry: Registry) {
         return { ...page, messages: titled.transcript(page.messages) };
       };
       const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
-        const captured = await capture(state, null, end => read.initial(path, end));
-        const init = captured.frame;
-        const project = () => projectFrame(init.messages, captured.revision?.version, init.pos, () => read.initial(path, init.pos).messages);
-        const page = await project();
-        // Any ledger consulted during projection can finish a binding. When the token advances,
-        // project again against that token before promising it to the reader.
-        const decorated = state ? spokenState() : state;
-        const changed = decorated?.receipt !== state?.receipt;
-        await send({
-          type: "init",
-          ...(changed ? await project() : page),
-          start: init.start, atStart: init.atStart, pos: init.pos,
-          ...(voice && { spokenReceipt: decorated?.receipt ?? null }), ...(captured.cursor && { spokenCursor: digest(captured.cursor) }),
-          ...((refreshSpoken || changed) && { refreshSpoken: true }),
-        });
-        pos = init.pos;
-        cursor = captured.cursor;
-        revision = captured.revision;
-        verifiedVersion = revision?.version;
-        checking = undefined;
-        spoken = decorated;
+        const captureWindow = (current: SpokenState) => capture(current, null, end => read.initial(path, end));
+        let captured = await captureWindow(state);
+        while (!stream.aborted) {
+          const init = captured.frame;
+          const page = await projectFrame(init.messages, captured.revision?.version, init.pos, () => read.initial(path, init.pos).messages);
+          const latest = spokenState();
+          if (latest?.receipt !== state?.receipt) {
+            // The first or last spoken row changes whether this frame needs a verified cursor.
+            // A new text receipt on the same history only needs a fresh projection.
+            if (Boolean(latest) !== Boolean(state)) captured = await captureWindow(latest);
+            state = latest;
+            refreshSpoken = true;
+            continue;
+          }
+          await send({
+            type: "init", ...page, start: init.start, atStart: init.atStart, pos: init.pos,
+            ...(voice && { spokenReceipt: state?.receipt ?? null }), ...(captured.cursor && { spokenCursor: digest(captured.cursor) }),
+            ...(refreshSpoken && { refreshSpoken: true }),
+          });
+          pos = init.pos;
+          cursor = captured.cursor;
+          revision = captured.revision;
+          verifiedVersion = revision?.version;
+          checking = undefined;
+          spoken = state;
+          return;
+        }
       };
       try {
         const from = resumeFrom();
@@ -246,13 +252,18 @@ export function transcriptStreamHandler(registry: Registry) {
           if (spoken && captured.before !== heldCursor) {
             await sendWindow(spoken, true);
           } else {
-            pos = resumed.pos;
-            cursor = captured.cursor;
-            revision = captured.revision;
-            verifiedVersion = revision?.version;
-            await send({ type: "resume", ...await projectFrame(resumed.messages, captured.revision?.version, resumed.pos,
-              () => read.appended(path, from, resumed.pos).messages),
-              pos, ...(cursor && { spokenCursor: digest(cursor) }) });
+            const page = await projectFrame(resumed.messages, captured.revision?.version, resumed.pos,
+              () => read.appended(path, from, resumed.pos).messages);
+            const latest = spokenState();
+            if (latest?.receipt !== spoken?.receipt) {
+              await sendWindow(latest, true);
+            } else {
+              pos = resumed.pos;
+              cursor = captured.cursor;
+              revision = captured.revision;
+              verifiedVersion = revision?.version;
+              await send({ type: "resume", ...page, pos, ...(cursor && { spokenCursor: digest(cursor) }) });
+            }
           }
         } else {
           await sendWindow(spoken, stale);
@@ -313,6 +324,12 @@ export function transcriptStreamHandler(registry: Registry) {
           if (messages.length > 0 || (current && advanced)) {
             const from = pos;
             const page = await projectFrame(messages, captured.revision?.version, next, () => read.appended(path, from, next).messages);
+            const latest = spokenState();
+            if (latest?.receipt !== current?.receipt) {
+              await sendWindow(latest, true);
+              sinceHeartbeat = 0;
+              continue;
+            }
             await send({ type: "append", ...page, pos: next,
               ...(captured.cursor && { spokenCursor: digest(captured.cursor) }) });
             sinceHeartbeat = 0;

@@ -366,7 +366,8 @@ async function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscrip
     for (let from = 0;;) {
       await yieldToDaemon();
       if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
-      const page = transcript.read.after(transcript.path, from, 50, true);
+      const first = transcript.read.after(transcript.path, from, 50, "cooperative");
+      const page = first.finishOversizedRecord ? await first.finishOversizedRecord(signal) : first;
       if (page.start !== from || transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
       skippedRecord ||= !!page.skippedRecord;
       spokenLedger.bound({ key: noteKey, transcript: null }, page.messages, now);

@@ -223,7 +223,7 @@ process with a parent watchdog and verifies that the helper leaves no timer behi
 
 ## Spoken delivery
 
-Schema 55 adds the nullable `reviews.filed_by_voice_at` timestamp. Filing a blocking ask by
+Schema 56 adds the nullable `reviews.filed_by_voice_at` timestamp. Filing a blocking ask by
 voice sets the timestamp, message wait mode and MCP detach stamp together. A compatible
 child can recover its receipt on a later poll, including after daemon restart. Existing
 reviews start with a null timestamp. A legacy duplicate receives a conflict once voice has filed the ask, preserving the receipt and its answer delivery.
@@ -236,7 +236,7 @@ A new spoken outbox row records the pending calls it encountered in `spoken_turn
 in the enqueue transaction. A capable child polling later can file its ask while those words
 are still queued in its conversation. Deleting the turn also deletes its review links.
 
-Schema 54 records the original words, composition time, and receiving work-cycle generation on
+Schema 55 records the original words, composition time, and receiving work-cycle generation on
 spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
 and generation on the outbox row, alongside the time the transport reached its write guard.
 Confirming delivery and retiring the row atomically carry this time into `session_work_cycles.spoken_hold_since`

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
-import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
-import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
+import { INSPECTOR_MODEL_SPEC, inspectorEffortShown } from "@shared/inspector.ts";
+import { resolveFeatureFlag } from "@shared/feature-flags.ts";
+import { liveLlmJobIds, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import type { LlmJobId } from "@shared/llm-jobs.ts";
 import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import type { ForemanConfigPatch, InspectorConfigPatch } from "@shared/protocol.ts";
@@ -13,7 +14,7 @@ import type { LlmProviderView } from "@shared/types.ts";
 import type { LlmState } from "../useLlm.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 import { TaskKindDefaultsGroup } from "./TaskKindDefaults.tsx";
-import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { FeatureFlagsContext, useFeatureFlag } from "../useFeatureFlag.ts";
 import { modelSlotColumns, modelSlotRow, ProviderSelect, SettingsMatrix } from "./SettingsMatrix.tsx";
 
 // The Models category: which provider does the app's OWN offline work, and on which model.
@@ -69,6 +70,8 @@ export function LlmSettingsPanel({
   inspector: InspectorState;
 }): React.JSX.Element {
   const { config, status, update, error } = state;
+  const flags = useContext(FeatureFlagsContext);
+  const jobs = liveLlmJobIds((flag) => resolveFeatureFlag(flag, flags));
   const showEffort = useFeatureFlag(BACKGROUND_REASONING_EFFORT_FLAG_ID);
   const columns = modelSlotColumns(showEffort);
   const runners = status?.runners ?? [];
@@ -124,11 +127,12 @@ export function LlmSettingsPanel({
         <SettingsMatrix
           caption="Background jobs, and what each one runs on"
           columns={columns}
-          rows={LLM_JOB_IDS.map((job) =>
+          rows={jobs.map((job) =>
             modelSlotRow({
               key: `llm-${job}`,
               anchor: `models/job-${job}`,
               spec: LLM_JOB_SPECS[job],
+              fixedModels: LLM_JOB_SPECS[job].fixedModels,
               providers: runners,
               runnerValue: config?.runners[job] ?? "",
               runnerResolved: status?.jobRunners[job],
@@ -139,7 +143,7 @@ export function LlmSettingsPanel({
               modelResolved: status?.models[job],
               disabled: !config,
               reset: reset[job] ?? null,
-              effort: showEffort ? {
+              effort: showEffort && !LLM_JOB_SPECS[job].fixedThinking ? {
                 value: config?.efforts?.[job] ?? null,
                 onCommit: (value) => void update({ efforts: { [job]: value } }),
               } : undefined,
@@ -382,7 +386,10 @@ function InspectorModelGroup({
             disabled: !config,
             reset,
             effort: showEffort ? {
-              value: config?.effort ?? null,
+              // Never chosen is not "Provider default" here: a review then runs at the
+              // Inspector's own default where this model offers it, and the control shows
+              // what will be used.
+              value: config ? inspectorEffortShown(config.effort, runner?.id, model?.id) : null,
               onCommit: (effort) => void update({ effort }),
             } : undefined,
             onCommit: (patch) => {

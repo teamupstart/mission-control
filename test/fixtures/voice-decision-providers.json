@@ -1,0 +1,53 @@
+{
+  "description": "Replies in each decision provider's documented response shape (OpenAI Decisions, POST /v1/decisions; Jev, POST /v1/systemone), as read from their API references on 2026-11-23. Field names and nesting follow the documentation; the values are this suite's. No test calls a real provider.",
+  "openai": {
+    "split": {
+      "answers": [
+        {
+          "type": "choice",
+          "name": "q1",
+          "choice": "split",
+          "confidence": 0.99,
+          "probabilities": [
+            { "value": "split", "probability": 0.99 },
+            { "value": "mention", "probability": 0.01 },
+            { "value": "not sure", "probability": 0 }
+          ]
+        }
+      ],
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 212,
+        "input_tokens_details": { "cache_write_tokens": 0, "cached_tokens": 0 },
+        "output_tokens": 0,
+        "output_tokens_details": { "reasoning_tokens": 0 },
+        "total_tokens": 212
+      }
+    },
+    "refusal": {
+      "answers": [{ "type": "refusal", "name": "q1" }],
+      "model": "gpt-6-luna",
+      "usage": { "input_tokens": 200, "input_tokens_details": { "cache_write_tokens": 0, "cached_tokens": 0 }, "output_tokens": 0, "output_tokens_details": { "reasoning_tokens": 0 }, "total_tokens": 200 }
+    },
+    "unauthorized": {
+      "error": { "message": "Incorrect API key provided: sk-proj-****wxyz.", "type": "invalid_request_error", "code": "invalid_api_key" }
+    }
+  },
+  "jev": {
+    "mention": {
+      "model": "jev-1.14.0",
+      "answers": {
+        "q1": {
+          "type": "choice",
+          "choice": "mention",
+          "confidence": 0.99,
+          "probabilities": { "split": 0.01, "mention": 0.99, "not sure": 0 }
+        }
+      },
+      "usage": { "input_tokens": 190, "output_tokens": 3 }
+    },
+    "validation": {
+      "detail": [{ "loc": ["body", "state"], "msg": "Field required", "type": "missing" }]
+    }
+  }
+}

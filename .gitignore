@@ -18,3 +18,4 @@ e2e/.artifacts/
 .evidence/
 /docs/reports/resident-skill-isolation-wider/
 .pipeline/
+native/voice-listener/.build/

@@ -682,6 +682,36 @@ test("strict forward reads distinguish a verified partial tail from a short or f
   }
 });
 
+test("an oversized forward record yields between boundary chunks and can be interrupted before EOF", async t => {
+  const path = join(dir, "cooperative-forward.jsonl");
+  const size = 17 * 1024 * 1024;
+  writeFileSync(path, Buffer.alloc(size, 120));
+  const read = fs.readSync;
+  let chunks = 0;
+  let serviced = 0;
+  t.mock.method(fs, "readSync", (...args: unknown[]) => {
+    if (Number(args[4]) >= 16 * 1024 * 1024) {
+      assert.equal(serviced, chunks, "the previous boundary read yielded to daemon work");
+      chunks++;
+      setImmediate(() => { serviced++; });
+    }
+    return Reflect.apply(read, fs, args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const start = claude.after(path, 0, 1, "cooperative");
+  assert.ok(start.finishOversizedRecord);
+  assert.equal(chunks, 0);
+  const aborted = new AbortController();
+  const attempt = start.finishOversizedRecord(aborted.signal);
+  setImmediate(() => aborted.abort());
+  await assert.rejects(attempt, { name: "AbortError" });
+  assert.equal(chunks, 1);
+  const end = await start.finishOversizedRecord();
+  assert.deepEqual(end, { start: 0, end: 0, atEnd: true, messages: [], partialTailEnd: size });
+  assert.ok(chunks > 2);
+});
+
 test("an anchor at or past EOF ends the walk instead of throwing", () => {
   const { path } = writeClaude("forward-eof.jsonl", 5);
   const size = statSync(path).size;

@@ -35,7 +35,7 @@ test("spoken rows wait for idle even with a persisted steer or interrupt overrid
   }
 });
 
-test("upgrade from 51 leaves typed rows untouched, and spoken composition survives restart and retry", () => {
+test("upgrade from 54 leaves typed rows untouched, and spoken composition survives restart and retry", () => {
   const key = "conversation";
   const words = "check the build";
   const typed = db.createPendingTurn({ id: "typed", noteKey: key, text: words, now: 1 });
@@ -51,7 +51,7 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
     ALTER TABLE pending_turns DROP COLUMN spoken_requires_guard;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold_since;
-    PRAGMA user_version = 51;
+    PRAGMA user_version = 54;
   `);
   db.closeDb();
   assert.deepEqual(db.listPendingTurns(key), [typed]);
@@ -1044,7 +1044,7 @@ test("a quiet native binding survives a failed transcript read and advances attr
   // The retry must request a strict read and keep its marker when that read fails.
   let requestedStrict = false;
   t.mock.method(native.read, "after", (...args: Parameters<typeof after>) => {
-    requestedStrict = args[3] === true;
+    requestedStrict = Boolean(args[3]);
     if (requestedStrict) throw new Error("transient native read failure");
     return { messages: [], start: args[1], end: args[1], atEnd: true };
   }, { times: 1 });

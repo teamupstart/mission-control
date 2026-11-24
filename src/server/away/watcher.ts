@@ -154,6 +154,15 @@ export function startAwayWatcher(
   const waitingReports = (): ReportItem[] | null =>
     featureEnabled(INBOX_FLAG) ? listedReports(registry.snapshot()) : null;
 
+  // Project at both read boundaries, so a flag change between the last tick, leaving Away,
+  // and claiming the digest never needs another occurrence (or a still-live session).
+  const displayedBuffer = (source: AwayBuffer | null): AwayBuffer | null => {
+    if (!source) return null;
+    const variant = !featureEnabled(INBOX_FLAG) ? "withoutInbox" : featureEnabled(VOICE_FLAG) ? "spoken" : "fallback";
+    return { ...source, events: source.events.map((event) =>
+      event.sessionTitles ? { ...event, title: event.sessionTitles[variant] } : event) };
+  };
+
   /** When each parked gate was first seen parked - the gate rule's only honest clock. */
   /** Close the open window into `pending`. Idempotent - a second call is a no-op. */
   const closeWindow = (): void => {
@@ -320,7 +329,7 @@ export function startAwayWatcher(
       if (timer) clearTimeout(timer);
     },
     stalls: () => stalls,
-    buffer: () => buffer,
+    buffer: () => displayedBuffer(buffer),
     takePending: () => {
       const p = pending;
       pending = null;
@@ -333,7 +342,7 @@ export function startAwayWatcher(
           console.error("[away] keeping the digest's report marks failed:", err);
         }
       }
-      return p;
+      return displayedBuffer(p);
     },
     flush: closeWindow,
     tick: pass,

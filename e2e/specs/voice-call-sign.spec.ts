@@ -7,6 +7,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
+import type { ResidentProfile } from "../../src/shared/residents.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 
 // The suite dispatches fixture agents and files their questions through the MCP review route.
@@ -108,10 +109,18 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expect(dialog.locator(".voice-heard")).toHaveText("Will, check the build");
   await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "2");
   await expect(dialog.locator(".voice-meter-bad")).toHaveText("Everyday word");
-  await expect(dialog.getByText("Anything you say that starts with “Will” goes to this agent, and everyday sentences can start that way. You can keep it; a rarer name is safer.")).toBeVisible();
+  await expect(dialog.getByText("Sentences like “Will you grab the door?” start the same way. You can keep it; a rarer name is safer.")).toBeVisible();
   await expect(dialog.getByText("One short syllable is easy to miss or mishear. You can keep it; two syllables or more is safer.")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await expect(dialog.getByText("Warning only", { exact: true })).toBeVisible();
   await shoot(dialog, "02-warning-everyday-word");
+
+  await field.fill("!!!");
+  await expect(dialog.locator(".voice-meter-bad")).toHaveText("Symbols only");
+  await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "3");
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await field.fill("サクラ Stop");
+  await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "4");
 
   await field.fill("Alice");
   await expect(dialog.locator(".voice-heard")).toHaveText("Alice, check the build");
@@ -263,4 +272,30 @@ test("a shelved task's call sign survives a restart, reads back in the editor, a
   expect(response.ok(), await response.text()).toBe(true);
   expect(JSON.parse(response.request().postData() ?? "{}")).toEqual({ callSign: null });
   expect(((await response.json()) as { task: Task }).task.callSign ?? null).toBeNull();
+});
+
+test("a running resident's question card follows its renamed profile only with Voice on", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  const profile = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Release Captain" },
+    persona: { personaId: "builtin:code-risk-reviewer" },
+    execution: { model: "claude-fable-5" },
+    loop: { delaySeconds: 3600, minDelaySeconds: 60, maxDelaySeconds: 3600 },
+  } });
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: "spoken-rename" });
+  const residentCwd = async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.kind === "resident")?.cwd;
+  await expect.poll(residentCwd, { timeout: 60_000 }).toBeTruthy();
+  await ask(daemon, (await residentCwd())!);
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const author = inbox.locator("section.review .review-head .review-agent");
+  await expect(author).toHaveText("Release Captain");
+  await api(daemon, `/api/residents/profiles/${profile.id}`, {
+    expectedRevision: profile.revision, settings: { ...profile.settings, identity: { ...profile.settings.identity, name: "Release Lead" } },
+  }, "PATCH");
+  await expect(author).toHaveText("Release Lead");
+  await shoot(inbox, "09-running-resident-renamed");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
+  await expect(author).toHaveText("Release Captain");
 });

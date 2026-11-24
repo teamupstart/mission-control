@@ -390,9 +390,9 @@ calls a resident by one.
 
 ### Reference names
 
-A resident profile's **Identity** card has a **Reference name** field under **Description**:
-what to say instead of the profile name, for a name such as "Release Captain" that is not
-something to say. It is `identity.referenceName` in the profile's revision JSON, optional with no
+A resident profile's **Identity** card pairs **Name** with an optional **Reference name**.
+For example, a resident named "Release Captain" can answer to "Sage". The reference name
+is `identity.referenceName` in the profile's revision JSON, optional with no
 default, so a revision saved before it existed reads exactly as before. Clearing it saves it
 blank, which means none: a save that left the key out would carry the previous revision's forward.
 
@@ -400,12 +400,14 @@ If Voice is switched off during an edit, saving the profile preserves its stored
 
 A reference name is a spoken name, not a launch setting, so it applies as soon as it is saved,
 also to a resident that is running: the roster reads the profile as it stands, and so does the
-display name a card prints. Every other profile edit still applies at the next launch.
+display name a card prints. With no reference name, Voice follows the current profile name
+as soon as the operator renames the resident. With Voice off, cards use the name pinned at launch.
 
 ### Checking a name
 
-Each field shows the sentence you would say, "**Alice,** check the build", with a four-step
-meter under it and one line per warning. The meter lights four steps, less one per warning.
+Dispatch previews "**Alice,** check the build" and the resident profile previews
+"**Sage,** cut the release". Each field shows a four-step meter and one line per warning.
+The meter lights four steps, less one per warning.
 Warnings never block: Dispatch and Save stay enabled whatever they say. They come from one pure
 function, `validateSpokenName(name, roster)` in `src/shared/voice-names.ts`, checked against the
 other names on the roster, never against the agent's own entry:
@@ -414,6 +416,7 @@ other names on the roster, never against the agent's own entry:
 | --- | --- |
 | `control-word` | The name's first word is, or sounds like (`keysSoundAlike`, so Stopper is heard as stop), a word voice listens for on its own: cancel, stop, reply, answer, submit, option, no (`VOICE_CONTROL_WORDS`) |
 | `sounds-like` | It sounds like another roster name, which the warning names |
+| `symbols-only` | The name contains no letters or numbers in any script. |
 | `common-word` | A one-word name on the bundled list of everyday words (`src/shared/voice-common-words.ts`), such as Will or Sage |
 | `short` | A one-word name of one syllable and four letters or fewer, such as Bo |
 
@@ -440,12 +443,13 @@ taskId, sessionId, role, colorId, agent, state }`:
   `not-running`. It stays while the profile is live.
 - one per task with a call sign that has launched, keyed `task:<taskId>`: its call sign; its title
   as its role; `running` while a live session runs it, `hibernated` while the task is hibernated,
-  else `not-running`. A task is not listed until its first launch starts (`Task.dispatchedAt`), so
-  one in the backlog, or created to launch now and still waiting for the dispatcher, is not.
+  else `not-running`. A backlog task or an attempt still provisioning its first session cannot
+  displace an agent that already answers to the name.
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
-stopped later. The displaced name stays off the roster even if the other agent gives it up or the
+stopped later. Schema 52 adds the nullable `tasks.retired_call_sign` column to record displacement
+without changing the configured call sign. The displaced name stays off the roster even if the other agent gives it up or the
 daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
 A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
 phase can say "<name> isn't running".
@@ -459,7 +463,7 @@ absolute bound:
   a restarted daemon reads the day's named finished tasks from storage
   (`loadFinishedTasksWithCallSign`), not only the 50 it reloads.
 - A task that stopped without finishing (its session exited, the task still open) counts from when
-  the daemon first saw it stopped. That moment is held in memory only, so a restart starts the
+  the daemon first saw it stopped, even when the call sign was added later. That moment is held in memory only, so a restart starts the
   clock again and the name can stay listed for longer than a day.
 
 **Settings > Voice** draws the roster as a table: the agent (a resident's profile name in its board
@@ -480,8 +484,10 @@ called by it on the inbox, the review modal, question cards, alert titles, the A
 report's author, and a resident by its reference name in its board colour. They are voice's names,
 so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameInput` takes the flag
 as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
+Schema 53 adds nullable `author_spoken_name` columns to `reports` and `report_mutes`.
 New reports capture both author labels when posted. Switching Voice changes which label is shown,
 even after the session exits. Older reports with a single recorded label keep that attribution.
+Away previews and return digests also select the label for buffered session events when read.
 
 ## The voice state
 

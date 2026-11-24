@@ -263,23 +263,20 @@ export async function withSpokenReadProofs<T>(conversation: DeliveryConversation
     const offsets = needed.length && anchor
       ? [...new Set([...spokenLedger.projectionOffsets(conversation.key, undefined, messages), anchor.end])] : needed;
     let capture = offsets.length ? await captureOffsets(offsets) : null;
-    let anchored = false;
     if (offsets.length && (!capture || capture.version !== version || read.snapshot?.(path)?.version !== version)) {
       const first = capture;
       if (!anchor || !first?.proofs.has(anchor.end) || !pageMatches()) continue;
       capture = await captureOffsets(offsets);
       if (!capture || !capture.fileId || capture.fileId !== first.fileId ||
           offsets.some(n => first.proofs.get(n)?.proof !== capture?.proofs.get(n)?.proof)) continue;
-      anchored = true;
     }
+    // Even growth on the same inode can include a prefix edit. Only the revision the
+    // final worker pass verified can authorize a disclosure or a durable binding.
     const snapshot = () => {
       const live = read.snapshot?.(path);
-      if (!anchored || !live || !capture) return live ?? null;
-      if (live.fileId !== capture.fileId || (live.version !== capture.version && live.size <= (capture.size ?? Infinity))) return null;
-      // Never cache a proof of the old page as proof of the entire growing file.
-      return { ...live, version: live.version + "/" + capture.proofs.get(anchor!.end)!.proof };
+      return live && (!capture || capture.version === live.version) ? live : null;
     };
-    const valid = () => anchored ? !!snapshot() : read.snapshot?.(path)?.version === version;
+    const valid = () => capture ? !!snapshot() : read.snapshot?.(path)?.version === version;
     if (capture && !valid()) continue;
     const verified = { path, read: { ...read, snapshot,
       boundary: (_path: string, offset?: number) => offset !== undefined && capture && valid() ? capture.proofs.get(offset) ?? null : null,

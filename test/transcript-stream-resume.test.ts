@@ -402,12 +402,13 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   spokenLedger.forgetCaches();
   const reader = native.read as Required<Pick<typeof native.read, "boundary" | "prepareHandoffBoundaries">>;
   const sync = t.mock.method(reader, "boundary");
-  let appendDuringVerification = false;
+  let appendsDuringVerification = 0;
   let rewritePrefix = false;
   const prepare = reader.prepareHandoffBoundaries.bind(reader);
   const worker = t.mock.method(reader, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
     const result = await prepare(...args);
-    if (appendDuringVerification) {
+    if (appendsDuringVerification > 0) {
+      appendsDuringVerification--;
       if (rewritePrefix) {
         rewritePrefix = false;
         writeFileSync(path, readFileSync(path, "utf8").replace("pppp", "edit"));
@@ -423,7 +424,7 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   assert.deepEqual(spokenIds(opened.messages), ["native-visible-first", "native-visible-second"]);
   assert.deepEqual(worker.mock.calls[0]?.arguments, [path, [...offsets, opened.pos], false]);
   appendFileSync(path, turn("advance-revision", "more output"));
-  appendDuringVerification = true;
+  appendsDuringVerification = 1;
   const end = statSync(path).size;
   const historyPage = () => app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
   const history = await historyPage();
@@ -431,21 +432,29 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   assert.deepEqual(spokenIds((await history.json()).messages), ["native-visible-first", "native-visible-second"]);
   for (const call of worker.mock.calls.slice(1)) assert.deepEqual(call.arguments, [path, [...offsets, end], false]);
   assert.equal(worker.mock.callCount(), 3, "both worker passes tolerated growth beyond the captured page");
+  // Continuous growth after every completed worker pass must defer attribution.
+  appendFileSync(path, turn("invalidate", "another revision"));
+  appendsDuringVerification = 4;
+  const deferred = await (await historyPage()).json();
+  assert.equal(deferred.spokenDeferred, true);
+  assert.deepEqual(spokenIds(deferred.messages), []);
+  assert.deepEqual(spokenIds((await (await historyPage()).json()).messages), ["native-visible-first", "native-visible-second"]);
+  appendFileSync(path, turn("invalidate-again", "more output"));
+  appendsDuringVerification = 1;
   rewritePrefix = true;
   const rewritten = await historyPage();
   assert.equal(rewritten.status, 200);
   assert.deepEqual(spokenIds((await rewritten.json()).messages), [], "changing earlier bytes during growth invalidates both disclosures");
-  appendDuringVerification = false;
   writeFileSync(path + ".new", readFileSync(path));
   renameSync(path + ".new", path);
   const replacement = await firstFrame();
   assert.ok(replacement.type === "init");
   assert.deepEqual(spokenIds(replacement.messages), []);
   assert.equal(sync.mock.callCount(), 0);
-  t.diagnostic(`Four projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
+  t.diagnostic(`Projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
 });
 
-async function confirmedTerminalRecord(id: string) {
+async function confirmedTerminalRecord(id: string, bind = true) {
   const { noteKeyFor } = await import("../src/server/registry.ts");
   const { sessionMessages } = await import("../src/server/harness/index.ts");
   const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
@@ -462,9 +471,9 @@ async function confirmedTerminalRecord(id: string) {
   const record = JSON.stringify({ type: "user", uuid: id + "-native", timestamp: new Date(now).toISOString(),
     message: { role: "user", content: id } }) + "\n";
   appendFileSync(path, record);
-  spokenLedger.bindLanded(key, native, now);
+  if (bind) spokenLedger.bindLanded(key, native, now);
   spokenLedger.forgetCaches();
-  return { read: native.read, record };
+  return { read: native.read, record, key };
 }
 
 test("a rewrite after native parsing cannot certify stale spoken history with a cold or cached proof", async t => {
@@ -547,4 +556,33 @@ test("a failed proof leaves native history, opening, resume and live appends rea
   const recovered = await firstFrame();
   assert.ok(recovered.type === "init" && !recovered.spokenDeferred);
   assert.equal(recovered.messages.find(m => m.id === words + "-native")?.presentation?.kind, "spoken");
+});
+
+test("growth after the final prefix capture cannot disclose or bind a turn against an edited prefix", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  for (const bound of [true, false]) {
+    const words = "post-capture-growth-" + bound;
+    const { read, key } = await confirmedTerminalRecord(words, bound);
+    const reader = read as Required<Pick<typeof read, "prepareHandoffBoundaries">>;
+    const prepare = reader.prepareHandoffBoundaries.bind(reader);
+    let passes = 0;
+    const worker = t.mock.method(reader, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+      const captured = await prepare(...args);
+      passes++;
+      if (passes === 1) appendFileSync(path, turn("after-first", "first append"));
+      if (passes === 2) writeFileSync(path, readFileSync(path, "utf8").replace("INTRO", "ALTER") + turn("after-final", "second append"));
+      return captured;
+    });
+    const frame = await firstFrame();
+    assert.ok(frame.type === "init");
+    assert.ok(passes >= 2);
+    const message = frame.messages.find(m => m.id === words + "-native");
+    assert.equal(message?.text, words);
+    assert.equal(message?.presentation, undefined);
+    if (!bound) assert.equal(loadSpokenTurns(key).find(row => row.spokenWords === words)?.messageId, null);
+    worker.mock.restore();
+  }
 });

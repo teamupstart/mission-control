@@ -9,7 +9,7 @@ import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
 import {
-  followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger,
+  followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff,
   SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, SpokenTranscriptUnavailable, type PreparedSpokenTranscript,
 } from "./delivery-ledgers.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
@@ -270,10 +270,10 @@ function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn
 }
 
 /** Positive evidence that nothing landed: give the record back. */
-function withdrawOutboxSend(send: OutboxSend, turn: PendingTurn): void {
+function withdrawOutboxSend(send: OutboxSend): void {
   if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
   else if (send.kind === "other") withdrawOtherSend(send.handle);
-  else if (send.reservationId !== null) spokenLedger.release(turn.noteKey, send.reservationId);
+  // Spoken reservations are withdrawn in the same transaction that requeues the claim.
 }
 
 /**
@@ -296,8 +296,8 @@ export class PendingTurnManager {
   private readonly draining = new Set<string>();
   /** After-work turns a delivery guard held back because their launch could not be checked. */
   private readonly unverifiedAfterWork = new Set<string>();
-  /** Retires of delivered turns that failed and are tried again, by turn id. */
-  private readonly retireRetries = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Failed database settlements retried by reservation or turn id. */
+  private readonly settlementRetries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTimers = new Map<string, ArmedDrain>();
   private readonly pickup = new Map<string, PickupCandidate>();
   private readonly terminalDrainBoundaries = new Map<string, TerminalDrainBoundary>();
@@ -360,8 +360,8 @@ export class PendingTurnManager {
     }
     this.idleTimers.clear();
     this.pickup.clear();
-    for (const timer of this.retireRetries.values()) clearTimeout(timer);
-    this.retireRetries.clear();
+    for (const timer of this.settlementRetries.values()) clearTimeout(timer);
+    this.settlementRetries.clear();
     this.terminalDrainBoundaries.clear();
     this.sdkHandoffs.clear();
     if (this.steerTimer) clearTimeout(this.steerTimer);
@@ -1325,10 +1325,10 @@ export class PendingTurnManager {
       } else if (accepted === null) {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
-        withdrawOutboxSend(outboxSend, turn);
+        withdrawOutboxSend(outboxSend);
         withdrawPersonDelivery(personSend);
         if (spokenRefusal === SPOKEN_TRANSCRIPT_CHANGED) this.spokenPreparationFailed(turn);
-        else releasePendingTurn(turn.id, turn.revision, spokenRefusal ?? "The agent became busy before delivery.", this.deps.now());
+        else this.releaseRefused(turn, outboxSend, spokenRefusal ?? "The agent became busy before delivery.");
         this.dropIfRefused(turn);
       } else if (this.registry.sessionResetInProgress(session.id)) {
         this.markResetUncertain(
@@ -1414,10 +1414,10 @@ export class PendingTurnManager {
       } else {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
-        withdrawOutboxSend(outboxSend, turn);
+        withdrawOutboxSend(outboxSend);
         withdrawPersonDelivery(personSend);
         if (spokenRefusal === SPOKEN_TRANSCRIPT_CHANGED) this.spokenPreparationFailed(turn);
-        else releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
+        else this.releaseRefused(turn, outboxSend, errorMessage(err));
       }
     } finally {
       if (this.sdkHandoffs.get(turn.noteKey) === handoff) {
@@ -1518,10 +1518,10 @@ export class PendingTurnManager {
         );
       } else {
         if (author) releaseInjection(session.id, turn.text);
-        withdrawOutboxSend(outboxSend, turn);
+        withdrawOutboxSend(outboxSend);
         withdrawPersonDelivery(personSend);
         if (spokenRefusal === SPOKEN_TRANSCRIPT_CHANGED) this.spokenPreparationFailed(turn);
-        else releasePendingTurn(turn.id, turn.revision, result.error ?? "The terminal refused the message.", this.deps.now());
+        else this.releaseRefused(turn, outboxSend, result.error ?? "The terminal refused the message.");
         this.dropIfRefused(turn);
       }
       this.registry.refreshPendingTurns(turn.noteKey);
@@ -1587,14 +1587,9 @@ export class PendingTurnManager {
       }
     } else {
       if (author) releaseInjection(session.id, turn.text);
-      withdrawOutboxSend(outboxSend, turn);
+      withdrawOutboxSend(outboxSend);
       withdrawPersonDelivery(personSend);
-      releasePendingTurn(
-        turn.id,
-        turn.revision,
-        result.error ?? "The terminal refused the message.",
-        this.deps.now(),
-      );
+      this.releaseRefused(turn, outboxSend, result.error ?? "The terminal refused the message.");
     }
     this.registry.refreshPendingTurns(turn.noteKey);
   }
@@ -1812,6 +1807,37 @@ export class PendingTurnManager {
     this.registry.refreshPendingTurns(turn.noteKey);
   }
 
+  private retrySettlement(key: string, failures: number, retry: () => void): void {
+    const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
+    this.settlementRetries.set(key, unref(setTimeout(() => {
+      this.settlementRetries.delete(key);
+      retry();
+    }, delay)));
+  }
+
+  /** Retry only the bookkeeping for a known refusal. The reservation fences any replacement claim. */
+  private releaseRefused(turn: PendingTurn, send: OutboxSend, detail: string, failures = 0): void {
+    const reservationId = send.kind === "spoken" ? send.reservationId : null;
+    let released: PendingTurn | null;
+    try {
+      released = releasePendingTurn(turn.id, turn.revision, detail, this.deps.now(), reservationId ?? undefined);
+    } catch (error) {
+      if (!reservationId) throw error;
+      console.warn(`[pending-turns] could not record spoken refusal for ${turn.id}:`, errorMessage(error));
+      if (!this.stopped) this.retrySettlement(reservationId, failures, () => this.releaseRefused(turn, send, detail, failures + 1));
+      return;
+    }
+    if (released && failures) {
+      // The original refusal publishes inside the drain. Give its delayed settlement
+      // the same guard so its own session_upsert cannot schedule another transport call.
+      const key = released.noteKey;
+      const alreadyDraining = this.draining.has(key);
+      this.draining.add(key);
+      try { this.registry.refreshPendingTurns(key); }
+      finally { if (!alreadyDraining) this.draining.delete(key); }
+    }
+  }
+
   /**
    * Retire a turn the agent took, with its after-work prompt row if it has one, in one
    * transaction. The delivery has already happened, so a retire that throws is not the
@@ -1824,17 +1850,13 @@ export class PendingTurnManager {
   private retireDelivered(turn: PendingTurn, reservationId: string | null, onCommit?: () => void,
     failures = 0): "committed" | "retrying" | "stale" {
     const retryKey = reservationId ?? turn.id;
-    this.retireRetries.delete(retryKey);
     let retiredKey: string | null;
     try {
       retiredKey = this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
     } catch (error) {
       console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
       if (this.stopped) return "stale";
-      const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
-      this.retireRetries.set(retryKey, unref(setTimeout(() => {
-        this.retireDelivered(turn, reservationId, onCommit, failures + 1);
-      }, delay)));
+      this.retrySettlement(retryKey, failures, () => this.retireDelivered(turn, reservationId, onCommit, failures + 1));
       return "retrying";
     }
     if (retiredKey === null) return "stale";

@@ -15596,6 +15596,7 @@ function transitionPendingTurn(
   to: PendingTurnState,
   now: number,
   lastError: string | null,
+  refusedReservationId: string | null = null,
 ): PendingTurn | null {
   const d = openDb();
   const transition = () => {
@@ -15603,10 +15604,29 @@ function transitionPendingTurn(
           SET state = ?, revision = revision + 1, updated_at = ?,
               claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
               last_error = ?
-        WHERE id = ? AND state = ? AND revision = ? RETURNING *`)
-      .get(to, now, to, lastError, id, from, revision) as PendingTurnRow | undefined;
-    if (!row) return null;
-    if (to === "queued") discardUnconfirmedSpokenReservation(d, row.spoken_reservation_id, now, true);
+        WHERE id = ? AND state = ? AND revision = ? AND (? IS NULL OR spoken_reservation_id = ?) RETURNING *`)
+      .get(to, now, to, lastError, id, from, revision, refusedReservationId, refusedReservationId) as PendingTurnRow | undefined;
+    if (!row) {
+      if (refusedReservationId && d.prepare("SELECT 1 FROM pending_turns WHERE id = ? AND state = ? AND revision = ? AND spoken_reservation_id = ?")
+          .get(id, from, revision, refusedReservationId)) throw new Error("The spoken refusal was not saved");
+      return null;
+    }
+    if (to === "queued" && row.spoken_reservation_id) {
+      if (from === "sending") {
+        // A positive refusal withdraws the actual attempt, including its unused SDK UUID.
+        // A crash or a manual retry of an uncertain row lacks this evidence.
+        const released = d.prepare(`DELETE FROM session_spoken_turns WHERE id = ? AND outbox_turn_id = ?
+          AND outbox_revision = ? AND runtime_confirmed_at IS NULL RETURNING note_key AS noteKey, fingerprint`)
+          .get(row.spoken_reservation_id, id, revision) as ReleasedDelivery | undefined;
+        if (released) rememberSpokenRelease(d, released);
+        else if (d.prepare("SELECT 1 FROM session_spoken_turns WHERE id = ?").get(row.spoken_reservation_id)) {
+          throw new Error("The refused spoken reservation was not withdrawn");
+        }
+        const cleared = d.prepare(`UPDATE pending_turns SET spoken_handoff_key = NULL, spoken_handoff_at = NULL,
+          spoken_handoff_generation = NULL, spoken_reservation_id = NULL WHERE id = ?`).run(id);
+        if (!cleared.changes) throw new Error("The refused spoken handoff stamp was not cleared");
+      } else discardUnconfirmedSpokenReservation(d, row.spoken_reservation_id, now, true);
+    }
     return rowToPendingTurn(row);
   };
   return to === "queued" && !d.isTransaction ? inTransaction(transition) : transition();
@@ -15617,8 +15637,9 @@ export function releasePendingTurn(
   revision: number,
   error: string,
   now: number,
+  reservationId?: string,
 ): PendingTurn | null {
-  return transitionPendingTurn(id, revision, "sending", "queued", now, error);
+  return transitionPendingTurn(id, revision, "sending", "queued", now, error, reservationId);
 }
 
 export function markPendingTurnUncertain(

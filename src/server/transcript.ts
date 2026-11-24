@@ -603,7 +603,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       const boundary = reachedEof ? null : nextRecordEnd(path, start, size, requireReadable);
       if (boundary === null) return { messages: [], start, end: start, atEnd: true,
         ...(requireReadable && { partialTailEnd: size }) };
-      return { messages: [], start, end: boundary, atEnd: false };
+      return { messages: [], start, end: boundary, atEnd: false, ...(requireReadable && { skippedRecord: true }) };
     }
     const repaired = repairTrailingBatch(path, size, finish, messages);
     return {

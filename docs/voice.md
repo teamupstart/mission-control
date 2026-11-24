@@ -111,6 +111,8 @@ Confirmation changes the outcome to `sent`. Recalling an unsent message changes 
 An outstanding card still receives that outcome after its entry leaves Recently heard.
 If writing the delivery receipt fails, the card keeps its queue status while the daemon retries
 the database write. A successful retry publishes the receipt without sending the message again.
+A confirmed transport refusal requeues its outbox claim and withdraws its transcript reservation
+in one transaction. If that write fails, the daemon retries the transaction without resending.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
 follow-up task.
@@ -127,6 +129,8 @@ It removes an unmatched payload only after reading the whole file. If the transc
 unreadable, or changes during the scan, cleanup tries again on a later sweep. If a runtime exits
 mid-record, cleanup checks every complete record and reads through the unfinished line to EOF.
 It waits until that file revision is at least 24 hours old before expiring unmatched receipts.
+If a complete record exceeds the parser budget, cleanup can observe later receipts but keeps
+unmatched payloads because it could not check that record.
 
 A terminal delivery records the native file identity and a digest of the bytes through its delivery
 offset. A worker hashes the history before the paste. The daemon checks the file revision and

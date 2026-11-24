@@ -280,6 +280,8 @@ export interface TranscriptForwardPage {
   atEnd: boolean;
   /** Strict native read reached this byte at EOF beyond the final newline. */
   partialTailEnd?: number;
+  /** A complete native record exceeded the parse budget and its contents were not inspected. */
+  skippedRecord?: true;
 }
 
 /** A live stream's opening history: turns, where to resume, and where to page back from. */

@@ -757,6 +757,35 @@ test("a verified terminal submit waits for fresh activity and idle before draini
   f.manager.stop();
 });
 
+for (const runtime of ["sdk", "terminal"] as const) test(runtime + " refusal retries only the atomic spoken settlement after SQLite recovers", async t => {
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const name = "refusal-settlement-" + runtime;
+  let attempts = 0;
+  const refuse = () => {
+    attempts++;
+    db.openDb().exec(`CREATE TRIGGER refuse_queue_write BEFORE UPDATE OF state ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL AND NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'queue write failed'); END`);
+  };
+  const f = runtime === "sdk" ? sdkFixture(name, async () => { refuse(); return null; }) :
+    terminalFixture(name, async () => { refuse(); return { ok: false, pasted: false, submitVerified: false, error: "positive refusal" }; });
+  t.after(() => { f.manager.stop(); db.openDb().exec("DROP TRIGGER IF EXISTS refuse_queue_write"); });
+  if (runtime === "sdk") idle(f.registry, f.id);
+  assert.ok(f.manager.submitSpoken(f.id, "inspect this refusal", name).ok);
+  await until(() => attempts === 1, "transport refusal");
+  assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+  const receipts = db.loadSpokenTurns(f.key);
+  assert.equal(receipts.length, 1, "the failed transition also rolled back reservation withdrawal");
+  db.openDb().exec("DROP TRIGGER refuse_queue_write");
+  await until(() => listPendingTurns(f.key)[0]?.state === "queued", "bookkeeping retry", 5000);
+  assert.equal(db.loadSpokenTurns(f.key).length, 0);
+  await tick(30); // Let a drain erroneously scheduled by the queue update run.
+  assert.equal(attempts, 1, "the storage retry did not call the transport");
+  db.recoverSendingPendingTurns(Date.now());
+  assert.equal(listPendingTurns(f.key)[0]?.state, "queued");
+});
+
 test("a spoken paste retries a changed transcript boundary and sends once against the fresh file", async t => {
   const name = "spoken-boundary-retry";
   const path = join(home, name + ".jsonl");

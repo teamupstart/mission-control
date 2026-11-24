@@ -84,6 +84,26 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
   db.closeDb();
 });
 
+test("a refused spoken release fences the attempt and rolls the queue transition back if withdrawal fails", async () => {
+  const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const key = "atomic-refused-spoken";
+  const words = "test the queue";
+  const turn = claimSpoken(key, words, words);
+  const reservation = reserveSpokenTurn({ key, transcript: null }, words, words, true, turn);
+  assert.equal(db.releasePendingTurn(turn.id, turn.revision, "refused", 10, "old-attempt"), null);
+  db.openDb().exec("CREATE TRIGGER ignore_withdrawal BEFORE DELETE ON session_spoken_turns BEGIN SELECT RAISE(IGNORE); END");
+  try {
+    assert.throws(() => db.releasePendingTurn(turn.id, turn.revision, "refused", 10, reservation.id), /not withdrawn/);
+    assert.equal(db.listPendingTurns(key)[0]?.state, "sending");
+    assert.equal(db.loadSpokenTurns(key)[0]?.id, reservation.id);
+  } finally {
+    db.openDb().exec("DROP TRIGGER ignore_withdrawal");
+  }
+  assert.equal(db.releasePendingTurn(turn.id, turn.revision, "refused", 11, reservation.id)?.state, "queued");
+  assert.equal(db.loadSpokenTurns(key).length, 0);
+  assert.equal(db.openDb().prepare("SELECT spoken_reservation_id FROM pending_turns WHERE id=?").get(turn.id)?.spoken_reservation_id, null);
+});
+
 test("spoken ledger reloads the exact payload and binds its native turn once a competing send is released", async () => {
   const { delegatedLedger, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
@@ -1307,6 +1327,38 @@ test("cleanup expires unmatched spoken receipts after a stable partial JSONL tai
   const stored = db.loadSpokenTurns(key);
   assert.ok(stored.every(row => row.id !== sdk.id && row.id !== terminal.id));
   assert.deepEqual(stored.map(r => r.id).sort(), [observed.id, incomplete.id].sort());
+});
+
+test("cleanup preserves an SDK receipt in an oversized native record and observes later readable receipts", async t => {
+  const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-oversized-cleanup-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const key = "sdk-oversized-cleanup";
+  const path = join(dir, "transcript.jsonl");
+  writeFileSync(path, "");
+  const now = Date.now();
+  const source = { path, read: claudeTranscript.messages! };
+  const reserve = (words: string) => {
+    const claim = claimSpoken(key, words, words);
+    const row = reserveSpokenTurn({ key, transcript: source }, words, words, true, claim, now);
+    assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+    return row;
+  };
+  const large = reserve("huge native record");
+  const later = reserve("later readable receipt");
+  const line = (row: typeof large, padding: string) => JSON.stringify({ type: "user", uuid: row.id, padding,
+    timestamp: new Date(now).toISOString(), message: { role: "user", content: row.received } }) + "\n";
+  writeFileSync(path, line(large, "x".repeat(17 * 1024 * 1024)) + line(later, ""));
+  const sweep = () => pruneExpiredSpokenTurns(now + 8 * DELIVERY_LAG_MS, k => k === key ? [source] : [], now + 1);
+  assert.equal(await sweep(), 0);
+  const rows = db.loadSpokenTurns(key);
+  assert.equal(rows.find(r => r.id === large.id)?.received, large.received);
+  assert.equal(rows.find(r => r.id === later.id)?.messageTs, now);
+  writeFileSync(path, line(large, "") + line(later, ""));
+  await sweep();
+  assert.equal(db.loadSpokenTurns(key).find(r => r.id === large.id)?.messageTs, now);
 });
 
 test("cleanup distinguishes a verified empty transcript from a failed read at byte zero", async t => {

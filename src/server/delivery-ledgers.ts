@@ -362,14 +362,18 @@ async function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscrip
     }
     // A rewritten transcript can put an SDK UUID before its handoff offset. Exact IDs
     // can be observed from each page without starting another whole-file binding walk.
+    let skippedRecord = false;
     for (let from = 0;;) {
       await yieldToDaemon();
       if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
       const page = transcript.read.after(transcript.path, from, 50, true);
       if (page.start !== from || transcript.read.snapshot?.(transcript.path)?.version !== snapshot.version) return "retry";
+      skippedRecord ||= !!page.skippedRecord;
       spokenLedger.bound({ key: noteKey, transcript: null }, page.messages, now);
       if (!spokenLedger.flushClientObservations(noteKey)) return "retry";
       if (page.atEnd) {
+        // Later records can prove a receipt was seen. A skipped record prevents proving absence.
+        if (skippedRecord) return "retry";
         if (page.end !== snapshot.size) {
           // A runtime can exit mid-record. Only a strict read through the actual EOF
           // can establish that all complete records were checked. Give the writer the

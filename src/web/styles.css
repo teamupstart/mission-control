@@ -43147,6 +43147,7 @@ button.vi { cursor: pointer; }
   font: 12px/1.4 var(--sans); overflow-wrap: anywhere; -webkit-app-region: no-drag;
 }
 .vi-composer-hint { color: var(--muted); font: 12px/1.4 var(--sans); }
+.compose > .vi-composer-hint { flex-basis: 100%; }
 .vi-topbar:hover { background: color-mix(in oklab, var(--vi) 12%, transparent); }
 .vi-status-line {
   display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px;

@@ -224,7 +224,7 @@ The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `to
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
 The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Click any indicator to mute or unmute. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
 
-**Recently heard** shows the latest 50 utterances, newest first, including the match, deciding rule and outcome. An exact opening name routes with or without a pause. A name mentioned later alone does not address an agent. Clear empties the in-memory history. Audio is never stored.
+**Recently heard** shows the latest 50 utterances, newest first, including the match, deciding rule and outcome. An exact opening name routes with or without a pause. A name mentioned later alone does not address an agent. Clear empties the daemon’s in-memory history, even when the table is empty or cannot refresh. Audio is never stored.
 
 With
 `voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the

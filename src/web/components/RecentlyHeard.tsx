@@ -79,7 +79,7 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   const readStatus = readError ? "History unavailable." : "Loading…";
   return <section aria-label="Recently heard" className="rh-dialog" data-anchor="voice/heard">
     <header className="rh-dialog-head"><strong>Recently heard</strong><span className="dim">{entries && !readError && `${entries.length} recent`}</span>
-      <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={knownEmpty || clearing} onClick={() => void clear()}>Clear</button></Tooltip>
+      <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={clearing} onClick={() => void clear()}>Clear</button></Tooltip>
     </header>
     {clearError && <p role="alert" className="settings-error">{clearError}</p>}
     {readError && <p role="alert" className="settings-error">{readError}</p>}

@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import type { Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { enableVoice, say } from "../fixtures/voice.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -60,7 +61,7 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
   await clear.click();
   await expect(table).toContainText("Nothing heard yet.");
   await expect(table.getByRole("alert")).toHaveCount(0);
-  await expect(table.getByRole("button", { name: "Clear" })).toBeDisabled();
+  await expect(clear).toBeEnabled();
   await expect(table).toContainText("Kept in memory, cleared when Mission Control quits. Audio is not stored.");
   if (capture) await table.screenshot({ path: join(capture, "empty.png") });
 });
@@ -98,7 +99,7 @@ for (const previouslyEmpty of [false, true]) {
     if (previouslyEmpty) {
       await page.goto(daemon.baseURL + "/#/settings/voice");
       await expect(history).toContainText("Nothing heard yet.");
-      await expect(clear).toBeDisabled();
+      await expect(clear).toBeEnabled();
     }
     await page.route("**/api/voice/heard", route => route.request().method() === "GET"
       ? route.fulfill({ status: 503 })
@@ -129,3 +130,37 @@ for (const previouslyEmpty of [false, true]) {
     await expect(history.getByRole("alert")).toHaveCount(0);
   });
 }
+
+test("Clear deletes retained speech while the next history poll is stalled after an empty read", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const endpoint = daemon.baseURL + "/api/voice/heard";
+  const history = page.getByRole("region", { name: "Recently heard" });
+  const clear = history.getByRole("button", { name: "Clear" });
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await expect(history).toContainText("Nothing heard yet.");
+
+  const stalled = Promise.withResolvers<Route>();
+  await page.route(endpoint, route => stalled.resolve(route), { times: 1 });
+  const read = await stalled.promise;
+  expect(read.request().method()).toBe("GET");
+  expect((await say(daemon, "Speech heard during the stalled poll")).ok).toBe(true);
+  const staleResponse = await read.fetch();
+  expect((await staleResponse.json()).entries).toEqual([expect.objectContaining({ text: "Speech heard during the stalled poll" })]);
+  try {
+    await expect(clear).toBeEnabled();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await history.screenshot({ path: join(mkdtempSync(join(root, "stalled-read-")), "clear.png") });
+    }
+    const deleted = page.waitForResponse(response => response.url() === endpoint && response.request().method() === "DELETE");
+    await clear.click();
+    expect((await deleted).ok()).toBe(true);
+    expect((await (await page.request.get(endpoint)).json()).entries).toEqual([]);
+  } finally {
+    await read.fulfill({ response: staleResponse });
+  }
+  expect((await say(daemon, "After the deletion")).ok).toBe(true);
+  await expect(history.getByRole("cell", { name: "After the deletion" })).toBeVisible();
+  await expect(history.getByRole("cell", { name: "Speech heard during the stalled poll" })).toHaveCount(0);
+});

@@ -209,7 +209,7 @@ test("a failed indicator save shows an alert and restores the previous selection
 
 // The console always sends the keyboard shortcut to the transcript. Mount the actual fallback
 // with no transcript owner, using the same dev-dashboard fixture as dispatch-modes.spec.ts.
-test("the Action Bar fallback keeps its message label and typed draft across mute changes", async ({ dashboard: page, daemon }) => {
+test("the Action Bar fallback keeps its visible typing prompt and draft alongside its voice hint", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const dev = await startDevDashboard(daemon);
   const listener = await beListener(daemon);
@@ -229,16 +229,20 @@ test("the Action Bar fallback keeps its message label and typed draft across mut
     const form = page.locator(".actions .compose");
     const message = form.getByRole("textbox", { name: "Message to send…", exact: true });
     await expect(message).toHaveAccessibleDescription('Message to send… or say "Will, …"');
+    await expect(message).toHaveAttribute("placeholder", "Message to send…");
+    await expect(form.getByText('Message to send… or say "Will, …"', { exact: true })).toBeVisible();
     await form.getByRole("button", { name: "Voice: listening. Mute" }).click();
     await expect(message).toHaveAccessibleDescription("Voice is muted");
-    await message.fill("A typed message");
-    await message.press("Shift+Enter");
-    await expect(message).toHaveValue("A typed message\n");
+    await expect(message).toHaveAttribute("placeholder", "Message to send…");
+    await expect(form.getByText("Voice is muted", { exact: true })).toBeVisible();
     if (process.env.MC_E2E_EVIDENCE) {
       const root = artifactsDir("voice-window");
       mkdirSync(root, { recursive: true });
       await form.screenshot({ path: join(mkdtempSync(join(root, "action-bar-")), "muted.png") });
     }
+    await message.fill("A typed message");
+    await message.press("Shift+Enter");
+    await expect(message).toHaveValue("A typed message\n");
     await form.getByRole("button", { name: "Voice: muted. Unmute" }).click();
     await expect(message).toHaveAccessibleDescription('Message to send… or say "Will, …"');
     await expect(message).toHaveValue("A typed message\n");

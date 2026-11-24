@@ -493,14 +493,14 @@ export function ActionBar({
               })}
             </div>
           )}
+          {voiceHint && <span className="vi-composer-hint" id={voiceHintId}>{voiceHint}</span>}
           <VoiceIndicator id="composer" />
-          {voiceHint && <span hidden id={voiceHintId}>{voiceHint}</span>}
           <textarea
             ref={inputRef}
             className="compose-input"
             aria-label={voiceHint ? "Message to send…" : undefined}
             aria-describedby={voiceHint ? voiceHintId : undefined}
-            placeholder={voiceHint ?? "Message to send…"}
+            placeholder="Message to send…"
             rows={1}
             autoFocus
             // Cancel and Escape only close this box - they unmount the input, so

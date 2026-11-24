@@ -452,10 +452,16 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version; a hello whose major
   version is not this daemon's (`1`) is refused with 409 `unsupported_protocol`, and the state's
   `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, registeredHotkey, hotkeyError }`,
-  sent by the desktop shell. Its optional `registeredHotkey` field names the chord the shell
-  actually registered. A report lapses 15 seconds after it arrives. Capability ids this build
-  does not know are dropped rather than refused.
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, registeredHotkey, hotkeyError }`
+  receives the desktop shell's capability report. A report lapses after 15 seconds.
+  The daemon drops unrecognized capability IDs.
+
+[Phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md) introduces the shell report producer.
+[Phase 11](plans/voice-addressing-for-agents/phase-11-hotkey-and-calls.md) connects it to the native hotkey registrar.
+On successful registration, Electron must include the registrar's confirmed chord in `registeredHotkey` on each report.
+If replacing a chord fails, it reports the chord still in force and the registration error. With no registration,
+it reports `null`. The producer regression test belongs alongside the registrar and checks the outgoing report
+after a successful registration, a failed replacement, and unregistration.
 
 ### Following it
 

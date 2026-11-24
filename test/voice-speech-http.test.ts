@@ -244,6 +244,44 @@ test("a signed exit returns 503 and holds capture until a retry removes the laun
   assert.equal((await holder.poll()).capture, true);
 });
 
+for (const inventoryState of ["missing", "unreadable"] as const) {
+  for (const ledgerState of ["intact", "unreadable"] as const) {
+    test(`signed exit with ${inventoryState} inventory clears only the exact holder after restart with ${ledgerState} ledger`, async () => {
+      const holder = player(), peer = player(crypto.randomUUID());
+      await holder.announce(); await holder.hello();
+      const id = await audition();
+      assert.equal((await holder.event(id, "started")).status, 200);
+      const saved = readFileSync(inventory, "utf8");
+      if (inventoryState === "missing") rmSync(inventory);
+      else writeFileSync(inventory, "?");
+      if (ledgerState === "unreadable") writeFileSync(ledger, "?");
+      store.reset(); await peer.hello();
+      assert.equal((await holder.poll()).speak.stop, true);
+      assert.equal((await peer.report("exited", holder.instance)).status, 403);
+      assert.equal((await peer.poll()).capture, false);
+
+      assert.equal((await holder.report("exited")).status, 200);
+      assert.equal((await holder.report("started")).status, 409);
+      const remaining = entries();
+      if (ledgerState === "intact") assert.deepEqual(remaining, []);
+      else {
+        assert.equal(remaining.length, 1);
+        assert.equal(remaining[0].supervisor, ".");
+      }
+      if (inventoryState === "missing") assert.throws(() => readFileSync(inventory), { code: "ENOENT" });
+      else assert.equal(readFileSync(inventory, "utf8"), "?");
+      store.reset(); await peer.hello();
+      assert.equal((await peer.poll()).capture, ledgerState === "intact");
+      // A restored inventory can contain the exited nonce. Its signed exit still counts.
+      writeFileSync(inventory, saved);
+      assert.equal((await holder.report("exited")).status, 200);
+      assert.deepEqual(entries(), []);
+      assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+      assert.equal((await peer.poll()).capture, true);
+    });
+  }
+}
+
 test("a surviving peer receipt cannot account for a missing player when the inventory is lost", async () => {
   const holder = player(), peer = player(crypto.randomUUID());
   await holder.announce(); await holder.hello();

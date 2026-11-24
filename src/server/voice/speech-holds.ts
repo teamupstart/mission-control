@@ -159,8 +159,19 @@ export class SpeechHolds {
       if (state === "started") {
         const exited = this.exitRecorded(name);
         if (exited !== false) return exited ? "already_exited" : "unavailable";
+      } else {
+        if (!this.write(join(this.directory, "supervised-exits", name + ".json"), true)) return "unavailable";
+        try { unlinkSync(path); }
+        catch (error) { if (!missing(error, path)) return "unavailable"; }
       }
-      let inventory = this.readInventory() ?? this.lastInventory;
+      let inventory: Launch[] | undefined;
+      try { inventory = this.readInventory() ?? this.lastInventory; }
+      catch {
+        if (state === "started") return "unavailable";
+      }
+      // The signed exit is durable for this nonce. Leave an incomplete inventory untouched:
+      // it cannot account for other players, and discovery will honor the exit if it returns.
+      if (!inventory && state === "exited") return "accepted";
       const known: Launch[] = holds.flatMap((hold): Launch[] => {
         if ("instance" in hold) return [hold.instance];
         return hold.supervisor === SUPERVISOR_DIRECTORY ? [] : [{ supervisor: hold.supervisor }];
@@ -175,11 +186,6 @@ export class SpeechHolds {
       if (state === "started") {
         if (!this.write(path, { instance })) return "unavailable";
         active.set(name, instance);
-      } else {
-        if (!this.write(join(this.directory, "supervised-exits", name + ".json"), true)) return "unavailable";
-        try { unlinkSync(path); }
-        catch (error) { if (!missing(error, path)) return "unavailable"; }
-        active.delete(name);
       }
       const next = [...active.values()];
       if (!this.write(this.inventoryPath, next)) return "unavailable";

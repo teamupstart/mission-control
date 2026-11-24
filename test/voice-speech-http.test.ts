@@ -683,13 +683,20 @@ test("a supervised same-account child cannot read or change the daemon's recover
   t.after(() => rmSync(model, { force: true }));
   const exit = join(home, "voice/supervised-exits", "fixture.json");
   mkdirSync(join(home, "voice/supervised-exits"), { recursive: true });
-  const { instance, child } = await signer.launch(home, process.execPath, ["-e", check, ledger, exit, model], {},
-    async (subject, proof) => { assert.equal((await peer.report("started", subject, proof)).status, 200); });
+  const launched = await signer.launch(home, process.execPath, ["-e", check, ledger, exit, model], {},
+    async (subject, state, proof) => { assert.equal((await peer.report(state, subject, proof)).status, 200); })
+    .catch(error => {
+      if (process.platform === "linux" && error.code === "ENOENT") return null;
+      throw error;
+    });
+  if (!launched) {
+    assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+    t.diagnostic("Bubblewrap is unavailable. The launcher retired the failed start without running the listener.");
+    return;
+  }
+  const { instance, child } = launched;
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
-  const completed = once(child, "close").catch(error => {
-    if (process.platform === "linux" && error.code === "ENOENT") return ["no-bwrap"];
-    throw error;
-  });
+  const completed = once(child, "close");
   const output = text(child.stdout), errors = text(child.stderr);
   await peer.hello(instance);
   const id = await audition();
@@ -697,7 +704,7 @@ test("a supervised same-account child cannot read or change the daemon's recover
   child.stdin.end("check");
   const [code] = await completed;
   const stderr = await errors;
-  if (process.platform === "linux" && (code === "no-bwrap" || (code !== 0 && /bwrap:.*(?:namespace|permitted|userns)/iu.test(stderr)))) {
+  if (process.platform === "linux" && code !== 0 && /bwrap:.*(?:namespace|permitted|userns)/iu.test(stderr)) {
     assert.equal(await output, ""); // The host refused confinement and the listener never ran.
     t.diagnostic("Host refused a confined process. Verified the launcher never falls back to an unrestricted child.");
   } else {
@@ -721,7 +728,8 @@ test("a symlinked voice directory cannot receive a signed start or replace the s
   symlinkSync(backing, voice, "dir");
   let announcements = 0;
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
-  const launch = (announce: () => Promise<void>) => signer.launch(root, process.execPath, ["--version"], {}, announce);
+  const launch = (announce: () => Promise<void>) => signer.launch(root, process.execPath, ["--version"], {},
+    async (_, state) => { if (state === "started") await announce(); });
   await assert.rejects(launch(async () => { announcements++; }), /real directories/);
   assert.equal(announcements, 0);
   rmSync(voice);
@@ -739,6 +747,60 @@ test("a symlinked voice directory cannot receive a signed start or replace the s
     symlinkSync(backing, voice, "dir");
   }), /real directories/);
   assert.equal(announcements, 1);
+});
+
+test("a confirmed spawn failure retries its signed exit until recovery retires the announced launch", { timeout: 10_000 }, async t => {
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  Object.assign(process.env, signer.daemonEnv);
+  t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
+  const peer = player();
+  let original = "", exitAttempts = 0;
+  const statuses: number[] = [];
+  // Node rejects this argv before any OS child exists, after the start has been accepted.
+  await assert.rejects(signer.launch(home, process.execPath, ["\0"], {}, async (instance, state, proof) => {
+    if (state === "started") {
+      original = instance;
+      statuses.push((await peer.report(state, instance, proof)).status);
+      return;
+    }
+    assert.equal(instance, original);
+    if (++exitAttempts === 1) {
+      store.reset(); await peer.hello(); // Missing playback ledger discovers the unretired launch.
+      assert.equal((await peer.poll()).capture, false);
+      renameSync(supervised, supervised + ".retry");
+      writeFileSync(supervised, "unavailable");
+      try { statuses.push((await peer.report(state, instance, proof)).status); }
+      finally { rmSync(supervised); renameSync(supervised + ".retry", supervised); }
+      throw new Error("Retry the unacknowledged exit");
+    }
+    statuses.push((await peer.report(state, instance, proof)).status);
+  }), { code: "ERR_INVALID_ARG_VALUE" });
+  assert.deepEqual(statuses, [200, 503, 200]);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+  rmSync(ledger);
+  store.reset(); await peer.hello();
+  assert.equal((await peer.poll()).capture, true);
+});
+
+test("a lost start acknowledgement retires the same launch while a definitive refusal spawns nothing", async t => {
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  Object.assign(process.env, signer.daemonEnv);
+  t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
+  const peer = player();
+  const reports: string[] = [];
+  await assert.rejects(signer.launch(home, process.execPath, ["--version"], {}, async (subject, state, proof) => {
+    reports.push(state);
+    assert.equal((await peer.report(state, subject, proof)).status, 200);
+    if (state === "started") throw new Error("Start acknowledgement lost");
+  }), /acknowledgement lost/);
+  assert.deepEqual(reports, ["started", "exited"]);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+  reports.length = 0;
+  await assert.rejects(signer.launch(home, process.execPath, ["--version"], {}, async (_, state) => {
+    reports.push(state);
+    return false;
+  }), /start was refused/);
+  assert.deepEqual(reports, ["started"]);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

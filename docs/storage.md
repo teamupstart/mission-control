@@ -207,9 +207,11 @@ that verifier to its launch nonce. Ordinary files owned by the listener's OS
 account, including legacy keys in the Mission Control state home, cannot be
 used as credential descriptors.
 
-Use the supervisor's `launch(stateHome, executable, args, env, announce)` for
-speech-capable children. It supplies a fresh instance and signed start to the
-announcement callback. After that callback succeeds it starts the executable
+Use the supervisor's `launch(stateHome, executable, args, env, report)` for
+speech-capable children. The report callback receives the instance, event and
+signature, and resolves when the daemon acknowledges that report. It returns
+`false` for a definitive refusal and throws when the outcome is unknown. After the
+start is acknowledged the launcher starts the executable
 under the OS filesystem sandbox. The child can read the voice models and write
 to its own temporary directory. It cannot read the other voice records or
 write the daemon's ledger, launch inventory, receipts or exit evidence.
@@ -219,9 +221,12 @@ outlive the process whose exit the supervisor reports. The Linux launcher requir
 `/usr/bin/bwrap` and user namespaces. If confinement fails the player cannot
 run. The launcher rejects a symlinked voice or model directory before announcing
 the child and rechecks the directories before spawn. The supervisor uses the
-instance it announced to report the child's exit
-or a confirmed failure to spawn. It retains that instance until the daemon
-accepts the exit. A capture-only listener can keep its existing launch path.
+instance it announced to report the child's exit. If the OS refuses to spawn
+the child, pre-spawn validation fails after announcement, or the start
+acknowledgement is lost, the launch helper
+retains the instance and retries its signed exit with backoff. It returns the
+original spawn error once the exit is acknowledged. A capture-only listener
+can keep its existing launch path.
 
 #### Voice launch receipts
 

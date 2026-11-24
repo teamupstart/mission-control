@@ -1,5 +1,7 @@
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
+import { once } from "node:events";
 import { closeSync, fstatSync, readSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { confinedVoiceListener } from "./supervised-listener.ts";
 
 export const VOICE_SUPERVISOR_PROOF_HEADER = "x-mission-voice-supervisor-proof";
@@ -49,11 +51,32 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
   return {
     daemonEnv: { [verifierEnv[name]]: der.toString("base64") },
     async launch(stateHome: string, executable: string, args: string[], env: NodeJS.ProcessEnv,
-      announce: (instance: string, proof: string) => Promise<void>) {
+      report: (instance: string, state: SupervisorReportState, proof: string) => Promise<void | false>) {
       const instance = prefix + randomBytes(32).toString("hex");
       const start = confinedVoiceListener(stateHome, instance);
-      await announce(instance, signature(instance, "started"));
-      return { instance, child: start(executable, args, env) };
+      let refused = false;
+      try {
+        refused = await report(instance, "started", signature(instance, "started")) === false;
+        if (refused) throw new Error("Voice supervisor start was refused.");
+        const child = start(executable, args, env);
+        // An OS spawn error precedes 'spawn'. Once spawned, the launcher owns
+        // the live child's handle and must observe its exit before retiring it.
+        await once(child, "spawn");
+        return { instance, child };
+      } catch (error) {
+        if (refused) throw error;
+        // An accepted start, including one whose acknowledgement was lost, can
+        // leave a receipt without an OS child. Retire the exact nonce before returning.
+        const proof = signature(instance, "exited");
+        let retryMs = 250;
+        for (;;) {
+          try { if (await report(instance, "exited", proof) !== false) break; }
+          catch { /* The daemon may already have committed this exit. */ }
+          await delay(retryMs);
+          retryMs = Math.min(5000, retryMs * 2);
+        }
+        throw error;
+      }
     },
     exitProof: (instance: string) => signature(instance, "exited"),
   };

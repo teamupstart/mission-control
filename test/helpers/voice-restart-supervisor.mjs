@@ -13,7 +13,8 @@ process.on("message", async request => {
   if (request.state === "started") {
     // The HTTP test runs the fake player independently of these two restartable parents.
     // Pause at announcement so the fixture can model a parent dying at this boundary.
-    await signer.launch(request.home, process.execPath, [], {}, (instance, proof) => {
+    await signer.launch(request.home, process.execPath, [], {}, (instance, state, proof) => {
+      if (state !== "started") throw new Error("Unexpected exit before the test player starts");
       process.send({ instance, env: signer.daemonEnv, proof });
       return new Promise(() => {});
     });

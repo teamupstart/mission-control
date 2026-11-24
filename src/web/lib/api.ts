@@ -2540,9 +2540,18 @@ export const api = {
     "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
   setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement) =>
     put("/api/voice/confirmation", { confirmation }, { signal: AbortSignal.timeout(5000) }),
-  submitVoiceAnswerCompanion: (id: string) => post(`/api/voice/cards/${encodeURIComponent(id)}/send-now?source=card`),
-  voiceCardAction: (id: string, action: "cancel" | "send-now" | "pick", candidateId?: string) =>
-    post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`, candidateId ? { id: candidateId } : undefined),
+  voiceAnswerAction: (id: string, action: "cancel" | "send-now") => post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`),
+  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null; answerCompanion?: boolean } = {}) => {
+    const remaining = options.deadline == null ? Infinity : options.deadline - performance.now();
+    if (remaining <= 0) return { ok: false, error: "The cancel window has closed." };
+    // Leave time for a retry even in a short cancel window. The daemon may already
+    // have acted when only its response was lost. Its event stream supplies the outcome.
+    const signal = AbortSignal.timeout(Math.max(1, Math.min(2000, Math.floor(remaining / 2))));
+    const source = options.answerCompanion && action === "send-now" ? "?source=card" : "";
+    const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}${source}`,
+      options.candidateId ? { id: options.candidateId } : undefined, { signal });
+    return signal.aborted ? { ok: false, error: "The request timed out." } : result;
+  },
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
     put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),

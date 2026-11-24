@@ -3,7 +3,7 @@ import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
 import type { VoiceAnswer } from "@shared/voice-answers.ts";
-import { receiveVoiceCard, type DashboardVoiceCard } from "./lib/voice-card-clock.ts";
+import { receiveVoiceCard, VoiceCardClock, type DashboardVoiceCard } from "./lib/voice-card-clock.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -49,7 +49,7 @@ import { dropSessionArtifactState } from "./lib/conversationArtifacts.ts";
 import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
-import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
+import { fetchVoiceConfig, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
 import { applyVoiceIndicatorSelection } from "./lib/uiConfig.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
@@ -417,10 +417,44 @@ export function useEventStream(): MissionState {
 
   useEffect(() => {
     let windowId: string | undefined;
+    let connectionStartedAt = performance.now();
     const es = new EventSource("/events");
     esRef.current = es;
-    let voiceClockOffset = Infinity;
+    let voiceClock = new VoiceCardClock();
+    let clockProbe: AbortController | undefined;
+    let lastProbeAt = -Infinity;
+    function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }) {
+      const now = performance.now();
+      const stamp = frame.voiceServerTime ?? Date.now();
+      const sample = voiceClock.observe(connectionStartedAt, now, frame.voiceStreamStartedAt ?? stamp, stamp);
+      // A long SSE handshake does not tell us which direction was slow. Take an
+      // independent timestamped read and refine only the windows still using that estimate.
+      if (sample.uncertain && !clockProbe && now - lastProbeAt > 1000) {
+        const probe = new AbortController();
+        clockProbe = probe;
+        lastProbeAt = now;
+        void fetchVoiceConfig(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(read => {
+          if (clockProbe !== probe || !read || !Number.isFinite(read.serverTime)) return;
+          const refined = voiceClock.observe(now, performance.now(), read.serverTime, read.serverTime);
+          setVoiceCards(current => {
+            const next = new Map(current);
+            for (const [id, card] of current) {
+              if (card.provisionalDeadline) next.set(id, receiveVoiceCard(card, refined, card));
+            }
+            return next;
+          });
+        }).finally(() => { if (clockProbe === probe) clockProbe = undefined; });
+      }
+      return sample;
+    }
+    function cancelClockProbe() {
+      clockProbe?.abort();
+      clockProbe = undefined;
+      lastProbeAt = -Infinity;
+    }
     function clearVoiceTimers() {
+      cancelClockProbe();
+      voiceClock = new VoiceCardClock();
       for (const { timer, fadeTimer } of voiceExpiry.values()) {
         window.clearTimeout(timer ?? undefined);
         window.clearTimeout(fadeTimer);
@@ -446,6 +480,8 @@ export function useEventStream(): MissionState {
     };
     es.onerror = () => {
       if (esRef.current !== es) return;
+      cancelClockProbe();
+      connectionStartedAt = performance.now(); // EventSource will retry after this point.
       observeBrowserConnection(false);
       setConnected(false);
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
@@ -558,12 +594,12 @@ export function useEventStream(): MissionState {
           if (msg.voice && msg.voice.mode !== "off") {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
-            voiceClockOffset = performance.now() - (msg.voiceServerTime ?? Date.now());
-            const active = (msg.voiceCards ?? []).map(card => receiveVoiceCard(card, voiceClockOffset));
+            const sample = sampleCardClock(msg);
+            const active = msg.voiceCards ?? [];
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
-              for (const card of active) next.set(card.id, card);
+              for (const card of active) next.set(card.id, receiveVoiceCard(card, sample, current.get(card.id)));
               return next;
             });
           } else {
@@ -859,14 +895,12 @@ export function useEventStream(): MissionState {
           });
           break;
         case "voice_card": {
-          // A slow frame cannot extend the deadline beyond an earlier clock sample.
-          const offset = Math.min(voiceClockOffset, performance.now() - (msg.voiceServerTime ?? Date.now()));
-          voiceClockOffset = offset;
+          const sample = sampleCardClock(msg);
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);
             next.delete(msg.card.id);
-            next.set(msg.card.id, receiveVoiceCard(msg.card, offset, prev.get(msg.card.id)));
+            next.set(msg.card.id, receiveVoiceCard(msg.card, sample, prev.get(msg.card.id)));
             const completed = [...next.values()].filter(card => voiceCardCanExpire(card) && voiceExpiry.get(card.id)?.timer !== null);
             if (completed.length > 50) next.delete(completed[0]!.id);
             return next;

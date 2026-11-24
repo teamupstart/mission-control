@@ -212,7 +212,7 @@ export function ReviewCard({
     if (!pendingAnswer) return;
     const attempt = manualEdit && action === "cancel" ? { id: pendingAnswer.id, status: "requested" as const } : null;
     if (attempt) setEditCancel(attempt);
-    const result = await api.voiceCardAction(pendingAnswer.id, action);
+    const result = await api.voiceAnswerAction(pendingAnswer.id, action);
     if (result.ok) return;
     if (attempt) {
       // A retry can reach the daemon before the earlier request returns.

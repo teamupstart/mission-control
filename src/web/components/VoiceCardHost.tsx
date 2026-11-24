@@ -11,19 +11,21 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
   card: DashboardVoiceCard; actions: VoiceCardActions; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
 }) {
   const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState("");
+  const [actionFeedback, setActionFeedback] = useState<{ state: DashboardVoiceCard["state"]; message: string } | null>(null);
+  const feedback = actionFeedback?.state === card.state ? actionFeedback.message : "";
   const run = useCallback(async (perform: () => Promise<ActionResult>, success = "", failure = "") => {
     setBusy(true);
-    setFeedback("");
+    setActionFeedback(null);
     try {
       const result = await perform();
-      setFeedback(result.ok ? success : failure + (result.error ?? "The card changed before that action completed."));
+      const message = result.ok ? success : failure + (result.error ?? "The card changed before that action completed.");
+      setActionFeedback({ state: card.state, message });
     } catch {
-      setFeedback(failure + "Mission Control could not complete that action.");
+      setActionFeedback({ state: card.state, message: failure + "Mission Control could not complete that action." });
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [card.state]);
   const announced = useRef<number | null>(null);
   useEffect(() => {
     if (!notify || !card.deadline || card.state !== "pending" || announced.current === card.deadline) return;
@@ -66,8 +68,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
             if (!active || !choice) return;
             if (choice === "window-focused") return allowRetry();
             const label = choice === "cancel" ? "Cancel" : "Send now";
-            void run(() => reason === "voice-answer" && choice === "send-now"
-              ? api.submitVoiceAnswerCompanion(cardId) : api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
+            void run(() => api.voiceCardAction(cardId, choice, { deadline, answerCompanion: reason === "voice-answer" }), "", `Desktop ${label} was not confirmed. `);
           }, allowRetry);
           return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
         }

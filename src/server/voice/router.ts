@@ -80,6 +80,8 @@ function compareAnswerCaptures(a: AnswerAttempt, b: AnswerAttempt): number {
 
 interface OpenCard {
   answer?: VoiceAnswer;
+  /** Daemon monotonic deadline. The wire deadline is in wall time for dashboard calibration. */
+  answerExpiresAt?: number;
   /** The original answer's speech order survives a picker click and later corrections. */
   answerCapture?: ActionTime & { sequence: number };
   answerAttempt?: AnswerAttempt;
@@ -428,7 +430,7 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = "switch-answer";
       const index = spokenIndex(correction[1]!, true);
-      if (index !== undefined && review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[index]) {
+      if (index !== undefined && review && performance.now() < latest.answerExpiresAt! && review.decisions?.[0]?.options[index]) {
         return this.prepareAnswer(latest, review, "option " + (index + 1), false, { id: utterance.id, time }).then(() => true);
       }
       return true;
@@ -600,6 +602,8 @@ export class VoiceRouter {
     const window = this.window();
     const windowMs = window.enabled ? window.seconds * 1000 : 0;
     const deadline = Date.now() + windowMs;
+    const expiresAt = performance.now() + windowMs;
+    item.answerExpiresAt = expiresAt;
     if (correction) {
       // Replace the action in place so delayed buttons cannot act on the new answer,
       // while spoken Cancel still follows the original capture order.
@@ -620,7 +624,7 @@ export class VoiceRouter {
     this.questions!.publish(review.id, item.answer);
     if (!item.answer.footerWindowId) this.publish(item.card);
     if (!windowMs) { await this.sendNow(id); return; }
-    item.timer = setTimeout(() => { void this.sendNow(id); }, windowMs);
+    item.timer = setTimeout(() => { void this.sendNow(id); }, Math.ceil(expiresAt - performance.now()));
     item.timer.unref();
   }
 

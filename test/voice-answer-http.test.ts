@@ -22,6 +22,32 @@ test("the deadline resolves through the human click path, correction restarts it
   assert.equal((await act("answer", "send-now")).status, 409);
 });
 
+test("a wall-clock jump during the countdown preserves a correction until its monotonic deadline", async t => {
+  let wall = Date.now();
+  let elapsed = performance.now();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.method(Date, "now", () => wall);
+  t.mock.method(performance, "now", () => elapsed);
+  const q = question();
+  await say("Steve, option B", "before-jump");
+  elapsed += 400;
+  t.mock.timers.tick(400);
+  wall += 60_000;
+  await say("no, A", "after-jump");
+  assert.equal(answers()[0]?.text, "SQLite");
+  elapsed += 600;
+  t.mock.timers.tick(600);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  // Delay the timer callback past the corrected deadline. Wall time alone
+  // would still admit another correction, since the wall clock is stationary.
+  elapsed += 400;
+  await say("no, B", "expired");
+  assert.equal(answers()[0]?.id, "after-jump");
+  t.mock.timers.tick(400);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.getReview(q.id)?.selections?.[0]?.selected, ["sqlite"]);
+});
+
 test("window off resolves immediately, a competing human answer survives a late send", async () => {
   const first = question();
   await say("Steve, option B", "late");

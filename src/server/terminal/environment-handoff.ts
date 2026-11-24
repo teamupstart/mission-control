@@ -40,7 +40,7 @@ export async function stopTerminalEnvironmentHandoffs(): Promise<void> {
  * enough for sockaddr_un even when a managed resume's state-home path is long.
  */
 export async function openTerminalEnvironmentHandoff(
-  launch: { cwd: string; stateHome: string }, named: NamedAgentEnvironment, onUnused?: () => void,
+  launch: { cwd: string; stateHome: string }, named: NamedAgentEnvironment,
 ) {
   if (stopping) throw new Error("Terminal environment handoffs are stopping.");
   const patch = terminalEnvironmentPatch(launch, named);
@@ -55,7 +55,6 @@ export async function openTerminalEnvironmentHandoff(
   };
   const server = createServer();
   let disposed = false;
-  let used = false;
   const closed = new Promise<void>((resolve) => {
     server.once("close", () => {
       removeDirectory();
@@ -68,9 +67,6 @@ export async function openTerminalEnvironmentHandoff(
       disposed = true;
       clearTimeout(timer);
       server.close();
-      if (!used && onUnused) {
-        try { onUnused(); } catch { console.warn("Could not release the unused terminal launch state home."); }
-      }
     }
     return closed;
   };
@@ -79,7 +75,6 @@ export async function openTerminalEnvironmentHandoff(
   const timer = setTimeout(dispose, RESUME_START_MS).unref();
   server.on("connection", (socket) => {
     if (disposed) { socket.destroy(); return; }
-    used = true;
     void dispose();
     socket.on("error", () => socket.destroy());
     socket.setTimeout(5_000, () => socket.destroy());
@@ -108,10 +103,10 @@ export async function openTerminalEnvironmentHandoff(
 
 /** A fresh dispatch runs its existing shell wrapper under the selected environment. */
 export async function terminalEnvironmentArgv(
-  argv: string[], launch: { cwd: string; stateHome: string }, named?: NamedAgentEnvironment, onUnused?: () => void,
+  argv: string[], launch: { cwd: string; stateHome: string }, named?: NamedAgentEnvironment,
 ) {
   if (!named) return { argv, dispose() {} };
-  const { path, dispose } = await openTerminalEnvironmentHandoff(launch, named, onUnused);
+  const { path, dispose } = await openTerminalEnvironmentHandoff(launch, named);
   const runtime = resolveOwnedRuntime({ executable: process.execPath, kind: process.versions.electron ? "electron" : "node" });
   return { argv: ["/usr/bin/env", ...Object.entries(runtime.env).map(([k, v]) => `${k}=${v}`),
     runtime.command, resumeGuardPath(), "--with-agent-environment", path, ...argv], dispose };

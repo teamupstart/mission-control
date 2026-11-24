@@ -19,6 +19,7 @@ import {
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import type { NamedAgentEnvironment } from "./executables/named-variable.ts";
 import { launchAgentEnvironment } from "./agent-environment.ts";
+import { RESUME_START_MS } from "./terminal/resume-lease.ts";
 import { terminalEnvironmentArgv } from "./terminal/environment-handoff.ts";
 import { launchPreparedResume, type ManagedResumeLaunch } from "./terminal/resume-launch.ts";
 import { readLaunchProcess, spawnHasLaunchIdentity, turnOneOutcomePath } from "./terminal/launch-process.ts";
@@ -95,6 +96,7 @@ import { configuredTerminalDeps } from "./terminals-config.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
+  retainPendingTerminalHome,
   isolatedAgentArgv,
   isolatedAgentEnvironment,
 } from "./agent-subprocess-env.ts";
@@ -1139,6 +1141,8 @@ export class Dispatcher {
         // first sees the agent beneath THIS wrapper. Settled when the launch ends below.
         const named = await launchAgentEnvironment(resident);
         expectedWorkUnit = expectTerminalLaunchWorkUnit(stateHome, workUnitId, null, named?.missing);
+        // The real spawner owns cleanup even if the backend cannot confirm its outcome.
+        if (!this.deps.spawn) pendingAgentStateHome = null;
         home = await (this.deps.spawn ?? spawnUniquely)(
           label,
           shortId,
@@ -1423,9 +1427,12 @@ export class Dispatcher {
       // a `homeName`-less task would otherwise read as "no home was ever spawned" - true,
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
-      const alive = embedded ?? (
-        cur.homeName ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId) : false
-      );
+      // A timeout before a backend returns its name gives us no identity to check. Its
+      // delayed pane still needs the checkout even though no home record was confirmed.
+      const unconfirmedSpawn = err instanceof TerminalLaunchError && err.outcomeUnknown;
+      const alive = embedded ?? (cur.homeName
+        ? await homeAlive(cur.homeName, configuredTerminalDeps, cur.homeBackend ?? null, cur.terminalResourceId)
+        : unconfirmedSpawn ? null : false);
       if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
@@ -3689,18 +3696,20 @@ export async function spawnUniquely(
   deps?: HomeDeps,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
+  let release = () => cleanupDisposableAgentStateHome(effectiveStateHome);
+  let handoff: Awaited<ReturnType<typeof terminalEnvironmentArgv>> | undefined;
   try {
     const argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
-    const handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named,
-      () => cleanupDisposableAgentStateHome(effectiveStateHome));
-    try {
-      return await spawnWrappedUniquely(baseName, shortId, cwd, handoff.argv, effectiveStateHome, terminalBackend, deps);
-    } catch (error) {
-      if (!(error instanceof TerminalLaunchError && error.outcomeUnknown)) handoff.dispose();
-      throw error;
-    }
+    handoff = await terminalEnvironmentArgv(argv, { cwd, stateHome: effectiveStateHome }, named);
+    if (named) release = retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+    return await spawnWrappedUniquely(baseName, shortId, cwd, handoff.argv, effectiveStateHome, terminalBackend, deps);
   } catch (error) {
-    cleanupDisposableAgentStateHome(effectiveStateHome);
+    if (error instanceof TerminalLaunchError && error.outcomeUnknown) {
+      if (!named) retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
+    } else {
+      await handoff?.dispose();
+      release();
+    }
     throw error;
   }
 }

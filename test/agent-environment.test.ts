@@ -156,8 +156,7 @@ test("terminal handoff enforces SDK isolation before either launch command execu
 
   await t.test("a terminal handoff delivers the credential once and rejects the same argv before a second agent starts", async (t) => {
     const starts = join(dir, "agent-starts");
-    const unused = t.mock.fn();
-    const handoff = await terminalEnvironmentArgv([...agent, starts], { cwd: dir, stateHome: dir }, named, unused);
+    const handoff = await terminalEnvironmentArgv([...agent, starts], { cwd: dir, stateHome: dir }, named);
     t.after(handoff.dispose);
     const launch = () => promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: { TMUX_PANE: "%real" } });
 
@@ -165,8 +164,6 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     assert.equal(readFileSync(starts, "utf8"), "started\n");
     await assert.rejects(launch(), { code: 1, stderr: /could not read the terminal environment handoff/ });
     assert.equal(readFileSync(starts, "utf8"), "started\n", "reusing the handoff must never enter the agent");
-    await handoff.dispose();
-    assert.equal(unused.mock.callCount(), 0, "consumption transfers cleanup ownership to the wrapper");
   });
 
   await t.test("concurrent handoffs use separate private directories and remove them after use or disposal", async (t) => {

@@ -47,6 +47,7 @@ const GO_CACHE_UID = userInfo().uid;
 const SHARED_GO_BUILD_CACHE = join(tmpdir(), `mission-control-go-build-${GO_CACHE_UID}`);
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
+const pendingTerminalHomeChecks = new Set<() => void>();
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -131,6 +132,7 @@ function hookProcessCleanup(): void {
   if (cleanupHooked) return;
   cleanupHooked = true;
   process.once("exit", () => {
+    for (const release of pendingTerminalHomeChecks) release();
     for (const stateHome of liveDisposableStateHomes) {
       rmSync(stateHome, { recursive: true, force: true });
     }
@@ -159,6 +161,29 @@ export function cleanupDisposableAgentStateHome(stateHome: string | undefined): 
   if (!stateHome.startsWith(prefix) || stateHome.slice(prefix.length).includes("/")) return;
   rmSync(stateHome, { recursive: true, force: true });
   liveDisposableStateHomes.delete(stateHome);
+}
+
+/**
+ * Keep a named dispatch home across backend timeouts and interrupted socket reads. At the
+ * deadline (or shutdown), the daemon and shell compete to create the same private PID file.
+ * A winning wrapper has installed its EXIT trap and owns cleanup for the rest of its life.
+ */
+export function retainPendingTerminalHome(stateHome: string, timeoutMs: number): () => void {
+  if (!liveDisposableStateHomes.delete(stateHome)) return () => {};
+  const release = () => {
+    if (!pendingTerminalHomeChecks.delete(release)) return;
+    clearTimeout(timer);
+    try {
+      writeFileSync(join(stateHome, LAUNCH_PID_FILE), "", { flag: "wx", mode: 0o600 });
+      cleanupDisposableAgentStateHome(stateHome);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "EEXIST") console.warn("Could not release an unstarted terminal launch home.");
+    }
+  };
+  const timer = setTimeout(release, timeoutMs).unref();
+  pendingTerminalHomeChecks.add(release);
+  return release;
 }
 
 /** Release the disposable home named by a child environment. */
@@ -292,7 +317,9 @@ function launchAndCleanupScript(
         : assignment;
     }),
     `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
-    `printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}"`,
+    // POSIX noclobber claims the start record exclusively against expiry or another pane.
+    // A loser must disarm its trap: the winning wrapper may already have a running agent.
+    `(set -C; printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}") || { trap - EXIT; exit 1; }`,
     ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv, turnOneOutcomePath(env.MISSION_HOME!)) : [shellCommand(argv)]),
     "",
   ].join("\n");

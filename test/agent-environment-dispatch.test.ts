@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -31,7 +32,7 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared") {
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed") {
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
@@ -77,9 +78,14 @@ process.stdin.resume();
   registry.upsertTask(task);
 
   let observedEnvironment: Record<string, boolean> | undefined;
+  let delayed: { argv: readonly string[]; cwd: string } | undefined;
   const mux = fakeMultiplexer({ sessions: {
     names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
     async spawnDetached({ argv, cwd, name }) {
+      if (scenario === "unconfirmed") {
+        delayed = { argv, cwd };
+        return { ok: false, outcomeUnknown: true, error: "terminal reply timed out" };
+      }
       // Execute exactly what the launcher gives the pane. The probe stays alive until
       // dispatch binds the task so discovery can claim this wrapper's missing-name warning.
       const child = spawn(argv[0]!, argv.slice(1), { cwd, env: { PATH: process.env.PATH }, timeout: 30_000 });
@@ -110,6 +116,28 @@ process.stdin.resume();
   }).dispatch(task.id);
 
   const launched = registry.getTask(task.id)!;
+  if (scenario === "unconfirmed") {
+    assert.equal(launched.status, "failed");
+    assert.equal(launched.launchFailure?.sessionKept, true);
+    assert.ok(delayed && existsSync(delayed.cwd), "an unconfirmed pane retains its checkout");
+    const child = spawn(delayed.argv[0]!, delayed.argv.slice(1), { cwd: delayed.cwd, env: { PATH: process.env.PATH }, timeout: 30_000 });
+    const exited = once(child, "close");
+    const lines = createInterface({ input: child.stdout });
+    try {
+      const report = await lines[Symbol.asyncIterator]().next();
+      assert.ok(!report.done, "the late pane ran the original wrapper");
+      const observed = JSON.parse(report.value);
+      assert.equal(observed.listedMatches, true);
+      assert.ok(existsSync(observed.home));
+      child.stdin.end();
+      assert.deepEqual(await exited, [0, null]);
+      assert.equal(existsSync(observed.home), false);
+    } finally {
+      lines.close();
+      child.stdin.end();
+    }
+    return;
+  }
   assert.equal(launched.status, "running", launched.error ?? "fresh dispatch reached running");
   assert.equal(launched.sessionId, discoveredId);
   const passesNames = scenario === "ship";
@@ -127,27 +155,65 @@ test("fresh resident terminal dispatch skips named shell lookups, variable injec
 test("clearing the enabled list gives the next dispatched agent no named environment or missing-name warning",
   (t) => checkTerminalDispatch(t, "cleared"));
 
-test("an accepted dispatch that expires before its pane starts releases only its unused state home", async (t) => {
+test("a pane confirmed only after the backend timeout can still enter its checkout and run its named dispatch wrapper",
+  (t) => checkTerminalDispatch(t, "unconfirmed"));
+
+test("dispatch state-home cleanup follows wrapper startup across the handoff deadline", async (t) => {
   const { spawnUniquely } = await import("../src/server/dispatcher.ts");
   const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
   const { createDisposableAgentStateHome, cleanupDisposableAgentStateHome } = await import("../src/server/agent-subprocess-env.ts");
   process.env.MISSION_RESUME_GUARD = join(dir, "expiry-guard.mjs");
   await build({ entryPoints: ["src/server/terminal/resume-guard.ts"], outfile: process.env.MISSION_RESUME_GUARD,
     bundle: true, platform: "node", format: "esm" });
-  const stateHome = createDisposableAgentStateHome();
-  t.after(() => cleanupDisposableAgentStateHome(stateHome));
-  const marker = join(dir, "late-dispatch-started");
-  let command: readonly string[] = [];
-  const mux = fakeMultiplexer({ sessions: {
-    names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
-    async spawnDetached({ argv, name }) { command = argv; return { ...OK, session: name }; },
-  } });
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  await spawnUniquely("delayed", "1", dir, "/usr/bin/touch", [marker], stateHome, "tmux", {}, null,
-    { extraEnv: { LISTED: "fixture" }, missing: [] }, fakeTerminals(mux, fakeEmulator()));
-  assert.ok(existsSync(stateHome));
-  t.mock.timers.tick(RESUME_START_MS);
-  assert.equal(existsSync(stateHome), false);
-  await assert.rejects(promisify(execFile)(command[0]!, command.slice(1)), { code: 1, stderr: /handoff.*expired/ });
-  assert.equal(existsSync(marker), false);
+
+  async function accepted(t: TestContext, bin: string, args: string[]) {
+    const stateHome = createDisposableAgentStateHome();
+    t.after(() => cleanupDisposableAgentStateHome(stateHome));
+    let command: readonly string[] = [];
+    const mux = fakeMultiplexer({ sessions: {
+      names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
+      async spawnDetached({ argv, name }) { command = argv; return { ...OK, session: name }; },
+    } });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await spawnUniquely("delayed", "1", dir, bin, args, stateHome, "tmux", {}, null,
+      { extraEnv: { LISTED: "fixture" }, missing: [] }, fakeTerminals(mux, fakeEmulator()));
+    assert.ok(existsSync(stateHome));
+    return { command, stateHome };
+  }
+
+  await t.test("an unopened socket expires before a delayed pane can start", async (t) => {
+    const marker = join(dir, "late-dispatch-started");
+    const { command, stateHome } = await accepted(t, "/usr/bin/touch", [marker]);
+    t.mock.timers.tick(RESUME_START_MS);
+    assert.equal(existsSync(stateHome), false);
+    await assert.rejects(promisify(execFile)(command[0]!, command.slice(1)), { code: 1, stderr: /handoff.*expired/ });
+    assert.equal(existsSync(marker), false);
+  });
+
+  await t.test("a reader that consumes the socket but never starts its wrapper still expires", async (t) => {
+    const { command, stateHome } = await accepted(t, "/bin/true", []);
+    const socket = createConnection(command[command.indexOf("--with-agent-environment") + 1]!);
+    socket.resume();
+    await once(socket, "close");
+    assert.ok(existsSync(stateHome));
+    t.mock.timers.tick(RESUME_START_MS);
+    assert.equal(existsSync(stateHome), false);
+  });
+
+  await t.test("a running wrapper owns its home beyond the deadline and cleans it on exit", async (t) => {
+    const { command, stateHome } = await accepted(t, "/bin/sh", ["-c", "echo ready; read -r line"]);
+    const child = spawn(command[0]!, command.slice(1));
+    const exited = once(child, "close");
+    const lines = createInterface({ input: child.stdout });
+    try {
+      assert.equal((await lines[Symbol.asyncIterator]().next()).value, "ready");
+      t.mock.timers.tick(RESUME_START_MS);
+      assert.ok(existsSync(stateHome));
+    } finally {
+      lines.close();
+      child.stdin.end("done\n");
+      await exited;
+    }
+    assert.equal(existsSync(stateHome), false);
+  });
 });

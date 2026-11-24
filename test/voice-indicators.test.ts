@@ -33,3 +33,12 @@ test("diagnostics mark the heard spelling of a rejected name and its closest can
     assert.ok(html.includes(fragment));
   }
 });
+
+test("a spoken selection names the selected agent without marking the selection as an address", () => {
+  const html = renderToStaticMarkup(createElement(HeardRow, { roster: [], now: 0, entry: {
+    id: "pick", time: 0, text: "second", matchedName: "Will", outcome: "control", rule: "pick", pauseMs: null, detail: "",
+  } }));
+  assert.match(html, /<td>second<\/td>/);
+  assert.match(html, /<strong>Will<\/strong>/);
+  assert.match(html, /spoken selection/);
+});

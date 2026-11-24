@@ -54,8 +54,11 @@ test("initial hydration cannot undo an indicator save acknowledged after the GET
   const before = structuredClone(uiConfig());
   let finishRead!: (response: Response) => void;
   const read = new Promise<Response>(resolve => { finishRead = resolve; });
+  let finishRefresh!: (response: Response) => void;
+  const refresh = new Promise<Response>(resolve => { finishRefresh = resolve; });
+  let reads = 0;
   t.mock.method(globalThis, "fetch", async (path: string) => {
-    if (path === "/api/ui/config") return read;
+    if (path === "/api/ui/config") return ++reads === 1 ? read : refresh;
     assert.equal(path, "/api/voice/indicators");
     return Response.json({ indicators: ["status-line", "edge"] });
   });
@@ -64,6 +67,12 @@ test("initial hydration cannot undo an indicator save acknowledged after the GET
   finishRead(Response.json({ configured: true, config: { ...before, richText: true } }));
   await hydration;
   assert.deepEqual(uiConfig().voice.indicators, ["status-line", "edge"]);
+  assert.equal(uiConfig().richText, true);
+  assert.equal(reads, 2);
+  const indicators = ["status-line", "edge", "floating"];
+  finishRefresh(Response.json({ configured: true, config: { ...before, voice: { ...before.voice, indicators } } }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(uiConfig().voice.indicators, indicators);
   assert.equal(uiConfig().richText, true);
 });
 

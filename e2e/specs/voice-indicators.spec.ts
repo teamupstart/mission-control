@@ -243,6 +243,48 @@ test("two windows selecting different indicators preserve both choices in the da
   }
 });
 
+test("startup reconciles a peer's indicator edit after a local save overtakes hydration", async ({ page, context, daemon }) => {
+  await enableVoice(daemon);
+  const settings = daemon.baseURL + "/#/settings/voice";
+  const peer = await context.newPage();
+  await peer.goto(settings);
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let reads = 0;
+  await page.route("**/api/ui/config", async route => {
+    if (++reads === 1) {
+      started.resolve();
+      await release.promise;
+    }
+    await route.continue();
+  });
+  try {
+    await page.goto(settings);
+    await started.promise;
+    const edge = page.getByRole("checkbox", { name: "Edge light" });
+    const floating = peer.getByRole("checkbox", { name: "Floating button" });
+    await edge.check();
+    await expect(edge).toBeEnabled();
+    await floating.check();
+    await expect(floating).toBeEnabled();
+    release.resolve();
+    await expect(page.getByRole("checkbox", { name: "Floating button" })).toBeChecked({ timeout: 8000 });
+    await expect(page.locator("button.vi-floating")).toBeVisible();
+    await expect(edge).toBeChecked();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await page.mouse.move(1, 1);
+      await edge.blur();
+      await expect(page.locator(".tooltip")).toHaveCount(0);
+      await page.getByRole("group", { name: "In the window" }).screenshot({ path: join(mkdtempSync(join(root, "startup-peer-")), "choices.png") });
+    }
+  } finally {
+    release.resolve();
+  }
+});
+
 test("a delayed indicator acknowledgement keeps the newer two-window configuration visible", async ({ page, context, daemon }) => {
   await enableVoice(daemon);
   const settings = daemon.baseURL + "/#/settings/voice";

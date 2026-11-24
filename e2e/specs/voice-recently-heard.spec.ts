@@ -66,6 +66,33 @@ test("Recently heard explains routed, unaddressed and cancelled speech and clear
   if (capture) await table.screenshot({ path: join(capture, "empty.png") });
 });
 
+test("a spoken selection shows the chosen agent without highlighting an unrelated opening word", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  for (const callSign of ["Steve", "Will"]) {
+    const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
+      repoRoot: daemon.repo, intent: "Check the build", title: callSign, kind: "ship", agent: "claude", runtime: "sdk", workflowId: null, callSign,
+    } });
+    expect(task.ok(), await task.text()).toBe(true);
+  }
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
+  for (const callSign of ["Steve", "Will"]) await expect(roster.getByRole("row").filter({ hasText: callSign })).toContainText("Running");
+  const phrase = "Steven ask Will about the deployment";
+  expect((await say(daemon, phrase)).ok).toBe(true);
+  expect((await say(daemon, "Will")).ok).toBe(true);
+  const history = page.getByRole("region", { name: "Recently heard" });
+  const original = history.getByRole("row").filter({ has: page.getByRole("cell", { name: phrase, exact: true }) });
+  await expect(original.getByRole("cell", { name: "Will", exact: true })).toBeVisible();
+  await expect(original).toContainText("second name");
+  await expect(history.getByRole("row").filter({ hasText: "spoken selection" })).toBeVisible();
+  await expect(original.locator("mark")).toHaveCount(0, { timeout: 3000 });
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await history.screenshot({ path: join(mkdtempSync(join(root, "spoken-pick-")), "history.png") });
+  }
+});
+
 test("a failed history read shows an alert and retains entries until a successful poll refreshes them", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   expect((await say(daemon, "Before the read failure")).ok).toBe(true);

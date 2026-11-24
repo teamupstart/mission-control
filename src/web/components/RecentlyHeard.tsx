@@ -21,7 +21,8 @@ const outcomes: Record<HeardEntry["outcome"], string> = {
 export function HeardRow({ entry, roster, now }: { entry: HeardEntry; roster: readonly SpokenName[]; now: number }) {
   const { text, matchedName, outcome, rule, detail } = entry;
   const miss = rule === "near-miss";
-  const count = miss ? 1 : matchedName?.trim().split(/\s+/u).length ?? 0;
+  const openingName = rule === "exact" || rule === "phonetic" ? matchedName : null;
+  const count = miss ? 1 : openingName?.trim().split(/\s+/u).length ?? 0;
   const words = Array.from(text.matchAll(/[\p{L}\p{N}][\p{L}\p{M}\p{N}'’-]*/gu));
   const last = words[count - 1];
   const start = words[0]?.index ?? 0;

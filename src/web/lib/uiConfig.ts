@@ -70,11 +70,15 @@ function commit(next: UiConfig): void {
  * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
  * so the record it draws from stays whole.
  */
-function withHeldFields(config: UiConfigView["config"], indicatorsAtRead: string[]): UiConfig {
+function applyHydratedConfig(config: UiConfigView["config"], indicatorsAtRead: string[]): void {
   const voice = config.voice ?? current.voice;
-  // A local acknowledgement can arrive while this hydration GET is in flight.
-  return { ...config, voice: current.voice.indicators === indicatorsAtRead
-    ? voice : { ...voice, indicators: current.voice.indicators } };
+  if (config.voice && current.voice.indicators !== indicatorsAtRead) {
+    // The snapshot may predate our save or include a peer's later edit.
+    commit({ ...config, voice: { ...voice, indicators: current.voice.indicators } });
+    void reconcileVoiceIndicators();
+    return;
+  }
+  commit({ ...config, voice });
 }
 
 /** The live config. Safe to read at module load and outside React. */
@@ -131,10 +135,10 @@ export async function hydrateUiConfig(): Promise<void> {
         return;
       }
     } else {
-      commit(withHeldFields(view.config, indicatorsAtRead));
+      applyHydratedConfig(view.config, indicatorsAtRead);
     }
   } else {
-    commit(withHeldFields(view.config, indicatorsAtRead));
+    applyHydratedConfig(view.config, indicatorsAtRead);
   }
   hydrated = true;
   emit();

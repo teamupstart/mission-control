@@ -454,7 +454,7 @@ test("a single eligible split identifies the later occurrence in the model quest
   const { router, asked, delivered, say } = routerRig(() => answered("split"));
   t.after(() => router.reset());
   for (const address of ["Alice", "“Alice”"]) {
-    const text = `Steve, Alice is busy. ${address}, review the PR`;
+    const text = `Steve, Alice is busy. ${address}, verify the changelog`;
     const id = `single-${asked.length}`;
     await say(text, id);
     const questions = asked.at(-1)!;
@@ -465,9 +465,9 @@ test("a single eligible split identifies the later occurrence in the model quest
     assert.equal(question.nameOffset, offset);
     const instructions = voiceQuestionInstructions(question, false);
     assert.ok(instructions.includes(`offset ${offset}.`));
-    assert.ok(instructions.includes(JSON.stringify(text.slice(offset))));
+    assert.ok(!instructions.includes(text.slice(offset)));
     assert.equal(await router.sendNow(id), true);
-    assert.deepEqual(delivered.slice(-2), [["Steve", "Alice is busy.", id], ["Alice", "review the PR", `${id}#2`]]);
+    assert.deepEqual(delivered.slice(-2), [["Steve", "Alice is busy.", id], ["Alice", "verify the changelog", `${id}#2`]]);
   }
 });
 
@@ -832,6 +832,20 @@ test("a repeated transcript appears once in a job or provider batch", async () =
     assert.equal(JSON.stringify(calls[0]?.body).split(q.text).length, 2);
   }
   assert.equal(buildVoiceRoutingPrompt([q, q]).split(q.text).length, 2);
+});
+
+test("both decision providers keep split speech in the input and only its offset in the instructions", async () => {
+  const text = "Steve, check the build, and Alice, gather the source maps";
+  const nameOffset = text.lastIndexOf("Alice");
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" } });
+    await ask(["codex"], [{ ...SPLIT, text, nameOffset }]);
+    const body = calls[0]!.body;
+    assert.ok(String(body[provider === "openai" ? "input" : "state"]).includes(JSON.stringify(text)));
+    const [question] = Object.values(body.questions as Record<string, { instructions: string }>);
+    assert.ok(question!.instructions.includes(`offset ${nameOffset}.`));
+    assert.ok(!question!.instructions.includes("gather the source maps"), provider);
+  }
 });
 
 test("each provider associates a mixed batch's questions with their own transcripts", async () => {

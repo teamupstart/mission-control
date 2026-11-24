@@ -309,6 +309,29 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(line(page)).toHaveText(using("Jev"));
   });
 
+  test("one explicit Off selection from a stale window stops decision-provider routing", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const other = await context.newPage();
+    await openVoiceSettings(other, daemon);
+    await expect(providerMenu(other)).toHaveValue("auto");
+    // Hold the polling window's view at its original revision.
+    await page.route("**/api/voice/config", route => route.request().method() === "GET" ? route.abort() : route.continue());
+    await saveKey(other, "Jev", SAVED_JEV);
+    await providerMenu(other).selectOption("jev");
+    await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(daemon, "/api/voice/config")).config.decisionProvider).toBe("jev");
+    const conflict = page.waitForResponse(r => r.url().endsWith("/api/voice/config/provider-intent") && r.status() === 409);
+    await providerMenu(page).selectOption("off");
+    await conflict;
+    await expect(line(page)).toHaveText(NOT_SET, { timeout: 2_000 });
+    await expect(providerMenu(page)).toHaveValue("off");
+    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+    expect(decisions.requests).toHaveLength(0);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "23-stale-window-opts-out");
+  });
+
   for (const heldAt of ["request", "response"] as const) {
     test(`Off supersedes an earlier provider selection with a stalled ${heldAt}`, async ({ dashboard: page, daemon, decisions }) => {
       await turnVoiceOn(daemon);

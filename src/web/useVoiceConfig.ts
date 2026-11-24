@@ -109,8 +109,14 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         setPending(pendingRef.current.filter(candidate => candidate !== edit));
         return false;
       }
-      const res = sendProvider && order && !order.ticket ? order
+      let res = sendProvider && order && !order.ticket ? order
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
+      // An explicit opt-out still applies if another window changed providers since our read.
+      // Obtain a fresh ticket so a new selection made here during the retry still wins.
+      if (decisionProvider === "off" && !superseded() && res.status === 409 && res.providerRevision) {
+        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision);
+        if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
+      }
       const kept = res.ok && res.config !== undefined;
       const current = confirmedRef.current;
       if (res.config && current && (kept || res.status === 409)) {

@@ -86,7 +86,8 @@ export function voiceQuestionInstructions(question: VoiceQuestion, includeSpeech
       return [
         `The speech is addressed to ${first}. Later it names ${second}. Decide whether ${second} gets a message of their own.`,
         ...(question.nameOffset === undefined ? [] : [
-          `Judge only the name at offset ${question.nameOffset}. The words starting at that name are ${quoted(question.text.slice(question.nameOffset, question.nameOffset + 120))}.`,
+          `Judge only the name at offset ${question.nameOffset}.` + (includeSpeech
+            ? ` The words starting at that name are ${quoted(question.text.slice(question.nameOffset, question.nameOffset + 120))}.` : ""),
         ]),
         `- "split": the speaker turns to ${second} and gives ${second} an instruction directly, as in`,
         `  "${first}, check the build, and ${second}, review the PR". Each of them gets a separate message.`,

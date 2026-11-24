@@ -49,6 +49,8 @@ function world(on, { flag, minModApi = 1 }) {
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_, e) => { seen.statuses.push(e.text); return { value: undefined } })
+  // Stand in for the host when the mod yields a render, such as while a survey owns the prompt.
+  on('ui.render', ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId ?? 's1' }))
   return seen

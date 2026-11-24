@@ -192,7 +192,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   const yaml = input.coderabbit?.yaml;
   let comparison: CodeRabbitComparison | null = null;
   let reservation: CheckRunReservation | undefined;
-  let started = false;
+  let chargeRun = false;
   let failureStage = "preflight";
   const summary = (status: "skipped" | "incomplete", diagnostic: string): import("@shared/workflow.ts").CodeRabbitReviewSummary => ({
     comparison: comparison ?? { interpreterVersion: 1,
@@ -210,7 +210,10 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   // and returned a result Mission Control cannot accept is a different problem: Setup would
   // show a healthy CLI, so point at the retained output instead.
   // `remedy` replaces both: a problem neither Setup nor the retained output can fix says its own.
-  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
+  const remainingRuns = () => Math.max(0,
+    (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit"))
+      - (reservation?.spent ?? 0) - Number(chargeRun));
+  const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: remainingRuns() }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
   reservation = input.reserveRun?.();
   if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
@@ -234,35 +237,37 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     if (ready.error || !("command" in ready)) return block(ready.error ?? "CodeRabbit is unavailable");
     const argv = codeRabbitReviewArgv(comparison.command ?? CODERABBIT_REVIEW_COMMAND, comparison.severity, comparison.mergeBase);
     const command = [ready.command, ...argv.slice(1)];
-    // An executor that throws cannot prove that the review never started. Keep its claim
-    // unless a completed runtime result explicitly reports a pre-start refusal.
-    started = true;
+    // Charge ambiguous executor exceptions. Only a typed runtime or provider failure
+    // establishes that the attempt ended for an infrastructure reason.
+    chargeRun = true;
     failureStage = "execution";
     const execution = await deps.execute({ slot: "coderabbit", command, repoRoot: input.repoRoot, workingSubpath: "", headSha: comparison.head,
       timeoutMs: comparison.timeoutMs, coderabbit: comparison, env: ready.env });
-    started = execution.kind !== "unavailable" && execution.kind !== "decided"
-      && (execution.kind !== "infrastructure" || execution.started !== false);
+    chargeRun = execution.kind === "exited";
     // A review takes its tree without a dependency claim, so it is never decided by one.
     if (execution.kind === "unavailable" || execution.kind === "decided") return block(execution.note);
     if (execution.kind === "infrastructure") return block(execution.reason, execution.review, execution.artifacts);
     failureStage = "result";
     const review = execution.review;
-    if (review?.status === "incomplete" && review.retryableConnection) return {
-      kind: "retryable_connection", reason: review.diagnostic, artifacts: execution.artifacts,
-      review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) },
-    };
+    if (review?.status === "incomplete" && review.retryableConnection) {
+      chargeRun = false;
+      return {
+        kind: "retryable_connection", reason: review.diagnostic, artifacts: execution.artifacts,
+        review: { ...review, remainingRuns: remainingRuns() },
+      };
+    }
     if (!review || review.status === "incomplete") return block(review?.diagnostic ?? "CodeRabbit semantic result is missing", review, execution.artifacts,
       !review || review.diagnostic === CODERABBIT_OPERATOR_ACTION);
     const skipped = review.status === "skipped";
     const note = `${review.diagnostic}. Head ${comparison.head}; base ${comparison.baseRef} at ${comparison.baseTip}; merge-base ${comparison.mergeBase}; threshold ${comparison.severity}. ${Object.entries(review.counts).map(([severity, count]) => `${severity}: ${count}`).join(", ")}. YAML ${comparison.yaml.source}: ${comparison.yaml.state}; digest ${comparison.yaml.digest}. ${review.titles.join("; ")}`.slice(0, WORKFLOW_EXECUTION_LIMITS.verdictSummary);
     return { kind: "outcome", outcome: { slot: "coderabbit", status: skipped ? "skipped" : execution.exitCode === 2 ? "failed" : "passed", command,
       exitCode: execution.exitCode, output: execution.output, truncatedBytes: execution.truncatedBytes, artifacts: execution.artifacts ?? [], timeoutMs: comparison.timeoutMs,
-      note, review: { ...review, remainingRuns: Math.max(0, comparison.maxRuns - ((reservation?.spent ?? 0) + 1)) }, ...(skipped ? { warning: review.diagnostic } : {}),
+      note, review: { ...review, remainingRuns: remainingRuns() }, ...(skipped ? { warning: review.diagnostic } : {}),
     } };
   } catch (error) {
     // Raw exception messages and names can contain credentials, paths or vendor output.
     workflowLog("error", { event: "coderabbit_exception", state: failureStage,
       error: error instanceof SyntaxError ? "SyntaxError" : error instanceof TypeError ? "TypeError" : error instanceof Error ? "Error" : "unknown" });
     return block("CodeRabbit execution could not establish a complete review. Inspect daemon diagnostics and any retained output before retrying");
-  } finally { if (!started) reservation?.release?.(); }
+  } finally { if (!chargeRun) reservation?.release?.(); }
 }

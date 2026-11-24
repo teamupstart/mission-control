@@ -864,7 +864,9 @@ export function CommandLibrary({
               the last option genuinely means "as often as it ever did". */}
           <div className="wf-command-budget">
             <label htmlFor="workflow-command-max-runs">How often this Command may run</label>
-            <Tooltip label="How many times a single workflow run may execute this Command, across every repair round and shared by every gate that runs it. Once the run has spent it, the gate is skipped with a note and CI is what still runs the command.">
+            <Tooltip label={isCodeRabbit
+              ? "CodeRabbit allowance shared across all review gates and repair rounds in this run. Reported infrastructure failures return their slot."
+              : "How many times a single workflow run may execute this Command, across every repair round and shared by every gate that runs it. Once the run has spent it, the gate is skipped with a note and CI is what still runs the command."}>
               <select
                 id="workflow-command-max-runs"
                 className="field-input"
@@ -880,9 +882,10 @@ export function CommandLibrary({
               </select>
             </Tooltip>
             <p className="wf-command-hint">
-              {workflowCommandRunsFact(draft.maxRuns)}, counting only the times it actually
-              executes and shared by every gate that runs this Command. Once a workflow run has
-              spent this budget, {isCodeRabbit ? "later reviews skip with a warning and do not claim a completed review. " : "later gates and repair rounds skip with a note; CI still runs the command against the merge commit. "}
+              {workflowCommandRunsFact(draft.maxRuns)}, {isCodeRabbit
+                ? "shared by every gate that runs CodeRabbit. Reported infrastructure failures return their slot. "
+                : "counting only the times it actually executes and shared by every gate that runs this Command. "}
+              Once a workflow run has spent this budget, {isCodeRabbit ? "later reviews skip with a warning and do not claim a completed review. " : "later gates and repair rounds skip with a note; CI still runs the command against the merge commit. "}
               Granting a run more repair rounds starts the count over.
             </p>
           </div>

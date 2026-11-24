@@ -3158,9 +3158,10 @@ explicit base in Library.
 The default allowance is **10 executions per workflow run**, shared by all CodeRabbit nodes.
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
-Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
-unavailable. A node whose latest non-skipped review in this run remains incomplete blocks on
-exhaustion, including on a fresh submission; it cannot earn approval by spending its allowance.
+Exhaustion before a node starts reviewing skips with a warning above the pipeline for that
+round, even if the tool is unavailable. A node whose latest non-skipped review in this run
+remains incomplete blocks on exhaustion, including on a fresh submission; it cannot earn
+approval by spending its allowance.
 A later complete review clears that condition. To recover from an exhausted incomplete review,
 explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
 Retrying the same submission keeps its frozen allowance. YAML-enabled reviews with
@@ -3176,11 +3177,13 @@ When the provider explicitly marks an error as `errorType: connection` and `reco
 Mission Control automatically retries the same step and captured comparison, up to three total
 attempts. The delays are 30 and 60 seconds plus up to 50% jitter; a longer vendor wait takes
 precedence, including a deadline extended by another node after the retry was scheduled.
-Pending retries survive daemon restart. Every launched attempt spends the existing
-shared review allowance, and retries never authorize extra credits. Missing completion,
-authentication, usage and credit errors do not qualify. Exhaustion retains the connection cause
-and asks the operator to inspect output and retry after connectivity recovers. A heartbeat or
-partial review never satisfies the gate.
+Pending retries survive daemon restart. The shared allowance reserves a slot during execution
+and returns it when the runtime reports an infrastructure failure (including worktree hand-back)
+or the provider confirms a recoverable disconnect. A launched review with missing completion,
+authentication, usage or credit errors still spends its slot. This accounting is local to
+Mission Control. Retries never authorize extra vendor credits. Reaching the retry limit retains
+the connection cause and asks the operator to inspect output and retry after connectivity
+recovers. A heartbeat or partial review never satisfies the gate.
 
 CodeRabbit reviews the same commit as the other Commands. An uncommitted submission is reviewed
 through its review snapshot, a commit of exactly the captured publication content parented on HEAD, so a ship

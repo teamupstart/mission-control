@@ -1,6 +1,6 @@
 import { workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
-import { CODERABBIT_ALLOWANCE_REMEDY, resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { resolveCodeRabbitComparison } from "./coderabbit.ts";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -1858,11 +1858,9 @@ export class WorkflowEngine {
       this.onRunChanged(runId);
       return;
     }
-    const exhausted = attempt.attempt >= MAX_INFRA_ATTEMPTS;
-    const allowanceSpent = result.review.remainingRuns === 0;
-    if (exhausted || allowanceSpent) {
+    if (attempt.attempt >= MAX_INFRA_ATTEMPTS) {
       this.handleCheckActionRequired(attempt, runId,
-        `${result.reason}. ${exhausted ? "Automatic connection retry limit reached (3 attempts)" : "CodeRabbit execution allowance exhausted"}. Review remains incomplete. ${allowanceSpent ? CODERABBIT_ALLOWANCE_REMEDY : "Inspect retained output and retry after connectivity recovers"}. No additional credits were authorized.`, result);
+        `${result.reason}. Automatic connection retry limit reached (${MAX_INFRA_ATTEMPTS} attempts). Review remains incomplete. Inspect retained output and retry after connectivity recovers. No additional credits were authorized.`, result);
       return;
     }
     const now = this.now();
@@ -1885,7 +1883,7 @@ export class WorkflowEngine {
     this.wake();
   }
 
-  /** Configuration or consent needs a human correction, never an automatic retry or code fix. */
+  /** Park a check that needs operator action. An unresolved lease takes priority. */
   private handleCheckActionRequired(
     attempt: WorkflowNodeAttempt,
     runId: string,
@@ -1904,6 +1902,7 @@ export class WorkflowEngine {
       ...(details.review ? { review: details.review } : {}),
       ...(details.artifacts ? { artifacts: details.artifacts } : {}),
     }) : undefined }, this.now());
+    if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     this.store.setSubmissionState(submission.id, "failed", this.now());
     this.store.setRunState(runId, "blocked", "command_action_required", {
       nodeId: attempt.nodeId,

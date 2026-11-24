@@ -3614,6 +3614,10 @@ export function WorkflowRunView({
   const inspectorGate = detail.inspectorGate;
   const spentGateStatus = spentInspectorGateStatus(detail);
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
+  const codeRabbitAllowanceSkipped = roundAttempts.some((attempt) => {
+    const outcome = checkOutcomeOf(attempt);
+    return outcome?.slot === "coderabbit" && outcome.status === "budget_spent";
+  });
   // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
   // exactly this kind - never guessed from the absence of a verdict, which is also what an
   // errored reviewer looks like.
@@ -4118,6 +4122,11 @@ export function WorkflowRunView({
                 </div>
               </details>
             </div>
+          )}
+          {codeRabbitAllowanceSkipped && (
+            <p className="wf-run-notice" role="status">
+              CodeRabbit review skipped because the run allowance is exhausted.
+            </p>
           )}
         </section>
       )}

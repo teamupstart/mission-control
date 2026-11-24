@@ -178,12 +178,19 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   private namespace(kind: Namespace, create = true) {
     const path = join(this.root, kind);
     for (const directory of [this.root, path]) {
-      const entry = lstatSync(directory, { throwIfNoEntry: false });
-      if (!entry) {
-        if (!create) return undefined;
-        mkdirSync(directory, { mode: 0o700 });
-      } else if (!entry.isDirectory()) unavailable();
-      if (realpathSync(directory) !== directory) unavailable();
+      const containsDigests = directory === this.root || kind === "digests";
+      try {
+        const entry = lstatSync(directory, { throwIfNoEntry: false });
+        if (!entry) {
+          if (!create) return undefined;
+          if (containsDigests) this.ownership.unavailable(null);
+          mkdirSync(directory, { mode: 0o700 });
+        } else if (!entry.isDirectory()) unavailable();
+        if (realpathSync(directory) !== directory) unavailable();
+      } catch (error) {
+        if (containsDigests && isArtifactIntegrityFailure(error)) this.ownership.unavailable(null);
+        throw error;
+      }
     }
     return path;
   }
@@ -409,7 +416,13 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     this.checkClaim(request);
   }
   private verifyPublished(digest: string, signal: AbortSignal, lease?: string) {
-    return verifyDirectory(join(this.namespace("digests"), digest), digest, signal, {
+    signal.throwIfAborted();
+    const root = this.namespace("digests", false);
+    if (!root) {
+      this.ownership.unavailable(null);
+      return unavailable();
+    }
+    return verifyDirectory(join(root, digest), digest, signal, {
       lease: lease ? { root: lease, storage: this.storage } : undefined,
       onIntegrityFailure: () => this.ownership.unavailable(digest),
     });

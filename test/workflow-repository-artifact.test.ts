@@ -912,6 +912,65 @@ test("allocation sync failures stop pending and lease writers before their first
   await f.service.reconcile();
 });
 
+for (const [operation, replacement] of [
+  ["verify", "file"], ["materialize", "symlink"], ["reconcile", "file"], ["verify", "missing"],
+] as const) {
+  test(`invalid digest namespace fails all ready artifacts during ${operation} (${replacement})`, async (t) => {
+    const f = fixture(t);
+    f.write("file", "first");
+    const first = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(first);
+    f.write("file", "second");
+    const second = await f.service.promote(await f.prepare(), f.submission());
+    f.store.commitRepositoryCaptureActivation(second);
+    assert.notEqual(first.digest, second.digest);
+    const root = realpathSync(join(f.root, "digests"));
+    const run = () => {
+      if (operation === "verify") return f.service.verify(first, signal);
+      if (operation === "materialize") return f.service.materialize(f.request(first), signal);
+      return f.service.reconcile();
+    };
+    const fs = (await import("node:fs")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const stat = fs.lstatSync;
+    const fault = t.mock.method(fs, "lstatSync", (...args: Parameters<typeof stat>) => {
+      if (String(args[0]) === root) throw Object.assign(new Error("read failed"), { code: "EIO" });
+      return stat(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(run(), { code: operation === "reconcile" ? "EIO" : "artifact_unavailable" });
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+    for (const s of [first, second]) assert.equal(f.service.activeSnapshot(s.submissionId)?.artifact.state, "ready");
+
+    const saved = root + "-saved";
+    renameSync(root, saved);
+    if (replacement === "symlink") symlinkSync(saved, root);
+    if (replacement === "file") writeFileSync(root, "unrelated bytes");
+    await assert.rejects(run(), { code: "artifact_unavailable" });
+    for (const s of [first, second]) {
+      assert.equal(f.service.activeSnapshot(s.submissionId), null);
+      const row = f.service.artifacts().find(a => a.digest === s.digest);
+      assert.equal(row?.state, "failed");
+      assert.equal(row?.verificationError, "artifact_unavailable");
+    }
+    if (replacement === "symlink") assert.ok(lstatSync(root).isSymbolicLink());
+    if (replacement === "file") assert.equal(readFileSync(root, "utf8"), "unrelated bytes");
+    if (replacement !== "missing") rmSync(root);
+    else assert.equal(existsSync(root), false);
+    renameSync(saved, root);
+    const retried = await f.service.promote(await f.prepare(), f.submission());
+    assert.equal(retried.digest, second.digest);
+    assert.equal(f.service.activeSnapshot(second.submissionId)?.artifact.state, "ready");
+    assert.equal(f.service.activeSnapshot(first.submissionId), null);
+    for (const s of [first, second, retried]) await f.service.release(s.submissionId);
+    await f.service.reconcile();
+  });
+}
+
 test("materializing a damaged source object fails the shared digest for every holder", async (t) => {
   const f = fixture(t);
   f.write("file", "shared bytes");

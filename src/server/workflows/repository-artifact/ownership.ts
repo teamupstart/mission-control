@@ -186,14 +186,12 @@ export class RepositoryOwnership {
         .run(Date.now(), digest),
     );
   }
-  unavailable(digest: string) {
-    this.store.transact((db) =>
-      db
-        .prepare(
-          "UPDATE workflow_repository_artifacts SET state='failed', verification_error='artifact_unavailable' WHERE digest=? AND state='ready'",
-        )
-        .run(digest),
-    );
+  unavailable(digest: string | null) {
+    this.store.transact((db) => {
+      const update = "UPDATE workflow_repository_artifacts SET state='failed', verification_error='artifact_unavailable' WHERE state='ready'";
+      if (digest === null) db.prepare(update).run();
+      else db.prepare(update + " AND digest=?").run(digest);
+    });
   }
   cleanup(digest: string, remove: () => void) {
     return this.store.transact((db) => {

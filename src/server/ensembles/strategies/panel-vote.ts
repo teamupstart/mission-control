@@ -301,6 +301,7 @@ function judgeGuidance(
       guidanceMarkdown: persona.guidanceMarkdown,
       runner: persona.runner,
       model: persona.model,
+      ...(persona.effort && { effort: persona.effort }),
     },
     label: persona.name,
   };

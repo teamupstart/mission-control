@@ -111,6 +111,7 @@ export interface ForemanLlmSelection {
   runner: LlmRunnerId;
   claudeTransport: ClaudeTransport;
   codexTransport: CodexTransport;
+  backgroundReasoningEffort: boolean;
 }
 
 /** Compatibility answer when the daemon predates the transport field or status route. */
@@ -967,6 +968,7 @@ export class ForemanClient implements ForemanActions {
       runner?: { id?: string };
       claudeTransport?: string;
       codexTransport?: string;
+      backgroundReasoningEffort?: boolean;
     }>("/api/llm/status");
     const id = status?.runner?.id;
     const transport = status?.claudeTransport;
@@ -981,6 +983,7 @@ export class ForemanClient implements ForemanActions {
       codexTransport: codex && isCodexTransport(codex)
         ? codex
         : foremanCodexTransportFallback(),
+      backgroundReasoningEffort: status?.backgroundReasoningEffort === true,
     };
   }
 

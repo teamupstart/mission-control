@@ -112,7 +112,7 @@ import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaF
 import { SpokenNameField } from "./SpokenNameField.tsx";
 import { rosterWithout, VoiceRosterContext } from "../lib/voice-roster.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { taskSpokenNameKey } from "@shared/voice-names.ts";
+import { taskSpokenNameKey, validateSpokenName } from "@shared/voice-names.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
 import {
@@ -3913,6 +3913,9 @@ function DispatchModal({
       </div>
 
       <footer className={`modal-foot${guidedDim}`}>
+        {voiceNames && advancedOpen && !ensembleMode && !tourDemo && validateSpokenName(draft.callSign, callSignRoster).length > 0 && (
+          <span className="voice-name-warning">Warning only</span>
+        )}
         {/* Leading edge, ahead of the verbs that keep the task, because it is the one action
             here that destroys something - and edit-only, because a new dispatch has no row
             behind it to delete. Ghost-danger rather than filled: it must be findable without

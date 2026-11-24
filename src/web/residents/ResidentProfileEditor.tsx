@@ -377,7 +377,11 @@ export function ResidentProfileEditor({
         {RESIDENT_EDITOR_SECTIONS.filter((section) => residentEditorSectionVisible(section, featureFlags, problemSections)).map(({ id, title: heading, blurb, Body }) => (
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
-            <p className="resident-section-blurb">{blurb}</p>
+            <p className="resident-section-blurb">
+              {id === "identity" && resolveFeatureFlag(VOICE_FLAG, featureFlags)
+                ? "Residents are addressed by their profile name unless a reference name is set."
+                : blurb}
+            </p>
             <Body draft={draft} update={update} changeHarness={changeHarness} useMcpDefault={!base && !seed && !mcpEdited} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} profileId={profile?.id ?? null} />
           </section>
         ))}

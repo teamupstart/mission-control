@@ -152,11 +152,12 @@ test("the naming rule reads a running resident's reference name from its profile
     { taskId: "t-c", profileId: "p-gone", settings: { identity: { name: "Gone", referenceName: "Kept" }, board: { colorId: "rose" } } },
   ];
   const current = withCurrentReferenceNames(pinned, [
-    { id: "p-a", settings: { identity: {} } },
-    { id: "p-b", settings: { identity: { referenceName: "Steve" } } },
+    { id: "p-a", settings: { identity: { name: "Release Lead" } } },
+    { id: "p-b", settings: { identity: { name: "Linter watcher", referenceName: "Steve" } } },
   ]);
   const nameOf = (taskId: string) => agentDisplayName(sessionDisplayNameInput({ name: "s", task: { id: taskId, title: "t", kind: "resident" as const } }, current, true)).name;
-  assert.equal(nameOf("t-a"), "Release Captain", "a reference name taken off the profile is gone at once");
+  assert.equal(nameOf("t-a"), "Release Lead", "a reference name taken off the profile is gone at once");
+  assert.equal(agentDisplayName(sessionDisplayNameInput({ name: "s", task: { id: "t-a", title: "t", kind: "resident" } }, current, false)).name, "Release Captain");
   assert.equal(nameOf("t-b"), "Steve", "a reference name added to the profile names the running resident at once");
   assert.equal(nameOf("t-c"), "Kept", "a run whose profile is not listed keeps its pinned reference name");
   assert.equal(current[1]!.settings.identity.name, "Linter watcher", "the profile name stays pinned");

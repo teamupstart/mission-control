@@ -177,12 +177,31 @@ test("a task waiting for its first launch answers to nothing, and its day starts
   assert.equal(timers.length, 0, "no 24 hours are counting for it");
   clock.now += 30 * HOUR;
   sources.upsertTask({ ...waiting, dispatchedAt: clock.now });
-  assert.deepEqual(brief(names.roster()), ["task:t-w Wren not-running"], "listed once its launch starts");
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0]!.ms, VOICE_NAME_RETENTION_MS, "a full day from the launch: the wait before it does not count");
+  assert.deepEqual(names.roster(), [], "a pending launch has no agent to answer");
+  assert.equal(timers.length, 0);
   sources.upsertTask({ ...waiting, status: "running", dispatchedAt: clock.now, sessionId: "s-t-w" });
   sources.upsertSession(liveSession("s-t-w", "t-w"));
   assert.deepEqual(brief(names.roster()), ["task:t-w Wren running"]);
+});
+
+test("a pending launch cancelled before its first session cannot retire another task's name", () => {
+  const { sources, names, clock } = harness();
+  sources.upsertTask(callSignTask("old", "Alice", { status: "done", completedAt: clock.now - HOUR }));
+  const attempt = callSignTask("new", "Alice", { status: "dispatching", sessionId: null });
+  sources.upsertTask(attempt);
+  sources.upsertTask({ ...attempt, status: "cancelled", completedAt: clock.now });
+  assert.deepEqual(brief(names.roster()), ["task:old Alice not-running"]);
+});
+
+test("naming a previously unnamed session after its retention period leaves the roster empty", () => {
+  const { sources, names, clock } = harness();
+  const task = callSignTask("late", "Alice", { callSign: null });
+  sources.upsertTask(task);
+  sources.upsertSession(liveSession("s-late", "late"));
+  sources.upsertSession(liveSession("s-late", "late", { state: "exited" }));
+  clock.now += 25 * HOUR;
+  sources.upsertTask({ ...task, callSign: "Alice" });
+  assert.deepEqual(names.roster(), []);
 });
 
 test("a session that exits leaves its task not running, and the name leaves 24 hours after", () => {
@@ -272,6 +291,16 @@ test("a stopped task's name leaves at once when another agent takes it", () => {
   sources.upsertTask(callSignTask("t-x2", "Max", { status: "done", completedAt: clock.now - 2 * HOUR, sessionId: null }));
   assert.ok(brief(names.roster()).includes("task:t-x2 Max not-running"));
   assert.ok(!brief(names.roster()).includes("task:t-x1 Max not-running"));
+});
+
+test("a resident taking a canonically equivalent spelling retires the stopped task", () => {
+  const { sources, names, clock } = harness();
+  sources.upsertTask(callSignTask("old", "José", { status: "done", completedAt: clock.now }));
+  const spelling = "Jose\u0301";
+  sources.upsertProfile(profile("resident", { name: spelling }));
+  assert.deepEqual(names.roster().map((entry) => entry.name), [spelling]);
+  sources.removeProfile("resident");
+  assert.deepEqual(names.roster(), []);
 });
 
 test("a resident releasing a reused name never restores the stopped task, cached or evicted", () => {

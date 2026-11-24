@@ -217,6 +217,48 @@ test("sherpa skips a blank decode and posts speech from the next file segment", 
   assert.deepEqual(posts, ["check the build"]);
 });
 
+test("a mute during VAD lookahead pauses the file scan and resumes at the next unread sample", async () => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
+  const windows = 256;
+  let scanned = 0;
+  let pausedAt = 0;
+  const decoded: number[] = [];
+  const posts: boolean[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    const response = app.request(url, init);
+    if (url.includes("directive?revision=")) {
+      pausedAt = scanned;
+      assert.ok(pausedAt > 0 && pausedAt < windows);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(scanned, pausedAt);
+      assert.deepEqual(decoded, []);
+      setVoiceConfig({ muted: false });
+    }
+    if (new URL(url).pathname === "/voice/utterances") posts.push((await (await response).clone().json()).accepted);
+    return response;
+  });
+  const samples = new Float32Array(512 * windows);
+  let detected = 0;
+  await playRecording(client, signal => recordingSegments(samples, {
+    acceptWaveform(batch) {
+      assert.equal(batch.byteOffset / 4, scanned * 512);
+      scanned++;
+      if (scanned === 1 || scanned === windows) detected = scanned;
+      if (scanned === 2) setVoiceConfig({ muted: true });
+    },
+    isEmpty: () => detected === 0, front: () => ({ samples: Float32Array.of(detected) }),
+    pop() { detected = 0; }, reset() { detected = 0; }, flush() {},
+  }, signal), async segment => {
+    decoded.push(segment[0]!);
+    return { text: "speech", tokens: [], timestamps: [], durations: [] };
+  });
+  assert.ok(pausedAt > 0, "the scan must observe the mute before EOF");
+  assert.equal(scanned, windows);
+  assert.deepEqual(decoded, [windows], "only speech captured under the resumed directive is decoded");
+  assert.deepEqual(posts, [true]);
+});
+
 test("muting during the last decode discards it and ends playback while capture stays muted", async () => {
   voiceStateStore.reset();
   setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
@@ -288,8 +330,9 @@ test("scanning a silent recording lets the event loop run before reaching EOF", 
       if (++scanned === 1) setImmediate(() => lifetime.abort());
     },
     isEmpty: () => true,
-    flush() {}, pop() {}, front: () => assert.fail("no speech"),
+    flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
   }, lifetime.signal);
-  await assert.rejects(segments.next(), { name: "AbortError" });
+  assert.deepEqual(await segments.next("active"), { done: false, value: null });
+  await assert.rejects(segments.next("active"), { name: "AbortError" });
   assert.ok(scanned > 0 && scanned < windows);
 });

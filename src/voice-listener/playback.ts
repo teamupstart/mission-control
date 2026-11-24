@@ -7,7 +7,7 @@ export interface RecordingSegment { samples: Float32Array; last: boolean }
 
 /** File playback is a finite listener session. A changed directive invalidates only the segment decoded under it. */
 export async function playRecording(client: ListenerClient,
-  open: (signal: AbortSignal) => Iterator<RecordingSegment> | AsyncIterator<RecordingSegment>,
+  open: (signal: AbortSignal) => Iterator<RecordingSegment | null, void, string> | AsyncIterator<RecordingSegment | null, void, string>,
   decode: (samples: Float32Array, roster: string[]) => Promise<Recognition>): Promise<void> {
   const lifetime = new AbortController();
   const segments = open(lifetime.signal);
@@ -26,8 +26,9 @@ export async function playRecording(client: ListenerClient,
     while (!last) {
       let directive = await client.poll(undefined, lifetime.signal);
       while (!directive.capture) directive = await client.poll(directive.revision, lifetime.signal);
-      const segment = await segments.next();
+      const segment = await segments.next(directive.revision);
       if (segment.done) return;
+      if (segment.value === null) continue;
       last = segment.value.last;
       lifetime.signal.throwIfAborted();
       const capturedAt = Date.now();

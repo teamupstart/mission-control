@@ -3,21 +3,41 @@ import type { Vad } from "sherpa-onnx-node";
 import type { RecordingSegment } from "./playback.ts";
 
 const WINDOW = 512;
+const BATCH = 64 * WINDOW;
 
-/** Buffer one detection so trailing silence can mark the last utterance before decoding it. */
-export async function* recordingSegments(samples: Float32Array, vad: Vad, signal: AbortSignal): AsyncGenerator<RecordingSegment> {
+/** One capture directive authorizes at most one batch. A null result asks playback to poll again. */
+export function recordingSegments(samples: Float32Array, vad: Vad, signal: AbortSignal): AsyncIterator<RecordingSegment | null, void, string> {
+  let offset = 0;
+  let revision: string | undefined;
   let pending: Float32Array | undefined;
-  for (let offset = 0; offset < samples.length; offset += WINDOW) {
-    // Give the heartbeat and cancellation a turn even through long runs of silence.
-    if (offset % (64 * WINDOW) === 0) await setImmediate(undefined, { signal });
-    vad.acceptWaveform(samples.subarray(offset, offset + WINDOW));
-    if (offset + WINDOW >= samples.length) vad.flush();
-    while (!vad.isEmpty()) {
-      // The next detection stays in the detector until playback has capture permission again.
-      if (pending) yield { samples: pending, last: false };
-      pending = vad.front().samples;
-      vad.pop();
-    }
-  }
-  if (pending) yield { samples: pending, last: true };
+  return {
+    async next(current?: string) {
+      await setImmediate(undefined, { signal });
+      if (revision !== undefined && current !== revision) {
+        // Neither a buffered utterance nor partial speech belongs to the new directive.
+        pending = undefined;
+        vad.reset();
+      }
+      revision = current;
+      const end = Math.min(offset + BATCH, samples.length);
+      for (;;) {
+        while (!vad.isEmpty()) {
+          const previous = pending;
+          pending = vad.front().samples;
+          vad.pop();
+          if (previous) return { done: false, value: { samples: previous, last: false } };
+        }
+        if (offset === end) break;
+        const next = Math.min(offset + WINDOW, end);
+        vad.acceptWaveform(samples.subarray(offset, next));
+        offset = next;
+        if (offset === samples.length) vad.flush();
+      }
+      if (offset < samples.length) return { done: false, value: null };
+      if (!pending) return { done: true, value: undefined };
+      const last = pending;
+      pending = undefined;
+      return { done: false, value: { samples: last, last: true } };
+    },
+  };
 }

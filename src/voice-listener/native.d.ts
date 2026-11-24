@@ -37,5 +37,6 @@ declare module "sherpa-onnx-node" {
     isEmpty(): boolean;
     front(): { samples: Float32Array };
     pop(): void;
+    reset(): void;
   }
 }

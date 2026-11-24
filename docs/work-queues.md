@@ -226,6 +226,14 @@ the selected radio quietly do nothing. Workflow completion claiming is durable a
 idempotent, so retries converge on one submission and one run instead of launching the
 review twice.
 
+After a Workflow completes its Pull Request action and reaches End, the author's final
+publication, CI, or evidence turn can settle idle again. For each repository, Foreman claims
+that generation against the completed run when its reviewed checkout and human instruction
+revisions still match. The run keeps its evidence. This handoff can be claimed once, for
+the generation current at completion or its immediate successor. Later independent cycles,
+changed work, and new instructions can
+start a fresh review, and the operator can choose **Run again** on the same work.
+
 The manual **Run No-Mistakes Review** button on the **Ship it?** card follows the same
 workflow path. It reuses the active built-in binding when one exists, creates a manual
 built-in binding for an unbound conversation, and refuses to replace a different workflow.

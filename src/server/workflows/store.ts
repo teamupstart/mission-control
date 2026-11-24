@@ -2447,6 +2447,16 @@ function runContextState(
   return "corrupt";
 }
 
+// Both End and Inspector can finish a run. Pin the conversation's generation in the
+// terminal UPDATE itself, before another turn or a daemon restart can change the answer.
+// A run completed before this column existed has no witnessed boundary.
+const completionGenerationSql = `(SELECT c.generation FROM session_work_cycles c
+  JOIN workflow_bindings b ON b.note_key = c.logical_key WHERE b.id = workflow_runs.binding_id)`;
+
+// The author's idle may already have landed at End, or may arrive one generation later.
+// Foreman coalesces missed cycles. A later generation cannot spend an earlier handoff.
+const publicationHandoffDueSql = "? BETWEEN publication_handoff_generation AND publication_handoff_generation + 1";
+
 function transaction<T>(db: DatabaseSync, fn: () => T): T {
   if (db.isTransaction) return fn();
   db.exec("BEGIN IMMEDIATE");
@@ -2869,6 +2879,8 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
+  /** Latest completed publication whose accepted checkout still matched the repository probe. */
+  unchangedPublicationRunId?: string;
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -5263,6 +5275,21 @@ export class WorkflowStore {
     return row ? parseWorkflowRunRow(row) : null;
   }
 
+  /** The action and its accepted continuation are durable even when the author finishes later. */
+  publicationHandoffDue(runId: string, generation: number): boolean {
+    return !!this.db.prepare(
+      `SELECT 1 FROM workflow_submissions child
+        JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
+        JOIN workflow_runs r ON r.id = child.run_id
+        WHERE r.id = ? AND ${publicationHandoffDueSql} AND action.submission_id = child.parent_submission_id
+          AND action.state = 'completed'
+          AND json_extract(action.session_action_snapshot_json, '$.completion.kind') = 'pull_request'
+          AND json_extract(action.output_json, '$.expectation.kind') = 'pull_request'
+          AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
+        LIMIT 1`,
+    ).get(runId, generation);
+  }
+
   latestRunForBinding(bindingId: string): WorkflowRun | null {
     const row = this.db.prepare(
       `SELECT * FROM workflow_runs WHERE binding_id = ? ORDER BY started_at DESC, id DESC LIMIT 1`,
@@ -7284,7 +7311,21 @@ export class WorkflowStore {
       let created = false;
       let previousFingerprint: string | undefined;
 
-      if (!run) {
+      if (input.completionKind === "prompted" && input.unchangedPublicationRunId) {
+        const published = this.latestRunForBinding(binding.id);
+        if (run || published?.id !== input.unchangedPublicationRunId || published.status !== "completed") {
+          throw new Error("Workflow publication changed during completion comparison");
+        }
+        // One follow-through per repository. Clearing the pin and consuming the shared
+        // generation commit together. An identical retry is answered by duplicateEvent.
+        const spent = this.db.prepare(
+          `UPDATE workflow_runs SET publication_handoff_generation = NULL
+            WHERE id = ? AND ${publicationHandoffDueSql}`,
+        ).run(published.id, input.expectedWorkCycle!.generation);
+        if (!spent.changes) throw new Error("Workflow publication handoff is no longer current");
+        run = published;
+        state = "already_claimed";
+      } else if (!run) {
         const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
         this.db.prepare(
           `INSERT INTO workflow_runs (
@@ -7615,9 +7656,10 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_runs
             SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?,
+                publication_handoff_generation = CASE WHEN ? THEN ${completionGenerationSql} END,
                 completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
           WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, terminal ? 1 : 0, now, id);
+      ).run(status, currentPhase, gateState === null ? null : JSON.stringify(gateState), now, status === "completed" ? 1 : 0, terminal ? 1 : 0, now, id);
       return this.mustRun(id);
 
     }, () => ({ kind: "run", id, now }));
@@ -7924,6 +7966,7 @@ export class WorkflowStore {
       `UPDATE workflow_runs
           SET status = ?, current_phase = ?, inspector_pr_key = ?,
               inspector_head_sha = ?, gate_state_json = ?, updated_at = ?,
+              publication_handoff_generation = CASE WHEN ? THEN ${completionGenerationSql} END,
               completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE NULL END
         WHERE id = ? AND gate_state_json = ?
           AND status NOT IN ('completed', 'cancelled', 'failed')`,
@@ -7934,6 +7977,7 @@ export class WorkflowStore {
       input.state.targetHeadSha,
       stateJson,
       input.now,
+      completed ? 1 : 0,
       completed ? 1 : 0,
       input.now,
       input.runId,
@@ -9132,7 +9176,7 @@ export class WorkflowStore {
   /**
    * Confirmed packets that can still appear in one session's bounded transcript window.
    *
-   * The delivery ledger and its post-send transcript anchors are the durable authorship source
+   * The delivery ledger and its transcript anchors are the durable authorship source
    * for workflow context capture. Only confirmed sends with an anchor qualify: prepared,
    * refused, uncertain, and unanchored packets cannot identify a transcript turn. Newest first
    * and capped beyond the transcript window so a long-lived session cannot make context capture
@@ -9142,12 +9186,13 @@ export class WorkflowStore {
     sessionId: string,
     noteKey: string,
     limit = 200,
-  ): Array<{ payload: string; transcriptAnchor: number }> {
+  ): Array<{ payload: string; transcriptAnchor: number; beforeSend?: true }> {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
       `SELECT d.payload, d.session_id,
-              CAST(json_extract(e.payload_json, '$.transcriptAnchor') AS INTEGER)
-                AS transcript_anchor
+              COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
+                       json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
+              json_type(e.payload_json, '$.transcriptStart') = 'integer' AS before_send
          FROM workflow_deliveries d
          JOIN workflow_events e
            ON e.run_id = d.run_id
@@ -9156,16 +9201,19 @@ export class WorkflowStore {
         WHERE d.note_key = ? AND d.session_id IN (${sessions.map(() => "?").join(",")})
           AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
           AND d.payload <> ''
-          AND json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+          AND (json_type(e.payload_json, '$.transcriptStart') = 'integer'
+            OR json_type(e.payload_json, '$.transcriptAnchor') = 'integer')
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
       session_id: string;
       payload: string;
       transcript_anchor: number;
+      before_send: number | null;
     }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
+      ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
   }
 
@@ -9401,6 +9449,7 @@ export class WorkflowStore {
     transcriptAnchor: number | null,
     submitVerified: boolean,
     now = Date.now(),
+    transcriptStart: number | null = null,
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
       const delivery = this.getDelivery(id);
@@ -9470,6 +9519,7 @@ export class WorkflowStore {
       this.appendEvent(delivery.runId, "delivery_delivered", {
         deliveryId: delivery.id,
         transcriptAnchor,
+        transcriptStart,
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);

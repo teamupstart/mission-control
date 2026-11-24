@@ -109,7 +109,7 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
   assert.deepEqual(context.acceptanceCriteria, []);
 });
 
-test("workflow context excludes a delivered workflow packet after live attribution is lost", async () => {
+for (const beforeSend of [false, true]) test(`workflow context excludes the delivered packet and keeps a human repeat, pre-send anchor=${beforeSend}`, async () => {
   const transcriptPath = join(home, "workflow-attribution.jsonl");
   const humanDecision = "Keep the public API stable";
   const workflowPacket = "# Evidence preflight needs repair\n\nCapture the rendered result.";
@@ -163,7 +163,8 @@ test("workflow context excludes a delivered workflow packet after live attributi
   forgetInjections(session.id);
   const captured = await readWorkflowContextRaw(registry, binding, [], [{
     payload: workflowPacket,
-    transcriptAnchor: deliveryAnchor,
+    transcriptAnchor: beforeSend ? Buffer.byteLength(records[0]!) : deliveryAnchor,
+    ...(beforeSend ? { beforeSend: true as const } : {}),
   }]);
 
   assert.deepEqual(captured.raw.humanDecisions, [

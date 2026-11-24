@@ -1450,6 +1450,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
+      publication_handoff_generation INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
@@ -4031,6 +4032,7 @@ function migrate(d: DatabaseSync): void {
   // evidence and delivery payloads. The sweep fills them only after its transaction
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
+  addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
   d.exec(`
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution

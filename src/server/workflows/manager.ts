@@ -166,6 +166,7 @@ import {
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
+  probeMatchesRepositoryContent,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
@@ -3863,11 +3864,7 @@ export class WorkflowManager {
       node.kind === "session_action" && node.action.requiredSkillId ? [node.action.requiredSkillId] : []) ?? []);
   }
 
-  async claimCompletion(
-    sessionId: string,
-    claim: WorkflowCompletionClaim,
-    now = Date.now(),
-  ): Promise<WorkflowCompletionClaimResult> {
+  private currentCompletionSession(sessionId: string, claim: WorkflowCompletionClaim): Session {
     const session = this.registry.getSession(sessionId);
     if (!session || session.state === "exited") {
       throw new Error("The completion target session is not live");
@@ -3899,6 +3896,15 @@ export class WorkflowManager {
     if (claim.expectedPlanPublication && !samePlanPublicationContext(
       claim.expectedPlanPublication, this.planPublicationContext(sessionId),
     )) throw new Error("Foreman plan publication ownership is no longer current");
+    return session;
+  }
+
+  async claimCompletion(
+    sessionId: string,
+    claim: WorkflowCompletionClaim,
+    now = Date.now(),
+  ): Promise<WorkflowCompletionClaimResult> {
+    let session = this.currentCompletionSession(sessionId, claim);
     // Resolve a matching historical prompted guard before entering the claim
     // transaction. A rejected legacy replay must persist its compatibility consume;
     // doing this inside the transaction would roll that migration back with the claim.
@@ -3920,19 +3926,43 @@ export class WorkflowManager {
     // `[anchor]` for every single-repo conversation, so everything below is one claim against
     // one binding exactly as it always was.
     const targets = this.repoRunTargets(session, anchor);
+    // Only a completed publication needs a git read before the claim. Probe each checkout
+    // independently, then revalidate ownership before spending the shared generation.
+    const primaryCheckout = workflowCheckoutPath(anchor, session);
+    const publications = new Map<string, string>();
+    const probes: Promise<void>[] = [];
+    for (const target of targets) {
+      const probe = this.unchangedPublication(target, session, claim);
+      if (probe) probes.push(probe.then(runId => {
+        if (runId) publications.set(target.id, runId);
+      }));
+    }
+    if (probes.length) {
+      await Promise.all(probes);
+      session = this.currentCompletionSession(sessionId, claim);
+      if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
+        throw new Error("Foreman completion session is no longer idle for handoff");
+      }
+      const current = this.store.activeBindingForNote(noteKeyFor(session));
+      const currentTargets = current && current.id === anchor.id && current.triggerMode === "foreman_complete"
+        ? this.repoRunTargets(session, current) : [];
+      if (primaryCheckout !== workflowCheckoutPath(anchor, session) || targets.length !== currentTargets.length || targets.some((target, i) =>
+        target.id !== currentTargets[i]?.id || target.workflowVersionId !== currentTargets[i]?.workflowVersionId
+        || target.sessionId !== currentTargets[i]?.sessionId || target.sessionCwd !== currentTargets[i]?.sessionCwd)) {
+        throw new Error("Foreman completion repository ownership changed during publication comparison");
+      }
+    }
     let answer: WorkflowCompletionClaimResult | null = null;
     let lead: { result: WorkflowCompletionClaimResult; activate: PreparedWorkflowRun } | null = null;
     const siblings: PreparedWorkflowRun[] = [];
-    // Every claim is made HERE, synchronously and in order, before any evidence is read. The
-    // durable half of a completion - the guard, the runs, the submissions - is what the reply
-    // speaks for, and it must not depend on how long a git read takes.
+    // Reserve all runs synchronously before capturing any new submission.
     for (const [index, target] of targets.entries()) {
       // The FIRST target spends the completion boundary; the rest ride the same proof. One
       // settled turn is one boundary however many repositories it touched, and consuming the
       // guard again would throw on a guard that is no longer armed. It is deliberately the
       // first rather than the primary: a task whose primary is untouched has no primary run,
       // and the boundary must still be spent by the review that does exist.
-      const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now);
+      const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now, publications.get(target.id));
       if (index === 0) {
         answer = claimed.result;
         // A refused lead is the whole answer - nothing was claimed, the guard is still armed,
@@ -3997,6 +4027,39 @@ export class WorkflowManager {
     return answer;
   }
 
+  /** A completed publication owns a later idle handoff only while its accepted work still matches. */
+  private unchangedPublication(
+    binding: WorkflowBinding,
+    session: Session,
+    claim: WorkflowCompletionClaim,
+  ): Promise<string | null> | null {
+    if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
+    const run = this.store.latestRunForBinding(binding.id);
+    const source = run?.intent?.intentSource;
+    if (!run || run.status !== "completed" || run.workflowVersionId !== binding.workflowVersionId
+      || source?.objectiveVersion !== claim.expectedIntent.objectiveVersion
+      || source.promptRevision !== claim.expectedIntent.promptRevision
+      || source.resolvedPromptRevision !== source.promptRevision) return null;
+
+    if (!this.store.publicationHandoffDue(run.id, claim.expectedWorkCycle.generation)) return null;
+    const submission = this.store.latestSubmission(run.id);
+    if (submission?.status !== "completed") return null;
+    const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!context.success || context.data.session.cwd !== workflowCheckoutPath(binding, session)) return null;
+    const evidence = context.data.evidence;
+    if (!evidence.headSha || !evidence.contentTreeOid) return null;
+    const publication = evidence.publication;
+    const unpublished = publication
+      ? publication.unpublishedPaths.length > 0 || publication.pathsTruncated || Boolean(publication.artifactProblems?.length)
+      : evidence.workingTreeDirty;
+    if (unpublished) return null;
+    // Missing repository proof cannot retire a new review opportunity.
+    return this.probeRepository(binding, submission).then(
+      probe => probe.contentTreeOid && probeMatchesRepositoryContent(probe, evidence) ? run.id : null,
+      () => null,
+    );
+  }
+
   /**
    * Offer one settled turn's proof to one repository's binding.
    *
@@ -4017,6 +4080,7 @@ export class WorkflowManager {
     retireGuard: boolean,
     session: Session,
     now: number,
+    unchangedPublicationRunId?: string,
   ): {
     result: WorkflowCompletionClaimResult;
     activate: PreparedWorkflowRun | null;
@@ -4036,6 +4100,7 @@ export class WorkflowManager {
     try {
       stored = this.store.claimForemanCompletion({
         binding,
+        unchangedPublicationRunId,
         completionKind: claim.completionKind,
         marker: claim.marker,
         expectedWorkCycle: claim.expectedWorkCycle,
@@ -7019,6 +7084,8 @@ export class WorkflowManager {
       return;
     }
     const expectedPane = paneToken(session);
+    const beforeSend = sessionMessages(session);
+    const transcriptStart = beforeSend?.read.size(beforeSend.path) ?? null;
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
     // Claimed BEFORE the first byte. The agent's prompt hook can report this packet back while
     // the write is still unresolved, and an echo that arrives with no authorship on file is
@@ -7123,6 +7190,8 @@ export class WorkflowManager {
       sending.id,
       transcriptAnchor,
       result.submitVerified,
+      Date.now(),
+      beforeSend?.path === transcript?.path ? transcriptStart : null,
     );
     if (!confirmed) return;
     // Settles the reservation above rather than adding to it: recording afresh would owe a

@@ -441,6 +441,7 @@ export function humanTranscriptDecisions(messages: TranscriptMessage[]): Workflo
 export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
   transcriptAnchor: number;
+  beforeSend?: true;
 }
 
 interface WorkflowTranscriptTurnIdentity {
@@ -506,13 +507,14 @@ function deliveredWorkflowTurnIdentities(
   for (const delivery of deliveries) {
     if (!delivery.payload.trim()) continue;
     const payloadFingerprint = injectionFingerprint(delivery.payload);
-    const messages = located.read.before(located.path, delivery.transcriptAnchor, 12).messages;
-    const match = messages.findLast((message) =>
-      message.role === "user"
-      && Boolean(message.text)
-      && injectionFingerprint(message.text) === payloadFingerprint
-    );
-    if (match) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
+    // A verified write may return before the harness appends the packet. New deliveries
+    // record their starting offset so that only the first user turn can own the send.
+    // Older deliveries recorded the end offset and retain their original backward lookup.
+    const match = delivery.beforeSend
+      ? located.read.after(located.path, delivery.transcriptAnchor, 12).messages.find(message => message.role === "user")
+      : located.read.before(located.path, delivery.transcriptAnchor, 12).messages.findLast(message =>
+        message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint);
+    if (match && injectionFingerprint(match.text) === payloadFingerprint) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
   }
   return identities;
 }
@@ -1600,6 +1602,15 @@ export function probeMatchesEvidence(
   probe: WorkflowEvidenceProbe,
   evidence: WorkflowContextSnapshot["evidence"],
 ): boolean {
+  return probeMatchesRepositoryContent(probe, evidence)
+    && (probe.stagedImageGeneration ?? 0) === (evidence.stagedImageGeneration ?? 0);
+}
+
+/** Repository work alone, independent of proof registered for a review round. */
+export function probeMatchesRepositoryContent(
+  probe: WorkflowEvidenceProbe,
+  evidence: WorkflowContextSnapshot["evidence"],
+): boolean {
   const retained = evidence.publication?.localArtifacts ?? [];
   const hashes = probe.localArtifactHashes ?? [];
   return (probe.publicationVersion === undefined || probe.publicationVersion === evidence.publication?.version)
@@ -1609,8 +1620,7 @@ export function probeMatchesEvidence(
     && probe.headSha === evidence.headSha
     && probe.workingTreeStatus.length === evidence.workingTreeStatus.length
     && probe.workingTreeStatus.every((line, index) => line === evidence.workingTreeStatus[index])
-    && probe.diffFingerprint === evidence.diffFingerprint
-    && (probe.stagedImageGeneration ?? 0) === (evidence.stagedImageGeneration ?? 0);
+    && probe.diffFingerprint === evidence.diffFingerprint;
 }
 
 /**

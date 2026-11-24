@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
@@ -77,13 +77,53 @@ test("confirmed workflow payloads remain available for transcript attribution af
   const store = seededStore("attribution");
   const delivered = prepare(store, "attribution", "evidence_readiness");
   store.claimDeliverySend(delivered.id);
-  store.confirmDeliverySend(delivered.id, 1_234, true, 11);
+  store.confirmDeliverySend(delivered.id, 1_234, true, 11, 900);
 
   const restarted = new WorkflowStore();
   assert.deepEqual(
     restarted.listDeliveredTranscriptAnchors("session-attribution", "note-attribution"),
-    [{ payload: "repair exactly once", transcriptAnchor: 1_234 }],
+    [{ payload: "repair exactly once", transcriptAnchor: 900, beforeSend: true }],
   );
+});
+
+test("a persisted legacy post-send anchor excludes the workflow turn from frozen human decisions after restart", async () => {
+  const { closeDb } = await import("../src/server/db.ts");
+  const { Registry } = await import("../src/server/registry.ts");
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const suffix = "legacy-attribution";
+  const store = seededStore(suffix);
+  const delivery = prepare(store, suffix, "evidence_readiness");
+  const transcriptPath = join(home, "legacy-attribution.jsonl");
+  const turn = (uuid: string, text: string, ts: number) => JSON.stringify({
+    type: "user", uuid, timestamp: new Date(ts).toISOString(), message: { role: "user", content: text },
+  }) + "\n";
+  const throughDelivery = turn("initial-ask", "Publish the reviewed work", 1_000)
+    + turn("workflow-packet", delivery.payload, 2_000);
+  const transcriptAnchor = Buffer.byteLength(throughDelivery);
+  writeFileSync(transcriptPath, throughDelivery + turn("human-repeat", delivery.payload, 3_000));
+
+  // Persist exactly the old event shape. Today's confirmation writer also records transcriptStart.
+  store.claimDeliverySend(delivery.id);
+  store.setDeliveryState(delivery.id, "delivered", null, 2_000);
+  store.appendEvent(delivery.runId, "delivery_delivered", {
+    deliveryId: delivery.id, transcriptAnchor, submitVerified: true,
+  }, 2_000);
+  closeDb();
+
+  const restarted = new WorkflowStore();
+  const binding = restarted.getBinding(`binding-${suffix}`)!;
+  const anchors = restarted.listDeliveredTranscriptAnchors(delivery.sessionId, binding.noteKey);
+  assert.deepEqual(anchors, [{ payload: delivery.payload, transcriptAnchor }]);
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: delivery.sessionId, agentSessionId: binding.noteKey, agent: "claude", name: "work",
+    nameSource: "process", cwd: "/repo", gitBranch: "feature", gitRoot: "/repo", repoRoot: "/repo",
+    pid: 91, tty: "tty-legacy-attribution", terminals: [], startedAt: 1, transcriptPath,
+  } as DiscoveredSession]);
+  const intent = readWorkflowIntentSnapshot(registry, binding, anchors);
+  assert.ok(intent);
+  assert.deepEqual(intent.decisions.filter(d => d.source.kind === "transcript").map(d => d.source.id),
+    ["initial-ask", "human-repeat"]);
 });
 
 test("positive refusal is explicitly retryable while uncertain delivery never auto-retries", () => {

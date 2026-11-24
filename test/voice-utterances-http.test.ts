@@ -697,6 +697,20 @@ test("a selected session missing from the registry is reported as unavailable", 
   assert.equal((await readHeard())[0]?.outcome, "not-running");
 });
 
+test("a manual split pick leaves the card open when its running roster row has no live session", async (t) => {
+  const gone = { ...name("Will"), sessionId: "sdk:gone" };
+  voiceStateStore.useRoster(() => [name("Steve"), gone]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Steve, ask Will about the release", "pick-gone");
+  await resolved("pick-gone");
+  assert.equal((await act("pick-gone", "pick", { id: "task:Will" })).status, 409);
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.equal((await act("pick-gone", "send-now")).status, 409);
+  assert.equal((await act("pick-gone", "pick", { id: "task:Steve" })).status, 200);
+  assert.equal((await act("pick-gone", "send-now")).status, 200);
+  assert.equal(queued("Steve").at(-1), "ask Will about the release");
+});
+
 test("a spoken pick for a departed candidate records why the unsure card stays open", async (t) => {
   await say("Steven ask Will about the release", "choose");
   voiceStateStore.useRoster(() => roster.filter((target) => target.name !== "Will"));

@@ -29,16 +29,17 @@ import { dirname, join, resolve } from "node:path";
  * fail loudly - the hook swallows its fetch errors - it would just quietly stop
  * reporting until someone reinstalled it.
  */
-export function envVar(suffix) {
+export function envVar(suffix, env = process.env) {
   return (
-    process.env[`MISSION_${suffix}`] ??
-    process.env[`FLEET_${suffix}`] ??
-    process.env[`HARNESS_${suffix}`]
+    env[`MISSION_${suffix}`] ??
+    env[`FLEET_${suffix}`] ??
+    env[`HARNESS_${suffix}`]
   );
 }
 
 /** Port the daemon binds on (loopback only). */
-export const PORT = Number(envVar("PORT") ?? 7317);
+export function runtimePort(env = process.env) { return Number(envVar("PORT", env) ?? 7317); }
+export const PORT = runtimePort();
 
 /** Loopback host the daemon binds to. */
 export const HOST = "127.0.0.1";
@@ -67,8 +68,8 @@ export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
  * the MCP bridge as well as the daemon, and a path resolver that had side effects would
  * have several processes racing to invent a state dir.
  */
-export function stateDir() {
-  const override = envVar("HOME");
+export function stateDir(env = process.env) {
+  const override = envVar("HOME", env);
   if (override) return override;
   for (const name of STATE_DIRS) {
     const p = join(homedir(), name);
@@ -118,8 +119,8 @@ export function migrateStateDir() {
 }
 
 /** Path to the shared auth token the daemon writes and clients present. */
-export function tokenPath() {
-  return join(stateDir(), "token");
+export function tokenPath(env = process.env) {
+  return join(stateDir(env), "token");
 }
 
 /** Direct loopback credential for a child that must not learn the daemon's state path. */
@@ -129,19 +130,19 @@ export const MISSION_API_TOKEN_ENV = "MISSION_API_TOKEN";
 export const MISSION_API_TOKEN_FILE_ENV = "MISSION_API_TOKEN_FILE";
 
 /** Read the daemon auth token, or "" when it isn't present yet. */
-export function readToken() {
+export function readToken(env = process.env) {
   try {
-    return readFileSync(tokenPath(), "utf8").trim();
+    return readFileSync(tokenPath(env), "utf8").trim();
   } catch {
     return "";
   }
 }
 
 /** Read a client credential supplied directly to an isolated child, then the normal file. */
-export function readClientToken() {
-  const supplied = process.env[MISSION_API_TOKEN_ENV]?.trim();
+export function readClientToken(env = process.env) {
+  const supplied = env[MISSION_API_TOKEN_ENV]?.trim();
   if (supplied) return supplied;
-  const suppliedFile = process.env[MISSION_API_TOKEN_FILE_ENV]?.trim();
+  const suppliedFile = env[MISSION_API_TOKEN_FILE_ENV]?.trim();
   if (suppliedFile) {
     try {
       return readFileSync(suppliedFile, "utf8").trim();
@@ -149,7 +150,7 @@ export function readClientToken() {
       return "";
     }
   }
-  return readToken();
+  return readToken(env);
 }
 
 /**

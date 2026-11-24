@@ -70,8 +70,11 @@ function commit(next: UiConfig): void {
  * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
  * so the record it draws from stays whole.
  */
-function withHeldFields(config: UiConfigView["config"]): UiConfig {
-  return { ...config, voice: config.voice ?? current.voice };
+function withHeldFields(config: UiConfigView["config"], indicatorsAtRead: string[]): UiConfig {
+  const voice = config.voice ?? current.voice;
+  // A local acknowledgement can arrive while this hydration GET is in flight.
+  return { ...config, voice: current.voice.indicators === indicatorsAtRead
+    ? voice : { ...voice, indicators: current.voice.indicators } };
 }
 
 /** The live config. Safe to read at module load and outside React. */
@@ -104,6 +107,7 @@ function retryHydration(): void {
  */
 export async function hydrateUiConfig(): Promise<void> {
   if (hydrated) return;
+  const indicatorsAtRead = current.voice.indicators;
   const view = await fetchUiConfig();
   if (!view) {
     retryHydration();
@@ -127,10 +131,10 @@ export async function hydrateUiConfig(): Promise<void> {
         return;
       }
     } else {
-      commit(withHeldFields(view.config));
+      commit(withHeldFields(view.config, indicatorsAtRead));
     }
   } else {
-    commit(withHeldFields(view.config));
+    commit(withHeldFields(view.config, indicatorsAtRead));
   }
   hydrated = true;
   emit();
@@ -189,6 +193,24 @@ export async function refreshAnnouncedTours(): Promise<boolean> {
   return true;
 }
 
+/** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
+export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<boolean> {
+  const atWrite = current.voice.indicators;
+  const result = await api.setVoiceIndicator(id, enabled);
+  if (!result.ok || !result.indicators) return false;
+  let indicators = result.indicators;
+  const atReply = current.voice.indicators;
+  if (atReply !== atWrite) {
+    // Either the PUT or the intervening snapshot could be newer. A GET started after
+    // both sees their result. Keep a still newer snapshot if one arrives during it.
+    const view = await fetchUiConfig(AbortSignal.timeout(5000));
+    if (!view?.config.voice || current.voice.indicators !== atReply) return true;
+    indicators = view.config.voice.indicators;
+  }
+  commit({ ...current, voice: { ...current.voice, indicators } });
+  return true;
+}
+
 // Stable references for useSyncExternalStore, so it doesn't drop and re-add the listener
 // on every render (an inline arrow would).
 function subscribe(cb: () => void): () => void {
@@ -202,14 +224,6 @@ function subscribe(cb: () => void): () => void {
  * holding no copy of the overrides it derives from.
  */
 export const subscribeUiConfig = subscribe;
-
-/** Persist only the checkbox that changed and adopt the daemon's merged selection. */
-export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<boolean> {
-  const result = await api.setVoiceIndicator(id, enabled);
-  if (!result.ok || !result.indicators) return false;
-  commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
-  return true;
-}
 function getSnapshot(): UiConfig {
   return current;
 }

@@ -205,6 +205,85 @@ test("two windows selecting different indicators preserve both choices in the da
   }
 });
 
+test("a delayed indicator acknowledgement keeps the newer two-window configuration visible", async ({ page, context, daemon }) => {
+  await enableVoice(daemon);
+  const settings = daemon.baseURL + "/#/settings/voice";
+  const peer = await context.newPage();
+  await peer.goto(settings);
+  const releaseRead = Promise.withResolvers<void>();
+  const releaseSave = Promise.withResolvers<void>();
+  const saved = Promise.withResolvers<string[]>();
+  await page.route("**/api/ui/config", async route => {
+    await releaseRead.promise;
+    await route.continue();
+  });
+  await page.route("**/api/voice/indicators", async route => {
+    const response = await route.fetch();
+    saved.resolve((await response.json()).indicators);
+    await releaseSave.promise;
+    await route.fulfill({ response });
+  });
+  await page.goto(settings);
+  const edge = page.getByRole("checkbox", { name: "Edge light" });
+  const floating = page.getByRole("checkbox", { name: "Floating button" });
+  await edge.check();
+  expect(await saved.promise).toEqual(["status-line", "edge"]);
+  await peer.getByRole("checkbox", { name: "Floating button" }).check();
+  await expect(peer.getByRole("checkbox", { name: "Floating button" })).toBeEnabled();
+  releaseRead.resolve();
+  await expect(floating).toBeChecked();
+  releaseSave.resolve();
+  await expect(edge).toBeEnabled();
+  await expect(edge).toBeChecked();
+  await expect(floating).toBeChecked();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await page.mouse.move(1, 1);
+    await edge.blur();
+    await expect(page.locator(".tooltip")).toHaveCount(0);
+    await page.getByRole("group", { name: "In the window" }).screenshot({ path: join(mkdtempSync(join(root, "late-save-")), "settings.png") });
+  }
+});
+
+test("the 720 by 480 dashboard keeps the last console row above its bottom status line", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
+    repoRoot: daemon.repo, intent: "Measure the console", title: "Status line geometry",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  } });
+  expect(task.ok(), await task.text()).toBe(true);
+  await page.goto(daemon.baseURL);
+  const session = page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Status line geometry/ });
+  await session.click();
+  await page.setViewportSize({ width: 720, height: 480 });
+  const content = page.locator(".console");
+  const status = page.locator("button.vi-status-line");
+  await expect(content).toBeVisible();
+  const actions = content.locator(".actions");
+  await expect(actions).toBeInViewport();
+  await expect(status).toBeInViewport({ ratio: 1 });
+  const line = (await status.boundingBox())!;
+  const consoleBounds = (await content.boundingBox())!;
+  expect(line.height).toBe(26);
+  expect(line.y + line.height).toBe(480);
+  expect(consoleBounds.y + consoleBounds.height).toBeLessThanOrEqual(line.y);
+  const lastRow = (await actions.boundingBox())!;
+  expect(lastRow.y + lastRow.height).toBeLessThanOrEqual(line.y);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await page.mouse.move(1, 1);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(page.locator(".tooltip")).toHaveCount(0);
+    await page.screenshot({
+      path: join(mkdtempSync(join(root, "last-row-")), "dashboard.png"),
+      mask: [page.locator(".detail-sub .kv").filter({ has: page.locator("dt", { hasText: /^path$/i }) }).locator("dd"), page.locator(".transcript-log")],
+      maskColor: "#1b2029",
+    });
+  }
+});
+
 test("a failed indicator save shows an alert and restores the previous selection and top bar", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");

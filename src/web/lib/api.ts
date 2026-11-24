@@ -446,7 +446,7 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
-export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
+export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
  * Both, because they diverge for real reasons (a hand-edited file, an install from

@@ -28,7 +28,7 @@ Object.defineProperty(globalThis, "fetch", {
   },
 });
 
-const { uiConfig, updateUiConfig } = await import("../src/web/lib/uiConfig.ts");
+const { hydrateUiConfig, uiConfig, updateUiConfig, updateVoiceIndicator } = await import("../src/web/lib/uiConfig.ts");
 
 test("a failed tour preference write does not restore over a newer preference", async () => {
   const savingPreference = updateUiConfig({ showToursOnStartup: false });
@@ -48,4 +48,38 @@ test("a failed older write cannot restore over a successful identical write", as
   finishTourWrite?.(new Response(JSON.stringify({ error: "temporary failure" }), { status: 503 }));
   assert.equal(await olderWrite, false);
   assert.equal(uiConfig().showToursOnStartup, false, "the newer accepted value remains in the live cache");
+});
+
+test("initial hydration cannot undo an indicator save acknowledged after the GET started", async (t) => {
+  const before = structuredClone(uiConfig());
+  let finishRead!: (response: Response) => void;
+  const read = new Promise<Response>(resolve => { finishRead = resolve; });
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    if (path === "/api/ui/config") return read;
+    assert.equal(path, "/api/voice/indicators");
+    return Response.json({ indicators: ["status-line", "edge"] });
+  });
+  const hydration = hydrateUiConfig();
+  assert.equal(await updateVoiceIndicator("edge", true), true);
+  finishRead(Response.json({ configured: true, config: { ...before, richText: true } }));
+  await hydration;
+  assert.deepEqual(uiConfig().voice.indicators, ["status-line", "edge"]);
+  assert.equal(uiConfig().richText, true);
+});
+
+test("an older indicator response reconciles against the newer selection in the config store", async (t) => {
+  const newer = { ...uiConfig().voice, indicators: ["status-line", "edge", "floating"] };
+  let acknowledge!: (response: Response) => void;
+  const earlier = new Promise<Response>(resolve => { acknowledge = resolve; });
+  t.mock.method(globalThis, "fetch", async (path: string, init: RequestInit) => {
+    if (path === "/api/voice/indicators") return earlier;
+    assert.equal(path, "/api/ui/config");
+    return init.method === "PUT" ? Response.json({ ok: true })
+      : Response.json({ configured: true, config: { ...uiConfig(), voice: newer } });
+  });
+  const saving = updateVoiceIndicator("edge", true);
+  await updateUiConfig({ voice: newer });
+  acknowledge(Response.json({ indicators: ["status-line", "edge"] }));
+  assert.equal(await saving, true);
+  assert.deepEqual(uiConfig().voice.indicators, newer.indicators);
 });

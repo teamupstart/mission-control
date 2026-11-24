@@ -16,7 +16,7 @@ import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { maintainScoutSessionCredentials } from "./scouts/session-credentials.ts";
-import { serve } from "@hono/node-server";
+import { getRequestListener, serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import type { Server } from "node:http";
 import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
@@ -49,7 +49,8 @@ import {
 import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
-import { envVar } from "@shared/harness-runtime.mjs";
+import { desktopVoiceEndpointPath, envVar } from "@shared/harness-runtime.mjs";
+import { serveDesktopVoice } from "./voice/desktop-endpoint.ts";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
@@ -934,9 +935,35 @@ if (hasDist) {
   app.get("*", dashboardDocument);
 }
 
+let stopDesktopVoice = () => {};
+function watchDesktopVoice() {
+  let active: AbortController | undefined;
+  let retry: NodeJS.Timeout | undefined;
+  function reconcile() {
+    clearTimeout(retry);
+    if (featureEnabled(VOICE_FLAG)) {
+      if (active) return;
+      const controller = active = new AbortController();
+      void serveDesktopVoice(getRequestListener(app.fetch, { overrideGlobalObjects: false }), desktopVoiceEndpointPath(), controller.signal).catch(error => {
+        if (controller.signal.aborted) return;
+        console.error("[voice] Could not start private desktop endpoint:", error);
+        active = undefined;
+        retry = setTimeout(reconcile, 5000);
+      });
+    } else {
+      active?.abort();
+      active = undefined;
+    }
+  }
+  const unsubscribe = onFeatureFlagsChanged(reconcile);
+  reconcile();
+  return () => { unsubscribe(); clearTimeout(retry); active?.abort(); };
+}
+
 let shutdownStarted = false;
 let telemetry: TelemetryService | null = null;
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
+  if (process.platform === "darwin") stopDesktopVoice = watchDesktopVoice();
   // Restoration remains serial, but is no longer on the listener's critical path. Terminal
   // discovery and every first-observation reconciliation still wait for every prepared SDK
   // row to adopt or follow register-and-evict. A failed port bind never reaches this callback,
@@ -1137,6 +1164,7 @@ async function shutdown(): Promise<void> {
   stopPersonDeliveries();
   stopShapingConfig();
   registry.voiceRouter?.reset();
+  stopDesktopVoice();
   stopVoiceState();
   stopVoiceIndicators();
   stopVoiceNames();

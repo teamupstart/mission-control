@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
+import { desktopVoiceEndpointPath } from "../src/shared/harness-runtime.mjs";
+import { ensureToken } from "../src/server/auth.ts";
+import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
 import { buildSync } from "esbuild";
 import { _electron } from "@playwright/test";
 import { voiceStateOff, type VoiceMode, type VoiceShellReport } from "../src/shared/voice.ts";
@@ -16,26 +19,47 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   assertElectronGuiLaunchAllowed();
   const root = mkdtempSync(join(tmpdir(), "voice-shell-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  writeFileSync(join(root, "token"), "fixture");
+  writeFileSync(join(root, "token"), ensureToken());
   const binary = join(root, "voice-listener");
   writeFileSync(binary, `#!/usr/bin/env node
     const fs = require("node:fs");
-    const {MISSION_VOICE_MODEL_DIR, MISSION_VOICE_TOKEN_FILE, MISSION_VOICE_DAEMON_URL} = process.env;
+    const {MISSION_VOICE_MODEL_DIR, MISSION_VOICE_TOKEN_FILE, MISSION_VOICE_DAEMON_URL, MISSION_VOICE_DAEMON_CERT} = process.env;
     fs.appendFileSync(${JSON.stringify(join(root, "pids"))}, process.pid + "\\n");
-    fs.writeFileSync(${JSON.stringify(join(root, "started"))}, JSON.stringify([MISSION_VOICE_MODEL_DIR, MISSION_VOICE_TOKEN_FILE, MISSION_VOICE_DAEMON_URL]));
+    fs.writeFileSync(${JSON.stringify(join(root, "started"))}, JSON.stringify([MISSION_VOICE_MODEL_DIR, MISSION_VOICE_TOKEN_FILE, MISSION_VOICE_DAEMON_URL, MISSION_VOICE_DAEMON_CERT]));
     process.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(join(root, "stopped"))}, "stopped"); process.exit(0); });
     setInterval(() => {}, 1000);
   `, {mode: 0o755});
   let events: ServerResponse | undefined;
   let connects = 0;
+  let unavailableHandshakes = 1;
+  let refusals = 0;
   let reconnectSnapshot: string | undefined;
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
   let holdReport = false;
   let heldReport: ServerResponse | undefined;
-  const server = createServer(async (req, res) => {
+  const publicRequests: { path?: string; credential: boolean }[] = [];
+  const server = createServer((req, res) => {
+    publicRequests.push({ path: req.url, credential: !!req.headers["x-harness-token"] });
+    res.end(JSON.stringify({ counts: { needsYou: 2 } }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const endpointFile = desktopVoiceEndpointPath(root, address.port);
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const secureServer = await serveDesktopVoice(async (req, res) => {
     if (req.url === "/events") {
+      if (unavailableHandshakes > 0) {
+        unavailableHandshakes--;
+        refusals++;
+        res.writeHead(503).end();
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       events = res;
       connects++;
@@ -51,7 +75,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       if (muteResponse === "timeout") return;
       if (muteResponse === "refused") res.statusCode = 503;
     }
-    if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === "fixture") {
+    if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === ensureToken()) {
       reports.push(JSON.parse(body));
       if (holdReport) {
         holdReport = false;
@@ -60,10 +84,16 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       }
     }
     res.end(JSON.stringify({ counts: { needsYou: 2 } }));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => { server.closeAllConnections(); server.close(); });
+  }, endpointFile, controller.signal);
+  assert.ok(secureServer);
+  const rejectedHandshake = once(secureServer, "tlsClientError");
+  const endpoint = JSON.parse(readFileSync(endpointFile, "utf8"));
+  const otherFile = join(root, "other-identity.json");
+  const other = new AbortController();
+  await serveDesktopVoice(() => assert.fail("unexpected application request"), otherFile, other.signal);
+  const otherCertificate = JSON.parse(readFileSync(otherFile, "utf8")).certificate;
+  other.abort();
+  writeFileSync(endpointFile, JSON.stringify({ ...endpoint, certificate: otherCertificate }));
   const entry = join(root, "fixture.cjs");
   buildSync({
     stdin: { resolveDir: resolve("."), loader: "ts", contents: `
@@ -106,8 +136,6 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
   });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
   const app = await _electron.launch({ args: [entry, "--user-data-dir=" + root], env: {
     ...process.env, MISSION_HOME: root, MISSION_PORT: String(address.port),
   } });
@@ -129,7 +157,19 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       await new Promise(resolve => setTimeout(resolve, 40));
     }
   }
+  await t.test("a different daemon certificate keeps voice off and sends no HTTP request", async () => {
+    await until(async () => (await read()).title === " 2");
+    await rejectedHandshake;
+    assert.equal((await read()).mode, "off");
+    assert.equal(refusals, 0);
+    assert.equal(connects, 0);
+    assert.equal(reports.length, 0);
+    assert.equal(existsSync(join(root, "started")), false);
+    assert.ok(publicRequests.length && publicRequests.every(r => r.path === "/api/report" && !r.credential));
+  });
+  writeFileSync(endpointFile, JSON.stringify(endpoint));
   await until(async () => !!events && (await read()).title === " 2");
+  assert.equal(refusals, 1, "the shell recovered from a 503 on its first handshake");
   assert.equal(reports.length, 0);
   await click("click");
   assert.equal((await read()).opens, 1);
@@ -277,18 +317,20 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(await calls(), before + 2);
   });
   assert.deepEqual(JSON.parse(readFileSync(join(root, "started"), "utf8")),
-    ["/verified-model", join(root, "token"), `http://127.0.0.1:${address.port}`]);
+    ["/verified-model", join(root, "token"), `https://127.0.0.1:${endpoint.port}`, endpoint.certificate]);
   const pids = () => readFileSync(join(root, "pids"), "utf8").trim().split("\n").map(Number);
   const exited = (pid: number) => {
     try { process.kill(pid, 0); return false; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
   };
-  await t.test("a broken stream terminates the active listener before a reconnect snapshot starts its replacement", async () => {
+  await t.test("capture stops on stream loss and a fresh snapshot restores it after two HTTP 503 handshakes", async () => {
     const [first] = pids();
     assert.equal(exited(first!), false);
+    unavailableHandshakes = 2;
     events!.destroy();
     await until(() => exited(first!));
     await until(() => connects === 2);
+    assert.equal(refusals, 3);
     assert.equal((await read()).mode, "off");
     assert.deepEqual(pids(), [first]);
     events!.write("data: " + JSON.stringify({ type: "snapshot", voice: ready }) + "\n\n");

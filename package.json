@@ -133,8 +133,10 @@
     "rehype-highlight": "^7.0.2",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "selfsigned": "^5.5.0",
     "sherpa-onnx-node": "2.0.3",
     "smol-toml": "^1.9.1",
+    "undici": "^8.12.4",
     "yaml": "^2.9.0",
     "yauzl": "3.4.0",
     "zod": "^4.6.7"

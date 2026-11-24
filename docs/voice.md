@@ -23,6 +23,11 @@ undetermined, the app retries with backoff. After a denial, **Open System Settin
 the microphone privacy pane. Allow Mission Control, then choose **Check again**. The desktop
 app reads the current macOS permission and reports it to the daemon before Setup refreshes.
 
+On macOS, the daemon publishes its voice port and public TLS certificate in its state directory
+when Voice is enabled. The shell and its listener verify that certificate on their voice
+connections. Losing the connection pauses capture. The shell reads the current daemon identity
+again before resuming from a fresh snapshot.
+
 You can minimize the window while speaking. The menu-bar microphone means listening, and a
 struck microphone means muted or unavailable. Right-click for the status and existing app
 commands. Left-click to mute or unmute. While a change awaits confirmation, further clicks
@@ -45,9 +50,12 @@ Any launcher can run `dist/native/voice-listener` directly with these three vari
 
 | Variable | Value |
 | --- | --- |
-| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin |
+| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin for standalone development |
 | `MISSION_VOICE_TOKEN_FILE` | Path to its token, sent as `x-harness-token` |
 | `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
+
+The desktop shell supplies an HTTPS origin and its pinned DER certificate in
+`MISSION_VOICE_DAEMON_CERT` (base64). The managed listener requires both for its requests.
 
 The development launcher fills missing values from the local daemon configuration and the
 selected backend's model manifest. When macOS reports `not-determined` at startup, the helper

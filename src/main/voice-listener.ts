@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { BASE_URL, tokenPath } from "../shared/harness-runtime.mjs";
+import { tokenPath } from "../shared/harness-runtime.mjs";
 import { logMain } from "./main-log.ts";
 import type { ShellVoiceState } from "./voice-state.ts";
 
@@ -64,14 +64,18 @@ export class VoiceListener {
   }
 }
 
-export function nativeVoiceListener(executable: string): VoiceListener {
-  return new VoiceListener(directory => spawn(executable, [], {
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      MISSION_VOICE_DAEMON_URL: BASE_URL,
-      MISSION_VOICE_TOKEN_FILE: tokenPath(),
-      MISSION_VOICE_MODEL_DIR: directory,
-    },
-  }));
+export function nativeVoiceListener(executable: string, endpoint: () => { origin: string; certificate: string }): VoiceListener {
+  return new VoiceListener(directory => {
+    const { origin, certificate } = endpoint();
+    return spawn(executable, [], {
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        MISSION_VOICE_DAEMON_URL: origin,
+        MISSION_VOICE_DAEMON_CERT: certificate,
+        MISSION_VOICE_TOKEN_FILE: tokenPath(),
+        MISSION_VOICE_MODEL_DIR: directory,
+      },
+    });
+  });
 }

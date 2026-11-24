@@ -10,6 +10,7 @@ export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
+export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
 // Replaces only the registry module in reader tests.
 export const FEATURE_FLAGS = [{

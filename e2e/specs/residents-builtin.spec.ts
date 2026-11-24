@@ -309,7 +309,7 @@ test("the inspector asks for a fresh duplicate search when the searched reposito
     .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create")).toHaveLength(0);
 });
 
-test("a launched Bug Fix Inspector prepares a scheduled finding and receives a GitHub issue URL only after issue-specific approval", async ({ dashboard, daemon }) => {
+for (const pass of ["first", "scheduled"] as const) test(`a launched Bug Fix Inspector requires approval for a finding on its ${pass} pass`, async ({ dashboard, daemon }) => {
   await inspectorPreview(daemon, true);
   const finding = "Finished task leaves its bound workflow unsubmitted";
   writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
@@ -317,17 +317,20 @@ test("a launched Bug Fix Inspector prepares a scheduled finding and receives a G
   await dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" }).getByRole("button", { name: "Launch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toContainText("Launching this resident asks it to prepare GitHub issue drafts for confirmed defects on its first and scheduled passes. You approve each issue before publication.");
-  await capture(dialog, "17-inspector-launch-authorization");
-  await dialog.getByLabel("Instructions for this run").fill(`Fixture scheduled finding: ${finding}\nFixture searched repository: acme/public-issues`);
+  if (pass === "scheduled") await capture(dialog, "17-inspector-launch-authorization");
+  const fixtureLabel = pass === "first" ? "Fixture finding" : "Fixture scheduled finding";
+  await dialog.getByLabel("Instructions for this run").fill(`${fixtureLabel}: ${finding}\nFixture searched repository: acme/public-issues`);
   await dialog.getByRole("button", { name: "Launch resident" }).click();
   await expect(dialog).toBeHidden();
 
-  // Make the next scheduled wake overdue in this disposable home after the quiet launch turn.
   const run = () => withDaemonDb(daemon, db => db.prepare("SELECT iteration, loop_state FROM resident_runs WHERE ended_at IS NULL").get());
-  await expect.poll(run, { timeout: 30_000 }).toMatchObject({ iteration: 1, loop_state: "waiting" });
-  await daemon.crash();
-  withDaemonDb(daemon, db => db.prepare("UPDATE resident_runs SET next_wake_at = ? WHERE ended_at IS NULL").run(Date.now() - 1));
-  await daemon.restart();
+  if (pass === "scheduled") {
+    // Make the next scheduled wake overdue in this disposable home after the quiet launch turn.
+    await expect.poll(run, { timeout: 30_000 }).toMatchObject({ iteration: 1, loop_state: "waiting" });
+    await daemon.crash();
+    withDaemonDb(daemon, db => db.prepare("UPDATE resident_runs SET next_wake_at = ? WHERE ended_at IS NULL").run(Date.now() - 1));
+    await daemon.restart();
+  }
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
   const detail = dashboard.locator(".console-detail");
@@ -342,11 +345,12 @@ test("a launched Bug Fix Inspector prepares a scheduled finding and receives a G
   const submit = preview.getByRole("button", { name: "Submit", exact: true });
   await expect(submit).toBeDisabled();
   expect(creates()).toHaveLength(0);
-  await capture(preview, "13-inspector-issue-preview");
+  expect(run()).toMatchObject({ iteration: pass === "first" ? 1 : 2 });
+  await capture(preview, pass === "first" ? "18-inspector-first-pass-preview" : "13-inspector-issue-preview");
   await preview.getByRole("radio", { name: "Submit public issue" }).check();
   await submit.click();
   await expect(detail).toContainText(`report_product_issue answered: Product issue created: ${FAKE_GH_PRODUCT_ISSUE_URL}`, { timeout: 30_000 });
-  await capture(detail, "14-inspector-issue-result");
+  await capture(detail, pass === "first" ? "19-inspector-first-pass-result" : "14-inspector-issue-result");
   expect(creates()).toHaveLength(1);
   expect(creates()[0]!.argv).toEqual(expect.arrayContaining(["acme/public-issues", finding, "bug", "source:agent"]));
 });

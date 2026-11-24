@@ -97,6 +97,7 @@ test("Bug Fix Inspector ships with a fixed 45-minute cadence and rolling $20 gua
   assert.equal(loop.spendCapUsd, 20);
   assert.match(inspector.settings.identity.description, /Launching this resident asks it to prepare GitHub issue drafts.*first and scheduled passes/);
   assert.match(inspector.settings.instructions.markdown, /standing request to prepare drafts for this run/);
+  assert.match(inspector.settings.instructions.markdown, /On the first pass and every scheduled pass, call `report_product_issue` for each new confirmed defect/);
   assert.match(inspector.settings.instructions.markdown, /Only the operator selecting \*\*Submit public issue\*\* for that draft authorizes publication/);
   assert.match(inspector.settings.instructions.markdown, /last successfully inspected time/);
   assert.match(inspector.settings.instructions.markdown, /retry the oldest uncovered interval first/);

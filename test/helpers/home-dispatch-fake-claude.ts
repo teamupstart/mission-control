@@ -101,12 +101,24 @@ if (argv[0] === "plugin") {
     }
     process.exit(0);
   }
+  if (sub === "marketplace" && argv[2] === "list") {
+    fail("marketplace list");
+    process.stdout.write(JSON.stringify(state.marketplaces.map((p) => ({ name: "mission-control", source: "directory", path: p, installLocation: p }))));
+    process.exit(0);
+  }
   if (sub === "marketplace" && argv[2] === "add") {
     fail("marketplace add");
     const source = firstArg(3);
     if (source && !state.marketplaces.includes(source)) state.marketplaces.push(source);
     save();
     process.stdout.write("Added marketplace " + source + "\\n");
+    process.exit(0);
+  }
+  if (sub === "enable") {
+    fail("enable");
+    const id = firstArg(2);
+    for (const p of state.plugins) if (p.id === id && p.scope === (flag("--scope") ?? "user")) p.enabled = true;
+    save();
     process.exit(0);
   }
   if (sub === "install") {

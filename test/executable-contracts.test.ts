@@ -48,6 +48,9 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
+  "src/cli/claude-cli.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "P14 probes and plugin commands use the CLI's locator-selected absolute Claude path and bounded child environment without changing daemon discovery order" },
+  ],
   "src/pi/generation-lease.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
   ],

@@ -513,6 +513,14 @@ setting in the app or use the environment variable as a process-level fallback:
 See [Configuration](docs/configuration.md) for the complete precedence rules and transport
 tradeoffs.
 
+## Claude-session control (preview)
+
+With a built checkout and the daemon running, `node dist/cli/mctl.mjs setup` enables
+`headless-mode` and installs the Mission Control mod through Claude Code's user plugin
+marketplace. The next Claude session opens the Needs you and Tasks pane; `/mission-dispatch`
+starts work and opens the pane. `node dist/cli/mctl.mjs doctor` reports setup problems without
+changing settings or spending model tokens. See [setup, checks and recovery](docs/headless-mode.md).
+
 ## Pi session integration
 
 Managed Pi sessions support structured extension questions, Pi-owned project trust, and

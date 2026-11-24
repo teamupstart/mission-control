@@ -44,10 +44,12 @@ in every open window, with no Save button or restart. A refused write rolls back
 inline error. Preview features are off until enabled individually or through the master switch.
 With no preview declared the panel shows its empty state instead of a list.
 
-**Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
-a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
-answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
-route answers 404 and the `home-dispatch-v1` health capability is absent.
+**Headless mode** (`headless-mode`) enables dispatch, attention signals and the Needs you and Tasks
+pane inside Claude Code. It ships off until chosen. From a built checkout, `mctl setup` enables
+the flag and installs the mod; [setup and doctor](headless-mode.md) document the prerequisites
+and recovery commands. `mctl setup --off` disables the flag while leaving the mod installed.
+With the flag off, every `/dispatch/*` route answers 404 and the `home-dispatch-v1` health
+capability is absent; the mod closes its pane and clears its glance layer at the next poll.
 
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the

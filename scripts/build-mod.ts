@@ -85,6 +85,8 @@ await build({
 });
 
 await cp(join(root, "src/mod/types/index.d.ts"), join(pluginDir, "types", "index.d.ts"));
+// Doctor checks the staged bundle against the same allowlist as the source smoke check.
+await cp(join(root, "src/mod/allowed-calls.json"), join(pluginDir, "allowed-calls.json"));
 await writeFile(join(pluginDir, "hooks", "hooks.json"), `${JSON.stringify({ modules: ["./register.js"] }, null, 2)}\n`);
 await writeFile(
   join(pluginDir, ".claude-plugin", "plugin.json"),

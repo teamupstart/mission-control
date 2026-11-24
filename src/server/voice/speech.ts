@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  VOICE_SPEECH_CONFIRM_LIMIT_MS, VOICE_SPEECH_END_MARGIN_MS, VOICE_SPEECH_START_LIMIT_MS,
+  VOICE_SPEECH_CONFIRM_LIMIT_MS, VOICE_SPEECH_END_MARGIN_MS, VOICE_SPEECH_PREPARE_LIMIT_MS, VOICE_SPEECH_START_LIMIT_MS,
   VOICE_SPEECH_SYSTEM_LIMIT_MS, type SpeakDirective, type VoiceSpeechJob, type VoiceSpeechState, type VoiceSpeechVoice,
 } from "@shared/voice-speech.ts";
 import { verifySupervisorReport, type SupervisorReportState } from "./supervisor-auth.ts";
@@ -208,9 +208,16 @@ export class VoiceSpeechManager {
     if (target.voice.engine === "neural") {
       this.deps.changed();
       if (!this.jobs.has(job.id)) return;
+      const deadline = this.deps.now() + VOICE_SPEECH_PREPARE_LIMIT_MS;
+      const expire = () => {
+        try { this.synth.stop(); } catch { /* A stuck backend cannot keep the job alive. */ }
+        this.finish(item, "failed");
+      };
+      this.arm(item, VOICE_SPEECH_PREPARE_LIMIT_MS, expire);
       try {
         const audio = await this.synth.synthesize(job.text, target.voice);
         if (!this.jobs.has(job.id)) return;
+        if (this.deps.now() >= deadline) return expire();
         item.wav = audio.wav;
         job.durationMs = audio.durationMs;
       } catch {

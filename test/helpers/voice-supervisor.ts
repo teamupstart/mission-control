@@ -1,6 +1,10 @@
+import { generateKeyPairSync } from "node:crypto";
 import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER, type SupervisorReportState } from "../../src/server/voice/supervisor-auth.ts";
 
-const supervisors = { shell: createVoiceSupervisor("shell"), dev: createVoiceSupervisor("dev") };
+export function newFixtureSupervisor(name: "shell" | "dev") {
+  return createVoiceSupervisor(name, generateKeyPairSync("ed25519").privateKey);
+}
+const supervisors = { shell: newFixtureSupervisor("shell"), dev: newFixtureSupervisor("dev") };
 export const fixtureSupervisorEnv = { ...supervisors.shell.daemonEnv, ...supervisors.dev.daemonEnv };
 
 /** The listener receives its instance. Only this launcher fixture has the signing function. */

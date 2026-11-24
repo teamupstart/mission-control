@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { VoiceConfig, VoiceModelState, VoiceState } from "./voice.ts";
 
 export const VOICE_SPEECH_DEFAULT_NEURAL = "supertonic-3/F4";
+export const VOICE_SPEECH_PREPARE_LIMIT_MS = 15_000;
 export const VOICE_SPEECH_START_LIMIT_MS = 2000;
 export const VOICE_SPEECH_END_MARGIN_MS = 1500;
 export const VOICE_SPEECH_SYSTEM_LIMIT_MS = 10000;

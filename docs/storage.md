@@ -185,11 +185,29 @@ launch inventory and supervisor records all disappear, this marker distinguishes
 the used state home from a first boot. Capture stays off while the daemon cannot
 identify which listeners need to confirm silence.
 
-The voice supervisor holds its Ed25519 private key in launcher memory. The
-daemon receives the public verification key at startup. The private listener
-instance includes the launcher's public key and a per-child nonce, so a
-recorded launch remains bound to the same signer across daemon restarts.
-The daemon ignores legacy on-disk signing keys.
+#### Voice supervisor credentials
+
+Provision a distinct Ed25519 private key once for each shell or dev supervisor.
+Keep it in the launch service's protected credential store throughout launcher
+and daemon restarts. Provisioning a new key for each launcher process strands
+the old process's exit authority.
+
+On each boot, the service passes the 48-byte DER PKCS#8 key to the launcher on
+a dedicated inherited descriptor (3 or higher). It can send the key through a
+private pipe and close the write end, or preopen a private file owned by a
+different OS account before dropping privileges. Keep that file in a directory
+inaccessible to the listener, with no group, other or ACL grants. The launcher
+calls `createVoiceSupervisor(name, fd)` before spawning the listener. The import
+closes the descriptor and clears its temporary buffer, including on failure.
+A service with a protected key provider can supply a private Ed25519 KeyObject
+directly. A missing credential must prevent a new speech announcement.
+
+Only the public verifier is passed to the daemon. Every listener instance binds
+that verifier to its launch nonce. Ordinary files owned by the listener's OS
+account, including legacy keys in the Mission Control state home, cannot be
+used as credential descriptors.
+
+#### Voice launch receipts
 
 Under `voice/supervised/`, the daemon writes one owner-only `announced-<digest>.json` per accepted start, by atomic rename. Its content is the private instance ID and its filename uses the SHA-256 digest of that ID. An authenticated exit removes only that instance’s file. These launch records survive the daemon and let it find possible players even before a launcher reconnects. The supervisor owns its separate process record in the same directory.
 

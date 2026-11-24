@@ -1,10 +1,14 @@
-import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
+import { fixtureSupervisorEnv, fixtureVoiceSupervisor, newFixtureSupervisor } from "./helpers/voice-supervisor.ts";
 import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { announcementName } from "../src/server/voice/speech-holds.ts";
 import assert from "node:assert/strict";
+import { fork, spawn } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
+import { once } from "node:events";
 import test, { afterEach } from "node:test";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { Hono } from "hono";
 import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, utterancePath, voiceStateStore as store } from "./helpers/voice-http.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
@@ -495,7 +499,7 @@ test("the daemon verifies supervisor reports with public material and binds laun
   const id = await audition();
   assert.equal((await holder.event(id, "started")).status, 200);
   assert.ok(!readdirSync(join(home, "voice")).includes("supervisor-keys"));
-  const other = createVoiceSupervisor("shell");
+  const other = newFixtureSupervisor("shell");
   const unannounced = other.newInstance();
   assert.equal((await holder.report("started", unannounced, other.proof(unannounced, "started"))).status, 403);
   assert.equal((await holder.report("exited", unannounced, other.proof(unannounced, "exited"))).status, 403);
@@ -510,6 +514,61 @@ test("the daemon verifies supervisor reports with public material and binds laun
     assert.equal((await holder.report("exited")).status, 200);
     assert.equal((await holder.poll()).capture, true);
   } finally { Object.assign(process.env, fixtureSupervisorEnv); }
+});
+
+test("a restarted launcher can confirm the original player's exit using its provisioned signing authority", { timeout: 15_000 }, async t => {
+  const p = player();
+  // The test worker stands in for the protected credential host. Both launcher processes
+  // receive the same key on their private descriptor, which the signer closes at startup.
+  const credential = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "der" });
+  t.after(() => { credential.fill(0); Object.assign(process.env, fixtureSupervisorEnv); });
+  const boot = () => {
+    const child = fork(new URL("./helpers/voice-restart-supervisor.mjs", import.meta.url), [], {
+      execArgv: [], stdio: ["ignore", "ignore", "inherit", "ipc", "pipe"],
+    });
+    (child.stdio[4] as Writable).end(credential);
+    t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+    return child;
+  };
+  const first = boot();
+  const announced = once(first, "message");
+  first.send({ state: "started" });
+  const [start] = await announced;
+  Object.assign(process.env, start.env);
+  assert.equal((await p.report("started", start.instance, start.proof)).status, 200);
+  await p.hello(start.instance);
+  const listener = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(() => { if (listener.exitCode === null && listener.signalCode === null) listener.kill(); });
+  await once(listener, "spawn");
+  const id = await audition();
+  assert.equal((await p.request("/voice/speech/jobs/" + id + "/events", { type: "started" }, start.instance)).status, 200);
+  const crashed = once(first, "exit");
+  first.kill("SIGKILL"); await crashed;
+  store.reset(); await p.hello(start.instance);
+  const replacement = boot();
+  const confirmExit = async () => {
+    const result = once(replacement, "message");
+    replacement.send({ state: "exited", instance: start.instance, pid: listener.pid });
+    return (await result)[0].proof;
+  };
+  assert.equal(await confirmExit(), null);
+  assert.equal((await p.poll(start.instance)).capture, false);
+  const gone = once(listener, "exit");
+  listener.kill(); await gone; // The player disappears without sending ended.
+  assert.equal((await p.poll(start.instance)).capture, false);
+  const proof = await confirmExit();
+  assert.equal(typeof proof, "string");
+  assert.equal((await p.report("exited", start.instance, proof)).status, 200);
+  assert.deepEqual(entries(), []);
+  assert.equal((await p.poll(start.instance)).capture, true);
+});
+
+test("a same-account signing file is rejected even when owner-only", () => {
+  const file = join(home, "same-account.key");
+  writeFileSync(file, Buffer.alloc(48), { mode: 0o600 });
+  const fd = openSync(file, "r");
+  assert.throws(() => createVoiceSupervisor("shell", fd), /Unprotected supervisor credential/);
+  rmSync(file);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

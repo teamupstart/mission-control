@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { askAloudPossible, askSentence, resolveSpeechVoice, VOICE_SPEECH_DEFAULT_NEURAL } from "../src/shared/voice-speech.ts";
+import { askAloudPossible, askSentence, resolveSpeechVoice, VOICE_SPEECH_DEFAULT_NEURAL, VOICE_SPEECH_PREPARE_LIMIT_MS } from "../src/shared/voice-speech.ts";
 import { VOICE_CONFIG_DEFAULTS, voiceStateOff } from "../src/shared/voice.ts";
 import { VoiceSpeechManager } from "../src/server/voice/speech.ts";
 
@@ -91,4 +91,45 @@ test("preparing, queued, failed and expired jobs preserve handoff order", async 
   assert.equal(failed.state, "failed");
   assert.equal(manager.speak(instance), null);
   manager.dispose();
+});
+
+test("stalled preparation fails on its deadline, advances the queue and discards late audio", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const home = mkdtempSync(join(tmpdir(), "speech-preparation-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const { instance, proof } = fixtureVoiceSupervisor();
+  const complete: Array<() => void> = [];
+  let stops = 0;
+  const manager = new VoiceSpeechManager({
+    directory: join(home, "voice"), now: Date.now, changed() {},
+    target: () => ({ instance, voice: { engine: "neural", id: VOICE_SPEECH_DEFAULT_NEURAL } }),
+    synthesizer: { warm() {}, stop() { stops++; }, synthesize: () => new Promise(resolve => {
+      const sample = complete.length + 1;
+      complete.push(() => resolve({ wav: new Uint8Array([sample]), durationMs: 25 }));
+    }) },
+  });
+  t.after(() => manager.dispose());
+  manager.supervised(instance, "started", proof("started"));
+  const first = manager.open("audition", "First?", null);
+  const second = manager.open("audition", "Second?", null);
+  assert.ok(first && second);
+  t.mock.timers.tick(VOICE_SPEECH_PREPARE_LIMIT_MS - 1);
+  assert.equal(first.state, "preparing");
+  assert.equal(complete.length, 1);
+  assert.equal(manager.held, false);
+  t.mock.timers.tick(1);
+  assert.equal(stops, 1);
+  assert.deepEqual(manager.lastAudition, { id: first.id, state: "failed" });
+  assert.equal(manager.live, second);
+  assert.equal(complete.length, 2);
+  assert.equal(manager.speak(instance), null);
+  complete[1]!(); await Promise.resolve();
+  complete[0]!(); await Promise.resolve();
+  assert.equal(first.state, "failed");
+  assert.equal(manager.audio(first.id, instance), undefined);
+  assert.deepEqual(manager.audio(second.id, instance), new Uint8Array([2]));
+  assert.equal(manager.speak(instance)?.id, second.id);
+  assert.equal(manager.held, true);
+  assert.equal(manager.event(second.id, instance, "ended"), "accepted");
+  assert.equal(manager.held, false);
 });

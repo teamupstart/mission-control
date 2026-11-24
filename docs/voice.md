@@ -1005,6 +1005,10 @@ listening mode and a supervised listener with a ready voice. The setting keeps
 its saved value when unavailable and the usual on-screen choices still work.
 A sample requested through the audition route can play while muted.
 
+Neural preparation has a 15-second deadline per job once it reaches the front
+of the queue. If it expires, the daemon fails that job, discards late audio and
+starts the next waiting job. Capture is held only after audio is ready for handoff.
+
 All listeners pause capture before the daemon offers the job. Only its holder
 receives the job or its stop request. A start overdue by 2 seconds, a system
 voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
@@ -1032,8 +1036,10 @@ remains active, and the sender can retry. An accepted signed exit is final for
 that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).
 
 The supervisor authenticates both reports to `POST /voice/listener/supervised`.
-The launcher keeps its Ed25519 signing key in its own process. At daemon startup
-it supplies the base64 DER SubjectPublicKeyInfo through
+The launch service provisions one durable Ed25519 key per supervisor. Each
+launcher boot imports the same key through a dedicated inherited credential
+descriptor before it starts a listener. At daemon startup the launcher supplies
+the base64 DER SubjectPublicKeyInfo through
 `MISSION_VOICE_SHELL_PUBLIC_KEY` or `MISSION_VOICE_DEV_PUBLIC_KEY`. Only an
 instance signed by the configured launcher can be announced. The instance is
 `<shell|dev>_<hex DER public key>_<hex nonce>`, with 32 fresh random bytes per
@@ -1044,7 +1050,10 @@ sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of
 the UTF-8 string `mission-voice-supervised/v2\n<state>\n<instance>` (LF
 separators, no trailing newline). Invalid signatures return 403. The original
 signer can retire a recorded instance even if a restarted daemon trusts another
-key for new launches. It signs an exit only after observing the child's exit.
+key for new launches. A restarted launcher loads its provisioned identity,
+reads the original process record, confirms the recorded child is gone, and
+signs the exit for the original instance. It retries if durable confirmation
+is unavailable. [Credential provisioning](storage.md#voice-supervisor-credentials)
 
 The daemon acknowledges a start after recording the launch. If the inventory is
 missing or unreadable during recovery, new starts receive 503 and can be retried

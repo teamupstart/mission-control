@@ -740,3 +740,31 @@ test("a multi-line notice becomes one line: the engine draws newlines as replace
   assert.equal(noticeLine("  a  \r\n  b  "), "a · b");
   assert.equal(noticeLine("\n\n"), "");
 });
+
+test("the mod-calls scan walks nested template literals, so a disallowed path cannot hide behind one", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-nested-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+
+    // A path built from a template with a nested template is judged by its static prefix.
+    assert.deepEqual(scan("const p = `/api/${flag ? `yes` : `no`}`;\n"), ["/api/"]);
+    // A real call after a nested template on the same line is still found (the old tokenizer closed on the inner backtick).
+    assert.deepEqual(scan("const x = `${a ? `b` : `c`}`; const bad = \"/api/secret\";\n"), ["/api/secret"]);
+    // Deeper nesting, an object literal in the expression, and a string containing a backtick.
+    assert.deepEqual(scan("const x = `${fn({ k: `${y ? `1` : '`'}` })}`; const bad = '/api/deep';\n"), ["/api/deep"]);
+    // An expression that contains a comment and braces does not end the template early.
+    assert.deepEqual(scan("const x = `${/* } */ a}`; const bad = \"/api/after\";\n"), ["/api/after"]);
+
+    // Allowed shapes stay allowed: a dispatch route built with an interpolated id, and the health path.
+    assert.deepEqual(scan("const u = `/dispatch/drafts/${encodeURIComponent(id)}/confirm`; const h = \"/api/health\";\n"), []);
+    // Comments still never count, including one that quotes a nested template.
+    assert.deepEqual(scan("// `/api/${flag ? `a` : `b`}` is not a call\nconst ok = 1;\n"), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

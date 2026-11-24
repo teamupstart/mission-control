@@ -602,19 +602,27 @@ test('a session end whose draftId clear is overtaken by a replacement start does
 
 test('a command whose pane open is refused tells the person, and the next command opens the pane', async ($, on) => {
   const seen = dispatchWorld(on)
-  const notices = []
-  on('session.append', (_, e) => { notices.push(e.text); return { value: undefined } })
+  // A notice reaches the person through `$.ui.log` (the host's notice), and the debug channel
+  // through the same call with `{ to: 'debug' }`; both are recorded here.
+  const logs = []
+  on('ui.log', (_, e) => { logs.push({ text: e.text, to: e.to }); return { value: undefined } })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
   const before = seen.opened.length
+  const told = () => logs.filter((l) => l.to !== 'debug' && l.text === 'Mission Control could not finish that dispatch. Run /mission-dispatch again.')
   seen.failOpen = true
   await $.command.run(COMMAND('inbox'))
-  await new Promise((resolve) => setTimeout(resolve, 150))
+  await settle(() => told().length > 0)
+  // The person is told, once, in the words the flow uses; the cause goes on the debug channel.
+  expect(told().length).toBe(1)
+  expect(logs.some((l) => l.to === 'debug' && /the dispatch flow threw: /.test(l.text))).toBe(true)
   expect(seen.opened.length).toBe(before)
   seen.failOpen = false
   await $.command.run(COMMAND('inbox'))
   await settle(() => seen.opened.length > before)
   expect(seen.opened.length).toBe(before + 1)
+  // The retry that works says nothing more.
+  expect(told().length).toBe(1)
 })
 
 // ------------------------------------------------ a dispatch completed through the registered hooks

@@ -33,11 +33,56 @@ function startsRegex(out) {
   return /(?:^|[^\w])(?:return|typeof|case|in|of|void|delete|throw|yield|await)$/.test(before);
 }
 
+/** The index just past a quoted string that starts at `i`. */
+function skipString(text, i) {
+  const quote = text[i];
+  let j = i + 1;
+  while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
+  return j + 1;
+}
+
+/**
+ * The index just past a template literal that starts at `i` (a backtick). A `${ ... }` inside it is
+ * code, so it is walked on its own terms: its braces are counted, and strings and further template
+ * literals in it (`/api/${flag ? `a` : `b`}`) are skipped whole instead of closing the outer one.
+ */
+function skipTemplate(text, i) {
+  let j = i + 1;
+  while (j < text.length) {
+    const c = text[j];
+    if (c === "\\") j += 2;
+    else if (c === "`") return j + 1;
+    else if (c === "$" && text[j + 1] === "{") j = skipExpression(text, j + 2);
+    else j += 1;
+  }
+  return text.length;
+}
+
+/** The index just past the `}` that closes a `${` whose expression starts at `j`. */
+function skipExpression(text, j) {
+  let depth = 1;
+  while (j < text.length && depth > 0) {
+    const c = text[j];
+    if (c === '"' || c === "'") j = skipString(text, j);
+    else if (c === "`") j = skipTemplate(text, j);
+    else if (c === "/" && text[j + 1] === "/") while (j < text.length && text[j] !== "\n") j += 1;
+    else if (c === "/" && text[j + 1] === "*") {
+      const end = text.indexOf("*/", j + 2);
+      j = end === -1 ? text.length : end + 2;
+    } else {
+      if (c === "{") depth += 1;
+      else if (c === "}") depth -= 1;
+      j += 1;
+    }
+  }
+  return j;
+}
+
 /**
  * The source with its comments blanked, so prose that quotes an example path is not mistaken for
- * a call. Strings, template literals and regular expression literals are walked as units, so a
- * `//` inside one (a URL, or the end of a regex like `/\//`) is not a comment and nothing after it
- * on the line is hidden from the scan.
+ * a call. Strings, template literals (with their nested `${}` code) and regular expression literals
+ * are walked as units, so a `//` inside one (a URL, or the end of a regex like `/\//`) is not a
+ * comment and nothing after it on the line is hidden from the scan.
  */
 export function stripComments(text) {
   let out = "";
@@ -65,10 +110,9 @@ export function stripComments(text) {
       out += text.slice(i, j + 1);
       i = j + 1;
     } else if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1;
-      while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;
-      out += text.slice(i, j + 1);
-      i = j + 1;
+      const stop = c === "`" ? skipTemplate(text, i) : skipString(text, i);
+      out += text.slice(i, stop);
+      i = stop;
     } else {
       out += c;
       i += 1;
@@ -83,8 +127,10 @@ export function findDisallowedModCalls(root) {
   const found = [];
   for (const file of sourceFiles(join(root, "src/mod"))) {
     const text = stripComments(readFileSync(file, "utf8"));
-    // A quoted or template literal that begins with `/api` or `/dispatch`.
-    for (const match of text.matchAll(/["'`](\/(?:api|dispatch)[^"'`\s]*)["'`]/g)) {
+    // A quoted or template literal that begins with `/api` or `/dispatch`: its whole text up to the
+    // closing quote, or its static prefix up to a `${` (the rest is built at run time, so the prefix is
+    // what can be judged: `/dispatch/drafts/${id}` is `/dispatch/drafts/`, and `/api/${x}` is `/api/`).
+    for (const match of text.matchAll(/["'`](\/(?:api|dispatch)[^"'`\s$]*)(?:["'`]|\$\{)/g)) {
       const path = match[1];
       if (!isAllowedModCall(path, allowed)) found.push({ file, path });
     }

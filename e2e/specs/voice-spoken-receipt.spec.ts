@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, Task } from "../../src/shared/types.ts";
 import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
@@ -83,17 +83,17 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
       await green.screenshot({ path: join(dir, "rescanned.png") });
     }
-    // Rewrite the first native record in place, preserving its UUID and changing its words
-    // to another recorded payload. The open stream must replace that stale disclosure too.
-    writeFileSync(path, readFileSync(path, "utf8").replace(words, second));
-    await expect(green).toHaveCount(2);
-    await expect(green.first()).toContainText("When you have finished this, post a report.");
-    await expect(green.first().getByText("Spoken", { exact: true })).toHaveCount(0);
-    await expect(green.last().getByText("Spoken", { exact: true })).toBeVisible();
+    // Change the second record to the first one's words. Its reused ID is stale,
+    // while the first record and its handoff prefix are still intact.
+    writeFileSync(path, readFileSync(path, "utf8").replace(second, words) + "\n\n\n\n");
+    await expect(actual).toHaveCount(2);
+    await expect(actual.last()).toContainText("When you have finished this, post a report.");
+    await expect(actual.last().getByText("Spoken", { exact: true })).toHaveCount(0);
+    await expect(actual.first().getByText("Spoken", { exact: true })).toBeVisible();
     if (process.env.MC_E2E_EVIDENCE === "1") {
       const dir = artifactsDir("voice-spoken-rewritten-native");
       mkdirSync(dir, { recursive: true });
-      await green.first().screenshot({ path: join(dir, "rewritten.png") });
+      await actual.last().screenshot({ path: join(dir, "rewritten.png") });
     }
     const progressText = "Build output continues while the transcript grows";
     let writes = 0;
@@ -103,7 +103,7 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     try {
       const progress = dashboard.locator("article.turn-user").filter({ hasText: progressText });
       await expect(progress).toBeVisible();
-      await expect(green.last().getByText("Spoken", { exact: true })).toBeVisible();
+      await expect(actual.first().getByText("Spoken", { exact: true })).toBeVisible();
       if (process.env.MC_E2E_EVIDENCE === "1") {
         const dir = artifactsDir("voice-spoken-active-transcript");
         mkdirSync(dir, { recursive: true });
@@ -136,6 +136,12 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       await dashboard.mouse.move(0, 0);
       await late.screenshot({ path: join(dir, "bound.png") });
     }
+    // Even identical bytes and native IDs on a replacement inode belong to another file.
+    writeFileSync(path + ".next", readFileSync(path));
+    renameSync(path + ".next", path);
+    await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
+    await expect(late).toContainText(latePayload);
+    await late.screenshot({ path: test.info().outputPath("reused-native-id.png") });
   } finally {
     pane.cleanup();
   }

@@ -1,5 +1,5 @@
 import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
-import type { SdkUsage, TranscriptSession } from "./harness/types.ts";
+import type { SdkUsage, TranscriptBoundary, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
 import { CodeRabbitRecordSchema, type CodeRabbitRecord } from "./inspector/code-rabbit-state.ts";
@@ -13442,13 +13442,14 @@ export function contestSpokenTurn(id: string, contested: boolean): void {
     .run(Number(contested), id);
 }
 
-export function bindSpokenTurn(id: string, messageId: string, messageTs: number): boolean {
+export function bindSpokenTurn(id: string, messageId: string, messageTs: number, boundary: TranscriptBoundary): boolean {
   // A text-only match needs a positive runtime receipt for this attempt. Check it on the write
   // as well as the read: a cached reservation can outlive a retry, discard, or manual settlement.
   const result = openDb().prepare(
-    `UPDATE session_spoken_turns SET message_id = ?, message_ts = ?, text_receipt_order = ${nextSpokenAttributionOrder}
+    `UPDATE session_spoken_turns SET message_id = ?, message_ts = ?, transcript_offset = ?, transcript_boundary = ?,
+      text_receipt_order = ${nextSpokenAttributionOrder}
       WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NOT NULL`,
-  ).run(messageId, messageTs, id);
+  ).run(messageId, messageTs, boundary.offset, boundary.proof, id);
   return Number(result.changes) > 0;
 }
 

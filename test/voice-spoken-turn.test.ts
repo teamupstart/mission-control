@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -160,24 +161,85 @@ test("a separate Codex client receipt follows the first native conversation key,
 
 test("a terminal transcript created after reservation supplies a boundary; an older file with identical text does not", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
   const dir = mkdtempSync(join(tmpdir(), "voice-late-transcript-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "native.jsonl");
   writeFileSync(path, "");
   const created = statSync(path).birthtimeMs;
   const text = "check the build";
-  const transcript = fakeTranscript();
-  const native = transcript.append("first-native", text, Math.ceil(created) + 5);
-  const repeat = transcript.append("typed-repeat", text, native.ts + 1);
+  const ts = Math.ceil(created) + 5;
+  const contents = ["first-native", "typed-repeat"].map((uuid, i) => JSON.stringify({ type: "user", uuid,
+    timestamp: new Date(ts + i).toISOString(), message: { role: "user", content: text } }) + "\n").join("");
+  appendFileSync(path, contents);
+  const transcript = { path, read: claudeTranscript.messages! };
   for (const [key, reservedAt, expected] of [
-    ["before-file", Math.floor(created) - 1, [native.id]], ["same-time", Math.floor(created), []],
+    ["before-file", Math.floor(created) - 1, ["first-native"]], ["same-time", Math.floor(created), []],
     ["after-file", Math.ceil(created) + 1, []],
   ] as const) {
     const attempt = claimSpoken(key, text, text);
     reserveSpokenTurn({ key, transcript: null }, text, text, false, attempt, reservedAt);
-    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, native.ts, attempt.reservationId));
-    const located = { key, transcript: { read: transcript.conversation(key).transcript!.read, path } };
-    assert.deepEqual([...spokenLedger.bound(located, [native, repeat]).rows.keys()], expected);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, ts, attempt.reservationId));
+    assert.deepEqual([...spokenLedger.bound({ key, transcript }, transcript.read.after(path, 0).messages).rows.keys()], expected);
+  }
+  db.closeDb();
+  spokenLedger.forgetCaches();
+  const boundIds = () => [...spokenLedger.bound({ key: "before-file", transcript }, transcript.read.after(path, 0).messages).rows.keys()];
+  assert.deepEqual(boundIds(), ["first-native"]);
+  writeFileSync(path + ".next", contents);
+  renameSync(path + ".next", path);
+  assert.deepEqual(boundIds(), []);
+});
+
+test("terminal handoff verifies its captured prefix while native output continues to append", async t => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-active-boundary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const read = claudeTranscript.messages!;
+  const prefix = JSON.stringify({ padding: "x".repeat(128 * 1024) }) + "\n";
+  for (const mode of ["append", "edit-and-grow", "rotate"] as const) {
+    const key = "hash-during-" + mode;
+    const path = join(dir, key);
+    writeFileSync(path, prefix);
+    const conversation = { key, transcript: { path, read } };
+    const words = "read the build log";
+    const received = spokenMessageText(words, { openQuestions: null, unseenReports: null });
+    const attempt = claimSpoken(key, words, received);
+    const expected = read.boundary!(path);
+    const nativeRead = fs.readSync;
+    let writes = 0;
+    const reads = t.mock.method(fs, "readSync", (fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+      const count = nativeRead(fd, buffer, offset, length, position);
+      if (position === 0) {
+        if (mode === "rotate" && !writes) {
+          writeFileSync(path + ".next", prefix);
+          renameSync(path + ".next", path);
+        } else if (mode === "edit-and-grow" && !writes) {
+          writeFileSync(path, prefix.replace("xxx", "yyy"));
+        }
+        appendFileSync(path, "{}\n");
+        writes++;
+      }
+      return count;
+    });
+    syncBuiltinESMExports();
+    let row;
+    try {
+      row = reserveSpokenTurn(conversation, words, received, false, attempt);
+    } finally {
+      reads.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.ok(writes > 0);
+    assert.equal(row.transcriptBoundary, mode === "append" ? expected?.proof : null, mode);
+    assert.equal(row.transcriptOffset, Buffer.byteLength(prefix));
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, Date.now(), row.id));
+    appendFileSync(path, JSON.stringify({ type: "user", uuid: "actual", timestamp: new Date().toISOString(),
+      message: { role: "user", content: received } }) + "\n");
+    spokenLedger.forgetCaches();
+    const actual = spokenLedger.bound(conversation, read.after(path, 0).messages).rows.get("actual");
+    assert.equal(actual?.received, mode === "append" ? received : undefined, mode);
   }
 });
 
@@ -216,6 +278,19 @@ test("a confirmed terminal send binds only in the file and history captured at h
     assert.equal(spokenLedger.bound(conversation, messages).rows.has("same-words"), kind === "append", kind);
     assert.equal(db.loadSpokenTurns(key)[0]?.messageId, kind === "append" ? "same-words" : null);
     if (kind === "append") {
+      writeFileSync(path, prefix.replace("before", "edited") + line("same-words", payload));
+      assert.equal(spokenLedger.bound(conversation, transcript.read.after(path, 0).messages).rows.size, 0, "edited prefix and reused ID");
+      writeFileSync(path, prefix + line("same-words", payload));
+      assert.equal(spokenLedger.bound(conversation, transcript.read.after(path, 0).messages).rows.size, 1, "restored prefix");
+      writeFileSync(path + ".next", prefix + line("same-words", payload));
+      renameSync(path + ".next", path);
+      db.closeDb();
+      spokenLedger.forgetCaches();
+      assert.equal(spokenLedger.bound(conversation, transcript.read.after(path, 0).messages).rows.size, 0, "replacement with identical ID, words and timestamp");
+      const sdk = reserveSpokenTurn(conversation, words, payload, true, claimSpoken(key, words, payload), now);
+      const native = transcript.read.after(path, 0).messages.at(-1)!;
+      assert.equal(spokenLedger.bound(conversation, [{ ...native, clientMessageId: sdk.id }]).rows.get(native.id)?.id, sdk.id,
+        "a separate SDK client receipt still identifies its delivery on the replacement");
       writeFileSync(path + ".next", prefix + line("typed-on-replacement", payload));
       renameSync(path + ".next", path);
       const replacement = transcript.read.after(path, 0).messages;
@@ -871,7 +946,7 @@ test("startup removes an older orphan payload while retaining the still-uncertai
   assert.equal(stored.get("live-at-boot")?.received, words);
 });
 
-test("upgrade preserves anchored legacy disclosures and leaves unproven legacy reservations unbound", async () => {
+test("upgrade preserves SDK client receipts and leaves legacy text bindings without a prefix undecorated", async () => {
   const { spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { injectionFingerprint } = await import("../src/server/injections.ts");
   const key = "legacy-attempt";
@@ -886,14 +961,15 @@ test("upgrade preserves anchored legacy disclosures and leaves unproven legacy r
   const insert = db.openDb().prepare(`INSERT INTO session_spoken_turns
     (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, message_id)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`);
-  for (const nativeId of ["anchored", null]) {
-    insert.run(nativeId ?? "orphan", key, injectionFingerprint(text), text, text, now, nativeId);
+  for (const [id, nativeId] of [["anchored", "anchored"], ["terminal", "native-terminal"], ["orphan", null]] as const) {
+    insert.run(id, key, injectionFingerprint(text), text, text, now, nativeId);
   }
   db.closeDb();
   const transcript = fakeTranscript();
   const typed = transcript.append("typed", text, now);
   const anchored = transcript.append("anchored", text, now + 1);
-  const bound = spokenLedger.bound(transcript.conversation(key), [typed, anchored]);
+  const oldTerminal = transcript.append("native-terminal", text, now + 2);
+  const bound = spokenLedger.bound(transcript.conversation(key), [typed, anchored, oldTerminal]);
   assert.deepEqual([...bound.rows.keys()], [anchored.id]);
 });
 

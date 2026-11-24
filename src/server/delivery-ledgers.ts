@@ -60,7 +60,7 @@ export const delegatedLedger = new DeliveryLedger<DelegatedTurnRow>({
   insert: insertDelegatedTurn,
   remove: deleteDelegatedTurn,
   contest: contestDelegatedTurn,
-  bind: bindDelegatedTurn,
+  bind: (row, id, ts) => bindDelegatedTurn(row.id, id, ts),
   // The label a row would show: two rows with the same one cannot be credited to the wrong sender.
   sender: (row) => `${row.controllerId}\0${row.controllerName}`,
 });
@@ -74,7 +74,7 @@ export const reviewLedger = new DeliveryLedger<ReviewDeliveryRow>({
   insert: insertReviewDelivery,
   remove: deleteReviewDelivery,
   contest: contestReviewDelivery,
-  bind: bindReviewDelivery,
+  bind: (row, id, ts) => bindReviewDelivery(row.id, id, ts),
   // Every review message is Mission Control's, so two of the same words never contest each other.
   sender: () => "mission-control",
 }, () => {
@@ -96,12 +96,16 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   maxCachedConversations: 32,
   requireExactFingerprint: true,
   takeInvalidatedKeys: takeDiscardedSpokenKeys,
-  textBoundaryIntact(row, transcript) {
-    // A file first created after handoff is checked separately by newTranscriptAfter.
-    if (row.transcriptOffset === null) return row.messageId === null && row.transcriptBoundary === "missing";
+  textBoundary(row, transcript) {
+    if (row.transcriptOffset === null) {
+      // bindPending checked the file's creation time. Pin its identity on the first binding.
+      if (row.messageId !== null || row.transcriptBoundary !== "missing") return false;
+      return transcript.read.boundary?.(transcript.path, 0) ?? null;
+    }
     if (row.transcriptBoundary === null) return false;
     const boundary = transcript.read.boundary?.(transcript.path, row.transcriptOffset);
-    return boundary ? boundary.proof === row.transcriptBoundary : null;
+    if (!boundary) return null;
+    return boundary.proof === row.transcriptBoundary ? boundary : false;
   },
   newTranscriptAfter(transcript, deliveredAt) {
     try {
@@ -115,7 +119,12 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   insert: insertSpokenTurn,
   remove: deleteSpokenTurn,
   contest: contestSpokenTurn,
-  bind: bindSpokenTurn,
+  bind(row, id, ts, boundary) {
+    if (!boundary || !bindSpokenTurn(row.id, id, ts, boundary)) return false;
+    row.transcriptOffset = boundary.offset;
+    row.transcriptBoundary = boundary.proof;
+    return true;
+  },
   observeClientReceipt: observeSpokenClientReceipt,
   sender: row => row.spokenWords,
 });

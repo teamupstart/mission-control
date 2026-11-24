@@ -199,6 +199,12 @@ export interface TranscriptStreamRead {
   pos: number;
 }
 
+/** File identity and contents through the byte offset recorded for a delivery. */
+export interface TranscriptBoundary {
+  offset: number;
+  proof: string;
+}
+
 /**
  * A contiguous run of turns, and the exact byte range they were read from.
  *
@@ -303,7 +309,7 @@ export interface TranscriptMessages {
   /** Identify one file revision for a scan that needs to prove a receipt is absent. */
   snapshot?(path: string): { size: number; version: string } | null;
   /** Identity of the file and its bytes through an offset, stable across later appends. */
-  boundary?(path: string, offset?: number): { offset: number; proof: string } | null;
+  boundary?(path: string, offset?: number): TranscriptBoundary | null;
   /** Recent history through the captured EOF (default: current EOF). Throws if unreadable. */
   initial(path: string, through?: number): TranscriptInitialRead;
   /**

@@ -8,6 +8,7 @@ import {
   type BindableDelivery,
 } from "./db.ts";
 import type { SessionMessages } from "./harness/index.ts";
+import type { TranscriptBoundary } from "./harness/types.ts";
 import { injectionFingerprint } from "./injections.ts";
 
 export type { BindableDelivery } from "./db.ts";
@@ -58,8 +59,8 @@ export interface DeliveryStore<Row extends BindableDelivery> {
   maxCachedConversations?: number;
   /** Native IDs in a rewritten transcript may now identify different words. */
   requireExactFingerprint?: boolean;
-  /** Null means the saved prefix could not be checked. Cleanup must retry. */
-  textBoundaryIntact?(row: Row, transcript: SessionMessages): boolean | null;
+  /** Verified text-binding boundary, false for a mismatch, null when cleanup must retry the read. */
+  textBoundary?(row: Row, transcript: SessionMessages): TranscriptBoundary | false | null;
   /** Conversations whose rows an outbox transaction removed outside this ledger. */
   takeInvalidatedKeys?(): readonly string[] | undefined;
   /** Optional byte boundary for a transcript proven to have been created after reservation. */
@@ -72,7 +73,7 @@ export interface DeliveryStore<Row extends BindableDelivery> {
   remove(id: string): void;
   contest(id: string, contested: boolean): void;
   /** Write-once: false when the row was already bound. */
-  bind(id: string, messageId: string, messageTs: number): boolean;
+  bind(row: Row, messageId: string, messageTs: number, boundary?: TranscriptBoundary): boolean;
   /** Return the persisted native timestamp, or null if the reservation was already removed. */
   observeClientReceipt?(id: string, messageTs: number): number | null;
   /**
@@ -308,6 +309,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   private readonly scanned = new Map<string, number>();
   /** Spoken scan progress is reusable only in the file revision that supplied its bytes. */
   private readonly scanVersions = new Map<string, string>();
+  /** Bound text rows whose saved prefix was verified in this scan revision. */
+  private readonly verifiedTextRows = new Set<string>();
   /** A native candidate was visible, but its read or binding could not finish on this revision. */
   private readonly deferredBindings = new Set<string>();
   /** Only failed writes are retained. Native UUIDs and timestamps outlive the payload cache. */
@@ -351,6 +354,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   private forgetScan(id: string): void {
     this.scanned.delete(id);
+    this.verifiedTextRows.delete(id);
     this.deferredBindings.delete(id);
     this.expired.delete(id);
     this.twins.delete(id);
@@ -362,6 +366,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     this.cache.clear();
     this.scanned.clear();
     this.scanVersions.clear();
+    this.verifiedTextRows.clear();
     this.deferredBindings.clear();
     this.expired.clear();
     this.twins.clear();
@@ -457,7 +462,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   bindLanded(noteKey: string, transcript: SessionMessages, now: number, requireReadable = false): void {
     const rows = this.rows(noteKey);
     let version: string | undefined;
-    if (rows.length && this.store.textBoundaryIntact) {
+    if (rows.length && this.store.textBoundary) {
       version = transcript.read.snapshot?.(transcript.path)?.version;
       if (!version || this.scanVersions.get(noteKey) !== version) {
         // Native files can rewrite a suffix without changing size. Offsets, expiry and
@@ -583,7 +588,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           from = page.end;
         }
       } catch (err) {
-        if (this.store.textBoundaryIntact) this.deferredBindings.add(row.id);
+        if (this.store.textBoundary) this.deferredBindings.add(row.id);
         if (requireReadable) throw err;
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;
@@ -595,16 +600,17 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         continue;
       }
       try {
-        if (this.store.textBoundaryIntact) {
-          const intact = this.store.textBoundaryIntact(row, transcript);
+        const boundary = this.store.textBoundary?.(row, transcript);
+        if (this.store.textBoundary) {
           const stable = version && transcript.read.snapshot?.(transcript.path)?.version === version;
-          if (intact === null || !stable) this.deferredBindings.add(row.id);
-          if (requireReadable && (intact === null || !stable)) throw new Error("Could not verify a stable transcript boundary");
-          if (!stable || !intact) continue;
+          if (boundary === null || !stable) this.deferredBindings.add(row.id);
+          if (requireReadable && (boundary === null || !stable)) throw new Error("Could not verify a stable transcript boundary");
+          if (!stable || !boundary) continue;
         }
-        if (!this.store.bind(row.id, found.id, found.ts)) continue;
+        if (!this.store.bind(row, found.id, found.ts, boundary || undefined)) continue;
+        if (boundary) this.verifiedTextRows.add(row.id);
       } catch (err) {
-        if (this.store.textBoundaryIntact) this.deferredBindings.add(row.id);
+        if (this.store.textBoundary) this.deferredBindings.add(row.id);
         if (requireReadable) throw err;
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;
@@ -649,6 +655,16 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       return false;
     }
     return state.count === 1;
+  }
+
+  private boundTextIntact(row: Row, transcript: SessionMessages | null): boolean {
+    if (!this.store.textBoundary) return true;
+    if (!transcript) return false;
+    if (this.verifiedTextRows.has(row.id)) return true;
+    if (!this.store.textBoundary(row, transcript)) return false;
+    const version = this.scanVersions.get(row.noteKey);
+    if (version && transcript.read.snapshot?.(transcript.path)?.version === version) this.verifiedTextRows.add(row.id);
+    return true;
   }
 
   /**
@@ -707,10 +723,12 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       result.matched.add(m.id);
       const clientReceipt = m.clientMessageId ? byId.get(m.clientMessageId) : undefined;
       // Some runtimes store the caller's receipt alongside their own native id.
-      const exact = byId.get(m.id) ??
-        (clientReceipt && clientReceipt.id === clientReceipt.messageId ? clientReceipt : undefined);
+      const exact = clientReceipt && clientReceipt.id === clientReceipt.messageId
+        ? clientReceipt : byId.get(m.id);
       if (exact && this.store.requireExactFingerprint && exact.fingerprint !== fingerprint) continue;
       if (exact && (exact.messageId !== exact.id || exact.fingerprint === fingerprint)) {
+        if (exact.messageId !== exact.id && this.store.textBoundary &&
+            (exact.messageTs !== m.ts || !this.boundTextIntact(exact, conversation.transcript))) continue;
         if (exact.messageId === exact.id && exact.messageTs === null && this.store.observeClientReceipt) {
           if (!this.pendingObservations.has(exact.id)) {
             try {
@@ -728,7 +746,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const entry = key ? keyed.get(key) : undefined;
       const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
       if (row && conversation.transcript && this.uniqueAtTimestamp(row, conversation.transcript)
-          && (!this.store.textBoundaryIntact || this.store.textBoundaryIntact(row, conversation.transcript))) result.rows.set(m.id, row);
+          && this.boundTextIntact(row, conversation.transcript)) result.rows.set(m.id, row);
       else if (couldBe(fingerprint, m)) result.ambiguous.add(m.id);
     }
     return result;

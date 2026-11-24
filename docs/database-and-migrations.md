@@ -239,8 +239,9 @@ replayed with the same outbox ID and revision, it receives a new UUID. A late re
 first handoff cannot retire the new row or confirm its reservation.
 A restart before the guard leaves no transcript reservation. After the guard, the ledger can
 bind the spoken words even after the pending row retires. For databases from earlier builds
-of this phase, an existing native binding preserves the disclosure. A reserved client ID
-still needs a matching transcript entry or a runtime receipt.
+of this phase, an SDK client UUID can identify its native turn directly. A terminal binding
+needs its saved file and prefix proof to display the disclosure, even if the native ID and
+words still match. Older terminal bindings without that proof display the transcript text.
 A legacy reservation with only a text match lacks proof that its attempt reached handoff.
 
 The Claude and Codex SDKs receive the reservation UUID as a user-message identifier on
@@ -268,6 +269,10 @@ Pending uncertain attempts remain available for the operator to resolve.
 
 For a confirmed transport without client identifiers, a file created after reservation
 supplies the starting boundary only if its creation millisecond is strictly later than the reservation.
+The first binding saves that file's identity at offset zero in the same transaction as the
+native message ID. For an existing file, the handoff hashes through its captured offset.
+If the writer appends during the read, a second matching hash through that same offset
+confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
 Startup also removes orphan payloads left by earlier builds. An older file of unknown
 size cannot establish which turn was spoken.

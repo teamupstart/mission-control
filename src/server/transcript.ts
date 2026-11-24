@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync, type BigIntStats } from "node:fs";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type {
   TranscriptForwardPage,
+  TranscriptBoundary,
   TranscriptInitialRead,
   TranscriptMessages,
   TranscriptPage,
@@ -633,24 +634,37 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
 }
 
 /** The offset and prefix come from one open file. A replacement inode or a rewritten prefix invalidates it. */
-function transcriptBoundary(path: string, offset?: number): { offset: number; proof: string } | null {
+function transcriptBoundary(path: string, offset?: number): TranscriptBoundary | null {
   let fd: number | undefined;
   try {
     fd = openSync(path, "r");
     const original = fstatSync(fd, { bigint: true });
     const end = offset ?? Number(original.size);
     if (!Number.isSafeInteger(end) || end < 0 || end > original.size) return null;
-    const hash = createHash("sha256").update([original.dev, original.ino, original.birthtimeNs, end].join(":") + "\n");
     const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, end));
-    for (let pos = 0; pos < end;) {
-      const n = readSync(fd, chunk, 0, Math.min(end - pos, chunk.length), pos);
-      if (!n) return null;
-      hash.update(chunk.subarray(0, n));
-      pos += n;
-    }
+    const prefixDigest = (file: number) => {
+      const hash = createHash("sha256").update([original.dev, original.ino, original.birthtimeNs, end].join(":") + "\n");
+      for (let pos = 0; pos < end;) {
+        const n = readSync(file, chunk, 0, Math.min(end - pos, chunk.length), pos);
+        if (!n) return null;
+        hash.update(chunk.subarray(0, n));
+        pos += n;
+      }
+      return hash.digest("hex");
+    };
+    const coversPrefix = (s: BigIntStats) => original.dev === s.dev && original.ino === s.ino
+      && original.birthtimeNs === s.birthtimeNs && s.size >= end;
+    const proof = prefixDigest(fd);
     const current = statSync(path, { bigint: true });
-    if (original.dev !== current.dev || original.ino !== current.ino || original.ctimeNs !== current.ctimeNs) return null;
-    return { offset: end, proof: hash.digest("hex") };
+    if (!proof || !coversPrefix(current)) return null;
+    if (current.ctimeNs !== original.ctimeNs || current.size !== original.size) {
+      // Growth can coincide with an in-place edit. Verify the original bytes twice on
+      // the same descriptor, even if more output arrives during the second pass.
+      if (prefixDigest(fd) !== proof) return null;
+      const final = statSync(path, { bigint: true });
+      if (!coversPrefix(final) || (final.ctimeNs !== current.ctimeNs && final.size <= current.size)) return null;
+    }
+    return { offset: end, proof };
   } catch {
     return null;
   } finally {

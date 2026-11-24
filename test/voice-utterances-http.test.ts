@@ -317,6 +317,22 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
 });
 
+test("a quoted candidate leaves the unsure card and queue untouched until an unquoted pick", async () => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const before = queued("Will");
+  await say("Steven ask Will about the results", "choice");
+  for (const text of ["“Will”", '"Will"!', "'Will'"]) {
+    await say(text);
+    assert.equal((await readHeard())[0]?.rule, "no-message");
+    assert.deepEqual(queued("Will"), before);
+    assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.state), ["unsure"]);
+  }
+  await say("Will.");
+  assert.deepEqual(queued("Will"), [...before, "ask Will about the results"]);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+});
+
 test("a delayed spoken pick can only queue an unsure capture that preceded it", async () => {
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });

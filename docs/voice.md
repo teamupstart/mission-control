@@ -39,7 +39,8 @@ can address Release Captain, while “Release, Captain needs help” can address
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
 a candidate when exactly one option matches across open unsure cards captured by the time
-the name was spoken. Multiple matches
+the name was spoken. Quoting the candidate name leaves the card open. An apostrophe within
+a name such as `O’Neil` is part of the name. Multiple matches
 leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
 no matching option records `no-message`. This includes “Release Captain” when both Release

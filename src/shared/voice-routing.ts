@@ -184,22 +184,26 @@ function tokensIn(span: string, offset: number): Token[] {
     .filter(({ raw }) => normalized(raw));
 }
 
-/** Straight quotes can close the first command or open a quoted second address. */
-function closingMessageQuotes(body: string, offset: number): Set<number> {
+const OPENING_QUOTES = new Set([...WRAPPER_PAIRS].map(pair => pair[0]!).filter(mark => /\p{Quotation_Mark}/u.test(mark)));
+
+function messageQuotes(body: string, offset: number) {
   const closers = new Set<number>();
-  let open = "";
-  for (const { 0: mark, index } of body.matchAll(/\\[\s\S]|["']/gu)) {
-    if (mark.length !== 1) continue; // Escaped character.
-    if (mark === "'" && /[\p{L}\p{N}]/u.test(body[index - 1] ?? "") &&
-        (!open || /[\p{L}\p{N}]/u.test(body[index + 1] ?? ""))) continue; // Possessive or contraction.
-    if (mark === open) {
+  const spans: { start: number; end: number; name: string }[] = [];
+  const stack: { mark: string; index: number }[] = [];
+  for (const { 0: mark, index } of body.matchAll(/\\[\s\S]|\p{Quotation_Mark}/gu)) {
+    if (mark.startsWith("\\")) continue;
+    const open = stack.at(-1);
+    if ((mark === "'" || mark === "’") && /[\p{L}\p{N}]/u.test(body[index - 1] ?? "") &&
+        (!open || /[\p{L}\p{N}]/u.test(body[index + 1] ?? ""))) continue;
+    if (open && WRAPPER_PAIRS.has(open.mark + mark)) {
+      stack.pop();
       closers.add(offset + index);
-      open = "";
-    } else if (!open) {
-      open = mark;
+      if (!stack.length) spans.push({ start: offset + open.index, end: offset + index, name: normalized(body.slice(open.index + 1, index)) });
+    } else if (OPENING_QUOTES.has(mark)) {
+      stack.push({ mark, index });
     }
   }
-  return closers;
+  return { closers, spans };
 }
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
@@ -317,15 +321,21 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   // target stays fixed whichever it is: the model is asked split or mention, never who.
   const splitCandidates = new Set([target]);
   const splits: VoiceSplitPoint[] = [];
-  const closingQuotes = closingMessageQuotes(body, offset);
+  const quotes = messageQuotes(body, offset);
+  let quoteIndex = 0;
   for (let i = count; i < tokens.length; i++) {
     const at = tokens[i]!;
+    const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
+    while (quoteIndex < quotes.spans.length && quotes.spans[quoteIndex]!.end <= nameOffset) quoteIndex++;
+    const quote = quotes.spans[quoteIndex];
     const laterNames = namesStartingAt(text, at, tokens[i + 1]);
     const atStart = splits.length;
     let addressLength = 1;
     for (let length = laterNames.length; length > 0; length--) {
       const end = tokens[i + length - 1]!;
       const heard = laterNames[length - 1];
+      // A quote around the name alone can mark an address. Words inside a quoted sentence belong to the message.
+      if (quote && quote.start < nameOffset && heard !== quote.name) continue;
       const matches = names.filter(({ name }) => name === heard);
       if (!matches.length) continue;
       const preceding = text.slice(offset, at.index);
@@ -334,7 +344,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       let addressStart = wrapperStart;
       for (const mark of wrappers.matchAll(/["']/gu)) {
         const index = wrapperStart + mark.index;
-        if (closingQuotes.has(index)) addressStart = index + 1;
+        if (quotes.closers.has(index)) addressStart = index + 1;
       }
       const beforeName = text.slice(offset, addressStart).trimEnd();
       const head = splitHead(beforeName);
@@ -356,7 +366,6 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
         break;
       }
       const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
-      const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
       for (const other of matches) {
         splits.push({ target: other.target, at: nameOffset, head, tail, ...(commands.some(Boolean) && { commands }) });
         splitCandidates.add(other.target);

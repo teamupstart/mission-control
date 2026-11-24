@@ -116,7 +116,8 @@ for the whole of it, process start included. It asks only what is left in doubt:
   or “then” stays in the first message. In “Steve, echo done then, Alice, review the PR”, Steve
   receives “echo done then” and Alice receives “review the PR” after either a model split or a
   manual split pick. “Steve, ask Alice about the build” is a mention:
-  the whole text goes to Steve and nothing to Alice. Each possible split is considered in spoken
+  the whole text goes to Steve and nothing to Alice. A name inside a quoted sentence stays in the
+  dictated text. A quote around just the addressee can still start a separate command. Each possible split is considered in spoken
   order, including repeated uses of the same name. The first split determines the two messages.
   A “not sure” before that split leaves the card unsure. A sentence with more than eight possible
   split positions goes straight to manual selection, with every position available. A name shared

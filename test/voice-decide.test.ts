@@ -1624,6 +1624,32 @@ test("the resolving event and reconnect snapshot agree while the second model ca
   assert.deepEqual(router.activeCards(), [cards.at(-1)]);
 });
 
+test("quoted message text stays with the first agent while a separately quoted address can split", async (t) => {
+  const { router, say, delivered, asked, cards } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  for (const literal of [
+    "write the sentence ‘Alice, review the PR’ in the docs",
+    'write "please ask Alice, review the PR" in the docs',
+    "copy «she said ‘Alice, don’t stop’» into the notes",
+    "copy 「Alice, review the PR」 into the notes",
+  ]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${literal}`, id);
+    assert.equal(asked.length, 0);
+    assert.equal(await router.pick(id, "task:Alice"), false);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.at(-1), ["Steve", literal, id]);
+  }
+  const first = "write ‘Alice, review the PR’";
+  await say(`Steve, ${first}, and “Alice”, run the tests`, "quoted-address");
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.length, 1);
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.ok(await router.pick("quoted-address", "task:Alice"));
+  assert.ok(await router.sendNow("quoted-address"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", first, "quoted-address"], ["Alice", "run the tests", "quoted-address#2"]]);
+});
+
 test("a split consumes comma-adjacent wrappers around the second address", async (t) => {
   const { router, say, delivered } = routerRig(() => answered("split"));
   t.after(() => router.reset());

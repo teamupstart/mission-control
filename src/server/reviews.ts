@@ -948,15 +948,18 @@ export class ReviewManager {
     }
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    return new Promise<ReviewWaitResponse | null>((resolve) => {
+    return new Promise<ReviewWaitResponse | null>((resolve, reject) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
 
-      const finish = (r: ReviewWaitResponse | null): void => {
+      const cleanup = (): void => {
+        if (!set!.delete(waiter)) return;
         clearTimeout(timer);
-        set!.delete(waiter);
         if (!set!.size) this.waiters.delete(id);
         signal?.removeEventListener("abort", early);
+      };
+      const finish = (r: ReviewWaitResponse | null): void => {
+        cleanup();
         resolve(r);
       };
       const waiter: Waiter = { finish, convertible };
@@ -966,19 +969,24 @@ export class ReviewManager {
       set.add(waiter);
       if (signal?.aborted) return early();
       signal?.addEventListener("abort", early, { once: true });
-      if (!convertible) blockReviewVoiceConversion(id);
-      // A call is waiting on a question filed without one (`async-input`): an MCP child from an
-      // older build re-asked it word for word, was handed the open row, and long-polls it because
-      // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
-      // its answer is this call's result, and only a later detach (a cancelled or restarted call)
-      // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
-      // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
-      // closure that event triggers must be able to release this very call.
-      if (current.waitMode === "message") {
-        this.attachCall(current);
-      } else if (convertible && featureEnabled("voice")) {
-        const session = this.registry.getSession(current.sessionId);
-        if (session) this.tryFileForQueuedSpeech(session.id, noteKeyFor(session));
+      try {
+        if (!convertible) blockReviewVoiceConversion(id);
+        // A call is waiting on a question filed without one (`async-input`): an MCP child from an
+        // older build re-asked it word for word, was handed the open row, and long-polls it because
+        // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
+        // its answer is this call's result, and only a later detach (a cancelled or restarted call)
+        // hands it to the outbox. Without this the agent would hear the answer twice. Attached only
+        // after this waiter is registered: attaching publishes a `session_upsert`, and a merge
+        // closure that event triggers must be able to release this very call.
+        if (current.waitMode === "message") {
+          this.attachCall(current);
+        } else if (convertible && featureEnabled("voice")) {
+          const session = this.registry.getSession(current.sessionId);
+          if (session) this.tryFileForQueuedSpeech(session.id, noteKeyFor(session));
+        }
+      } catch (error) {
+        cleanup();
+        reject(error);
       }
     });
   }

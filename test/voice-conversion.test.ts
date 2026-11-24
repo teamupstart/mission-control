@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { asyncInputReceipt, filedPlanReceipt } from "../src/shared/async-input.ts";
 import { act, applyFeatureFlagIntent, cards, home, pending, post, reviews, registry, say, token } from "./helpers/voice-http.ts";
-import { loadReview, MESSAGE_ANSWER_TURN_PREFIX } from "../src/server/db.ts";
+import { loadReview, MESSAGE_ANSWER_TURN_PREFIX, openDb } from "../src/server/db.ts";
 
 const sessionId = "sdk:Will";
 for (const kind of ["input", "plan-decisions"] as const) {
@@ -64,6 +64,22 @@ test("conversion needs unanimous live poll capability and loses to an answer", a
   assert.equal(reviews.convertToFiled(row.id), false);
   for (const result of await Promise.all([old, second])) assert.equal(result?.response, "Yes");
   assert.equal(loadReview(row.id)?.waitMode, undefined);
+});
+
+test("a failed legacy wait setup removes the waiter before the next compatible poll", async () => {
+  const ask = reviews.create(sessionId, "input", "Which channel?", "Choose", null, { snoozable: true });
+  const db = openDb();
+  db.exec(`CREATE TEMP TRIGGER fail_legacy_veto BEFORE UPDATE OF voice_conversion_blocked ON reviews
+    BEGIN SELECT RAISE(ABORT, 'failed to record veto'); END`);
+  try {
+    await assert.rejects(reviews.wait(ask.id, 60_000, new AbortController().signal), /failed to record veto/);
+  } finally {
+    db.exec("DROP TRIGGER fail_legacy_veto");
+  }
+  const capable = reviews.wait(ask.id, 5000, undefined, true);
+  assert.ok(reviews.convertToFiled(ask.id));
+  assert.deepEqual((await capable)?.converted, { receipt: asyncInputReceipt(ask) });
+  reviews.resolve(ask.id, "dismiss", null);
 });
 
 test("an expired capability cannot file a later poll, and a confirmation cannot become a question", async () => {

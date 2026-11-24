@@ -325,6 +325,43 @@ for (const opening of ["follow-up", "regular Dispatch"]) {
   });
 }
 
+test("a queued card becomes held and stays recallable past its original expiry when a blocking question opens", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const sessionURL = daemon.baseURL + "/api/sessions/" + encodeURIComponent(steve.id);
+  expect((await page.request.post(sessionURL + "/send", {
+    data: { text: "E2E_HOLD_TURN_UNTIL_RELEASED", submit: true, origin: "human" },
+  })).ok()).toBe(true);
+  await page.clock.install();
+  const words = "check the queued build";
+  await say(daemon, "Steve, " + words, { id: "queued-then-held" });
+  await page.getByRole("button", { name: "Send now" }).click();
+  const queued = page.getByRole("status").filter({ hasText: "Queued behind Steve" });
+  await expect(queued).toBeVisible();
+  await captureCard(queued, "queued-before-question");
+
+  const title = "Which build should I check?";
+  const ask = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title, body: title },
+  });
+  expect(ask.ok(), await ask.text()).toBe(true);
+  await page.clock.fastForward(9000);
+  const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
+  await expect(held).toContainText(title);
+  await expect(queued).toHaveCount(0);
+  await expect(held.getByRole("button", { name: "Open question" })).toBeEnabled();
+  const recall = held.getByRole("button", { name: "Cancel message" });
+  await expect(recall).toBeEnabled();
+  await expectCardGeometry(held, "routing-exceptions", ".rx-card.is-held");
+  await captureCard(held, "held-after-queue");
+  await page.reload();
+  const receipt = page.waitForResponse(response => response.url() === sessionURL + "/pending-turns/" + encodeURIComponent("voice:queued-then-held") + "/recall");
+  await recall.click();
+  expect(await (await receipt).json()).toEqual({ ok: true, text: words });
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
 test("a held card identifies the blocking question and recalls the queued words", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const session = await runningAgent(page, daemon, "Steve");

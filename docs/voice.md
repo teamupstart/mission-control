@@ -35,6 +35,8 @@ A settled card stays visible while one of its controls has focus or its action i
 progress, including when the dashboard reconnects to the daemon. Once both end, the card
 gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
+If a blocking question opens while the message is still queued, the dashboard shows a Held
+card with **Open question** and **Cancel message**, even if the Queued card has already faded.
 If the daemon takes more than two seconds to confirm a held message’s recall, the card
 shows that recall is unconfirmed and lets you retry or open the blocking question.
 Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch

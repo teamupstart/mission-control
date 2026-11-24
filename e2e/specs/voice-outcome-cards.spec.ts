@@ -109,6 +109,7 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await page.getByRole("status").filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
   const mixed = page.getByRole("status").filter({ hasText: "Sent to Steve" });
   await expect(mixed).toContainText("Held for Will");
+  await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(2);
   await page.reload();
   await expect(mixed).toContainText(title);
   await expect.poll(pendingWords).toEqual([earlier, ["voice:split#2", "about the deployment"]]);
@@ -118,6 +119,7 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await mixed.getByRole("button", { name: "Cancel message" }).click();
   expect(await (await recall).json()).toEqual({ ok: true, text: "about the deployment" });
   await expect(mixed).toContainText("Will · Cancelled");
+  await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(1);
   await expect.poll(pendingWords).toEqual([earlier]);
   await captureCard(mixed, "mixed-split-recalled");
 });

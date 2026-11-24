@@ -665,7 +665,11 @@ export class VoiceRouter {
     const target = roster.find(row => row.sessionId === session.id);
     if (!target) return;
     for (const turn of missing) {
-      const card: VoiceCard = { id: turn.id.slice(VOICE_TURN_PREFIX.length), state: "held", deadline: null,
+      const id = turn.id.slice(VOICE_TURN_PREFIX.length);
+      // Split parts append # and their index to the URL-unreserved capture ID. The
+      // live delivery owns every part, even before its queue callback registers a receipt.
+      if (this.delivering.has(id.split("#", 1)[0]!)) continue;
+      const card: VoiceCard = { id, state: "held", deadline: null,
         parts: [{ target, text: turn.spokenWords!, turnId: turn.id }], candidates: [], reason: "outbox",
         openQuestions: this.deliverer.openQuestions?.(session.id) ?? session.pendingReviews };
       const delivery: CardDelivery = { card, results: [{ outcome: "held" }], ready: true, routingDetail: "" };

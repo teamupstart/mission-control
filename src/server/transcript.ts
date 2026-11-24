@@ -1,4 +1,5 @@
-import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type {
   TranscriptForwardPage,
@@ -630,5 +631,31 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       return null;
     }
   };
-  return { window, since, size: transcriptSize, snapshot, initial, before, after, appended, narration };
+  return { window, since, size: transcriptSize, snapshot, boundary: transcriptBoundary, initial, before, after, appended, narration };
+}
+
+/** The offset and prefix come from one open file. A replacement inode or a rewritten prefix invalidates it. */
+function transcriptBoundary(path: string, offset?: number): { offset: number; proof: string } | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const original = fstatSync(fd, { bigint: true });
+    const end = offset ?? Number(original.size);
+    if (!Number.isSafeInteger(end) || end < 0 || end > original.size) return null;
+    const hash = createHash("sha256").update([original.dev, original.ino, original.birthtimeNs, end].join(":") + "\n");
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, end));
+    for (let pos = 0; pos < end;) {
+      const n = readSync(fd, chunk, 0, Math.min(end - pos, chunk.length), pos);
+      if (!n) return null;
+      hash.update(chunk.subarray(0, n));
+      pos += n;
+    }
+    const current = statSync(path, { bigint: true });
+    if (original.dev !== current.dev || original.ino !== current.ino || original.ctimeNs !== current.ctimeNs) return null;
+    return { offset: end, proof: hash.digest("hex") };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }

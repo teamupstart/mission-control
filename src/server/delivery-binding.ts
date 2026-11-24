@@ -55,6 +55,9 @@ export interface DeliveryConversation {
 
 /** One table's persistence, and who its rows would be credited to. */
 export interface DeliveryStore<Row extends BindableDelivery> {
+  maxCachedConversations?: number;
+  /** Validate an append-only boundary before committing a match by text. */
+  textBoundaryIntact?(row: Row, transcript: SessionMessages): boolean;
   /** Conversations whose rows an outbox transaction removed outside this ledger. */
   takeInvalidatedKeys?(): readonly string[] | undefined;
   /** Optional byte boundary for a transcript proven to have been created after reservation. */
@@ -320,6 +323,12 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     let rows = this.cache.get(noteKey);
     if (!rows) {
       rows = this.store.load(noteKey);
+      if (this.store.maxCachedConversations && this.cache.size >= this.store.maxCachedConversations) {
+        this.forgetConversation(this.cache.keys().next().value!);
+      }
+      this.cache.set(noteKey, rows);
+    } else if (this.store.maxCachedConversations) {
+      this.cache.delete(noteKey);
       this.cache.set(noteKey, rows);
     }
     return rows;
@@ -492,6 +501,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     for (const row of rows) {
       if (row.messageId !== null || row.contested || this.expired.has(row.id)) continue;
       if (row.transcriptOffset === null && !this.store.newTranscriptAfter?.(transcript, row.deliveredAt)) continue;
+      const version = this.store.textBoundaryIntact && transcript.read.snapshot?.(transcript.path)?.version;
       let from = this.scanned.get(row.id) ?? row.transcriptOffset ?? 0;
       let found: TranscriptMessage | null = null;
       let closed = false;
@@ -524,6 +534,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         continue;
       }
       try {
+        if (this.store.textBoundaryIntact && (!version || !this.store.textBoundaryIntact(row, transcript)
+            || transcript.read.snapshot?.(transcript.path)?.version !== version)) continue;
         if (!this.store.bind(row.id, found.id, found.ts)) continue;
       } catch (err) {
         if (requireReadable) throw err;
@@ -641,7 +653,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const key = turnKey(fingerprint, m.ts);
       const entry = key ? keyed.get(key) : undefined;
       const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
-      if (row && conversation.transcript && this.uniqueAtTimestamp(row, conversation.transcript)) result.rows.set(m.id, row);
+      if (row && conversation.transcript && this.uniqueAtTimestamp(row, conversation.transcript)
+          && (!this.store.textBoundaryIntact || this.store.textBoundaryIntact(row, conversation.transcript))) result.rows.set(m.id, row);
       else if (couldBe(fingerprint, m)) result.ambiguous.add(m.id);
     }
     return result;

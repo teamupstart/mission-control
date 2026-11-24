@@ -302,6 +302,8 @@ export interface TranscriptMessages {
   size(path: string): number | null;
   /** Identify one file revision for a scan that needs to prove a receipt is absent. */
   snapshot?(path: string): { size: number; version: string } | null;
+  /** Identity of the file and its bytes through an offset, stable across later appends. */
+  boundary?(path: string, offset?: number): { offset: number; proof: string } | null;
   /** Recent history for a live stream, plus the offset to resume from. Throws if unreadable. */
   initial(path: string): TranscriptInitialRead;
   /**

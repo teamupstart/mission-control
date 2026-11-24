@@ -3855,6 +3855,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
+  addColumn(d, "session_spoken_turns", "transcript_boundary", "TEXT");
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
   addColumn(d, "session_spoken_turns", "abandoned_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_abandoned ON session_spoken_turns(abandoned_at) WHERE abandoned_at IS NOT NULL");
@@ -13314,6 +13315,7 @@ export interface BindableDelivery {
 // ---- spoken turns (operator words and the exact payload delivered) ----
 
 export interface SpokenTurnRow extends BindableDelivery {
+  transcriptBoundary: string | null;
   spokenWords: string;
   received: string;
   outboxTurnId: string | null;
@@ -13324,10 +13326,10 @@ export function insertSpokenTurn(row: SpokenTurnRow): void {
   openDb().prepare(
     `INSERT INTO session_spoken_turns
        (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, contested, message_id, message_ts,
-        outbox_turn_id, outbox_revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        outbox_turn_id, outbox_revision, transcript_boundary)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.noteKey, row.fingerprint, row.spokenWords, row.received,
-    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs, row.outboxTurnId, row.outboxRevision);
+    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs, row.outboxTurnId, row.outboxRevision, row.transcriptBoundary);
 }
 
 export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
@@ -13336,7 +13338,8 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
   const rows = openDb().prepare(
     `SELECT id, note_key AS noteKey, fingerprint, spoken_words AS spokenWords, received,
             delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
-            message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision
+            message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision,
+            transcript_boundary AS transcriptBoundary
        FROM session_spoken_turns WHERE note_key = ? AND (message_id IS NOT NULL OR runtime_confirmed_at IS NOT NULL
          OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.spoken_reservation_id = session_spoken_turns.id
            AND p.state = 'sending' AND p.spoken_handoff_generation IS NOT NULL))

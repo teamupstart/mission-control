@@ -90,7 +90,14 @@ onSend(settleSteerEchoesBeforeSend(reviewLedger));
 
 export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   label: "a spoken message",
+  // Reads include archived sessions and hourly cleanup, which can outlive Registry eviction.
+  maxCachedConversations: 32,
   takeInvalidatedKeys: takeDiscardedSpokenKeys,
+  textBoundaryIntact(row, transcript) {
+    // A file first created after handoff is checked separately by newTranscriptAfter.
+    if (row.transcriptOffset === null) return row.messageId === null && row.transcriptBoundary === "missing";
+    return row.transcriptBoundary !== null && transcript.read.boundary?.(transcript.path, row.transcriptOffset)?.proof === row.transcriptBoundary;
+  },
   newTranscriptAfter(transcript, deliveredAt) {
     try {
       const created = statSync(transcript.path).birthtimeMs;
@@ -111,10 +118,16 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
 /** On runtimes that accept a native user-message id, reserve that identity before the write. */
 export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWords: string, received: string,
   clientMessageIds: boolean, attempt: Pick<PendingTurn, "id" | "revision"> & { reservationId: string }, now = Date.now()) {
-  return spokenLedger.reserve(conversation, received, base => ({
-    ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
-    messageId: clientMessageIds ? base.id : null,
-  }), now, attempt.reservationId);
+  return spokenLedger.reserve(conversation, received, base => {
+    const transcript = conversation.transcript;
+    const boundary = !clientMessageIds && transcript ? transcript.read.boundary?.(transcript.path) : null;
+    return {
+      ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
+      messageId: clientMessageIds ? base.id : null,
+      transcriptOffset: boundary?.offset ?? base.transcriptOffset,
+      transcriptBoundary: boundary?.proof ?? (!clientMessageIds && !transcript ? "missing" : null),
+    };
+  }, now, attempt.reservationId);
 }
 
 export function followSpokenConversationKey(sessionId: string, fromKey: string, toKey: string): void {

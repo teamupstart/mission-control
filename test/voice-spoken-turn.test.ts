@@ -82,7 +82,7 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
 });
 
 test("spoken ledger reloads the exact payload and binds its native turn once a competing send is released", async () => {
-  const { delegatedLedger, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { delegatedLedger, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
   const transcript = fakeTranscript();
   const conversation = transcript.conversation("spoken-binding");
@@ -90,9 +90,7 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   const received = spokenMessageText(spokenWords, { openQuestions: null, unseenReports: null });
   const now = Date.now();
   const attempt = claimSpoken(conversation.key, spokenWords, received);
-  const reserve = () => spokenLedger.reserve(conversation, received, base => ({
-    ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
-  }), now, attempt.reservationId);
+  const reserve = () => reserveSpokenTurn(conversation, spokenWords, received, false, attempt, now);
   const refused = reserve();
   spokenLedger.release(conversation.key, refused.id);
   const spoken = reserve();
@@ -161,7 +159,7 @@ test("a separate Codex client receipt follows the first native conversation key,
 });
 
 test("a terminal transcript created after reservation supplies a boundary; an older file with identical text does not", async t => {
-  const { spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const dir = mkdtempSync(join(tmpdir(), "voice-late-transcript-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "native.jsonl");
@@ -176,13 +174,72 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
     ["after-file", Math.ceil(created) + 1, []],
   ] as const) {
     const attempt = claimSpoken(key, text, text);
-    spokenLedger.reserve({ key, transcript: null }, text, base => ({
-      ...base, spokenWords: text, received: text, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
-    }), reservedAt, attempt.reservationId);
+    reserveSpokenTurn({ key, transcript: null }, text, text, false, attempt, reservedAt);
     assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, native.ts, attempt.reservationId));
     const located = { key, transcript: { read: transcript.conversation(key).transcript!.read, path } };
     assert.deepEqual([...spokenLedger.bound(located, [native, repeat]).rows.keys()], expected);
   }
+});
+
+test("a confirmed terminal send binds only in the file and history captured at handoff", async t => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-boundary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const now = Date.now();
+  const words = "inspect the build";
+  const payload = spokenMessageText(words, { openQuestions: null, unseenReports: null });
+  const line = (uuid: string, content: string) => JSON.stringify({ type: "user", uuid, timestamp: new Date(now).toISOString(),
+    message: { role: "user", content } }) + "\n";
+  const prefix = line("prefix", "before") + line("boundary", "same last record");
+  for (const kind of ["append", "replace", "rewrite", "legacy"]) {
+    const key = "terminal-file-" + kind;
+    const path = join(dir, key + ".jsonl");
+    writeFileSync(path, prefix);
+    const transcript = { path, read: claudeTranscript.messages! };
+    const conversation = { key, transcript };
+    const attempt = claimSpoken(key, words, payload);
+    const row = reserveSpokenTurn(conversation, words, payload, false, attempt, now);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+    if (kind === "replace") {
+      writeFileSync(path + ".next", prefix);
+      renameSync(path + ".next", path);
+    } else if (kind === "rewrite") {
+      writeFileSync(path, prefix.replace("before", "edited"));
+    } else if (kind === "legacy") {
+      db.openDb().prepare("UPDATE session_spoken_turns SET transcript_boundary = NULL WHERE id = ?").run(row.id);
+    }
+    appendFileSync(path, line("same-words", payload));
+    db.closeDb();
+    spokenLedger.forgetCaches();
+    const messages = transcript.read.after(path, 0).messages;
+    assert.equal(spokenLedger.bound(conversation, messages).rows.has("same-words"), kind === "append", kind);
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageId, kind === "append" ? "same-words" : null);
+    if (kind === "append") {
+      writeFileSync(path + ".next", prefix + line("typed-on-replacement", payload));
+      renameSync(path + ".next", path);
+      const replacement = transcript.read.after(path, 0).messages;
+      assert.equal(spokenLedger.bound(conversation, replacement).rows.has("typed-on-replacement"), false);
+    }
+  }
+});
+
+test("archived spoken payloads leave the bounded cache and their disclosures reload from SQLite", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const key = "archived-cached-spoken";
+  const transcript = fakeTranscript();
+  const conversation = transcript.conversation(key);
+  const words = "read the report";
+  const payload = spokenMessageText(words, { openQuestions: null, unseenReports: null });
+  const attempt = claimSpoken(key, words, payload);
+  const row = reserveSpokenTurn(conversation, words, payload, true, attempt);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, Date.now(), row.id));
+  const message = transcript.append(row.id, payload, Date.now());
+  assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, payload);
+  const cached = spokenLedger.rows(key);
+  for (let i = 0; i < 100; i++) spokenLedger.rows("later-conversation-" + i);
+  assert.notStrictEqual(spokenLedger.rows(key), cached);
+  assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, payload);
 });
 
 for (const handedOff of [false, true]) {
@@ -596,7 +653,8 @@ test("upgrade preserves anchored legacy disclosures and leaves unproven legacy r
   const text = "check the build";
   const now = Date.now();
   db.openDb().exec(`ALTER TABLE session_spoken_turns DROP COLUMN outbox_turn_id;
-    ALTER TABLE session_spoken_turns DROP COLUMN outbox_revision;`);
+    ALTER TABLE session_spoken_turns DROP COLUMN outbox_revision;
+    ALTER TABLE session_spoken_turns DROP COLUMN transcript_boundary;`);
   const insert = db.openDb().prepare(`INSERT INTO session_spoken_turns
     (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, message_id)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`);

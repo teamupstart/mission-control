@@ -13,6 +13,8 @@ export function fakeTranscript() {
   const turns: TranscriptMessage[] = [];
   let sizeFails: boolean | "missing" = false;
   const read = {
+    boundary: (_path: string, offset = turns.length * TURN_BYTES) => sizeFails || offset > turns.length * TURN_BYTES
+      ? null : { offset, proof: JSON.stringify(turns.slice(0, offset / TURN_BYTES)) },
     snapshot: () => sizeFails ? null : { size: turns.length * TURN_BYTES, version: String(turns.length) },
     size: () => {
       if (sizeFails === "missing") return null;

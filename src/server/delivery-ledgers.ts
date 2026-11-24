@@ -105,7 +105,7 @@ export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWord
   clientMessageIds: boolean, attempt: Pick<PendingTurn, "id" | "revision">) {
   return spokenLedger.reserve(conversation, received, base => ({
     ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
-    messageId: clientMessageIds && base.transcriptOffset === null ? base.id : null,
+    messageId: clientMessageIds ? base.id : null,
   }));
 }
 

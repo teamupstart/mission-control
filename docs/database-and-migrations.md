@@ -234,8 +234,13 @@ bind the spoken words even after the pending row retires. For databases from ear
 of this phase, an existing native binding or client message ID preserves the disclosure.
 A legacy reservation with only a text match lacks proof that its attempt reached handoff.
 
-When the native transcript is missing at handoff, the Claude and Codex SDKs receive the
-reservation UUID as a user-message identifier. The transcript reader uses that identifier
-even if another turn contains identical text. For a transport without client identifiers,
-a file created after reservation supplies the starting boundary. An older file of unknown
+The Claude and Codex SDKs receive the reservation UUID as a user-message identifier on
+every spoken handoff. For a transport without client identifiers, binding by text requires
+a runtime delivery receipt for that specific outbox revision. The daemon records the receipt in the
+same transaction that retires the delivered outbox row. A retry, discard, or operator marking
+an uncertain attempt sent cannot supply that receipt. A confirmation without a recorded receiving
+generation also leaves the current work cycle alone.
+
+For a confirmed transport without client identifiers, a file created after reservation
+supplies the starting boundary. An older file of unknown
 size cannot establish which turn was spoken.

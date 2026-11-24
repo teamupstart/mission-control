@@ -3852,6 +3852,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "spoken_handoff_generation", "INTEGER");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
+  addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
   addColumn(d, "session_work_cycles", "spoken_hold", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -13314,7 +13315,10 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
     `SELECT id, note_key AS noteKey, fingerprint, spoken_words AS spokenWords, received,
             delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
             message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision
-       FROM session_spoken_turns WHERE note_key = ? AND (outbox_turn_id IS NOT NULL OR message_id IS NOT NULL) ORDER BY rowid`,
+       FROM session_spoken_turns WHERE note_key = ? AND (message_id IS NOT NULL OR runtime_confirmed_at IS NOT NULL
+         OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.revision = outbox_revision
+           AND p.state = 'sending' AND p.spoken_handoff_generation IS NOT NULL))
+       ORDER BY rowid`,
   ).all(noteKey) as unknown as Array<Omit<SpokenTurnRow, "contested"> & { contested: number }>;
   return rows.map(row => ({ ...row, contested: row.contested === 1 }));
 }
@@ -13333,8 +13337,11 @@ export function contestSpokenTurn(id: string, contested: boolean): void {
 }
 
 export function bindSpokenTurn(id: string, messageId: string, messageTs: number): boolean {
+  // A text-only match needs a positive runtime receipt for this attempt. Check it on the write
+  // as well as the read: a cached reservation can outlive a retry, discard, or manual settlement.
   const result = openDb().prepare(
-    "UPDATE session_spoken_turns SET message_id = ?, message_ts = ? WHERE id = ? AND message_id IS NULL",
+    `UPDATE session_spoken_turns SET message_id = ?, message_ts = ?
+      WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NOT NULL`,
   ).run(messageId, messageTs, id);
   return Number(result.changes) > 0;
 }
@@ -15487,14 +15494,18 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
       RETURNING COALESCE(spoken_handoff_key, note_key) AS receivingKey,
                 spoken_words IS NOT NULL AS spoken, spoken_handoff_generation AS generation`)
       .get(id, state, revision) as { receivingKey: string; spoken: number; generation: number | null } | undefined;
-    if (retired?.spoken) {
+    if (retired?.spoken && retired.generation !== null) {
+      if (state === "sending") {
+        d.prepare(`UPDATE session_spoken_turns SET runtime_confirmed_at = ?
+          WHERE outbox_turn_id = ? AND outbox_revision = ?`).run(deliveredAt, id, revision);
+      }
       // If the receiving cycle completed before acknowledgement (or during a retire retry),
       // its generation already advanced. Never put a hold on the following turn.
       d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold)
         VALUES (?, ?, 1, 1)
         ON CONFLICT(logical_key) DO UPDATE SET spoken_hold = 1, active = 1
-        WHERE ? IS NULL OR session_work_cycles.generation = ?`)
-        .run(retired.receivingKey, deliveredAt, retired.generation, retired.generation);
+        WHERE session_work_cycles.generation = ?`)
+        .run(retired.receivingKey, deliveredAt, retired.generation);
     }
     if (retired && id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)) {
       d.prepare(`UPDATE task_skill_prompts SET state = 'delivered', reason = NULL, delivered_at = ?

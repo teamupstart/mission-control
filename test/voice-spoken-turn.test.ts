@@ -9,6 +9,13 @@ import { claimHumanEcho, expectHumanEcho } from "../src/server/injections.ts";
 import type { TurnDelivered } from "../src/server/registry.ts";
 import { fakeTranscript } from "./helpers/fake-transcript.ts";
 
+function claimSpoken(key: string, words: string, text: string) {
+  const queued = db.createPendingTurn({ id: key + "-outbox", noteKey: key, spokenWords: words, text: words, now: Date.now() });
+  const claimed = db.claimNextPendingTurn(key, Date.now(), queued, () => text)!;
+  assert.ok(db.recordSpokenHandoff(claimed.id, claimed.revision, 0));
+  return claimed;
+}
+
 test("upgrade from 51 leaves typed rows untouched, and spoken composition survives restart and retry", () => {
   const key = "conversation";
   const words = "check the build";
@@ -55,8 +62,9 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   const spokenWords = "inspect the build";
   const received = spokenMessageText(spokenWords, { openQuestions: null, unseenReports: null });
   const now = Date.now();
+  const attempt = claimSpoken(conversation.key, spokenWords, received);
   const reserve = () => spokenLedger.reserve(conversation, received, base => ({
-    ...base, spokenWords, received, outboxTurnId: "ledger-test", outboxRevision: 1,
+    ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
   }), now);
   const refused = reserve();
   spokenLedger.release(conversation.key, refused.id);
@@ -68,6 +76,7 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   db.closeDb();
   assert.deepEqual(spokenLedger.rows(conversation.key), [{ ...spoken, contested: true }]);
   delegatedLedger.release(conversation.key, rival.id);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now));
   const turn = transcript.append("spoken-turn", received, now + 1);
   const duplicate = transcript.append("later-turn", received, now + 2);
   const bound = spokenLedger.bound(conversation, [turn, duplicate]);
@@ -137,9 +146,11 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
   for (const [key, reservedAt, expected] of [
     ["before-file", Math.floor(created) - 1, [native.id]], ["after-file", Math.ceil(created) + 1, []],
   ] as const) {
+    const attempt = claimSpoken(key, text, text);
     spokenLedger.reserve({ key, transcript: null }, text, base => ({
-      ...base, spokenWords: text, received: text, outboxTurnId: key, outboxRevision: 1,
+      ...base, spokenWords: text, received: text, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
     }), reservedAt);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, native.ts));
     const located = { key, transcript: { read: transcript.conversation(key).transcript!.read, path } };
     assert.deepEqual([...spokenLedger.bound(located, [native, repeat]).rows.keys()], expected);
   }
@@ -170,11 +181,13 @@ for (const handedOff of [false, true]) {
     const transcript = sessionMessages(registry.getSession(id)!)!;
     assert.equal(transcript.read.size(path), 0);
     let payload: string | undefined;
+    let receiptId: string | undefined;
     const manager = new PendingTurnManager(registry, {
       ...unexpectedActiveSdkDelivery,
       sendWhenIdle: async (_, input, beforeSend) => {
         if (handedOff) assert.equal(beforeSend?.(), null);
         payload = input.text;
+        receiptId = input.clientMessageId;
         return new Promise<never>(() => {}); // The old process never observes a response.
       },
     }, { idleSettleMs: 0 });
@@ -197,16 +210,48 @@ for (const handedOff of [false, true]) {
       const editable = db.retryPendingTurn(queued.id, uncertain.revision, Date.now())!;
       assert.ok(db.recallPendingTurn(key, queued.id, editable.revision));
     }
-    for (const uuid of ["first", "repeat"]) {
+    if (handedOff) assert.ok(receiptId, "SDK handoff supplies a native receipt even with a known transcript offset");
+    for (const uuid of [receiptId ?? "first", "repeat"]) {
       appendFileSync(path, JSON.stringify({ type: "user", uuid, timestamp: new Date().toISOString(),
         message: { role: "user", content: payload } }) + "\n");
     }
     const { messages } = transcript.read.after(path, 0);
     assert.equal(messages.length, 2);
     const bound = spokenLedger.bound({ key, transcript }, messages);
-    assert.deepEqual([...bound.rows.keys()], handedOff ? ["first"] : []);
+    assert.deepEqual([...bound.rows.keys()], handedOff ? [receiptId] : []);
   });
 }
+
+test("settled text-only attempts cannot claim later typed messages across retries, discard, or mark sent", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const words = "check the build";
+  for (const action of ["retry", "discard", "mark-sent", "confirmed"] as const) {
+    const key = "text-receipt-" + action;
+    const transcript = fakeTranscript();
+    const conversation = transcript.conversation(key);
+    const attempt = claimSpoken(key, words, words);
+    reserveSpokenTurn(conversation, words, words, false, attempt);
+    if (action === "confirmed") {
+      assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, Date.now()));
+    } else {
+      db.recoverSendingPendingTurns(Date.now());
+      const [uncertain] = db.listPendingTurns(key);
+      assert.equal(uncertain?.state, "uncertain");
+      if (action === "mark-sent") assert.ok(db.resolveUncertainPendingTurn(attempt.id, uncertain.revision));
+      else if (action === "discard") assert.equal(db.clearPendingTurns(key), 1);
+      else {
+        const queued = db.retryPendingTurn(attempt.id, uncertain.revision, Date.now())!;
+        const retried = db.claimNextPendingTurn(key, Date.now(), queued)!;
+        assert.ok(db.recordSpokenHandoff(retried.id, retried.revision, 0));
+      }
+    }
+    const message = transcript.append(action, words, Date.now());
+    for (const reload of [false, true]) {
+      if (reload) { db.closeDb(); spokenLedger.forgetCaches(); }
+      assert.equal(spokenLedger.bound(conversation, [message]).rows.has(message.id), action === "confirmed", action);
+    }
+  }
+});
 
 test("upgrade preserves anchored legacy disclosures and leaves unproven legacy reservations unbound", async () => {
   const { spokenLedger } = await import("../src/server/delivery-ledgers.ts");

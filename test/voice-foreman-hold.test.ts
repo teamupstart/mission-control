@@ -139,6 +139,22 @@ test("settling an uncertain spoken handoff after restart holds only its original
   }
 });
 
+test("marking an unstamped spoken attempt sent leaves idle and unrelated working cycles alone", () => {
+  for (const working of [false, true]) {
+    const key = "unstamped-" + working;
+    const row = db.createPendingTurn({ id: key, noteKey: key, text: "inspect", spokenWords: "inspect", now: 1 });
+    assert.ok(db.claimNextPendingTurn(key, 2, row, words => words));
+    db.closeDb();
+    db.recoverSendingPendingTurns(3);
+    if (working) db.markWorkCycleActive(key, 4);
+    const before = db.workCycleFor(key);
+    const [uncertain] = db.listPendingTurns(key);
+    assert.ok(db.resolveUncertainPendingTurn(row.id, uncertain!.revision, 5));
+    assert.equal(db.hasDeliveredSpokenHold(key), false);
+    assert.deepEqual(db.workCycleFor(key), before);
+  }
+});
+
 test("a confirmed spoken hold follows the first native binding and stays with that conversation on clear", () => {
   applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
   const registry = new Registry();

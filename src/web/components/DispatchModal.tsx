@@ -648,6 +648,7 @@ export function harnessDefaultsLine(
  */
 function DispatchDraftOwner({
   opening,
+  suspended = false,
   tasks = [],
   sessions = [],
   personas = [],
@@ -679,6 +680,8 @@ function DispatchDraftOwner({
    * applies it.
    */
   opening: DispatchOpening | null;
+  /** A card-only route hides the form while this owner retains its drafts and attachment URLs. */
+  suspended?: boolean;
   tasks?: Task[];
   sessions?: Session[];
   /** Live Personas, for the Ensemble evaluator-guidance selector and the Advanced Persona choice. */
@@ -1068,7 +1071,7 @@ function DispatchDraftOwner({
   );
 
   if (openingProblem) return refuse(openingProblem);
-  if (requested === null) return null;
+  if (requested === null || suspended) return null;
   refused.current = null;
 
   /**

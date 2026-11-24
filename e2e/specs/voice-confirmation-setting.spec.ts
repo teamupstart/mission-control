@@ -1,3 +1,4 @@
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { enableVoice, say, voiceToken } from "../fixtures/voice.ts";
 import { allowStreamDisconnect, captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
@@ -30,6 +31,40 @@ test("three placement previews persist across reload, with a toast fallback and 
   await page.goto(daemon.baseURL + "/#/voice/popover");
   await expect(page.locator(".voice-standalone")).toHaveCount(1);
   await expect(page.locator(".app")).toHaveCount(0);
+});
+
+test("visiting either standalone voice route preserves a closed Dispatch draft and attachment", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const dispatch = page.getByRole("button", { name: "Dispatch", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  const intent = dialog.getByPlaceholder("What should this agent do?");
+  const attachment = dialog.getByRole("button", { name: "Remove voice-draft.png" });
+  await dispatch.click();
+  await expectContentClearsBorder(dialog);
+  await intent.fill("Keep my work across voice routes");
+  const transfer = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), c => c.charCodeAt(0));
+    data.items.add(new File([png], "voice-draft.png", { type: "image/png" }));
+    return data;
+  });
+  await dialog.locator(".drop-zone").dispatchEvent("drop", { dataTransfer: transfer });
+  await transfer.dispose();
+  await expect(attachment).toBeVisible();
+  for (const placement of ["pill", "popover"]) {
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } });
+    await page.goto(daemon.baseURL + "/#/voice/" + placement);
+    await expect(page.locator(".voice-standalone")).toHaveCount(1);
+    await expect(page.locator(".app")).toHaveCount(0);
+    await page.goto(daemon.baseURL + "/#/fleet");
+    await dispatch.click();
+    await expectContentClearsBorder(dialog);
+    await expect(intent).toHaveValue("Keep my work across voice routes", { timeout: 1000 });
+    await expect(attachment).toBeVisible();
+    await expect(dialog.locator('.drop-zone img').first()).toHaveJSProperty("naturalWidth", 1);
+  }
 });
 
 test("a confirmed placement stays selected without its stream update", async ({ dashboard: page, daemon }) => {

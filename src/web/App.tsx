@@ -4409,6 +4409,12 @@ export function App(): React.JSX.Element {
       // In the Idle preview, Tab enters a section's controls and rows natively.
       // Once a row has focus, Tab and Shift+Tab keep their session shortcuts.
       const inIdleSections = Boolean(target?.closest(".has-idle-sections"));
+      if (chord === "Home" && inIdleSections && target?.closest(".rail-row")) {
+        e.preventDefault();
+        target.closest(".idle-rail-section")
+          ?.querySelector<HTMLButtonElement>(".idle-rail-section-toggle")?.focus();
+        return;
+      }
       if ((chord === "Tab" || chord === "shift+Tab") && (
         target?.closest(".line-dock") || (inIdleSections && !target?.closest(".rail-row"))
       )) return;

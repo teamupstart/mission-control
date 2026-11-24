@@ -441,13 +441,18 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   // key, keeping focus on the row instead of moving to the previous control.
   await freeRow.press("Shift+Tab");
   await expect(freeRow).toBeFocused();
-  await freeSection.press("ArrowDown");
+  await expect(freeRow).toHaveAttribute("aria-keyshortcuts", "Home");
+  await dashboard.keyboard.press("Home");
+  await expect(freeSection).toBeFocused();
+  await dashboard.keyboard.press("ArrowDown");
   await expect(heldSection).toBeFocused();
   await dashboard.keyboard.press("Enter");
   await expect(heldSection).toHaveAttribute("aria-expanded", "true");
   await dashboard.keyboard.press("Tab");
   await dashboard.keyboard.press("Tab");
   await expect(rail.locator(".rail-row.is-held")).toBeFocused();
+  await dashboard.keyboard.press("Home");
+  await expect(heldSection).toBeFocused();
   await shoot(dashboard, "idle-rail-section-counts");
   await heldSection.click();
   await expect(rail.locator(".rail-row.is-held")).toHaveCount(0);

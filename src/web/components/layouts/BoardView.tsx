@@ -427,6 +427,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
+      sectionNavigation={Boolean(props.idleRailSections)}
       onSelect={() => props.onSelect(s.id)}
       // Register the element like the console rail does, so Shift+Tab/Escape out of the
       // reader can land focus back on the selected row here.

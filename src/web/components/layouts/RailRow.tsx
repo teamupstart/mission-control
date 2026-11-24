@@ -46,6 +46,7 @@ export function RailRow({
   session,
   shortcutChord = null,
   selected,
+  sectionNavigation = false,
   onSelect,
   registerEl,
   workflowRun = null,
@@ -74,6 +75,7 @@ export function RailRow({
    */
   shortcutChord?: string | null;
   selected: boolean;
+  sectionNavigation?: boolean;
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
@@ -165,7 +167,9 @@ export function RailRow({
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
   const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
-  }`;
+  }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;
+  const keyshortcuts = [shortcutChord && ariaKeyshortcuts(shortcutChord), sectionNavigation && "Home"]
+    .filter(Boolean).join(" ");
   const firstFact = stall && stalledFactRows(session, stall)[0];
   const descriptionId = useId();
   const actionWaitId = useId();
@@ -187,7 +191,7 @@ export function RailRow({
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
            the chord is announced here instead - on the control it actually drives, which for
            the rail is the row itself rather than a button stretched over a card. */
-        aria-keyshortcuts={shortcutChord ? ariaKeyshortcuts(shortcutChord) : undefined}
+        aria-keyshortcuts={keyshortcuts || undefined}
         onClick={onSelect}
       >
         <AgentDot agent={session.agent} />

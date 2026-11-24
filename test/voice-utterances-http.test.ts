@@ -485,7 +485,8 @@ test("model and manual split delivery preserve stop punctuation and command-line
   }
 });
 
-test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
+test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   decide = (questions) => ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" });
   await say("Steven tell Will something", "ambiguous");
   await resolved("ambiguous");
@@ -496,6 +497,7 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
   assert.equal(cards.at(-1)?.state, "cancelled");
   assert.ok(!queued("Steve").includes("tell Will something"));
   for (const method of ["spoken", "click"]) {
+    t.mock.timers.setTime(Date.now() + 1);
     await say("Steven ask Will about it", method);
     await resolved(method);
     assert.equal((await act(method, "pick", { id: "unknown" })).status, 409);

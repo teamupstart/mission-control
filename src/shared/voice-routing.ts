@@ -64,9 +64,10 @@ function splitHead(text: string): string {
     ?? /\s+(?:and\s+then|and|then)$/iu.exec(raw);
   if (!conjunction) return raw;
   const preceding = raw.slice(0, conjunction.index).trimEnd();
-  // A request to spell or quote the joining word keeps it in the first message.
-  const namesLiteral = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu;
-  return namesLiteral.test(preceding.replace(/[\p{P}\s]+$/u, "")) ? raw : preceding;
+  // A literal directive or an unfinished phrase ("replace x with", "rename x to")
+  // still needs the final word as its argument. The comma alone separates the address.
+  const needsWord = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction|with|to|from|by|as|for|of|into)$/iu;
+  return needsWord.test(preceding.replace(/[\p{P}\s]+$/u, "")) ? raw : preceding;
 }
 
 export type VoiceAddressedCommand = "stop";

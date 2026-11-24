@@ -152,7 +152,7 @@ export class VoiceRouter {
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
   // Earlier choice rows can block a delayed spoken pick, but can never be picked again.
-  private readonly priorChoices: { from: number; until: number; names: string[] }[] = [];
+  private readonly priorChoices: { cardId: string; from: number; until: number; names: string[] }[] = [];
   private picksKnownFrom = 0;
   private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
@@ -199,10 +199,9 @@ export class VoiceRouter {
     const from = item.choicesOfferedAt ?? item.entry.time;
     const until = Math.max(from, at);
     item.choicesOfferedAt = until;
-    if (until === from) return;
-    this.priorChoices.push({ from, until, names: [...new Set(item.card.candidates.map(c => c.title))] });
+    this.priorChoices.push({ cardId: item.card.id, from, until, names: [...new Set(item.card.candidates.map(c => c.title))] });
     if (this.priorChoices.length > HISTORY_LIMIT) {
-      this.picksKnownFrom = Math.max(this.picksKnownFrom, this.priorChoices.shift()!.until);
+      this.picksKnownFrom = Math.max(this.picksKnownFrom, this.priorChoices.shift()!.until + 1);
     }
   }
 
@@ -217,8 +216,13 @@ export class VoiceRouter {
         entry.time <= capturedAt && (choicesOfferedAt === undefined || choicesOfferedAt <= capturedAt))
       .map(({ card }) => card);
     const priorPickNames = this.priorChoices
-      .filter(window => window.from <= capturedAt && capturedAt < window.until)
-      .flatMap(window => window.names);
+      .filter(window => window.from <= capturedAt && capturedAt <= window.until)
+      .flatMap(window => {
+        // At a millisecond tie, a name still offered by the same card is already counted.
+        // Names from closed cards or removed rows remain possible competing choices.
+        const current = window.until === capturedAt && unsureCards.find(card => card.id === window.cardId);
+        return current ? window.names.filter(name => !current.candidates.some(row => row.title === name)) : window.names;
+      });
     // Bind every potential part to the roster session present when the utterance arrived.
     const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards, priorPickNames });
     // An unsure card reserves its delivery slot so it can still be picked at capacity.

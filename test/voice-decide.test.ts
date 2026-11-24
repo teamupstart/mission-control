@@ -515,12 +515,14 @@ test("a split after three mentioned agents still reaches its addressee", async (
 });
 
 test("a roster pick after an uncertain mention never redirects Steve's whole message to Alice", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
   const { router, delivered, say } = routerRig(() => answered(null));
   t.after(() => router.reset());
   await say("Steve, ask Alice about the build", "one");
   assert.equal(await router.pick("one", "task:Steve"), true);
   await router.sendNow("one");
   assert.deepEqual(delivered, [["Steve", "ask Alice about the build", "one"]]);
+  t.mock.timers.setTime(101);
   await say("Steve, ask Alice about the build", "two");
   await say("Alice");
   assert.equal(await router.sendNow("two"), true);
@@ -1030,6 +1032,25 @@ for (const later of ["resolving", "unsure", "pending", "cancelled"] as const) {
   });
 }
 
+for (const closedAt of [200, 300]) {
+  test(`a pick captured when a competing card closes at ${closedAt} stays ambiguous`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const { router, say } = routerRig(() => answered(null));
+    t.after(() => router.reset());
+    await say(SPLIT.text, "older");
+    t.mock.timers.setTime(200);
+    await say(SPLIT.text, "newer");
+    t.mock.timers.setTime(closedAt);
+    assert.ok(router.cancel("newer"));
+    t.mock.timers.setTime(closedAt + 1);
+    await router.accept(VoiceUtteranceSchema.parse({ id: "tie", text: "Alice", backend: "fluidaudio", capturedAt: closedAt }));
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(router.heard.list().find(e => e.id === "tie")?.rule, "ambiguous-pick");
+    await say("Alice", "after");
+    assert.equal(router.activeCards()[0]?.state, "pending");
+  });
+}
+
 test("a comma-free split preserves the literal word before the next name", async (t) => {
   const { router, say, delivered } = routerRig(() => answered(null));
   t.after(() => router.reset());
@@ -1068,6 +1089,7 @@ test("a confirmed split removes one conjunction before the address and preserves
     ["spell and", "spell and"], ["explain the word and", "explain the word and"],
     ["spell the word: and", "spell the word: and"], ["say, then", "say, then"],
     ["define the term: plus", "define the term: plus"],
+    ["replace foo with then", "replace foo with then"], ["rename foo to and", "rename foo to and"],
   ]) {
     for (const separator of [" ", ", ", ",", " , "]) {
       const id = String(delivered.length);

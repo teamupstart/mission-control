@@ -837,6 +837,9 @@ test("a repeated transcript appears once in a job or provider batch", async () =
 test("each provider associates a mixed batch's questions with their own transcripts", async () => {
   const first = { ...SPLIT, text: "Steve, check the issue and Alice, triage it" };
   const second = { ...SPLIT, text: "Steve, ask Alice about the report" };
+  const jobLines = buildVoiceRoutingPrompt([first, second, first]).split("\n");
+  assert.deepEqual(jobLines.filter(line => line.includes(first.text)).map(line => line.match(/q\d+/gu)), [["q1", "q3"]]);
+  assert.deepEqual(jobLines.filter(line => line.includes(second.text)).map(line => line.match(/q\d+/gu)), [["q2"]]);
   for (const provider of ["openai", "jev"] as const) {
     const { ask, calls } = rig({ saved: { [provider]: "test-key" } });
     await ask(["codex"], [first, second, first]);

@@ -235,7 +235,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
 export function defaultVoiceDecider(): VoiceDecider {
   return createVoiceDecider({
     config: () => getVoiceConfig(),
-    savedKeys: () => savedDecisionKeys(),
+    savedKeys: () => savedDecisionKeys() ?? {},
     env: () => process.env,
     providers: DECISION_PROVIDERS,
     job: runVoiceRoutingJob,

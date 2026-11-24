@@ -335,6 +335,8 @@ each provider, since a key belongs to a provider.
   this Mac** or **Not set**. Enter a key and choose **Save** to add or replace that provider's
   key. Choose **Remove** to delete its saved key. If that provider also has an environment key,
   its row then shows **From the environment**. Each action affects only the selected provider.
+  If the daemon cannot read the key store, both rows show **Status unavailable**. Routing
+  can still use an environment key or fall through to the configured job or roster choices.
   For storage and disclosure details, see [Saved voice decision keys](security.md#saved-voice-decision-keys).
 
 `GET /api/voice/decision-key` returns `{ provider, keys: { openai: { source }, jev: { source } } }`

@@ -117,24 +117,35 @@ export const VOICE_ROUTING_SYSTEM_PROMPT = [
   "Reply with only the JSON object the schema describes.",
 ].join("\n");
 
+/** Attach each transcript once and identify every question that refers to it. */
+export function decisionInput(questions: readonly VoiceQuestion[]): string {
+  const bySpeech = new Map<string, string[]>();
+  for (const [index, question] of questions.entries()) {
+    const name = voiceQuestionName(index);
+    const names = bySpeech.get(question.text);
+    if (names) names.push(name);
+    else bySpeech.set(question.text, [name]);
+  }
+  return [...bySpeech].map(([text, names]) => `Speech for ${names.join(", ")}: ${JSON.stringify(text)}`).join("\n");
+}
+
 /** The job's user prompt: every question, each with its closed list of choices. */
 export function buildVoiceRoutingPrompt(questions: readonly VoiceQuestion[]): string {
-  const transcripts = new Set<string>();
+  const single = questions.length === 1;
   const blocks = questions.map((question, index) => {
     const choices = voiceChoiceValues(question).map((choice, n) => question.kind === "option"
       ? `- Option ${n + 1}: ${JSON.stringify(choice.value)}${choice.detail ? `, ${choice.detail}` : ""}`
       : `- ${JSON.stringify(choice.value)}${question.kind === "who" && choice.detail ? `: ${choice.detail}` : ""}`);
-    const includeSpeech = !transcripts.has(question.text);
-    transcripts.add(question.text);
     return [
       `Question ${voiceQuestionName(index)} (${question.kind}):`,
-      voiceQuestionInstructions(question, includeSpeech),
+      voiceQuestionInstructions(question, single),
       "Choices:",
       ...choices,
       `- ${JSON.stringify(VOICE_NOT_SURE)}`,
     ].join("\n");
   });
   return [
+    ...(single ? [] : [decisionInput(questions)]),
     ...blocks,
     "",
     `Answer as {"answers": {${questions.map((_, i) => `"${voiceQuestionName(i)}": {"choice": ..., "confidence": ...}`).join(", ")}}}.`,

@@ -271,12 +271,16 @@ function rasterMimeType(bytes) {
  */
 function voiceRoutingAnswer(prompt) {
   const answers = {};
-  const speech = /^Speech: (".*")$/m.exec(prompt);
+  const single = /^Speech: (".*")$/m.exec(prompt);
+  const speech = new Map();
+  for (const [, names, text] of prompt.matchAll(/^Speech for (q\d+(?:, q\d+)*): (".*")$/gm)) {
+    for (const id of names.split(", ")) speech.set(id, JSON.parse(text));
+  }
   for (const block of prompt.split(/\n(?=Question q\d+ \()/)) {
     const head = /^Question (q\d+) \((who|split|option)\):/m.exec(block);
     if (!head) continue;
     const second = /Later it names (.+?)\. Decide/.exec(block);
-    const text = speech ? JSON.parse(speech[1]) : "";
+    const text = speech.get(head[1]) ?? (single ? JSON.parse(single[1]) : "");
     const split = head[2] === "split" && second && new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second[1]},`).test(text);
     answers[head[1]] = head[2] === "split"
       ? { choice: split ? "split" : "mention", confidence: 0.99 }

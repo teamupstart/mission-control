@@ -58,13 +58,13 @@ function readKeys(path: string): SavedKeys {
   }
 }
 
-/** Routing and source reports can fall through when saved keys are unavailable. */
-export function savedDecisionKeys(path = decisionKeyPath()): SavedKeys {
+/** An absent file has no saved keys. An unreadable store has unknown contents. */
+export function savedDecisionKeys(path = decisionKeyPath()): SavedKeys | null {
   try {
     return readKeys(path);
   } catch {
     console.warn("[voice] the saved decision-model keys could not be read");
-    return {};
+    return null;
   }
 }
 
@@ -92,16 +92,20 @@ function writeKeys(keys: SavedKeys, path: string): void {
 }
 
 /** Save one provider's key. The other provider's saved key stays as it was. */
-export function saveDecisionKey(provider: VoiceKeyProvider, key: string, path = decisionKeyPath()): void {
-  writeKeys({ ...readKeys(path), [provider]: key }, path);
+export function saveDecisionKey(provider: VoiceKeyProvider, key: string, path = decisionKeyPath()): VoiceKeyAvailability {
+  const keys = { ...readKeys(path), [provider]: key };
+  writeKeys(keys, path);
+  return decisionKeyAvailability(keys, process.env);
 }
 
 /** Remove one provider's saved key. The other provider's stays; with none left the file goes. */
-export function removeDecisionKey(provider: VoiceKeyProvider, path = decisionKeyPath()): void {
+export function removeDecisionKey(provider: VoiceKeyProvider, path = decisionKeyPath()): VoiceKeyAvailability {
   const keys = readKeys(path);
-  if (!(provider in keys)) return;
-  delete keys[provider];
-  writeKeys(keys, path);
+  if (provider in keys) {
+    delete keys[provider];
+    writeKeys(keys, path);
+  }
+  return decisionKeyAvailability(keys, process.env);
 }
 
 /** A provider's key from the daemon's environment, or null. */

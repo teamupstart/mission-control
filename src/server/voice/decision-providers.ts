@@ -3,7 +3,7 @@ import { validateEndpoint } from "@shared/telemetry-endpoint.ts";
 import { readCappedBody } from "../origin-fetch.ts";
 import { envVar } from "../../shared/harness-runtime.mjs";
 import type { VoiceKeyProvider, VoiceQuestion } from "@shared/voice-decide.ts";
-import { VOICE_NOT_SURE, voiceChoiceId, voiceChoiceValues, voiceQuestionInstructions, voiceQuestionName } from "./decide-prompt.ts";
+import { decisionInput, VOICE_NOT_SURE, voiceChoiceId, voiceChoiceValues, voiceQuestionInstructions, voiceQuestionName } from "./decide-prompt.ts";
 
 // The two decision-model providers (contract E), each one HTTPS request per utterance carrying
 // every question it needs. Both answer a typed `choice` question with a choice and a confidence,
@@ -68,18 +68,6 @@ export class DecisionProviderError extends Error {
 
 const MAX_DECISION_REPLY_BYTES = 256 * 1024;
 const NOT_SURE_DESCRIPTION = "The words do not settle it.";
-
-/** Attach each transcript once and identify every question that refers to it. */
-export function decisionInput(questions: readonly VoiceQuestion[]): string {
-  const bySpeech = new Map<string, string[]>();
-  for (const [index, question] of questions.entries()) {
-    const name = voiceQuestionName(index);
-    const names = bySpeech.get(question.text);
-    if (names) names.push(name);
-    else bySpeech.set(question.text, [name]);
-  }
-  return [...bySpeech].map(([text, names]) => `Speech for ${names.join(", ")}: ${JSON.stringify(text)}`).join("\n");
-}
 
 function choicesFor(question: VoiceQuestion): { value: string; description: string }[] {
   return [

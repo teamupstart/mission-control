@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test as base } from "../fixtures/test.ts";
@@ -432,3 +432,27 @@ for (const mutation of ["save", "remove"] as const) {
     await expect(line(page)).toHaveText(mutation === "save" ? using("OpenAI Decisions") : NOT_SET);
   });
 }
+
+test("an unreadable key store shows unavailable while ambiguous speech still reaches the routing job", async ({ dashboard: page, daemon, decisions }) => {
+  await turnVoiceOn(daemon);
+  await codexAgents(daemon);
+  await page.clock.install();
+  await openVoiceSettings(page, daemon);
+  await saveKey(page, "OpenAI Decisions", SAVED_OPENAI);
+  const path = join(daemon.home, "voice", "decision-key.json");
+  const saved = readFileSync(path);
+  writeFileSync(path, "broken fixture credential file");
+  await page.clock.fastForward(5_000);
+  await expect(line(page)).toHaveText("Key status unavailable");
+  await expect(row(page, "OpenAI Decisions")).toContainText("Status unavailable");
+  await expect(row(page, "Jev")).toContainText("Status unavailable");
+  const { entry, card } = await sayAndSettle(daemon, SPLIT);
+  expect(entry.detail).toBe("job on codex answered: split");
+  expect(card?.parts.map(part => part.target?.name)).toEqual(["Steve", "Alice"]);
+  expect(decisions.requests).toHaveLength(0);
+  await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "14-unreadable-store");
+  writeFileSync(path, saved);
+  await page.clock.fastForward(5_000);
+  await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+  await expect(row(page, "OpenAI Decisions")).toContainText("Saved on this Mac");
+});

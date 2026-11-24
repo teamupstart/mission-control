@@ -7,7 +7,7 @@ import {
   VoiceDecisionKeyProviderSchema,
   VoiceDecisionKeyPutSchema,
   voiceDecisionKeyReport,
-  type VoiceDecisionKeyReport,
+  type VoiceKeyAvailability,
 } from "@shared/voice-decide.ts";
 import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -97,11 +97,12 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
-  const keyReport = (): VoiceDecisionKeyReport =>
-    voiceDecisionKeyReport(getVoiceConfig(), decisionKeyAvailability(savedDecisionKeys(), process.env));
+  const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
   app.get("/api/voice/decision-key", gate, (c) => {
     c.header("Cache-Control", "no-store");
-    return c.json(keyReport());
+    const saved = savedDecisionKeys();
+    if (saved === null) return c.json({ error: "key_status_unavailable" }, 503);
+    return c.json(keyReport(decisionKeyAvailability(saved, process.env)));
   });
   app.put("/api/voice/decision-key", gate, limitBody, async (c) => {
     // Parsed here rather than through `parseBody`, whose 400 echoes the issues: a rejected key
@@ -114,24 +115,26 @@ export function registerVoiceRoutes(
     if (!parsed.success) {
       return c.json({ error: "invalid_key", reason: "Send { provider, key } with a key of 8 to 512 printable characters and no spaces." }, 400);
     }
+    let availability: VoiceKeyAvailability;
     try {
-      saveDecisionKey(parsed.data.provider, parsed.data.key);
+      availability = saveDecisionKey(parsed.data.provider, parsed.data.key);
     } catch (error) {
       console.warn("[voice] could not save the decision-model key:", error instanceof Error ? error.message : String(error));
       return c.json({ error: "save_failed", reason: "The key could not be saved." }, 500);
     }
-    return c.json(keyReport());
+    return c.json(keyReport(availability));
   });
   app.delete("/api/voice/decision-key", gate, (c) => {
     const provider = VoiceDecisionKeyProviderSchema.safeParse(c.req.query("provider"));
     if (!provider.success) return c.json({ error: "invalid_provider", reason: "Name the provider: openai or jev." }, 400);
+    let availability: VoiceKeyAvailability;
     try {
-      removeDecisionKey(provider.data);
+      availability = removeDecisionKey(provider.data);
     } catch (error) {
       console.warn("[voice] could not remove the decision-model key:", error instanceof Error ? error.message : String(error));
       return c.json({ error: "save_failed", reason: "The key could not be removed." }, 500);
     }
-    return c.json(keyReport());
+    return c.json(keyReport(availability));
   });
 
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {

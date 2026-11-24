@@ -10,6 +10,7 @@ import { findClaude, realExec } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import type { CliIo } from "../src/cli/commands/index.ts";
 import { calledPaths } from "../src/cli/setup-steps/checks.ts";
+import { run as runDoctorStep } from "../src/cli/setup-steps/doctor.ts";
 import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
 import { stageMod } from "../src/server/mod-stage.ts";
 import { createFakeClaude, createFakeDaemon, type FakeClaude, type FakeDaemon } from "./helpers/home-dispatch-fakes.ts";
@@ -422,5 +423,59 @@ test("an install that exits 0 but lists the wrong version, or the wrong scope, i
     assert.match(result.message, /shows 2\.2\.0, project scope, not 2\.2\.0/);
   } finally {
     await wrongScope.cleanup();
+  }
+});
+
+test("doctor fails mod-calls, with the fix, when `claude plugin validate` refuses the staged mod", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    r.claude.update({ failures: { validate: { exitCode: 1, stderr: "plugin.json: unknown field", times: 5 } } });
+    const result = await r.run("doctor");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod-calls: `claude plugin validate` refused the staged mod: plugin\.json: unknown field\n {8}fix: Rebuild with `npm run build`, then run `mctl setup`\./);
+    assert.match(result.out, /ok {4}mod-enabled: /, "the other checks still report");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a plugin listing that fails is reported by setup (with recovery commands) and by doctor, both exit 1", async () => {
+  const r = await rig();
+  try {
+    r.claude.update({ failures: { list: { exitCode: 1, stderr: "settings.json is unreadable", times: 20 } } });
+    const setup = await r.run("setup");
+    assert.equal(setup.code, 1);
+    assert.match(setup.out, /FAIL {2}mod: `claude plugin list` failed: settings\.json is unreadable/);
+    assert.ok(setup.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    assert.ok(!pluginCalls(r.claude).includes("install"), "nothing is installed on an unreadable listing");
+    const doctor = await r.run("doctor");
+    assert.equal(doctor.code, 1);
+    assert.match(doctor.out, /FAIL {2}mod-enabled: `claude plugin list` failed: settings\.json is unreadable\n {8}fix: Run `mctl setup`\./);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a plugin listing that is not JSON is reported by setup and by doctor", async () => {
+  const r = await rig();
+  try {
+    const garbled = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+      const real = await realExec(file, args, options);
+      return args[1] === "list" ? { ...real, stdout: "Installed plugins:\n  mission-control" } : real;
+    };
+    const deps = { env: r.env, exec: garbled };
+    const setup = await runModStep({ live: false, deps });
+    assert.equal(setup.status, "failed");
+    assert.match(setup.message, /`claude plugin list --json` printed something that is not JSON/);
+    assert.ok(setup.message.includes("claude plugin marketplace add " + join(r.state, "mod")));
+    const doctor = await runDoctorStep({ live: false, deps });
+    assert.equal(doctor.status, "failed");
+    const check = doctor.checks!.find((c) => c.name === "mod-enabled")!;
+    assert.equal(check.status, "fail");
+    assert.match(check.message, /not JSON/);
+    assert.equal(check.fix, "Run `mctl setup`.");
+  } finally {
+    await r.cleanup();
   }
 });

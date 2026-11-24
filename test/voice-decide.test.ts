@@ -1263,14 +1263,19 @@ test("a confirmed split removes one conjunction before the address and preserves
   }
 });
 
-test("a comma before the connector lets a split end the first instruction with a preposition", async (t) => {
+test("a split after a question with a stranded preposition drops its connector", async (t) => {
   for (const choice of ["split", null]) {
     const { router, say, delivered } = routerRig(() => answered(choice));
     t.after(() => router.reset());
-    await say("Steve, find out who this is for, and Alice, review the PR", "for");
-    if (choice === null) assert.ok(await router.pick("for", "task:Alice"));
-    assert.ok(await router.sendNow("for"));
-    assert.deepEqual(delivered, [["Steve", "find out who this is for", "for"], ["Alice", "review the PR", "for#2"]]);
+    for (const first of ["find out who this is for", "check what branch it was from"]) {
+      for (const connector of [", and ", " and "]) {
+        const id = String(delivered.length);
+        await say(`Steve, ${first}${connector}Alice, review the PR`, id);
+        if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+        assert.ok(await router.sendNow(id));
+        assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+      }
+    }
   }
 });
 

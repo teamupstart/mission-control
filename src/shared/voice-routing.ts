@@ -68,8 +68,15 @@ function splitHead(text: string): string {
   // still needs the final word as its argument. The comma alone separates the address.
   const before = preceding.replace(/[\p{P}\s]+$/u, "");
   if (/\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu.test(before)) return raw;
-  const needsNextWord = /\b(?:or|use|with|to|from|by|as|for|of|into)$/iu.test(before);
-  return needsNextWord && !conjunction[0].startsWith(",") ? raw : preceding;
+  if (conjunction[0].startsWith(",")) return preceding;
+  if (/\b(?:or|use)$/iu.test(before)) return raw;
+  const preposition = /\b(?:with|to|from|by|as|for|of|into)$/iu.exec(before);
+  if (!preposition) return preceding;
+  // In "who this is for", the question word already supplies the object of "for".
+  const clause = before.slice(0, preposition.index).trimEnd().split(/[,;:.!?]|\b(?:and|but|then)\b/iu).at(-1) ?? "";
+  const completeQuestion = /\b(?:who|whom|what|which)\b/iu.test(clause) &&
+    /\b(?:am|is|are|was|were)(?:\s+(?:this|that|it|they|these|those|we|you|he|she|I))?$/iu.test(clause);
+  return completeQuestion ? preceding : raw;
 }
 
 export type VoiceAddressedCommand = "stop";

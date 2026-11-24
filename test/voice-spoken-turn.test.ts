@@ -107,6 +107,24 @@ test("preparation settlement cannot spend a replacement spoken claim's retry bud
   assert.equal(db.listPendingTurns(key)[0]?.state, "queued");
 });
 
+test("a pre-handoff refusal cannot requeue a replacement claim or a claim that has crossed handoff", () => {
+  const key = "pre-handoff-refusal-replay";
+  const make = (createdAt: number, claimedAt: number) => {
+    const row = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: createdAt });
+    return db.claimNextPendingTurn(key, claimedAt, row, words => words)!;
+  };
+  const original = make(1, 2);
+  db.clearPendingTurns(key);
+  const replay = make(3, 4);
+  assert.equal(replay.revision, original.revision);
+  assert.equal(db.releaseUnreservedSpokenClaim(original, "old refusal", 5), null);
+  assert.equal(db.listPendingTurns(key)[0]?.state, "sending");
+  assert.ok(db.recordSpokenHandoff(replay.id, replay.revision, 0, 6));
+  assert.equal(db.releaseUnreservedSpokenClaim(replay, "late refusal", 7), null);
+  assert.equal(db.listPendingTurns(key)[0]?.state, "sending");
+  db.clearPendingTurns(key);
+});
+
 test("a refused spoken release fences the attempt and rolls the queue transition back if withdrawal fails", async () => {
   const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const key = "atomic-refused-spoken";

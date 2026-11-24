@@ -152,6 +152,46 @@ for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner
   });
 }
 
+test("an older split stop receipt keeps the newer standalone countdown selected", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Will");
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", event => {
+          if (!event.isTrusted) return;
+          const frame = JSON.parse(event.data);
+          if (frame.type !== "voice_card" || frame.card.id !== "earlier-split" || frame.card.state !== "pending" ||
+            !frame.card.parts.some((part: { immediateStop?: boolean; outcome?: string }) => part.immediateStop && part.outcome)) return;
+          event.stopImmediatePropagation();
+          window.addEventListener("release-stop-receipt", () => this.dispatchEvent(new MessageEvent("message", { data: event.data })), { once: true });
+          document.documentElement.dataset.stopReceipt = "buffered";
+        });
+      }
+    };
+  });
+  await page.goto("about:blank");
+  await page.goto(daemon.baseURL + "/#/voice/pill");
+  const card = page.getByRole("status");
+  await say(daemon, "Steve, inspect the build, and Will, stop", { id: "earlier-split" });
+  await card.getByRole("button", { name: /Will/ }).click();
+  await expect(card).toContainText("stopping");
+  await say(daemon, "Steve, inspect the newer release", { id: "newer-message" });
+  await expect(card).toContainText("inspect the newer release");
+  await expect(page.locator("html")).toHaveAttribute("data-stop-receipt", "buffered");
+  await page.evaluate(() => window.dispatchEvent(new Event("release-stop-receipt")));
+  await expect(card).toContainText("inspect the newer release", { timeout: 3000 });
+  await page.mouse.move(600, 400);
+  await captureCard(page.locator(".voice-card-surface"), "newer-countdown-after-stop-receipt");
+  const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/newer-message/cancel"));
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await cancelled).ok()).toBe(true);
+  await expect(card).toContainText("stop sent");
+  await expect(card.getByRole("button", { name: "Send to Steve now" })).toBeEnabled();
+});
+
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
   test(`the ${label} keeps an unresolved recipient picker reachable ahead of a newer held result`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);

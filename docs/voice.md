@@ -63,8 +63,9 @@ With no countdown open or message selected, an address awaiting a recipient choi
 ahead of delivery results, including messages held behind a question.
 When several messages remain, the Voice message selector lets you revisit their cards,
 including individual turns held for the same agent. A new countdown takes priority even
-when you selected another pending delivery. When the new window closes, the surface
-returns to your selection if its card is still available and eligible.
+when you selected another pending delivery. A stop receipt updates its own card and keeps
+the current countdown selected. When the new window closes, the surface returns to your
+selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
 while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
 the same launch request.
@@ -482,7 +483,8 @@ commit the queue update. After three failed preparations it reports the failure,
 Foreman, and lets the following message proceed.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
-follow-up task.
+follow-up task. A follow-up opens a separate Dispatch draft for the finished task’s repository.
+If the See the work tour is on screen, the draft stays open when you exit the tour.
 
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation

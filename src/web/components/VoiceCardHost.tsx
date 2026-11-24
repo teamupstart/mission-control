@@ -140,7 +140,13 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
   const [selection, setSelection] = useState<{ id: string; openWindows: Map<string, number | null> } | null>(null);
   const newestFirst = [...cards.values()].reverse();
   const now = performance.now();
-  const pending = surface ? newestFirst.filter(card => card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now) : [];
+  const pending = surface ? newestFirst.filter(card => card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now)
+    .sort((a, b) => {
+      // A stop receipt refreshes a split in the stream without opening a new cancel window.
+      const openedA = a.deadline! - (a.windowMs ?? 0);
+      const openedB = b.deadline! - (b.windowMs ?? 0);
+      return openedB - openedA || (b.firstReceivedAt ?? 0) - (a.firstReceivedAt ?? 0) || a.id.localeCompare(b.id);
+    }) : [];
   const choices = pending.length ? pending : newestFirst;
   // A manual choice applies to the windows the operator has seen. Each later window
   // takes priority until it closes or the operator makes another explicit selection.

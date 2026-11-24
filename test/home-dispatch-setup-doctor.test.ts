@@ -25,7 +25,10 @@ function writeModBuild(root: string, version: string, bundle = 'fetch("/api/heal
   mkdirSync(join(root, ".claude-plugin"), { recursive: true });
   mkdirSync(join(root, "mission-control", ".claude-plugin"), { recursive: true });
   mkdirSync(join(root, "mission-control", "hooks"), { recursive: true });
-  writeFileSync(join(root, ".claude-plugin", "marketplace.json"), "{}");
+  writeFileSync(
+    join(root, ".claude-plugin", "marketplace.json"),
+    JSON.stringify({ name: "mission-control", owner: { name: "Mission Control" }, plugins: [{ name: "mission-control", source: "./mission-control" }] }),
+  );
   writeFileSync(join(root, "mission-control", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "mission-control", version }));
   writeFileSync(join(root, "mission-control", "hooks", "register.js"), bundle);
   // What `build:mod` records once its source-aware mod-calls check has passed this bundle.
@@ -1003,5 +1006,69 @@ test("an installed mod whose staged copy is missing or unreadable fails mod-curr
     assert.match(missing.err, /2 of 6 checks failed/, "mod-current and mod-calls both fail");
   } finally {
     await r.cleanup();
+  }
+});
+
+test("a marketplace manifest that is unreadable or does not list the mod is refused before anything is replaced", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-market-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    const manifest = join(source, ".claude-plugin", "marketplace.json");
+    for (const [contents, reason] of [
+      ["{ not json", /marketplace\.json that is missing or not valid JSON/],
+      ["{}", /not the mission-control marketplace/],
+      [JSON.stringify({ name: "mission-control", plugins: [] }), /not the mission-control marketplace/],
+      [JSON.stringify({ name: "other", plugins: [{ name: "mission-control" }] }), /not the mission-control marketplace/],
+      ["null", /not the mission-control marketplace/],
+    ] as const) {
+      writeModBuild(source, "1.1.0");
+      writeFileSync(manifest, contents);
+      await assert.rejects(stageMod({ source, dest }), reason, contents);
+      assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0", "the working mod stays");
+      assert.deepEqual(readdirSync(join(dir, "state")), ["mod"]);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup has claude validate the marketplace before the swap, and a refusal leaves the working mod and its installation alone", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    // Refuse only the marketplace root; the plugin folder inside it validates.
+    const refuseMarketplace = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+      if (args[1] === "validate" && !String(args[2]).endsWith("mission-control")) return { code: 1, stdout: "", stderr: "marketplace.json: unknown field" };
+      return realExec(file, args, options);
+    };
+    const result = await runModStep({ live: false, deps: { env: r.env, exec: refuseMarketplace } });
+    assert.equal(result.status, "failed");
+    assert.match(result.message, /refused the marketplace: marketplace\.json: unknown field/);
+    assert.ok(!existsSync(join(r.state, "mod")), "nothing was published");
+    const calls = pluginCalls(r.claude);
+    assert.ok(!calls.includes("uninstall") && !calls.includes("install") && !calls.includes("marketplace add"));
+    assert.equal(r.claude.state().plugins[0]?.version, "2.1.0");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a marketplace error that merely mentions it is already registered does not count, and the working install is not uninstalled", async () => {
+  for (const stderr of ["marketplace already registered but manifest is unreadable", "Marketplace 'x' already exists but is invalid", "already added, however the manifest could not be read"]) {
+    const r = await rig({ version: "2.3.0" });
+    try {
+      r.claude.setInstalledVersion("2.1.0");
+      r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr, times: 5 } } });
+      const result = await r.run("setup");
+      assert.equal(result.code, 1, stderr);
+      assert.match(result.out, /FAIL {2}mod: `claude plugin marketplace add` failed: /);
+      assert.ok(!pluginCalls(r.claude).includes("uninstall"), "the stale install is not removed on a failed add: " + stderr);
+      assert.equal(r.claude.state().plugins[0]?.version, "2.1.0");
+    } finally {
+      await r.cleanup();
+    }
   }
 });

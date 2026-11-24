@@ -37,6 +37,26 @@ export async function readModVersion(root: string): Promise<string> {
   return parsed.version;
 }
 
+/**
+ * The folder marketplace's manifest, read and checked rather than only found: `claude plugin
+ * marketplace add` rejects one that is unreadable or does not list the mod, and by then the
+ * published mod would already have been replaced.
+ */
+async function assertMarketplace(root: string): Promise<void> {
+  const file = join(root, ".claude-plugin", "marketplace.json");
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    throw new Error(root + " has a marketplace.json that is missing or not valid JSON; run `npm run build:mod`");
+  }
+  const m = manifest as { name?: unknown; plugins?: unknown } | null;
+  const lists = Array.isArray(m?.plugins) && m.plugins.some((p) => typeof p === "object" && p !== null && (p as { name?: unknown }).name === PLUGIN_NAME);
+  if (typeof m !== "object" || m === null || m.name !== PLUGIN_NAME || !lists) {
+    throw new Error(root + " has a marketplace.json that is not the " + PLUGIN_NAME + " marketplace listing the " + PLUGIN_NAME + " plugin; run `npm run build:mod`");
+  }
+}
+
 async function assertBuild(source: string): Promise<void> {
   for (const file of [join(".claude-plugin", "marketplace.json"), join(PLUGIN_NAME, ".claude-plugin", "plugin.json"), join(PLUGIN_NAME, "hooks", "register.js")]) {
     try {
@@ -45,6 +65,7 @@ async function assertBuild(source: string): Promise<void> {
       throw new Error(source + " is not a mod build (missing " + file + "); run `npm run build:mod`");
     }
   }
+  await assertMarketplace(source);
 }
 
 export async function stageMod(options: {

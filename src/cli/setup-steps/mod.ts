@@ -12,7 +12,14 @@ export const owner = "P14" as const;
 export const implemented = true;
 
 /** The phrases for a marketplace that is already registered, and nothing broader. */
-const ALREADY_ADDED = /\balready (?:been )?(?:added|registered)\b|\bmarketplace\s+["'][^"'\n]+["']\s+already exists\b(?!\s+but)/i;
+const ALREADY_ADDED = /\balready (?:been )?(?:added|registered)\b|\bmarketplace\s+["'][^"'\n]+["']\s+already exists\b/i;
+/** Words that qualify or contradict it ("already registered but unreadable"): the add did not succeed. */
+const QUALIFIED = /\b(?:but|however|though|unless|except|unreadable|invalid|corrupt|malformed|cannot|can't|could not|couldn't|failed|failure|error|denied|locked|not)\b/i;
+
+/** Only an unambiguous "already registered" is a no-op; anything qualified is a failed add. */
+function isAlreadyAdded(text: string): boolean {
+  return ALREADY_ADDED.test(text) && !QUALIFIED.test(text);
+}
 
 const failed = (message: string): SetupStepResult => ({ id, status: "failed", message });
 
@@ -53,6 +60,9 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
         validate: async (staging) => {
           const check = await checkModCallsAt(claude, deps, join(staging, MOD_NAME));
           if (check.status === "fail") throw new Error(check.message + ". " + (check.fix ?? ""));
+          // The marketplace is what `marketplace add` reads; let claude refuse it now, not after the swap.
+          const market = await deps.exec(claude.path, ["plugin", "validate", staging], { timeoutMs: 30_000 });
+          if (market.code !== 0) throw new Error("`claude plugin validate` refused the marketplace: " + describe(market) + ". Rebuild with `npm run build`, then run `mctl setup`.");
         },
       })
     ).version;
@@ -70,7 +80,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   // A marketplace that is already added is not an error; any other failure is, even one whose text
   // happens to contain the word "already" ("already locked", "already exists but is unreadable").
   const add = await deps.exec(claude.path, ["plugin", "marketplace", "add", modDir], { timeoutMs: 120_000 });
-  if (add.code !== 0 && !ALREADY_ADDED.test(add.stderr + add.stdout)) {
+  if (add.code !== 0 && !isAlreadyAdded(add.stderr + add.stdout)) {
     return installFailure("`claude plugin marketplace add` failed: " + describe(add), deps.stateDir, bin);
   }
   // A stale or disabled user-scope install is replaced by uninstall and install, never `claude plugin

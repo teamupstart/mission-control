@@ -2,7 +2,8 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
+import type { HeardEntry } from "@shared/voice-routing.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceRevision, VoiceState } from "@shared/voice.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
   type ShapingConfigView,
@@ -445,7 +446,7 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
-export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
+export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
  * Both, because they diverge for real reasons (a hand-edited file, an install from
@@ -498,6 +499,8 @@ export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shippin
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
+export const fetchRecentlyHeard = (signal: AbortSignal) =>
+  fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 
@@ -2502,8 +2505,11 @@ export const api = {
   // --- Voice, behind its preview flag (404 while it is off) ---
   setVoiceConfig: (patch: VoiceConfigPatch) =>
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
-  setVoiceMuted: (muted: boolean) =>
-    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
+  clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
+  setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
+    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
+  setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
+    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */
   startVoiceModelDownload: () =>
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),

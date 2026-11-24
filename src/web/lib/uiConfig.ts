@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
+import type { VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
 import { api, fetchUiConfig } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
@@ -21,7 +22,7 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
  * Deliberately not polled, unlike `useHarnesses` / `useForeman`: those hooks are alive
  * only while a rarely-opened modal is, whereas this one is alive for the life of the app,
  * and a request every 4s forever to notice an edit made in a second dashboard tab is a
- * bad trade. Reconciling tabs live is a `ui_config` ServerEvent, noted as follow-up.
+ * bad trade. Voice indicator edits arrive through their own bounded event.
  */
 
 /**
@@ -69,8 +70,16 @@ function commit(next: UiConfig): void {
  * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
  * so the record it draws from stays whole.
  */
-function withHeldFields(config: UiConfigView["config"]): UiConfig {
-  return { ...config, voice: config.voice ?? current.voice };
+function applyHydratedConfig({ config, voiceIndicatorVersion }: UiConfigView, indicatorsAtRead: string[]): void {
+  const voice = config.voice ?? current.voice;
+  const overlap = current.voice.indicators !== indicatorsAtRead;
+  if (config.voice && (overlap || !acceptIndicatorVersion(voiceIndicatorVersion))) {
+    // The snapshot may predate our save or include a peer's later edit.
+    commit({ ...config, voice: { ...voice, indicators: current.voice.indicators } });
+    if (overlap) void reconcileVoiceIndicators();
+    return;
+  }
+  commit({ ...config, voice });
 }
 
 /** The live config. Safe to read at module load and outside React. */
@@ -103,6 +112,7 @@ function retryHydration(): void {
  */
 export async function hydrateUiConfig(): Promise<void> {
   if (hydrated) return;
+  const indicatorsAtRead = current.voice.indicators;
   const view = await fetchUiConfig();
   if (!view) {
     retryHydration();
@@ -126,10 +136,10 @@ export async function hydrateUiConfig(): Promise<void> {
         return;
       }
     } else {
-      commit(withHeldFields(view.config));
+      applyHydratedConfig(view, indicatorsAtRead);
     }
   } else {
-    commit(withHeldFields(view.config));
+    applyHydratedConfig(view, indicatorsAtRead);
   }
   hydrated = true;
   emit();
@@ -186,6 +196,72 @@ export async function refreshAnnouncedTours(): Promise<boolean> {
     commit({ ...current, announcedTours: view.config.announcedTours });
   }
   return true;
+}
+
+let indicatorReadGeneration = 0;
+let indicatorRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+const INDICATOR_REQUEST_TIMEOUT_MS = 5000;
+let latestIndicatorVersion: VoiceRevision | undefined;
+
+/** The ordered stream can establish a new daemon, including when voice is enabled after reconnect. */
+function acceptIndicatorVersion(next?: VoiceRevision, fromStream = false): boolean {
+  if (latestIndicatorVersion) {
+    if (next?.source === latestIndicatorVersion.source) {
+      if (next.revision < latestIndicatorVersion.revision) return false;
+    } else if (!fromStream) return false;
+  }
+  latestIndicatorVersion = next;
+  return true;
+}
+
+/** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
+export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision): void {
+  if (!acceptIndicatorVersion(version, true)) return;
+  indicatorReadGeneration++;
+  clearTimeout(indicatorRetryTimer);
+  indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+  commit({ ...current, voice: { ...current.voice, indicators } });
+}
+
+/** Retry a failed or superseded read without keeping the settings controls disabled. */
+async function reconcileVoiceIndicators(): Promise<void> {
+  const generation = ++indicatorReadGeneration;
+  clearTimeout(indicatorRetryTimer);
+  const atRead = current.voice.indicators;
+  const view = await fetchUiConfig(AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS));
+  if (generation !== indicatorReadGeneration) return;
+  if (view && (!view.config.voice || current.voice.indicators === atRead)) {
+    indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+    if (view.config.voice && acceptIndicatorVersion(view.voiceIndicatorVersion)) {
+      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+    }
+    return;
+  }
+  indicatorRetryTimer = setTimeout(() => void reconcileVoiceIndicators(), indicatorRetryDelay);
+  indicatorRetryDelay = Math.min(indicatorRetryDelay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
+}
+
+/** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
+export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<"saved" | "failed" | "unconfirmed"> {
+  const atWrite = current.voice.indicators;
+  const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
+  const result = await api.setVoiceIndicator(id, enabled, deadline);
+  if (deadline.aborted) {
+    // The daemon may have persisted the edit before the response stalled.
+    void reconcileVoiceIndicators();
+    return "unconfirmed";
+  }
+  if (!result.ok || !result.indicators) return "failed";
+  const overlap = current.voice.indicators !== atWrite;
+  if ((!overlap || result.voiceIndicatorVersion) && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
+    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
+  }
+  if (overlap) {
+    // The write is confirmed. Refresh the overlapping selection without holding the checkboxes.
+    void reconcileVoiceIndicators();
+  }
+  return "saved";
 }
 
 // Stable references for useSyncExternalStore, so it doesn't drop and re-add the listener

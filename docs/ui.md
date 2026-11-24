@@ -2265,3 +2265,7 @@ are the first thing that row gives up to stay on one line, and the chords keep w
 them. Small icon-only controls (such as the ⚙ gear) never
 carry one - a keycap would be larger than the icon - and name their key in the tooltip
 instead.
+
+## Voice in the dashboard
+
+With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).

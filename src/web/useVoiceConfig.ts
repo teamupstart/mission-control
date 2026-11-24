@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
 import { api, fetchVoiceConfig, fetchVoiceDevices } from "./lib/api.ts";
 
-// Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
-// `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
+// Voice settings (`GET`/`PUT /api/voice/config`). Poll while Settings > Voice is open so
+// the panel picks up edits made in other windows.
 // The voice STATE is not here; it is the event stream's (`MissionState.voice`).
 
 const POLL_MS = 5000;
@@ -35,7 +35,9 @@ interface PendingEdit {
 }
 
 /**
- * `enabled` is whether Settings > Voice is on screen: nothing is read or polled otherwise.
+ * Window-owned settings keep pending edits in order across navigation. Live shortcut hints
+ * use the configured and registered chords from the daemon's voice state.
+ * Nothing is read or polled with the preview off.
  *
  * Edits are saved one at a time, in the order they were made. Each controls a different field,
  * and the panel allows a second edit while the first is still being saved, so answers settling in
@@ -44,7 +46,7 @@ interface PendingEdit {
  * order, every answer the panel adopts is the daemon's config as of that edit, and a refusal only
  * drops its own edit from what is drawn.
  */
-export function useVoiceConfig(enabled: boolean): VoiceConfigState {
+export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
   const [pending, setPendingState] = useState<readonly PendingEdit[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +69,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!pollWhileOpen) return;
     let alive = true;
     const tick = async (): Promise<void> => {
       // A read taken while an edit is waiting, or answered after one was made, can predate it.
@@ -82,7 +84,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       alive = false;
       clearInterval(id);
     };
-  }, [enabled, setConfirmed]);
+  }, [pollWhileOpen, setConfirmed]);
 
   const update = useCallback((patch: VoiceConfigPatch): Promise<boolean> => {
     if (!confirmedRef.current) return Promise.resolve(false);

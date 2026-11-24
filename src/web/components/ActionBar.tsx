@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { VoiceIndicator, useVoiceComposerHint } from "./VoiceIndicators.tsx";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { PendingMessageDelivery } from "./MessageDelivery.tsx";
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
@@ -144,6 +145,8 @@ export function ActionBar({
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<{ text: string; ok: boolean } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const voiceHint = useVoiceComposerHint(session.id);
+  const voiceHintId = useId();
   const composerActivity = useComposerActivity(session.id);
   const releaseComposerActivity = composerActivity.release;
   const closeComposer = useCallback((): void => {
@@ -490,9 +493,13 @@ export function ActionBar({
               })}
             </div>
           )}
+          {voiceHint && <span className="vi-composer-hint" id={voiceHintId}>{voiceHint}</span>}
+          <VoiceIndicator id="composer" />
           <textarea
             ref={inputRef}
             className="compose-input"
+            aria-label={voiceHint ? "Message to send…" : undefined}
+            aria-describedby={voiceHint ? voiceHintId : undefined}
             placeholder="Message to send…"
             rows={1}
             autoFocus

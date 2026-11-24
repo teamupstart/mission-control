@@ -117,6 +117,7 @@ function renderCategory(category: SettingsCategoryId): string {
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: FLAGS_ON }, createElement(SettingsPage, {
       category,
+      voiceConfig: { config: null, error: null, update: async () => false },
       shapingSettings: SHAPING,
       onNavigate: () => {},
       onLeave: () => {},

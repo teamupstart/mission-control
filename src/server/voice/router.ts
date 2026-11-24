@@ -12,7 +12,7 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
-import { VOICE_TURN_PREFIX, voiceHeldByReview } from "@shared/voice-delivery.ts";
+import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
 import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
 import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
@@ -984,9 +984,8 @@ export class VoiceRouter {
   }
 
   /** Keep live receipts in sync with blocking reviews and restore held rows after discovery. */
-  syncQueuedTurns(session: Session): void {
-    if (!session.pendingTurns.length) return;
-    const outcome = voiceHeldByReview(session) ? "held" : "queued";
+  syncQueuedTurns(session: Session, blockingReview: boolean): void {
+    const outcome = blockingReview ? "held" : "queued";
     const changed = new Set<CardDelivery>();
     const missing: Session["pendingTurns"] = [];
     for (const turn of session.pendingTurns) {

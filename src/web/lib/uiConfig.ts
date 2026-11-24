@@ -247,7 +247,10 @@ async function reconcileVoiceIndicators(): Promise<void> {
 
 /** Apply the confirmed pair before the radio group releases its saving state. */
 export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
-  const result = await api.setVoicePlacement(placement);
+  const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
+  const expected = latestIndicatorVersion ?? (await fetchUiConfig(deadline))?.voiceIndicatorVersion;
+  if (!expected) return false;
+  const result = await api.setVoicePlacement(placement, expected, deadline);
   if (!result.ok) {
     // The daemon may have committed a write whose response was lost.
     void reconcileVoiceIndicators();

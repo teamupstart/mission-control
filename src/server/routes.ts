@@ -2,14 +2,13 @@ import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
-import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
-import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
+import { filedReviewReceipt, OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
+import { ASYNC_INPUT_FLAG, decideWaitMode, FILED_PLAN_DECISIONS_FLAG } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import type { VoiceDecider } from "./voice/decide.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { voiceHeldByReview } from "@shared/voice-delivery.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -647,6 +646,7 @@ import {
   getSkillsAcks,
   loadConversationResolvedReviews,
   loadReviewsByIds,
+  blockReviewVoiceConversion,
   loadReview,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
@@ -5333,14 +5333,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const waitOptions = {
       ...(wait === "message" ? { waitMode: "message" as const } : {}),
       callerPolls: parsed.data.asyncCapable !== true,
+      convertible: parsed.data.convertible === true,
       ...(revises !== undefined ? { revises } : {}),
     };
     // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
     // answer names the row's own mode rather than the one this ask would have had.
-    const created = (review: ReviewItem, receiptOptions: { bundleApproved?: boolean } = {}) => {
-      if (review.waitMode !== "message") return c.json({ id: review.id, sessionId: session.id, wait: "call" });
-      const receipt = isFiledGate(review) ? filedPlanReceipt(review, receiptOptions) : asyncInputReceipt(review);
-      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt });
+    const created = (review: ReviewItem) => {
+      if (review.waitMode !== "message") {
+        if (parsed.data.convertible !== true) blockReviewVoiceConversion(review.id);
+        return c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      }
+      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: filedReviewReceipt(review) });
     };
     try {
       const target = parsed.data.managedPlan;
@@ -5393,7 +5396,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
             remaining, waitOptions);
           recordStandingFollowUp(followUp.id, approvedId);
-          return created(followUp, { bundleApproved: true });
+          return created(followUp);
         }
         const review = reviews.create(session.id, kind, title, fullBody, allDecisions, waitOptions);
         bindPlanReview(authority, input, review.id, manager);
@@ -5408,7 +5411,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       return created(review);
     } catch (error) {
-      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal) return c.json({ error: error.message }, 409);
+      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal || error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
       return planFailure(c, error);
     }
   }
@@ -5687,9 +5690,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
     const ended = new AbortController();
     const release = openEndedRequests.add(() => ended.abort());
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
-    if (!review) return c.json({ error: "no such review" }, 404);
-    return c.json(review);
+    try {
+      const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS,
+        AbortSignal.any([ended.signal, c.req.raw.signal]), c.req.query("convertible") === "1");
+      if (!review) return c.json({ error: "no such review" }, 404);
+      return c.json(review);
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    } finally {
+      release();
+    }
   });
 
   app.post("/mcp/reviews/:id/detach", async (c) => {
@@ -9420,8 +9431,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
       const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
-      if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      return { outcome: voiceHeldByReview(session) ? "held" : "queued", turnId: result.pendingTurn.id };
+      const turn = result.pendingTurn;
+      if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
+      reviews.tryFileForQueuedSpeech(session.id);
+      const held = registry.hasPendingReviewCall(session.id);
+      return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider, {
     pending: () => registry.pendingReviews().filter(q => q.kind === "input" && (q.decisions?.length ?? 0) <= 1),

@@ -31,11 +31,14 @@ export function readRecording(path: string): Float32Array {
   if (end > wav.length) throw new Error("Truncated WAV recording");
   let width = 0;
   let floating = false;
-  for (let offset = 12; offset + 8 <= end;) {
+  let data: Buffer | undefined;
+  for (let offset = 12; offset < end;) {
+    if (end - offset < 8) throw new Error("Truncated WAV chunk header");
     const chunk = wav.toString("latin1", offset, offset + 4);
     const size = wav.readUInt32LE(offset + 4);
     const start = offset + 8;
-    if (size > end - start) throw new Error("Truncated WAV chunk");
+    const next = start + size + (size % 2); // RIFF chunks start on even byte boundaries.
+    if (next > end) throw new Error("Truncated WAV chunk");
     if (chunk === "fmt ") {
       if (size < 16 || width) throw new Error("Invalid WAV format chunk");
       if (wav.readUInt16LE(start + 2) !== 1 || wav.readUInt32LE(start + 4) !== 16000) throw new Error("Expected a 16 kHz mono WAV");
@@ -46,23 +49,24 @@ export function readRecording(path: string): Float32Array {
       width = bits / 8;
       if (wav.readUInt16LE(start + 12) !== width || wav.readUInt32LE(start + 8) !== width * 16000) throw new Error("Invalid WAV frame size");
     } else if (chunk === "data") {
-      if (!width || size % width) throw new Error("Invalid WAV data chunk");
-      const samples = new Float32Array(size / width);
-      const scale = 2 ** (width * 8 - 1);
-      for (let i = 0; i < samples.length; i++) {
-        const at = start + i * width;
-        if (floating) {
-          const sample = wav.readFloatLE(at);
-          if (!Number.isFinite(sample)) throw new Error("Non-finite WAV sample");
-          samples[i] = sample;
-        } else {
-          const integer = width === 1 ? wav[at]! - 128 : wav.readIntLE(at, width);
-          samples[i] = integer / scale;
-        }
-      }
-      return samples;
+      if (!width || size % width || data) throw new Error("Invalid WAV data chunk");
+      data = wav.subarray(start, start + size);
     }
-    offset = start + size + (size % 2); // RIFF chunks start on even byte boundaries.
+    offset = next;
   }
-  throw new Error("Missing WAV data chunk");
+  if (!data) throw new Error("Missing WAV data chunk");
+  const samples = new Float32Array(data.length / width);
+  const scale = 2 ** (width * 8 - 1);
+  for (let i = 0; i < samples.length; i++) {
+    const at = i * width;
+    if (floating) {
+      const sample = data.readFloatLE(at);
+      if (!Number.isFinite(sample)) throw new Error("Non-finite WAV sample");
+      samples[i] = sample;
+    } else {
+      const integer = width === 1 ? data[at]! - 128 : data.readIntLE(at, width);
+      samples[i] = integer / scale;
+    }
+  }
+  return samples;
 }

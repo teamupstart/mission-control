@@ -1,10 +1,9 @@
 import { existsSync } from "node:fs";
-import { release } from "node:os";
 import { resolve, isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { BASE_URL, tokenPath } from "../src/shared/harness-runtime.mjs";
-import { resolveVoiceBackend, VoiceModelManifestSchema } from "../src/shared/voice-models.ts";
+import { VoiceModelManifestSchema } from "../src/shared/voice-models.ts";
 import { VOICE_BACKENDS, VOICE_BACKEND_CHOICES } from "../src/shared/voice.ts";
 import { loopbackDaemonUrl } from "../src/voice-listener/daemon-url.ts";
 
@@ -14,7 +13,7 @@ if (file === "") throw new Error("--input-file requires a non-empty recording pa
 const selected = values.backend ?? process.env.MISSION_VOICE_BACKEND;
 const choice = z.enum(VOICE_BACKEND_CHOICES).optional().safeParse(selected);
 if (!choice.success) throw new Error("Unknown voice backend: " + selected);
-const override = choice.data && resolveVoiceBackend(choice.data, process.platform, process.arch, release());
+const override = choice.data === "auto" ? undefined : choice.data;
 const binaries = { fluidaudio: resolve("dist/native/voice-listener"), "sherpa-onnx": resolve("dist/voice-listener/sherpa.mjs") };
 function missingBinary(): never {
   console.error("Voice listener is missing. Run npm run build:voice-listener first.");

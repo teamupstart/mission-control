@@ -86,6 +86,19 @@ test("Agent Shepherd ships as a launchable built-in whose whole role is its docu
   assert.equal(manager().settingsProblem(shepherd.settings), null, "the shipped settings are launchable");
 });
 
+test("Bug Fix Inspector ships with a fixed 45-minute cadence and rolling $20 guardrail", () => {
+  store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 1);
+  const inspector = store.getResidentProfile(builtinResidentProfileId("bug-fix-inspector"))!;
+  assert.equal(inspector.builtin, true);
+  assert.equal(inspector.name, "Bug Fix Inspector");
+  const { execution, loop, authority } = inspector.settings;
+  assert.deepEqual(execution, { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" });
+  assert.deepEqual([loop.delaySeconds, loop.minDelaySeconds, loop.maxDelaySeconds], [2700, 2700, 2700]);
+  assert.equal(loop.spendCapUsd, 20);
+  assert.equal(authority.controlOtherSessions, true);
+  assert.equal(manager().settingsProblem(inspector.settings), null);
+});
+
 test("a document without settings, or settings without a document, fails at load", () => {
   assert.throws(() => builtinResidentsFrom([{ slug: "orphan", instructionsMarkdown: "# Orphan\n" }], {}), /has no settings/);
   assert.throws(() => builtinResidentsFrom([], { ghost: {} }), /has no residents\/ghost\.md/);
@@ -185,7 +198,7 @@ test("an operator profile that held the name before it shipped keeps it and its 
   store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 2);
 
   const live = store.listLiveResidentProfiles();
-  assert.deepEqual(live.map((profile) => profile.id).sort(), ["builtin:agent-shepherd", "mine"]);
+  assert.deepEqual(live.map((profile) => profile.id).sort(), [...BUILTIN_RESIDENTS.map(({ id }) => id), "mine"].sort());
   const saved = store.updateResidentProfile({ id: "mine", expectedRevision: 1, settings: settings("Agent Shepherd", "edited"), at: 3 });
   assert.equal(saved.status, "ok", "keeping its own name is not a rename into the built-in's");
 
@@ -245,6 +258,6 @@ test("built-ins do not count toward the live operator profile bound", () => {
     store.ResidentProfileLimitError,
   );
   const live = store.listLiveResidentProfiles();
-  assert.equal(live.length, RESIDENT_LIMITS.liveProfiles + 1, "a full operator catalog still lists the built-in");
+  assert.equal(live.length, RESIDENT_LIMITS.liveProfiles + BUILTIN_RESIDENTS.length, "a full operator catalog still lists the built-in");
   assert.ok(live.some((profile) => profile.id === SHEPHERD));
 });

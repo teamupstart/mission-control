@@ -1965,18 +1965,18 @@ async function runReportBug(prompt) {
   const kind = /- Task kind: (\S+)/.exec(prompt)?.[1] ?? "unknown";
   const phase = /\(dispatch phase `([a-z]+)`\)/.exec(prompt)?.[1] ?? "unknown";
   const attempts = /Attempts that failed the same way \((\d+)\)/.exec(prompt)?.[1] ?? "1";
+  return reportFixtureBug(`A ${kind} dispatch did not start`, [
+    `A ${kind} dispatch failed in its \`${phase}\` phase, before its session started.`,
+    `${attempts} attempt(s) failed the same way.`,
+    "The base branch could not be fetched from <repository>'s origin.",
+  ].join("\n\n"));
+}
+
+function reportFixtureBug(title, details) {
   return withMissionMcp(async (request) => {
     const called = await request("tools/call", {
       name: "report_product_issue",
-      arguments: {
-        type: "bug",
-        title: `A ${kind} dispatch did not start`,
-        details: [
-          `A ${kind} dispatch failed in its \`${phase}\` phase, before its session started.`,
-          `${attempts} attempt(s) failed the same way.`,
-          "The base branch could not be fetched from <repository>'s origin.",
-        ].join("\n\n"),
-      },
+      arguments: { type: "bug", title, details },
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
@@ -2325,6 +2325,15 @@ rl.on("line", (line) => {
     if (prompt.includes(RESIDENT_RETRO_MARKER)) {
       beginHeldTurn(runResidentRetro(prompt));
       return;
+    }
+
+    if (prompt.includes("Begin your standing task.") && appendedSystemPrompt.includes("# Bug Fix Inspector")
+      && appendedSystemPrompt.includes("report_product_issue")) {
+      const finding = /^Fixture finding: (.+)$/m.exec(appendedSystemPrompt);
+      if (finding) {
+        beginHeldTurn(reportFixtureBug(finding[1], "Foreman recorded completion twice, but neither attempt submitted the bound workflow."));
+        return;
+      }
     }
 
     if (prompt.includes("E2E_RESIDENT_REVIEW") && !prompt.startsWith("[mission-resident:")) {

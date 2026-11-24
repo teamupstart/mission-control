@@ -209,7 +209,7 @@ test("a profile saves a nondefault harness, model and effort, edits to a new rev
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByRole("radio", { name: "Resident" }).click();
   await expect(dialog.getByRole("radio", { name: /Docs Gardener/ })).toHaveCount(0);
-  await expect(dialog.getByRole("radiogroup", { name: "Profile" }).getByRole("radio")).toHaveText([/^Agent Shepherd/]);
+  await expect(dialog.getByRole("radiogroup", { name: "Profile" }).getByRole("radio")).toHaveText([/^Agent Shepherd/, /^Bug Fix Inspector/]);
 });
 
 test("a revision saved in another window never discards unsaved edits: it is held as a conflict with an explicit choice", async ({

@@ -5,6 +5,8 @@ import type { Locator } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { FAKE_GH_PRODUCT_ISSUE_URL, writeGhProductScript } from "../fixtures/fake-agents.ts";
+import { recordsIn } from "../fixtures/records.ts";
 import { settled } from "../fixtures/settle.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -210,7 +212,7 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   const ownRow = rows.filter({ hasNotText: "built-in" });
   await expect(builtinRow).toHaveCount(1);
   await expect(ownRow).toHaveCount(1);
-  await expect(rail).toContainText("2 live");
+  await expect(rail).toContainText("3 live");
 
   // The operator's profile keeps its data and stays editable.
   await ownRow.click();
@@ -232,7 +234,7 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   await expect(dock.getByRole("button", { name: `Launch ${BUILTIN}`, exact: true })).toHaveCount(1);
   await expect(dock.getByRole("button", { name: `Launch ${BUILTIN} (built-in)`, exact: true })).toHaveCount(1);
   // The tag is laid out whole inside its name cell: the name, not the tag, is what truncates.
-  const tagFits = await dock.locator(".residents-pop-name").filter({ hasText: "built-in" }).evaluate((cell) => {
+  const tagFits = await dock.locator(".residents-pop-name").filter({ hasText: BUILTIN }).filter({ hasText: "built-in" }).evaluate((cell) => {
     const tag = cell.querySelector(".resident-builtin-tag")!.getBoundingClientRect();
     const box = cell.getBoundingClientRect();
     return tag.width > 0 && tag.left >= box.left - 0.5 && tag.right <= box.right + 0.5;
@@ -245,8 +247,54 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   await shipped.getByRole("button", { name: "Launch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   const cards = dialog.getByRole("radiogroup", { name: "Profile" }).getByRole("radio");
-  await expect(cards).toHaveCount(2);
-  await expect(cards.filter({ hasText: "built-in" })).toHaveAttribute("aria-checked", "true");
+  await expect(cards.filter({ hasText: BUILTIN })).toHaveCount(2);
+  await expect(cards.filter({ hasText: BUILTIN }).filter({ hasText: "built-in" })).toHaveAttribute("aria-checked", "true");
   await expect(dialog).toContainText("revision 1");
   await capture(dialog, "09-both-listed-dispatch");
+});
+
+test("Bug Fix Inspector offers optional GitHub reporting with fixed loop guardrails", async ({ dashboard, daemon }) => {
+  await dashboard.goto(`${daemon.baseURL}/#/residents`);
+  const rail = dashboard.getByRole("complementary", { name: "Resident profiles" });
+  await rail.getByRole("button").filter({ hasText: "Bug Fix Inspector" }).click();
+  const editor = dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" });
+  await expect(editor.getByLabel("Description")).toHaveValue(/optional resident that helps improve Mission Control over time/);
+  await expect(editor.getByLabel("Profile instructions")).toHaveValue(/report_product_issue/);
+  await expect(editor.getByRole("button", { name: "Launch", exact: true })).toBeVisible();
+  for (const label of ["Wake cadence (seconds)", "Minimum requested delay (seconds)", "Maximum requested delay (seconds)"]) {
+    await expect(editor.getByLabel(label, { exact: true })).toHaveValue("2700");
+  }
+  await expect(editor.getByLabel("Spend per 24 hours (USD)", { exact: true })).toHaveValue("20");
+  await capture(editor.getByRole("region", { name: "Loop and guardrails", exact: true }), "11-inspector-cadence");
+  await capture(editor.getByRole("region", { name: "Identity", exact: true }), "12-inspector-profile");
+});
+
+test("a launched Bug Fix Inspector receives a GitHub issue URL only after approval of its finding", async ({ dashboard, daemon }) => {
+  const finding = "Finished task leaves its bound workflow unsubmitted";
+  writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
+  const launch = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
+    data: { repoRoot: null, instructions: `Fixture finding: ${finding}`, requestId: "inspector-report" },
+  });
+  expect(launch.ok(), await launch.text()).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail.getByRole("group", { name: "Resident Bug Fix Inspector" })).toContainText("revision 1");
+  await detail.getByRole("button", { name: "to review" }).click({ timeout: 60_000 });
+  const preview = dashboard.locator(".review-modal");
+  await expect(preview).toContainText("Public GitHub issue preview");
+  await expect(preview).toContainText(finding);
+  await expect(preview).toContainText("acme/public-issues");
+  const creates = () => recordsIn<{ argv: string[] }>(daemon.recordDir, file => file.startsWith("gh-"))
+    .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create");
+  const submit = preview.getByRole("button", { name: "Submit", exact: true });
+  await expect(submit).toBeDisabled();
+  expect(creates()).toHaveLength(0);
+  await capture(preview, "13-inspector-issue-preview");
+  await preview.getByRole("radio", { name: "Submit public issue" }).check();
+  await submit.click();
+  await expect(detail).toContainText(`report_product_issue answered: Product issue created: ${FAKE_GH_PRODUCT_ISSUE_URL}`, { timeout: 30_000 });
+  await capture(detail, "14-inspector-issue-result");
+  expect(creates()).toHaveLength(1);
+  expect(creates()[0]!.argv).toEqual(expect.arrayContaining(["acme/public-issues", finding, "bug", "source:agent"]));
 });

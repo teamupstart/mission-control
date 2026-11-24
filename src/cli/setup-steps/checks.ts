@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { isAllowedModCall } from "../../../scripts/mod-calls.mjs";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthCompatibility } from "@shared/daemon-protocol.ts";
 import { daemonBaseUrl } from "../../mod/daemon-link.ts";
 import { MOD_NAME } from "../../mod/constants.ts";
@@ -15,6 +14,16 @@ import type { DoctorCheck } from "./types.ts";
  * only reads: it runs `claude` for its listings, asks the daemon for `/api/health`, and reads
  * the staged mod. None changes a setting or spends a model token.
  */
+
+/**
+ * Whether `path` (query stripped) is on the allowlist. Written out here rather than imported from
+ * `scripts/mod-calls.mjs`, which parses source with the TypeScript compiler and would put it in the
+ * `mctl` bundle.
+ */
+function isAllowedModCall(path: string, allowed: { exact: string[]; prefixes: string[] }): boolean {
+  const bare = path.split("?")[0]!;
+  return allowed.exact.includes(bare) || allowed.prefixes.some((prefix) => bare.startsWith(prefix));
+}
 
 /** `name@marketplace`, as `claude plugin install` takes it. */
 export const MOD_PLUGIN_ID = `${MOD_NAME}@${MOD_NAME}`;

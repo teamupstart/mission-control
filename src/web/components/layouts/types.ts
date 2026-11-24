@@ -1,3 +1,4 @@
+import type { Stall } from "@shared/stall.ts";
 import type { ReportItem } from "@shared/reports.ts";
 import type { ReportEntryControls } from "../../lib/sessionReports.ts";
 import type {
@@ -93,7 +94,9 @@ export interface SessionViewProps {
    */
   consoleZone: "rail" | "detail";
   onConsoleZoneChange: (zone: "rail" | "detail") => void;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, tab?: "queue") => void;
+  queueTabSession?: string | null;
+  onQueueTabOpened?: () => void;
   /**
    * Move the selection cursor to a session WITHOUT opening its detail.
    *
@@ -337,6 +340,14 @@ export interface SessionViewProps {
    * for a tick. Absent means none.
    */
   awaitingIds?: ReadonlySet<string>;
+  /**
+   * Idle stalls by session (`stalledSessions`, `idle-stalled`), computed once by App so the views
+   * draw the Stalled section in the order the arrow keys walk. Absent or empty means the flag is
+   * off or nothing is stalled.
+   */
+  stalledById?: ReadonlyMap<string, Stall>;
+  /** Dismiss one Stalled card's stall: the card returns to free or held until its facts change. */
+  onDismissStall?: (sessionId: string, stall: Stall) => void;
   /**
    * App-owned join from each session Restart on new profile replaced to its replacement
    * (`residentReplacementsBySession`). The replaced run has ended, so these sessions have no

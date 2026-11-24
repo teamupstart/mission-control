@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useId, useRef } from "react";
+import type { Stall } from "@shared/stall.ts";
 import { isPrioritySession, useFleetPause } from "../../lib/fleet-pause.ts";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
+import { stalledFactRows } from "../../lib/stalled.ts";
 import { relativeTime, uptime } from "../../lib/format.ts";
 import { ariaKeyshortcuts } from "../../lib/keybindings.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
@@ -59,6 +61,7 @@ export function RailRow({
   pipelineCommissionRun = null,
   onOpenPipelineCommission,
   resident = null,
+  stall = null,
 }: {
   session: Session;
   /**
@@ -91,6 +94,11 @@ export function RailRow({
   onOpenPipelineCommission?: (commissionId: string) => void;
   /** The resident this session is, or null. The same mark and gate the Board card reads. */
   resident?: ResidentSessionMark | null;
+  /**
+   * The idle stall this row sits under the Stalled rule for (`idle-stalled`), or null. The rail
+   * shows the first fact below the name. The session detail carries the full sheet and fixes.
+   */
+  stall?: Stall | null;
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
@@ -105,7 +113,10 @@ export function RailRow({
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.
   const heldBy = heldByRun(workflowRuns, st.tone);
-  const held = heldBy !== null;
+  // A stalled card is not drawn as held: the ordering takes a held and stalled session out of the
+  // held partition (`orderSessions`), because "a workflow owns the next turn" is exactly what is no
+  // longer true of it. The tag, its tooltip and the held tone would say it anyway.
+  const held = heldBy !== null && !stall;
   const ref = useRef<HTMLButtonElement>(null);
   const setRef = useCallback(
     (el: HTMLButtonElement | null) => {
@@ -149,6 +160,7 @@ export function RailRow({
   const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }`;
+  const firstFact = stall && stalledFactRows(session, stall)[0];
   const descriptionId = useId();
   const actionWaitId = useId();
   const actionWaitRuns = (workflowRuns ?? (workflowRun ? [workflowRun] : []))
@@ -158,7 +170,8 @@ export function RailRow({
     <>
       <button
         ref={setRef}
-        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}${
+        className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${stall ? " is-stalled" : ""}${
+          selected ? " selected" : ""}${
           residentMark ? " is-resident" : ""
         }${session.pause ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
         style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
@@ -178,7 +191,7 @@ export function RailRow({
             {session.name || "(unnamed)"}
           </span>
         </Tooltip>
-        <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
+        <span className="rail-sub">{firstFact ? `${firstFact.label}: ${firstFact.value}` : session.goal?.text ?? session.activity ?? ""}</span>
         {/* Two lines, never four: the state, then everything else on one line. Given a
             line each, the marks and the PR chip made a row as tall as three, and a rail
             you can only fit six sessions in has stopped being a rail. */}
@@ -203,6 +216,11 @@ export function RailRow({
                 label={`Held by ${heldBy?.workflowName ?? "a workflow"} - the run owns this session's next turn`}
               >
                 <span className="rail-held">held</span>
+              </Tooltip>
+            )}
+            {stall && (
+              <Tooltip label={`Stalled: ${stall.reason}`}>
+                <span className="rail-stalled">stalled</span>
               </Tooltip>
             )}
             {/* A wait qualifies the "idle" beside it the way "held" does: idle on purpose,

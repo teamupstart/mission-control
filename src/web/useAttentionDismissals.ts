@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
+import { legacyStallDismissalUpgrade } from "./lib/attention.ts";
+import type { ObservedStall } from "./lib/stalls.ts";
 import { api } from "./lib/api.ts";
 import {
   applyDismissalRead,
@@ -7,6 +9,7 @@ import {
   createDismissalSender,
   createRevisionLedger,
   dismissalBatches,
+  type DismissalIntent,
   effectiveDismissals,
   INITIAL_DISMISSAL_STATE,
   readRetryDelay,
@@ -66,7 +69,7 @@ export interface AttentionDismissalsState {
  * than left until some later event happens to ask again, and the last known set stays in force
  * meanwhile.
  */
-export function useAttentionDismissals(revision: number): AttentionDismissalsState {
+export function useAttentionDismissals(revision: number, stalls?: readonly ObservedStall[]): AttentionDismissalsState {
   const [state, setState] = useState(INITIAL_DISMISSAL_STATE);
   const [unreadable, setUnreadable] = useState(false);
   const readsStarted = useRef(0);
@@ -117,7 +120,7 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     if (retry.current) clearTimeout(retry.current.timer);
   }, []);
 
-  const dismiss = useCallback(async (keys: readonly AttentionDismissalKey[]): Promise<string | null> => {
+  const dismiss = useCallback(async (keys: readonly DismissalIntent[]): Promise<string | null> => {
     // A row of more questions than one request may carry goes out in several. Every batch is
     // started here, at the click, so each is hidden at once and sent with the basis this window
     // had seen when the operator clicked - the same as a row that fits in one.
@@ -144,6 +147,42 @@ export function useAttentionDismissals(revision: number): AttentionDismissalsSta
     const refused = answers.find((answer) => !answer.ok);
     return refused ? `Could not dismiss: ${refused.error ?? "the daemon refused"}` : null;
   }, [read, send]);
+
+  // Keep a confirmed match through a minute change or a failed write. The daemon's
+  // revision check protects a newer operator decision made while the upgrade was in flight.
+  const upgrades = useRef(new Map<string, { basis: number; stop: () => void }>());
+  useEffect(() => {
+    for (const [id, upgrade] of upgrades.current) {
+      if (state.storedRevisions.get(id) === upgrade.basis) continue;
+      upgrade.stop();
+      upgrades.current.delete(id);
+    }
+    for (const stall of stalls ?? []) {
+      const key = legacyStallDismissalUpgrade(stall, state.stored);
+      if (!key || upgrades.current.has(key.itemId)) continue;
+      const basis = state.storedRevisions.get(key.itemId);
+      if (basis === undefined) continue;
+      let active = true;
+      let failures = 0;
+      let timer: ReturnType<typeof setTimeout>;
+      upgrades.current.set(key.itemId, { basis, stop() {
+        active = false;
+        clearTimeout(timer);
+      } });
+      const write = async () => {
+        const error = await dismiss([{ ...key, basis }]);
+        if (error && active) timer = setTimeout(() => void write(), readRetryDelay(failures++));
+      };
+      void write();
+    }
+  }, [stalls, state.stored, state.storedRevisions, dismiss]);
+  useEffect(() => {
+    const jobs = upgrades.current;
+    return () => {
+      for (const job of jobs.values()) job.stop();
+      jobs.clear();
+    };
+  }, []);
 
   const dismissed = useMemo(
     () => (state.appliedRead > 0 ? effectiveDismissals(state) : null),

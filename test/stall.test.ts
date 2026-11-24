@@ -652,6 +652,7 @@ test("a session that moved and then stalled again is a new episode, with the sam
   // Idle again on the same open task after a turn of work.
   const idle = (spokeAt: number) =>
     one(mkSession({ state: "idle", lastActivity: spokeAt, task: mkTask({ id: "t1" }) }), spokeAt + 30 * MIN)!;
+  assert.equal(idle(60 * MIN).since, 60 * MIN);
   assert.notEqual(idle(0).fingerprint, idle(60 * MIN).fingerprint);
   // Foreman escalates the same text again: a new note, a new row.
   const escalated = (at: number) =>

@@ -1066,12 +1066,14 @@ none of a closed question’s options, the dashboard shows “No matching option
 stays pending and the agent receives no message. With several pending questions
 and no target card, choose a question by clicking its row or saying its ordinal. “Steve, answer”
 opens the question picker without supplying an answer. If the standalone picker asks you to
-focus a dashboard, choose the question again there. Ordinary addressed speech, such as
+focus a dashboard, choose the question again there. Choosing an older spoken answer from
+the picker preserves any newer answer already staged for that question. Ordinary addressed speech, such as
 “Steve, check the build”, goes to the agent as a message even while the question is open.
 
 The selected option or written reply appears on the card for the configured cancel window.
 “Cancel” stops the newest pending voice action. “No, A” switches the newest pending answer
-and restarts its countdown. The footer's **Cancel** and **Submit now** act on that answer.
+and restarts its countdown. If that answer settles before the correction arrives, the other
+questions keep their choices and deadlines. The footer's **Cancel** and **Submit now** act on that answer.
 Editing the form requests cancellation and keeps the edit in your draft. Until cancellation is
 confirmed, the footer shows the original voice answer and its deadline. Use **Retry cancel**
 if the request fails or takes too long. The original answer can still submit at the deadline.

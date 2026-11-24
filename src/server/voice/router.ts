@@ -80,6 +80,8 @@ function compareAnswerCaptures(a: AnswerAttempt, b: AnswerAttempt): number {
 
 interface OpenCard {
   answer?: VoiceAnswer;
+  /** The original answer's speech order survives a picker click and later corrections. */
+  answerCapture?: ActionTime & { sequence: number };
   answerAttempt?: AnswerAttempt;
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
@@ -224,6 +226,9 @@ export class VoiceRouter {
   // Keep the last accepted capture until its question settles, even after a Cancel.
   private readonly lastAnswer = new Map<string, AnswerAttempt>();
   private answerSequence = 0;
+  // Which answer a correction could address at capture. Retiring an answer leaves
+  // its interval in history, so a delayed correction cannot fall back to a neighbor.
+  private readonly correctionTargets: { at: ActionTime; slot?: number; retired: boolean }[] = [];
   // The outbox can outlive its Recently heard entry. Only the card is needed to publish the receipt.
   private lifetime = new AbortController();
   private readonly outbox = new Map<string, OutboxReceipt>();
@@ -280,6 +285,27 @@ export class VoiceRouter {
 
   private now(): ActionTime {
     return { openedAt: Date.now(), openedAtHostUs: this.hostNowUs() };
+  }
+
+  private recordCorrectionTarget(retired: boolean): void {
+    let newest: OpenCard | undefined;
+    for (const candidate of this.open.values()) {
+      if (!candidate.answer) continue;
+      if (!newest || (offsetUs(candidate.time, newest.time) || candidate.answerCapture!.sequence - newest.answerCapture!.sequence) > 0) {
+        newest = candidate;
+      }
+    }
+    const slot = newest?.answerCapture?.sequence;
+    if (slot === this.correctionTargets.at(-1)?.slot) return;
+    this.correctionTargets.push({ at: this.now(), slot, retired });
+    if (this.correctionTargets.length > HISTORY_LIMIT) this.correctionTargets.shift();
+  }
+
+  private correctionTarget(time: ActionTime): OpenCard | undefined {
+    const target = this.correctionTargets.findLast(change => offsetUs(change.at, time) <= 0);
+    // A capture on the same clock tick as retirement cannot safely fall back to an older answer.
+    if (!target?.slot || (target.retired && offsetUs(target.at, time) === 0)) return;
+    return [...this.open.values()].find(item => item.answer && item.answerCapture?.sequence === target.slot);
   }
 
   private cancelLatestAt(time: ActionTime): string | undefined {
@@ -396,8 +422,7 @@ export class VoiceRouter {
     const words = utterance.text.trim();
     const correction = /^no(?:,\s*|\s+)(.+)$/iu.exec(words);
     if (correction) {
-      const latest = [...this.open.values()].reverse().filter(i => i.answer && offsetUs(i.time, time) <= 0)
-        .sort((a, b) => offsetUs(b.time, a.time)).at(0);
+      const latest = this.correctionTarget(time);
       if (!latest?.answer) return false;
       const review = this.questions!.pending().find(q => q.id === latest.answer!.reviewId);
       entry.outcome = "control";
@@ -436,7 +461,7 @@ export class VoiceRouter {
     if (!explicit && !(replyWindow && pending.length)) return false;
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit && answer ? answer[1]!.trim() : body;
-    const item: OpenCard = { entry, time, message: body,
+    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, sequence: ++this.answerSequence },
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
     entry.matchedName = target?.name ?? null;
@@ -486,7 +511,6 @@ export class VoiceRouter {
   }
 
   private async confirmReply(item: OpenCard, windowId: string, words: string, allowText: boolean, drawn?: ReviewItem): Promise<void> {
-    const sequence = ++this.answerSequence;
     const calibratingTarget = this.openCards.calibrating ? drawn?.id : undefined;
     this.reserveAnswer(item);
     const signal = AbortSignal.any([item.modelStep!.signal, this.lifetime.signal, AbortSignal.timeout(3000)]);
@@ -497,7 +521,7 @@ export class VoiceRouter {
     const timing = this.questionCaptureTiming(item.time);
     if (confirmed && review && timing === "eligible" && this.openCards.footerOwner(review.id) === windowId &&
         (!calibratingTarget || calibratingTarget === review.id)) {
-      await this.prepareAnswer(item, review, words, allowText, undefined, sequence);
+      await this.prepareAnswer(item, review, words, allowText);
       return;
     }
     this.take(item);
@@ -507,18 +531,19 @@ export class VoiceRouter {
   }
 
   private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean,
-    correction?: { id: string; time: ActionTime }, reservedSequence?: number): Promise<void> {
+    correction?: { id: string; time: ActionTime }): Promise<void> {
     const id = correction?.id ?? item.card.id;
     const signal = this.lifetime.signal;
-    const attempt = { ...(correction?.time ?? item.time), reviewId: review.id, sequence: reservedSequence ?? ++this.answerSequence };
+    const capture = correction ? { ...correction.time, sequence: ++this.answerSequence } : item.answerCapture!;
+    const attempt = { ...capture, reviewId: review.id };
     const accepted = this.lastAnswer.get(review.id);
     if (accepted && compareAnswerCaptures(attempt, accepted) < 0) {
-      if (reservedSequence !== undefined) this.take(item);
+      if (!correction && this.open.get(id) === item) this.take(item);
       return;
     }
     if (!correction) {
       item.answerAttempt = attempt;
-      if (reservedSequence === undefined) this.reserveAnswer(item);
+      if (this.open.get(id) !== item) this.reserveAnswer(item);
     }
     const target = item.card.parts[0]?.target ?? null;
     const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);
@@ -562,6 +587,7 @@ export class VoiceRouter {
     }
     item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched: !!correction,
       footerWindowId: this.openCards.footerOwner(review.id) };
+    if (!correction) this.recordCorrectionTarget(false);
     item.card = { ...item.card, id, state: "pending", reason: "voice-answer", questionTitle: review.title, deadline, windowMs,
       parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
     item.entry.rule = "voice-answer";
@@ -715,7 +741,10 @@ export class VoiceRouter {
     this.closeChoices(item, at);
     clearTimeout(item.timer);
     this.open.delete(item.card.id);
-    if (item.answer) this.questions?.publish(item.answer.reviewId, null);
+    if (item.answer) {
+      this.recordCorrectionTarget(true);
+      this.questions?.publish(item.answer.reviewId, null);
+    }
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
   }
@@ -1001,6 +1030,7 @@ export class VoiceRouter {
     this.openCards.clear();
     this.open.clear();
     this.lastAnswer.clear();
+    this.correctionTargets.length = 0;
     this.resolutions.clear();
     this.lifetime.abort();
     this.lifetime = new AbortController();

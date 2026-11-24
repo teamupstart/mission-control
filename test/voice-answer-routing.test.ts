@@ -576,6 +576,50 @@ test("a slow match cannot revive a cancelled newer answer or take a different qu
   assert.equal(registry.getReview(other.id)?.status, "answered");
 });
 
+test("a correction captured before the newest answer settled cannot switch the remaining question", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const first = question();
+  const second = question("Which cache?", "sdk:Will");
+  await say("Steve, option B", "older-answer");
+  const [original] = answers();
+  t.mock.timers.tick(100);
+  await say("Will, option B", "newer-answer");
+  t.mock.timers.tick(100);
+  await act("newer-answer", "send-now?source=card");
+  assert.equal(registry.getReview(second.id)?.status, "answered");
+  const correct = (id: string, capturedAt: number) => registry.voiceRouter!.accept({
+    id, text: "no, A", backend: "fluidaudio", capturedAt, words: [],
+  });
+  await correct("delayed-correction", now + 150);
+  assert.deepEqual(answers(), [original]);
+  assert.equal(registry.getReview(first.id)?.status, "pending");
+  t.mock.timers.tick(50);
+  await correct("after-submit", now + 225);
+  assert.equal(answers()[0]?.text, "SQLite");
+  assert.equal(answers()[0]?.reviewId, first.id);
+});
+
+test("choosing an old prefilled picker preserves the newer answer and its deadline", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const first = question();
+  const second = question("Which cache?");
+  await say("Steve, answer: Postgres", "old-picker");
+  // Same millisecond captures still retain their original arrival order.
+  await show([first.id]);
+  await say("Steve, option A", "newer-choice");
+  const [original] = answers();
+  t.mock.timers.tick(100);
+  assert.equal((await act("old-picker", "pick", { id: first.id })).status, 200);
+  await registry.voiceRouter!.resolution("old-picker");
+  assert.deepEqual(answers(), [original]);
+  t.mock.timers.tick(901);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.getReview(first.id)?.selections?.[0]?.selected, ["sqlite"]);
+  assert.equal(registry.getReview(second.id)?.status, "pending");
+});
+
 test("a prefilled question pick is acknowledged while its match is pending", async t => {
   const q = question();
   question("Which cache?");

@@ -309,6 +309,30 @@ test("a focused multi-decision form blocks replies to its single-decision neighb
   expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + neighbor)).json()).status).toBe("pending");
 });
 
+test("choosing a question in an older picker keeps the newer dictated answer", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const id = await file(page, daemon, steve.cwd, "Which database?");
+  await file(page, daemon, steve.cwd, "Which cache?");
+  await say(daemon, "Steve, answer: Postgres");
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  await expect(picker).toBeVisible();
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const field = inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+  await field.focus();
+  await say(daemon, "reply, SQLite");
+  await expect(field).toHaveValue("SQLite");
+  await page.keyboard.press("Escape");
+  await picker.getByRole("button", { name: /Which database/ }).click();
+  await expect(picker).toHaveCount(0);
+  const companion = page.getByRole("status").filter({ hasText: "Voice answer" });
+  await expect(companion).toContainText("SQLite");
+  await companion.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("SQLite");
+});
+
 test("a companion identifies its destination and hands its calibrated countdown to the owning footer", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 30);
   const steve = await runningAgent(page, daemon, "Steve");

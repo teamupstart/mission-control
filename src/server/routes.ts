@@ -6,6 +6,7 @@ import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIO
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
+import type { VoiceDecider } from "./voice/decide.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -343,6 +344,7 @@ import type { QueueManager } from "./queue.ts";
 import type {
   InspectorInspection,
   InspectorStatus,
+  KeepAwakeStatus,
   LlmStatus,
   ReviewActor,
   ReviewItem,
@@ -368,7 +370,7 @@ import { mcpCreateWorkUnitSource } from "./work-unit.ts";
 import { serverTour, tourRecipeFor, type TourOperation } from "./tours.ts";
 import { sseHandler } from "./sse.ts";
 import { openEndedRequests } from "./http-shutdown.ts";
-import type { KeepAwakeManager } from "./keep-awake.ts";
+import { KeepAwakeSaveError, type KeepAwakeManager } from "./keep-awake.ts";
 import { archiveErrorStatus, type ArchiveManager } from "./archives/manager.ts";
 import { planDispatchBlock } from "./plans/skills.ts";
 import { grillFirstDispatchBlock } from "./grill-first.ts";
@@ -600,6 +602,7 @@ import {
   inspectorExecution,
   setInspectorConfig,
 } from "./inspector/config.ts";
+import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
 import { llmStatus } from "./llm/status.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
@@ -1394,7 +1397,7 @@ export interface RouteDeps {
    */
   paneDeps?: PaneDeps;
   /**
-   * The transient Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
+   * The Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
    * than constructing a second owner here - the manager owns exactly one OS child, and a
    * route-built twin would be a second claimant on host power state.
    */
@@ -1468,6 +1471,12 @@ export interface RouteDeps {
    * test does not read the machine's own LaunchServices preferences.
    */
   systemDefaultTerminal?: () => Promise<EmulatorId | null>;
+  /**
+   * The voice model step (contract E). Defaults to the daemon's: the saved and environment
+   * decision-model keys, both providers and the `voice-routing` job. Injected so a route test
+   * routes an ambiguous sentence without reaching a provider or spawning a model.
+   */
+  voiceDecider?: VoiceDecider;
 }
 
 /**
@@ -1518,6 +1527,7 @@ export const ROUTE_DEP_NAMES = [
   "setupInstallDeps",
   "focusTerminals",
   "systemDefaultTerminal",
+  "voiceDecider",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1855,6 +1865,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     setupInstallDeps,
     focusTerminals,
     systemDefaultTerminal,
+    voiceDecider,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
@@ -2342,7 +2353,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
   registerHibernationRoutes(app, hibernation);
 
-  // --- Keep Awake: the transient idle-sleep inhibitor ---
+  // --- Keep Awake: the idle-sleep inhibitor ---
   //
   // Reads and writes go to the injected manager; convergence goes over SSE. The route
   // answers the CALLER with the settled transition, and the Registry event answers every
@@ -2374,7 +2385,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Waits for the manager's CONFIRMED transition - the response describes observed
     // state, never the request. A failed OS transition reports 502 with the observed
     // error status so the caller can render it without waiting for SSE.
-    const status = await keepAwake.setEnabled(parsed.data.enabled);
+    let status: KeepAwakeStatus;
+    try {
+      status = await keepAwake.setEnabled(parsed.data.enabled);
+    } catch (err) {
+      if (!(err instanceof KeepAwakeSaveError)) throw err;
+      // The daemon's own storage refused the choice, which makes this a 500 and not a 502: the
+      // OS did nothing wrong. The manager has already undone the request, so `err.status` is
+      // the state a restart will agree with - the caller draws it beside the error.
+      return c.json({ error: err.message, code: "keep_awake_not_saved", status: err.status }, 500);
+    }
     const settled = parsed.data.enabled ? status.state === "on" : status.state === "off";
     if (!settled) {
       return c.json(
@@ -8353,14 +8373,42 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // four roles and the Inspector's one keep their own routes and their own blobs, because
   // each is edited by the panel that owns that subsystem - a second writer would turn a
   // per-key merge into a lost update.
-  app.get("/api/llm/config", (c) => c.json(getLlmConfig()));
+  const hiddenLlmJobs = () => LLM_JOB_IDS.filter((job) => {
+    const flag = LLM_JOB_SPECS[job].previewFlag;
+    return flag && !featureEnabled(flag);
+  });
+  const visibleLlmConfig = (config: ReturnType<typeof getLlmConfig>) => {
+    const models = { ...config.models };
+    const runners = { ...config.runners };
+    const efforts = { ...config.efforts };
+    for (const job of hiddenLlmJobs()) {
+      delete models[job];
+      delete runners[job];
+      delete efforts[job];
+    }
+    return { ...config, models, runners, ...(config.efforts && { efforts }) };
+  };
+  app.get("/api/llm/config", (c) => c.json(visibleLlmConfig(getLlmConfig())));
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    for (const job of hiddenLlmJobs()) {
+      if (parsed.data.runners?.[job] !== undefined || parsed.data.models?.[job] !== undefined || parsed.data.efforts?.[job] !== undefined) {
+        return c.json({ error: "This feature is disabled.", feature: LLM_JOB_SPECS[job].previewFlag }, 404);
+      }
+    }
+    for (const job of LLM_JOB_IDS) {
+      if (LLM_JOB_SPECS[job].fixedThinking && parsed.data.efforts?.[job]) {
+        return c.json({ error: "Thinking is fixed for this job." }, 400);
+      }
+      if (LLM_JOB_SPECS[job].fixedModels && parsed.data.models?.[job]) {
+        return c.json({ error: "This job uses a fixed model for each provider." }, 400);
+      }
+    }
     if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
       return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
     }
-    const config = setLlmConfig(parsed.data);
+    const config = visibleLlmConfig(setLlmConfig(parsed.data));
     // Personas without a provider override follow this setting. Refresh their top-level SSE
     // projections in the same mutation so the editor never advertises a stale effective model.
     if ("runner" in parsed.data) personas?.refreshExecution();
@@ -9328,6 +9376,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result;
   }
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
+    available(sessionId) {
+      const session = registry.getSession(sessionId);
+      return !!session && session.state !== "exited";
+    },
     openQuestions: sessionId => reviews.openAsks(sessionId).length,
     async deliver(target, text, utteranceId, command, active, onQueued) {
       if (target.state === "not-running") return "not-running";
@@ -9354,7 +9406,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const held = session.pendingReviews > 0 || session.state === "awaiting_review";
       return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
     },
-  }, (card) => registry.emitVoiceCard(card));
+  }, (card) => registry.emitVoiceCard(card), voiceDecider);
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

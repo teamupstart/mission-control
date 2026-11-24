@@ -3786,7 +3786,8 @@ export interface LlmStatus {
   claudeTransport: ClaudeTransport;
   /** The same, for Codex. `exec` spawns the CLI; `sdk` drives it through the typed SDK. */
   codexTransport: CodexTransport;
-  models: Record<LlmJobId, ResolvedLlmJobModel>;
+  /** Every live job (`liveLlmJobIds`): a job behind a preview flag that is off is absent. */
+  models: Partial<Record<LlmJobId, ResolvedLlmJobModel>>;
   /**
    * Which provider each background job resolved to, and which layer chose it.
    *
@@ -3796,7 +3797,7 @@ export interface LlmStatus {
    * another process. This is the per-job axis, and a job with no override simply repeats
    * the app-wide value.
    */
-  jobRunners: Record<LlmJobId, ResolvedLlmRunner>;
+  jobRunners: Partial<Record<LlmJobId, ResolvedLlmRunner>>;
   /** Foreman reads this live gate over HTTP. Present only while the preview is on. */
   backgroundReasoningEffort?: true;
   /** Every provider this build has, in declaration order. */
@@ -3888,11 +3889,12 @@ export interface SettingsStatus {
 // ---- Keep Awake (transient idle-sleep inhibition) ----
 
 /**
- * The daemon's observed Keep Awake state - never a saved preference. There is nothing
- * durable behind this on purpose: the mode applies only to the current daemon run, so a
- * quit, crash, or restart returns the next snapshot to `off` and nothing reacquires the
- * assertion. The one writer is the daemon's `KeepAwakeManager`; the browser's one source
- * is the snapshot plus `keep_awake_status` below.
+ * The daemon's observed Keep Awake state - never the saved choice. The assertion belongs to
+ * one daemon process, so this is `off` in every new daemon's first snapshot and becomes `on`
+ * only once that daemon has acquired its own; the operator's choice lives apart from it, in
+ * `app_config.keepAwake`, and is what the daemon re-applies after a restart or upgrade. The
+ * one writer is the daemon's `KeepAwakeManager`; the browser's one source is the snapshot
+ * plus `keep_awake_status` below.
  *
  * `state` reports what was OBSERVED of the OS assertion, not what was requested: `on` is
  * reachable only after the provider confirms the assertion, and a provider failure lands
@@ -4078,6 +4080,9 @@ export type ServerEvent =
        * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
+      /** Current indicator selection on connect or reconnect, only while voice is enabled. */
+      voiceIndicators?: string[];
+      voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
       /** Cards still awaiting delivery or a pick when this window connects. */
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
       /**
@@ -4263,6 +4268,7 @@ export type ServerEvent =
    */
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
+  | { type: "voice_indicators"; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session
    * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces

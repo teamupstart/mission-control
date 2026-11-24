@@ -5,8 +5,9 @@ When it is finished, the operator will talk to an agent by name, with speech rec
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
-holds a message for the configured cancel window and queues it to the addressed agent. Audio
-capture and the on-screen confirmation card belong to later phases.
+settles ambiguous sentences with a model, holds each message for the configured cancel window,
+and queues it to the addressed agent. On Apple silicon, the standalone listener captures and
+recognizes speech locally. The on-screen confirmation card belongs to a later phase.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
@@ -14,20 +15,185 @@ snapshot has no `voice` field, and neither the Settings category, the Setup fami
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
 
+## Running the listener on a development Mac
+
+Build the helper with `npm run build:voice-listener`. Start the daemon, enable the four previews, download
+the model in Setup and unmute Voice. From a terminal with microphone access, run
+`npm run voice:listener`. Speak a running resident's reference name followed by “check the
+build”. After the cancel window, look for “check the build” in the resident's conversation
+and the routing outcome at `GET /api/voice/heard`. Muting stops the audio engine and
+releases its microphone. If this was the only capture, the macOS orange dot goes out.
+
+Any launcher can run `dist/native/voice-listener` directly with these three variables.
+
+| Variable | Value |
+| --- | --- |
+| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin |
+| `MISSION_VOICE_TOKEN_FILE` | Path to its token, sent as `x-harness-token` |
+| `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
+
+The development launcher fills missing values from the local daemon configuration and the
+FluidAudio model manifest. When macOS reports `not-determined` at startup, the helper
+prints a terminal diagnostic, includes the reading in its hello and keeps the microphone
+closed. Run the development command from a terminal app that already has microphone access.
+An explicit denial is sent in the hello and exits with status 2. The first-time consent
+prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
+
+On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
+Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
+Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
+directive poll and utterance POST, alongside the daemon token. The first compatible hello
+claims the listener lease. While its microphone permission is granted, a second process
+receives HTTP 409 `listener_in_use` and exits before
+opening the microphone. A new process can claim capture 30 seconds after the owner's last
+hello. It receives a fresh revision even when settings are identical. The daemon checks
+ownership again when a held poll completes and before routing each utterance.
+A helper with undetermined, restricted or unknown permission can report its status to Setup
+and poll with capture off. A granted listener can replace it immediately. The replacement
+receives a fresh revision and the previous listener's next poll or heartbeat receives HTTP 409.
+A helper reporting an explicit microphone denial releases capture immediately and exits
+with status 2. Setup retains the permission reading, and a newly authorized helper can
+start immediately.
+Selecting a different backend releases the previous owner's lease and wakes its held poll.
+Only the selected backend can acquire or renew the lease. A hello from another backend
+receives HTTP 409 `backend_not_selected`. In `auto`, either backend can acquire a free lease.
+
+Every utterance POST also requires the capture directive's revision. Older protocol majors
+receive HTTP 409 `unsupported_protocol` at hello. The helper sends one hello
+at a time, so a loading heartbeat completes before it announces CoreML readiness.
+The hello lists inputs by stable UID and reports built-in and Bluetooth transport. It
+omits empty or oversized UIDs and limits display names to 256 UTF-16 code units.
+The built-in selection falls back
+to the system input when no built-in input exists. An unavailable explicit UID stops the
+listener. The optional `primingAvailable` boolean reports whether the local CTC model loaded.
+With only the TDT repository present, transcription continues with priming off.
+
+Fetch `GET /voice/listener/directive` with both `x-harness-token` and `x-voice-listener-id`
+on every poll. Use the same listener UUID that the daemon accepted at hello. The first poll returns
+`{ capture, roster, inputDevice, pauseMs, revision }`. The roster is an array of spoken names.
+After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
+directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
+`pauseMs` is optional and unused. This daemon sends null.
+
+A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
+response header. The native helper retains completed phrases in capture order and decodes
+them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
+The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
+If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
+When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
+`x-voice-release-revision` (the held capture revision) and `x-voice-release-host-ms` (monotonic
+host milliseconds). A helper applying that exact held revision uses key-up as the boundary for
+the unfinished phrase. If its input tap still owes samples through that time, the helper
+collects the pre-release portion of the last callback before closing. A stalled input
+closes after 250 ms and delivers only phrases completed before the stall. Manual mute stops the input immediately. The helper can finish decoding and posting
+the held audio with the original revision. If another press arrives before the tap closes,
+the helper keeps polling for privacy changes and rechecks the directive after closure.
+A second key press can record while the helper
+finishes decoding previous holds in spoken order. The daemon lists up to eight authorized
+released revisions in `x-voice-draining-revisions`. A poll that missed an intervening key-up
+also receives the release time for its queried revision. An ordinary capture stop discards unfinished work.
+The native helper dates the samples from the input tap's audio timestamp on the shared host
+clock, so a delayed callback still includes speech recorded before key-up. A gap in
+the input timeline discards the interrupted utterance through the next silence boundary.
+During push-to-talk the helper retains the interrupted prefix for up to two seconds.
+If delayed key-up falls on or before the last contiguous sample boundary, the helper
+can finish the phrase using only samples through release. A key-up in the gap discards it.
+If the gap falls between utterances, the helper clears the lead-in and accepts the next phrase immediately.
+
+The shell timestamps every snapshot, including idle heartbeats, at observation time with
+`reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
+monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
+across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
+older, duplicate, future-dated and expired snapshots before applying state. A dated
+snapshot's 15-second lifetime starts when observed, including time spent in transit.
+Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.
+A fresh snapshot still renews that lifetime and updates call state, permissions and capabilities
+when it repeats a key event older than the daemon’s last key transition.
+
+On macOS use the Core Audio host clock (`mach_absolute_time` converted with its timebase).
+Key events use the same microsecond clock. The daemon orders them at that precision and
+rounds down to whole milliseconds only for the release boundary sent to the listener. During a hold send
+`pushToTalk: true` and the original `pushToTalkPressedAtHostUs` when available. Otherwise
+the first ordered down snapshot dates the press. A later press starts a fresh revision.
+On release send `pushToTalk: false` and `pushToTalkReleasedAtHostUs`, retaining the last
+release stamp on subsequent idle snapshots so a reordered heartbeat can confirm it.
+If key-up predates an inferred press and cannot be identified as a replay of an older
+physical event, the daemon closes capture and discards the hold.
+A missing, invalid or future release stamp closes capture and discards the tail. Reports
+without ordering metadata still carry shell capabilities and call state but cannot authorize
+a hold. Legacy Unix key timestamps are accepted as input and have no delivery authority.
+
+The default-input audio engine runs with voice processing off. It converts input to mono
+16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
+steady background noise can continue between utterances. Parakeet transcribes each segment
+after 800 ms of frames classified as non-speech. If the 30-second buffer fills
+before that boundary, the listener discards the whole utterance, including any further
+speech before the next silence boundary. During a key hold, the prefix remains recoverable
+for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
+When CTC is available, the helper uses the directive's roster to rescore those same samples.
+Only a correction aligned to the leading address can change the transcript and its timing
+labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.
+Word timings come from the decoder. When a CTC correction changes the word count, the listener
+divides the measured span evenly among the corrected words. Interior boundaries are estimates.
+While listening, two completed phrases can wait in capture order behind a busy recognizer
+or a pending POST. If that queue fills, the listener drops the incoming phrase and reports
+the backlog on stderr. Only text, relative word timings and capture metadata reach the daemon. Samples and pending
+utterances stay in memory. Except for a matching push-to-talk release, a changed directive
+discards buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
+If a hardware change stops the engine, the helper refreshes its directive and opens a new
+input if capture is still enabled. Losing an explicitly selected UID produces an input error.
+A failed directive poll closes the microphone and exits. The helper writes no recordings or
+transcripts and logs no recognized words.
+
 ## Routing a text utterance
 
-A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
-`x-harness-token`. Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix
-milliseconds on the host clock shared by the listener and daemon. A listener using a recognizer
-with its own clock converts its timestamps to host time at capture.
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...`
+with both `x-harness-token` and `x-voice-listener-id`. Set the latter to the UUID from that
+listener's accepted hello. Send the directive revision under which the segment was captured. The daemon
+returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
+Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
+Reassigning a spoken name or changing its target task or session issues a fresh revision,
+even when the list of names sent to the recognizer stays the same.
+Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix milliseconds
+on the host clock shared by the listener and daemon. The helper dates the first sample
+when it detects speech and carries that timestamp through clipping and transcription.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
-The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
+transcript, and the listener continues with later speech. While listening, the daemon can route a capture immediately.
+A POST made while push-to-talk is held waits for the shell's key-up timestamp before
+anything reaches Recently heard, a card or the queue. If the same key is still held after
+25 seconds, the daemon returns `accepted: false` and its revision in `x-voice-held-revision`.
+The listener retries the same POST and utterance ID after at least 250 ms. It drops that
+segment after three attempts or 55 seconds, including time spent waiting for a response,
+and continues with later speech. During auto-mute following key-up,
+the daemon accepts the same owner's held revision for segments contained within the key interval.
+The listener rounds the first sample down to host microseconds in `x-voice-capture-start-host-us`.
+It also sends the first voiced sample in `x-voice-speech-start-host-us`. This optional
+timestamp lies inside the posted audio interval. It orders speech against dashboard actions
+even when the recorded lead-in began before a click. Clients that omit it use capture start.
+It clips on 16 kHz sample boundaries and rounds the exclusive end up to host milliseconds
+for `x-voice-capture-end-host-ms`. At key-up the detector tests a partial 20 ms frame
+with silence padding. The recognizer receives only recorded samples through release.
+A clipped prefix containing only quiet lead-in is discarded.
+The daemon timestamps dashboard picks on the listener's host clock. On macOS it reads
+`CLOCK_UPTIME_RAW`, the Core Audio clock in nanoseconds, and converts it to microseconds.
+On Linux the host clock is `CLOCK_MONOTONIC`. The router uses these timestamps to order
+commands, picks and cancels. Comparisons involving Unix-only captures use wall time.
+Recently heard displays the original Unix `capturedAt`. If a POST races key-up
+and extends past it, the daemon returns `accepted: false` and the release headers. The
+helper transcribes the clipped PCM again before retrying. Successive key presses during the
+same call preserve the release exception. Manual mute, a change of recipient, listener or input,
+or leaving the call revokes it. When the shell lease lapses, a new call cannot
+restore an earlier call's released revisions.
 With the window off the daemon acknowledges the capture as soon as it claims delivery.
 The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit
-backend selection. The daemon drops captures dated more than one second ahead of its clock.
+backend selection. During ordinary listening the daemon drops captures dated more than
+one second ahead of its host clock, or its wall clock for Unix-only clients.
+For released holds it checks the monotonic key interval,
+so a backward wall-clock adjustment still lets pre-release speech reach the queue.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
 The listener posts captures in spoken order, waiting for each response before posting the next
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
@@ -57,8 +223,10 @@ leave the cards open and record `ambiguous-pick` in Recently heard. If the selec
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
 no matching option records `no-message`. This includes “Release Captain” when both Release
 and Release Captain are on the roster.
-Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
-two-word match. No model is called.
+When a later name could start a second message, or the first name is in doubt, the
+[model step](#the-model-step) resolves that question. A later name with nothing on one
+side of it (“Steve and Will, check the build”, “Steve, ping Will”) leaves the whole
+message with the first agent.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
 the window off, the daemon submits the remaining text as a spoken turn. The card and Recently heard show the delivery outcome.
@@ -83,7 +251,10 @@ The router allows up to 50 open or delivering cards in total. At capacity a capt
 would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
 Existing cards keep their deadlines, and the operator can still pick or cancel them.
 Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
-timestamp. For a pick through the card API, the daemon records the host time when it applies
+timestamp and can select only choices the daemon had offered by then. A matching name on another
+card that was resolving at capture time keeps the pick ambiguous, even if that card has since
+settled or closed. The daemon retains the last 50 choice transitions and ignores spoken picks
+older than the history it can verify. For a pick through the card API, the daemon records the host time when it applies
 the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
 arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,
@@ -97,6 +268,85 @@ card history exist only in memory and disappear on daemon restart or disabling v
 toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
 a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
+
+## The model step
+
+A sentence the names alone could not settle goes to one model step, with a five-second budget
+for the whole of it, process start included. It asks only what is left in doubt:
+
+- **Split or mention.** “Steve, check the build, and Alice, review the PR” is one card with two
+  parts: “check the build” to Steve and “review the PR” to Alice, each verbatim from the sentence
+  with the joining “and” dropped. When a comma alone marks the boundary, a lone ambiguous “and”
+  or “then” stays in the first message. In “Steve, echo done then, Alice, review the PR”, Steve
+  receives “echo done then” and Alice receives “review the PR” after either a model split or a
+  manual split pick. “Steve, ask Alice about the build” is a mention:
+  the whole text goes to Steve and nothing to Alice. A name inside a quoted sentence stays in the
+  dictated text. A quote around just the addressee can still start a separate command. Each possible split is considered in spoken
+  order, including repeated uses of the same name. The first split determines the two messages.
+  A “not sure” before that split leaves the card unsure. A sentence with more than eight possible
+  split positions goes straight to manual selection, with every position available. A name shared
+  by two agents counts once at each place it occurs in the sentence.
+  On an unsure card, picking the first agent keeps the whole message with that agent. Picking a
+  later occurrence confirms the split there, even when both messages go to the same agent.
+  If several rows share a name, their details distinguish keeping the message whole from splitting
+  at the words shown. Saying the shared name alone leaves the card unsure.
+- **Who.** A first word that sounds like two names (“Steven” with Steve and Stevie on the roster) asks
+  which was meant, judged by sound. If the rest of the sentence contains another possible command,
+  the router settles its split points after choosing the first agent, within the original deadline. If the selected spoken name belongs to several agents, the card stays unsure. The operator can pick the intended session from the roster rows.
+- **Option** questions, a loosely worded answer to a card, are part of the same contract for the
+  phase that answers cards by voice.
+
+An exact first-word name is never asked about: the model decides only split or mention, a name in
+doubt and an option. The step is a ladder, and every rung's answer is checked against the
+question's own choices before its confidence is read, since in the spike a model gave an option
+that was not on the card a confidence of 1.0.
+
+1. **A decision model**, when one is in use (see [Faster routing](#faster-routing)): one HTTPS
+   request per batch to OpenAI Decisions (`POST /v1/decisions`, model `gpt-6-luna`) or Jev
+   (`POST /v1/systemone`, model pinned to `jev-1.14.0`), carrying each question as a typed choice.
+   Its two-second allowance covers the whole capture, including a follow-up split question.
+   A valid “not sure”, a refusal, or
+   confidence below 0.98 leaves routing unsure. An error, timeout, malformed reply, or choice
+   outside the offered values falls to the next rung with the time remaining.
+2. **The `voice-routing` job**, with thinking off and its own short system prompt, on the time
+   left. It runs on Codex (Luna, `gpt-6-luna`, floor 0.98) when every agent involved is a Codex
+   session, on Claude (Haiku) when every one is a Claude session, and otherwise on the provider
+   chosen for background jobs in **Settings > Models**. The Haiku rung is **off**: its retest
+   passed on accuracy and missed the five-second deadline once in 60 calls (see
+   [the spike findings](voice-spike-findings.md#s7-addendum-haiku-retest)), so a sentence to
+   Claude sessions skips this rung. Luna is never used in its place.
+3. **None**: the daemon marks the card `unsure` and includes the candidates for an operator
+   pick. A missing key or a disabled rung follows this same path.
+
+The daemon opens the card at once and puts it in the cancel order, so “cancel” stops it while the
+step runs. It is published as `resolving` only once the step has taken a second. When the step
+answers, the card keeps its place in the cancel order and becomes `pending` (one target, or
+two parts for a split, with the ordinary cancel window) or `unsure`. Picking a split requires
+both captured sessions to still match the roster. An answer that comes after the budget, or after the card was
+cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
+each captured session immediately before delivering its part, in spoken order. If a session
+has left or been replaced, the other recipient can still receive their part. Recently heard
+lists each recipient and delivery result. The card carries the worse of the two outcomes.
+The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
+
+Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. None of
+the five moments in the selected **Roster rows** design (variant B) has a rendered outcome card
+in this phase. Phase 6 draws the on-screen candidate picker, the stopped resident and finished
+session with their respective actions, the message held behind a blocking question, and the
+two-message split or one-message mention. It also supplies the clickable rows used when asking
+aloud. Phase 12 adds the spoken question, listening state and Recently heard link. The roster
+in Voice settings lists addressable agents independently of these outcomes.
+[Selected routing-exceptions mock-up](plans/voice-addressing-for-agents/mockup-routing-exceptions.html#b)
+· [Phase 6 outcome cards](plans/voice-addressing-for-agents/phase-6-confirmation-and-outcome-cards.md)
+· [Phase 12 ask aloud](plans/voice-addressing-for-agents/phase-12-floating-surfaces-and-ask-aloud.md)
+
+For what each model receives, see [Voice routing in the Security guide](security.md#voice-routing).
+
+`MISSION_VOICE_OPENAI_DECISIONS_URL` and `MISSION_VOICE_JEV_URL` replace each provider's base URL
+(`https://api.openai.com`, `https://api.typesafe.ai`) for a test server or a gateway. The end-to-end
+suite points both at a closed loopback port, and its daemons never inherit `OPENAI_API_KEY` or
+`TYPESAFE_API_KEY`, so no spec reaches a real provider; a spec that drives the rung serves both
+endpoints with `startDecisionServer()`.
 
 ## Spoken delivery
 
@@ -301,6 +551,46 @@ Below that are the behavior rows:
 | When routing is unsure (Show on screen or Ask aloud) | `whenUnsure` | `show` |
 | Plan forms by voice | `planFormsByVoice` | on |
 
+### Faster routing
+
+The **Faster routing** group chooses the decision model (`decisionProvider`) and holds a key for
+each provider, since a key belongs to a provider.
+
+- The line at the top names the provider in use. When no provider is in use, it reads
+  “Not set: routing uses Luna for Codex sessions, and shows the candidates for others”.
+- **Decision model**: **Automatic** (null, the default), **Off** (`off`), **OpenAI Decisions**
+  (`openai`) or **Jev** (`jev`). Automatic takes the first of four keys that exists, in a fixed
+  order: a saved OpenAI Decisions key, a saved Jev key, `OPENAI_API_KEY` in the daemon's
+  environment, `TYPESAFE_API_KEY` in it. So a key in the environment alone switches the decision
+  model on, a saved key beats any environment key, and within each OpenAI Decisions comes first.
+  A provider chosen by name is used only with its own key; another provider's key is never sent
+  to it. Off sends nothing to either, whatever keys exist.
+- The **OpenAI Decisions key** and **Jev key** rows show **From the environment**, **Saved on
+  this Mac** or **Not set**. Enter a key and choose **Save** to add or replace that provider's
+  key. Choose **Remove** to delete its saved key. If that provider also has an environment key,
+  its row then shows **From the environment**. Each action affects only the selected provider.
+  If the daemon cannot read the key store, the rows flag the saved key status as unavailable.
+  The banner still names the provider receiving speech through an environment key, or
+  describes the job and roster fallback when neither provider is in use.
+  For storage and disclosure details, see [Saved voice decision keys](security.md#saved-voice-decision-keys).
+
+`GET /api/voice/decision-key` returns `{ provider, keys: { openai: { source }, jev: { source } } }`
+with `source` one of `settings`, `environment` or null. An unreadable store adds
+`savedKeysUnavailable: true` and the report identifies the usable environment keys.
+Dashboard reads of both config and key status carry the provider selection revision and the
+order in which the daemon read the snapshot. A delayed poll can still show a new cancel-window
+length, and an older result cannot make an already removed key appear saved again.
+Config, device and key-status reads expire after 15 seconds. Saving or removing a key cancels
+earlier key-status polls and refreshes the rows. Leaving Voice settings cancels outstanding reads.
+If a save or removal goes unconfirmed for 15 seconds, the dashboard releases both rows and
+reads the current key sources from the daemon.
+The dashboard sends that deadline and the revision it read for the provider with each save or removal.
+The daemon checks both before changing the key file. A late request cannot enable or disable routing
+after the dashboard has reported the timeout.
+`PUT /api/voice/decision-key` accepts
+`{ provider, key }`. `DELETE /api/voice/decision-key?provider=openai` removes the saved OpenAI
+Decisions key. Both operations return the updated report.
+
 The settings are one `app_config` entry, `voice`, read with defaults so a field an older build
 never wrote needs no migration. It holds every field the later phases read, so none of them
 changes the schema:
@@ -321,7 +611,15 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-Nothing draws either yet. Like every voice surface it is behind the flag: with
+The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. Click any indicator to mute or unmute. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
+
+If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
+
+While a mute or unmute request is pending, the dashboard shows its progress and disables the other mute controls in that window. If the daemon takes more than five seconds to confirm the change, the controls become available again. The indicators continue to show the daemon's latest mode, including a change that arrives after the timeout.
+
+**Recently heard** shows the latest 50 utterances, newest first, including the match, deciding rule and outcome. An exact opening name routes with or without a pause. A name mentioned later alone does not address an agent. A read that takes over five seconds shows an error and keeps the last known rows until polling succeeds. Clear empties the daemon’s in-memory history, even when the table is empty or cannot refresh. If Clear times out, the table reports that deletion is unconfirmed, resumes polling and lets you retry. Audio is never stored.
+
+With
 `voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the
 flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and saves nothing.
 
@@ -472,7 +770,11 @@ in the order they are listed:
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
 
-The state also carries `capabilities`, `hotkeyError`, `model` and `roster`. The capabilities and
+The state also carries `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+Every window receives the saved chord and current shell registration together when either changes.
+The dashboard shows a shortcut only when the shell confirms the exact configured chord,
+reports the hotkey capability and has no registration error. Until then the indicator shows its
+click action. A missing or expired confirmation yields `registeredHotkey: null`. The capabilities and
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
@@ -485,8 +787,28 @@ absent otherwise; a shell report's `listener` entry is dropped.
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
+  Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
+  The dashboard uses the request and response times of daemon snapshots to estimate expiry.
+  A slow response preserves an earlier, more precise estimate. If the initial estimate is too
+  imprecise, the dashboard requests another sample within the edit's original time budget.
+  The daemon rejects an expired patch before changing any setting.
+- The dashboard reserves a provider selection with `POST /api/voice/config/provider-intent`
+  and sends the returned ticket in the config write's `x-voice-provider-ticket` header. A newer
+  selection can commit immediately. An older write arriving afterwards receives 409.
+  A window with a stale view can retry Off when the daemon's last provider intent
+  predates the click. An intervening reservation also invalidates that retry.
+  An uncommitted reservation also counts when ordering clicks from different windows.
+  Dashboard windows share the daemon's latest reservation receipt before submitting a write.
+  A click carrying that receipt follows the reservation even if its response arrives much later.
+  This protects a pending Off from a delayed opt-in and a pending provider from a delayed Off.
+  A later opt-in can still switch providers if its window observed the current selection.
+  The dashboard gives a provider change 75 seconds, including its reservation, write and any
+  retry. If the change times out, it reads the current configuration and provider from the daemon.
+  The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
-- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`.
+- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
+  the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
+  displays the newest confirmed mode whichever arrives first.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty
   with `listener: false` when no hello is live.
 - `POST /api/voice/model/download` starts the download and answers 202 with `{ model }`. A download
@@ -498,12 +820,20 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
 Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does:
 
 - `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
-  listener every 10 seconds. `version` is the listener protocol version; a hello whose major
-  version is not this daemon's (`1`) is refused with 409 `unsupported_protocol`, and the state's
-  `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, hotkeyError }`,
-  sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
+  listener every 10 seconds. `version` is the listener protocol version. A hello with a different
+  major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
+  If there is no other active owner, the state's `listener` capability says why.
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
+  sent by the desktop shell. A dated report lapses 15 seconds after observation. An
+  accepted undated report lapses 15 seconds after arrival. Capability ids this build
   does not know are dropped rather than refused.
+
+[Phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md) introduces the shell report producer.
+[Phase 11](plans/voice-addressing-for-agents/phase-11-hotkey-and-calls.md) connects it to the native hotkey registrar.
+On successful registration, Electron must include the registrar's confirmed chord in `registeredHotkey` on each report.
+If replacing a chord fails, it reports the chord still in force and the registration error. With no registration,
+it reports `null`. The producer regression test belongs alongside the registrar and checks the outgoing report
+after a successful registration, a failed replacement, and unregistration.
 
 ### Following it
 
@@ -515,6 +845,19 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.
+- `test/voice-routing.test.ts`: each routing rule, an exact first word with a later name asking
+  split or mention with the target fixed, and where a split cuts the sentence.
+- `test/voice-decide.test.ts`, with both real provider adapters over a fake `fetch` answering in
+  each provider's documented reply shape and a scripted job: the key order (each source alone,
+  both saved, a saved Jev key against `OPENAI_API_KEY`, a chosen provider, Off, a chosen provider
+  with only the other's key), a provider error or timeout falling to the job on what is left of the
+  budget, a job past the deadline, a low confidence, a choice that is not on the list at 1.0, a
+  refusal, the job's provider following the agents, and the router's split, mention, unsure,
+  `resolving` and cancel-while-resolving.
+- `test/voice-decision-key-http.test.ts` covers saving and removing keys independently, each
+  provider's reported source, and the credential protections in the security guide.
+- `test/voice-utterances-http.test.ts`: the routes, the cancel order and delivery, with a scripted
+  model step, including a split queued to each agent.
 - `test/voice-config-http.test.ts`: defaults, patches, mute, the token routes, the frames, and
   every route answering 404 with the flag off.
 - `test/setup-probes.test.ts`: the **Voice previews**, **Microphone access** and **Voice speech
@@ -560,3 +903,11 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   offers the listener's devices. `startModelServer()` in `e2e/fixtures/voice.ts` stands in for
   Hugging Face with three small files and a manifest pinning them, so no spec downloads the real
   model.
+- `e2e/specs/voice-decision-key.spec.ts`: a saved OpenAI Decisions key reads **Saved on this Mac**
+  and the group names OpenAI Decisions, the page never holds the key, and Remove clears it; with
+  keys on both rows Automatic names OpenAI Decisions and choosing Jev names Jev, and a split
+  sentence reaches Jev with its own key; with `OPENAI_API_KEY` in the daemon's environment the
+  group names OpenAI Decisions and the row reads **From the environment**, and Off reads **Not
+  set** while the suite's fake Codex answers the routing job for split and mention.
+  `startDecisionServer()` in `e2e/fixtures/voice.ts` answers both providers' endpoints, and the
+  suite's daemon never inherits either variable, so no spec reaches a provider.

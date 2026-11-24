@@ -32,10 +32,13 @@ test("background reasoning effort follows the preview and reaches the next model
   await preview.click();
   await expect(title).toBeEnabled();
   await expect(models.getByRole("columnheader", { name: "Reasoning effort" })).toHaveCount(3);
-  for (const control of [title, review, verify, inspector]) {
+  for (const control of [title, review, verify]) {
     await expect(control).toHaveValue("");
     await expect(control.getByRole("option", { name: "Provider default" })).toHaveCount(1);
   }
+  // Nobody has chosen an Inspector effort yet, so the control shows what a review runs at.
+  await expect(inspector).toHaveValue("xhigh");
+  await expect(inspector.getByRole("option", { name: "Provider default" })).toHaveCount(1);
 
   const stored = async (group: string) => (await models.request.get(
     `${daemon.baseURL}/api/${group}/config`,
@@ -55,6 +58,13 @@ test("background reasoning effort follows the preview and reaches the next model
   await expect(review).toHaveValue("high");
   await expect(verify).toHaveValue("low");
   await expect(inspector).toHaveValue("medium");
+
+  // Provider default is a choice of its own: it is stored, and it survives a reload instead
+  // of falling back to the review default.
+  await inspector.selectOption("");
+  await expect.poll(async () => (await stored("inspector")).effort).toBe(null);
+  await models.reload();
+  await expect(inspector).toHaveValue("");
 
   const titleCalls = () => recordsIn<{ argv: string[] }>(
     join(daemon.recordDir, "codex"), (file) => file.startsWith("invocation-"),

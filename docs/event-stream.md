@@ -169,8 +169,12 @@ folds them. See [Task shaping](task-shaping.md#settings).
 
 ## Voice
 
+While voice is enabled, `voiceIndicators` in the snapshot carries the saved indicator IDs.
+After a preference write commits, `voice_indicators` carries the full selection to connected
+windows. A window that missed the write receives the saved selection when it reconnects.
+
 `voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
-`mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
+`mode`, `reasons`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`. It is sent whenever the
 state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
 or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
 state moved. A model download publishes its progress at most every 250 ms, so a download is a
@@ -185,9 +189,11 @@ of scalars, at most seven capabilities with bounded reasons, and the roster. It 
 `LINE_INPUT_EVENTS` member.
 
 `voice_card` carries `{ card }` whenever an utterance opens a card or changes its state.
-Consumers replace the card by id. While delivery is in progress the card has state `pending`,
-reason `delivering` and a null deadline. Its card actions are closed. A reconnect snapshot
-carries both open cards and in-flight deliveries in `voiceCards`
+Consumers replace the card by id. A model step that takes a second publishes a `resolving`
+card. A faster decision publishes `pending` or `unsure` directly. A split is one card with two
+targets in its `parts`. While delivery is in progress the card has state `pending`, reason
+`delivering` and a null deadline. Its card actions are closed. A reconnect snapshot carries
+both open cards and in-flight deliveries in `voiceCards`
 while voice is enabled. The daemon drops them and the dashboard clears its map when voice turns
 off. Recently heard stays in daemon memory and is read separately through the voice routes.
 

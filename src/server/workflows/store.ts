@@ -435,6 +435,8 @@ export const WORKFLOW_TABLES = [
   "workflow_bindings",
   "workflow_runs",
   "workflow_submissions",
+  "workflow_repository_artifacts",
+  "workflow_repository_snapshot_claims",
   "workflow_node_attempts",
   "workflow_command_artifact_reservations",
   "workflow_command_artifacts",
@@ -3041,6 +3043,14 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
  * so the budget's `check_run_slot = <slot>` counts skip it; see `forgiveCheckRuns`.
  */
 const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
+
+type SubmissionCapture = {
+  context: WorkflowJson;
+  evidence: WorkflowJson;
+  fingerprint?: string;
+  repositoryFingerprint?: string;
+  readiness?: WorkflowEvidenceReadinessResult | null;
+};
 
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
@@ -7395,14 +7405,7 @@ export class WorkflowStore {
 
   updateSubmissionCapture(
     id: string,
-    input: {
-      context: WorkflowJson;
-      evidence: WorkflowJson;
-      fingerprint?: string;
-      repositoryFingerprint?: string;
-      readiness?: WorkflowEvidenceReadinessResult | null;
-      status?: WorkflowSubmission["status"];
-    },
+    input: SubmissionCapture & { status?: WorkflowSubmission["status"] },
     now = Date.now(),
   ): WorkflowSubmission {
     const current = this.mustSubmission(id);
@@ -8062,6 +8065,23 @@ export class WorkflowStore {
         submission: this.mustSubmission(input.id),
         idempotent: false,
       };
+    });
+  }
+
+  commitRepositoryCaptureActivation(
+    input: { submissionId: string; digest: string; capture: Required<SubmissionCapture> },
+    now = Date.now(),
+  ): WorkflowSubmission {
+    return transaction(this.db, () => {
+      if (this.mustSubmission(input.submissionId).status !== "capturing")
+        throw new Error("Repository submission activation conflict");
+      const activated = this.db.prepare(`
+        UPDATE workflow_repository_snapshot_claims SET state='active', activated_at=?
+        WHERE submission_id=? AND digest=? AND state='provisional'
+          AND EXISTS (SELECT 1 FROM workflow_repository_artifacts WHERE digest=? AND state='ready')
+      `).run(now, input.submissionId, input.digest, input.digest);
+      if (activated.changes !== 1) throw new Error("Repository claim activation conflict");
+      return this.updateSubmissionCapture(input.submissionId, { ...input.capture, status: "running" }, now);
     });
   }
 
@@ -10665,6 +10685,9 @@ export class WorkflowStore {
             updates.push({ id: row.id, context: parsed });
           }
 
+          this.db.prepare(`UPDATE workflow_repository_snapshot_claims SET state='released', released_at=?
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id=?) AND state!='released'`)
+            .run(input.now, runId);
           this.appendEvent(runId, "evidence_pruned", {
             submissions: updates.length,
             diffBytes,

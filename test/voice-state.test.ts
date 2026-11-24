@@ -6,6 +6,7 @@ import {
   canonicalVoiceState,
   VOICE_CONFIG_DEFAULTS,
   VOICE_HELLO_LAPSE_MS,
+  VOICE_LISTENER_PROTOCOL_VERSION,
   VOICE_MODEL_STATE_NONE,
   VOICE_SHELL_REPORT_LAPSE_MS,
   VoiceConfigSchema,
@@ -81,8 +82,9 @@ test("the config schema holds every contract A field with its default", () => {
 // ---- the store ----
 
 const ALL_FLAGS = new Set(["voice", "async-input", "inbox", "filed-plan-decisions"]);
+const listenerId = crypto.randomUUID();
 const HELLO: VoiceListenerHello = {
-  backend: "sherpa-onnx", version: "1.0", devices: [], modelLoaded: true, microphone: "granted",
+  backend: "sherpa-onnx", version: VOICE_LISTENER_PROTOCOL_VERSION, devices: [], modelLoaded: true, microphone: "granted",
 };
 const REPORT: VoiceShellReport = {
   capabilities: {}, microphone: null, callActive: false, pushToTalk: false, hotkeyError: null,
@@ -95,6 +97,7 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
   const timers: Array<{ fn: () => void; at: number }> = [];
   const store = new VoiceStateStore({
     now: () => now,
+    hostNowUs: () => now * 1000,
     enabled: (id) => flags.has(id),
     config: () => config,
     setTimer: (fn, ms) => {
@@ -111,6 +114,7 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
   store.onChange((state) => published.push(state));
   return {
     store,
+    hostNowUs: () => now * 1000,
     flags,
     published,
     setConfig: (patch: Partial<VoiceConfig>) => { config = { ...config, ...patch }; },
@@ -128,9 +132,29 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
 
 test("with the flag off the state is off, whatever was heard", () => {
   const h = harness({ flags: new Set(["async-input", "inbox", "filed-plan-decisions"]) });
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   assert.deepEqual(h.store.state(), voiceStateOff());
   assert.equal(h.timers.length, 0, "nothing is scheduled while voice is off");
+});
+
+test("mute replies and published modes share a revision ordered within one daemon", () => {
+  const h = harness();
+  h.store.acceptHello(listenerId, HELLO);
+  const initial = h.store.state().modeVersion;
+  assert.ok(initial);
+  h.store.acceptHello(listenerId, HELLO);
+  assert.deepEqual(h.store.state().modeVersion, initial);
+  for (const [index, muted] of [true, false].entries()) {
+    h.setConfig({ muted });
+    h.store.publish();
+    const state = h.store.state();
+    assert.equal(state.mode, muted ? "muted" : "listening");
+    assert.deepEqual(state.modeVersion, { source: initial.source, revision: initial.revision + index + 1 });
+    assert.deepEqual(state.modeVersion, h.published.at(-1)?.modeVersion);
+  }
+  const restarted = harness();
+  restarted.store.acceptHello(listenerId, HELLO);
+  assert.notEqual(restarted.store.state().modeVersion?.source, initial.source);
 });
 
 test("unavailable until a listener says hello; then listening; then unavailable once it lapses", () => {
@@ -138,7 +162,7 @@ test("unavailable until a listener says hello; then listening; then unavailable 
   assert.deepEqual(h.store.state().reasons, ["listener"]);
   assert.equal(h.store.state().mode, "unavailable");
 
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   assert.equal(h.store.state().mode, "listening");
   assert.deepEqual(h.store.state().capabilities.listener, { available: true, reason: null });
   assert.equal(h.published.at(-1)?.mode, "listening", "a hello publishes at once");
@@ -153,58 +177,76 @@ test("unavailable until a listener says hello; then listening; then unavailable 
 
 test("a hello saying no model is loaded, or the microphone denied, gives that reason", () => {
   const h = harness();
-  h.store.acceptHello({ ...HELLO, modelLoaded: false });
+  h.store.acceptHello(listenerId, { ...HELLO, modelLoaded: false });
   assert.deepEqual(h.store.state().reasons, ["model"]);
-  h.store.acceptHello({ ...HELLO, microphone: "denied" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "denied" });
   assert.deepEqual(h.store.state().reasons, ["microphone"]);
 });
 
 test("a required flag off reads as the flags reason", () => {
   const h = harness();
   h.flags.delete("inbox");
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   assert.equal(h.store.state().mode, "unavailable");
   assert.deepEqual(h.store.state().reasons, ["flags"]);
 });
 
 test("a hello with an unknown major version is refused, and the state says why", () => {
   const h = harness();
-  h.store.acceptHello(HELLO);
-  const refused = h.store.acceptHello({ ...HELLO, version: "2.0" });
+  h.store.acceptHello(listenerId, HELLO);
+  const refused = h.store.acceptHello(listenerId, { ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 2\.0.*1\.0/);
+  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.0/);
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);
   assert.equal(state.capabilities.listener?.available, false);
-  assert.match(state.capabilities.listener?.reason ?? "", /protocol 2\.0/);
+  assert.match(state.capabilities.listener?.reason ?? "", /protocol 1\.0/);
   // A minor version is not compared.
-  assert.equal(h.store.acceptHello({ ...HELLO, version: "1.7.2" }).ok, true);
+  assert.equal(h.store.acceptHello(listenerId, { ...HELLO, version: "4.7.2" }).ok, true);
   assert.deepEqual(h.store.state().capabilities.listener, { available: true, reason: null });
   // And the refusal lapses like a hello.
-  h.store.acceptHello({ ...HELLO, version: "3" });
+  h.store.acceptHello(listenerId, { ...HELLO, version: "3.0" });
   h.advance(VOICE_HELLO_LAPSE_MS);
   assert.equal(h.store.state().capabilities.listener, undefined);
 });
 
 test("mute, a call with auto-mute, and push-to-talk come from the config and the shell report", () => {
   const h = harness();
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   h.setConfig({ muted: true });
   assert.equal(h.store.state().mode, "muted");
   h.setConfig({ muted: false });
   h.store.acceptShellReport({ ...REPORT, callActive: true });
   assert.equal(h.store.state().mode, "auto-muted");
-  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true });
+  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true, reportedAtHostUs: h.hostNowUs() });
   assert.equal(h.store.state().mode, "push-to-talk");
   h.setConfig({ autoMuteDuringCalls: false });
   assert.equal(h.store.state().mode, "listening");
 });
 
+test("a dated key-down can authorize capture only for the lease remaining since observation", () => {
+  const h = harness();
+  h.store.acceptHello(listenerId, HELLO);
+  h.store.acceptShellReport({ ...REPORT, callActive: true });
+  const down = { ...REPORT, callActive: true, pushToTalk: true };
+  const nowUs = h.hostNowUs();
+  h.store.acceptShellReport({ ...down, reportedAtHostUs: nowUs - VOICE_SHELL_REPORT_LAPSE_MS * 1000 });
+  assert.equal(h.store.state().mode, "auto-muted");
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptShellReport({ ...down, reportedAtHostUs: nowUs - (VOICE_SHELL_REPORT_LAPSE_MS - 2000) * 1000 });
+  assert.equal(h.store.state().mode, "push-to-talk");
+  h.advance(1999);
+  assert.equal(h.store.state().mode, "push-to-talk");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "listening");
+});
+
 test("a shell report's capabilities and hotkey error are copied, and lapse with it", () => {
   const h = harness();
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null } });
+  assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   h.store.acceptShellReport({
     ...REPORT,
@@ -214,10 +256,17 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
       // A capability this build does not know is dropped, not refused.
       "teleport": { available: true, reason: null },
     },
+    registeredHotkey: "ctrl+alt+m",
     hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" },
   });
   const state = h.store.state();
   assert.ok(voiceCapable(state, "hotkey"));
+  assert.equal(state.registeredHotkey, "ctrl+alt+m");
+  assert.equal(state.configuredHotkey, "ctrl+alt+m");
+  h.setConfig({ hotkey: "ctrl+alt+k" });
+  assert.equal(h.store.state().configuredHotkey, "ctrl+alt+k");
+  assert.equal(h.store.state().registeredHotkey, "ctrl+alt+m");
+  assert.notEqual(canonicalVoiceState(state), canonicalVoiceState(h.store.state()));
   assert.ok(!voiceCapable(state, "call-detection"));
   assert.equal(state.capabilities["call-detection"]?.reason, "Needs macOS 14.2 or later.");
   assert.equal(Object.hasOwn(state.capabilities, "teleport"), false);
@@ -225,6 +274,7 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
 
   h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
   assert.equal(h.published.at(-1)?.capabilities.hotkey, undefined, "the lapse is published");
+  assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   assert.equal(h.store.state().mode, "listening", "the hello has not lapsed yet");
 });
@@ -238,7 +288,7 @@ test("a shell report cannot claim the listener: that capability is the daemon's 
   assert.equal(voiceCapable(state, "listener"), false);
   assert.deepEqual(state.capabilities.tray, { available: true, reason: null }, "its other capabilities still come through");
   // A shell saying it is unavailable does not override a live hello either.
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   h.store.acceptShellReport({ ...REPORT, capabilities: { listener: { available: false, reason: "shell says no" } } });
   state = h.store.state();
   assert.deepEqual(state.capabilities.listener, { available: true, reason: null });
@@ -247,7 +297,7 @@ test("a shell report cannot claim the listener: that capability is the daemon's 
 
 test("a lapsing shell report ends a call's auto-mute at the 15 second boundary, and the timer publishes it", () => {
   const h = harness();
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   h.store.acceptShellReport({ ...REPORT, callActive: true });
   assert.equal(h.store.state().mode, "auto-muted");
   assert.equal(h.published.at(-1)?.mode, "auto-muted", "the report publishes at once");
@@ -263,14 +313,14 @@ test("a lapsing shell report ends a call's auto-mute at the 15 second boundary, 
 
 test("a shell report saying the microphone is denied makes voice unavailable", () => {
   const h = harness();
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   h.store.acceptShellReport({ ...REPORT, microphone: "denied" });
   assert.deepEqual(h.store.state().reasons, ["microphone"]);
 });
 
 test("with no model manager the model reads as nothing known, and the roster is empty until Phase 2", () => {
   const h = harness();
-  h.store.acceptHello(HELLO);
+  h.store.acceptHello(listenerId, HELLO);
   assert.deepEqual(h.store.state().model, VOICE_MODEL_STATE_NONE);
   assert.deepEqual(h.store.state().roster, []);
 });
@@ -278,13 +328,13 @@ test("with no model manager the model reads as nothing known, and the roster is 
 test("the microphone reading is the newest report's, and a live denial from either source wins", () => {
   const h = harness();
   assert.equal(h.store.microphoneReading(), null, "nothing has reported yet");
-  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "granted" });
   assert.deepEqual(h.store.microphoneReading(), { permission: "granted", source: "listener" });
   h.advance(1000);
   h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "not-determined" }));
   assert.deepEqual(h.store.microphoneReading(), { permission: "not-determined", source: "shell" }, "the newer reading");
   h.advance(1000);
-  h.store.acceptHello({ ...HELLO, microphone: "denied" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "denied" });
   h.advance(1000);
   h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "granted" }));
   assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" }, "a live denial wins");
@@ -294,7 +344,7 @@ test("the microphone reading is the newest report's, and a live denial from eith
 
 test("a lapsed denial with nothing newer still stands: a listener stopping does not change macOS's answer", () => {
   const h = harness();
-  h.store.acceptHello({ ...HELLO, microphone: "denied" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "denied" });
   h.advance(VOICE_HELLO_LAPSE_MS * 2);
   assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "listener" });
 });
@@ -305,10 +355,10 @@ test("a lapsed denial gives way to a newer grant from the other source, so Check
   const h = harness();
   h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "denied" }));
   h.advance(1000);
-  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "granted" });
   assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "shell" }, "while the app's report is live it still wins");
   h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
-  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "granted" });
   assert.deepEqual(h.store.microphoneReading(), { permission: "granted", source: "listener" }, "once it lapses the newer grant counts");
   assert.deepEqual(voiceMicrophoneSetupStatus(h.store.microphoneReading()), {
     state: "satisfied", evidence: "Allowed, as the voice listener reports",
@@ -321,7 +371,7 @@ test("a shell's microphone denial wins over a later listener grant", () => {
   const h = harness();
   h.store.acceptShellReport(VoiceShellReportSchema.parse({ microphone: "denied" }));
   h.advance(1000);
-  h.store.acceptHello({ ...HELLO, microphone: "granted" });
+  h.store.acceptHello(listenerId, { ...HELLO, microphone: "granted" });
   assert.deepEqual(h.store.microphoneReading(), { permission: "denied", source: "shell" });
   assert.deepEqual(voiceMicrophoneSetupStatus(h.store.microphoneReading()), {
     state: "needs-setup",
@@ -334,7 +384,7 @@ test("the listener's devices are offered only while its hello is live", () => {
   const h = harness();
   assert.equal(h.store.listenerDevices(), null);
   const devices = [{ id: "usb-1", name: "Desk microphone", builtIn: false }];
-  h.store.acceptHello({ ...HELLO, devices });
+  h.store.acceptHello(listenerId, { ...HELLO, devices });
   assert.deepEqual(h.store.listenerDevices(), devices);
   h.advance(VOICE_HELLO_LAPSE_MS);
   assert.equal(h.store.listenerDevices(), null);

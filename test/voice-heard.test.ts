@@ -1,8 +1,41 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { before, test } from "node:test";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { RecentlyHeard, VoiceRouter } from "../src/server/voice/router.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import type { VoiceCard, VoiceUtterance } from "../src/shared/voice-routing.ts";
+
+before(() => { ensureNativeStateLockAddon(); });
+
+test("a daemon-dated dashboard pick and timestamped speech stay ordered across a backward clock step", async t => {
+  const will: SpokenName = { key: "task:will", name: "Will", kind: "session", sessionId: "will", taskId: "will",
+    role: "", colorId: null, agent: "codex", state: "running" };
+  const steve = { ...will, key: "task:steve", name: "Steve" };
+  const unix = Date.now();
+  let wallNow = unix;
+  let hostNow = 100_000;
+  t.mock.method(Date, "now", () => wallNow);
+  const cards: VoiceCard[] = [];
+  const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: "listening", roster: [steve, will] }),
+    () => ({ enabled: true, seconds: 30 }), { deliver: async () => "queued" }, card => cards.push(card), undefined, () => hostNow);
+  t.after(() => router.reset());
+  const say = (id: string, text: string, capturedAt: number, startHostUs?: number) =>
+    router.accept({ id, text, capturedAt, backend: "fluidaudio", words: [] }, { startHostUs });
+  assert.ok(await say("choice", "Steven ask Will about the deployment", unix, 100_000));
+  await router.resolution("choice");
+  hostNow += 10_000;
+  assert.ok(await router.pick("choice", will.key));
+  wallNow -= 60_000;
+  hostNow += 10_000;
+  // Arrives after the pick, but was spoken one microsecond before it.
+  assert.ok(await say("early", "cancel", unix, 109_999));
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.ok(await say("late", "cancel", wallNow, 110_001));
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.equal(router.heard.list().find(entry => entry.id === "early")?.time, unix);
+  assert.equal(await say("future", "Will skip", wallNow, hostNow + 1_000_001), false);
+  assert.equal(await say("unix-only-future", "Will skip", unix), false);
+});
 
 test("Recently heard retains the newest 50 reasons and clears in memory", async () => {
   const cat: SpokenName = { key: "task:cat", name: "Cat", kind: "session", sessionId: null, taskId: "cat",
@@ -110,6 +143,7 @@ test("direct and picked stops interrupt immediately while ordinary speech keeps 
     await say("direct", "Steve, STOP!");
     await say("picked", "Steven, stop.");
     assert.deepEqual(deliveries, [[steve.key, "STOP!", "direct", "stop"]]);
+    await router.resolution("picked");
     assert.equal(await router.pick("picked", steve.key), true);
     await say("message", "Steve, stop the build");
     assert.deepEqual(deliveries, [

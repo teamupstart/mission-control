@@ -41,13 +41,75 @@ export interface HeardEntry {
   detail: string;
 }
 
+/**
+ * Where a later name would split an utterance: the first target's message (`head`) and the later
+ * name's (`tail`), each verbatim from the text. Both messages need content beyond separators.
+ */
+export interface VoiceSplitPoint {
+  target: SpokenName;
+  /** Character offset of this name in the original utterance. */
+  at: number;
+  /** More than one captured target could be addressed starting at this offset. */
+  ambiguousTarget?: true;
+  commands?: readonly (VoiceAddressedCommand | undefined)[];
+  head: string;
+  tail: string;
+}
+
+/** Drop what joins two commands from the end of the first: separators and a joining word. */
+function splitHead(text: string): string {
+  // A comma may separate independent commands, or introduce one joining phrase.
+  // Everything before that boundary belongs to the first message, including punctuation.
+  const prefix = text.trim();
+  const raw = prefix.replace(/,$/u, "").trimEnd();
+  // When only the comma separates the commands, a lone "and" or "then"
+  // can be the first message's final word. Preserve that reading.
+  const unmarkedJoiner = prefix.endsWith(",") ? /\s+and\s+then$/iu : /\s+(?:and\s+then|and|then)$/iu;
+  const conjunction = /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and\s+then|and|then|also|plus)$/iu.exec(raw)
+    ?? unmarkedJoiner.exec(raw);
+  if (!conjunction) return raw;
+  const preceding = raw.slice(0, conjunction.index).trimEnd();
+  // A literal directive or an unfinished phrase ("replace x with", "rename x to")
+  // still needs the final word as its argument. The comma alone separates the address.
+  const before = preceding.replace(/[\p{P}\s]+$/u, "");
+  const literalVerb = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print)$/iu.exec(before);
+  if (conjunction[0].startsWith(",")) {
+    // "Say, then" still needs its object. "Update the keyword, and" already has one.
+    const bareDirective = literalVerb && /^(?:please\s+)?$/iu.test(before.slice(0, literalVerb.index));
+    return bareDirective ? raw : preceding;
+  }
+  if (prefix.endsWith(",") && /^\s+and\s+then$/iu.test(conjunction[0])) {
+    // In "between if and then, Alice", the comma ends the comparison. Its "and" pairs
+    // the two operands. A comparison already containing that "and" can take a joiner.
+    const clause = before.split(/[.!?;:]/u).at(-1) ?? "";
+    if (clause.match(/\b(?:between|and)\b/giu)?.at(-1)?.toLowerCase() === "between") return raw;
+  }
+  if (literalVerb || /\b(?:word|term|literal|keyword|token|conjunction|titled|entitled|called|named|labelled|labeled)$/iu.test(before)) return raw;
+  if (/\b(?:or|use)$/iu.test(before)) return raw;
+  // A replacement can introduce its literal operand with "with the text" or "to the string".
+  if (/\b(?:with|to|from|as)\s+(?:the\s+)?(?:text|string|value)$/iu.test(before)) return raw;
+  const preposition = /\b(?:with|to|from|by|as|for|of|into)$/iu.exec(before);
+  if (!preposition) return preceding;
+  // In "who this is for", the question word already supplies the object of "for".
+  const clause = before.slice(0, preposition.index).trimEnd().split(/[,;:.!?]|\b(?:and|but|then)\b/iu).at(-1) ?? "";
+  const completeQuestion = /\b(?:who|whom|what|which)\b/iu.test(clause) &&
+    /\b(?:am|is|are|was|were)(?:\s+(?:this|that|it|they|these|those|we|you|he|she|I))?$/iu.test(clause);
+  return completeQuestion ? preceding : raw;
+}
+
 export type VoiceAddressedCommand = "stop";
+export type VoiceRouteDecision = Decision;
 
 type Decision =
   | { kind: "control"; command: "cancel" }
   | { kind: "control"; command: "pick"; cardId: string; candidateId: string }
   | { kind: "addressed"; command?: VoiceAddressedCommand; target: SpokenName; match: "exact" | "phonetic"; text: string; pauseMs: number | null }
-  | { kind: "needs-model"; command?: VoiceAddressedCommand; candidates: SpokenName[]; text: string; reason: "ambiguous-name" | "second-name"; pauseMs: number | null }
+  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "ambiguous-name"; match: "exact" | "phonetic"; command?: VoiceAddressedCommand; splits: VoiceSplitPoint[]; pauseMs: number | null }
+  | { kind: "needs-model"; candidates: SpokenName[]; text: string; reason: "second-name"; pauseMs: number | null;
+      /** The fixed first target: the model never chooses it (the first-word rule, spike S3). */
+      target: SpokenName; match: "exact" | "phonetic";
+      /** Each later name that could start a message of its own, in the order it was said. */
+      splits: VoiceSplitPoint[] }
   | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
 
 const BOUNDARY_PUNCTUATION = /^[\p{P}\s]+|[\p{P}\s]+$/gu;
@@ -58,6 +120,10 @@ function normalized(text: string): string {
 
 function barePhrase(text: string): string {
   return normalizeSpokenName(text).replace(/[\p{Sentence_Terminal}…]+$/u, "").trimEnd();
+}
+
+function addressedCommand(text: string, wrappersClosed: boolean): VoiceAddressedCommand | undefined {
+  return wrappersClosed && barePhrase(text) === "stop" ? "stop" : undefined;
 }
 
 interface Token { raw: string; index: number }
@@ -119,12 +185,34 @@ function tokensIn(span: string, offset: number): Token[] {
     .filter(({ raw }) => normalized(raw));
 }
 
+const OPENING_QUOTES = new Set([...WRAPPER_PAIRS].map(pair => pair[0]!).filter(mark => /\p{Quotation_Mark}/u.test(mark)));
+
+function messageQuotes(body: string, offset: number) {
+  const closers = new Set<number>();
+  const spans: { start: number; end: number; name: string }[] = [];
+  const stack: { mark: string; index: number }[] = [];
+  for (const { 0: mark, index } of body.matchAll(/\\[\s\S]|\p{Quotation_Mark}/gu)) {
+    if (mark.startsWith("\\")) continue;
+    const open = stack.at(-1);
+    if ((mark === "'" || mark === "’") && /[\p{L}\p{N}]/u.test(body[index - 1] ?? "") &&
+        (!open || /[\p{L}\p{N}]/u.test(body[index + 1] ?? ""))) continue;
+    if (open && WRAPPER_PAIRS.has(open.mark + mark)) {
+      stack.pop();
+      closers.add(offset + index);
+      if (!stack.length) spans.push({ start: offset + open.index, end: offset + index, name: normalized(body.slice(open.index + 1, index)) });
+    } else if (OPENING_QUOTES.has(mark)) {
+      stack.push({ mark, index });
+    }
+  }
+  return { closers, spans };
+}
+
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
-function messageAfterAddress(text: string, end: number): { body: string; wrappersClosed: boolean } {
+function messageAfterAddress(text: string, start: number, end: number): { body: string; offset: number; wrappersClosed: boolean } {
   const rest = text.slice(end).trimStart();
   const separatorLength = rest.startsWith(",") ? 1 : 0;
   let bodyStart = separatorLength;
-  const address = text.slice(0, end).trimStart();
+  const address = text.slice(start, end).trimStart();
   const prefix = address.match(/^[\p{P}\s]+/u)?.[0] ?? "";
   const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
   const wrappers = prefix.match(/[\p{Ps}\p{Pi}"']/gu) ?? [];
@@ -132,7 +220,8 @@ function messageAfterAddress(text: string, end: number): { body: string; wrapper
   // bracket or quote after the name starts the literal message at that mark.
   for (const mark of trailing.matchAll(/[\p{Ps}\p{Pe}\p{Pi}\p{Pf}"']/gu)) {
     if (!WRAPPER_PAIRS.has((wrappers.pop() ?? "") + mark[0])) {
-      return { body: text.slice(end - trailing.length + mark.index).trimEnd(), wrappersClosed: false };
+      const offset = end - trailing.length + mark.index;
+      return { body: text.slice(offset).trimEnd(), offset, wrappersClosed: false };
     }
   }
   while (wrappers.length) {
@@ -150,12 +239,15 @@ function messageAfterAddress(text: string, end: number): { body: string; wrapper
     bodyStart += rest.slice(bodyStart).match(/^[\p{Sentence_Terminal}…]+/u)?.[0].length ?? 0;
     bodyStart += rest.slice(bodyStart).match(/^\s*,/u)?.[0].length ?? 0;
   }
-  return { body: rest.slice(bodyStart).trimStart(), wrappersClosed: wrappers.length === 0 };
+  const body = rest.slice(bodyStart).trimStart();
+  return { body, offset: text.length - body.length, wrappersClosed: wrappers.length === 0 };
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
   roster: readonly SpokenName[];
   unsureCards?: readonly VoiceCard[];
+  /** Candidates from a past card state at the time the speech was captured. */
+  priorPickNames?: readonly string[];
 }): Decision {
   const { text, words } = utterance;
   // Keep offsets into the original capture. Name matching ignores boundary punctuation,
@@ -164,16 +256,21 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const tokens = tokensIn(text.slice(0, boundary), 0).concat(tokensIn(text.slice(boundary), boundary));
   const [firstToken, secondToken] = tokens;
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
-  const bodyAfter = (token: Token) => messageAfterAddress(text, token.index + token.raw.length);
+  const bodyAfter = (token: Token) => messageAfterAddress(text, 0, token.index + token.raw.length);
   const phrase = bodyAfter(tokens.at(-1)!).body ? null : normalized(text);
   const controlPhrase = barePhrase(text);
   if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
   const pickName = phrase !== null ? controlPhrase : null;
+  if (pickName && context.priorPickNames?.some(name => normalized(name) === pickName)) {
+    return { kind: "ignored", reason: "ambiguous-pick" };
+  }
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === pickName)
-    .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
-  if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
-  if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
+    .map((candidate) => ({ card, candidateId: candidate.id })));
+  if (picks.length === 1 && picks[0]!.card.state === "unsure") {
+    return { kind: "control", command: "pick", cardId: picks[0]!.card.id, candidateId: picks[0]!.candidateId };
+  }
+  if (picks.length) return { kind: "ignored", reason: "ambiguous-pick" };
 
   const names = context.roster.map((target) => ({ target, name: normalized(target.name) }));
   if (names.some(({ name }) => name === phrase)) return { kind: "ignored", reason: "no-message" };
@@ -216,20 +313,74 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
     return { kind: "ignored", reason: "near-miss" };
   }
-  const { body, wrappersClosed } = bodyAfter(tokens[count - 1]!);
+  const { body, offset, wrappersClosed } = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = wrappersClosed && barePhrase(body) === "stop" ? { command: "stop" as const } : {};
-  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
+  const command = addressedCommand(body, wrappersClosed);
   const target = candidates[0]!;
-  if (match !== "exact" || count !== 1) {
-    const remaining = tokens.slice(count);
-    const mentions = new Set(remaining.flatMap((token, i) => namesStartingAt(text, token, remaining[i + 1])));
-    const later = names.filter(({ name, target: other }) => other.key !== target.key &&
-      mentions.has(name));
-    if (later.length) {
-      return { kind: "needs-model", reason: "second-name", candidates: [target, ...later.map(({ target: other }) => other)], text: body, pauseMs, ...command };
+  // A later roster name may start a message of its own or only be talked about. The first
+  // target stays fixed whichever it is: the model is asked split or mention, never who.
+  const splitCandidates = new Set([target]);
+  const splits: VoiceSplitPoint[] = [];
+  const quotes = messageQuotes(body, offset);
+  let quoteIndex = 0;
+  for (let i = count; i < tokens.length; i++) {
+    const at = tokens[i]!;
+    const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
+    while (quoteIndex < quotes.spans.length && quotes.spans[quoteIndex]!.end <= nameOffset) quoteIndex++;
+    const quote = quotes.spans[quoteIndex];
+    const laterNames = namesStartingAt(text, at, tokens[i + 1]);
+    const atStart = splits.length;
+    let addressLength = 1;
+    for (let length = laterNames.length; length > 0; length--) {
+      const end = tokens[i + length - 1]!;
+      const heard = laterNames[length - 1];
+      // A quote around the name alone can mark an address. Words inside a quoted sentence belong to the message.
+      if (quote && quote.start < nameOffset && heard !== quote.name) continue;
+      const matches = names.filter(({ name }) => name === heard);
+      if (!matches.length) continue;
+      const preceding = text.slice(offset, at.index);
+      const wrappers = preceding.match(/(?:^|[,\s])([\p{Ps}\p{Pi}"'\s]+)$/u)?.[1] ?? "";
+      const wrapperStart = at.index - wrappers.length;
+      let addressStart = wrapperStart;
+      for (const mark of wrappers.matchAll(/["']/gu)) {
+        const index = wrapperStart + mark.index;
+        if (quotes.closers.has(index)) addressStart = index + 1;
+      }
+      const beforeName = text.slice(offset, addressStart).trimEnd();
+      const head = splitHead(beforeName);
+      // A separator or joining phrase introduces the whole call sign. With no
+      // such boundary, "check the release Captain" can still address Captain.
+      if (head !== beforeName || /[\p{Sentence_Terminal};:]$/u.test(beforeName)) {
+        addressLength = Math.max(addressLength, length);
+      }
+      const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
+      const tail = second.body.trim();
+      const content = /[\p{L}\p{N}\p{S}]|\p{Emoji}\uFE0F|[#*]\u20E3/u;
+      // Names are checked longest first. With no message after "Release Captain",
+      // the second word of that call sign cannot become a message for "Release".
+      if (!content.test(tail)) break;
+      if (!content.test(head)) {
+        // No command precedes this call sign. Its own words cannot supply that command
+        // for a split starting inside the name.
+        addressLength = Math.max(addressLength, length);
+        break;
+      }
+      const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
+      for (const other of matches) {
+        splits.push({ target: other.target, at: nameOffset, head, tail, ...(commands.some(Boolean) && { commands }) });
+        splitCandidates.add(other.target);
+      }
     }
+    // For example, both Release and Release Captain may start at this word.
+    if (splits.length > atStart + 1) {
+      for (let j = atStart; j < splits.length; j++) splits[j]!.ambiguousTarget = true;
+    }
+    i += addressLength - 1;
   }
-  return { kind: "addressed", target, text: body, match, pauseMs, ...command };
+  if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, splits, candidates, text: body, pauseMs, ...(command && { command }) };
+  if (splits.length) {
+    return { kind: "needs-model", reason: "second-name", candidates: [...splitCandidates], text: body, pauseMs, target, match, splits };
+  }
+  return { kind: "addressed", target, text: body, match, pauseMs, ...(command && { command }) };
 }

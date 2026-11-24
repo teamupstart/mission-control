@@ -29,6 +29,8 @@ the reason. Its controls remain available for a retry while the cancel window is
 The desktop measures the remaining interval on its own monotonic clock. Reloading or
 closing the dashboard dismisses the native notice for that page.
 The browser closes its notification at the cancel deadline even if its connection to the daemon drops.
+If the clock estimate is uncertain, the card and notification allow at most one configured
+cancel window from the first time the dashboard receives that pending delivery.
 At the deadline the card removes its delivery controls. If the outcome has yet to arrive,
 it shows “Awaiting delivery confirmation”.
 
@@ -51,7 +53,8 @@ Settings > Voice > Confirmation card previews the corner toast, floating pill an
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
 for those windows. If a save times out, you can select another placement. A delayed request
-cannot replace the newer saved choice. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
+cannot replace the newer saved choice, even when that save reaffirms the current placement.
+Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.

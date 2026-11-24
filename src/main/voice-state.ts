@@ -3,7 +3,7 @@ import { EventSource } from "eventsource";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { BASE_URL, readToken } from "../shared/harness-runtime.mjs";
+import { desktopVoiceConnection } from "./voice-connection.ts";
 import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
 
@@ -22,8 +22,12 @@ export type ShellVoiceState = z.infer<typeof ShellVoiceStateSchema>;
 
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
 export function startShellVoice(binary: string, onState: (state: ShellVoiceState) => void) {
-  const listener = nativeVoiceListener(binary);
-  let stream: EventSource;
+  let connection: ReturnType<typeof desktopVoiceConnection>;
+  const listener = nativeVoiceListener(binary, () => {
+    if (!connection) throw new Error("Voice listener has no daemon connection");
+    return connection;
+  });
+  let stream: EventSource | undefined;
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
   let state: ShellVoiceState = voiceStateOff();
@@ -48,7 +52,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   async function sendReports() {
     let accepted = false;
     try {
-      while (reportRequested && state.mode !== "off") {
+      while (connection && reportRequested && state.mode !== "off") {
         reportRequested = false;
         const microphone = systemPreferences.getMediaAccessStatus("microphone");
         const report: VoiceShellReport = {
@@ -58,8 +62,8 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
           },
           microphone, hotkeyError: null, callActive: false, pushToTalk: false,
         };
-        accepted = await fetch(BASE_URL + "/voice/shell-report", {
-          method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-harness-token": readToken() },
+        accepted = await connection.request("/voice/shell-report", {
+          method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify(report), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
         }).then(response => response.ok, () => false);
       }
@@ -103,8 +107,13 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     void sync();
   }
   function disconnect() {
-    stream.onmessage = stream.onerror = null;
-    stream.close();
+    if (stream) {
+      stream.onmessage = stream.onerror = null;
+      stream.close();
+      stream = undefined;
+    }
+    connection?.close();
+    connection = undefined;
   }
   function requestSnapshot() {
     disconnect();
@@ -136,15 +145,17 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     update(parsed.data);
   }
   function connect() {
-    stream = new EventSource(BASE_URL + "/events", {
-      fetch: (url, options) => fetch(url, { ...options, redirect: "error" }),
+    const current = connection = desktopVoiceConnection();
+    if (!current) {
+      reconnect = setTimeout(connect, 1000);
+      return;
+    }
+    stream = new EventSource(current.origin + "/events", {
+      fetch: (_url, options) => current.request("/events", options),
     });
     stream.onmessage = ({data}) => receive(data);
-    stream.onerror = () => {
-      // CONNECTING already owns a retry. A rejected HTTP handshake leaves it CLOSED.
-      if (stream.readyState === EventSource.CLOSED) requestSnapshot();
-      else update(voiceStateOff());
-    };
+    // A replacement daemon has its own key. Re-read its local identity on every reconnect.
+    stream.onerror = requestSnapshot;
   }
   connect();
   const heartbeat = setInterval(() => void sync(), 5000);
@@ -161,8 +172,8 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       return "checked";
     },
     async mute(muted: boolean) {
-      if (state.mode === "off") return false;
-      return fetch(BASE_URL + "/api/voice/mute", {
+      if (!connection || state.mode === "off") return false;
+      return connection.request("/api/voice/mute", {
         method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
         body: JSON.stringify({ muted }), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
       }).then(response => response.ok, () => false);

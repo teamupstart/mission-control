@@ -134,6 +134,7 @@ export function AttentionInbox({
   onOpenRun = (runId) => {
     window.location.hash = `#/runs/${encodeURIComponent(runId)}`;
   },
+  onComplete,
   onReplyBox,
   pinned = null,
 }: {
@@ -170,6 +171,8 @@ export function AttentionInbox({
   held?: boolean;
   /** Open a workflow run on the Runs page, for a Stuck row about a parked run. */
   onOpenRun?: (runId: string) => void;
+  /** Open a session's Complete dialog, for a Stuck row's Mark done. The inbox closes first, like every deep link. */
+  onComplete?: (sessionId: string) => void;
   /** A Stuck row's message box appearing or going, by session (the `onReplyBox` contract). */
   onReplyBox?: (sessionId: string, present: boolean) => void;
   /** The report a notification opened that no section lists, drawn above them; null for none. */
@@ -366,6 +369,7 @@ export function AttentionInbox({
                 onOpenSession={(sessionId) => leave(() => onOpenSession(sessionId))()}
                 onOpenPipelineCommission={(commissionId) => leave(() => onOpenPipelineCommission(commissionId))()}
                 onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
+                onComplete={onComplete && ((sessionId) => leave(() => onComplete(sessionId))())}
                 onReplyBox={onReplyBox}
                 onDismiss={dismiss(item)}
                 onLeave={onClose}
@@ -488,6 +492,7 @@ function InboxItem({
   onOpenSession,
   onOpenPipelineCommission,
   onOpenRun,
+  onComplete,
   onDismiss,
   onReplyBox,
   onLeave,
@@ -505,6 +510,7 @@ function InboxItem({
   onOpenSession: (sessionId: string) => void;
   onOpenPipelineCommission: (commissionId: string) => void;
   onOpenRun: (runId: string) => void;
+  onComplete?: (sessionId: string) => void;
   /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
   onDismiss: () => void;
   onReplyBox?: (sessionId: string, present: boolean) => void;
@@ -526,6 +532,7 @@ function InboxItem({
           subject={subjectView}
           onOpenSession={onOpenSession}
           onOpenRun={onOpenRun}
+          onComplete={onComplete}
           onDismiss={onDismiss}
           onReplyBox={onReplyBox ? (present) => onReplyBox(item.session.id, present) : undefined}
         />

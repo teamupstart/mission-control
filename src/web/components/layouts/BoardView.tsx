@@ -314,6 +314,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       selected={s.id === props.selectedId}
       onOpen={() => props.onSelect(s.id)}
       onOpenQueue={() => props.onSelect(s.id, "queue")}
+      onComplete={() => props.onComplete(s.id)}
       onCursorTo={() => props.onCursorTo(s.id)}
       registerEl={props.registerEl}
       registerWorkflowDisclosure={props.registerWorkflowDisclosure}

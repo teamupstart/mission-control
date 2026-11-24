@@ -361,6 +361,24 @@ napi_value RenamePlanEntry(napi_env env, napi_callback_info info) {
   return Undefined(env);
 }
 
+// Atomic replacement within one held directory. POSIX rename refuses to replace
+// a directory with a file and does not follow the destination leaf.
+napi_value ReplaceFileEntry(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3];
+  int32_t parent;
+  std::string source, destination;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &parent) != napi_ok || parent < 0 ||
+      !ReadEntry(env, argv[1], &source) || !ReadEntry(env, argv[2], &destination)) {
+    return ThrowTypeError(env, "replaceFileEntry requires a directory descriptor and two entry names");
+  }
+  int result;
+  do { result = renameat(parent, source.c_str(), parent, destination.c_str()); }
+  while (result != 0 && errno == EINTR);
+  return result == 0 ? Undefined(env) : PlanIoError(env);
+}
+
 napi_value UnlinkPlanEntry(napi_env env, napi_callback_info info) {
   size_t argc = 3;
   napi_value argv[3];
@@ -714,6 +732,7 @@ NAPI_MODULE_INIT() {
       {"openPlanEntry", nullptr, OpenPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"makePlanDirectory", nullptr, MakePlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"renamePlanEntry", nullptr, RenamePlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"replaceFileEntry", nullptr, ReplaceFileEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"unlinkPlanEntry", nullptr, UnlinkPlanEntry, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readPlanDirectory", nullptr, ReadPlanDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"readPlanDirectoryEntries", nullptr, ReadPlanDirectoryEntries, nullptr, nullptr, nullptr, napi_default, nullptr},

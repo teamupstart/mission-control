@@ -1,8 +1,8 @@
-import { lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
-import { announcementName, removePlayerScratch, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
+import { announcementName, listVoiceRecords, readVoiceRecord, removePlayerScratch, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
 import type { SupervisorReporter, SupervisorReportState } from "./supervisor-auth.ts";
 import { voiceProcessGone } from "./supervised-listener.ts";
 
@@ -156,18 +156,18 @@ export class SupervisorRetirements {
     let retry = false;
     try {
       const dir = this.directory();
-      for (const file of readdirSync(dir)) {
+      for (const file of listVoiceRecords(this.home, dir)) {
         if (!file.startsWith(this.name + "-announced-") || !file.endsWith(".json")) continue;
         try {
           if (records.has(file)) continue;
           const path = join(dir, file);
-          const raw = readFileSync(path, "utf8");
+          const raw = readVoiceRecord(this.home, path);
           const entry = queuedRecord.parse(JSON.parse(raw));
           if (this.file(entry.instance) !== file) continue;
           if ("pid" in entry) {
             // A live launcher can replace its PID with the child's before dying.
             // Re-read after observing death so stale evidence cannot retire that child.
-            if (!voiceProcessGone(entry.pid) || readFileSync(path, "utf8") !== raw) { retry = true; continue; }
+            if (!voiceProcessGone(entry.pid) || readVoiceRecord(this.home, path) !== raw) { retry = true; continue; }
             const exit = this.recoveredExit(entry);
             if (exit) records.set(file, exit);
           } else if (this.verifies(entry)) records.set(file, entry);

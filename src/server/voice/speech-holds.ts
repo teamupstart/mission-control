@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
 import { supervisorIssuer } from "./supervisor-auth.ts";
-import { announcementName, removeVoiceRecord, writeVoiceRecord } from "./recovery-files.ts";
+import { announcementName, listVoiceRecords, readVoiceRecord, removeVoiceRecord, writeVoiceRecord } from "./recovery-files.ts";
 export { announcementName } from "./recovery-files.ts";
 
 // A period represents the supervised directory itself if even its listing is unreadable.
@@ -48,7 +48,7 @@ export class SpeechHolds {
   supervisorRecord(name: string): string | undefined {
     const path = join(this.directory, "supervised", name + ".json");
     try {
-      const raw = readFileSync(path, "utf8");
+      const raw = readVoiceRecord(dirname(this.directory), path);
       const instance = SpeechInstanceSchema.parse(JSON.parse(raw).instance);
       return name.startsWith("announced-") && announcementName(instance) !== name ? undefined : instance;
     } catch {
@@ -60,7 +60,7 @@ export class SpeechHolds {
   exitRecorded(name: string): boolean | undefined {
     const path = join(this.directory, "supervised-exits", name + ".json");
     try {
-      const { instance, proof } = exitRecord.parse(JSON.parse(readFileSync(path, "utf8")));
+      const { instance, proof } = exitRecord.parse(JSON.parse(readVoiceRecord(dirname(this.directory), path)));
       // The receipt identifies the original issuer even after the configured verifier rotates.
       return announcementName(instance) === name && supervisorIssuer(instance, "exited", proof)
         ? true : undefined;
@@ -81,7 +81,7 @@ export class SpeechHolds {
 
   load(): { holds: Hold[]; unknown: boolean } {
     try {
-      const holds = z.array(entry).parse(JSON.parse(readFileSync(this.path, "utf8")));
+      const holds = z.array(entry).parse(JSON.parse(readVoiceRecord(dirname(this.directory), this.path)));
       if (new Set(holds.map(h => h.jobId)).size !== holds.length) throw new Error("Duplicate job");
       // Older daemons could already have handed out one of these jobs before the marker existed.
       if (holds.length && !mayExist(this.usedPath)) this.write(this.usedPath, true);
@@ -131,7 +131,7 @@ export class SpeechHolds {
   }
 
   private readInventory(): Launch[] | undefined {
-    try { return z.array(launchSchema).parse(JSON.parse(readFileSync(this.inventoryPath, "utf8"))); }
+    try { return z.array(launchSchema).parse(JSON.parse(readVoiceRecord(dirname(this.directory), this.inventoryPath))); }
     catch (error) {
       if (missing(error, this.inventoryPath)) return undefined;
       throw error;
@@ -141,7 +141,7 @@ export class SpeechHolds {
   private processRecords(): Launch[] {
     const directory = join(this.directory, "supervised");
     try {
-      return readdirSync(directory).filter(file => file.endsWith(".json")).map(file => {
+      return listVoiceRecords(dirname(this.directory), directory).filter(file => file.endsWith(".json")).map(file => {
         const name = file.slice(0, -5);
         return this.supervisorRecord(name) ?? { supervisor: name };
       });

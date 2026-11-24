@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { before } from "node:test";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { askAloudPossible, askSentence, resolveSpeechVoice, VOICE_SPEECH_DEFAULT_NEURAL, VOICE_SPEECH_PREPARE_LIMIT_MS } from "../src/shared/voice-speech.ts";
 import { VOICE_CONFIG_DEFAULTS, voiceStateOff } from "../src/shared/voice.ts";
 import { VoiceSpeechManager } from "../src/server/voice/speech.ts";
 
 Object.assign(process.env, fixtureSupervisorEnv);
+before(() => ensureNativeStateLockAddon());
 
 test("two or three names form a question", () => {
   assert.deepEqual([1, 2, 3, 4].map(n => askSentence(["A", "B", "C", "D"].slice(0, n))), [null, "A or B?", "A, B or C?", null]);

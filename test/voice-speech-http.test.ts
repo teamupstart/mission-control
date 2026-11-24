@@ -389,24 +389,23 @@ test("handoff waits for staged files and their directories to sync, including on
   await p.announce(); await p.hello();
   const homeInode = statSync(home).ino, voiceInode = statSync(join(home, "voice")).ino;
   const stages: string[] = [];
-  const synced = new Set<number>();
+  let stagedInode: number | undefined;
   let failure: "staged file" | "voice directory" | undefined;
-  const sync = fs.fsyncSync, rename = fs.renameSync;
+  const sync = fs.fsyncSync;
   const syncHook = t.mock.method(fs, "fsyncSync", (fd: number) => {
     const info = fs.fstatSync(fd);
     const stage = info.isFile() ? "staged file" : info.ino === voiceInode ? "voice directory" :
       info.ino === homeInode ? "state home" : "other directory";
+    if (stagedInode !== undefined && info.isDirectory()) {
+      const target = stage === "state home" ? used : ledger;
+      assert.equal(statSync(target).ino, stagedInode, "published the synced staged file before syncing its parent");
+      stages.push(target === used ? "publish marker" : "publish hold");
+      stagedInode = undefined;
+    }
     stages.push(stage);
     if (failure === stage) throw new Error("Injected sync failure");
     sync(fd);
-    if (info.isFile()) synced.add(info.ino);
-  });
-  const renameHook = t.mock.method(fs, "renameSync", (src: fs.PathLike, dst: fs.PathLike) => {
-    if (dst === ledger || dst === used) {
-      assert.ok(synced.delete(statSync(src).ino), "staged contents synced before rename");
-      stages.push(dst === ledger ? "publish hold" : "publish marker");
-    }
-    rename(src, dst);
+    if (info.isFile()) stagedInode = info.ino;
   });
   syncBuiltinESMExports();
   try {
@@ -423,7 +422,7 @@ test("handoff waits for staged files and their directories to sync, including on
     assert.equal((await p.poll()).speak.id, id);
     assert.equal((await p.event(id, "ended")).status, 200);
   } finally {
-    syncHook.mock.restore(); renameHook.mock.restore(); syncBuiltinESMExports();
+    syncHook.mock.restore(); syncBuiltinESMExports();
   }
 });
 
@@ -450,6 +449,33 @@ test("a signed exit returns 503 and holds capture until a retry removes the laun
   assert.equal((await holder.report("exited")).status, 200);
   assert.deepEqual(readdirSync(supervised), []);
   assert.deepEqual(entries(), []);
+  assert.equal((await holder.poll()).capture, true);
+});
+
+test("linked recovery parents refuse signed retirement and keep capture held until a durable retry", async () => {
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  await holder.event(id, "started");
+  const alternate = mkdtempSync(join(home, "alternate-records-"));
+  const receiptName = announcementName(holder.instance) + ".json";
+  const placeholder = join(alternate, receiptName);
+  writeFileSync(placeholder, "untouched");
+  for (const directory of [join(home, "voice/supervised-exits"), supervised]) {
+    mkdirSync(directory, { recursive: true });
+    renameSync(directory, directory + ".real");
+    symlinkSync(alternate, directory, "dir");
+    try {
+      assert.equal((await holder.report("exited")).status, 503);
+      assert.deepEqual(readdirSync(alternate), [receiptName]);
+      assert.equal(readFileSync(placeholder, "utf8"), "untouched");
+      assert.equal((await holder.poll()).capture, false);
+    } finally {
+      rmSync(directory);
+      renameSync(directory + ".real", directory);
+    }
+  }
+  assert.equal((await holder.report("exited")).status, 200);
   assert.equal((await holder.poll()).capture, true);
 });
 

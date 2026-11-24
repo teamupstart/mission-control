@@ -2,7 +2,8 @@ import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-su
 // Voice state (contract B): the pure mode rule, the reasons, and the daemon's store with a fake
 // clock - a hello and a shell report lapsing, a refused protocol version, and capabilities.
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before } from "node:test";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import {
   canonicalVoiceState,
   VOICE_CONFIG_DEFAULTS,
@@ -26,6 +27,7 @@ import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { voiceMicrophoneSetupStatus } from "../src/shared/voice-models.ts";
 
 Object.assign(process.env, fixtureSupervisorEnv);
+before(() => ensureNativeStateLockAddon());
 
 const base: VoiceModeInputs = {
   enabled: true, reasons: [], muted: false, callActive: false, autoMuteDuringCalls: true, pushToTalk: false,

@@ -1,13 +1,34 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:https";
 import test from "node:test";
 import { generate } from "selfsigned";
 import { desktopVoiceEndpointPath, HOST } from "../src/shared/harness-runtime.mjs";
 import { ensureToken } from "../src/server/auth.ts";
-import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
+import { DESKTOP_VOICE_DAEMON_STOPPING, serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
 import { desktopVoiceConnection } from "../src/main/voice-connection.ts";
+
+test("the voice endpoint closes when shutdown cannot replace the descriptor with a reconnect marker", async t => {
+  const file = desktopVoiceEndpointPath();
+  const controller = new AbortController();
+  const server = await serveDesktopVoice((_req, res) => res.end(), file, controller.signal);
+  assert.ok(server);
+  t.after(() => { controller.abort(); rmSync(file, { force: true, recursive: true }); });
+  // A directory at the descriptor path makes its atomic rename fail on every platform.
+  rmSync(file);
+  mkdirSync(file);
+  const warning = t.mock.method(console, "warn", () => {});
+  const closed = once(server, "close");
+  controller.abort(DESKTOP_VOICE_DAEMON_STOPPING);
+  await closed;
+  assert.equal(server.listening, false);
+  assert.equal(warning.mock.callCount(), 1);
+  const [call] = warning.mock.calls;
+  assert.ok(call);
+  assert.match(String(call.arguments[0]), /Could not publish desktop reconnect marker/);
+  assert.ok(call.arguments[1] instanceof Error);
+});
 
 test("status-only voice POSTs release unfinished response bodies on success and refusal", { timeout: 10000 }, async t => {
   ensureToken();

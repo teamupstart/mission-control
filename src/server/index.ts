@@ -21,7 +21,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import type { Server } from "node:http";
 import { closeHttpServer, HTTP_CLOSE_GRACE_MS } from "./http-shutdown.ts";
 import type { Context } from "hono";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, residentLaunchWaitMs, STATE_DIR } from "./config.ts";
@@ -50,7 +50,7 @@ import { configureClaudeRunnerTransport } from "./llm/claude.ts";
 import { configureCodexRunnerTransport } from "./llm/codex.ts";
 import { WORKFLOW_PERSONA_MODEL_ENV } from "@shared/workflow.ts";
 import { desktopVoiceEndpointPath, envVar } from "@shared/harness-runtime.mjs";
-import { DESKTOP_VOICE_DAEMON_STOPPING, serveDesktopVoice } from "./voice/desktop-endpoint.ts";
+import { DESKTOP_VOICE_DAEMON_STOPPING, removeDesktopVoiceEndpoint, serveDesktopVoice } from "./voice/desktop-endpoint.ts";
 import { reconcileDisposableAgentStateHomes } from "./agent-subprocess-env.ts";
 import { recheckManagedResumes } from "./harness/resume.ts";
 import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
@@ -954,7 +954,7 @@ function watchDesktopVoice() {
     } else {
       active?.abort();
       active = undefined;
-      rmSync(endpointFile, { force: true });
+      removeDesktopVoiceEndpoint(endpointFile);
     }
   }
   const unsubscribe = onFeatureFlagsChanged(reconcile);

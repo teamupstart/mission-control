@@ -11,6 +11,11 @@ const routes = new Set(["/events", "/api/voice/mute", "/voice/shell-report",
 
 export const DESKTOP_VOICE_DAEMON_STOPPING = Symbol("desktop voice daemon stopping");
 
+export function removeDesktopVoiceEndpoint(file: string) {
+  try { rmSync(file, { force: true }); }
+  catch (error) { console.warn("[voice] Could not remove private desktop endpoint:", error); }
+}
+
 /** Publish the public certificate only after binding. The private key dies with this server. */
 export async function serveDesktopVoice(
   handle: RequestListener, file: string, signal: AbortSignal,
@@ -46,8 +51,10 @@ export async function serveDesktopVoice(
     if (!published) return;
     // A surviving shell can distinguish a daemon restart from an explicit flag-off.
     // The marker has no port or certificate and cannot authorize a connection.
-    if (signal.reason === DESKTOP_VOICE_DAEMON_STOPPING) publish({ enabled: true });
-    else rmSync(file, { force: true });
+    if (signal.reason === DESKTOP_VOICE_DAEMON_STOPPING) {
+      try { publish({ enabled: true }); }
+      catch (error) { console.warn("[voice] Could not publish desktop reconnect marker:", error); }
+    } else removeDesktopVoiceEndpoint(file);
   }
   try {
     server.listen(0, HOST);

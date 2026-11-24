@@ -768,3 +768,26 @@ test("the mod-calls scan walks nested template literals, so a disallowed path ca
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the mod-calls scan treats a $ in a quoted path as an ordinary character, and only ${ as an interpolation", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-dollar-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // A plain string with a $ in it is still read to its closing quote and judged.
+    assert.deepEqual(scan("fetch(\"/api/$secret\");\n"), ["/api/$secret"]);
+    assert.deepEqual(scan("fetch('/api/a$b$c');\n"), ["/api/a$b$c"]);
+    assert.deepEqual(scan("fetch(\"/api/$\");\n"), ["/api/$"]);
+    // A $ inside a template that is not an interpolation is the same.
+    assert.deepEqual(scan("const u = `/api/$notInterpolated`;\n"), ["/api/$notInterpolated"]);
+    // An interpolation still ends the static prefix, and allowed shapes stay allowed.
+    assert.deepEqual(scan("const u = `/api/${x}`;\n"), ["/api/"]);
+    assert.deepEqual(scan("const u = `/dispatch/drafts/${id}/confirm`; const c = \"/dispatch/a$b\";\n"), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

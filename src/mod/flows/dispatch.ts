@@ -106,28 +106,43 @@ export function isRepoSelectorRefusal(outcome: Refused): boolean {
       || /^[^/\n]+ matches \/.+, \//.test(outcome.error));
 }
 
+/** How many times a repository the daemon cannot resolve is tried in all, wherever it is asked. */
+const REPO_ATTEMPTS = 3;
+
 /**
- * Creates the draft. A repository the daemon cannot resolve is asked about again, in the
- * person's words under Other, for three attempts in all, and the third refusal is returned to be
- * shown as written; every other refusal is returned the same way. `cancelled` means the person
- * gave up at that question.
+ * The one policy for a repository the daemon refuses to resolve (7.20), shared by creating a draft
+ * with a repository named up front and completing a draft that still needs one: `attempt` is tried
+ * with the repository (none at first, unless `askFirst`), and each repository refusal is asked about
+ * again in the person's words under Other, for `REPO_ATTEMPTS` attempts in all. The last refusal is
+ * returned to be shown as written (asking again would only discard the answer), as is any refusal that
+ * is not about the repository. `cancelled` means the person gave up at the question.
  */
+async function retryRepository<T>(
+  host: FlowHost,
+  attempt: (repo: string | undefined) => Promise<Outcome<T>>,
+  options: { askFirst: boolean },
+): Promise<Outcome<T> | { ok: false; kind: "cancelled" }> {
+  let repo: string | undefined;
+  if (options.askFirst) {
+    repo = await askText(host, "Repo", NEEDS_REPO_QUESTION);
+    if (repo === undefined) return { ok: false, kind: "cancelled" };
+  }
+  for (let tries = 1; ; tries += 1) {
+    const result = await attempt(repo);
+    if (result.ok || result.kind !== "refused" || !isRepoSelectorRefusal(result)) return result;
+    if (tries >= REPO_ATTEMPTS) return result;
+    repo = await askText(host, "Repo", `${result.error}. ${NEEDS_REPO_QUESTION}`);
+    if (repo === undefined) return { ok: false, kind: "cancelled" };
+  }
+}
+
+/** Creates the draft, asking again about a repository the daemon cannot resolve (see `retryRepository`). */
 export async function createDraftAsking(
   host: FlowHost,
   session: FlowSession,
   fields: Parameters<typeof createDraft>[2],
 ): Promise<Outcome<HomeDispatchDraftSummary> | { ok: false; kind: "cancelled" }> {
-  let attempt = fields;
-  for (let tries = 0; tries < 3; tries += 1) {
-    const created = await createDraft(host, session, attempt);
-    if (created.ok || created.kind !== "refused" || !isRepoSelectorRefusal(created)) return created;
-    // The last refusal is shown as written; asking again would only discard the answer.
-    if (tries === 2) return created;
-    const repo = await askText(host, "Repo", `${created.error}. ${NEEDS_REPO_QUESTION}`);
-    if (repo === undefined) return { ok: false, kind: "cancelled" };
-    attempt = { ...attempt, repo };
-  }
-  return { ok: false, kind: "cancelled" };
+  return retryRepository(host, (repo) => createDraft(host, session, repo === undefined ? fields : { ...fields, repo }), { askFirst: false });
 }
 
 /** Fills the prompt box for the description, or asks for it in a dialog when it cannot be filled (S12). */
@@ -322,20 +337,11 @@ export async function completeDraft(
 ): Promise<FlowResult> {
   let summary = first;
   if (summary.needs.includes("repo")) {
-    // The same three attempts createDraftAsking gives: a refused name is asked about again, and
-    // the last refusal is shown as written.
-    let question = NEEDS_REPO_QUESTION;
-    for (let tries = 0; ; tries += 1) {
-      const named = await askText(host, "Repo", question);
-      if (named === undefined) return cancel(host, session, summary.draftId);
-      const updated = await updateDraft(host, session, summary.draftId, { repo: named });
-      if (updated.ok) {
-        summary = updated.value;
-        break;
-      }
-      if (updated.kind !== "refused" || !isRepoSelectorRefusal(updated) || tries === 2) return fail(host, updated);
-      question = `${updated.error}. ${NEEDS_REPO_QUESTION}`;
-    }
+    // The same policy as creating a draft with a repository named up front.
+    const draftId = summary.draftId;
+    const updated = await retryRepository(host, (repo) => updateDraft(host, session, draftId, { repo: repo ?? "" }), { askFirst: true });
+    if (!updated.ok) return updated.kind === "cancelled" ? cancel(host, session, draftId) : fail(host, updated);
+    summary = updated.value;
   }
   return summary.needs.includes("description")
     ? requestDescription(host, session, summary)

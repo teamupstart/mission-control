@@ -130,7 +130,8 @@ export function findDisallowedModCalls(root) {
     // A quoted or template literal that begins with `/api` or `/dispatch`: its whole text up to the
     // closing quote, or its static prefix up to a `${` (the rest is built at run time, so the prefix is
     // what can be judged: `/dispatch/drafts/${id}` is `/dispatch/drafts/`, and `/api/${x}` is `/api/`).
-    for (const match of text.matchAll(/["'`](\/(?:api|dispatch)[^"'`\s$]*)(?:["'`]|\$\{)/g)) {
+    // A `$` is an ordinary character in a quoted string (`"/api/$x"`); only `${` ends the static text.
+    for (const match of text.matchAll(/["'`](\/(?:api|dispatch)(?:[^"'`\s$]|\$(?!\{))*)(?:["'`]|\$\{)/g)) {
       const path = match[1];
       if (!isAllowedModCall(path, allowed)) found.push({ file, path });
     }

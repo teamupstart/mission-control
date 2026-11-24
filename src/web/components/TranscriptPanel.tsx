@@ -46,7 +46,9 @@ import {
 import {
   appendLive,
   backAnchor,
+  dropHistory,
   flattenHistory,
+  markVoiceRefresh,
   prependPage,
   readHistory,
   resumeAnchor,
@@ -490,6 +492,7 @@ export function TranscriptPanel({
   );
   const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const voiceHistoryRestore = useRef<{ to: number; askedFrom: number | null } | null>(null);
   const [olderError, setOlderError] = useState<string | null>(null);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
   const [note, setNote] = useState("");
@@ -910,8 +913,12 @@ export function TranscriptPanel({
     historyEpoch.current += 1;
     // Show whatever this session already has while the stream connects, instead of
     // clearing to "Loading…" and throwing away scroll-back the map still holds.
-    setMessages(flattenHistory(readHistory(sessionId)));
-    setCanLoadOlder(backAnchor(readHistory(sessionId)) !== null);
+    const held = readHistory(sessionId);
+    let refreshFrom = voiceEnabled && held?.voiceRefreshFrom !== undefined ? markVoiceRefresh(held) : undefined;
+    if (held && !voiceEnabled) markVoiceRefresh(held);
+    setMessages(flattenHistory(held));
+    setCanLoadOlder(backAnchor(held) !== null);
+    voiceHistoryRestore.current = null;
     setLoadingOlder(false);
     setOlderError(null);
     setStatus("connecting");
@@ -930,13 +937,15 @@ export function TranscriptPanel({
 
     const connect = (): void => {
       if (closed) return;
-      const from = resumeAnchor(sessionId);
+      // A byte resume only returns new turns. Refresh the held range to acquire spoken attribution.
+      const from = refreshFrom === undefined ? resumeAnchor(sessionId) : null;
       const base = `/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`;
       es = new EventSource(from === null ? base : `${base}?from=${encodeURIComponent(String(from))}`);
       es.onopen = () => {
         delay = RECONNECT_MIN_MS;
       };
       es.onmessage = (ev) => {
+        if (closed) return;
         let msg: TranscriptStreamMsg;
         try {
           msg = JSON.parse(ev.data) as TranscriptStreamMsg;
@@ -947,7 +956,14 @@ export function TranscriptPanel({
           // The start-over path: a first connect, or a resume the server refused because
           // the file moved or too much was written to bridge. `seedTail` keeps whatever
           // pages still abut this window and reports what survived.
+          if (refreshFrom !== undefined) dropHistory(sessionId);
           const next = seedTail(sessionId, msg);
+          if (!voiceEnabled) markVoiceRefresh(next);
+          if (refreshFrom !== undefined) {
+            next.voiceRefreshFrom = refreshFrom;
+            voiceHistoryRestore.current = { to: refreshFrom, askedFrom: null };
+            refreshFrom = undefined;
+          }
           setMessages(flattenHistory(next));
           setCanLoadOlder(backAnchor(next) !== null);
           setStatus("live");
@@ -990,7 +1006,7 @@ export function TranscriptPanel({
       if (retry) clearTimeout(retry);
       es?.close();
     };
-  }, [resetNonce, sessionId]);
+  }, [resetNonce, sessionId, voiceEnabled]);
 
   /**
    * Fetch the page above what we hold and splice it in.
@@ -1032,6 +1048,23 @@ export function TranscriptPanel({
     }
     setLoadingOlder(false);
   }, [loadingOlder, sessionId]);
+
+  // A fresh tail can be shorter than the range the operator already loaded. Reuse ordinary
+  // scrollback paging, including its scroll anchoring, cancellation and retry controls.
+  useEffect(() => {
+    const restore = voiceHistoryRestore.current;
+    if (!voiceEnabled || !restore) return;
+    const held = readHistory(sessionId);
+    if (!held) return;
+    const anchor = backAnchor(held);
+    if (anchor === null || anchor <= restore.to) {
+      delete held.voiceRefreshFrom;
+      voiceHistoryRestore.current = null;
+    } else if (!loadingOlder && !olderError && !pagingStalled(restore.askedFrom, anchor, loadingOlder)) {
+      restore.askedFrom = anchor;
+      void loadOlder();
+    }
+  }, [voiceEnabled, sessionId, messages, loadingOlder, olderError, loadOlder]);
 
   /**
    * Run "Jump to launch" one step at a time: jump when the launching turn is loaded, page

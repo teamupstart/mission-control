@@ -118,8 +118,8 @@ follow-up task.
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation
 labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
-After a crash, abandoning an uncertain SDK send gives the daemon 24 hours to find the client
-message ID and matching words in the transcript. Hourly cleanup checks live and persisted
+After an SDK send is acknowledged, or an uncertain send is abandoned after a crash, the daemon
+allows 24 hours for the client message ID and matching words to appear. Hourly cleanup checks live and persisted
 conversations. It scans from the beginning because a rewritten transcript can move a receipt.
 It removes an unmatched payload only after reading the whole file. If the transcript is missing,
 unreadable, or changes during the scan, cleanup tries again on a later sweep.

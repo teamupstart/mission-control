@@ -45,6 +45,8 @@ export interface HistoryPage {
  * reader explicitly scrolled back to, and nothing but another page-back changes it.
  */
 export interface SessionHistory {
+  /** Oldest held byte to refresh when Voice is enabled after reads with spoken attribution disabled. */
+  voiceRefreshFrom?: number;
   /** Pages older than `tailStart`, ascending and contiguous; `older[i].end === older[i+1].start`. */
   older: HistoryPage[];
   /** Byte offset the live tail window began at - the anchor the next page back uses. */
@@ -80,6 +82,12 @@ const histories = new Map<string, SessionHistory>();
 /** What this session has accumulated, or null when nothing has been read yet. */
 export function readHistory(sessionId: string): SessionHistory | null {
   return histories.get(sessionId) ?? null;
+}
+
+export function markVoiceRefresh(history: SessionHistory): number {
+  const oldest = history.older[0]?.start ?? history.tailStart;
+  history.voiceRefreshFrom = Math.min(oldest, history.voiceRefreshFrom ?? oldest);
+  return history.voiceRefreshFrom;
 }
 
 function store(sessionId: string, h: SessionHistory): SessionHistory {

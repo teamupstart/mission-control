@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -54,17 +54,42 @@ test("spoken words and the exact delivered payload in both conversation views", 
   renameSync(nativePath, nativePath + ".before-spoken");
 
   expect(await (await say(daemon, "Steve, check the build")).json()).toEqual({ accepted: true });
+  await expect.poll(async () => (await (await request.get(`${daemon.baseURL}/api/voice/heard`)).json()).entries[0]?.outcome).toBe("sent");
   for (const view of ["chat", "terminal"]) {
     expect((await request.put(`${daemon.baseURL}/api/ui/config`, { data: { conversationView: view } })).ok()).toBe(true);
+    const voice = (enabled: boolean) => request.put(`${daemon.baseURL}/api/feature-flags`, {
+      data: { kind: "flag", id: "voice", enabled },
+    });
+    expect((await voice(false)).ok()).toBe(true);
+    if (view === "terminal") {
+      // Put the spoken turn on a history page. The native metadata occupies bytes, not screen space.
+      const padding = "x".repeat(5800);
+      const timestamp = new Date().toISOString();
+      appendFileSync(nativePath, Array.from({ length: 110 }, (_, index) => JSON.stringify({
+        type: "user", uuid: `later-${index}`, timestamp, padding,
+        message: { role: "user", content: `Later native turn ${index}` },
+      })).join("\n") + "\n");
+    }
     await page.reload();
     await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
+    const raw = page.getByRole("article").filter({ hasText: "check the build" })
+      .filter({ hasText: "When you have finished this, post a report." });
+    if (view === "terminal") {
+      const older = page.getByRole("button", { name: "Load older messages" });
+      await expect(older).toBeVisible();
+      await expect(raw).toHaveCount(0);
+      await older.click();
+    }
+    await expect(raw.first()).toBeVisible();
+    await expect(raw.getByText("Spoken", { exact: true })).toHaveCount(0);
+    expect((await voice(true)).ok()).toBe(true);
     const turn = page.getByRole("article").filter({ has: page.getByText("Spoken", { exact: true }), hasText: "check the build" });
     await expect(turn.getByText("check the build", { exact: true })).toBeVisible({ timeout: 30_000 });
     const payload = turn.locator(".review-received-text");
     await expect(payload).toBeHidden();
     const capture = async (state: string) => {
       if (process.env.MC_E2E_EVIDENCE !== "1") return;
-      const dir = artifactsDir("voice-spoken-message-cold-transcript");
+      const dir = artifactsDir("voice-spoken-message-live-flag");
       mkdirSync(dir, { recursive: true });
       await page.mouse.move(0, 0);
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -90,7 +115,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
   const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
-    await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message-cold-transcript"), "not-running.png") });
+    await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message-live-flag"), "not-running.png") });
   }
 });
 
@@ -149,7 +174,7 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
   const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
-    const dir = artifactsDir("voice-overlapping-cards");
+    const dir = artifactsDir("voice-overlapping-cards-stopped-during-window");
     mkdirSync(dir, { recursive: true });
     await feedback.screenshot({ path: join(dir, "earlier-failure.png") });
   }

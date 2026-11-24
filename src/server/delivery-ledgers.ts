@@ -164,7 +164,7 @@ function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryC
   }
 }
 
-/** Final binding pass for abandoned SDK receipts and confirmed text-only turns whose window has closed. */
+/** Final transcript pass for abandoned attempts and confirmed deliveries still awaiting a native match. */
 export function pruneExpiredSpokenTurns(now: number, transcriptFor: (key: string) => DeliveryConversation["transcript"],
   unavailableBefore?: number): number {
   const cutoff = now - DELIVERY_LAG_MS;

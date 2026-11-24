@@ -231,13 +231,14 @@ export class VoiceStateStore {
   /** Take the shell's report. The latest one wins whole. */
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
+    const keyUp = report.pushToTalkReleasedAt;
     const held = !report.pushToTalk && this.report?.report.pushToTalk && this.state().mode === "push-to-talk"
       ? this.directive() : null;
     this.report = { at, report };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
-    if (held?.capture && this.state().mode === "auto-muted") {
+    if (held?.capture && keyUp !== undefined && keyUp <= at && this.state().mode === "auto-muted") {
       this.directive();
-      this.release = { revision: held.revision, at };
+      this.release = { revision: held.revision, at: keyUp };
     }
     this.publish();
   }

@@ -470,6 +470,8 @@ export const VoiceShellReportSchema = z.object({
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS).nullable().default(null),
   callActive: z.boolean().default(false),
   pushToTalk: z.boolean().default(false),
+  /** Host Unix milliseconds of the actual key-up. An undated release just closes capture. */
+  pushToTalkReleasedAt: z.number().int().nonnegative().optional().catch(undefined),
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),

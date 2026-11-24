@@ -122,7 +122,8 @@ test("only one listener can capture or deliver, and its heartbeat lease transfer
 test("only pre-release speech from the held revision can finish during call auto-mute", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
-  const press = (pushToTalk: boolean) => post("/voice/shell-report", { callActive: true, pushToTalk }, token);
+  const press = (pushToTalk: boolean, pushToTalkReleasedAt?: number | string) =>
+    post("/voice/shell-report", { callActive: true, pushToTalk, pushToTalkReleasedAt }, token);
   const poll = () => app.request("/voice/listener/directive", {
     headers: { "x-harness-token": token, "x-voice-listener-id": listenerId },
   });
@@ -135,7 +136,9 @@ test("only pre-release speech from the held revision can finish during call auto
   const held = voiceStateStore.directive();
   assert.equal(held.capture, true);
   t.mock.timers.tick(100);
-  await press(false);
+  const keyUp = Date.now();
+  t.mock.timers.tick(450); // The shell report was in transit after the operator released the key.
+  await press(false, keyUp);
   const off = await poll();
   assert.equal(off.headers.get("x-voice-release-revision"), held.revision);
   assert.equal(off.headers.get("x-voice-release-at"), String(now + 100));
@@ -156,10 +159,19 @@ test("only pre-release speech from the held revision can finish during call auto
   assert.deepEqual(await submit(held.revision, now, "after-mute"), { accepted: false });
   await post("/api/voice/mute", { muted: false });
   assert.deepEqual(await submit(held.revision, now, "after-unmute"), { accepted: false });
+  for (const invalidKeyUp of [undefined, "bad-clock", Date.now() + 1000]) {
+    await press(true);
+    const heldAgain = voiceStateStore.directive();
+    await press(false, invalidKeyUp);
+    const stopped = await poll();
+    assert.equal((await stopped.json()).capture, false);
+    assert.equal(stopped.headers.get("x-voice-release-at"), null);
+    assert.deepEqual(await submit(heldAgain.revision, now, "no-valid-keyup"), { accepted: false });
+  }
   await press(true);
   const next = voiceStateStore.directive();
   await post("/api/voice/mute", { muted: true }); // An actual mute while held also discards.
-  await press(false);
+  await press(false, Date.now());
   assert.equal((await poll()).headers.get("x-voice-release-revision"), null);
   assert.deepEqual(await submit(next.revision, now, "muted-while-held"), { accepted: false });
 });

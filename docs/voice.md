@@ -81,6 +81,10 @@ the held audio with the original revision. An ordinary capture stop discards unf
 The native helper dates the samples from the input tap's audio timestamp on the shared host
 clock, so a delayed callback still includes speech recorded before key-up.
 
+The shell sends `pushToTalk: false` with `pushToTalkReleasedAt` set to the key event's
+Unix time in milliseconds on the shared host clock. Transport delay does not extend the
+held interval. A missing, invalid or future timestamp closes capture and discards the tail.
+
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
 steady background noise can continue between utterances. Parakeet transcribes each segment
@@ -529,7 +533,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`3`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, hotkeyError }`,
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkReleasedAt?, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
   does not know are dropped rather than refused.
 

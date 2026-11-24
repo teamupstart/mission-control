@@ -42,8 +42,14 @@ async function assertBuild(source: string): Promise<void> {
   }
 }
 
-export async function stageMod(options: { source: string; dest: string }): Promise<StagedMod> {
+export async function stageMod(options: {
+  source: string;
+  dest: string;
+  /** The rename used to publish; a test injects one that fails part way through the swap. */
+  rename?: typeof rename;
+}): Promise<StagedMod> {
   const { source, dest } = options;
+  const move = options.rename ?? rename;
   await assertBuild(source);
   const suffix = process.pid + "-" + randomBytes(4).toString("hex");
   const staging = dest + ".staging-" + suffix;
@@ -58,14 +64,14 @@ export async function stageMod(options: { source: string; dest: string }): Promi
   let movedAside = false;
   try {
     try {
-      await rename(dest, previous);
+      await move(dest, previous);
       movedAside = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    await rename(staging, dest);
+    await move(staging, dest);
   } catch (error) {
-    if (movedAside) await rename(previous, dest).catch(() => undefined);
+    if (movedAside) await move(previous, dest).catch(() => undefined);
     await rm(staging, { recursive: true, force: true });
     throw error;
   }

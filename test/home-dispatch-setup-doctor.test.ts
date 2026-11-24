@@ -5,10 +5,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { rename } from "node:fs/promises";
 import { findClaude, realExec } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import type { CliIo } from "../src/cli/commands/index.ts";
 import { calledPaths } from "../src/cli/setup-steps/checks.ts";
+import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
 import { stageMod } from "../src/server/mod-stage.ts";
 import { createFakeClaude, createFakeDaemon, type FakeClaude, type FakeDaemon } from "./helpers/home-dispatch-fakes.ts";
 
@@ -314,5 +316,111 @@ test("setup and doctor take no unknown arguments", async () => {
     assert.equal((await r.run("doctor", "--live")).code, 1);
   } finally {
     await r.cleanup();
+  }
+});
+
+test("a swap that fails after the old mod is moved aside puts the old mod back and leaves no sibling", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-swap-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    writeModBuild(source, "1.1.0");
+    let calls = 0;
+    // The first rename moves the old mod aside; the second would publish the new one and fails.
+    const failing: typeof rename = async (from, to) => {
+      calls += 1;
+      if (calls === 2) throw new Error("disk full");
+      return rename(from, to);
+    };
+    await assert.rejects(stageMod({ source, dest, rename: failing }), /disk full/);
+    assert.equal(calls >= 3, true, "the old mod was renamed back after the failed publish");
+    assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0");
+    assert.deepEqual(readdirSync(join(dir, "state")), ["mod"], "no staging or old sibling is left behind");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a marketplace add that fails stops before any install and prints both recovery commands", async () => {
+  const r = await rig();
+  try {
+    r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr: "cannot read marketplace", times: 5 } } });
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod: `claude plugin marketplace add` failed: cannot read marketplace/);
+    assert.ok(result.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    assert.ok(!pluginCalls(r.claude).includes("install"));
+    assert.deepEqual(r.claude.state().plugins, []);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a marketplace that is already added is not a failure", async () => {
+  const r = await rig();
+  try {
+    r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr: "marketplace already added", times: 5 } } });
+    const result = await r.run("setup");
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.equal(r.claude.state().plugins[0]?.version, "2.2.0");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a stale build whose uninstall fails stays installed, nothing is installed over it, and setup exits 1", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    r.claude.update({ failures: { uninstall: { exitCode: 1, stderr: "plugin is in use", times: 5 } } });
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod: `claude plugin uninstall` failed: plugin is in use/);
+    assert.ok(result.out.includes("claude plugin marketplace add " + join(r.state, "mod")));
+    assert.ok(!pluginCalls(r.claude).includes("install"));
+    assert.deepEqual(r.claude.state().plugins.map((p) => p.version), ["2.1.0"]);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("an install that exits 0 but lists the wrong version, or the wrong scope, is reported as a failure", async () => {
+  // Wrong version: the fake records 9.9.9 for the install, not the staged 2.3.0.
+  const wrongVersion = await rig({ version: "2.3.0" });
+  try {
+    wrongVersion.claude.update({ stagedVersion: "9.9.9" });
+    const result = await wrongVersion.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod: the install finished but `claude plugin list` shows 9\.9\.9, not 2\.3\.0/);
+    assert.ok(result.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+  } finally {
+    await wrongVersion.cleanup();
+  }
+
+  // Wrong scope: the listing after the install says the plugin is at project scope.
+  const wrongScope = await rig();
+  try {
+    let installed = false;
+    const result = await runModStep({
+      live: false,
+      deps: {
+        env: wrongScope.env,
+        exec: async (file, args, options) => {
+          const real = await realExec(file, args, options);
+          if (args[1] === "install") installed = true;
+          if (installed && args[1] === "list") {
+            const rows = JSON.parse(real.stdout) as { scope: string }[];
+            return { ...real, stdout: JSON.stringify(rows.map((row) => ({ ...row, scope: "project" }))) };
+          }
+          return real;
+        },
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.match(result.message, /shows 2\.2\.0, project scope, not 2\.2\.0/);
+  } finally {
+    await wrongScope.cleanup();
   }
 });

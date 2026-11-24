@@ -67,8 +67,8 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   // Re-read in a fresh `claude` invocation: the install must show the staged version.
   const after = await readInstalledMod(claude, deps);
   if ("error" in after) return installFailure(after.error, deps.stateDir);
-  if (!after.mod || !after.mod.enabled || after.mod.version !== version) {
-    const seen = after.mod ? after.mod.version + (after.mod.enabled ? "" : ", disabled") : "nothing";
+  if (!after.mod || !after.mod.enabled || after.mod.scope !== "user" || after.mod.version !== version) {
+    const seen = after.mod ? after.mod.version + (after.mod.enabled ? "" : ", disabled") + (after.mod.scope === "user" ? "" : ", " + after.mod.scope + " scope") : "nothing";
     return installFailure("the install finished but `claude plugin list` shows " + seen + ", not " + version, deps.stateDir);
   }
   const action = installed ? "replaced " + installed.version + " with" : "installed";

@@ -406,6 +406,46 @@ test("bare numeric answers prefer an exact label and explicit option numbers are
   assert.deepEqual(registry.getReview(q.id)?.selections?.[0]?.selected, ["four"]);
 });
 
+test("multi-letter option commands use the displayed letters and never become messages or Other", async () => {
+  const title = "Which choice?";
+  const q = reviews.create("sdk:Steve", "input", title, title, [{ id: "q", question: title, allowOther: true,
+    options: Array.from({ length: 53 }, (_, i) => ({ id: String(i + 1), label: "Choice " + (i + 1) })) }]);
+  await say("Steve, option BA");
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["53"]);
+  await say("cancel");
+  for (const open of [false, true]) {
+    await show(open ? [q.id] : []);
+    for (const label of ["BB", "ZZ", "AAA"]) {
+      await say("Steve, option " + label);
+      assert.equal(cards.at(-1)?.detail, "No matching option.", label);
+      assert.deepEqual(answers(), []);
+      assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 0);
+    }
+  }
+  assert.deepEqual(queued("Steve"), []);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
+test("opening a question after speaking cannot authorize Other when the operator chooses it in the picker", async t => {
+  const now = Date.now();
+  const connected = performance.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  t.mock.method(performance, "now", () => connected + (Date.now() - now));
+  const q = question();
+  const second = question("Which cache?");
+  await say("Steve, answer: a different database", "closed-picker");
+  assert.deepEqual(cards.at(-1)?.candidates.map(c => c.id), [q.id, second.id]);
+  t.mock.timers.tick(100);
+  await show([q.id]);
+  t.mock.timers.tick(100);
+  assert.equal((await act("closed-picker", "pick", { id: q.id })).status, 200);
+  await registry.voiceRouter!.resolution("closed-picker");
+  assert.equal(cards.at(-1)?.detail, "No matching option.");
+  assert.deepEqual(answers(), []);
+  assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 0);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
 test("a matcher failure leaves Other untouched and the question available to retry", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const q = question();

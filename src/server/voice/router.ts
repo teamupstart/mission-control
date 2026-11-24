@@ -427,7 +427,7 @@ export class VoiceRouter {
       const review = this.questions!.pending().find(q => q.id === latest.answer!.reviewId);
       entry.outcome = "control";
       entry.rule = "switch-answer";
-      const index = spokenIndex(correction[1]!);
+      const index = spokenIndex(correction[1]!, true);
       if (index !== undefined && review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[index]) {
         return this.prepareAnswer(latest, review, "option " + (index + 1), false, { id: utterance.id, time }).then(() => true);
       }
@@ -531,7 +531,9 @@ export class VoiceRouter {
     // Include the originally eligible cards when reading focus. Settling one while
     // we await the report must not turn its unfocused neighbor into the sole target.
     const focused = this.openCards.target(candidates, !!target);
-    const timing = this.questionCaptureTiming(item.time);
+    // Picking sets a new time for cancellation priority. Only the original
+    // speech can establish whether the operator dictated into an open card.
+    const timing = this.questionCaptureTiming(item.answerCapture!);
     const open = confirmed && focused && timing === "eligible" && this.openCards.footerOwner(focused.id) === windowId &&
       (!calibratingTarget || calibratingTarget === focused.id) ? focused : undefined;
     const review = fixed ?? open;

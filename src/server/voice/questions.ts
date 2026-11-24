@@ -224,20 +224,24 @@ function spokenNumber(value: string, start = 0): number | undefined {
   return undefined;
 }
 
-export function spokenIndex(words: string): number | undefined {
+export function spokenIndex(words: string, explicitLetters = false): number | undefined {
   const value = words.trim().toLowerCase().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/u, "").replace(/-/gu, " ");
-  if (/^[a-z]$/u.test(value)) return value.charCodeAt(0) - 97;
-  if (/^a[a-z]$/u.test(value)) return 26 + value.charCodeAt(1) - 97;
   if (/^\d+(?:st|nd|rd|th)?$/u.test(value)) return parseInt(value, 10) - 1;
   const number = spokenNumber(value) ?? (value.endsWith(" one") ? positions.get(value.slice(0, -4)) : undefined);
-  return number === undefined ? undefined : number - 1;
+  if (number !== undefined) return number - 1;
+  // In an explicit selector every letter belongs to the badge. Keep ordinary
+  // single-word dictation available to the matcher and the Other field.
+  if (!(explicitLetters ? /^[a-z]+$/u : /^a?[a-z]$/u).test(value)) return undefined;
+  let position = 0;
+  for (const letter of value) position = position * 26 + letter.charCodeAt(0) - 96;
+  return position - 1;
 }
 
 /** These commands request a particular option and cannot supply a written answer. */
 export function requestedChoice(words: string): number | "recommended" | undefined {
   if (/^go with your recommendation[.!?]*$/iu.test(words)) return "recommended";
   const selector = /^option\s+(.+?)\s*[.!?]*$/iu.exec(words)?.[1];
-  return selector ? spokenIndex(selector) : undefined;
+  return selector ? spokenIndex(selector, true) : undefined;
 }
 
 function normalizedLabel(text: string): string {

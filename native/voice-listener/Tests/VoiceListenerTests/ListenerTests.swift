@@ -252,6 +252,56 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(result?.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
     }
 
+    func test48kReleaseIsIndependentOfPostReleaseInput() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        let clock = CaptureClock(hostTime: 0, unixTime: 100)
+        let release: Int64 = 100_205
+        func released(afterKeyUp: Float, held: Bool, cutoffKnown: Bool) throws -> Segment {
+            let tap = try InputSegmenter(source: format, held: held)
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+            frame.frameLength = frame.frameCapacity
+            for start in stride(from: 0, through: 9600, by: 960) {
+                for i in 0..<960 {
+                    let n = start + i
+                    let value = n < 9840 ? 0.3 * sin(Float(n) * 2 * .pi * 400 / 48_000) : afterKeyUp
+                    for channel in 0..<2 { frame.floatChannelData![channel][i] = value }
+                }
+                let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 48_000),
+                                       sampleTime: Int64(start), atRate: 48_000)
+                XCTAssertTrue(tap.consume(frame, at: when, clock: clock, cutoff: cutoffKnown && start == 9600 ? release : nil).isEmpty)
+            }
+            return try XCTUnwrap(tap.finish(at: release))
+        }
+        // An explicit cutoff protects either conversion mode. Held capture also
+        // has to protect a boundary reported after the whole callback was read.
+        for (held, cutoffKnown) in [(false, true), (true, true), (true, false)] {
+            let positive = try released(afterKeyUp: 0.9, held: held, cutoffKnown: cutoffKnown)
+            let negative = try released(afterKeyUp: -0.9, held: held, cutoffKnown: cutoffKnown)
+            XCTAssertEqual(positive.endedAt, release)
+            XCTAssertGreaterThan(positive.samples.count, 1600)
+            XCTAssertEqual(positive.samples.count, negative.samples.count)
+            XCTAssertTrue(positive.samples.elementsEqual(negative.samples), "Post-release audio affected the resampled command (known cutoff: \(cutoffKnown))")
+        }
+    }
+
+    func testContiguousSamplePositionsSurviveHostJitter() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
+        frame.frameLength = frame.frameCapacity
+        for i in 0..<960 { frame.floatChannelData![0][i] = 0.3 * sin(Float(i) * 2 * .pi * 400 / 48_000) }
+        let tap = try InputSegmenter(source: format, held: true)
+        let clock = CaptureClock(hostTime: 0, unixTime: 100)
+        for i in 0..<12 {
+            let jitter = i.isMultiple(of: 2) ? 0.0 : 0.0004
+            let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(i) * 0.02 + jitter),
+                                   sampleTime: Int64(i * 960), atRate: 48_000)
+            XCTAssertTrue(tap.consume(frame, at: when, clock: clock).isEmpty)
+        }
+        let phrase = try XCTUnwrap(tap.finish(at: 100_230))
+        XCTAssertEqual(phrase.startNs, 100_000_000_000)
+        XCTAssertEqual(phrase.samples.count, 230 * 16)
+    }
+
     func testTapGapDiscardsInterruptedSpeechThroughSilenceAndKeepsTheNextCommand() throws {
         let (_, corpus) = try fixtureDirectories()
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))

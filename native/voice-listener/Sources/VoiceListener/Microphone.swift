@@ -256,10 +256,26 @@ final class InputSegmenter {
               let converter = AVAudioConverter(from: source, to: mono) else { throw CaptureError.format }
         self.mono = mono
         self.converter = converter
+        // In a hold, key-up can arrive after this tap. Real-time (unprimed) SRC
+        // emits its filter latency at the start instead of reading future input
+        // into earlier output. A late release can then safely trim the mono PCM.
+        if held { converter.primeMethod = .none }
         segmenter = try SpeechSegmenter(held: held)
     }
 
+    private func prefix(_ buffer: AVAudioPCMBuffer, frames: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        guard let prefix = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: frames) else { return nil }
+        prefix.frameLength = frames
+        let source = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        for (i, plane) in UnsafeMutableAudioBufferListPointer(prefix.mutableAudioBufferList).enumerated() {
+            guard let dest = plane.mData, let src = source[i].mData else { return nil }
+            dest.copyMemory(from: src, byteCount: Int(plane.mDataByteSize))
+        }
+        return prefix
+    }
+
     func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock(), cutoff: Int64? = nil) -> [Segment] {
+        if let cutoff, let deliveredThrough, deliveredThrough >= cutoff { return [] }
         if when.isHostTimeValid && when.isSampleTimeValid { anchor = when }
         let time = when.isHostTimeValid ? when : anchor.flatMap { when.extrapolateTime(fromAnchor: $0) }
         guard let time, time.isHostTimeValid else { interrupt(); return [] }
@@ -267,28 +283,52 @@ final class InputSegmenter {
         let hostSeconds = AVAudioTime.seconds(forHostTime: time.hostTime)
         // Sample positions catch missing frames even if the device's host clock jitters.
         // Host-only timestamps are compared to within half an input sample for tick rounding.
-        let sampleGap = when.isSampleTimeValid && nextSample.map { $0 != when.sampleTime } == true
-        let hostGap = nextHostSeconds.map { abs($0 - hostSeconds) > 0.5 / rate } == true
-        if sampleGap || hostGap { interrupt() }
+        if when.isSampleTimeValid, let nextSample {
+            if when.sampleTime != nextSample { interrupt() }
+        } else if let nextHostSeconds, abs(nextHostSeconds - hostSeconds) > 0.5 / rate {
+            interrupt()
+        }
         nextSample = when.isSampleTimeValid ? when.sampleTime + Int64(buffer.frameLength) : nil
         nextHostSeconds = hostSeconds + Double(buffer.frameLength) / rate
-        let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * mono.sampleRate / buffer.format.sampleRate)) + 1
+
+        let inputStart = clock.unixNanoseconds(at: time.hostTime)
+        let inputDuration = Double(buffer.frameLength) / rate
+        let inputEnd = inputStart + Int64((inputDuration * 1e9).rounded())
+        let atRelease = cutoff.map { $0 <= inputEnd / 1_000_000 } ?? false
+        var input: AVAudioPCMBuffer? = buffer
+        if atRelease, let cutoff {
+            // Compare in the device's sample domain before the resampling filter
+            // sees the boundary. Only complete input frames belong to the hold.
+            let durationNs = cutoff <= inputStart / 1_000_000 ? 0 : cutoff * 1_000_000 - inputStart
+            let frames = min(buffer.frameLength, AVAudioFrameCount(Double(durationNs) * rate / 1e9))
+            if frames == 0 {
+                input = nil
+            } else if frames < buffer.frameLength {
+                guard let clipped = prefix(buffer, frames: frames) else { interrupt(); return [] }
+                input = clipped
+            }
+        }
+        let pendingDuration = atRelease ? max(0, converterDelay) : 0
+        let capacity = AVAudioFrameCount(ceil((inputDuration + pendingDuration) * mono.sampleRate)) + 1
         guard let converted = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: capacity) else { interrupt(); return [] }
         var supplied = false
         let status = converter.convert(to: converted, error: nil) { _, state in
-            if supplied { state.pointee = .noDataNow; return nil }
+            guard !supplied, let input else {
+                state.pointee = atRelease ? .endOfStream : .noDataNow
+                return nil
+            }
             supplied = true
             state.pointee = .haveData
-            return buffer
+            return input
         }
         guard status != .error, let channel = converted.floatChannelData?[0] else { interrupt(); return [] }
         // The tap timestamp names the first input frame. Some input can remain
         // buffered in the resampler across callbacks; date the emitted PCM itself.
         let outputDuration = Double(converted.frameLength) / mono.sampleRate
-        let startNs = clock.unixNanoseconds(at: time.hostTime) - Int64((converterDelay * 1e9).rounded())
+        let startNs = inputStart - Int64((converterDelay * 1e9).rounded())
         let endNs = startNs + Int64(converted.frameLength) * Segment.sampleNs
-        converterDelay += Double(buffer.frameLength) / buffer.format.sampleRate - outputDuration
-        deliveredThrough = endNs / 1_000_000
+        converterDelay += Double(input?.frameLength ?? 0) / rate - outputDuration
+        deliveredThrough = atRelease ? cutoff : endNs / 1_000_000
         var count = Int(converted.frameLength)
         if let cutoff {
             count = Segment.completeSamples(count, startingAt: startNs, through: cutoff)

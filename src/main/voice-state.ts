@@ -28,7 +28,8 @@ export function startShellVoice(binary: string, onState: (state: VoiceState) => 
       return;
     }
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
-    const installed = existsSync(binary);
+    // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
+    const installed = state.model.backend === "fluidaudio" && existsSync(binary);
     listener.update(state, installed && microphone === "granted");
     if (installed && state.model.status === "ready" && microphone === "not-determined" && !asked) {
       void ask().then(sync).catch(() => {});

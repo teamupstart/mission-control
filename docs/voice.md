@@ -5,7 +5,7 @@ When it is finished, the operator will talk to an agent by name, with speech rec
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
-holds a message for the configured cancel window and queues it to the addressed agent. On Apple silicon, the standalone listener captures and recognizes speech locally.
+holds a message for the configured cancel window and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS and Linux.
 The on-screen confirmation card belongs to a later phase.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
@@ -45,7 +45,7 @@ Any launcher can run `dist/native/voice-listener` directly with these three vari
 | `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
 
 The development launcher fills missing values from the local daemon configuration and the
-FluidAudio model manifest. When macOS reports `not-determined` at startup, the helper
+selected backend's model manifest. When macOS reports `not-determined` at startup, the helper
 prints a terminal diagnostic, includes the reading in its hello and keeps the microphone
 closed. Run the development command from a terminal app that already has microphone access.
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
@@ -320,9 +320,35 @@ a 40-character commit does not parse. The `fluidaudio` entry holds two models, 5
 | Parakeet TDT 0.6B v2, Core ML | `FluidInference/parakeet-tdt-0.6b-v2-coreml` at `ee09c569f73759e6d44c9bd16766f477b2b36d39`: the Encoder, Decoder, JointDecision and Preprocessor models and `parakeet_vocab.json` | The recognizer |
 | Parakeet TDT-CTC 110M, Core ML | `FluidInference/parakeet-ctc-110m-coreml` at `accdafd8cf8a2ff1cabe3c11e54416b405d409aa` | FluidAudio primes the roster's names with a vocabulary-boosting pass over this model |
 
-The `sherpa-onnx` entry is empty until its backend is built. The configured `backend` decides which
-entry is used: `auto` is `fluidaudio` on Apple silicon and `sherpa-onnx` everywhere else. A machine
-whose backend has no model reads so on the row, with nothing to download.
+On Apple silicon running macOS 14 or newer, `auto` selects FluidAudio.
+Elsewhere it selects sherpa-onnx. Select either backend with `PUT /api/voice/config`
+or set `MISSION_VOICE_BACKEND` when starting the daemon. Switching keeps the other
+backend's verified files. The sherpa download includes the int8 Parakeet TDT 0.6B v2
+recognizer (about 661 MB) and a Silero speech detector (2.2 MB). Allow about 2 GB
+of resident memory for recognition, as measured in the spike.
+
+**Sherpa currently accepts recordings only. Live microphone capture is unverified.**
+On macOS or Linux, build the helper, select sherpa in the daemon, download its model
+in Setup, unmute, then run
+`npm run voice:listener -- --backend sherpa-onnx --input-file sample.wav` from the
+checkout. Use 16 kHz mono PCM WAV. The listener waits for capture permission from the
+daemon, detects speech, applies roster hotwords and posts timed utterances. During
+playback the development listener reports its file input as granted and enumerates
+zero microphones. Use ordinary listening mode for playback. After the file ends,
+allow the listener’s 30-second lease to expire before launching another process. The packaged app excludes file playback. The desktop
+shell starts FluidAudio for live capture. Linux supports the standalone recognizer path;
+desktop capture, daemon launch, hotkeys and call detection belong to the Linux follow-on.
+
+The dedicated Linux CI job tests the shipped addon layout against a loopback daemon with
+a 16 kHz mono recording of “Steve, check the build”. The fixture uses the macOS Samantha
+voice at 180 words per minute, with 400 ms of silence inserted between the name and
+the message. The test checks the decoded words and their timings. Routing uses the
+first word regardless of the measured gap. The pinned fp32 Parakeet 110M model
+and detector cache occupy about 480 MB. Unit shards use a complete existing cache and
+skip recognition on a cold cache. To run the required check locally, set
+`MISSION_VOICE_RECOGNIZER_JOB=1` and run
+`node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts`.
+`MISSION_VOICE_TEST_MODEL_DIR` overrides the temporary cache location.
 
 ### Download and verification
 

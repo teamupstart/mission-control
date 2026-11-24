@@ -1,3 +1,4 @@
+import { release } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, rename, rm } from "node:fs/promises";
@@ -624,7 +625,7 @@ let baseUrl: string | null | undefined;
 export const voiceModelManager = new VoiceModelManager({
   root: () => join(stateDir(), "voice", "models"),
   active: () => featureEnabled(VOICE_FLAG),
-  backend: () => resolveVoiceBackend(getVoiceConfig().backend, process.platform, process.arch),
+  backend: () => resolveVoiceBackend(getVoiceConfig().backend, process.platform, process.arch, release()),
   manifests: () => (manifests ??= voiceModelManifestsFromEnv()),
   baseUrl: () => (baseUrl === undefined ? (baseUrl = voiceModelBaseUrlFromEnv()) : baseUrl),
 });

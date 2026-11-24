@@ -17,7 +17,7 @@ async function until(condition: () => boolean, description: string, timeoutMs = 
   }
 }
 
-describe("Swift listener microphone lifecycle", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
+describe("voice listener subprocess protocol and Swift microphone lifecycle", { skip: process.platform !== "darwin" || process.arch !== "arm64" }, () => {
   let dir: string;
   before(() => {
     dir = mkdtempSync(join(tmpdir(), "listener-lifecycle-"));
@@ -28,7 +28,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
+  async function launch(t: TestContext, { sherpa = false, initialCapture = true, roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
     const events: string[] = [];
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
@@ -81,7 +81,9 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     await once(server, "listening");
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const child = spawn(join(dir, "listener"), [], { env: {
+    const executable = sherpa ? process.execPath : join(dir, "listener");
+    const args = sherpa ? ["--import", "tsx", "test/helpers/sherpa-protocol-fixture.ts"] : [];
+    const child = spawn(executable, args, { env: {
       ...process.env, VOICE_FIXTURE_PERMISSION: microphone, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port,
       MISSION_VOICE_TOKEN_FILE: join(dir, "token"), MISSION_VOICE_MODEL_DIR: modelDir,
     } });
@@ -108,8 +110,25 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     }
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
-    apply(initial, "first", true);
+    apply(initial, "first", initialCapture);
     return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
+  }
+
+  for (const backend of ["fluidaudio", "sherpa-onnx"]) {
+    it(backend + " waits through mute, primes the resumed roster and posts under the new capture revision", async t => {
+      const { nextPoll, apply, events, posted, hellos, instanceIds } = await launch(t, {
+        sherpa: backend === "sherpa-onnx", initialCapture: false, inputDevice: "two-utterances",
+      });
+      const muted = await nextPoll("first");
+      assert.deepEqual(posted, []);
+      apply(muted, "resumed", true, ["Steve"]);
+      await until(() => posted.length > 0, "fixture transcription to reach the daemon");
+      assert.ok(events.includes('prime ["Steve"]'));
+      assert.deepEqual(posted[0], { text: "first", revision: "resumed" });
+      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === "4.0"));
+      assert.equal(instanceIds.size, 1);
+      assert.ok([...instanceIds][0]);
+    });
   }
 
   it("explains the authorized-terminal prerequisite on first launch and keeps unapproved capture closed", async t => {

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { MOD_NAME } from "../../mod/constants.ts";
 import { findClaude, type ClaudeCli } from "../claude-cli.ts";
 import { stageMod } from "../../server/mod-stage.ts";
-import { MOD_PLUGIN_ID, checkModCallsAt, readInstalledMod, recoveryCommands } from "./checks.ts";
+import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
 import type { SetupStepOptions, SetupStepResult } from "./types.ts";
 
@@ -17,8 +17,8 @@ const ALREADY_ADDED = /\balready (?:been )?(?:added|registered)\b|\bmarketplace\
 const failed = (message: string): SetupStepResult => ({ id, status: "failed", message });
 
 /** A failed install: the cause and the two commands that finish it by hand. */
-function installFailure(cause: string, stateDir: string): SetupStepResult {
-  const [add, install] = recoveryCommands(stateDir);
+function installFailure(cause: string, stateDir: string, claude: string): SetupStepResult {
+  const [add, install] = recoveryCommands(stateDir, claude);
   return failed(cause + "\nTo finish by hand, run:\n  " + add + "\n  " + install);
 }
 
@@ -39,6 +39,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
     return failed("the claude CLI was not found" + why + ". Install Claude Code or set MISSION_CLAUDE_BIN, then run `mctl setup` again; the mod was not installed.");
   }
   const claude = found.claude;
+  const bin = claudeCommand(claude);
   const modDir = join(deps.stateDir, "mod");
 
   let version: string;
@@ -60,7 +61,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   }
 
   const before = await readInstalledMod(claude, deps);
-  if ("error" in before) return installFailure(before.error, deps.stateDir);
+  if ("error" in before) return installFailure(before.error, deps.stateDir, bin);
   const installed = before.mod;
   if (installed && installed.enabled && installed.scope === "user" && installed.version === version) {
     return { id, status: "ok", message: "the mod " + version + " is already installed (claude " + claude.version + ")" };
@@ -70,23 +71,31 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   // happens to contain the word "already" ("already locked", "already exists but is unreadable").
   const add = await deps.exec(claude.path, ["plugin", "marketplace", "add", modDir], { timeoutMs: 120_000 });
   if (add.code !== 0 && !ALREADY_ADDED.test(add.stderr + add.stdout)) {
-    return installFailure("`claude plugin marketplace add` failed: " + describe(add), deps.stateDir);
+    return installFailure("`claude plugin marketplace add` failed: " + describe(add), deps.stateDir, bin);
   }
   // A stale or disabled user-scope install is replaced by uninstall and install, never `claude plugin
   // update`. An install at another scope is somebody else's and is left alone: the user-scope one is added beside it.
   if (installed && installed.scope === "user") {
     const gone = await claudeStep(claude, deps, ["plugin", "uninstall", MOD_PLUGIN_ID, "--scope", "user"]);
-    if (gone) return installFailure(gone, deps.stateDir);
+    if (gone) return installFailure(gone, deps.stateDir, bin);
   }
   const install = await claudeStep(claude, deps, ["plugin", "install", MOD_PLUGIN_ID, "--scope", "user"]);
-  if (install) return installFailure(install, deps.stateDir);
+  if (install) return installFailure(install, deps.stateDir, bin);
 
   // Re-read in a fresh `claude` invocation: the install must show the staged version.
   const after = await readInstalledMod(claude, deps);
-  if ("error" in after) return installFailure(after.error, deps.stateDir);
+  if ("error" in after) return installFailure(after.error, deps.stateDir, bin);
   if (!after.mod || !after.mod.enabled || after.mod.scope !== "user" || after.mod.version !== version) {
-    const seen = after.mod ? after.mod.version + (after.mod.enabled ? "" : ", disabled") + (after.mod.scope === "user" ? "" : ", " + after.mod.scope + " scope") : "nothing";
-    return installFailure("the install finished but `claude plugin list` shows " + seen + ", not " + version, deps.stateDir);
+    // Name what differs, so a scope problem is not read as a version problem.
+    const found = after.mod;
+    const problems = found
+      ? [
+          ...(found.version === version ? [] : ["version " + found.version + " instead of the staged " + version]),
+          ...(found.scope === "user" ? [] : [found.scope + " scope instead of user scope"]),
+          ...(found.enabled ? [] : ["disabled"]),
+        ]
+      : ["no entry for the mod"];
+    return installFailure("the install finished but `claude plugin list` shows " + problems.join(", "), deps.stateDir, bin);
   }
   const action = installed?.scope === "user" ? "replaced " + installed.version + " with" : "installed";
   return { id, status: "ok", message: action + " the mod " + version + " at user scope (claude " + claude.version + ")" };

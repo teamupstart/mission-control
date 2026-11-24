@@ -82,6 +82,9 @@ async function rig(options: { version?: string; flag?: boolean } = {}): Promise<
 }
 
 /** The `claude plugin ...` subcommands the fake saw, as `install`, `marketplace add` and so on. */
+/** How a failed setup spells the discovered claude in the commands it prints. */
+const bin = (r: Rig): string => shellArg(r.claude.path);
+
 function pluginCalls(claude: FakeClaude): string[] {
   return claude.invocations().filter((i) => i.argv[0] === "plugin").map((i) => (i.argv[1] === "marketplace" ? "marketplace add" : i.argv[1]!));
 }
@@ -219,8 +222,8 @@ test("a reinstall that fails twice prints the cause and both recovery commands, 
     const result = await r.run("setup");
     assert.equal(result.code, 1);
     assert.match(result.out, /FAIL {2}mod: `claude plugin install` failed: marketplace unreachable/);
-    assert.ok(result.out.includes("claude plugin marketplace add " + join(r.state, "mod")));
-    assert.ok(result.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    assert.ok(result.out.includes(bin(r) + " plugin marketplace add " + join(r.state, "mod")));
+    assert.ok(result.out.includes(bin(r) + " plugin install " + MOD_ID + " --scope user"));
     // The steps after the failed one still ran.
     assert.match(result.out, /- codex: step not available in this build/);
     assert.match(result.out, /FAIL {2}doctor: /);
@@ -278,10 +281,10 @@ test("doctor names each failing check with its fix and exits 1", async () => {
     assert.equal(stale.code, 1);
     assert.match(stale.out, /FAIL {2}mod-current: the installed mod is 2\.1\.0 but the staged build is 2\.3\.0/);
     assert.ok(
-      stale.out.includes("fix: Run `mctl setup`, or by hand: claude plugin uninstall " + MOD_ID + " --scope user && claude plugin marketplace add "),
+      stale.out.includes("fix: Run `mctl setup`, or by hand: " + bin(r) + " plugin uninstall " + MOD_ID + " --scope user && " + bin(r) + " plugin marketplace add "),
       "the by-hand fix for a stale mod starts with the uninstall",
     );
-    assert.ok(stale.out.includes("&& claude plugin install " + MOD_ID + " --scope user"));
+    assert.ok(stale.out.includes("&& " + bin(r) + " plugin install " + MOD_ID + " --scope user"));
 
     // Disabled.
     r.claude.update({ plugins: [{ id: MOD_ID, version: "2.3.0", scope: "user", enabled: false }] });
@@ -371,7 +374,7 @@ test("a marketplace add that fails stops before any install and prints both reco
     const result = await r.run("setup");
     assert.equal(result.code, 1);
     assert.match(result.out, /FAIL {2}mod: `claude plugin marketplace add` failed: cannot read marketplace/);
-    assert.ok(result.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    assert.ok(result.out.includes(bin(r) + " plugin install " + MOD_ID + " --scope user"));
     assert.ok(!pluginCalls(r.claude).includes("install"));
     assert.deepEqual(r.claude.state().plugins, []);
   } finally {
@@ -399,7 +402,7 @@ test("a stale build whose uninstall fails stays installed, nothing is installed 
     const result = await r.run("setup");
     assert.equal(result.code, 1);
     assert.match(result.out, /FAIL {2}mod: `claude plugin uninstall` failed: plugin is in use/);
-    assert.ok(result.out.includes("claude plugin marketplace add " + join(r.state, "mod")));
+    assert.ok(result.out.includes(bin(r) + " plugin marketplace add " + join(r.state, "mod")));
     assert.ok(!pluginCalls(r.claude).includes("install"));
     assert.deepEqual(r.claude.state().plugins.map((p) => p.version), ["2.1.0"]);
   } finally {
@@ -414,8 +417,8 @@ test("an install that exits 0 but lists the wrong version, or the wrong scope, i
     wrongVersion.claude.update({ stagedVersion: "9.9.9" });
     const result = await wrongVersion.run("setup");
     assert.equal(result.code, 1);
-    assert.match(result.out, /FAIL {2}mod: the install finished but `claude plugin list` shows 9\.9\.9, not 2\.3\.0/);
-    assert.ok(result.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    assert.match(result.out, /FAIL {2}mod: the install finished but `claude plugin list` shows version 9\.9\.9 instead of the staged 2\.3\.0/);
+    assert.ok(result.out.includes(bin(wrongVersion) + " plugin install " + MOD_ID + " --scope user"));
   } finally {
     await wrongVersion.cleanup();
   }
@@ -440,7 +443,7 @@ test("an install that exits 0 but lists the wrong version, or the wrong scope, i
       },
     });
     assert.equal(result.status, "failed");
-    assert.match(result.message, /shows 2\.2\.0, project scope, not 2\.2\.0/);
+    assert.match(result.message, /shows project scope instead of user scope/);
   } finally {
     await wrongScope.cleanup();
   }
@@ -467,7 +470,7 @@ test("a plugin listing that fails is reported by setup (with recovery commands) 
     const setup = await r.run("setup");
     assert.equal(setup.code, 1);
     assert.match(setup.out, /FAIL {2}mod: `claude plugin list` failed: settings\.json is unreadable/);
-    assert.ok(setup.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    assert.ok(setup.out.includes(bin(r) + " plugin install " + MOD_ID + " --scope user"));
     assert.ok(!pluginCalls(r.claude).includes("install"), "nothing is installed on an unreadable listing");
     const doctor = await r.run("doctor");
     assert.equal(doctor.code, 1);
@@ -488,7 +491,7 @@ test("a plugin listing that is not JSON is reported by setup and by doctor", asy
     const setup = await runModStep({ live: false, deps });
     assert.equal(setup.status, "failed");
     assert.match(setup.message, /`claude plugin list --json` printed something that is not JSON/);
-    assert.ok(setup.message.includes("claude plugin marketplace add " + join(r.state, "mod")));
+    assert.ok(setup.message.includes(bin(r) + " plugin marketplace add " + join(r.state, "mod")));
     const doctor = await runDoctorStep({ live: false, deps });
     assert.equal(doctor.status, "failed");
     const check = doctor.checks!.find((c) => c.name === "mod-enabled")!;
@@ -702,7 +705,7 @@ test("recovery commands quote a state directory with spaces or shell characters"
     r.claude.update({ failures: { install: { exitCode: 1, stderr: "nope", times: 5 } } });
     const result = await r.run("setup");
     assert.equal(result.code, 1);
-    assert.ok(result.out.includes("  claude plugin marketplace add " + shellArg(join(odd, "mod"))));
+    assert.ok(result.out.includes("  " + bin(r) + " plugin marketplace add " + shellArg(join(odd, "mod"))));
     assert.ok(result.out.includes("'\\''"), "the embedded quote is escaped");
   } finally {
     await r.cleanup();
@@ -721,7 +724,7 @@ test("with HOME unset in the environment, the known places under the resolved ho
     const found = await findClaude({ env: { PATH: "/nonexistent" }, exec: realExec, home });
     assert.equal(found.claude?.path, join(home, ".local", "bin", "claude"));
     assert.equal(found.claude?.source, "known place");
-    assert.equal((await findClaude({ env: { PATH: "/nonexistent" }, exec: realExec })).claude, null, "without a home there is nowhere to look");
+    assert.equal((await findClaude({ env: { PATH: "/nonexistent" }, exec: realExec, executable: () => false })).claude, null, "without a home there is nowhere to look");
   } finally {
     fake.cleanup();
     rmSync(home, { recursive: true, force: true });
@@ -831,4 +834,36 @@ test("the daemon check says what actually happened: refused, timed out, an error
   assert.match(other.fix!, /MISSION_PORT/);
   const fine = await reading(async () => ({ ok: true, status: 200, json: async () => ({ service: "mission-control" }) }));
   assert.equal(fine.status, "ok");
+});
+
+test("recovery commands name the discovered claude, and one setup run reads the daemon once", async () => {
+  const r = await rig();
+  try {
+    r.claude.update({ failures: { install: { exitCode: 1, stderr: "nope", times: 5 } } });
+    const result = await r.run("setup");
+    assert.ok(result.out.includes(r.claude.path + " plugin marketplace add "), "the commands use the claude that was found, not a bare `claude`");
+    assert.ok(result.out.includes(r.claude.path + " plugin install " + MOD_ID + " --scope user"));
+    assert.equal(r.daemon.requests.filter((q) => q.path === "/api/health").length, 1, "daemon, flag and doctor steps share one /api/health reading");
+    const doctor = await r.run("doctor");
+    assert.equal(doctor.code, 1);
+    assert.equal(r.daemon.requests.filter((q) => q.path === "/api/health").length, 2, "doctor alone reads it once more");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a mod-calls record that is null, an array or a scalar is a failed check, not a crash", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const record = join(r.state, "mod", "mission-control", "hooks", "mod-calls.json");
+    for (const contents of ["null", "[]", "7", '"checked"']) {
+      writeFileSync(record, contents);
+      const doctor = await r.run("doctor");
+      assert.equal(doctor.code, 1, contents);
+      assert.match(doctor.out, /FAIL {2}mod-calls: the staged mod has no build-time mod-calls record/, contents);
+    }
+  } finally {
+    await r.cleanup();
+  }
 });

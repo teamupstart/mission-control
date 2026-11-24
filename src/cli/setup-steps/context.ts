@@ -20,6 +20,8 @@ export interface SetupDeps {
   modSource: string;
   /** The user's home directory, for `claude` detection. */
   home: string;
+  /** When present, the first `/api/health` reading is kept here and shared by every step of one run. */
+  healthCache?: { reading?: Promise<import("./checks.ts").HealthReading> };
 }
 
 /** Where the built mod is: beside the bundle (`dist/cli` next to `dist/mod`), or in a source checkout. */
@@ -39,5 +41,6 @@ export function resolveDeps(partial: Partial<SetupDeps> = {}): SetupDeps {
     home,
     stateDir: partial.stateDir ?? resolveStateDir(env, home),
     modSource: partial.modSource ?? defaultModSource(env),
+    ...(partial.healthCache ? { healthCache: partial.healthCache } : {}),
   };
 }

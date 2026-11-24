@@ -35,8 +35,13 @@ export function shellArg(path: string): string {
 }
 
 /** The two commands that install the mod by hand, printed whenever setup could not. */
-export function recoveryCommands(stateDir: string): [string, string] {
-  return [`claude plugin marketplace add ${shellArg(join(stateDir, "mod"))}`, `claude plugin install ${MOD_PLUGIN_ID} --scope user`];
+export function recoveryCommands(stateDir: string, claude: string = "claude"): [string, string] {
+  return [`${claude} plugin marketplace add ${shellArg(join(stateDir, "mod"))}`, `${claude} plugin install ${MOD_PLUGIN_ID} --scope user`];
+}
+
+/** How to spell the discovered claude in a command a person pastes: bare when it came from `PATH`, else its quoted path. */
+export function claudeCommand(claude: ClaudeCli): string {
+  return claude.source === "PATH" ? "claude" : shellArg(claude.path);
 }
 
 export interface InstalledMod {
@@ -101,6 +106,12 @@ export interface HealthReading {
 const HEALTH_TIMEOUT_MS = 3000;
 
 export async function fetchHealth(deps: SetupDeps): Promise<HealthReading> {
+  // One `mctl setup` run reads the daemon from three steps; with a cache they share one answer.
+  if (!deps.healthCache) return readHealth(deps);
+  return (deps.healthCache.reading ??= readHealth(deps));
+}
+
+async function readHealth(deps: SetupDeps): Promise<HealthReading> {
   let reply: Awaited<ReturnType<SetupDeps["fetch"]>>;
   try {
     reply = await deps.fetch(`${daemonBaseUrl(deps.env)}/api/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
@@ -147,7 +158,8 @@ export async function checkInstalled(claude: ClaudeCli, deps: SetupDeps): Promis
   const listed = await readInstalledMod(claude, deps);
   // Replacing an installed build is uninstall then install (a plain install does not replace it), so
   // the by-hand fix for a stale mod starts with the uninstall that `mctl setup` itself runs.
-  const reinstall = [`claude plugin uninstall ${MOD_PLUGIN_ID} --scope user`, ...recoveryCommands(deps.stateDir)].join(" && ");
+  const bin = claudeCommand(claude);
+  const reinstall = [`${bin} plugin uninstall ${MOD_PLUGIN_ID} --scope user`, ...recoveryCommands(deps.stateDir, bin)].join(" && ");
   if ("error" in listed) return [{ name: "mod-enabled", status: "fail", message: listed.error, fix: "Run `mctl setup`." }];
   const mod = listed.mod;
   if (!mod) return [{ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} is not installed`, fix: "Run `mctl setup`." }];
@@ -199,7 +211,9 @@ export async function checkModCallsAt(claude: ClaudeCli | null, deps: SetupDeps,
   // cannot be established, and the check fails rather than pass.
   let record: { checked?: unknown; bundleSha256?: unknown } = {};
   try {
-    record = JSON.parse(await readFile(join(pluginDir, "hooks", "mod-calls.json"), "utf8")) as typeof record;
+    const parsed: unknown = JSON.parse(await readFile(join(pluginDir, "hooks", "mod-calls.json"), "utf8"));
+    // `null`, an array or a scalar parses fine but is no record.
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) record = parsed as typeof record;
   } catch {
     // handled below: no readable record
   }

@@ -645,16 +645,18 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           const idleRail = isRail && c.id === "idle" ? props.idleRailSections : undefined;
           const ownRows = idleRail ? idleRail.sections.map((section) => (
             <div className={`idle-rail-section fleet-section-${section.kind}`} key={section.key}>
-              <button
-                type="button"
-                className="idle-rail-section-toggle"
-                aria-expanded={section.expanded}
-                data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}
-                onClick={() => idleRail.onToggle(section.key, !section.expanded)}
-              >
-                <span>{section.kind === "blocked" ? BLOCKED_LABEL : FLEET_SECTION_TITLES[section.kind]}</span>
-                <strong>{section.sessionIds.length}</strong>
-              </button>
+              <Tooltip label={section.expanded ? "Collapse section" : "Expand section"}>
+                <button
+                  type="button"
+                  className="idle-rail-section-toggle"
+                  aria-expanded={section.expanded}
+                  data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}
+                  onClick={() => idleRail.onToggle(section.key, !section.expanded)}
+                >
+                  <span>{section.kind === "blocked" ? BLOCKED_LABEL : FLEET_SECTION_TITLES[section.kind]}</span>
+                  <strong>{section.sessionIds.length}</strong>
+                </button>
+              </Tooltip>
               {section.expanded && groupRows(section.rows, true)}
             </div>
           )) : g === null ? blockedRows(c.blocked, isRail)

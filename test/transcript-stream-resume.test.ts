@@ -1,6 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Registry } from "../src/server/registry.ts";
@@ -270,4 +272,92 @@ test("a fresh spoken stream and its resume advance while the native file grows d
   assert.ok(continuation.type === "resume");
   assert.ok(continuation.pos > opening.pos && continuation.messages.length > 0);
   assert.ok(continuation.messages.every(message => message.text.startsWith("OUTPUT ")));
+});
+
+test("a live spoken cursor bounds append I/O and recovers rewritten history", { timeout: 25_000 }, async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const key = noteKeyFor(session);
+  const words = "watch the long transcript";
+  const now = Date.now();
+  const queued = db.createPendingTurn({ id: "stream-append-cost", noteKey: key, spokenWords: words, text: words, now });
+  const claim = db.claimNextPendingTurn(key, now, queued, () => words)!;
+  const receipt = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, true, 0, now)!;
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+
+  const padding = JSON.stringify({ padding: "x".repeat(2 * 1024 * 1024) }) + "\n";
+  writeFileSync(path, padding + turn("original", "ORIGINAL"));
+  const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
+  const reader = res.body!.getReader();
+  t.after(() => reader.cancel());
+  const nextFrame = async () => {
+    // Keep the worker alive while the daemon's unref'd poll timer is the only other handle.
+    const deadline = setTimeout(() => void reader.cancel(), 15_000);
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        assert.ok(!done, "SSE stream ended before the expected frame");
+        const line = new TextDecoder().decode(value).split("\n").find(s => s.startsWith("data: {"));
+        if (line) return JSON.parse(line.slice(6)) as TranscriptStreamMsg;
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+  const checkProof = (frame: TranscriptStreamMsg) => {
+    assert.ok(frame.type === "init" || frame.type === "append");
+    const stat = statSync(path, { bigint: true });
+    const expected = createHash("sha256").update([stat.dev, stat.ino, stat.birthtimeNs].join(":") + "\n")
+      .update(readFileSync(path).subarray(0, frame.pos)).digest("hex");
+    assert.equal(frame.spokenCursor, expected);
+  };
+  const opening = await nextFrame();
+  assert.ok(opening.type === "init");
+  checkProof(opening);
+  const handle = await open(path, "r");
+  const prototype: FileHandle = Object.getPrototypeOf(handle);
+  await handle.close();
+  const reads = t.mock.method(prototype, "read");
+  const second = turn("two", "SECOND");
+  const writes = [turn("one", "FIRST") + second.slice(0, -2), second.slice(-2), turn("three", "THIRD")];
+  for (const [i, write] of writes.entries()) {
+    appendFileSync(path, write);
+    const frame = await nextFrame();
+    assert.ok(frame.type === "append");
+    assert.deepEqual(frame.messages.map(m => m.text), [["FIRST"], ["SECOND"], ["THIRD"]][i]);
+    checkProof(frame);
+  }
+  const bytesRead = (await Promise.all(reads.mock.calls.map(call => call.result))).reduce((n, r) => n + r!.bytesRead, 0);
+  t.diagnostic(`Historical transcript ${opening.pos} bytes; three appends ${writes.join("").length} bytes; cursor file reads ${bytesRead} bytes`);
+  assert.ok(bytesRead < 64 * 1024, "three small appends have a bounded cursor read budget");
+
+  // An unchanged length with a new revision and a larger replacement inode both reseed immediately.
+  writeFileSync(path, turn("edited", "AFTER TRUNCATION"));
+  assert.equal((await nextFrame()).type, "init");
+  writeFileSync(path, turn("edited", "SAME SIZE CHANGE"));
+  const edited = await nextFrame();
+  assert.ok(edited.type === "init" && edited.refreshSpoken);
+  checkProof(edited);
+  const olderPages = JSON.stringify({ padding: "x".repeat(512 * 1024) }) + "\n";
+  writeFileSync(path + ".next", olderPages + readFileSync(path, "utf8") + turn("rotated", "REPLACED"));
+  renameSync(path + ".next", path);
+  const replaced = await nextFrame();
+  assert.ok(replaced.type === "init" && replaced.refreshSpoken);
+  checkProof(replaced);
+
+  // A same-inode rewrite can be coalesced with growth between polls. Even on a quiet
+  // connection the already displayed words must be corrected without a reconnect.
+  writeFileSync(path, readFileSync(path, "utf8").replace("SAME SIZE CHANGE", "EDITED WHILE BIG") + turn("more", "NEW"));
+  const progress = await nextFrame();
+  assert.ok(progress.type === "append");
+  assert.deepEqual(progress.messages.map(m => m.text), ["NEW"]);
+  const corrected = await nextFrame();
+  assert.ok(corrected.type === "init" && corrected.refreshSpoken);
+  assert.equal(corrected.messages[0]?.text, "EDITED WHILE BIG");
+  checkProof(corrected);
 });

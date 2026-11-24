@@ -363,6 +363,17 @@ for (const provider of ["openai", "jev"] as const) {
   });
 }
 
+test("Jev rejects a confident split when its reply includes an unrequested question", async () => {
+  const split = { type: "choice", choice: "split", confidence: 1 };
+  for (const [answers, valid] of [[{ q1: split }, true], [{ q1: split, extra: split }, false], [{ q2: split }, false]] as const) {
+    const { ask, jobs } = rig({ saved: { jev: "fixture-key" }, reply: () => json({ answers }) });
+    const result = await ask(["codex"]);
+    assert.equal(result.rung, valid ? "jev" : "job");
+    assert.deepEqual(result.answers.map(a => a.choice), [valid ? "split" : "mention"]);
+    assert.deepEqual(jobs.map(job => job.runner), valid ? [] : ["codex"]);
+  }
+});
+
 test("OpenAI split answers must name each question in request order", async () => {
   const questions: VoiceQuestion[] = [SPLIT, { ...SPLIT, second: steve }];
   for (const names of [["q1", "q2"], ["q2", "q1"], ["q1", "q1"], ["q1", undefined]]) {

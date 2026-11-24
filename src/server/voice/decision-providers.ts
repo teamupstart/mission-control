@@ -172,8 +172,9 @@ export const jevDecisions: DecisionProviderAdapter = {
     }, call);
     const parsed = JevReplySchema.safeParse(reply);
     const answers = parsed.success ? parsed.data.answers : null;
-    if (!answers || questions.some((_, index) => !(voiceQuestionName(index) in answers))) {
-      throw new DecisionProviderError("jev", "the reply does not answer every question");
+    if (!answers || Object.keys(answers).length !== questions.length ||
+        questions.some((_, index) => !Object.hasOwn(answers, voiceQuestionName(index)))) {
+      throw new DecisionProviderError("jev", "the reply does not match the requested questions");
     }
     return questions.map((question, index) => readChoice("jev", question, answers[voiceQuestionName(index)]!));
   },

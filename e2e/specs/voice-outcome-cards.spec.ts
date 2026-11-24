@@ -407,6 +407,34 @@ test("a queued card becomes held and stays recallable past its original expiry w
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
 
+test("a dashboard countdown stays in view when newer held outcomes fill the stack", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  const will = await runningAgent(page, daemon, "Will");
+  const question = "Which release should I check?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question },
+  })).ok()).toBe(true);
+  await page.setViewportSize({ width: 560, height: 420 });
+  await say(daemon, "Steve, check the build", { id: "active-build" });
+  const pending = page.getByRole("status").filter({ hasText: "To Steve" });
+  const cancel = pending.getByRole("button", { name: "Cancel", exact: true });
+  await expect(cancel).toBeInViewport({ ratio: 1 });
+  expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  for (const topic of ["tests", "docs", "release"]) await say(daemon, "Will, review the " + topic);
+  const held = page.getByRole("status").filter({ hasText: "Held for Will" });
+  await expect(held).toHaveCount(3);
+  for (const control of [pending.getByText("To Steve", { exact: true }), pending.locator(".vc-seconds"), cancel,
+    pending.getByRole("button", { name: "Send now" })]) await expect(control).toBeInViewport({ ratio: 1, timeout: 3000 });
+  await captureCard(page.locator(".voice-card-stack"), "active-countdown-before-held-outcomes");
+  const response = page.waitForResponse(r => r.url().endsWith("/cards/active-build/cancel"));
+  await cancel.click();
+  expect((await response).ok()).toBe(true);
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  await expect(held).toHaveCount(3);
+});
+
 test("two dashboard cards held by the same question identify and recall their own spoken words", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const steve = await runningAgent(page, daemon, "Steve");

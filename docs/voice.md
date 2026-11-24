@@ -12,6 +12,7 @@ and Linux. The corner confirmation card names the recipient and shows the spoken
 Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now. Its bar and
 seconds count down together. On a slow connection, `≤` marks the longest time that could
 remain. You can still try Cancel, and the daemon confirms whether it arrived in time.
+When several cards share the corner, open cancel windows stay nearest the corner, ahead of delivery results.
 Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answer, the card offers a retry while the original request can still reach it. A split offers
 “Send both now” when both messages are waiting. With a mention or an already-issued stop,
 the send button names the agent who will receive the remaining message. With the cancel

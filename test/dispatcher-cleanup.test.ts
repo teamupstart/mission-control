@@ -2,7 +2,7 @@ import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
@@ -258,5 +258,30 @@ for (const afterFetch of ["occupied", "unknown", "empty"] as const) {
       assert.ok(existsSync(fetched), "the remote was refreshed");
       assert.ok(existsSync(tree), "the checkout remains available to its occupant");
     }
+  });
+}
+
+for (const change of ["edit", "commit"] as const) {
+  test(`late terminal cleanup retains a checkout after an editor leaves a new ${change} during the occupancy scan`, async () => {
+    const { clone } = originAndCloneAt(join(home, `late-${change}`));
+    const tree = join(home, `edited-${change}`);
+    const branch = `harness/late-${change}`;
+    gitIn(clone, "worktree", "add", "-qb", branch, tree);
+    const file = join(tree, "unfinished.txt");
+    const fetched = gitIn(tree, "rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD");
+    rmSync(fetched, { force: true });
+    const remove = teardownWorktree({ repoRoot: clone, worktreePath: tree, branch, provider: "git", homeName: null },
+      undefined, "foreground", undefined, (path) => inactiveTerminalCheckoutBlocker(path, "git", async () => {
+        assert.ok(existsSync(fetched), "origin was refreshed before checking occupants");
+        writeFileSync(file, "keep this work");
+        if (change === "commit") {
+          gitIn(tree, "add", "unfinished.txt");
+          gitIn(tree, "commit", "-qm", "local work");
+        }
+        return new Map([[path, { status: "known", occupants: [] }]]);
+      }));
+    await assert.rejects(remove, change === "commit" ? /unpublished commits/ : /uncommitted, untracked or ignored work/);
+    assert.equal(readFileSync(file, "utf8"), "keep this work");
+    assert.equal(gitIn(tree, "branch", "--show-current"), branch);
   });
 }

@@ -3556,8 +3556,10 @@ export async function inactiveTerminalCheckoutBlocker(
   const unsafe = await worktreeReturnBlocker(path, { fetch: true });
   if (unsafe || provider === "mission") return unsafe; // Native leases verify occupancy before reset.
   const occupancy = (await inspectOccupancy([path])).get(path);
-  return occupancy?.status === "known" && occupancy.occupants.length === 0
-    ? null : "checkout is occupied or occupancy is unknown";
+  if (occupancy?.status !== "known" || occupancy.occupants.length) return "checkout is occupied or occupancy is unknown";
+  // An editor may write or commit and exit before the scan observes it. Compare the
+  // checkout again against the just-refreshed refs before handing it back for removal.
+  return worktreeReturnBlocker(path);
 }
 
 /** One tree's return-or-remove, provider-aware. See `teardownWorktree` for the policy. */

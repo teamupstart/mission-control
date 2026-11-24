@@ -4,6 +4,7 @@ import type { Locator, Page, Request } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { serveStallPoll } from "../fixtures/stall-poll.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { INBOX_MESSAGES } from "../../src/shared/inbox.ts";
 import type { Stall, StallFacts } from "../../src/shared/stall.ts";
@@ -96,7 +97,7 @@ test("each Stuck control sends its request and lands its effect, a failure shows
 
   // The stall list the dashboard polls every five seconds, served from here.
   let served: Stall[] = [];
-  await page.route("**/api/away/stalls", (route) => route.fulfill({ json: served }));
+  await serveStallPoll(page, () => served);
   const posts: Array<{ path: string; body: unknown }> = [];
   page.on("request", (request: Request) => {
     if (request.method() !== "POST") return;
@@ -206,8 +207,8 @@ test("each Stuck control sends its request and lands its effect, a failure shows
   await expect(row().getByRole("button", { name: "Resubmit" })).toHaveCount(0);
   await capture(row(), "04-parked-push", page);
   await row().getByRole("button", { name: "Tell it to push", exact: true }).click();
-  await expect(row().getByRole("status")).toHaveText("Told it to push.");
-  expect(sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "push" });
+  // Starting the turn retires this idle stall. Follow the request into the real transcript.
+  await expect.poll(() => sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "push" });
   await expect.poll(() => heard(daemon, id, INBOX_MESSAGES.push), { timeout: 30_000 }).toBe(true);
 
   // 5. A self-resuming round that stalled: nothing to resubmit and nothing to push, so the row
@@ -222,8 +223,7 @@ test("each Stuck control sends its request and lands its effect, a failure shows
   await expect(row().getByRole("button", { name: "Tell it to push" })).toHaveCount(0);
   await capture(row(), "05-parked-next-turn", page);
   await row().getByRole("button", { name: "Continue", exact: true }).click();
-  await expect(row().getByRole("status")).toHaveText("Asked it to continue.");
-  expect(sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "continue" });
+  await expect.poll(() => sent(`/sessions/${id}/inbox-message`).at(-1)?.body).toEqual({ kind: "continue" });
   await expect.poll(() => heard(daemon, id, INBOX_MESSAGES.continue), { timeout: 30_000 }).toBe(true);
 
   // 6. A resubmittable run: Resubmit asks for the run the row names. Its first answer is a
@@ -313,6 +313,9 @@ test("each Stuck control sends its request and lands its effect, a failure shows
 
   // 10. A facts-only change: the sentence stays the same, the fingerprint and the open work do
   //    not, and the row redraws what is open.
+  for (const intent of ["Review parser warnings", "Rerun parser checks"]) {
+    await api(daemon, `/api/sessions/${encodeURIComponent(id)}/queue`, { intent });
+  }
   served = [stall(id, reason, { kind: "unfinished-work", task: { id: task.id, title: task.title }, queueOpen: 2 }, "open-2")];
   await expect(row()).toContainText('Open: the task "Fix the parser" and 2 open queue items.', { timeout: 15_000 });
   await expect(row()).toContainText(reason);

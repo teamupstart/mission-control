@@ -14,7 +14,8 @@ import {
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
 import { reportToRead, type ReportItem } from "@shared/reports.ts";
-import type { Stall } from "@shared/stall.ts";
+import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
+import type { ObservedStall } from "./stalls.ts";
 import { stateDisplay } from "./format.ts";
 import { asQuestionAgent, pausedResidentSessionIds, stoppedOnQuestions } from "./async-questions.ts";
 
@@ -381,11 +382,42 @@ export function attentionDismissalKeys(item: AttentionItem): AttentionDismissalK
       // Mark read is a report row's dismissal; there is nothing to dismiss without reading.
       return [];
     case "session_stuck":
-      // The rule and its clock-free facts, never the sentence: the sentence carries the minutes,
-      // so a dismissed row keyed on it would come back every minute. A stall from a daemon that
-      // predates fingerprints falls back to the sentence, which is the most it can say.
-      return [{ itemId: item.id, occurrence: occurrenceOf(item.stall.kind, item.stall.fingerprint ?? item.stall.reason) }];
+      return [stallDismissalKey(item.session.id, item.stall)];
   }
+}
+
+/**
+ * The one key a stall is dismissed under, whether the operator dismissed it as the inbox's Stuck
+ * row or as a card in Idle's Stalled section (`idle-stalled`). One key for both, so a stall hidden
+ * on one surface is not drawn again on the other when the flag is switched.
+ *
+ * The rule and its clock-free facts, never the sentence: the sentence carries the minutes, so a
+ * dismissal keyed on it would come back every minute. A stall from a daemon that predates
+ * fingerprints uses its work identity and any available session episode data.
+ */
+export function stallDismissalKey(
+  sessionId: string,
+  stall: Stall,
+): AttentionDismissalKey {
+  return { itemId: `stuck:${sessionId}`, occurrence: occurrenceOf(stall.kind, stall.fingerprint ?? legacyStallFingerprint(stall)) };
+}
+
+/** Read pre-upgrade reason hashes only for stalls that arrived without a daemon fingerprint.
+ * New writes always use the stable occurrence from stallDismissalKey. */
+export function isStallDismissed(stall: ObservedStall, dismissed: ReadonlyMap<string, string> | null): boolean {
+  if (!dismissed?.size) return false;
+  const key = stallDismissalKey(stall.sessionId, stall);
+  const stored = dismissed.get(key.itemId);
+  return stored === key.occurrence || (
+    (!stall.fingerprint || stall.legacy === true) && stored === occurrenceOf(stall.kind, stall.reason)
+  );
+}
+
+/** Only an exact pre-upgrade match can be rewritten to this episode's stable key. */
+export function legacyStallDismissalUpgrade(stall: ObservedStall, stored: ReadonlyMap<string, string>): AttentionDismissalKey | null {
+  if (!stall.legacy) return null;
+  const key = stallDismissalKey(stall.sessionId, stall);
+  return stored.get(key.itemId) !== key.occurrence && isStallDismissed(stall, stored) ? key : null;
 }
 
 /** A question's own dismissal key, separate from its session's row so each is dismissed alone. */
@@ -426,6 +458,7 @@ function occurrenceOf(...parts: (string | null | undefined)[]): string {
 }
 
 function isDismissed(item: AttentionItem, dismissed: ReadonlyMap<string, string>): boolean {
+  if (item.kind === "session_stuck") return isStallDismissed(item.stall, dismissed);
   const keys = attentionDismissalKeys(item);
   return keys.length > 0 && keys.every((key) => dismissed.get(key.itemId) === key.occurrence);
 }
@@ -630,7 +663,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     if (!session || isSettling(session)) continue;
     const item: AttentionItem = {
       kind: "session_stuck",
-      id: `stuck:${session.id}`,
+      id: stallDismissalKey(session.id, stall).itemId,
       session,
       stall,
       context: contextFor(session),

@@ -232,6 +232,7 @@ export interface InspectorBranchActivity {
   headSha: string;
   activityId: number;
   changedAt: number;
+  verifiedForcePushId?: string;
   refHistory: { prCreatedAt: number; anchorActivityId: number; anchorChangedAt: number; updatesChecked: number };
 }
 
@@ -244,7 +245,7 @@ const recoveryPullRequest = z.object({
 
 const refUpdate = z.object({
   id: z.number().int().positive(), ref: z.string(), before: z.string().min(1), after: z.string().min(1),
-  timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(),
+  timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(), activity_type: z.string().optional(),
 }).transform((row, ctx) => {
   const timestamp = row.timestamp ?? row.pushed_at;
   if (!timestamp || (row.timestamp && row.pushed_at && row.timestamp !== row.pushed_at)) {
@@ -300,23 +301,45 @@ async function readRecoveryPull(pr: NonNullable<ReturnType<typeof parsePrUrl>>) 
 const recoveryTip = z.object({
   prKey: z.string(), headSha: z.string(), repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
   ref: z.string().startsWith("refs/heads/"), activityId: z.number().int().positive(), changedAt: z.number(),
+  verifiedForcePushId: z.string().min(1).optional(),
 });
 
 const recoveryPullQuery = `query RecoveryPull($owner:String!,$repo:String!,$number:Int!,$since:DateTime!){
   repository(owner:$owner,name:$repo){nameWithOwner pullRequest(number:$number){
     number state headRefName headRefOid headRepository{nameWithOwner}
-    timelineItems(first:1,since:$since,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT,HEAD_REF_DELETED_EVENT,HEAD_REF_RESTORED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){nodes{__typename}}
+    timelineItems(first:1,since:$since,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT,HEAD_REF_DELETED_EVENT,HEAD_REF_RESTORED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      pageInfo{hasNextPage} nodes{__typename ... on Node{id}
+        ... on HeadRefForcePushedEvent{createdAt beforeCommit{oid} afterCommit{oid} ref{prefix name repository{nameWithOwner}}}}
+    }
   }}
 }`;
 
+const timelineEvent = z.object({ __typename: z.string(), id: z.string().min(1) }).loose();
+const forcePushEvent = timelineEvent.extend({
+  __typename: z.literal("HeadRefForcePushedEvent"), createdAt: z.iso.datetime(),
+  beforeCommit: z.object({ oid: z.string() }), afterCommit: z.object({ oid: z.string() }),
+  ref: z.object({ prefix: z.string(), name: z.string(), repository: z.object({ nameWithOwner: z.string() }) }),
+});
 const recoveryPullSnapshot = z.object({
   errors: z.array(z.unknown()).length(0).optional(),
   data: z.object({ repository: z.object({ nameWithOwner: z.string(), pullRequest: z.object({
     number: z.number().int(), state: z.enum(["OPEN", "CLOSED", "MERGED"]), headRefName: z.string(), headRefOid: z.string(),
     headRepository: z.object({ nameWithOwner: z.string() }),
-    timelineItems: z.object({ nodes: z.array(z.object({ __typename: z.string() })).max(1) }),
+    timelineItems: z.object({ nodes: z.array(timelineEvent).max(1), pageInfo: z.object({ hasNextPage: z.boolean() }) }),
   }) }) }),
 });
+
+async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl>>, changedAt: number) {
+  // Ask GitHub about the entire timestamp bucket containing this ref update.
+  const since = new Date(Math.floor(changedAt / 1_000) * 1_000 - 1);
+  if (!Number.isFinite(since.getTime())) return null;
+  const response = recoveryPullSnapshot.safeParse(await readRecoveryApi("graphql", "-f", `query=${recoveryPullQuery}`,
+    "-f", `owner=${pr.owner}`, "-f", `repo=${pr.repo}`, "-F", `number=${pr.number}`, "-f", `since=${since.toISOString()}`));
+  if (!response.success) return null;
+  const base = response.data.data.repository;
+  if (base.nameWithOwner.toLowerCase() !== `${pr.owner}/${pr.repo}`.toLowerCase() || base.pullRequest.number !== pr.number) return false;
+  return base.pullRequest;
+}
 
 /** Read the PR state, head and evidence of a ref rewrite together at final verification. */
 export async function recheckInspectorRecoveryTip(prUrl: string, head: string, receipt: unknown): Promise<boolean | null> {
@@ -324,26 +347,19 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
   const saved = recoveryTip.safeParse(receipt);
   if (!pr || !saved.success || saved.data.prKey !== pr.key || saved.data.headSha !== head) return false;
   const { repository, ref, activityId, changedAt } = saved.data;
-  // Returning to the same commit requires a non-fast-forward update or recreating
-  // the ref. Ask about those events on the PR itself, including the tip's timestamp
-  // bucket. The activity endpoint and this lower bound both use GitHub's clock.
-  const since = new Date(changedAt - 1_000);
-  if (!Number.isFinite(since.getTime())) return false;
-  const queryArgs = ["-f", `query=${recoveryPullQuery}`, "-f", `owner=${pr.owner}`, "-f", `repo=${pr.repo}`,
-    "-F", `number=${pr.number}`, "-f", `since=${since.toISOString()}`];
   for (let sample = 0; sample < 2; sample++) {
     const tip = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
     if (tip.success) {
       const [latest] = tip.data;
       if (latest.ref !== ref || latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt) return false;
     }
-    const response = recoveryPullSnapshot.safeParse(await readRecoveryApi("graphql", ...queryArgs));
-    if (!response.success) return null;
-    const base = response.data.data.repository;
-    const pull = base.pullRequest;
-    if (base.nameWithOwner.toLowerCase() !== `${pr.owner}/${pr.repo}`.toLowerCase() || pull.number !== pr.number
-        || pull.state !== "OPEN" || pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
-        || `refs/heads/${pull.headRefName}` !== ref || pull.headRefOid !== head || pull.timelineItems.nodes.length) return false;
+    const pull = await readRecoveryTimeline(pr, changedAt);
+    if (pull === false) return false;
+    if (!pull) return null;
+    if (pull.state !== "OPEN" || pull.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
+        || `refs/heads/${pull.headRefName}` !== ref || pull.headRefOid !== head || pull.timelineItems.pageInfo.hasNextPage) return false;
+    const [event] = pull.timelineItems.nodes;
+    if (event?.id !== saved.data.verifiedForcePushId || (event && event.__typename !== "HeadRefForcePushedEvent")) return false;
     if (!tip.success) return null;
   }
   return true;
@@ -360,6 +376,20 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   if (!first.success) return null;
   const [tip] = first.data;
   if (tip.ref !== ref || tip.after !== expectedHead) return null;
+  let verifiedForcePushId: string | undefined;
+  if (tip.activity_type === "force_push") {
+    const snapshot = await readRecoveryTimeline(pr, tip.changedAt);
+    if (!snapshot || snapshot.state !== "OPEN" || snapshot.headRefOid !== expectedHead || snapshot.headRefName !== source.head.ref
+        || snapshot.headRepository.nameWithOwner.toLowerCase() !== repository.toLowerCase()
+        || snapshot.timelineItems.pageInfo.hasNextPage) return null;
+    const event = forcePushEvent.safeParse(snapshot.timelineItems.nodes[0]);
+    if (!event.success) return null;
+    const push = event.data;
+    if (Math.floor(Date.parse(push.createdAt) / 1_000) !== Math.floor(tip.changedAt / 1_000)
+        || push.beforeCommit.oid !== tip.before || push.afterCommit.oid !== tip.after
+        || push.ref.prefix + push.ref.name !== ref || push.ref.repository.nameWithOwner.toLowerCase() !== repository.toLowerCase()) return null;
+    verifiedForcePushId = push.id;
+  }
   const current = await readRecoveryPull(pr);
   if (current?.state !== "open" || current.head.sha !== expectedHead || current.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
       || current.head.ref !== source.head.ref || current.created_at !== source.created_at) return null;
@@ -367,10 +397,12 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
   const history = z.array(refUpdate).max(GITHUB_PAGE_SIZE).safeParse(await readRefActivity(repository, ref, GITHUB_PAGE_SIZE));
   if (!history.success) return null;
   const latest = history.data[0];
-  if (!latest || latest.id !== tip.id || latest.changedAt !== tip.changedAt || latest.before !== tip.before) return null;
+  if (!latest || latest.id !== tip.id || latest.changedAt !== tip.changedAt || latest.before !== tip.before
+      || latest.activity_type !== tip.activity_type) return null;
   const refHistory = verifyRefHistory(history.data, ref, expectedHead, Date.parse(current.created_at));
   if (!refHistory) return null;
-  return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: latest.id, changedAt: latest.changedAt, refHistory };
+  return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: latest.id, changedAt: latest.changedAt, refHistory,
+    ...(verifiedForcePushId && { verifiedForcePushId }) };
 }
 
 export interface GitHubRepositoryIdentity {

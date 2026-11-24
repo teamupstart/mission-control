@@ -2829,7 +2829,10 @@ re-enters the repair wait pinned to the verified replacement head. After resolvi
 prior commits, the evaluator checks the receipt's ref update ID and reads the PR from
 GitHub twice. Each PR response includes its state, source branch, head, and timeline
 of force pushes, branch deletions or restorations, and PR closures or reopenings
-since the verified update. This includes its timestamp bucket. A return to the
+since the verified update. If the replacement arrived by force push, the receipt records
+the GitHub timeline event ID after matching its source ref, before and after commits,
+and GitHub timestamp bucket to the verified activity. Only that event is accepted
+in the final timeline. An additional rewrite blocks even in the same second. A return to the
 same SHA or a closure during the final read can therefore block the replacement
 even while the local ledger still shows the old open tip. A confirmed mismatch
 blocks immediately. An unavailable read leaves the round available for the next

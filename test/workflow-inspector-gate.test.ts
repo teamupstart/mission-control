@@ -65,7 +65,8 @@ try {
         || !process.argv.some(arg => arg.startsWith("since="))) process.exit(1);
     process.stdout.write(JSON.stringify({ errors: pull.graphErrors, data: { repository: { nameWithOwner: pull.base.repo.full_name,
       pullRequest: { number: pull.number, state: pull.state.toUpperCase(), headRefName: pull.head.ref, headRefOid: pull.head.sha,
-        headRepository: { nameWithOwner: pull.head.repo.full_name }, timelineItems: { nodes: pull.rewrites ?? [] } } } } }));
+        headRepository: { nameWithOwner: pull.head.repo.full_name }, timelineItems: { nodes: (pull.rewrites ?? []).slice(0, 1),
+          pageInfo: { hasNextPage: (pull.rewrites ?? []).length > 1 } } } } } }));
     return;
   }
   const response = target === activityQuery + "1" ? JSON.stringify(JSON.parse(contents).slice(0, 1)) : contents;
@@ -3732,7 +3733,7 @@ for (const race of ["return to the verified SHA", "conversation transfer hold"] 
         const [previous, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
         writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 2, before: "later" },
           { ...previous, id: previous.id + 1, before: "current", after: "later" }, previous, ...history]));
-        writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites: [{ __typename: "HeadRefForcePushedEvent" }] }));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites: [{ __typename: "HeadRefForcePushedEvent", id: "later-force" }] }));
       } else {
         const { reserveSessionTransfer } = await import("../src/server/session-transfers/store.ts");
         const binding = store.getBinding(store.getRun(ids.run)!.bindingId)!;
@@ -3781,6 +3782,59 @@ test("a confirmed ref mismatch still blocks recovery when the final PR read is u
     assert.deepEqual(store.listSubmissions(ids.run), submissions);
   } finally { await manager.stop(); }
 });
+
+for (const later of ["none", "same-bucket rewrite", "different event ID"] as const) {
+  test(`legacy recovery recognizes only the verified pre-grant force push: ${later}`, async () => {
+    let selection = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (selection && head === "historical") {
+        selection = false;
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        const [verified] = pull.rewrites;
+        const other = { ...verified, id: "subsequent-event" };
+        if (later !== "none") writeFileSync(recoveryPr, JSON.stringify({ ...pull,
+          rewrites: later === "different event ID" ? [other] : [verified, other] }));
+      }
+      return head;
+    } });
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, "current");
+      const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+      const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+      const force = { __typename: "HeadRefForcePushedEvent", id: "verified-event", createdAt: tip.timestamp,
+        beforeCommit: { oid: tip.before }, afterCommit: { oid: tip.after },
+        ref: { prefix: "refs/heads/", name: pull.head.ref, repository: { nameWithOwner: pull.head.repo.full_name } } };
+      writeFileSync(branchActivity, JSON.stringify([{ ...tip, activity_type: "force_push" }, ...history]));
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      if (later === "none") {
+        for (const rewrites of [[], [force, force], [{ ...force, beforeCommit: { oid: "different" } }],
+          [{ ...force, afterCommit: { oid: "different" } }], [{ ...force, ref: { ...force.ref, name: "other" } }],
+          [{ ...force, createdAt: new Date(Date.parse(force.createdAt) + 1_000).toISOString() }]]) {
+          writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites }));
+          assert.equal((await recover()).status, 409);
+        }
+        assert.equal(store.listEvents(ids.run).some(event => event.kind === "inspector_stale_grant_recovered"), false);
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      }
+      writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites: [force] }));
+      selection = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      if (later === "none") {
+        assert.equal(store.latestSubmission(ids.run)?.prHeadSha, "current");
+        assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      } else {
+        assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      }
+      const receipt = store.listEvents(ids.run).find(event => event.kind === "inspector_stale_grant_recovered");
+      assert.ok(receipt);
+      assert.equal((receipt.payload as { branchActivity: { verifiedForcePushId: string } }).branchActivity.verifiedForcePushId, force.id);
+    } finally { await manager.stop(); }
+  });
+}
 
 test("legacy recovery reads eligibility from the workflow store's own database", async () => {
   const seeded = await spentInspectorGrant();

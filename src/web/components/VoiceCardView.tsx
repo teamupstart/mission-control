@@ -54,8 +54,8 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
   });
 }
 
-export function VoiceCardView({ card, actions, operation, onDeadline }: {
-  card: VoiceCard; actions: VoiceCardActions;
+export function VoiceCardView({ card, actions, operation, hidden = false, fading = false, onDeadline }: {
+  card: VoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string): Promise<void> };
   onDeadline?: () => void;
 }) {
@@ -68,14 +68,15 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
   const { setVoiceCardInUse } = actions;
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
-    if (focused && !article.current?.contains(document.activeElement)) setFocused(false);
-    if (!settled || (!focused && !busy)) return;
+    if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
+    const unreadFeedback = hidden && feedback !== "";
+    if (!settled || !(focused || busy || unreadFeedback)) return;
     setVoiceCardInUse(card.id, true);
     return () => setVoiceCardInUse(card.id, false);
-  }, [card, settled, focused, busy, setVoiceCardInUse]);
+  }, [card, settled, focused, busy, hidden, feedback, setVoiceCardInUse]);
   useEffect(() => {
     const deadline = card.deadline;
-    if (deadline === null) return;
+    if (hidden || deadline === null) return;
     let timer: number | undefined;
     const tick = () => {
       const time = Date.now();
@@ -85,7 +86,9 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
     };
     tick();
     return () => window.clearTimeout(timer);
-  }, [card.deadline, onDeadline]);
+  }, [card.deadline, hidden, onDeadline]);
+  // Standalone routes present one card at a time. Keep the operation and retry ID mounted.
+  if (hidden) return null;
   const button = (label: string, hint: string, click: () => void, style = "", disabled = false) =>
     <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click}>{label}</button></Tooltip>;
   const act = (action: "cancel" | "send-now") => {
@@ -189,7 +192,7 @@ export function VoiceCardView({ card, actions, operation, onDeadline }: {
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
   }
-  return <article ref={article} role="status" data-settled={(settled && !focused && !busy) || undefined}
+  return <article ref={article} role="status" data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>

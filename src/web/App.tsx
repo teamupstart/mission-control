@@ -415,6 +415,7 @@ export function App(): React.JSX.Element {
     subscribeShaping,
     voice,
     voiceCards, voiceAnswers, openVoiceQuestion, voiceWindowId,
+    fadingVoiceCards,
     setVoiceCardInUse,
     acknowledgeVoiceMode,
     settingsStatus,
@@ -5095,7 +5096,7 @@ export function App(): React.JSX.Element {
   }, [openVoiceQuestion]);
 
   const voiceHints = spokenNames && !!voice && voice.mode !== "off";
-  const voiceCardHost = spokenNames && <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards}
+  const voiceCardHost = spokenNames && <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
     actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,

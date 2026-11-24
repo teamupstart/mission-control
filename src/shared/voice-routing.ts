@@ -26,6 +26,8 @@ export interface VoiceCardNotice {
   deadline: number;
   scope?: "single" | "both" | "remaining";
 }
+/** A focus race can be retried on blur. A null result ends the request without an action. */
+export type VoiceCardNoticeResult = "cancel" | "send-now" | "window-focused" | null;
 export interface VoiceCard {
   id: string;
   state: "pending" | "resolving" | "unsure" | "cancelled" | VoiceDeliveryOutcome;

@@ -1,6 +1,7 @@
 import type { NotificationConstructorOptions } from "electron";
 import { z } from "zod";
 import { VOICE_CANCEL_WINDOW_SECONDS } from "../shared/voice.ts";
+import type { VoiceCardNoticeResult } from "../shared/voice-routing.ts";
 
 const noticeSchema = z.object({
   id: z.string().uuid(), title: z.string().max(256), body: z.string().max(32768),
@@ -39,14 +40,15 @@ export function registerVoiceCardNotifications(
   ipcMain.on("mission:voice-card-dismiss", (event, id) => {
     if (typeof id === "string" && ownsMainFrame(event, window())) dismiss.get(id)?.();
   });
-  ipcMain.handle("mission:voice-card-notice", (event, input: unknown) => {
+  ipcMain.handle("mission:voice-card-notice", (event, input: unknown): VoiceCardNoticeResult | Promise<VoiceCardNoticeResult> => {
     const owner = window();
-    if (!ownsMainFrame(event, owner) || owner.isFocused() || !NativeNotification.isSupported()) return null;
+    if (!ownsMainFrame(event, owner) || !NativeNotification.isSupported()) return null;
     const parsed = noticeSchema.safeParse(input);
     if (!parsed.success) return null;
     const { id, title, body, deadline, scope } = parsed.data;
     const ms = Math.min(VOICE_CANCEL_WINDOW_SECONDS.max * 1000, deadline - Date.now());
     if (ms <= 0 || dismiss.has(id)) return null;
+    if (owner.isFocused()) return "window-focused";
     return new Promise<"cancel" | "send-now" | null>(resolve => {
       const notice = new NativeNotification({ title, subtitle: "Say “cancel” to stop.", body, silent: true,
         actions: actionLabels[scope].map(text => ({ type: "button", text })) });

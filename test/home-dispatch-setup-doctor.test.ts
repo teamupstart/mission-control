@@ -266,7 +266,7 @@ test("doctor names each failing check with its fix and exits 1", async () => {
     const fresh = await r.run("doctor");
     assert.equal(fresh.code, 1);
     assert.match(fresh.out, /FAIL {2}mod-enabled: mission-control@mission-control is not installed\n {8}fix: Run `mctl setup`/);
-    assert.match(fresh.out, /FAIL {2}mod-calls: no staged mod bundle/);
+    assert.match(fresh.out, /FAIL {2}mod-calls: no mod bundle/);
 
     assert.equal((await r.run("setup")).code, 0);
 
@@ -299,12 +299,20 @@ test("doctor names each failing check with its fix and exits 1", async () => {
   }
 });
 
+/** Replaces the staged mod's bundle and its build-time record, as a hand edit or an older build would. */
+function restage(r: Rig, bundle: string, record: boolean | "other"): void {
+  const hooks = join(r.state, "mod", "mission-control", "hooks");
+  writeFileSync(join(hooks, "register.js"), bundle);
+  const sha = createHash("sha256").update(record === "other" ? "something else" : bundle).digest("hex");
+  if (record) writeFileSync(join(hooks, "mod-calls.json"), JSON.stringify({ checked: true, bundleSha256: sha }));
+  else rmSync(join(hooks, "mod-calls.json"), { force: true });
+}
+
 test("mod-calls fails on a staged bundle that reaches a daemon path outside the allowlist", async () => {
   const r = await rig();
   try {
-    writeModBuild(r.source, "2.2.0", 'fetch("/api/health"); fetch("/api/sessions");');
-    // Setup's closing doctor step catches it too.
-    assert.equal((await r.run("setup")).code, 1);
+    assert.equal((await r.run("setup")).code, 0);
+    restage(r, 'fetch("/api/health"); fetch("/api/sessions");', true);
     const result = await r.run("doctor");
     assert.equal(result.code, 1);
     assert.match(result.out, /FAIL {2}mod-calls: the staged mod calls daemon paths that are not allowed: \/api\/sessions/);
@@ -539,21 +547,83 @@ test("mod-calls fails closed when the staged bundle is not the one the build che
   const constructed = 'const p = ["/", "api", "/", "sessions"].join(""); fetch(p); fetch("/api/health");';
   const r = await rig();
   try {
+    assert.equal((await r.run("setup")).code, 0);
     // No record at all (an older build, or one made without the check).
-    writeModBuild(r.source, "2.2.0", constructed, false);
-    assert.equal((await r.run("setup")).code, 1);
+    restage(r, constructed, false);
     assert.match((await r.run("doctor")).out, /FAIL {2}mod-calls: the staged mod has no build-time mod-calls record, so its daemon calls cannot be established/);
-
     // A record for a different bundle (the bundle was edited after the check).
-    writeModBuild(r.source, "2.2.0", 'fetch("/api/health");');
-    writeFileSync(join(r.source, "mission-control", "hooks", "register.js"), constructed);
-    assert.equal((await r.run("setup")).code, 1);
+    restage(r, constructed, "other");
     const doctor = await r.run("doctor");
     assert.equal(doctor.code, 1);
     assert.match(doctor.out, /FAIL {2}mod-calls: the staged bundle is not the one the build checked, so its daemon calls cannot be established/);
     assert.match(doctor.out, /fix: Rebuild with `npm run build`, then run `mctl setup`\./);
   } finally {
     await r.cleanup();
+  }
+});
+
+test("a build that setup's own checks reject never replaces the working mod or its installation", async () => {
+  const constructed = 'const p = ["/", "api", "/", "sessions"].join(""); fetch(p);';
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const stagedBundle = join(r.state, "mod", "mission-control", "hooks", "register.js");
+    const working = readFileSync(stagedBundle, "utf8");
+    const calls = pluginCalls(r.claude).length;
+    const refuse = async (why: string, pattern: RegExp, prepare: () => void) => {
+      prepare();
+      const result = await r.run("setup");
+      assert.equal(result.code, 1, why);
+      assert.match(result.out, /FAIL {2}mod: could not stage the mod; the mod already installed was left as it was: /);
+      assert.match(result.out, pattern, why);
+      assert.equal(readFileSync(stagedBundle, "utf8"), working, why + ": the published mod is untouched");
+      assert.deepEqual(readdirSync(r.state), ["mod"], why + ": no staging sibling");
+      const added = pluginCalls(r.claude).slice(calls).filter((c) => c === "install" || c === "uninstall" || c === "marketplace add");
+      assert.deepEqual(added, [], why + ": the installation is untouched");
+      assert.equal(r.claude.state().plugins[0]?.version, "2.2.0");
+    };
+    // 1. A bundle with no build-time record.
+    await refuse("no record", /no build-time mod-calls record/, () => writeModBuild(r.source, "2.9.0", constructed, false));
+    // 2. A bundle that calls a route outside the allowlist.
+    await refuse("disallowed route", /not allowed: \/api\/sessions/, () => writeModBuild(r.source, "2.9.0", 'fetch("/api/sessions");'));
+    // 3. A bundle `claude plugin validate` refuses.
+    await refuse("validate refused", /refused the staged mod: bad manifest/, () => {
+      writeModBuild(r.source, "2.9.0");
+      r.claude.update({ failures: { validate: { exitCode: 1, stderr: "bad manifest", times: 1 } } });
+    });
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a failed cleanup of the staging copy does not stop the old mod being put back", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-cleanup-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    writeModBuild(source, "1.1.0");
+    let calls = 0;
+    // Publishing fails, and so does everything that would tidy up after it, until the old mod is back.
+    const failing: typeof rename = async (from, to) => {
+      calls += 1;
+      if (calls === 2) throw new Error("disk full");
+      return rename(from, to);
+    };
+    // Make the staging copy impossible to remove: a read-only directory inside it.
+    const blocked: typeof cp = async (from, to, opts) => {
+      await cp(from, to, opts);
+      const { chmodSync } = await import("node:fs");
+      chmodSync(join(String(to), "mission-control", "hooks"), 0o500);
+    };
+    await assert.rejects(stageMod({ source, dest, rename: failing, copy: blocked }), /disk full/);
+    assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0", "the old mod is back");
+    for (const name of readdirSync(join(dir, "state"))) {
+      if (name.includes("staging")) chmodSync(join(dir, "state", name, "mission-control", "hooks"), 0o700);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -54,6 +54,11 @@ export async function stageMod(options: {
   rename?: typeof rename;
   /** The copy into the staging folder; a test injects one whose result differs from the source. */
   copy?: typeof cp;
+  /**
+   * Run on the copy before anything is renamed. A rejection refuses the build and leaves the
+   * published mod as it was, so a build that setup's own checks reject never displaces a working one.
+   */
+  validate?: (stagingDir: string) => Promise<void>;
 }): Promise<StagedMod> {
   const { source, dest } = options;
   const move = options.rename ?? rename;
@@ -72,6 +77,7 @@ export async function stageMod(options: {
     await copy(source, staging, { recursive: true });
     await assertBuild(staging);
     version = await readModVersion(staging);
+    await options.validate?.(staging);
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
@@ -86,17 +92,20 @@ export async function stageMod(options: {
     }
     await move(staging, dest);
   } catch (error) {
-    await rm(staging, { recursive: true, force: true });
+    // Put the old mod back first: the published path must not stay empty because tidying failed.
     if (movedAside) {
       try {
         await move(previous, dest);
       } catch (restoreError) {
+        await rm(staging, { recursive: true, force: true }).catch(() => undefined);
         // The published path is now empty. Say so, and leave the old build where it is.
         throw new Error(
           "publishing the new mod failed (" + describeError(error) + ") and putting the previous mod back failed too (" + describeError(restoreError) + "); the previous build is at " + previous + " and must be moved back to " + dest + " by hand",
         );
       }
     }
+    // Removing the staging copy is best effort; it must not mask the publish error.
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
   if (movedAside) await rm(previous, { recursive: true, force: true });

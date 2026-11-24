@@ -154,12 +154,16 @@ export function calledPaths(bundle: string): string[] {
  * and `claude plugin validate` accepts the plugin.
  */
 export async function checkModCalls(claude: ClaudeCli | null, deps: SetupDeps): Promise<DoctorCheck> {
-  const pluginDir = join(deps.stateDir, "mod", MOD_NAME);
+  return checkModCallsAt(claude, deps, join(deps.stateDir, "mod", MOD_NAME));
+}
+
+/** The `mod-calls` check for the plugin folder at `pluginDir`: the staged mod, or a copy about to be published. */
+export async function checkModCallsAt(claude: ClaudeCli | null, deps: SetupDeps, pluginDir: string): Promise<DoctorCheck> {
   let bundle: string;
   try {
     bundle = await readFile(join(pluginDir, "hooks", "register.js"), "utf8");
   } catch {
-    return { name: "mod-calls", status: "fail", message: `no staged mod bundle at ${pluginDir}`, fix: "Run `mctl setup`." };
+    return { name: "mod-calls", status: "fail", message: `no mod bundle at ${pluginDir}`, fix: "Run `mctl setup`." };
   }
   // The literal scan below cannot see a route built at run time, so the build's source-aware check
   // is the proof: the bundle must be exactly the one it passed. Without that record the calls

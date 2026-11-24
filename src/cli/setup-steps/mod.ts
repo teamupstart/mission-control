@@ -1,7 +1,8 @@
 import { join } from "node:path";
+import { MOD_NAME } from "../../mod/constants.ts";
 import { findClaude, type ClaudeCli } from "../claude-cli.ts";
 import { stageMod } from "../../server/mod-stage.ts";
-import { MOD_PLUGIN_ID, readInstalledMod, recoveryCommands } from "./checks.ts";
+import { MOD_PLUGIN_ID, checkModCallsAt, readInstalledMod, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
 import type { SetupStepOptions, SetupStepResult } from "./types.ts";
 
@@ -39,9 +40,20 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
 
   let version: string;
   try {
-    version = (await stageMod({ source: deps.modSource, dest: modDir })).version;
+    version = (
+      await stageMod({
+        source: deps.modSource,
+        dest: modDir,
+        // The copy must pass the same `mod-calls` check doctor runs, with `claude plugin validate`,
+        // before it replaces anything: a build setup cannot certify never displaces a working one.
+        validate: async (staging) => {
+          const check = await checkModCallsAt(claude, deps, join(staging, MOD_NAME));
+          if (check.status === "fail") throw new Error(check.message + ". " + (check.fix ?? ""));
+        },
+      })
+    ).version;
   } catch (error) {
-    return failed("could not stage the mod: " + (error instanceof Error ? error.message : String(error)));
+    return failed("could not stage the mod; the mod already installed was left as it was: " + (error instanceof Error ? error.message : String(error)));
   }
 
   const before = await readInstalledMod(claude, deps);

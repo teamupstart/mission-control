@@ -20,6 +20,7 @@ legacy.close();
 
 const {
   claimNextPendingTurn,
+  closeDb,
   clearPendingTurns,
   createPendingTurn,
   deleteClaimedPendingTurn,
@@ -48,6 +49,24 @@ test("upgrading the existing outbox keeps old messages on next-turn delivery", (
   assert.equal(row.deadlineAt, null);
   assert.equal(row.interruptAttemptedAt, null);
   clearPendingTurns("legacy");
+});
+
+test("the upgrade remembers live and retired spoken IDs across subsequent opens", () => {
+  const live = { id: "voice:live", noteKey: "upgrade", spokenSessionId: "sdk:upgrade", text: "go", spokenWords: "go", now: 10 };
+  const queued = createPendingTurn(live);
+  openDb().exec(`INSERT INTO session_spoken_turns
+    (id, note_key, fingerprint, spoken_words, received, delivered_at, outbox_turn_id)
+    VALUES ('receipt', 'upgrade', 'print', 'done', 'done', 1, 'voice:retired');
+    DROP TABLE spoken_outbox_ids;
+    PRAGMA user_version = 60`);
+  closeDb();
+  assert.deepEqual(createPendingTurn(live), queued);
+  assert.ok(recallPendingTurn(live.noteKey, live.id, queued.revision));
+  closeDb();
+  for (const id of [live.id, "voice:retired"]) {
+    assert.throws(() => createPendingTurn({ ...live, id }), /already queued/);
+  }
+  assert.deepEqual(listPendingTurns(live.noteKey), []);
 });
 
 test("an unknown stored delivery mode blocks selection of another row", () => {

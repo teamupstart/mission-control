@@ -1143,10 +1143,15 @@ replay. If a launch fails before a child exists, the caller gets its launch
 error immediately. A start without an acknowledgement times out after five
 seconds. The supervisor persists the signed exit and retries it in the
 background, including after a reconnect or supervisor restart. It records its
-own PID before announcement and the sandbox child's PID before releasing the
-listener. A replacement launcher can therefore retire a launch interrupted
+own PID before announcement. Before releasing the listener on Linux, it persists
+the host PID of the sandbox's namespace init as reported on Bubblewrap's private
+`--info-fd`. This PID covers the player and its descendants. If the outer
+monitor exits first, the live and restarted supervisors wait for the namespace
+to exit before signing retirement. Legacy Linux watch records that identify
+only a monitor cannot establish silence. On macOS the sandbox executes the
+player in the watched child. A replacement launcher can retire a launch interrupted
 between acknowledgement and spawn once the OS confirms the recorded PID is gone.
-During ordinary operation the child's OS exit event queues its signed exit,
+Once the watched lifetime ends, the supervisor queues its signed exit,
 including for the first launch on a fresh state home.
 
 The body is `{ instance, state }`. Alongside the harness token, the supervisor

@@ -3,7 +3,7 @@ import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/ser
 import { announcementName } from "../src/server/voice/speech-holds.ts";
 import { playerScratchDirectory, retirementDirectory } from "../src/server/voice/recovery-files.ts";
 import assert from "node:assert/strict";
-import { fork, spawn } from "node:child_process";
+import { fork, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import { text } from "node:stream/consumers";
@@ -12,7 +12,9 @@ import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rename
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
-import type { Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
+import { sandboxLifetime } from "../src/server/voice/supervised-listener.ts";
+import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
 import { Hono } from "hono";
 import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, utterancePath, voiceStateStore as store } from "./helpers/voice-http.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
@@ -798,6 +800,76 @@ test("a restarted launcher can confirm the original player's exit using its prov
   assert.equal((await p.poll(start.instance)).capture, true);
 });
 
+test("a sandbox lifetime follows the reported namespace PID across monitor termination", { timeout: 10_000 }, async t => {
+  // Exercise the info-fd protocol with actual distinct processes even on hosts without namespaces.
+  const monitor = spawn(process.execPath, ["-e", `
+    const player = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const fs = require("node:fs");
+    fs.writeFileSync(3, JSON.stringify({ "child-pid": player.pid }));
+    fs.closeSync(3);
+  `], { stdio: ["ignore", "ignore", "inherit", "pipe"] });
+  t.after(() => { if (monitor.exitCode === null && monitor.signalCode === null) monitor.kill("SIGKILL"); });
+  await once(monitor, "spawn");
+  const lifetime = await sandboxLifetime(monitor, monitor.stdio[3] as Readable);
+  t.after(() => { if (lifetime.running()) process.kill(lifetime.pid, "SIGKILL"); });
+  assert.notEqual(lifetime.pid, monitor.pid);
+  let retired = false;
+  void lifetime.exited.then(() => { retired = true; });
+  const stopped = once(monitor, "exit");
+  monitor.kill("SIGKILL");
+  await stopped;
+  assert.equal(lifetime.running(), true);
+  assert.equal(retired, false);
+  process.kill(lifetime.pid, "SIGKILL");
+  await t.waitFor(() => assert.equal(retired, true));
+});
+
+test("Linux monitor termination keeps playing capture held in the live supervisor and after restart", {
+  timeout: 15_000, skip: process.platform !== "linux",
+}, async t => {
+  const probe = spawnSync(FIXED_OS_EXECUTABLES.bubblewrap, ["--unshare-all", "--ro-bind", "/", "/", "--", "/bin/true"], { encoding: "utf8" });
+  if ((probe.error as NodeJS.ErrnoException)?.code === "ENOENT" || (probe.status !== 0 && /namespace|permitted|userns/iu.test(probe.stderr))) {
+    t.skip("Host cannot create a Bubblewrap namespace.");
+    return;
+  }
+  assert.equal(probe.status, 0, probe.stderr);
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const signer = createVoiceSupervisor("shell", privateKey);
+  const replacement = createVoiceSupervisor("shell", privateKey);
+  Object.assign(process.env, signer.daemonEnv);
+  t.after(() => { signer.pauseExitRetries(); replacement.pauseExitRetries(); Object.assign(process.env, fixtureSupervisorEnv); });
+  const peer = player();
+  const exits: string[] = [];
+  const report = async (instance: string, state: "started" | "exited", proof: string) => {
+    assert.equal((await peer.report(state, instance, proof)).status, 200);
+    if (state === "exited") exits.push(instance);
+  };
+  const { instance, child, reannounce } = await signer.launch(home, process.execPath,
+    ["-e", "process.stdout.write('playing'); setInterval(() => {}, 1000)"], {}, report);
+  const file = join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json");
+  const { pid } = JSON.parse(readFileSync(file, "utf8"));
+  assert.notEqual(pid, child.pid);
+  t.after(() => { try { process.kill(pid, "SIGKILL"); } catch { /* Already exited. */ } });
+  assert.equal(String((await once(child.stdout, "data"))[0]), "playing");
+  await peer.hello(instance);
+  const id = await audition();
+  assert.equal((await peer.request("/voice/speech/jobs/" + id + "/events", { type: "started" }, instance)).status, 200);
+  const stopped = once(child, "exit");
+  child.kill("SIGKILL");
+  await stopped;
+  assert.equal(await reannounce(), true);
+  assert.deepEqual(exits, []);
+  assert.equal((await peer.poll(instance)).capture, false);
+  signer.pauseExitRetries();
+  store.reset(); await peer.hello(instance);
+  replacement.retryPendingExits(home, report);
+  assert.deepEqual(exits, []);
+  assert.deepEqual((await peer.poll(instance)).speak, { id, stop: true });
+  process.kill(pid, "SIGKILL");
+  await t.waitFor(() => assert.deepEqual(exits, [instance]));
+  assert.equal((await peer.poll(instance)).capture, true);
+});
+
 test("a same-account signing file is rejected even when owner-only", () => {
   const file = join(home, "same-account.key");
   writeFileSync(file, Buffer.alloc(48), { mode: 0o600 });
@@ -975,18 +1047,21 @@ for (const disconnected of [false, true]) test("the first supervised same-accoun
       assert.equal((await peer.report(state, subject, proof)).status, 200);
     })
     .catch(error => {
-      if (process.platform === "linux" && error.code === "ENOENT") return null;
+      if (process.platform === "linux" && (error.code === "ENOENT" || error.message === "Bubblewrap did not provide the sandbox PID.")) return null;
       throw error;
     });
   if (!launched) {
     deliverExit();
     await t.waitFor(() => assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []));
-    t.diagnostic("Bubblewrap is unavailable. The launcher retired the failed start without running the listener.");
+    t.diagnostic("Bubblewrap could not establish a sandbox PID. The launcher retired the failed start without releasing the listener.");
     return;
   }
   const { instance, child } = launched;
   const guarded = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
-  if (child.exitCode === null && child.signalCode === null) assert.equal(guarded.pid, child.pid);
+  if (child.exitCode === null && child.signalCode === null) {
+    if (process.platform === "linux") assert.notEqual(guarded.pid, child.pid);
+    else assert.equal(guarded.pid, child.pid);
+  }
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const completed = once(child, "close");
   const ready = process.platform === "darwin" ? once(child.stderr, "data") : null;

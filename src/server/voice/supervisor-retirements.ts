@@ -4,6 +4,7 @@ import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
 import { announcementName, removePlayerScratch, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
 import type { SupervisorReporter, SupervisorReportState } from "./supervisor-auth.ts";
+import { voiceProcessGone } from "./supervised-listener.ts";
 
 const signedExit = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
 type PendingExit = z.infer<typeof signedExit>;
@@ -36,11 +37,6 @@ export async function reportBeforeDeadline(report: SupervisorReporter, instance:
     clearTimeout(timer);
     signal.removeEventListener("abort", onAbort!);
   }
-}
-
-function processGone(pid: number) {
-  try { process.kill(pid, 0); return false; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
 
 /** Only the originating supervisor can convert a watched launch into a signed exit. */
@@ -171,7 +167,7 @@ export class SupervisorRetirements {
           if ("pid" in entry) {
             // A live launcher can replace its PID with the child's before dying.
             // Re-read after observing death so stale evidence cannot retire that child.
-            if (!processGone(entry.pid) || readFileSync(path, "utf8") !== raw) { retry = true; continue; }
+            if (!voiceProcessGone(entry.pid) || readFileSync(path, "utf8") !== raw) { retry = true; continue; }
             const exit = this.recoveredExit(entry);
             if (exit) records.set(file, exit);
           } else if (this.verifies(entry)) records.set(file, entry);

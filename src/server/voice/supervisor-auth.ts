@@ -1,5 +1,4 @@
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
-import { once } from "node:events";
 import { closeSync, fstatSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { confinedVoiceListener } from "./supervised-listener.ts";
@@ -50,8 +49,10 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
   const prefix = name + "_" + der.toString("hex") + "_";
   const signature = (instance: string, state: SupervisorReportState) =>
     sign(null, payload(instance, state), privateKey).toString("hex");
+  // Older Linux watches identified only the outer monitor. They cannot attest namespace exit.
+  const watchProtocol = process.platform === "linux" ? "mission-voice-launch-pid/linux-v2" : "mission-voice-launch-pid/v1";
   const watchProof = (instance: string, pid: number) =>
-    sign(null, Buffer.from(["mission-voice-launch-pid/v1", instance, pid].join("\n")), privateKey).toString("hex");
+    sign(null, Buffer.from([watchProtocol, instance, pid].join("\n")), privateKey).toString("hex");
   const queues = new Map<string, SupervisorRetirements>();
   const retirements = (home: string) => {
     const path = resolve(home);
@@ -88,21 +89,18 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
           queue.discardRefused(instance);
           throw new Error("Voice supervisor start was refused.");
         }
-        const child = start(executable, args, env);
-        // An OS spawn error precedes 'spawn'. Once spawned, the launcher owns
-        // the live child's handle and must observe its exit before retiring it.
-        await once(child, "spawn");
-        try { watch(child.pid!); }
+        const { child, lifetime } = await start(executable, args, env);
+        try { watch(lifetime.pid); }
         catch (error) { child.stdin.destroy(); throw error; }
         // Install the observer before release, including for the first child on a fresh home.
-        child.once("exit", retire);
+        void lifetime.exited.then(retire);
         // EOF before this line exits the gate. After release only the OS can establish exit.
         released = true;
         const onBrokenGate = () => {};
         child.stdin.once("error", onBrokenGate);
         child.stdin.write("go\n", error => { if (!error) child.stdin.off("error", onBrokenGate); });
         return { instance, child, reannounce: async () => {
-          if (child.exitCode !== null || child.signalCode !== null) return false;
+          if (!lifetime.running()) return false;
           return announce();
         } };
       } catch (error) {

@@ -14,6 +14,7 @@ import { originAndCloneAt } from "./helpers/git-fixture.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { fakeEmulator, fakeMultiplexer, fakeTerminals, OK } from "./helpers/terminal-fakes.ts";
 import { launchFailureOutcome } from "../src/shared/launch-failure.ts";
+import { shellWords, wrapperAgentCommand } from "../src/server/terminal/shell.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "mission-dispatch-environment-"));
@@ -33,7 +34,7 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "never-started-dirty" | "settled" | "cancel-probe" | "exited" | "exited-dirty" | "late-dirty" | "late-settled") {
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "never-started-dirty" | "settled" | "cancel-probe" | "cancel-inventory" | "cancel-retry" | "exited" | "exited-dirty" | "late-dirty" | "late-settled") {
   const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty" || scenario === "late-dirty" || scenario === "late-settled";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
@@ -65,7 +66,7 @@ process.stdin.resume();
     bundle: true, platform: "node", format: "esm", target: "node24" });
 
   const { Registry } = await import("../src/server/registry.ts");
-  const { Dispatcher } = await import("../src/server/dispatcher.ts");
+  const { Dispatcher, spawnUniquely } = await import("../src/server/dispatcher.ts");
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   const { launchAgentEnvironment, saveAgentEnvironment } = await import("../src/server/agent-environment.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "agent-environment", enabled: true });
@@ -93,10 +94,27 @@ process.stdin.resume();
   let observedEnvironment: Record<string, boolean> | undefined;
   let spawnCount = 0;
   let delayed: { argv: readonly string[]; cwd: string } | undefined;
-  const mux = fakeMultiplexer({ sessions: {
+  const cancelAfterHandoff = scenario === "cancel-inventory" || scenario === "cancel-retry";
+  let launchHome: string | undefined;
+  let handoffSocket: string | undefined;
+  let socketWasOpen = false;
+  const mux = fakeMultiplexer({ list: async () => {
+    if (cancelAfterHandoff && launchHome && !handoffSocket) {
+      const script = readFileSync(join(launchHome, "launch-and-cleanup.sh"), "utf8");
+      const reader = shellWords(wrapperAgentCommand(script));
+      handoffSocket = reader[reader.indexOf("--dispatch-agent") + 1];
+      socketWasOpen = !!handoffSocket && existsSync(handoffSocket);
+      if (scenario === "cancel-inventory") registry.upsertTask({ ...registry.getTask(task.id)!, status: "cancelled" });
+    }
+    return [];
+  }, sessions: {
     names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
     async spawnDetached({ argv, cwd, name }) {
       spawnCount++;
+      if (cancelAfterHandoff) {
+        registry.upsertTask({ ...registry.getTask(task.id)!, status: "cancelled" });
+        return { ok: false, outcomeUnknown: false, error: "terminal declined this name" };
+      }
       if (timesOut) {
         delayed = { argv, cwd };
         return { ok: false, outcomeUnknown: true, error: "terminal reply timed out" };
@@ -146,6 +164,10 @@ process.stdin.resume();
   const dispatch = new Dispatcher(registry, undefined, {
     resolveRuntime: () => "terminal", resolveTerminalBackend: () => "tmux",
     residentLaunch: (_task, instructions) => instructions,
+    ...(cancelAfterHandoff && { spawn: (...args: Parameters<typeof spawnUniquely>) => {
+      launchHome = args[5];
+      return spawnUniquely(...args);
+    } }),
     homeDeps: fakeTerminals(mux, fakeEmulator()), piExtensionInstalled: () => true,
     verifyMissionMcpTools: async () => ({ ok: true }), sleep: async () => {},
   }).dispatch(task.id);
@@ -153,6 +175,14 @@ process.stdin.resume();
   if (timesOut) await Promise.race([retained, dispatch]);
   else await dispatch;
   const launched = registry.getTask(task.id)!;
+  if (cancelAfterHandoff) {
+    assert.ok(socketWasOpen && handoffSocket && launchHome, "the handoff was listening before cancellation");
+    assert.equal(spawnCount, scenario === "cancel-inventory" ? 0 : 1, "no backend launch after cancellation");
+    assert.equal(launched.status, "cancelled");
+    assert.equal(existsSync(handoffSocket), false, "the unused socket was disposed");
+    assert.equal(existsSync(launchHome), false, "the unstarted wrapper home was released");
+    return;
+  }
   if (scenario === "cancel-probe") {
     assert.equal(launched.status, "cancelled");
     assert.equal(spawnCount, 0);
@@ -308,6 +338,11 @@ test("expiry preserves the checkout of a task marked done during the startup win
 
 test("cancelling during the login shell probe never sends a command to the terminal backend",
   (t) => checkTerminalDispatch(t, "cancel-probe"));
+
+test("cancelling during terminal inventory disposes the handoff before the first backend launch",
+  (t) => checkTerminalDispatch(t, "cancel-inventory"));
+test("cancelling during a declined terminal launch disposes the handoff before the name retry",
+  (t) => checkTerminalDispatch(t, "cancel-retry"));
 
 test("dispatch state-home cleanup follows wrapper startup across the handoff deadline", async (t) => {
   const { spawnUniquely } = await import("../src/server/dispatcher.ts");

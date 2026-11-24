@@ -1136,7 +1136,8 @@ export class Dispatcher {
       // provisional key and no later move: it is written under the key the session will hold
       // once `bindLaunchedAgentSession` runs.
       const named = await launchAgentEnvironment(resident);
-      if (!currentAttempt() || !this.stillDispatching(taskId)) {
+      const ownsLaunch = () => currentAttempt() && this.stillDispatching(taskId);
+      if (!ownsLaunch()) {
         cleanupDisposableAgentStateHome(stateHome);
         pendingAgentStateHome = null;
         if (currentAttempt()) await this.abortIfSettled(taskId);
@@ -1166,6 +1167,7 @@ export class Dispatcher {
           piFallbackArgs,
           named,
           this.deps.homeDeps,
+          ownsLaunch,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now -
@@ -3760,6 +3762,7 @@ export async function spawnUniquely(
   fallbackAgentArgs: readonly string[] | null = null,
   named?: NamedAgentEnvironment,
   deps?: HomeDeps,
+  ownsLaunch?: () => boolean,
 ): Promise<SpawnedHome> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   let pending: ReturnType<typeof retainPendingTerminalHome> | undefined;
@@ -3778,7 +3781,7 @@ export async function spawnUniquely(
     } else {
       argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     }
-    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps);
+    return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps, ownsLaunch);
   } catch (error) {
     if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord) {
       pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS);
@@ -3823,12 +3826,13 @@ export async function spawnWrappedUniquely(
   baseName: string, shortId: string, cwd: string, argv: string[], stateHome: string,
   terminalBackend: string | null,
   deps?: HomeDeps,
+  ownsLaunch?: () => boolean,
 ): Promise<SpawnedHome> {
   const held = await heldHomeNames(deps, terminalBackend);
   const unique = `${baseName}-${shortId}`;
   const name = held === null || held.has(baseName) ? unique : baseName;
 
-  const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend);
+  const first = await launchHome({ name, cwd, argv, sidePane: true }, deps, terminalBackend, ownsLaunch);
   if (first.ok) {
     return { homeName: name, homeBackend: first.backend.id, terminalResourceId: first.resourceId,
       // On every axis: the wrapper always runs from this home, so a pane whose address the
@@ -3841,6 +3845,7 @@ export async function spawnWrappedUniquely(
     { name: unique, cwd, argv, sidePane: true },
     deps,
     terminalBackend,
+    ownsLaunch,
   );
   if (retry.ok) {
     return { homeName: unique, homeBackend: retry.backend.id, terminalResourceId: retry.resourceId,

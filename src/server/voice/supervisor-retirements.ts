@@ -2,7 +2,7 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
-import { announcementName, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
+import { announcementName, removePlayerScratch, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
 import type { SupervisorReporter, SupervisorReportState } from "./supervisor-auth.ts";
 
 const signedExit = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
@@ -150,8 +150,14 @@ export class SupervisorRetirements {
       if (signal.aborted) return false;
       if (this.pending.has(file)) this.persist(file, exit);
       try {
-        await reportBeforeDeadline(report, exit.instance, "exited", exit.proof, signal);
+        // Both operations have the same proof of exit. An offline daemon must not strand scratch,
+        // and a slow cleanup must not delay the daemon's silence confirmation.
+        const [delivery, cleanup] = await Promise.allSettled([
+          reportBeforeDeadline(report, exit.instance, "exited", exit.proof, signal),
+          removePlayerScratch(this.home, exit.instance),
+        ]);
         if (signal.aborted) return false;
+        if (delivery.status === "rejected" || cleanup.status === "rejected") { retry = true; continue; }
         removeVoiceRecord(this.home, join(this.directory(), file));
         this.pending.delete(file);
       } catch { retry = true; }

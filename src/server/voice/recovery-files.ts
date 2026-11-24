@@ -1,11 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 export const retirementDirectory = (stateHome: string) => join(stateHome, "voice-retirements");
 
 export function announcementName(instance: string) {
   return "announced-" + createHash("sha256").update(instance).digest("hex");
+}
+
+// The durable launch ID determines its scratch directory without trusting a stored path.
+export const playerScratchDirectory = (stateHome: string, instance: string) =>
+  join(retirementDirectory(stateHome), "scratch-" + announcementName(instance));
+
+export async function removePlayerScratch(stateHome: string, instance: string) {
+  const parent = lstatSync(retirementDirectory(stateHome), { throwIfNoEntry: false });
+  if (!parent) return;
+  if (!parent.isDirectory()) throw new Error("Invalid supervisor retirement directory.");
+  await rm(playerScratchDirectory(stateHome, instance), { recursive: true, force: true });
 }
 
 function syncVoiceParents(directory: string, stateHome: string) {

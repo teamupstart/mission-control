@@ -224,8 +224,11 @@ on disk for the next connection.
 A replacement supervisor checks the recorded PID with the OS, rereads the
 record after observing that PID gone, and verifies its signature before signing
 an exit. A live or reused PID or an inconclusive OS result keeps the launch
-pending. The child can read the voice models and write
-to its own temporary directory. It cannot read the other voice records or
+pending. The child can read the voice models and write to its own owner-only
+`voice-retirements/scratch-announced-<digest>/` directory. The digest comes
+from the recorded launch instance. On normal close the launcher removes its
+scratch. After a launcher crash, retirement removes the same directory after
+confirmed exit and retains the record until cleanup succeeds. The child cannot read the other voice records or
 write the daemon's ledger, launch inventory, receipts or exit evidence.
 The macOS launcher uses `/usr/bin/sandbox-exec` and forbids spawning descendants.
 Both macOS playback engines run inside the listener, so a child player cannot

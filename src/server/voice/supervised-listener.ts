@@ -1,10 +1,8 @@
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
-import { retirementDirectory } from "./recovery-files.ts";
+import { playerScratchDirectory, removePlayerScratch, retirementDirectory } from "./recovery-files.ts";
 
 // The launcher announces the launch before calling spawn. Only ordinary listener
 // credentials and standard streams cross this boundary. The signer stays in the parent.
@@ -26,11 +24,12 @@ export function confinedVoiceListener(stateHome: string, instance: string) {
   return (executable: string, args: string[], env: NodeJS.ProcessEnv) => {
     // The announcement is asynchronous. Check again before the kernel applies the policy.
     validateDirectories();
-    const scratch = mkdtempSync(join(realpathSync(tmpdir()), "mission-voice-player-"));
+    const scratch = playerScratchDirectory(home, instance);
+    mkdirSync(scratch, { mode: 0o700 });
     // The fixed startup gate must run unmodified before the requested executable.
     const listenerEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !/^(LD_|DYLD_)/u.test(name)));
     const options = { env: { ...listenerEnv, TMPDIR: scratch, TMP: scratch, TEMP: scratch, MISSION_VOICE_LISTENER_INSTANCE: instance }, stdio: "pipe" as const };
-    const cleanup = () => { void rm(scratch, { recursive: true, force: true }).catch(() => {}); };
+    const cleanup = () => { void removePlayerScratch(home, instance).catch(() => {}); };
     try {
       const macOS = process.platform === "darwin";
       const command = macOS ? FIXED_OS_EXECUTABLES.sandboxExec : FIXED_OS_EXECUTABLES.bubblewrap;
@@ -54,6 +53,7 @@ function macPolicy(voice: string, models: string, retirements: string, scratch: 
     '(allow file-write* (subpath (param "SCRATCH")))',
     '(deny file-read* (subpath (param "VOICE")))',
     '(deny file-read* (subpath (param "RETIREMENTS")))',
+    '(allow file-read* (subpath (param "SCRATCH")))',
     '(allow file-read* (subpath (param "MODELS")))',
     // Both macOS playback engines run in the listener. Its confirmed exit must
     // establish that no descendant can still own playback.
@@ -68,5 +68,5 @@ function linuxPolicy(voice: string, models: string, retirements: string, scratch
   const policy = ["--unshare-all", "--share-net", "--new-session", "--cap-drop", "ALL",
     "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", voice];
   if (existsSync(models)) policy.push("--ro-bind", models, models);
-  return [...policy, "--remount-ro", voice, "--tmpfs", retirements, "--remount-ro", retirements, "--bind", scratch, scratch, "--"];
+  return [...policy, "--remount-ro", voice, "--tmpfs", retirements, "--bind", scratch, scratch, "--remount-ro", retirements, "--"];
 }

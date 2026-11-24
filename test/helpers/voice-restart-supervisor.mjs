@@ -14,7 +14,8 @@ process.on("message", async request => {
   if (request.state === "ack") return;
   if (request.state === "play") {
     const { child } = await signer.launch(request.home, process.execPath,
-      ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000);"], {}, async (instance, state, proof) => {
+      ["-e", "require('node:fs').writeFileSync(require('node:path').join(process.env.TMPDIR, 'playing'), 'sample'); process.stdout.write('ready'); setInterval(() => {}, 1000);"],
+      {}, async (instance, state, proof) => {
         if (state !== "started") throw new Error("Unexpected exit before release");
         const ack = once(process, "message");
         process.send({ instance, env: signer.daemonEnv, proof });

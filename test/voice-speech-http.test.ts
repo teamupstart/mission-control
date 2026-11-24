@@ -1,7 +1,7 @@
 import { fixtureSupervisorEnv, fixtureVoiceSupervisor, newFixtureSupervisor } from "./helpers/voice-supervisor.ts";
 import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { announcementName } from "../src/server/voice/speech-holds.ts";
-import { retirementDirectory } from "../src/server/voice/recovery-files.ts";
+import { playerScratchDirectory, retirementDirectory } from "../src/server/voice/recovery-files.ts";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -769,6 +769,10 @@ for (const playing of [false, true]) test("a launcher crash after an accepted st
   assert.equal(JSON.parse(readFileSync(file, "utf8")).pid, launcher.pid);
   assert.equal((await peer.report("started", start.instance, start.proof)).status, 200);
   let playerPid: number | undefined;
+  const scratch = playerScratchDirectory(home, start.instance);
+  const sibling = playerScratchDirectory(home, peer.instance);
+  mkdirSync(sibling, { mode: 0o700 });
+  writeFileSync(join(sibling, "other"), "another launch");
   if (playing) {
     const ready = once(launcher, "message");
     launcher.send({ state: "ack" });
@@ -777,6 +781,7 @@ for (const playing of [false, true]) test("a launcher crash after an accepted st
     playerPid = child.pid;
     t.after(() => { if (playerPid) try { process.kill(playerPid, "SIGKILL"); } catch { /* Already reaped. */ } });
     assert.equal(JSON.parse(readFileSync(file, "utf8")).pid, playerPid);
+    assert.equal(statSync(scratch).mode & 0o777, 0o700);
   }
   store.reset(); await peer.hello();
   assert.equal((await peer.poll()).capture, false);
@@ -798,12 +803,19 @@ for (const playing of [false, true]) test("a launcher crash after an accepted st
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(reports, []);
     assert.equal((await peer.poll()).capture, false);
+    assert.equal(readFileSync(join(scratch, "playing"), "utf8"), "sample");
     process.kill(playerPid, "SIGTERM");
     await t.waitFor(() => assert.throws(() => process.kill(playerPid!, 0), { code: "ESRCH" }));
     playerPid = undefined;
+    replacement.retryPendingExits(home, async () => { throw new Error("Daemon offline"); });
+    await t.waitFor(() => assert.throws(() => statSync(scratch), { code: "ENOENT" }));
+    assert.ok(statSync(file).isFile());
+    assert.equal((await peer.poll()).capture, false);
   }
   replacement.retryPendingExits(home, report);
-  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
+  await t.waitFor(() => assert.throws(() => statSync(file), { code: "ENOENT" }));
+  assert.throws(() => statSync(scratch), { code: "ENOENT" });
+  assert.equal(readFileSync(join(sibling, "other"), "utf8"), "another launch");
   assert.deepEqual(reports, [start.instance]);
   assert.equal((await peer.poll()).capture, true);
 });
@@ -833,7 +845,7 @@ test("a stalled start times out before spawning and retires the accepted launch 
   ack();
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(reports, ["started", "exited"]);
-  assert.deepEqual(readdirSync(retirementDirectory(home)), []);
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
 });
 
@@ -1142,22 +1154,23 @@ test("a stalled exit times out, lets the next retirement finish, and ignores lat
   await flush();
   assert.equal(transportSignal?.aborted, false);
   assert.equal(attempts.length, 1);
-  assert.equal(readdirSync(retirementDirectory(home)).length, 2);
+  const receipts = () => readdirSync(retirementDirectory(home)).filter(name => name.endsWith(".json"));
+  assert.equal(receipts().length, 2);
   t.mock.timers.tick(1);
   await flush();
   assert.equal(transportSignal?.aborted, true);
-  assert.equal(attempts.length, 2);
+  await t.waitFor(() => assert.equal(attempts.length, 2));
   assert.notEqual(attempts[1], attempts[0]);
   const remaining = ["shell-" + announcementName(attempts[0]!) + ".json"];
-  assert.deepEqual(readdirSync(retirementDirectory(home)), remaining);
+  await t.waitFor(() => assert.deepEqual(receipts(), remaining));
   finishLate();
   await flush();
-  assert.deepEqual(readdirSync(retirementDirectory(home)), remaining);
+  assert.deepEqual(receipts(), remaining);
   assert.equal((await peer.poll()).capture, false);
   t.mock.timers.tick(250);
   await flush();
   assert.deepEqual(attempts, [attempts[0], attempts[1], attempts[0]]);
-  assert.deepEqual(readdirSync(retirementDirectory(home)), []);
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
   assert.equal((await peer.poll()).capture, true);
 });
 

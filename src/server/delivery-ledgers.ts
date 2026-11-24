@@ -232,6 +232,8 @@ export async function prepareSpokenTranscript(key: string, transcript: NonNullab
 }
 
 export interface SpokenPageAnchor {
+  /** File revision sampled before the native parser read this frame. */
+  version: string | undefined;
   end: number;
   reread: () => TranscriptMessage[];
 }
@@ -244,17 +246,26 @@ export async function withSpokenReadProofs<T>(conversation: DeliveryConversation
   const prepare = transcript?.read.prepareHandoffBoundaries;
   if (!conversation || !transcript || !prepare || !spokenLedger.rows(conversation.key).length) return project(conversation);
   const { path, read } = transcript;
+  const pageMatches = () => {
+    try { return !!anchor && isDeepStrictEqual(anchor.reread(), messages); }
+    catch { return false; }
+  };
+  const captureOffsets = async (offsets: number[]) => {
+    try { return await prepare(path, offsets, false); }
+    catch (error) { throw new SpokenTranscriptUnavailable(error); }
+  };
   for (let attempt = 0; attempt < 2; attempt++) {
     const version = read.snapshot?.(path)?.version;
+    if (anchor && anchor.version !== version && !pageMatches()) throw new SpokenTranscriptChanged();
     const needed = spokenLedger.projectionOffsets(conversation.key, version, messages);
     const offsets = needed.length && anchor
       ? [...new Set([...spokenLedger.projectionOffsets(conversation.key, undefined, messages), anchor.end])] : needed;
-    let capture = offsets.length ? await prepare(path, offsets, false) : null;
+    let capture = offsets.length ? await captureOffsets(offsets) : null;
     let anchored = false;
     if (offsets.length && (!capture || capture.version !== version || read.snapshot?.(path)?.version !== version)) {
       const first = capture;
-      if (!anchor || !first?.proofs.has(anchor.end) || !isDeepStrictEqual(anchor.reread(), messages)) continue;
-      capture = await prepare(path, offsets, false);
+      if (!anchor || !first?.proofs.has(anchor.end) || !pageMatches()) continue;
+      capture = await captureOffsets(offsets);
       if (!capture || !capture.fileId || capture.fileId !== first.fileId ||
           offsets.some(n => first.proofs.get(n)?.proof !== capture?.proofs.get(n)?.proof)) continue;
       anchored = true;
@@ -271,10 +282,12 @@ export async function withSpokenReadProofs<T>(conversation: DeliveryConversation
     const verified = { path, read: { ...read, snapshot,
       boundary: (_path: string, offset?: number) => offset !== undefined && capture && valid() ? capture.proofs.get(offset) ?? null : null,
     } };
+    const pageIsCurrent = () => valid() || (!capture && (!anchor || pageMatches()) &&
+      !spokenLedger.projectionOffsets(conversation.key, read.snapshot?.(path)?.version, messages).length);
     const preparedSpokenFallbacks = await spokenLedger.prepareProjection(conversation.key, verified, messages);
-    if (!preparedSpokenFallbacks || (capture && !valid())) continue;
+    if (!preparedSpokenFallbacks || !pageIsCurrent()) continue;
     const result = project({ ...conversation, transcript: verified, preparedSpokenFallbacks });
-    if (valid() || (!capture && !spokenLedger.projectionOffsets(conversation.key, read.snapshot?.(path)?.version, messages).length)) return result;
+    if (pageIsCurrent()) return result;
   }
   throw new SpokenTranscriptChanged();
 }

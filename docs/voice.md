@@ -129,7 +129,10 @@ offset. A worker hashes the history before the paste. The daemon checks the file
 the outbox claim at handoff. A matching native turn must have a timestamp at or after handoff,
 and the saved prefix must still belong to the file. Opening or updating a conversation searches
 for an unbound receipt only when the displayed records could contain it. A later copy still
-checks the history from handoff so the first eligible turn keeps its disclosure. SDKs that accept client message IDs use that receipt.
+checks the history from handoff so the first eligible turn keeps its disclosure. If the proof worker
+is unavailable or the record changes during verification, the dashboard shows the native transcript
+and continues streaming new turns. It retries the disclosure in the background, including for pages
+the operator scrolled back to. SDKs that accept client message IDs use that receipt.
 
 A confirmed terminal delivery has a 24-hour window to match its transcript turn. Cleanup makes
 one final binding pass and deletes the payload if it still has no match. If the transcript stays

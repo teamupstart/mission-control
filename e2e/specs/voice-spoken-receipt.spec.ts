@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Session, Task } from "../../src/shared/types.ts";
 import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
@@ -8,7 +8,9 @@ import { handOver, hasTmux, paneSession, PANE_AGENT_DAEMON, startPaneAgent } fro
 import { expect, test } from "../fixtures/test.ts";
 import { say } from "../fixtures/voice.ts";
 
-test.use(PANE_AGENT_DAEMON);
+test.use({ ...PANE_AGENT_DAEMON, daemonEnv: { ...PANE_AGENT_DAEMON.daemonEnv,
+  NODE_OPTIONS: "--import=" + new URL("../fixtures/spoken-proof-worker.mjs", import.meta.url).href,
+} });
 test.skip(!hasTmux(), "tmux is required for terminal pickup");
 
 test("a terminal conversation restores late spoken receipts and rechecks rewritten native records", async ({ dashboard, daemon, request }) => {
@@ -58,6 +60,26 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
       await actual.screenshot({ path: join(dir, "confirmed.png") });
     }
+
+    // Lose only disclosure verification. Native messages keep arriving on the same open
+    // panel, then the original row recovers its disclosure without another native write.
+    const pauseProof = join(daemon.home, "pause-spoken-proof");
+    writeFileSync(pauseProof, "");
+    writeFileSync(path, readFileSync(path));
+    await expect(actual.getByText("Spoken", { exact: true })).toHaveCount(0);
+    await expect(actual).toContainText(payload);
+    const progressWhileDeferred = "New terminal output while proof is unavailable";
+    appendFileSync(path, line("while-proof-paused", progressWhileDeferred));
+    await expect(dashboard.getByText(progressWhileDeferred, { exact: true })).toBeVisible();
+    await actual.screenshot({ path: test.info().outputPath("unverified-spoken-frame.png") });
+    unlinkSync(pauseProof);
+    await expect(actual.getByText("Spoken", { exact: true })).toBeVisible({ timeout: 20_000 });
+    await actual.getByText("What the agent received", { exact: true }).click();
+    await expect(actual.locator(".review-received-text")).toHaveText(payload);
+    await dashboard.mouse.move(0, 0);
+    await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
+    await actual.screenshot({ path: test.info().outputPath("recovered-spoken-disclosure.png") });
 
     const second = "inspect the green build";
     expect(await (await say(daemon, "Steve, " + second)).json()).toEqual({ accepted: true });

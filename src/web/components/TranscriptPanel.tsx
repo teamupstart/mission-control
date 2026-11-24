@@ -492,6 +492,7 @@ export function TranscriptPanel({
   );
   const [canLoadOlder, setCanLoadOlder] = useState(() => backAnchor(readHistory(sessionId)) !== null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const retrySpokenPage = useRef<((end: number) => void) | null>(null);
   const voiceHistoryRestore = useRef<{ to: number; askedFrom: number | null } | null>(null);
   const [olderError, setOlderError] = useState<string | null>(null);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
@@ -914,7 +915,7 @@ export function TranscriptPanel({
     // Show whatever this session already has while the stream connects, instead of
     // clearing to "Loading…" and throwing away scroll-back the map still holds.
     const held = readHistory(sessionId);
-    let refreshFrom = voiceEnabled && held?.voiceRefreshFrom !== undefined ? markVoiceRefresh(held) : undefined;
+    let refreshFrom = voiceEnabled && held && (held.spokenDeferred || held.voiceRefreshFrom !== undefined) ? markVoiceRefresh(held) : undefined;
     if (held && !voiceEnabled) markVoiceRefresh(held);
     setMessages(flattenHistory(held));
     setCanLoadOlder(backAnchor(held) !== null);
@@ -935,9 +936,42 @@ export function TranscriptPanel({
     let delay = RECONNECT_MIN_MS;
     let closed = false;
 
+    let proofRetry: ReturnType<typeof setTimeout> | undefined;
+    let proofDelay = RECONNECT_MIN_MS;
+    const proofAbort = new AbortController();
+    const retryDisclosure = (end: number) => {
+      const heldPage = readHistory(sessionId);
+      if (!voiceEnabled || !heldPage || closed) return;
+      heldPage.spokenDeferred = true;
+      if (proofRetry !== undefined) return;
+      // Probe in the background. The existing stream keeps advancing while proof is
+      // unavailable. Once readable, reseed and restore the full range the operator held.
+      proofRetry = setTimeout(async () => {
+        const probe = await fetchTranscriptBefore(sessionId, end, proofAbort.signal);
+        proofRetry = undefined;
+        if (closed) return;
+        if (!probe.ok || probe.spokenDeferred) {
+          retryDisclosure(end);
+          return;
+        }
+        const history = readHistory(sessionId);
+        if (!history?.spokenDeferred) return;
+        refreshFrom = markVoiceRefresh(history);
+        historyEpoch.current += 1;
+        setLoadingOlder(false);
+        if (retry) clearTimeout(retry);
+        es?.close();
+        connect();
+      }, proofDelay);
+      proofDelay = Math.min(proofDelay * 2, RECONNECT_MAX_MS);
+    };
+    retrySpokenPage.current = retryDisclosure;
+
     const connect = (): void => {
       if (closed) return;
       // A byte resume only returns new turns. Refresh the held range to acquire spoken attribution.
+      const cached = readHistory(sessionId);
+      if (voiceEnabled && cached?.spokenDeferred) refreshFrom = markVoiceRefresh(cached);
       const from = refreshFrom === undefined ? resumeAnchor(sessionId) : null;
       const base = `/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`;
       const params = new URLSearchParams();
@@ -1006,6 +1040,7 @@ export function TranscriptPanel({
           setStatus("unavailable");
           setNote(msg.reason);
         }
+        if (msg.type !== "unavailable" && msg.spokenDeferred) retryDisclosure(msg.pos);
       };
       es.onerror = () => {
         // Close before retrying: left open, the browser starts its own reconnect against
@@ -1023,6 +1058,9 @@ export function TranscriptPanel({
       closed = true;
       historyEpoch.current += 1;
       if (retry) clearTimeout(retry);
+      clearTimeout(proofRetry);
+      proofAbort.abort();
+      retrySpokenPage.current = null;
       es?.close();
     };
   }, [resetNonce, sessionId, voiceEnabled]);
@@ -1057,6 +1095,7 @@ export function TranscriptPanel({
     pendingRestore.current = logRef.current?.scrollHeight ?? null;
     const next = prependPage(sessionId, res);
     if (next) {
+      if (res.spokenDeferred) retrySpokenPage.current?.(res.end);
       setMessages(flattenHistory(next));
       setCanLoadOlder(backAnchor(next) !== null);
     } else {

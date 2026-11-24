@@ -18,7 +18,7 @@ import { sleep } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
 import { spokenTranscriptState } from "./db.ts";
-import { spokenLedger, withSpokenReadProofs } from "./delivery-ledgers.ts";
+import { SpokenTranscriptChanged, SpokenTranscriptUnavailable, spokenLedger, withSpokenReadProofs } from "./delivery-ledgers.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import type { TranscriptStreamRead } from "./harness/types.ts";
 
@@ -204,19 +204,23 @@ export function transcriptStreamHandler(registry: Registry) {
         }
         return { frame, before: from === null ? undefined : digest(atSplit), cursor: completeLines, revision: snapshot };
       };
+      const projectFrame = async (messages: TranscriptStreamRead["messages"], version: string | undefined, end: number,
+        reread: () => TranscriptStreamRead["messages"]) => {
+        const page = await attributeTranscriptPage(id, messages, launch(), anchor, conversation(), { end, version, reread });
+        return { ...page, messages: titled.transcript(page.messages) };
+      };
       const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
         const captured = await capture(state, null, end => read.initial(path, end));
         const init = captured.frame;
-        const project = async () => titled.transcript(await attributeTranscriptPage(id, init.messages, launch(), anchor, conversation(),
-          { end: init.pos, reread: () => read.initial(path, init.pos).messages }));
-        const messages = await project();
+        const project = () => projectFrame(init.messages, captured.revision?.version, init.pos, () => read.initial(path, init.pos).messages);
+        const page = await project();
         // Any ledger consulted during projection can finish a binding. When the token advances,
         // project again against that token before promising it to the reader.
         const decorated = state ? spokenState() : state;
         const changed = decorated?.receipt !== state?.receipt;
         await send({
           type: "init",
-          messages: changed ? await project() : messages,
+          ...(changed ? await project() : page),
           start: init.start, atStart: init.atStart, pos: init.pos,
           ...(voice && { spokenReceipt: decorated?.receipt ?? null }), ...(captured.cursor && { spokenCursor: digest(captured.cursor) }),
           ...((refreshSpoken || changed) && { refreshSpoken: true }),
@@ -246,8 +250,8 @@ export function transcriptStreamHandler(registry: Registry) {
             cursor = captured.cursor;
             revision = captured.revision;
             verifiedVersion = revision?.version;
-            await send({ type: "resume", messages: titled.transcript(await attributeTranscriptPage(id, resumed.messages, launch(), anchor, conversation(),
-              { end: resumed.pos, reread: () => read.appended(path, from, resumed.pos).messages })),
+            await send({ type: "resume", ...await projectFrame(resumed.messages, captured.revision?.version, resumed.pos,
+              () => read.appended(path, from, resumed.pos).messages),
               pos, ...(cursor && { spokenCursor: digest(cursor) }) });
           }
         } else {
@@ -269,9 +273,15 @@ export function transcriptStreamHandler(registry: Registry) {
         }
         try {
           const target = spoken && conversation();
-          if (target) await withSpokenReadProofs(target, undefined, prepared => {
-            if (prepared) spokenLedger.retryDeferredBindings(prepared);
-          });
+          if (target) {
+            try {
+              await withSpokenReadProofs(target, undefined, prepared => {
+                if (prepared) spokenLedger.retryDeferredBindings(prepared);
+              });
+            } catch (error) {
+              if (!(error instanceof SpokenTranscriptChanged || error instanceof SpokenTranscriptUnavailable)) throw error;
+            }
+          }
           const current = spokenState();
           if (current?.receipt !== spoken?.receipt) {
             await sendWindow(current, true);
@@ -302,13 +312,12 @@ export function transcriptStreamHandler(registry: Registry) {
           const advanced = next > pos;
           if (messages.length > 0 || (current && advanced)) {
             const from = pos;
-            const projected = await attributeTranscriptPage(id, messages, launch(), anchor, conversation(),
-              { end: next, reread: () => read.appended(path, from, next).messages });
-            await send({ type: "append", messages: titled.transcript(projected), pos: next,
+            const page = await projectFrame(messages, captured.revision?.version, next, () => read.appended(path, from, next).messages);
+            await send({ type: "append", ...page, pos: next,
               ...(captured.cursor && { spokenCursor: digest(captured.cursor) }) });
             sinceHeartbeat = 0;
           }
-          // Advance only after projection and publication. A transient proof failure retries these bytes.
+          // Advance after publishing the native frame, including when disclosure verification is deferred.
           pos = next;
           if (current) {
             cursor = captured.cursor;

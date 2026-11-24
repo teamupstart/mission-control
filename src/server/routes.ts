@@ -4810,22 +4810,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       const turns = Number(c.req.query("turns"));
       const want = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : undefined;
+      const version = featureEnabled("voice") ? t.read.snapshot?.(t.path)?.version : undefined;
       const page = t.read.before(t.path, before, want);
       // The panel's own history pages, so they carry the same launch presentation the stream
       // put on `init` - decorated here rather than in the reader, because paging back far
       // enough to reach the launch turn must not make it reappear in full.
-      return c.json({
-        ...page,
-        // The same task-title projection the live stream applies (`task-titles.ts`).
-        messages: taskTitlePresenter(registry).transcript(await attributeTranscriptPage(
-          session.id,
-          page.messages,
-          resolveLaunchMarker(registry, session.id),
-          (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
-          { key: noteKeyFor(session), transcript: t },
-          { end: page.end, reread: () => t.read.before(t.path, page.end, want).messages },
-        )),
-      });
+      const projected = await attributeTranscriptPage(
+        session.id, page.messages, resolveLaunchMarker(registry, session.id),
+        (messageId) => bindLaunchTurnMessage(registry, session.id, messageId),
+        { key: noteKeyFor(session), transcript: t },
+        { end: page.end, version, reread: () => t.read.before(t.path, page.end, want).messages },
+      );
+      return c.json({ ...page, ...projected, messages: taskTitlePresenter(registry).transcript(projected.messages) });
     }
     const since = Number(c.req.query("since"));
     if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));

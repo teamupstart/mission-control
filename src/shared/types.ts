@@ -4517,7 +4517,7 @@ export interface TurnOriginSession {
  * A session that is actively working writes turns constantly, which made "you lost your
  * place" the normal outcome of a dropped connection rather than a rare one.
  */
-export type TranscriptStreamMsg =
+type NativeTranscriptFrame =
   | {
       type: "init";
       messages: TranscriptMessage[];
@@ -4547,7 +4547,13 @@ export type TranscriptStreamMsg =
       pos: number;
       spokenCursor?: string;
     }
-  | { type: "append"; messages: TranscriptMessage[]; pos: number; spokenCursor?: string }
+  | { type: "append"; messages: TranscriptMessage[]; pos: number; spokenCursor?: string };
+
+export type TranscriptStreamMsg =
+  | (NativeTranscriptFrame & {
+      /** Native turns are readable while the dashboard retries their spoken attribution. */
+      spokenDeferred?: true;
+    })
   | { type: "unavailable"; reason: string };
 
 // ---- session diff (changes vs the source branch) ----

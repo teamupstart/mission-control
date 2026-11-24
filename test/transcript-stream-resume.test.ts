@@ -444,3 +444,103 @@ test("cold transcript views verify multiple visible spoken handoff offsets off-t
   assert.equal(sync.mock.callCount(), 0);
   t.diagnostic(`Four projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
 });
+
+async function confirmedTerminalRecord(id: string) {
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const db = await import("../src/server/db.ts");
+  const key = noteKeyFor(session);
+  const native = sessionMessages(session)!;
+  const now = Date.now();
+  writeFileSync(path, turn("intro", "INTRO"));
+  const pending = db.createPendingTurn({ id, noteKey: key, spokenWords: id, text: id, now });
+  const claim = db.claimNextPendingTurn(key, now, pending, text => text)!;
+  const prepared = await prepareSpokenTranscript(key, native, claim.text);
+  const receipt = reserveSpokenHandoff({ key, session, transcript: native }, claim, id, false, 0, now, prepared)!;
+  assert.ok(db.retireDeliveredPendingTurn(id, claim.revision, now, receipt.id));
+  const record = JSON.stringify({ type: "user", uuid: id + "-native", timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: id } }) + "\n";
+  appendFileSync(path, record);
+  spokenLedger.bindLanded(key, native, now);
+  spokenLedger.forgetCaches();
+  return { read: native.read, record };
+}
+
+test("a rewrite after native parsing cannot certify stale spoken history with a cold or cached proof", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  for (const cached of [false, true]) {
+    const words = "received-" + cached;
+    const { read } = await confirmedTerminalRecord(words);
+    const end = statSync(path).size;
+    const history = async () => {
+      const res = await app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
+      assert.equal(res.status, 200);
+      return res.json();
+    };
+    if (cached) assert.equal((await history()).messages.at(-1).presentation.kind, "spoken");
+    const original = read.before.bind(read);
+    const mock = t.mock.method(read, "before", (...args: Parameters<typeof original>) => {
+      const page = original(...args);
+      writeFileSync(path, readFileSync(path, "utf8").replace('"content":"' + words, '"content":"REPLACED-' + cached));
+      return page;
+    }, { times: 1 });
+    const stale = await history();
+    assert.equal(stale.spokenDeferred, true);
+    assert.equal(stale.messages.at(-1).presentation, undefined);
+    mock.mock.restore();
+    const current = await history();
+    assert.equal(current.messages.at(-1).text, "REPLACED-" + cached);
+    assert.equal(current.messages.at(-1).presentation, undefined);
+  }
+});
+
+test("a failed proof leaves native history, opening, resume and live appends readable until disclosure recovers", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const words = "proof-worker-failure";
+  const { read, record } = await confirmedTerminalRecord(words);
+  const worker = t.mock.method(read as Required<Pick<typeof read, "prepareHandoffBoundaries">>, "prepareHandoffBoundaries",
+    async () => { throw new Error("transient proof worker failure"); });
+  const end = statSync(path).size;
+  const page = await app.request("/api/sessions/s1/transcript?before=" + end, { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(page.status, 200);
+  const history = await page.json();
+  assert.equal(history.spokenDeferred, true);
+  assert.equal(history.messages.at(-1).text, words);
+  assert.equal(history.messages.at(-1).presentation, undefined);
+  const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
+  const reader = res.body!.getReader();
+  const timer = setTimeout(() => void reader.cancel(), 15_000);
+  t.after(() => { clearTimeout(timer); return reader.cancel(); });
+  async function next() {
+    for (;;) {
+      const chunk = await reader.read();
+      assert.ok(!chunk.done);
+      const line = new TextDecoder().decode(chunk.value).split("\n").find(s => s.startsWith("data: {"));
+      if (line) return JSON.parse(line.slice(6)) as TranscriptStreamMsg;
+    }
+  }
+  const init = await next();
+  assert.ok(init.type === "init" && init.spokenDeferred && init.spokenCursor && init.spokenReceipt);
+  assert.equal(init.messages.at(-1)?.text, words);
+  assert.equal(init.messages.at(-1)?.presentation, undefined);
+  appendFileSync(path, record.replace(words + "-native", "independent-copy"));
+  const copy = await next();
+  assert.ok(copy.type === "append" && copy.spokenDeferred && copy.pos > init.pos);
+  assert.equal(copy.messages[0]?.presentation, undefined);
+  const resume = await firstFrame("?" + new URLSearchParams({ from: String(init.pos),
+    spokenCursor: init.spokenCursor, spokenReceipt: init.spokenReceipt }));
+  assert.ok(resume.type === "resume" && resume.spokenDeferred && resume.pos === copy.pos);
+  appendFileSync(path, turn("later", "New output during worker failure"));
+  const progress = await next();
+  assert.ok(progress.type === "append" && progress.pos > copy.pos);
+  assert.equal(progress.messages[0]?.text, "New output during worker failure");
+  worker.mock.restore();
+  const recovered = await firstFrame();
+  assert.ok(recovered.type === "init" && !recovered.spokenDeferred);
+  assert.equal(recovered.messages.find(m => m.id === words + "-native")?.presentation?.kind, "spoken");
+});

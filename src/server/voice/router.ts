@@ -87,19 +87,21 @@ export class VoiceRouter {
     }
   }
 
-  async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number } = {}): Promise<boolean> {
-    const { heldBeforeRelease, startHostUs } = timing;
+  async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number; speechStartHostUs?: number } = {}): Promise<boolean> {
+    const { heldBeforeRelease, startHostUs, speechStartHostUs } = timing;
+    const onsetUs = speechStartHostUs ?? startHostUs;
     const { mode, roster, backend } = this.state();
     if (!(voiceCaptures(mode) || (mode === "auto-muted" && heldBeforeRelease)) || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
     // Released holds already passed the route's monotonic key-down/key-up bounds.
     if (!heldBeforeRelease) {
-      const aheadUs = startHostUs !== undefined
-        ? startHostUs - this.hostNowUs() : (capturedAt - Date.now()) * 1000;
+      const aheadUs = onsetUs !== undefined
+        ? onsetUs - this.hostNowUs() : (capturedAt - Date.now()) * 1000;
       if (aheadUs > MAX_CAPTURE_CLOCK_SKEW_MS * 1000) return false;
     }
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
-    const time = { openedAt: capturedAt, openedAtHostUs: startHostUs };
+    const leadMs = speechStartHostUs !== undefined && startHostUs !== undefined ? (speechStartHostUs - startHostUs) / 1000 : 0;
+    const time = { openedAt: capturedAt + leadMs, openedAtHostUs: onsetUs };
     const unsureCards = Array.from(this.open.values())
       .filter(item => item.card.state === "unsure" && offsetUs(item.time, time) <= 0)
       .map(({ card }) => card);

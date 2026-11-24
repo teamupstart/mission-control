@@ -779,6 +779,24 @@ test("ordinary speech and dashboard picks use the native host clock after wall t
   assert.equal((await readHeard()).find(entry => entry.id === "before")?.time, unix);
 });
 
+test("quiet lead-in before a dashboard pick does not predate the spoken cancel", async () => {
+  await say("Steven ask Will", "choice");
+  const pcmStart = voiceHostTimeUs() - 100_000;
+  assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
+  const speechStart = voiceHostTimeUs();
+  const submit = async (onset: number) => (await app.request(utterancePath(), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(pcmStart), "x-voice-capture-end-host-ms": String(Math.ceil(speechStart / 1000) + 1),
+    "x-voice-speech-start-host-us": String(onset),
+  }, body: JSON.stringify(capture("cancel")) })).json();
+  assert.deepEqual(await submit(pcmStart), { accepted: true });
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.deepEqual(await submit(speechStart), { accepted: true });
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  assert.deepEqual(await submit(pcmStart - 1), { accepted: false });
+  assert.deepEqual(await submit((Math.ceil(speechStart / 1000) + 1) * 1000), { accepted: false });
+});
+
 test("an API pick and a spoken cancel use the shared host clock", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });

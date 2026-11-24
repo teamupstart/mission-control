@@ -12,6 +12,7 @@ import {
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
+  VOICE_SPEECH_START_HEADER,
   VoiceConfigPatchSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
@@ -186,9 +187,13 @@ export function registerVoiceUtteranceRoutes(
     const startHeader = c.req.header(VOICE_CAPTURE_START_HEADER);
     const startUs = startHeader ? Number(startHeader) : undefined;
     if (startUs !== undefined && (!Number.isSafeInteger(startUs) || startUs < 0)) return c.json({ accepted: false });
+    const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
+    const end = endHeader ? Number(endHeader) : NaN;
+    const onsetHeader = c.req.header(VOICE_SPEECH_START_HEADER);
+    const onsetUs = onsetHeader === undefined ? undefined : Number(onsetHeader);
+    if (onsetUs !== undefined && (!onsetHeader?.trim() || !Number.isSafeInteger(onsetUs) || startUs === undefined ||
+        onsetUs < startUs || !Number.isSafeInteger(end) || onsetUs >= end * 1000)) return c.json({ accepted: false });
     if (heldBeforeRelease) {
-      const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
-      const end = endHeader ? Number(endHeader) : NaN;
       if (startUs === undefined || startUs < release.pressedAtUs ||
           !Number.isSafeInteger(end) || end > release.at || startUs >= end * 1000) {
         c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
@@ -197,7 +202,7 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
-    return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs }) });
+    return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs }) });
   });
   app.get("/api/voice/heard", gate, (c) => {
     c.header("Cache-Control", "no-store");

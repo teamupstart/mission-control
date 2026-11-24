@@ -70,6 +70,7 @@ struct Segment {
     // Capture and release boundaries use milliseconds since the monotonic host-clock origin.
     var startedAtHostMs: Int64 { startNs / 1_000_000 }
     var startedAtHostUs: Int64 { startNs / 1000 }
+    var speechStartHostUs: Int64 { (startNs + Int64(firstVoicedSample) * Self.sampleNs) / 1000 }
     var endedAt: Int64 { (startNs + Int64(samples.count) * Self.sampleNs + 999_999) / 1_000_000 }
 
     static func completeSamples(_ count: Int, startingAt startNs: Int64, through releaseMs: Int64) -> Int {

@@ -165,6 +165,9 @@ segment after three attempts or 55 seconds, including time spent waiting for a r
 and continues with later speech. During auto-mute following key-up,
 the daemon accepts the same owner's held revision for segments contained within the key interval.
 The listener rounds the first sample down to host microseconds in `x-voice-capture-start-host-us`.
+It also sends the first voiced sample in `x-voice-speech-start-host-us`. This optional
+timestamp lies inside the posted audio interval. It orders speech against dashboard actions
+even when the recorded lead-in began before a click. Clients that omit it use capture start.
 It clips on 16 kHz sample boundaries and rounds the exclusive end up to host milliseconds
 for `x-voice-capture-end-host-ms`. At key-up the detector tests a partial 20 ms frame
 with silence padding. The recognizer receives only recorded samples through release.

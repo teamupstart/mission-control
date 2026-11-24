@@ -36,7 +36,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const modelDir = slowLoad ? join(dir, "slow-load") : dir;
     if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
-    const captureBounds: { start: unknown; end: unknown }[] = [];
+    const captureBounds: { start: unknown; onset: unknown; end: unknown }[] = [];
     const heldAttempts: number[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
@@ -71,7 +71,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
         const accepted = (posted.length > 0 || firstPostAccepted) &&
           !res.hasHeader("x-voice-held-revision") && !res.hasHeader("x-voice-release-revision");
         posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
-        captureBounds.push({ start: req.headers["x-voice-capture-start-host-us"], end: req.headers["x-voice-capture-end-host-ms"] });
+        captureBounds.push({ start: req.headers["x-voice-capture-start-host-us"], onset: req.headers["x-voice-speech-start-host-us"], end: req.headers["x-voice-capture-end-host-ms"] });
         res.end(JSON.stringify({ accepted }));
         return;
       }
@@ -207,7 +207,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     apply(release, "off", false);
     await until(() => posted.length === 5, "complete phrases and tail");
     assert.deepEqual(posted, ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(text => ({ text, revision: "first" })));
-    assert.deepEqual(captureBounds, posted.map(() => ({ start: "125", end: "1" })));
+    assert.deepEqual(captureBounds, posted.map(() => ({ start: "125", onset: "625", end: "1" })));
     assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 

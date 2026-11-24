@@ -20,6 +20,7 @@ struct Hello: Encodable {
 
 final class Daemon: NSObject, URLSessionTaskDelegate {
     typealias Response = (data: Data, http: HTTPURLResponse)
+    typealias CaptureTimes = (startUs: Int64, speechStartUs: Int64, endMs: Int64)
     struct Acknowledgement: Decodable { let accepted: Bool }
     let base: URL
     let token: String
@@ -46,7 +47,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    func request(_ route: String, revision: String? = nil, capture: (startUs: Int64, endMs: Int64)? = nil, body: Data? = nil) async throws -> Response {
+    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil) async throws -> Response {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
@@ -54,6 +55,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
         if let capture {
             req.setValue(String(capture.startUs), forHTTPHeaderField: "x-voice-capture-start-host-us")
+            req.setValue(String(capture.speechStartUs), forHTTPHeaderField: "x-voice-speech-start-host-us")
             req.setValue(String(capture.endMs), forHTTPHeaderField: "x-voice-capture-end-host-ms")
         }
         if let body {
@@ -70,7 +72,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         return (data, http)
     }
 
-    func postUtterance(revision: String, capture: (startUs: Int64, endMs: Int64), body: Data) async throws -> Response {
+    func postUtterance(revision: String, capture: CaptureTimes, body: Data) async throws -> Response {
         try await Self.postWithHeldRetries(revision: revision) {
             try await self.request("voice/utterances", revision: revision, capture: capture, body: body)
         }
@@ -258,7 +260,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }
                                     guard let words else { return }
                                     let (data, http) = try await daemon.postUtterance(revision: next.revision,
-                                        capture: (segment.startedAtHostUs, segment.endedAt), body: JSONEncoder().encode(words))
+                                        capture: (segment.startedAtHostUs, segment.speechStartHostUs, segment.endedAt),
+                                        body: JSONEncoder().encode(words))
                                     try Task.checkCancellation()
                                     // The POST can also beat the key-up directive back to the helper.
                                     if http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,

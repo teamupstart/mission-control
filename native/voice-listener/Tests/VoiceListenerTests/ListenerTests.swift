@@ -145,6 +145,18 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testFirstVoicedSampleOrdersSpeechIndependentlyOfThePCMLeadIn() throws {
+        var gate = SpeechGate(held: true)
+        let quiet = Array(repeating: Float(0), count: 2400)
+        XCTAssertNil(gate.feed(quiet, active: false, endNs: 1_150_000_000))
+        let frame = Array(quiet.prefix(16)) + Array(repeating: Float(0.2), count: 304)
+        XCTAssertNil(gate.feed(frame, active: true, endNs: 1_170_000_000))
+        let released = try XCTUnwrap(gate.finish(at: 1160))
+        XCTAssertEqual(released.startedAtHostUs, 1_000_000)
+        XCTAssertEqual(released.speechStartHostUs, 1_151_000)
+        XCTAssertEqual(released.endedAt, 1160)
+    }
+
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var gate = SpeechGate()
         let speech = Array(repeating: Float(0.1), count: 320)

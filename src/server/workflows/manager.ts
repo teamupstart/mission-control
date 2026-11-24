@@ -27,6 +27,7 @@ import type {
   CreateWorkflow,
   CreateWorkflowBinding,
   GrantWorkflowRepairRounds,
+  RecoverStaleInspectorGrant,
   ResolveWorkflowDelivery,
   ResubmitWorkflow,
   RetryWorkflowDelivery,
@@ -240,7 +241,7 @@ import {
   taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
-import { parsePrUrl } from "../inspector/github.ts";
+import { parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
@@ -548,6 +549,37 @@ function inspectorStateSaysClosed(observedState: InspectionUpdated["observedStat
   return observedState === "CLOSED" || observedState === "MERGED";
 }
 
+/** A grant authorizes another round. Only a positive read can supply its head. */
+function grantedHeadObservation(
+  state: WorkflowInspectorGateState,
+  signal: InspectionUpdated | null,
+): InspectionUpdated | null {
+  const boundary = state.grantObservation;
+  if (!boundary || !state.prKey) return null;
+  const ledger = loadInspectorInspection(state.prKey);
+  if (!ledger) return null;
+  const incoming = signal?.prKey === state.prKey && signal.ledger.key === state.prKey
+    && signal.observedState !== null && signal.observedAt >= boundary.requestedAt ? signal : null;
+  // Use the latest durable review and publication facts even for a queued notification.
+  const { observedAt, observedState, observedHeadSha } = ledger;
+  // Compare timestamps first. A failed durable read supersedes older or tied notifications.
+  const useDurable = observedAt !== null && (!incoming || observedAt >= incoming.observedAt);
+  const current = useDurable
+    ? { prKey: ledger.key, observedAt, observedState, observedHeadSha, ledger }
+    : incoming && { ...incoming, ledger };
+  if (!current || current.observedState == null
+      // Only legacy recovery separately verifies the receipt's head on GitHub.
+      // A poll started in the grant's millisecond may have preceded the grant.
+      || (!boundary.verifiedHeadSha && current.observedAt <= boundary.requestedAt)
+      || current.observedAt < boundary.minimumObservedAt || current.observedAt < state.enteredAt
+      || current.observedAt < (state.lastObservedAt ?? 0)
+      || (current.observedState === "OPEN" && !current.observedHeadSha)) return null;
+  if (!useDurable && current.observedAt === state.lastObservedAt
+      && (current.observedHeadSha !== state.observedHeadSha
+        || inspectorStateSaysClosed(current.observedState) !== (state.waitReason === "pr_closed"))) return null;
+  return current;
+}
+
 /**
  * Whether the pull request is positively seen open: a signal that read GitHub decides, and a
  * signal that read nothing falls back to the ledger's last recorded read.
@@ -624,6 +656,11 @@ function expectationMismatch(
   };
 }
 
+interface PendingInspectorRecoveryCheck {
+  requestId: string;
+  observation: InspectionUpdated | null;
+}
+
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
 export class WorkflowManager {
   readonly engine: WorkflowEngine;
@@ -633,6 +670,8 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  private readonly inspectorRecoveryReads = new Map<string, ReturnType<typeof readInspectorBranchActivity>>();
+  private readonly pendingInspectorRecoveryChecks = new Map<string, PendingInspectorRecoveryCheck>();
   private readonly inspectorFeedbackRefreshes = new Map<string, {
     pending: boolean;
     observationAfter: number;
@@ -3229,8 +3268,8 @@ export class WorkflowManager {
    * Shipping veto from `workflow-gate-spent` to `workflow-gate-pending` - trading a true
    * "this gave up" for a false "this is still working", which is worse than the dead end
    * this method exists to open. Restoring `waiting_for_new_head` puts it back where its own
-   * gate re-enters it, and the head that was refused has not been recorded as a prior
-   * submission head, so the next observation picks that very head up.
+   * gate re-enters it. The saved head may have moved while blocked, so selection starts
+   * with a read of the pinned PR after the grant.
    *
    * `workflowRunGaveUp` reads the same inequality, so the veto downgrades to `pending` -
    * now truthfully - without this method knowing Shipping exists.
@@ -3291,7 +3330,13 @@ export class WorkflowManager {
       ? {
           status: "waiting_for_new_head" as const,
           phase: "inspector_findings" as const,
-          gateState: gate as unknown as WorkflowJson,
+          gateState: {
+            ...gate, lastObservedAt: null,
+            grantObservation: {
+              minimumObservedAt: gate.lastObservedAt === null ? now : gate.lastObservedAt + 1,
+              requestedAt: now,
+            },
+          } as unknown as WorkflowJson,
         }
       : this.parkedRestoreForGrant(run);
     const updated = this.store.grantRunRepairRounds(run.id, granted, restore, latest.round + 1, {
@@ -3302,12 +3347,17 @@ export class WorkflowManager {
         to: granted,
         round: latest.round,
         resumed: restore?.status ?? null,
+        ...(restore?.status === "waiting_for_new_head" ? { currentObservationRequired: true } : {}),
       },
     }, now);
     if (!updated) {
       return { ok: false, reason: "conflict", message: "The run finished before the grant landed" };
     }
     this.publishRun(run.id);
+    if (restore?.status === "waiting_for_new_head") {
+      if (gate?.prKey) void this.reobserveGatePullRequest(run.id, gate.prKey, now);
+      this.scheduleGateEvaluation(run.id, null);
+    }
     return { ok: true, value: updated };
   }
 
@@ -3463,6 +3513,35 @@ export class WorkflowManager {
     return { ok: true, value: this.store.getDelivery(prepared.delivery.id) ?? prepared.delivery, idempotent: prepared.idempotent };
   }
 
+  async recoverStaleInspectorGrant(
+    runId: string,
+    requestId: string,
+    input: RecoverStaleInspectorGrant,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowRun>> {
+    let recovered = this.store.recoverStaleInspectorGrant(runId, requestId, input, now);
+    if (recovered && "verifyPrUrl" in recovered) {
+      const key = JSON.stringify([runId, requestId, input.grantRequestId, input.submissionId,
+        input.staleHeadSha, input.currentHeadSha, recovered.verifyPrUrl]);
+      let read = this.inspectorRecoveryReads.get(key);
+      if (!read) {
+        read = readInspectorBranchActivity(recovered.verifyPrUrl, input.currentHeadSha)
+          .finally(() => this.inspectorRecoveryReads.delete(key));
+        this.inspectorRecoveryReads.set(key, read);
+      }
+      // Only the provider read is shared. Every caller checks the current run and receipt.
+      const activity = await read;
+      recovered = this.store.recoverStaleInspectorGrant(runId, requestId, input, now, activity ?? undefined);
+    }
+    if (!recovered || "verifyPrUrl" in recovered) return { ok: false, reason: "conflict",
+      message: "Recovery requires matching legacy grant evidence and a current branch tip continuously held since before the grant" };
+    if (!recovered.idempotent) this.publishRun(runId);
+    if (this.gateState(recovered.run)?.grantObservation?.verifiedHeadSha === input.currentHeadSha) {
+      this.scheduleGateEvaluation(runId, null, { recoveryRequestId: requestId });
+    }
+    return { ok: true, value: recovered.run, idempotent: recovered.idempotent };
+  }
+
   recheckInspector(
     runId: string,
     requestId: string,
@@ -3499,10 +3578,12 @@ export class WorkflowManager {
       };
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
-    this.scheduleGateEvaluation(run.id, null, refreshPreparedFeedback);
-    const prKey = this.gateState(run)?.prKey ?? null;
-    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
-      void this.reobserveGatePullRequest(run.id, prKey);
+    this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback });
+    const gate = this.gateState(run);
+    const grant = gate?.grantObservation;
+    if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
+        || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
+      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt);
     }
     return { ok: true, value: run };
   }
@@ -3516,10 +3597,12 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveGatePullRequest(runId: string, prKey: string): Promise<boolean> {
+  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number): Promise<boolean> {
     const reobserve = this.options.reobservePullRequest;
     if (!reobserve) return Promise.resolve(false);
-    const task = Promise.resolve().then(() => reobserve(prKey))
+    // A read started in the same millisecond as a grant cannot prove ordering after restart.
+    const start = afterGrant === Date.now() ? new Promise<void>(resolve => setTimeout(resolve, 1)) : Promise.resolve();
+    const task = start.then(() => reobserve(prKey))
       .catch((error: unknown) => ({
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
@@ -4458,8 +4541,12 @@ export class WorkflowManager {
       const next: WorkflowInspectorGateState = {
         ...state,
         lastObservedAt: null,
-        observedHeadSha: null,
+        observedHeadSha: state.grantObservation ? state.observedHeadSha : null,
         waitReason,
+        ...(state.grantObservation && state.lastObservedAt !== null ? {
+          grantObservation: { ...state.grantObservation,
+            minimumObservedAt: Math.max(state.grantObservation.minimumObservedAt, state.lastObservedAt + 1) },
+        } : {}),
       };
       const updated = this.store.updateInspectorGate({
         runId: run.id,
@@ -4504,7 +4591,7 @@ export class WorkflowManager {
         const delivery = this.store.recoverableInspectorFeedback(run);
         const canResume = delivery !== null && !this.deliveryBlock(delivery)
           && !this.registry.getSession(delivery.sessionId)?.pause;
-        this.scheduleGateEvaluation(run.id, null, canResume);
+        this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback: canResume });
       }
     }
   }
@@ -4512,12 +4599,33 @@ export class WorkflowManager {
   private scheduleGateEvaluation(
     runId: string,
     event: InspectionUpdated | null,
-    refreshPreparedFeedback = false,
+    { refreshPreparedFeedback = false, recoveryRequestId }: {
+      refreshPreparedFeedback?: boolean; recoveryRequestId?: string;
+    } = {},
   ): void {
+    const run = this.store.getRun(runId);
+    const state = run && this.gateState(run);
+    const head = state?.grantObservation?.verifiedHeadSha;
+    const stranded = head && this.store.latestSubmission(runId);
+    const receipt = head && stranded ? this.store.inspectorRecoveryReceipt(runId, stranded.id, head) : null;
+    if (recoveryRequestId !== undefined && receipt?.requestId !== recoveryRequestId) return;
+    let recoveryCheck: PendingInspectorRecoveryCheck | undefined;
+    if (receipt && !refreshPreparedFeedback) {
+      const signal = event && event.prKey === state?.prKey && event.ledger.key === event.prKey
+        && event.observedState !== null ? event : null;
+      const pending = this.pendingInspectorRecoveryChecks.get(runId);
+      if (pending?.requestId === receipt.requestId) {
+        if (signal && (!pending.observation || signal.observedAt >= pending.observation.observedAt)) {
+          pending.observation = signal;
+        }
+        return;
+      }
+      recoveryCheck = { requestId: receipt.requestId, observation: signal };
+      this.pendingInspectorRecoveryChecks.set(runId, recoveryCheck);
+    }
     if (refreshPreparedFeedback) {
       if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
-      const run = this.store.getRun(runId);
-      const prKey = run ? this.gateState(run)?.prKey : null;
+      const prKey = state?.prKey;
       this.inspectorFeedbackRefreshes.set(runId, {
         pending: true,
         observationAfter: Math.max(Date.now(), prKey ? getInspectorPr(prKey)?.observedAt ?? 0 : 0),
@@ -4537,8 +4645,11 @@ export class WorkflowManager {
           } else keepRefreshHold = false;
           return;
         }
-        await this.evaluateInspectorGate(runId, event);
+        await this.evaluateInspectorGate(runId, event, recoveryCheck);
       } finally {
+        if (recoveryCheck && this.pendingInspectorRecoveryChecks.get(runId) === recoveryCheck) {
+          this.pendingInspectorRecoveryChecks.delete(runId);
+        }
         if (refreshPreparedFeedback) {
           const refresh = this.inspectorFeedbackRefreshes.get(runId);
           // Failure releases the read slot, not the packet. A later successful read or
@@ -4692,15 +4803,33 @@ export class WorkflowManager {
     return false;
   }
 
+  private async priorInspectorHeads(runId: string, root: string | null | undefined): Promise<Set<string>> {
+    const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+    return new Set(await Promise.all(this.store.listSubmissions(runId)
+      .flatMap((item) => item.prHeadSha ? [item.prHeadSha] : [])
+      .map((head) => root ? resolve(root, head).catch(() => head) : head)));
+  }
+
+  private blockRecoveredInspectorGrant(
+    run: WorkflowRun, state: WorkflowInspectorGateState, stranded: WorkflowSubmission,
+  ): void {
+    // The stranded submission still owns the gate until the replacement is created.
+    const blocked = { ...state, targetHeadSha: stranded.prHeadSha, waitReason: "head_mismatch" as const };
+    delete blocked.grantObservation;
+    this.transitionInspectorGate(run, state, blocked, "blocked", "inspector_head_mismatch", null, null, Date.now());
+  }
+
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
+    recoveryCheck?: PendingInspectorRecoveryCheck,
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
+    if (recoveryCheck && !state?.grantObservation?.verifiedHeadSha) return;
     const tiedObservation = observation && state?.lastObservedAt != null
       && observation.prKey === state.prKey && observation.observedAt === state.lastObservedAt;
-    if (state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
+    if (!state?.grantObservation && state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
         || tiedObservation)) {
       const prKey = state.prKey;
       const ledger = loadInspectorInspection(prKey);
@@ -4726,7 +4855,7 @@ export class WorkflowManager {
     }
     // Once a gate has observed a newer remote state, a queued older snapshot must not
     // change its head, reopen/close the PR, or supply review facts for an obsolete head.
-    if (observation && state?.lastObservedAt != null
+    if (observation && !state?.grantObservation && state?.lastObservedAt != null
         && observation.prKey === state.prKey
         && observation.observedAt < state.lastObservedAt) return;
     if (run && state) {
@@ -4763,6 +4892,38 @@ export class WorkflowManager {
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     if (!binding || transferForNote(binding.noteKey) || version?.completionPolicy.kind !== "inspector") return;
+    // Resolve prior submission identities before reading the current grant candidate. A
+    // newer observation may commit while git is running, even under the per-run gate lock.
+    const grantPriorHeads = state.grantObservation && state.prKey
+      ? await this.priorInspectorHeads(run.id, binding.sessionRepoRoot || getInspectorPr(state.prKey)?.repoRoot)
+      : null;
+    let recoveryTipMatches: boolean | null = null;
+    const recoveryHead = state.grantObservation?.verifiedHeadSha;
+    if (recoveryHead && state.prKey) {
+      const adopted = getInspectorPr(state.prKey);
+      const stranded = this.store.latestSubmission(run.id);
+      if (!adopted || !stranded) return;
+      const receipt = this.store.inspectorRecoveryReceipt(run.id, stranded.id, recoveryHead);
+      if (recoveryCheck && receipt?.requestId !== recoveryCheck.requestId) return;
+      if (receipt && !recoveryCheck) {
+        // This wakeup was queued before the receipt existed. Join the receipt's check.
+        this.scheduleGateEvaluation(runId, observation);
+        return;
+      }
+      recoveryTipMatches = await recheckInspectorRecoveryTip(adopted.url, recoveryHead, receipt?.branchActivity ?? null);
+      if (transferForNote(binding.noteKey)) return;
+      if (receipt && this.store.inspectorRecoveryReceipt(run.id, stranded.id, recoveryHead)?.requestId !== receipt.requestId) return;
+      if (recoveryTipMatches === false) {
+        this.blockRecoveredInspectorGrant(run, state, stranded);
+        return;
+      }
+    }
+    if (state.grantObservation) {
+      // A local observation can also arrive during the final live read. Read the
+      // ledger last and synchronously compare the gate when inserting the round.
+      observation = grantedHeadObservation(state, recoveryCheck?.observation ?? observation);
+      if (!observation) return;
+    }
     const now = Date.now();
     // A closed-PR block moves on one thing only: the pull request seen open again. Until then
     // nothing else may rewrite it, so this runs before every other branch below.
@@ -4862,7 +5023,16 @@ export class WorkflowManager {
       return;
     }
 
-    const ledger = observation?.prKey === state.prKey
+    if (state.grantObservation && run.status === "blocked" && run.currentPhase === "inspector_disabled") {
+      const resumed = { ...state, waitReason: "findings" as const };
+      const updated = this.transitionInspectorGate(run, state, resumed, "waiting_for_new_head",
+        "inspector_findings", null, null, now);
+      if (!updated) return;
+      run = updated;
+      state = resumed;
+    }
+
+    let ledger = observation?.prKey === state.prKey
       ? observation.ledger
       : getInspectorPr(state.prKey!);
     if (!ledger) {
@@ -4956,13 +5126,12 @@ export class WorkflowManager {
     const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
-      const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
-      const priorHeads = new Set(await Promise.all(
-        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : [])
-          .map((head) => repositoryRoot
-            ? resolve(repositoryRoot, head).catch(() => head)
-            : head),
-      ));
+      if (recoveryHead && recoveryHead !== newHead) {
+        this.blockRecoveredInspectorGrant(run, state, submission);
+        return;
+      }
+      if (recoveryHead && recoveryTipMatches === null) return;
+      const priorHeads = grantPriorHeads ?? await this.priorInspectorHeads(run.id, repositoryRoot);
       if (!state.failedHeadSha) {
         this.transitionInspectorGate(
           run,
@@ -5003,6 +5172,7 @@ export class WorkflowManager {
           reviewPosture: ledger.reviewPosture,
           waitReason: "review_pending",
         };
+        delete nextState.grantObservation;
         const created = this.store.createInspectorOnlySubmission({
           id: randomUUID(),
           runId: run.id,
@@ -5057,6 +5227,24 @@ export class WorkflowManager {
     const submittedHead = capturedHead && repositoryRoot
       ? await (this.options.resolveCommit ?? resolveCapturedCommit)(repositoryRoot, capturedHead).catch(() => null)
       : null;
+    if (submission.mode === "inspector_only" && state.prKey) {
+      // A new round is already immutable here. If the PR moved during rev-parse,
+      // its normal mismatch/closed guard must see that observation before any clean verdict.
+      const current = loadInspectorInspection(state.prKey);
+      if (!current) return;
+      if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)) {
+        if (current.observedState === null) return;
+        if (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState)) {
+          this.scheduleGateEvaluation(run.id, {
+            prKey: current.key, observedHeadSha: current.observedHeadSha,
+            observedAt: current.observedAt, observedState: current.observedState, ledger: current,
+          });
+          return;
+        }
+      }
+      ledger = current;
+      if (ledger.state === "closed") return;
+    }
     if (!submittedHead) {
       this.transitionInspectorGate(
         run,
@@ -5721,7 +5909,7 @@ export class WorkflowManager {
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
       if (delivery.kind === "inspector_feedback" && run.currentPhase === "delivery_blocked") {
-        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
+        this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback: this.store.recoverableInspectorFeedback(run) !== null });
         continue;
       }
       if (delivery.kind === "evidence_capture_repair") {

@@ -1,8 +1,9 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type {
@@ -30,14 +31,66 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-inspector-gate-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
 
-// Every `gh` call reaches a fake that answers the pull request read from a scripted snapshot,
-// and fails like an outage while none is scripted. Only a recheck of a closed-PR block reads
-// GitHub here; nothing in this file starts the Inspector sweep.
+// Recovery reads use scripted PR and branch activity responses. Missing fixtures simulate an outage.
 const ghSnapshot = join(home, "gh-pull-request.json");
+const branchActivity = join(home, "branch-activity.json");
+const recoveryPr = join(home, "recovery-pr.json");
+const holdActivity = join(home, "hold-activity");
+const activityPending = join(home, "activity-pending");
+const holdRecoveryPull = join(home, "hold-recovery-pull");
+const pullPending = join(home, "recovery-pull-pending");
+const recoveryPrReads = join(home, "recovery-pr-reads");
 const fakeGh = join(home, "gh");
 writeFileSync(fakeGh, `#!${process.execPath}
 const fs = require("node:fs");
-try { process.stdout.write(fs.readFileSync(${JSON.stringify(ghSnapshot)}, "utf8")); }
+const target = process.argv.find(arg => arg.startsWith("repos/"));
+const recoveryGraph = process.argv.some(arg => arg.startsWith("query=query RecoveryPull("));
+const activityQuery = "repos/author/fork/activity?ref=refs%2Fheads%2Ffeature&direction=desc&per_page=";
+if (target?.includes("/activity?") && ![activityQuery + "1", activityQuery + "100"].includes(target)) process.exit(1);
+const fixture = target?.includes("/activity?") ? ${JSON.stringify(branchActivity)}
+  : target?.includes("/pulls/") || recoveryGraph ? ${JSON.stringify(recoveryPr)} : ${JSON.stringify(ghSnapshot)};
+try {
+  if (fixture === ${JSON.stringify(recoveryPr)} && fs.existsSync(${JSON.stringify(recoveryPrReads)})) {
+    fs.appendFileSync(${JSON.stringify(recoveryPrReads)}, recoveryGraph ? "timeline\\n" : "pull\\n");
+  }
+  if (fixture === ${JSON.stringify(recoveryPr)} && fs.existsSync(${JSON.stringify(holdRecoveryPull)})) {
+    if (fs.readFileSync(${JSON.stringify(holdRecoveryPull)}, "utf8") === "hold second read") {
+      fs.writeFileSync(${JSON.stringify(holdRecoveryPull)}, "");
+    } else {
+      fs.writeFileSync(${JSON.stringify(pullPending)}, "");
+      while (fs.existsSync(${JSON.stringify(holdRecoveryPull)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  const contents = fs.readFileSync(fixture, "utf8");
+  if (recoveryGraph) {
+    const pull = JSON.parse(contents);
+    if (pull.graphExitCode) process.exitCode = pull.graphExitCode;
+    const query = process.argv.find(arg => arg.startsWith("query=query RecoveryPull("));
+    if (!["HEAD_REF_FORCE_PUSHED_EVENT","HEAD_REF_DELETED_EVENT","HEAD_REF_RESTORED_EVENT","CLOSED_EVENT","REOPENED_EVENT"].every(type => query.includes(type))
+        || !process.argv.some(arg => arg.startsWith("since="))) process.exit(1);
+    process.stdout.write(JSON.stringify({ errors: pull.graphErrors, data: { repository: { nameWithOwner: pull.base.repo.full_name,
+      pullRequest: { number: pull.number, state: pull.state.toUpperCase(), headRefName: pull.head.ref, headRefOid: pull.head.sha,
+        headRepository: pull.head.repo ? { nameWithOwner: pull.head.repo.full_name } : null, timelineItems: { nodes: (pull.rewrites ?? []).slice(0, 1),
+          pageInfo: { hasNextPage: (pull.rewrites ?? []).length > 1 } } } } } }), () => {
+      if (pull.graphInterrupted) process.kill(process.pid, "SIGTERM");
+    });
+    return;
+  }
+  const response = target === activityQuery + "1" ? JSON.stringify(JSON.parse(contents).slice(0, 1)) : contents;
+  if (fixture === ${JSON.stringify(branchActivity)} && fs.existsSync(${JSON.stringify(holdActivity)})) {
+    if (fs.readFileSync(${JSON.stringify(holdActivity)}, "utf8") === "hold second read") {
+      fs.writeFileSync(${JSON.stringify(holdActivity)}, "");
+      process.stdout.write(response);
+      return;
+    }
+    fs.writeFileSync(${JSON.stringify(activityPending)}, "");
+    const timer = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(holdActivity)})) return;
+      clearInterval(timer);
+      process.stdout.write(response);
+    }, 10);
+  } else process.stdout.write(response);
+}
 catch { process.stderr.write("gh: scripted outage\\n"); process.exit(1); }
 `);
 chmodSync(fakeGh, 0o755);
@@ -46,6 +99,9 @@ process.env.MISSION_GH_BIN = fakeGh;
 const {
   adoptInspectorPr,
   getInspectorPr,
+  readCodeRabbit,
+  recordCodeRabbit,
+  claimCodeRabbit,
   openDb,
   updateInspectorPr,
   upsertInspectorComment,
@@ -3174,3 +3230,1488 @@ for (const recovery of ["session return", "operator acknowledgement"] as const) 
     }
   });
 }
+const verifiedRecoveryOid = "b".repeat(40);
+const priorRefOid = "d".repeat(40);
+const laterRefOid = "a".repeat(40);
+
+async function spentInspectorGrant(options: SeedOptions = {}) {
+  const seeded = await seed({ ...options, policy: "inspector_only" });
+  const { manager, ids, store, now, key, url } = seeded;
+  await manager.settleBackgroundWork();
+  const initial: WorkflowInspectorGateState = {
+    prKey: key, prUrl: url, targetHeadSha: seeded.head, failedHeadSha: seeded.head,
+    enteredAt: now, lastObservedAt: now + 1, observedHeadSha: seeded.head,
+    reviewPosture: "live", waitReason: "findings", findingFingerprints: ["initial-finding"],
+  };
+  store.setRunState(ids.run, "waiting_for_new_head", "inspector_findings", workflowJson(initial), now + 1);
+  const failed = { ...initial, targetHeadSha: "failed", observedHeadSha: "failed" };
+  assert.ok(store.createInspectorOnlySubmission({
+    id: "failed-sub", runId: ids.run, triggerKey: `inspector-head:${ids.run}:failed`,
+    newHeadSha: "failed", failedHeadSha: seeded.head, priorFindingFingerprints: initial.findingFingerprints,
+    bypassReason: "Published GitHub Inspector-only findings policy", expectedState: initial, state: failed, now: now + 2,
+  }));
+  const stale = { ...failed, failedHeadSha: "failed", observedHeadSha: priorRefOid,
+    lastObservedAt: now + 3, findingFingerprints: ["prior-finding"] };
+  db.prepare("UPDATE workflow_runs SET max_repair_rounds = 1 WHERE id = ?").run(ids.run);
+  store.setRunState(ids.run, "blocked", "round_limit", workflowJson(stale), now + 4);
+  store.appendEvent(ids.run, "inspector_round_limit", { maxRepairRounds: 1 }, now + 4);
+  const grant = () => manager.grantRepairRounds(ids.run, { requestId: "buy-two", rounds: 2 }, now + 10);
+  return { ...seeded, stale, grant };
+}
+
+test("grant reobserves the pinned PR after an unobserved push before spending the round", async () => {
+  const { manager, store, ids, key, now } = await spentInspectorGrant();
+  try {
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "pre-grant", observedAt: now + 9,
+      cleanReviewHeadSha: "pre-grant" }, now + 9);
+    scriptGitHub("OPEN", "already-pushed");
+    assert.ok(manager.grantRepairRounds(ids.run, { requestId: "confirm-live", rounds: 2 }).ok);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.prHeadSha]), [[3, "already-pushed"]]);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+  } finally { scriptGitHub(null); await manager.stop(); }
+});
+
+test("grant preserves the round after a failed post-grant read even with a positive read tied to the grant", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    scriptGitHub(null);
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "same-millisecond", observedAt: now + 10 }, now + 10);
+    assert.ok(grant().ok);
+    registry.inspectionUpdated(key, "same-millisecond", "OPEN", now + 10);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    scriptGitHub("OPEN", "confirmed");
+    assert.ok(manager.recheckInspector(ids.run, "read-again").ok);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.prHeadSha]), [[3, "confirmed"]]);
+  } finally { scriptGitHub(null); await manager.stop(); }
+});
+
+test("grant confirms a newer pre-grant durable head and waits for its own clean review", async () => {
+  const seeded = await spentInspectorGrant({ reobservePullRequest: (prKey) => reobserveInspectorPr(seeded.registry, prKey, seeded.now + 11) });
+  const { manager, store, ids, key, now, grant, registry } = seeded;
+  try {
+    scriptGitHub("OPEN", "current");
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 9,
+      headSha: "current", cleanReviewHeadSha: priorRefOid, reviewPosture: "live" }, now + 9);
+    assert.ok(grant().ok);
+    const replay = grant();
+    assert.ok(replay.ok && replay.idempotent);
+    await manager.settleBackgroundWork();
+    const child = store.latestSubmission(ids.run)!;
+    assert.equal(child.prHeadSha, "current");
+    assert.equal(child.round, 3);
+    assert.deepEqual(child.context, { newHeadSha: "current", failedHeadSha: "failed",
+      priorFindingFingerprints: ["prior-finding"], bypassReason: "Published GitHub Inspector-only findings policy" });
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+    registry.inspectionUpdated(key, priorRefOid, "OPEN", now + 5);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+    upsertInspectorComment({ id: "still-open", prKey: key, fingerprint: "prior-finding", path: "src/file.ts",
+      line: 1, title: "Unresolved", body: "Repair still needed", severity: "major", round: 1,
+      status: "open", replies: 0, answeredCommentId: null, createdAt: now, updatedAt: now });
+    updateInspectorPr(key, { cleanReviewHeadSha: "current" }, now + 12);
+    registry.inspectionUpdated(key, "current", "OPEN", now + 12);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_findings");
+    db.prepare("UPDATE inspector_comments SET status = 'resolved' WHERE pr_key = ?").run(key);
+    registry.inspectionUpdated(key, "current", "OPEN", now + 13);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.status, "completed");
+    assert.equal(store.listEvents(ids.run).filter(e => e.kind === "repair_rounds_granted").length, 1);
+  } finally { scriptGitHub(null); await manager.stop(); }
+});
+
+test("a grant retains the superseding head across restart without sending failed-head feedback or spending a round", async () => {
+  const { manager, store, ids, injected, now, grant } = await spentInspectorGrant({ deliveryMode: "live" });
+  try {
+    const { delivery } = store.prepareDelivery({
+      id: "old-feedback", runId: ids.run, submissionId: "failed-sub", kind: "inspector_feedback",
+      sessionId: ids.session, noteKey: `agent-${serial}`, payload: "repair failed head",
+      payloadSha256: "old-feedback-digest",
+    }, now + 2);
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    const gate = () => store.getRun(ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+    assert.equal(gate().observedHeadSha, priorRefOid);
+    assert.equal(gate().lastObservedAt, null);
+    await manager.stop();
+    manager.start();
+    await manager.settleBackgroundWork();
+    assert.equal(gate().observedHeadSha, priorRefOid);
+    assert.equal(gate().lastObservedAt, null);
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    assert.equal(store.getDelivery(delivery.id)?.state, "prepared");
+    assert.deepEqual(injected, []);
+  } finally { await manager.stop(); }
+});
+
+test("after restart a grant selects the newer durable PR head on a recheck without a new observation", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    // The post-grant read reaches the ledger before shutdown, but its notification is lost.
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "current", observedAt: now + 11,
+      headSha: "current", cleanReviewHeadSha: priorRefOid, reviewPosture: "live" }, now + 11);
+  } finally { await manager.stop(); }
+
+  const gate = store.getRun(ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+  assert.equal(gate.observedHeadSha, priorRefOid);
+  assert.equal(store.latestSubmission(ids.run)?.round, 2);
+
+  const restarted = new WorkflowManager(registry, new WorkflowStore(db), {
+    resolveCommit: async (_root, head) => head,
+  });
+  try {
+    restarted.start();
+    assert.ok(restarted.recheckInspector(ids.run, "after-restart").ok);
+    await restarted.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.mode, s.prHeadSha]),
+      [[3, "inspector_only", "current"]]);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+  } finally { await restarted.stop(); }
+});
+
+test("grant waits through absent, failed, foreign and old observations and a closed PR before accepting a new head", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    registry.inspectionUpdated(key, null, null, now + 12);
+    registry.inspectionUpdated(key, priorRefOid, "OPEN", now + 3);
+    registry.inspectionUpdated("other/repo#1", "foreign", "OPEN", now + 13);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    registry.inspectionUpdated(key, "failed", "OPEN", now + 14);
+    registry.inspectionUpdated(key, "closed", "CLOSED", now + 15);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_pr_closed");
+    registry.inspectionUpdated(key, "repair", "OPEN", now + 16);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, "repair");
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+  } finally { await manager.stop(); }
+});
+
+test("a grant waits for a positive observation newer than the last durable null read", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "queued", observedAt: now + 11 }, now + 11);
+    registry.inspectionUpdated(key, "queued", "OPEN", now + 11);
+    // The queued evaluation will read the ledger after this unsuccessful read.
+    updateInspectorPr(key, { observedState: null, observedHeadSha: null, observedAt: now + 12 }, now + 12);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+
+    registry.inspectionUpdated(key, "tied", "OPEN", now + 12);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+
+    registry.inspectionUpdated(key, "confirmed", "OPEN", now + 13);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => [s.round, s.prHeadSha]), [[3, "confirmed"]]);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+  } finally { await manager.stop(); }
+});
+
+test("a durable observation arriving during commit resolution wins over a delayed grant notification", async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const resolving = new Promise<void>((resolve) => { entered = resolve; });
+  const resume = new Promise<void>((resolve) => { release = resolve; });
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === "failed") {
+      entered();
+      await resume;
+    }
+    return head;
+  } });
+  const { key, ids, manager, store, now, registry } = seeded;
+  try {
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "delayed", observedAt: now + 9 }, now + 9);
+    assert.ok(seeded.grant().ok);
+    await resolving;
+    registry.inspectionUpdated(key, "delayed", "OPEN", now + 11);
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "newest", observedAt: now + 12 }, now + 12);
+    registry.inspectionUpdated(key, "newest", "OPEN", now + 12);
+    release();
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.listSubmissions(ids.run).slice(2).map(s => s.prHeadSha), ["newest"]);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+  } finally { release(); await manager.stop(); }
+});
+
+test("a clean granted head superseded during verification cannot approve the run", async () => {
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === "clean") {
+      // The bypass has already pinned its immutable identity. GitHub advances before
+      // commit resolution finishes and before its next notification reaches the gate.
+      updateInspectorPr(seeded.key, { observedHeadSha: "pushed", observedState: "OPEN",
+        observedAt: seeded.now + 12 }, seeded.now + 12);
+    }
+    return head;
+  } });
+  try {
+    updateInspectorPr(seeded.key, { headSha: "clean", cleanReviewHeadSha: "clean", reviewPosture: "live",
+      observedState: "OPEN", observedHeadSha: "clean", observedAt: seeded.now + 9 }, seeded.now + 9);
+    assert.ok(seeded.grant().ok);
+    seeded.registry.inspectionUpdated(seeded.key, "clean", "OPEN", seeded.now + 11);
+    await seeded.manager.settleBackgroundWork();
+    assert.equal(seeded.store.latestSubmission(seeded.ids.run)?.prHeadSha, "clean");
+    assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.equal(seeded.store.listEvents(seeded.ids.run).some(e => e.kind === "inspector_gate_clean"), false);
+  } finally { await seeded.manager.stop(); }
+});
+
+test("later clean recheck rereads the durable head after resolving the immutable Inspector submission", async () => {
+  let pushDuringRecheck = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === "repair" && pushDuringRecheck) {
+      updateInspectorPr(seeded.key, { observedState: "OPEN", observedHeadSha: "pushed",
+        observedAt: seeded.now + 14 }, seeded.now + 14);
+    }
+    return head;
+  } });
+  const { store, manager, ids, key, now } = seeded;
+  try {
+    updateInspectorPr(key, { headSha: "repair", cleanReviewHeadSha: null, reviewPosture: "live",
+      observedState: "OPEN", observedHeadSha: "repair", observedAt: now + 9 }, now + 9);
+    assert.ok(seeded.grant().ok);
+    seeded.registry.inspectionUpdated(key, "repair", "OPEN", now + 11);
+    await manager.settleBackgroundWork();
+    const child = store.latestSubmission(ids.run);
+    assert.equal(child?.prHeadSha, "repair");
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+    updateInspectorPr(key, { cleanReviewHeadSha: "repair" }, now + 12);
+    pushDuringRecheck = true;
+    assert.ok(manager.recheckInspector(ids.run, "recheck-clean").ok);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.latestSubmission(ids.run), child);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_gate_clean"), false);
+  } finally { await manager.stop(); }
+});
+
+for (const timing of ["tied", "newer"] as const) {
+  test(`clean Inspector submission waits after a ${timing} failed read during commit resolution`, async () => {
+    let failRead = true;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === "clean" && failRead) {
+        failRead = false;
+        const at = seeded.now + (timing === "tied" ? 11 : 12);
+        updateInspectorPr(seeded.key, { observedState: null, observedHeadSha: null, observedAt: at }, at);
+      }
+      return head;
+    } });
+    const { store, manager, ids, key, now, registry } = seeded;
+    try {
+      updateInspectorPr(key, { headSha: "clean", cleanReviewHeadSha: "clean", reviewPosture: "live",
+        observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 9 }, now + 9);
+      assert.ok(seeded.grant().ok);
+      registry.inspectionUpdated(key, "clean", "OPEN", now + 11);
+      await manager.settleBackgroundWork();
+      assert.equal(failRead, false);
+      const child = store.latestSubmission(ids.run)!;
+      assert.equal(child.prHeadSha, "clean");
+      assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+      assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
+
+      updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 13 }, now + 13);
+      registry.inspectionUpdated(key, "clean", "OPEN", now + 13);
+      await manager.settleBackgroundWork();
+      assert.equal(store.getRun(ids.run)?.status, "completed");
+      assert.equal(store.latestSubmission(ids.run)?.id, child.id);
+      assert.equal(eventCount(seeded, "inspector_gate_clean"), 1);
+    } finally { await manager.stop(); }
+  });
+}
+
+test("a later push after a current-head grant remains an ordinary nonrecoverable mismatch", async () => {
+  const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
+  try {
+    assert.ok(grant().ok);
+    registry.inspectionUpdated(key, "first-repair", "OPEN", now + 11);
+    await manager.settleBackgroundWork();
+    const child = store.latestSubmission(ids.run)!;
+    assert.equal(child.prHeadSha, "first-repair");
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "later", observedAt: now + 20 }, now + 20);
+    registry.inspectionUpdated(key, "later", "OPEN", now + 20);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", {
+      grantRequestId: "buy-two", submissionId: child.id, staleHeadSha: "first-repair", currentHeadSha: "later",
+    })).ok, false);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+async function strandLegacyGrant(
+  seeded: Awaited<ReturnType<typeof spentInspectorGrant>>,
+  preGrantHead: string,
+  { delayedObservation = false, returnedToPinnedHead = false, maxRepairRounds = 4 } = {},
+) {
+  const { key, ids, manager, store, now, stale, registry } = seeded;
+  // The old daemon restored the saved gate, which still names the historical head.
+  // Only the actual Inspector facts leading up to that grant differ between cases.
+  updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: preGrantHead, observedAt: now + 8,
+    reviewPosture: "live", ...(delayedObservation ? {} : { headSha: preGrantHead, lastReviewedAt: now + 8 }) }, now + 8);
+  recordCodeRabbit(key, { headSha: preGrantHead, state: "OPEN", draft: false, findings: [] }, now + 8);
+  if (returnedToPinnedHead) {
+    updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: priorRefOid, observedAt: now + 9 }, now + 9);
+  }
+  store.grantRunRepairRounds(ids.run, maxRepairRounds, { status: "waiting_for_new_head", phase: "inspector_findings",
+    gateState: workflowJson(stale) }, 3, { kind: "repair_rounds_granted", payload: {
+      requestId: "legacy", from: 1, to: maxRepairRounds, round: 2, resumed: "waiting_for_new_head",
+    } }, now + 1010);
+  const stranded = store.createInspectorOnlySubmission({
+    id: "stranded", runId: ids.run, triggerKey: `inspector-head:${ids.run}:${priorRefOid}`,
+    newHeadSha: priorRefOid, failedHeadSha: "failed", priorFindingFingerprints: ["prior-finding"],
+    bypassReason: "Published GitHub Inspector-only findings policy", expectedState: stale,
+    state: { ...stale, targetHeadSha: priorRefOid, waitReason: "review_pending" }, now: now + 1011,
+  });
+  assert.ok(stranded);
+  updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: verifiedRecoveryOid, observedAt: now + 1012,
+    ...(preGrantHead === verifiedRecoveryOid ? {} : { headSha: verifiedRecoveryOid, lastReviewedAt: now + 1012 }),
+    cleanReviewHeadSha: null }, now + 1012);
+  const number = Number(key.split("#")[1]);
+  writeFileSync(recoveryPr, JSON.stringify({ number, state: "open", created_at: new Date(now - 10_000).toISOString(), base: { repo: { full_name: "owner/repo" } },
+    head: { repo: { full_name: "author/fork" }, ref: "feature", sha: verifiedRecoveryOid } }));
+  writeFileSync(branchActivity, JSON.stringify([
+    { id: 101, ref: "refs/heads/feature", before: priorRefOid, after: verifiedRecoveryOid,
+      timestamp: new Date(now + (returnedToPinnedHead || preGrantHead !== verifiedRecoveryOid ? 1012 : 6)).toISOString() },
+    { id: 99, ref: "refs/heads/feature", before: "c".repeat(40), after: priorRefOid,
+      timestamp: new Date(now - 12_000).toISOString() },
+  ]));
+  registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", delayedObservation ? now + 8 : now + 1012);
+  await manager.settleBackgroundWork();
+  assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+  return stranded;
+}
+
+async function legacyRecoveryRoute({ registry, manager, ids }: Awaited<ReturnType<typeof spentInspectorGrant>>) {
+  const { buildApp } = await import("../src/server/routes.ts");
+  const { ReviewManager } = await import("../src/server/reviews.ts");
+  const { TaskManager } = await import("../src/server/tasks.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  const app = buildApp({ registry, workflows: manager, reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry), queues: new QueueManager(registry) });
+  return (currentHeadSha = verifiedRecoveryOid, requestId = "recover") => app.request(`/api/workflow-runs/${ids.run}/recheck-inspector`, {
+    method: "POST", headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ requestId, recoverStaleGrant: { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha } }),
+  });
+}
+
+// The fake gh has already captured the first response when it creates activityPending.
+async function duringActivityRead(start: () => Response | Promise<Response>, change: () => void) {
+  writeFileSync(holdActivity, "");
+  const pending = start();
+  let response: Response;
+  try {
+    await waitFor(() => existsSync(activityPending), "the branch activity read never reached the fixture");
+    change();
+  } finally {
+    rmSync(holdActivity, { force: true });
+    rmSync(activityPending, { force: true });
+    response = await pending;
+  }
+  return response;
+}
+
+test("legacy recovery rechecks the durable head after a concurrent change during branch activity verification", async () => {
+  const seeded = await spentInspectorGrant();
+  const { key, ids, manager, store, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    const response = await duringActivityRead(recover, () => {
+      updateInspectorPr(key, {
+        observedState: "OPEN", observedHeadSha: "newer-repair", observedAt: now + 1013,
+      }, now + 1013);
+    });
+    assert.equal(response.status, 409);
+    await manager.settleBackgroundWork();
+    assert.equal(getInspectorPr(key)?.observedHeadSha, "newer-repair");
+    assert.deepEqual(store.getRun(ids.run), before);
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("legacy recovery rechecks the open PR and its source after GitHub snapshots branch activity", async () => {
+  const seeded = await spentInspectorGrant();
+  const { store, manager, ids, key } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+    for (const changed of [null, { ...pull, state: "closed" }, { ...pull, number: pull.number + 1 },
+      { ...pull, head: { ...pull.head, sha: laterRefOid } }, { ...pull, head: { ...pull.head, ref: "another-branch" } },
+      { ...pull, head: { ...pull.head, repo: { full_name: "another/fork" } } }]) {
+      writeFileSync(recoveryPr, JSON.stringify(pull));
+      const response = await duringActivityRead(recover, () => {
+        if (changed) writeFileSync(recoveryPr, JSON.stringify(changed));
+        else rmSync(recoveryPr);
+      });
+      assert.equal(response.status, 409);
+      await manager.settleBackgroundWork();
+      assert.equal(getInspectorPr(key)?.observedHeadSha, verifiedRecoveryOid);
+      assert.deepEqual(store.getRun(ids.run), before);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+  } finally { await manager.stop(); }
+});
+
+test("legacy recovery rejects a changed latest ref update even when the PR returns to the verified head", async () => {
+  const seeded = await spentInspectorGrant();
+  const { store, manager, ids, key, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    const [activity, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    const pull = readFileSync(recoveryPr, "utf8");
+    // Include a second update in the same timestamp bucket. A time comparison
+    // alone cannot distinguish it from the activity that preceded the grant.
+    for (const latest of [null, { ...activity, id: activity.id + 1 },
+      { ...activity, id: activity.id + 2, timestamp: new Date(now + 1014).toISOString() },
+      { ...activity, timestamp: new Date(now + 7).toISOString() }]) {
+      writeFileSync(branchActivity, JSON.stringify([activity, ...history]));
+      const response = await duringActivityRead(recover, () => {
+        if (latest) writeFileSync(branchActivity, JSON.stringify([latest, ...history]));
+        else rmSync(branchActivity);
+      });
+      assert.equal(response.status, 409);
+      await manager.settleBackgroundWork();
+      assert.equal(readFileSync(recoveryPr, "utf8"), pull);
+      assert.equal(getInspectorPr(key)?.observedHeadSha, verifiedRecoveryOid);
+      assert.deepEqual(store.getRun(ids.run), before);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+  } finally { await manager.stop(); }
+});
+
+test("a push after the legacy recovery receipt cannot spend the replacement on an unverified head", async () => {
+  let advanceBranch = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === priorRefOid && advanceBranch) {
+      advanceBranch = false;
+      updateInspectorPr(seeded.key, { observedState: "OPEN", observedHeadSha: "later",
+        observedAt: seeded.now + 1013 }, seeded.now + 1013);
+    }
+    return head;
+  } });
+  const { store, manager, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    advanceBranch = true;
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    const receipts = store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered");
+    assert.deepEqual(receipts.map(e => (e.payload as { currentHeadSha: string }).currentHeadSha), [verifiedRecoveryOid]);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    const gate = store.getRun(ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+    assert.equal(gate.targetHeadSha, priorRefOid);
+    assert.equal(gate.observedHeadSha, "later");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+  } finally { await manager.stop(); }
+});
+
+test("a GitHub-only push during commit resolution cannot spend the recovered round", async () => {
+  let pushDuringResolution = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === priorRefOid && pushDuringResolution) {
+      pushDuringResolution = false;
+      const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+      writeFileSync(recoveryPr, JSON.stringify({ ...pull, head: { ...pull.head, sha: laterRefOid } }));
+    }
+    return head;
+  } });
+  const { manager, store, ids, key } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    pushDuringResolution = true;
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(pushDuringResolution, false);
+    assert.equal(getInspectorPr(key)?.observedHeadSha, verifiedRecoveryOid);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+  } finally { await manager.stop(); }
+});
+
+for (const change of ["new ref update on the same SHA", "PR closes during the final activity read", "unavailable final PR read"] as const) {
+  test(`legacy replacement selection waits for live confirmation: ${change}`, async () => {
+    let applyChange = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === priorRefOid && applyChange) {
+        applyChange = false;
+        if (change === "unavailable final PR read") rmSync(recoveryPr);
+        else writeFileSync(holdActivity, change === "PR closes during the final activity read" ? "hold second read" : "");
+      }
+      return head;
+    } });
+    const { store, manager, ids, key } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const pull = readFileSync(recoveryPr);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      applyChange = true;
+      assert.equal((await recover()).status, 200);
+      if (change !== "unavailable final PR read") {
+        await waitFor(() => existsSync(activityPending), "the final ref read did not start");
+        if (change === "PR closes during the final activity read") {
+          writeFileSync(recoveryPr, JSON.stringify({ ...JSON.parse(pull.toString()), state: "closed" }));
+        } else {
+          // The first tip response is in flight; the PR returns to the same head.
+          const [previous, ...rest] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 1 }, ...rest]));
+        }
+        rmSync(holdActivity);
+      }
+      await manager.settleBackgroundWork();
+      assert.equal(applyChange, false);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      if (change !== "unavailable final PR read") {
+        assert.equal(getInspectorPr(key)?.observedState, "OPEN");
+        assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+      } else {
+        assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+        writeFileSync(recoveryPr, pull);
+        assert.equal((await recover(laterRefOid)).status, 409);
+        await manager.settleBackgroundWork();
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+        // No Inspector notification follows the outage. The original request retries
+        // the pending receipt even when its caller sends two copies together.
+        for (const replay of await Promise.all([recover(), recover()])) {
+          assert.equal(replay.status, 200);
+          assert.equal((await replay.json()).idempotent, true);
+        }
+        await manager.settleBackgroundWork();
+        assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+        assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+      }
+      assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally {
+      rmSync(holdActivity, { force: true });
+      rmSync(activityPending, { force: true });
+      await manager.stop();
+    }
+  });
+}
+
+for (const outage of [false, true]) {
+  test(`concurrent requests share initial legacy recovery verification when GitHub ${outage ? "is unavailable" : "confirms the head"}`, async () => {
+    const seeded = await spentInspectorGrant();
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const pull = readFileSync(recoveryPr);
+      const input = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+      const recover = () => manager.recoverStaleInspectorGrant(ids.run, "recover", input);
+      writeFileSync(recoveryPrReads, "");
+      writeFileSync(holdRecoveryPull, "");
+      const first = recover();
+      await waitFor(() => existsSync(pullPending), "the initial read did not reach GitHub");
+      if (outage) rmSync(recoveryPr);
+      const pending = [first, recover(), recover()];
+      rmSync(holdRecoveryPull);
+      const results = await Promise.all(pending);
+      await manager.settleBackgroundWork();
+      const reads = readFileSync(recoveryPrReads, "utf8").trim().split("\n");
+      assert.equal(reads.filter(read => read === "pull").length, outage ? 1 : 2);
+      if (outage) {
+        assert.ok(results.every(result => !result.ok && result.reason === "conflict"));
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+        assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 0);
+        writeFileSync(recoveryPr, pull);
+        assert.ok((await recover()).ok);
+        await manager.settleBackgroundWork();
+      } else {
+        assert.ok(results.every(result => result.ok));
+        assert.equal(results.filter(result => result.ok && result.idempotent).length, 2);
+      }
+      assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally {
+      rmSync(holdRecoveryPull, { force: true });
+      rmSync(pullPending, { force: true });
+      await manager.stop();
+      rmSync(recoveryPrReads, { force: true });
+    }
+  });
+}
+
+test("concurrent replays share a pending recovery check and a later replay retries after an outage", async () => {
+  let pause = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (pause && head === priorRefOid) {
+      pause = false;
+      writeFileSync(holdRecoveryPull, "");
+    }
+    return head;
+  } });
+  const { manager, store, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const recover = await legacyRecoveryRoute(seeded);
+    const submissions = store.listSubmissions(ids.run);
+    const pull = readFileSync(recoveryPr);
+    writeFileSync(recoveryPrReads, "");
+    pause = true;
+    assert.equal((await recover()).status, 200);
+    await waitFor(() => existsSync(pullPending), "the pending receipt never reached its PR check");
+    rmSync(recoveryPr);
+    const observedAt = Date.now();
+    updateInspectorPr(seeded.key, { observedState: "OPEN", observedHeadSha: verifiedRecoveryOid, observedAt }, observedAt);
+    seeded.registry.inspectionUpdated(seeded.key, verifiedRecoveryOid, "OPEN", observedAt);
+    seeded.registry.inspectionUpdated(seeded.key, null, null);
+    for (const replay of await Promise.all([recover(), recover(), recover()])) {
+      assert.equal(replay.status, 200);
+      assert.equal((await replay.json()).idempotent, true);
+    }
+    rmSync(holdRecoveryPull);
+    await manager.settleBackgroundWork();
+    assert.equal(readFileSync(recoveryPrReads, "utf8").trim().split("\n").filter(read => read === "timeline").length, 1);
+    assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+
+    writeFileSync(recoveryPr, pull);
+    const retry = await recover();
+    assert.equal(retry.status, 200);
+    assert.equal((await retry.json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+  } finally {
+    rmSync(holdRecoveryPull, { force: true });
+    rmSync(pullPending, { force: true });
+    await manager.stop();
+    rmSync(recoveryPrReads, { force: true });
+  }
+});
+
+for (const changed of ["ledger", "notification"] as const) {
+  test(`an observation starts one recovery check and a newer ${changed} head vetoes the replacement`, async () => {
+    let loseRead = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (loseRead && head === priorRefOid) {
+        loseRead = false;
+        rmSync(recoveryPr);
+      }
+      return head;
+    } });
+    const { manager, store, ids, key, registry } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const recover = await legacyRecoveryRoute(seeded);
+      const pull = readFileSync(recoveryPr);
+      const submissions = store.listSubmissions(ids.run);
+      loseRead = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+
+      writeFileSync(recoveryPr, pull);
+      writeFileSync(holdRecoveryPull, "");
+      writeFileSync(recoveryPrReads, "");
+      const at = Date.now() + 20;
+      registry.inspectionUpdated(key, null, null, at + 3);
+      await waitFor(() => existsSync(pullPending), "the Inspector observation did not start a recovery check");
+      assert.equal((await (await recover()).json()).idempotent, true);
+      if (changed === "ledger") {
+        updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: laterRefOid, observedAt: at + 2 }, at + 2);
+      } else {
+        registry.inspectionUpdated(key, laterRefOid, "OPEN", at + 2);
+      }
+      registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", at + 1);
+      rmSync(holdRecoveryPull);
+      await manager.settleBackgroundWork();
+      // One successful verification samples the timeline twice.
+      assert.deepEqual(readFileSync(recoveryPrReads, "utf8").trim().split("\n"), ["timeline", "timeline"]);
+      assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally {
+      rmSync(holdRecoveryPull, { force: true });
+      rmSync(pullPending, { force: true });
+      await manager.stop();
+      rmSync(recoveryPrReads, { force: true });
+    }
+  });
+}
+
+test("an older recovery request cannot wake a different pending receipt for the same submission and head", async () => {
+  let change: "mismatch" | "outage" | undefined;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === priorRefOid && change) {
+      if (change === "mismatch") {
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, head: { ...pull.head, sha: laterRefOid } }));
+      } else rmSync(recoveryPr);
+      change = undefined;
+    }
+    return head;
+  } });
+  const { manager, store, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const recover = await legacyRecoveryRoute(seeded);
+    const pull = readFileSync(recoveryPr);
+    const submissions = store.listSubmissions(ids.run);
+    change = "mismatch";
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(phaseOf(seeded), "blocked/inspector_head_mismatch");
+    writeFileSync(recoveryPr, pull);
+    change = "outage";
+    assert.equal((await recover(verifiedRecoveryOid, "second")).status, 200);
+    await manager.settleBackgroundWork();
+    writeFileSync(recoveryPr, pull);
+
+    assert.equal((await (await recover()).json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal((await (await recover(verifiedRecoveryOid, "second")).json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+    assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 2);
+  } finally { await manager.stop(); }
+});
+
+for (const race of ["return to the verified SHA", "conversation transfer hold"] as const) {
+  test(`legacy recovery preserves the round during the final PR read: ${race}`, async () => {
+    let pause = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (pause && head === priorRefOid) {
+        pause = false;
+        writeFileSync(holdRecoveryPull, "hold second read");
+      }
+      return head;
+    } });
+    const { manager, store, ids, key } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      pause = true;
+      assert.equal((await recover()).status, 200);
+      await waitFor(() => existsSync(pullPending), "the final PR read did not start");
+      if (race === "return to the verified SHA") {
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        const [previous, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+        writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 2, before: laterRefOid },
+          { ...previous, id: previous.id + 1, before: verifiedRecoveryOid, after: laterRefOid }, previous, ...history]));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites: [{ __typename: "HeadRefForcePushedEvent", id: "later-force" }] }));
+      } else {
+        const { reserveSessionTransfer } = await import("../src/server/session-transfers/store.ts");
+        const binding = store.getBinding(store.getRun(ids.run)!.bindingId)!;
+        reserveSessionTransfer({ sourceSessionId: ids.session, noteKey: binding.noteKey, taskId: null, facts: {
+          agent: "claude", nativeId: binding.noteKey, sourceName: "Transfer", sourceRuntime: "sdk", sourceEpisodeId: null,
+          cwd: home, repoRoot: home, taskIdentity: null, taskEpisodeId: null, bindings: [], leaseRoot: home,
+          leaseId: "lease", backend: null, home: null, sourceStopped: false, stopStarted: false, sourceProcess: null,
+          launchAt: null, launchOutcome: "not_started", canEnd: false,
+        } });
+      }
+      rmSync(holdRecoveryPull);
+      await manager.settleBackgroundWork();
+      assert.equal(getInspectorPr(key)?.observedHeadSha, verifiedRecoveryOid);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.getRun(ids.run)?.status, race === "conversation transfer hold" ? "waiting_for_new_head" : "blocked");
+      assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally {
+      rmSync(holdRecoveryPull, { force: true });
+      rmSync(pullPending, { force: true });
+      db.prepare("DELETE FROM session_runtime_transfers WHERE source_session_id = ?").run(ids.session);
+      await manager.stop();
+    }
+  });
+}
+
+for (const liveResult of ["closed PR", "changed ref", "matching tip"] as const) {
+  test(`legacy recovery with a failed ledger read respects the live result: ${liveResult}`, async () => {
+    let selecting = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === priorRefOid && selecting) {
+        selecting = false;
+        const at = seeded.now + 1013;
+        updateInspectorPr(seeded.key, { observedState: null, observedHeadSha: null, observedAt: at }, at);
+        if (liveResult === "closed PR") {
+          const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+          writeFileSync(recoveryPr, JSON.stringify({ ...pull, state: "closed" }));
+        } else if (liveResult === "changed ref") {
+          const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...tip, id: tip.id + 1 }, ...history]));
+        }
+      }
+      return head;
+    } });
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      selecting = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(selecting, false);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+      const run = store.getRun(ids.run)!;
+      const gate = run.gateState as unknown as WorkflowInspectorGateState;
+      if (liveResult === "matching tip") {
+        assert.equal(run.status, "waiting_for_new_head");
+        assert.equal(gate.grantObservation?.verifiedHeadSha, verifiedRecoveryOid);
+      } else {
+        assert.equal(run.currentPhase, "inspector_head_mismatch");
+        assert.equal(gate.targetHeadSha, priorRefOid);
+        assert.equal(gate.grantObservation, undefined);
+      }
+    } finally { await manager.stop(); }
+  });
+}
+
+test("a confirmed ref mismatch still blocks recovery when the final PR read is unavailable", async () => {
+  let changeRef = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (changeRef && head === priorRefOid) {
+      changeRef = false;
+      const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+      writeFileSync(branchActivity, JSON.stringify([{ ...tip, id: tip.id + 1 }, ...history]));
+      rmSync(recoveryPr);
+    }
+    return head;
+  } });
+  const { manager, store, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    changeRef = true;
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+  } finally { await manager.stop(); }
+});
+
+for (const scenario of [
+  { name: "closed", state: "closed", blocked: true },
+  { name: "merged", state: "merged", blocked: true },
+  { name: "open", state: "open", blocked: false },
+  { name: "partial closed response", state: "closed", errors: true, exit: 1, blocked: true },
+  { name: "partial merged response", state: "merged", errors: true, exit: 1, blocked: true },
+  { name: "partial open response", state: "open", errors: true, exit: 1, blocked: false },
+  { name: "failed read without GraphQL errors", state: "closed", exit: 1, blocked: false },
+  { name: "partial closure for a different PR", state: "closed", errors: true, exit: 1, wrongPr: true, blocked: false },
+  { name: "partial response with a PR state error", state: "closed", errors: true, errorField: "state", exit: 1, blocked: false },
+  { name: "interrupted partial response", state: "closed", errors: true, interrupted: true, blocked: false },
+]) {
+  test(`recovery checks the PR state before requiring the fork repository: ${scenario.name}`, async () => {
+    let deleteFork = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (deleteFork && head === priorRefOid) {
+        deleteFork = false;
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, state: scenario.state,
+          number: scenario.wrongPr ? pull.number + 1 : pull.number,
+          head: { ...pull.head, repo: scenario.name === "partial open response" ? pull.head.repo : null },
+          graphExitCode: scenario.exit, graphInterrupted: scenario.interrupted, graphErrors: scenario.errors ? [
+            { message: "Field unavailable", path: ["repository", "pullRequest", scenario.errorField ?? "headRepository"] },
+          ] : undefined }));
+      }
+      return head;
+    } });
+    const { manager, store, ids, key } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      deleteFork = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(deleteFork, false);
+      assert.equal(getInspectorPr(key)?.observedState, "OPEN");
+      assert.equal(store.getRun(ids.run)?.status, scenario.blocked ? "blocked" : "waiting_for_new_head");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally { await manager.stop(); }
+  });
+}
+
+for (const partial of [
+  { name: "changed head", head: laterRefOid, errors: ["timelineItems"], blocked: true },
+  { name: "changed SHA-256 head", head: "a".repeat(64), errors: ["timelineItems"], blocked: true },
+  { name: "matching head", head: verifiedRecoveryOid, errors: ["timelineItems"], blocked: false },
+  { name: "matching head and ref activity", head: verifiedRecoveryOid, errors: ["timelineItems"], keepActivity: true, blocked: false },
+  { name: "missing head", head: null, errors: ["timelineItems"], blocked: false },
+  { name: "invalid OID", head: "unavailable", errors: ["timelineItems"], blocked: false },
+  { name: "head field also failed", head: laterRefOid, errors: ["timelineItems", "headRefOid"], blocked: false },
+  { name: "different PR", head: laterRefOid, errors: ["timelineItems"], wrongPr: true, blocked: false },
+  { name: "renamed branch", head: verifiedRecoveryOid, branch: "other", errors: ["timelineItems"], blocked: true },
+  { name: "changed fork", head: verifiedRecoveryOid, fork: "another/fork", errors: ["timelineItems"], blocked: true },
+  { name: "malformed branch", head: verifiedRecoveryOid, branch: "bad..ref", errors: ["timelineItems"], blocked: false },
+  { name: "malformed fork", head: verifiedRecoveryOid, fork: "unavailable", errors: ["timelineItems"], blocked: false },
+  { name: "branch field also failed", head: verifiedRecoveryOid, branch: "other", errors: ["headRefName", "timelineItems"], blocked: false },
+  { name: "fork field also failed", head: verifiedRecoveryOid, fork: "another/fork", errors: ["headRepository", "timelineItems"], blocked: false },
+  { name: "changed fork with unavailable head", head: null, fork: "another/fork", errors: ["headRefOid"], blocked: true },
+  { name: "confirmed rewrite with unavailable fork", head: verifiedRecoveryOid, rewrite: true, errors: ["headRepository"], blocked: true },
+  { name: "rewrite field also failed", head: verifiedRecoveryOid, rewrite: true, errors: ["timelineItems"], blocked: false },
+]) {
+  test(`recovery checks the head in a partial PR response: ${partial.name}`, async () => {
+    let selecting = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (selecting && head === priorRefOid) {
+        selecting = false;
+        if (!partial.keepActivity) rmSync(branchActivity);
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, number: pull.number + (partial.wrongPr ? 1 : 0),
+          head: { ...pull.head, sha: partial.head, ref: partial.branch ?? pull.head.ref,
+            repo: partial.fork ? { full_name: partial.fork } : pull.head.repo },
+          rewrites: partial.rewrite ? [{ __typename: "HeadRefForcePushedEvent", id: "later-rewrite" }] : [],
+          graphExitCode: 1,
+          graphErrors: partial.errors.map(field => ({ message: "Field unavailable", path: ["repository", "pullRequest", field] })),
+        }));
+      }
+      return head;
+    } });
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      selecting = true;
+      assert.equal((await recover(verifiedRecoveryOid)).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(selecting, false);
+      assert.equal(phaseOf(seeded), partial.blocked ? "blocked/inspector_head_mismatch" : "waiting_for_new_head/inspector_findings");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    } finally { await manager.stop(); }
+  });
+}
+
+for (const other of ["PR number", "base repository", "activity ref"] as const) {
+  test(`final recovery ignores a successful response for a different ${other} and retries the same receipt`, async () => {
+    let substitute = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (substitute && head === priorRefOid) {
+        substitute = false;
+        if (other === "activity ref") {
+          const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...tip, ref: "refs/heads/other", after: laterRefOid }, ...history]));
+        } else {
+          const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+          if (other === "PR number") pull.number += 1;
+          else pull.base.repo.full_name = "owner/other";
+          pull.state = "closed";
+          pull.head.sha = laterRefOid;
+          writeFileSync(recoveryPr, JSON.stringify(pull));
+        }
+      }
+      return head;
+    } });
+    const { manager, store, ids, registry, key, now } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      const path = other === "activity ref" ? branchActivity : recoveryPr;
+      const valid = readFileSync(path);
+      substitute = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(substitute, false);
+      assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+
+      writeFileSync(path, valid);
+      registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", now + 1014);
+      await manager.settleBackgroundWork();
+      assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+      assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally { await manager.stop(); }
+  });
+}
+
+for (const source of ["PR snapshot", "ref activity"] as const) {
+  test(`successful ${source} reads with invalid head OIDs keep the receipt available for a valid retry`, async () => {
+    let invalidOid: string | undefined;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === priorRefOid && invalidOid !== undefined) {
+        if (source === "PR snapshot") {
+          const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+          writeFileSync(recoveryPr, JSON.stringify({ ...pull, head: { ...pull.head, sha: invalidOid } }));
+        } else {
+          const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...tip, after: invalidOid }, ...history]));
+        }
+      }
+      return head;
+    } });
+    const { manager, store, ids, registry, key, now } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      const path = source === "PR snapshot" ? recoveryPr : branchActivity;
+      const valid = readFileSync(path);
+      invalidOid = "";
+      assert.equal((await recover()).status, 200);
+      const invalidOids = ["", "not-an-oid", "a".repeat(39)];
+      if (source === "PR snapshot") invalidOids.push("0".repeat(40));
+      for (const oid of invalidOids) {
+        invalidOid = oid;
+        registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", now + 1013);
+        await manager.settleBackgroundWork();
+        assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      }
+      invalidOid = undefined;
+      writeFileSync(path, valid);
+      registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", now + 1014);
+      await manager.settleBackgroundWork();
+      assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+      assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally { await manager.stop(); }
+  });
+}
+
+for (const later of ["none", "same-bucket rewrite", "different event ID"] as const) {
+  test(`legacy recovery recognizes only the verified pre-grant force push: ${later}`, async () => {
+    let selection = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (selection && head === priorRefOid) {
+        selection = false;
+        const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+        const [verified] = pull.rewrites;
+        const other = { ...verified, id: "subsequent-event" };
+        if (later !== "none") writeFileSync(recoveryPr, JSON.stringify({ ...pull,
+          rewrites: later === "different event ID" ? [other] : [verified, other] }));
+      }
+      return head;
+    } });
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+      const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+      const force = { __typename: "HeadRefForcePushedEvent", id: "verified-event", createdAt: tip.timestamp,
+        beforeCommit: { oid: tip.before }, afterCommit: { oid: tip.after },
+        ref: { prefix: "refs/heads/", name: pull.head.ref, repository: { nameWithOwner: pull.head.repo.full_name } } };
+      writeFileSync(branchActivity, JSON.stringify([{ ...tip, activity_type: "force_push" }, ...history]));
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      if (later === "none") {
+        for (const rewrites of [[], [force, force], [{ ...force, beforeCommit: { oid: "different" } }],
+          [{ ...force, afterCommit: { oid: "different" } }], [{ ...force, ref: { ...force.ref, name: "other" } }],
+          [{ ...force, createdAt: new Date(Date.parse(force.createdAt) + 1_000).toISOString() }]]) {
+          writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites }));
+          assert.equal((await recover()).status, 409);
+        }
+        assert.equal(store.listEvents(ids.run).some(event => event.kind === "inspector_stale_grant_recovered"), false);
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      }
+      writeFileSync(recoveryPr, JSON.stringify({ ...pull, rewrites: [force] }));
+      selection = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      if (later === "none") {
+        assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+        assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      } else {
+        assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      }
+      const receipt = store.listEvents(ids.run).find(event => event.kind === "inspector_stale_grant_recovered");
+      assert.ok(receipt);
+      assert.equal((receipt.payload as { branchActivity: { verifiedForcePushId: string } }).branchActivity.verifiedForcePushId, force.id);
+    } finally { await manager.stop(); }
+  });
+}
+
+test("legacy recovery reads eligibility from the workflow store's own database", async () => {
+  const seeded = await spentInspectorGrant();
+  const { manager, store, ids, key, now, url } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const path = join(home, "isolated-workflow-store.db");
+    db.prepare("VACUUM INTO ?").run(path);
+    const isolated = new DatabaseSync(path);
+    try {
+      const input = { grantRequestId: "legacy", submissionId: "stranded",
+        staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+      updateInspectorPr(key, { observedHeadSha: "different", observedAt: now + 1013 }, now + 1013);
+      assert.equal(store.recoverStaleInspectorGrant(ids.run, "recover", input, now + 1014), null);
+      assert.deepEqual(new WorkflowStore(isolated).recoverStaleInspectorGrant(ids.run, "recover", input, now + 1014),
+        { verifyPrUrl: url });
+    } finally { isolated.close(); }
+  } finally { await manager.stop(); }
+});
+
+test("legacy recovery refuses a replacement beyond the granted cap", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, store, manager } = seeded;
+  try {
+    const stranded = await strandLegacyGrant(seeded, verifiedRecoveryOid, { maxRepairRounds: 3 });
+    const before = store.getRun(ids.run);
+    assert.equal(stranded.submission.round, 3);
+    assert.equal(before?.maxRepairRounds, 3);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    assert.equal((await recover()).status, 409);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.getRun(ids.run), before);
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("legacy recovery route refuses unavailable, closed, wrong-identity and changed-head PR reads", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const valid = JSON.parse(readFileSync(recoveryPr, "utf8"));
+    const recover = await legacyRecoveryRoute(seeded);
+    rmSync(recoveryPr);
+    for (const response of [null, { ...valid, state: "closed" }, { ...valid, number: valid.number + 1 },
+      { ...valid, base: { repo: { full_name: "owner/other" } } }, { ...valid, head: { ...valid.head, sha: laterRefOid } }]) {
+      if (response) writeFileSync(recoveryPr, JSON.stringify(response));
+      assert.equal((await recover()).status, 409);
+      await manager.settleBackgroundWork();
+      assert.deepEqual(store.getRun(ids.run), before);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+  } finally { await manager.stop(); }
+});
+
+test("legacy grant that selected the current head cannot recover from an ordinary later push", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, priorRefOid);
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", {
+      grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid,
+    })).ok, false);
+    assert.deepEqual(store.getRun(ids.run), before);
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("legacy B to A to B stays blocked even with a retained pre-grant review of B", async () => {
+  const seeded = await spentInspectorGrant();
+  const { key, ids, manager, store, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid, { returnedToPinnedHead: true });
+    const ledger = getInspectorPr(key)!;
+    assert.equal(ledger.headSha, verifiedRecoveryOid);
+    assert.equal(ledger.lastReviewedAt, now + 8);
+    const request = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+    const before = store.getRun(ids.run);
+    assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "deny-aba", request)).ok, false);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.getRun(ids.run), before);
+    assert.equal(store.latestSubmission(ids.run)?.id, "stranded");
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("a post-grant return to the witnessed head stays blocked when GitHub's clock is behind", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, now, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid, { returnedToPinnedHead: true });
+    const [latest, anchor] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    // The daemon observed B, then A, then granted at now + 1010. GitHub's clock
+    // is 5 seconds behind: its later return to B passes the old timestamp cutoff.
+    const providerTime = (local: number) => new Date(now + local - 5_000).toISOString();
+    writeFileSync(branchActivity, JSON.stringify([
+      { ...latest, id: 103, timestamp: providerTime(1012) },
+      { ...latest, id: 102, before: verifiedRecoveryOid, after: priorRefOid, timestamp: providerTime(9) },
+      { ...latest, timestamp: providerTime(6) },
+      anchor,
+    ]));
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    assert.equal((await recover()).status, 409);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.getRun(ids.run), before);
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("legacy grant recovery fails closed on unavailable, inconsistent or time-ambiguous branch activity", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, store, now, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const request = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+    const [valid, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    const submissions = store.listSubmissions(ids.run);
+    rmSync(branchActivity);
+    assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", request)).ok, false);
+    for (const response of [[], [{ ...valid, ref: "refs/heads/other" }], [{ ...valid, after: "unknown" }],
+      [{ ...valid, timestamp: new Date(now + 1009).toISOString() }],
+      [{ ...valid, pushed_at: new Date(now + 7).toISOString() }]]) {
+      writeFileSync(branchActivity, JSON.stringify([...response, ...history]));
+      assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", request)).ok, false);
+    }
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.status, "blocked");
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("a skewed GitHub clock requires contiguous ref history through PR creation", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, now, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const [tip, anchor] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    const prCreatedAt = Date.parse(JSON.parse(readFileSync(recoveryPr, "utf8")).created_at);
+    const unique = { ...tip, timestamp: new Date(now - 5_000).toISOString() };
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    for (const history of [
+      [unique], // retained page ends before reaching an update older than PR creation
+      [unique, { ...anchor, after: laterRefOid }],
+      [unique, { ...anchor, id: unique.id }],
+      [unique, { ...anchor, ref: "refs/heads/other" }],
+      [unique, { ...anchor, timestamp: new Date(now - 4_000).toISOString() }],
+      [unique, { ...anchor, timestamp: new Date(prCreatedAt - 999).toISOString() }],
+      [{ ...unique, before: "0".repeat(40) }, anchor], // branch recreated after PR creation
+    ]) {
+      writeFileSync(branchActivity, JSON.stringify(history));
+      assert.equal((await recover()).status, 409);
+      assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+    writeFileSync(branchActivity, JSON.stringify([unique, { ...anchor, timestamp: new Date(prCreatedAt - 1_000).toISOString() }]));
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    const receipt = store.listEvents(ids.run).find(e => e.kind === "inspector_stale_grant_recovered");
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { branchActivity: { refHistory: unknown } }).branchActivity.refHistory,
+      { prCreatedAt, anchorActivityId: anchor.id, anchorChangedAt: prCreatedAt - 1_000, updatesChecked: 2 });
+  } finally { await manager.stop(); }
+});
+
+test("a poll started before the grant requires a retained completed read before the grant", async () => {
+  const seeded = await spentInspectorGrant();
+  const { key, ids, now, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const recover = await legacyRecoveryRoute(seeded);
+    const submissions = store.listSubmissions(ids.run);
+    const observation = { headSha: verifiedRecoveryOid, state: "OPEN" as const, draft: false, findings: [] };
+    const grant = store.listEvents(ids.run).find(e => e.kind === "repair_rounds_granted")!;
+    for (const at of [grant.timestamp, grant.timestamp + 1]) {
+      recordCodeRabbit(key, observation, at);
+      assert.equal((await recover()).status, 409);
+    }
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+
+    // A later poll can overwrite the scan while preserving its earlier delivery claim.
+    recordCodeRabbit(key, { ...observation, findings: [{ id: "thread", rootId: "root", url: "https://github.com/owner/repo",
+      path: null, identity: "finding", resolved: false }] }, now + 8);
+    const { observationId } = readCodeRabbit(key)!;
+    assert.ok(claimCodeRabbit(key, { noteKey: "note", episodeKey: "episode" }, observationId, now + 9));
+    recordCodeRabbit(key, observation, grant.timestamp + 1);
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    const receipt = store.listEvents(ids.run).find(e => e.kind === "inspector_stale_grant_recovered");
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { completedObservation: unknown }).completedObservation,
+      { source: "delivery_claim", observationId, at: now + 9 });
+  } finally { await manager.stop(); }
+});
+
+for (const elapsedMs of [1_000, 999]) {
+  test(`legacy recovery branch activity cutoff: ${elapsedMs} ms before the grant`, async () => {
+    const seeded = await spentInspectorGrant();
+    const { ids, store, manager } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const grant = store.listEvents(ids.run).find(e => e.kind === "repair_rounds_granted");
+      assert.ok(grant);
+      const changedAt = grant.timestamp - elapsedMs;
+      const [activity, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+      writeFileSync(branchActivity, JSON.stringify([{ ...activity, timestamp: new Date(changedAt).toISOString() }, ...history]));
+      const before = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      const response = await recover();
+      await manager.settleBackgroundWork();
+      const submissions = store.listSubmissions(ids.run);
+      const receipts = store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered");
+      if (elapsedMs === 1_000) {
+        assert.equal(response.status, 200);
+        assert.equal(submissions.length, before.length + 1);
+        assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+        assert.equal(receipts.length, 1);
+      } else {
+        assert.equal(response.status, 409);
+        assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+        assert.deepEqual(submissions, before);
+        assert.equal(receipts.length, 0);
+      }
+    } finally { await manager.stop(); }
+  });
+}
+
+test("legacy recovery accepts branch activity with only pushed_at and records its time", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, store, manager, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const pushedAt = now + 7;
+    const [, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    writeFileSync(branchActivity, JSON.stringify([{ id: 102, ref: "refs/heads/feature", before: priorRefOid,
+      after: verifiedRecoveryOid, pushed_at: new Date(pushedAt).toISOString() }, ...history]));
+    const recover = await legacyRecoveryRoute(seeded);
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    const receipt = store.listEvents(ids.run).find(e => e.kind === "inspector_stale_grant_recovered");
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { branchActivity: unknown }).branchActivity, {
+      prKey: seeded.key, repository: "author/fork", ref: "refs/heads/feature",
+      headSha: verifiedRecoveryOid, activityId: 102, changedAt: pushedAt,
+      refHistory: { prCreatedAt: now - 10_000, anchorActivityId: 99, anchorChangedAt: now - 12_000, updatesChecked: 2 },
+    });
+  } finally { await manager.stop(); }
+});
+
+test("legacy grant recovery refuses missing, overwritten and ambiguous pre-grant proof", async () => {
+  const seeded = await spentInspectorGrant();
+  const { key, ids, store, manager, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    const request = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+    for (const proof of [
+      { headSha: verifiedRecoveryOid, lastReviewedAt: null },
+      { headSha: verifiedRecoveryOid, lastReviewedAt: now + 4 }, // tied with the budget block
+      { headSha: verifiedRecoveryOid, lastReviewedAt: now + 1010 }, // tied with the grant
+      { headSha: verifiedRecoveryOid, lastReviewedAt: now + 1013 }, // a subsequent review replaced the witness
+      { headSha: "different", lastReviewedAt: now + 8 },
+    ]) {
+      updateInspectorPr(key, proof, now + 1014);
+      assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", request)).ok, false);
+    }
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.equal(store.latestSubmission(ids.run)?.id, "stranded");
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("a legacy grant can use a delayed pre-grant observation without treating it as a review", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, store, manager, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, verifiedRecoveryOid, { delayedObservation: true });
+    const result = await manager.recoverStaleInspectorGrant(ids.run, "recover", {
+      grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid,
+    });
+    assert.ok(result.ok);
+    await manager.settleBackgroundWork();
+    const receipt = store.listEvents(ids.run).find(e => e.kind === "inspector_stale_grant_recovered");
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { preGrantWitness: unknown }).preGrantWitness,
+      { source: "gate_observation", observedAt: now + 8, headSha: verifiedRecoveryOid });
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_review");
+  } finally { await manager.stop(); }
+});
+
+test("explicit legacy-grant recovery uses remaining budget and retains both submission audits", async () => {
+  const seeded = await spentInspectorGrant();
+  const { key, ids, manager, store, now, registry } = seeded;
+  try {
+    const stranded = await strandLegacyGrant(seeded, verifiedRecoveryOid);
+    assert.equal(manager.recheckInspector(ids.run, "ordinary").ok, false);
+    const request = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+    for (const invalid of [{ grantRequestId: "other" }, { submissionId: "failed-sub" },
+      { staleHeadSha: "different" }, { currentHeadSha: "failed" }, { currentHeadSha: "unobserved" }]) {
+      assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "recover", { ...request, ...invalid })).ok, false);
+    }
+    const recover = await legacyRecoveryRoute(seeded);
+    const recovered = await recover();
+    assert.equal(recovered.status, 200);
+    assert.equal((await recovered.json()).idempotent, false);
+    await manager.settleBackgroundWork();
+    const committedSubmissions = store.listSubmissions(ids.run);
+    const committedEvents = store.listEvents(ids.run);
+    assert.equal((await recover("different-replacement")).status, 409);
+    assert.deepEqual(store.listSubmissions(ids.run), committedSubmissions);
+    assert.deepEqual(store.listEvents(ids.run), committedEvents);
+    rmSync(branchActivity); // A replay uses the committed receipt even during an outage.
+    const replay = await recover();
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json()).idempotent, true);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.getSubmission("stranded"), stranded.submission);
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+    assert.equal(store.latestSubmission(ids.run)?.round, 4);
+    assert.deepEqual(store.latestSubmission(ids.run)?.context, {
+      newHeadSha: verifiedRecoveryOid, failedHeadSha: "failed", priorFindingFingerprints: ["prior-finding"],
+      bypassReason: "Published GitHub Inspector-only findings policy",
+    });
+    assert.equal(store.getRun(ids.run)?.maxRepairRounds, 4);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+    const receipts = store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered");
+    assert.equal(receipts.length, 1);
+    const [receipt] = receipts;
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { branchActivity: unknown }).branchActivity, {
+      prKey: key, repository: "author/fork", ref: "refs/heads/feature", headSha: verifiedRecoveryOid, activityId: 101, changedAt: now + 6,
+      refHistory: { prCreatedAt: now - 10_000, anchorActivityId: 99, anchorChangedAt: now - 12_000, updatesChecked: 2 },
+    });
+    assert.deepEqual((receipt.payload as { preGrantWitness: unknown }).preGrantWitness,
+      { source: "inspector_review", observedAt: now + 8, headSha: verifiedRecoveryOid });
+    registry.inspectionUpdated(key, "another", "OPEN", now + 1015);
+    await manager.settleBackgroundWork();
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "again", request)).ok, false);
+  } finally { await manager.stop(); }
+});

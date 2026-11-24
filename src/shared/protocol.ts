@@ -7776,6 +7776,17 @@ export const WorkflowRunActionSchema = z.object({
 });
 export type WorkflowRunAction = z.infer<typeof WorkflowRunActionSchema>;
 
+export const RecoverStaleInspectorGrantSchema = z.object({
+  grantRequestId: z.string().min(1).max(200),
+  submissionId: WorkflowIdSchema,
+  staleHeadSha: z.string().min(1).max(100),
+  currentHeadSha: z.string().min(1).max(100),
+}).strict();
+export type RecoverStaleInspectorGrant = z.infer<typeof RecoverStaleInspectorGrantSchema>;
+export const RecheckWorkflowInspectorSchema = WorkflowRunActionSchema.extend({
+  recoverStaleGrant: RecoverStaleInspectorGrantSchema.optional(),
+});
+
 export const RestartFullWorkflowSchema = WorkflowRunActionSchema.extend({
   confirmation: z.string().max(200).optional(),
 });
@@ -7832,6 +7843,11 @@ export const WorkflowInspectorGateStateSchema = z.object({
     headSha: z.string().min(1).max(100).nullable(),
     treeOid: z.string().min(1).max(100),
     publishedTreeOid: z.string().min(1).max(100),
+  }).optional(),
+  grantObservation: z.object({
+    minimumObservedAt: z.number().int().nonnegative(),
+    requestedAt: z.number().int().nonnegative(),
+    verifiedHeadSha: z.string().min(1).max(100).optional(),
   }).optional(),
 });
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { applyVoiceConfigPatch, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
+import { applyVoiceConfigPatch, VOICE_PROVIDER_EDIT_TIMEOUT_MS, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
 import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
 import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type VoiceDashboardSnapshot } from "./lib/api.ts";
 
@@ -9,8 +9,6 @@ import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type V
 
 const POLL_MS = 5000;
 const SETTINGS_REQUEST_TIMEOUT_MS = 3 * POLL_MS;
-// A provider receipt remains usable after a minute-long response delay across windows.
-const PROVIDER_EDIT_TIMEOUT_MS = 75_000;
 
 // A receipt contains only a daemon instance, sequence and random nonce. Sharing
 // it before sending the PUT lets another window prove what preceded its click.
@@ -167,10 +165,10 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const selectedAt = performance.now();
     const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
     const optOut = decisionProvider === "off";
-    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id,
+    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id, expiresAt: Date.now() + VOICE_PROVIDER_EDIT_TIMEOUT_MS,
       observedIntent: changesProvider ? observedIntentReceipt() : undefined };
     const providerRequest = changesProvider ? new AbortController() : undefined;
-    const timer = providerRequest && setTimeout(() => providerRequest.abort(), PROVIDER_EDIT_TIMEOUT_MS);
+    const timer = providerRequest && setTimeout(() => providerRequest.abort(), VOICE_PROVIDER_EDIT_TIMEOUT_MS);
     const reservation = providerRequest ? nextProviderGesture(providerRequest.signal).then(gesture => {
       intent.gesture = gesture;
       return api.reserveVoiceProviderWrite(intent, providerRequest.signal);
@@ -352,12 +350,14 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
     };
   }, [enabled, providerRevision, observeProvider]);
 
-  const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
+  const mutate = useCallback(async (request: (signal: AbortSignal) => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
     if (writing.current) return "refused";
     writing.current = true;
     setBusy(true);
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), SETTINGS_REQUEST_TIMEOUT_MS);
     try {
-      const res = await request();
+      const res = await request(deadline.signal);
       if (res.ok && res.keys && res.provider !== undefined) {
         setError(null);
         return "confirmed";
@@ -365,6 +365,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       setError(res.reason ?? "The key change could not be confirmed.");
       return res.reason ? "refused" : "unconfirmed";
     } finally {
+      clearTimeout(timer);
       // Even a lost response can follow a committed change. Read the current sources and
       // discard responses from polls which started before this mutation settled.
       writes.current++;
@@ -376,9 +377,9 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
   }, []);
 
   const save = useCallback(async (provider: VoiceKeyProvider, key: string) =>
-    mutate(() => api.saveVoiceDecisionKey(provider, key)), [mutate]);
+    mutate(signal => api.saveVoiceDecisionKey(provider, key, signal)), [mutate]);
   const remove = useCallback(async (provider: VoiceKeyProvider) =>
-    mutate(() => api.removeVoiceDecisionKey(provider)), [mutate]);
+    mutate(signal => api.removeVoiceDecisionKey(provider, signal)), [mutate]);
 
   const report = status?.revision === providerRevision ? status.report : undefined;
   return { report, save, remove, error, busy };

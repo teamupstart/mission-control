@@ -2526,11 +2526,11 @@ export const api = {
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
-  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string) =>
-    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key }),
-  removeVoiceDecisionKey: (provider: VoiceKeyProvider) =>
+  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, signal: AbortSignal) =>
+    put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key }, { signal }),
+  removeVoiceDecisionKey: (provider: VoiceKeyProvider, signal: AbortSignal) =>
     request<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>(
-      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`),
+      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, { signal }),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>

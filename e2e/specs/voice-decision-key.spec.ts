@@ -1280,6 +1280,39 @@ test("a delayed local save cannot restore a key removed by another window", asyn
 });
 
 for (const mutation of ["save", "remove"] as const) {
+  test(`a stalled key ${mutation} releases both rows and reads the committed change`, async ({ dashboard: page, daemon }) => {
+    await turnVoiceOn(daemon);
+    await page.clock.install();
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(NOT_SET);
+    if (mutation === "remove") await saveKey(page, "OpenAI Decisions", SAVED_OPENAI);
+    const committed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/decision-key*", async route => {
+      if (route.request().method() === "GET") return route.continue();
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      committed.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    try {
+      if (mutation === "save") await keyField(page, "OpenAI Decisions").fill(SAVED_OPENAI);
+      await row(page, "OpenAI Decisions").getByRole("button", { name: mutation === "save" ? "Save" : "Remove" }).click();
+      await committed.promise;
+      await expect(keyField(page, "Jev")).toBeDisabled();
+      await page.clock.fastForward(15_000);
+      await expect(keyField(page, "Jev")).toBeEnabled({ timeout: 2_000 });
+      await expect(keyField(page, "OpenAI Decisions")).toBeEnabled();
+      await expect(keyField(page, "OpenAI Decisions")).toHaveValue("");
+      await expect(panel(page)).toContainText("The key change could not be confirmed.");
+      await expect(line(page)).toHaveText(mutation === "save" ? using("OpenAI Decisions") : NOT_SET);
+      if (mutation === "save") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "43-expired-key-save");
+    } finally {
+      release.resolve();
+    }
+  });
+
   test(`a lost key ${mutation} response refreshes the provider disclosure immediately`, async ({ dashboard: page, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

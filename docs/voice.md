@@ -355,6 +355,8 @@ order in which the daemon read the snapshot. A delayed poll can still show a new
 length, and an older result cannot make an already removed key appear saved again.
 Key-status reads expire after 15 seconds. Saving or removing a key cancels earlier polls
 and refreshes the rows. Leaving Voice settings cancels outstanding reads.
+If a save or removal goes unconfirmed for 15 seconds, the dashboard releases both rows and
+reads the current key sources from the daemon.
 `PUT /api/voice/decision-key` accepts
 `{ provider, key }`. `DELETE /api/voice/decision-key?provider=openai` removes the saved OpenAI
 Decisions key. Both operations return the updated report.
@@ -555,6 +557,7 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   A later opt-in can still switch providers if its window observed the current selection.
   The dashboard gives a provider change 75 seconds, including its reservation, write and any
   retry. If the change times out, it reads the current configuration and provider from the daemon.
+  The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
 - `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty

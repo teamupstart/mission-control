@@ -3,6 +3,7 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   applyVoiceConfigPatch,
   VOICE_CONFIG_DEFAULTS,
+  VOICE_PROVIDER_EDIT_TIMEOUT_MS,
   VoiceConfigSchema,
   type VoiceConfig,
   type VoiceConfigPatch,
@@ -27,7 +28,7 @@ let applied = 0;
 let lastOptOut = 0;
 let reservation: {
   order: number; appliedAtReservation: number; writer: string; edit: number; otherWriterOrder: number; optOut: boolean;
-  gesture: VoiceProviderIntent["gesture"]; otherGroupOrder: number;
+  gesture: VoiceProviderIntent["gesture"]; otherGroupOrder: number; expiresAt: number;
 } | undefined;
 let lastWriter: string | undefined;
 let writerBase = 0;
@@ -46,10 +47,14 @@ function issueProviderOrder(): number {
   return ++issued;
 }
 
+function hasPendingReservation(): boolean {
+  return reservation !== undefined && reservation.order > applied && performance.now() < reservation.expiresAt;
+}
+
 /** A gesture may retry only across an interval with no intervening selection. */
 export function providerIntentWindow() {
   return { token: `${instance}:${issued}:${applied}`, receipt: providerIntentReceipt(),
-    quietForMs: performance.now() - latestIntentAt, pendingSelection: issued > applied };
+    quietForMs: performance.now() - latestIntentAt, pendingSelection: hasPendingReservation() };
 }
 
 function canApply(writer: string, base: number): boolean {
@@ -65,6 +70,10 @@ function signTicket(payload: string): string {
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
 export function reserveProviderWrite(intent: VoiceProviderIntent): string | null {
   const { writer, observedRevision: revision, optOut = false, edit = 0, unchangedSince, observedIntent, gesture } = intent;
+  const remaining = intent.expiresAt === undefined ? VOICE_PROVIDER_EDIT_TIMEOUT_MS :
+    Math.min(VOICE_PROVIDER_EDIT_TIMEOUT_MS, intent.expiresAt - Date.now());
+  if (remaining <= 0) return null;
+  const expiresAt = performance.now() + remaining;
   const base = Number(revision.slice(instance.length + 1));
   if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || base < 0 || base > applied) return null;
   const previous = reservation?.gesture;
@@ -76,7 +85,7 @@ export function reserveProviderWrite(intent: VoiceProviderIntent): string | null
   const followsGesture = sameGroup && otherGroupOrder <= base;
   const observedLatest = observedIntent === providerIntentReceipt();
   if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token && !(optOut && observedLatest)) return null;
-  if (reservation && reservation.order > applied && !unchangedSince && !observedLatest && !followsGesture && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
+  if (reservation && hasPendingReservation() && !unchangedSince && !observedLatest && !followsGesture && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
     if (writer !== reservation.writer || edit <= reservation.edit || reservation.otherWriterOrder > applied) return null;
   }
   if (!canApply(writer, base) && !followsGesture) {
@@ -91,10 +100,10 @@ export function reserveProviderWrite(intent: VoiceProviderIntent): string | null
   const observedOrder = observedLatest || followsGesture ? issued : base;
   const order = issueProviderOrder();
   const own = reservation?.writer === writer ? reservation : undefined;
-  reservation = { order, appliedAtReservation: applied, writer, optOut, gesture, otherGroupOrder,
+  reservation = { order, appliedAtReservation: applied, writer, optOut, gesture, otherGroupOrder, expiresAt,
     edit: Math.max(own?.edit ?? 0, edit),
     otherWriterOrder: own?.otherWriterOrder ?? reservation?.order ?? 0 };
-  const payload = `${order}:${writer}:${observedOrder}:${optOut ? "off" : "switch"}`;
+  const payload = `${order}:${writer}:${observedOrder}:${optOut ? "off" : "switch"}:${expiresAt}`;
   return `${payload}:${signTicket(payload)}`;
 }
 
@@ -124,8 +133,8 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
     const end = ticket.lastIndexOf(":");
     const payload = ticket.slice(0, end);
     if (end < 0 || signTicket(payload) !== ticket.slice(end + 1)) return null;
-    const [number, author, observed, mode] = payload.split(":");
-    if (!author) return null;
+    const [number, author, observed, mode, expiresAt] = payload.split(":");
+    if (!author || !(performance.now() < Number(expiresAt))) return null;
     order = Number(number);
     const observedOrder = Number(observed);
     if (patch.decisionProvider === undefined || (mode === "off" && patch.decisionProvider !== "off") || order <= applied) return null;

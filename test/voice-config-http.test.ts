@@ -103,6 +103,37 @@ const reserveFor = async (writer: string, revision: string) => {
   return (await res.json() as { ticket: string }).ticket;
 };
 
+test("a provider ticket cannot enable routing after the edit expired", async t => {
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => elapsed);
+  await json("/api/voice/config", "PUT", { decisionProvider: "off" });
+  const revision = await readProviderRevision();
+  const ticket = await reserveFor(randomUUID(), revision);
+  elapsed = 75_000;
+  assert.equal((await choose("openai", ticket)).status, 409);
+  assert.equal(await readProviderRevision(), revision);
+  assert.equal((await (await json("/api/voice/config")).json()).config.decisionProvider, "off");
+});
+
+test("a delayed provider reservation uses only the time remaining on the original edit", async t => {
+  const clicked = Date.now();
+  let elapsed = 74_900;
+  t.mock.method(Date, "now", () => clicked + elapsed);
+  t.mock.method(performance, "now", () => elapsed);
+  await json("/api/voice/config", "PUT", { decisionProvider: "off" });
+  const observedRevision = await readProviderRevision();
+  const reserve = (expiresAt: number) => json("/api/voice/config/provider-intent", "POST",
+    { writer: randomUUID(), observedRevision, expiresAt, edit: 1 });
+  const first = await reserve(clicked + 75_000);
+  assert.equal(first.status, 200);
+  elapsed += 100;
+  assert.equal((await choose("openai", (await first.json()).ticket)).status, 409);
+  assert.equal((await reserve(clicked + 75_000)).status, 409);
+  const next = await reserve(Date.now() + 10_000);
+  assert.equal(next.status, 200);
+  assert.equal((await choose("jev", (await next.json()).ticket)).status, 200);
+});
+
 test("an earlier reserved provider write cannot undo Off, a restore, or a legacy write", async () => {
   const writer = randomUUID();
   const reserve = async () => reserveFor(writer, await readProviderRevision());

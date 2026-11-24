@@ -35,14 +35,11 @@ test("the published sherpa addon transcribes a recording through the listener an
   await run(process.execPath, ["scripts/build-voice-sherpa.mjs", join(cwd, "dist")]);
   const manifests = join(cwd, "models.json");
   await writeFile(manifests, JSON.stringify({ "sherpa-onnx": VOICE_TEST_MODEL }));
-  for (const key of ["MISSION_VOICE_BACKEND", "MISSION_VOICE_MODEL_MANIFEST"]) {
-    const original = process.env[key];
-    t.after(() => {
-      if (original === undefined) delete process.env[key];
-      else process.env[key] = original;
-    });
-  }
-  delete process.env.MISSION_VOICE_BACKEND;
+  const originalManifest = process.env.MISSION_VOICE_MODEL_MANIFEST;
+  t.after(() => {
+    if (originalManifest === undefined) delete process.env.MISSION_VOICE_MODEL_MANIFEST;
+    else process.env.MISSION_VOICE_MODEL_MANIFEST = originalManifest;
+  });
   process.env.MISSION_VOICE_MODEL_MANIFEST = manifests;
   const installed = join(stateDir(), "voice", "models", "sherpa-onnx");
   await mkdir(installed, { recursive: true });

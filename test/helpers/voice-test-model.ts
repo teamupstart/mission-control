@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { VOICE_TEST_MODEL, type VoiceModelFile } from "../../src/shared/voice-models.ts";
@@ -55,7 +55,7 @@ export async function ensureCachedModelFile(root: string, file: VoiceModelFile, 
 }
 
 export async function voiceTestModel(download: boolean): Promise<string | null> {
-  const root = process.env.MISSION_VOICE_TEST_MODEL_DIR || join(tmpdir(), "mission-voice-test-model", VOICE_TEST_MODEL.revision);
+  const root = resolve(process.env.MISSION_VOICE_TEST_MODEL_DIR || join(tmpdir(), "mission-voice-test-model", VOICE_TEST_MODEL.revision));
   for (const file of VOICE_TEST_MODEL.files) {
     if (!await ensureCachedModelFile(root, file, download)) return null;
   }

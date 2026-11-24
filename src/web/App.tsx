@@ -543,7 +543,11 @@ export function App(): React.JSX.Element {
   useStorageNotifications(storageHealth);
   const voiceHints = spokenNames && !!voice && voice.mode !== "off";
   useVoiceOpenCards(voiceHints && connected ? voiceWindowId : undefined, route.page !== "voice-card");
-  const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
+  const [reviewRequest, setReviewRequest] = useState<{ sessionId: string; questionId?: string } | null>(null);
+  const reviewSessionId = reviewRequest?.sessionId ?? null;
+  const setReviewSessionId = useCallback((sessionId: string | null) => {
+    setReviewRequest(sessionId ? { sessionId } : null);
+  }, []);
   // The entry point can ask for initial focus on a conversation's question. The inbox still
   // renders the live attention fold.
   const [inbox, setInbox] = useState<{ focusSessionId: string | null } | null>(null);
@@ -3566,11 +3570,11 @@ export function App(): React.JSX.Element {
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
-    ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
+    ? pendingReviews.filter((r) => r.sessionId === modalSession.id && (!reviewRequest?.questionId || r.id === reviewRequest.questionId))
     : [];
   // A menu the session is parked on is answered in the same modal as its reviews: a resident
   // card's menu row opens it, as its review rows do.
-  const modalDialog = modalSession ? activePaneDialog(modalSession) : null;
+  const modalDialog = modalSession && !reviewRequest?.questionId ? activePaneDialog(modalSession) : null;
   const seeWorkPreviewTask = seeWorkTourPreviewTaskId
     ? tasks.find((task) => task.id === seeWorkTourPreviewTaskId) ?? null
     : null;
@@ -5104,13 +5108,15 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (openVoiceQuestion) setReviewSessionId(openVoiceQuestion.sessionId);
-  }, [openVoiceQuestion]);
+  }, [openVoiceQuestion, setReviewSessionId]);
 
   const voiceCardHost = spokenNames && <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
     actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
-      openQuestion: id => { navigate({ page: "fleet" }, allowed => { if (allowed) setReviewSessionId(id); }); },
+      openQuestion: (sessionId, questionId) => { navigate({ page: "fleet" }, allowed => {
+        if (allowed) setReviewRequest({ sessionId, questionId });
+      }); },
       followUp: async taskId => {
         const id = newRequestId();
         pendingVoiceFollowUp.current = id;

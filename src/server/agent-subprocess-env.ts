@@ -70,11 +70,13 @@ export function observeTerminalWrapperExit(stateHome: string, readOwner = readTe
       while (stillOwned()) {
         const exited = outcome();
         if (exited !== null) return exited;
-        const current = await readOwner(stateHome);
-        if (owner && (!current || current.pid !== owner.pid || current.startMs !== owner.startMs)) return outcome() === true;
-        if (!current && retriedClaim) return outcome() === true;
-        owner = current;
-        retriedClaim = true;
+        const current = await readOwner(stateHome, owner?.pid);
+        if (current !== "unknown") {
+          if (owner && (!current || current.pid !== owner.pid || current.startMs !== owner.startMs)) return outcome() === true;
+          if (!current && retriedClaim) return outcome() === true;
+          owner = current;
+          retriedClaim = true;
+        }
         // The wrapper may have exited while the process table was being read.
         const observed = outcome();
         if (observed !== null) return observed;

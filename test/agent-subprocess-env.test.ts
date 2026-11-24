@@ -25,7 +25,7 @@ const daemonPort = 17317;
 process.env.MISSION_PORT = String(daemonPort);
 
 const { shellCommand } = await import("../src/server/terminal/shell.ts");
-const { LAUNCH_PID_FILE } = await import("../src/server/terminal/launch-process.ts");
+const { LAUNCH_PID_FILE, readTerminalWrapperProcess } = await import("../src/server/terminal/launch-process.ts");
 const {
   agentSubprocessEnv,
   observeTerminalWrapperExit,
@@ -459,4 +459,30 @@ test("a recycled wrapper PID stops observation without claiming an exit", async 
   t.mock.timers.tick(5_000);
   assert.equal(await exited, false);
   assert.ok(existsSync(home));
+});
+
+test("an incomplete process scan keeps watching a known wrapper until its actual exit", async (t) => {
+  const home = mkdtempSync(join(root, "interrupted-scan-"));
+  const argv = isolatedAgentArgv(["/bin/sh", "-c", "echo ready; read -r input"], { stateHome: home });
+  let scans = 0;
+  const observation = observeTerminalWrapperExit(home, async (path, pid) => {
+    if (++scans === 1) return { pid: child.pid!, startMs: 10 };
+    return readTerminalWrapperProcess(path, pid, async () => ({ processes: [], unknownReason: "scan interrupted" }));
+  });
+  t.after(observation.close);
+  const child = spawn(argv[0]!, argv.slice(1));
+  const closed = once(child, "close");
+  t.after(() => child.stdin.end());
+  await once(child.stdout, "data");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exited = observation.waitForExit(() => true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(5_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(scans, 2);
+  assert.equal(await readTerminalWrapperProcess(home, child.pid, async () => ({ processes: [], unknownReason: null })), null);
+  child.stdin.end("done\n");
+  assert.deepEqual(await closed, [0, null]);
+  t.mock.timers.tick(5_000);
+  assert.equal(await exited, true);
 });

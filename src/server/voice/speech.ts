@@ -7,7 +7,7 @@ import { verifySupervisorReport, type SupervisorReportState } from "./supervisor
 import { announcementName, SpeechHolds, SUPERVISOR_DIRECTORY, type Hold } from "./speech-holds.ts";
 
 export interface VoiceSynthesizer {
-  synthesize(text: string, voice: VoiceSpeechVoice): Promise<{ wav: Uint8Array<ArrayBuffer>; durationMs: number }>;
+  synthesize(text: string, voice: VoiceSpeechVoice, signal?: AbortSignal): Promise<{ wav: Uint8Array<ArrayBuffer>; durationMs: number }>;
   warm(): void;
   stop(): void;
 }
@@ -31,6 +31,7 @@ interface Playback {
   hold?: Hold;
   wav?: Uint8Array<ArrayBuffer>;
   timer?: unknown;
+  synthesis?: AbortController;
   unanswered?: boolean;
   confirmBy?: number;
   onStop?: "failed" | "stopped" | "timed-out" | "finished";
@@ -209,18 +210,18 @@ export class VoiceSpeechManager {
       this.deps.changed();
       if (!this.jobs.has(job.id)) return;
       const deadline = this.deps.now() + VOICE_SPEECH_PREPARE_LIMIT_MS;
-      const expire = () => {
-        try { this.synth.stop(); } catch { /* A stuck backend cannot keep the job alive. */ }
-        this.finish(item, "failed");
-      };
+      item.synthesis = new AbortController();
+      const expire = () => this.finish(item, "failed");
       this.arm(item, VOICE_SPEECH_PREPARE_LIMIT_MS, expire);
       try {
-        const audio = await this.synth.synthesize(job.text, target.voice);
+        const audio = await this.synth.synthesize(job.text, target.voice, item.synthesis.signal);
         if (!this.jobs.has(job.id)) return;
         if (this.deps.now() >= deadline) return expire();
+        delete item.synthesis;
         item.wav = audio.wav;
         job.durationMs = audio.durationMs;
       } catch {
+        delete item.synthesis;
         if (this.jobs.has(job.id)) this.finish(item, "failed");
         return;
       }
@@ -277,6 +278,11 @@ export class VoiceSpeechManager {
       return false;
     }
     this.clear(item);
+    if (item.synthesis) {
+      item.synthesis.abort();
+      delete item.synthesis;
+      try { this.synth.stop(); } catch { /* The request is aborted even if backend cleanup fails. */ }
+    }
     item.job.state = state;
     this.jobs.delete(item.job.id);
     if (item.hold) {
@@ -313,7 +319,10 @@ export class VoiceSpeechManager {
     delete item.timer;
   }
   dispose() {
-    for (const item of this.items()) this.clear(item);
+    for (const item of this.items()) {
+      this.clear(item);
+      item.synthesis?.abort();
+    }
     this.jobs.clear();
     this.synth.stop();
   }

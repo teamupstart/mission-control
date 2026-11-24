@@ -1007,7 +1007,9 @@ A sample requested through the audition route can play while muted.
 
 Neural preparation has a 15-second deadline per job once it reaches the front
 of the queue. If it expires, the daemon fails that job, discards late audio and
-starts the next waiting job. Capture is held only after audio is ready for handoff.
+starts the next waiting job. Cancelling active preparation aborts its request and
+stops the synthesizer before another job starts. Capture is held only after audio
+is ready for handoff.
 
 All listeners pause capture before the daemon offers the job. Only its holder
 receives the job or its stop request. A start overdue by 2 seconds, a system
@@ -1034,6 +1036,9 @@ The daemon acknowledges silence only after it persists the updated hold ledger.
 If that write fails, the end or exit report returns HTTP 503, the Stop directive
 remains active, and the sender can retry. An accepted signed exit is final for
 that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).
+If the daemon crashes between recording an exit and clearing the ledger, it
+applies the recorded exit at startup. Capture stays held until the reconciled
+ledger has been saved and every other possible player has confirmed silence.
 
 The supervisor authenticates both reports to `POST /voice/listener/supervised`.
 The launch service provisions one durable Ed25519 key per supervisor. Each

@@ -360,13 +360,48 @@ for (const proof of ["ended", "exited"] as const) {
     }
     assert.deepEqual(entries(), [{ jobId: id, instance: holder.instance, purpose: "audition" }]);
     store.reset(); await holder.hello();
-    assert.equal((await holder.poll()).capture, false);
+    assert.equal((await holder.poll()).capture, proof === "exited");
+    if (proof === "exited") assert.deepEqual(entries(), []);
     assert.equal((await confirm()).status, 200);
     assert.deepEqual(entries(), []);
     store.reset(); await holder.hello();
     assert.equal((await holder.poll()).capture, true);
   });
 }
+
+test("restart applies only recorded exits and keeps every hold while the reconciled ledger cannot be saved", async () => {
+  const gone = player(), live = player(crypto.randomUUID());
+  await gone.announce(); await gone.hello();
+  assert.equal((await gone.event(await audition(), "started")).status, 200);
+  await live.announce();
+  writeFileSync(ledger, "?");
+  store.reset(); await live.hello();
+  const both = readFileSync(ledger, "utf8");
+  assert.equal(entries().length, 2);
+  const liveStop = (await live.poll()).speak;
+  assert.equal((await gone.report("exited")).status, 200);
+  // Crash image: the exit is durable, but the old, intact two-player ledger survived.
+  writeFileSync(ledger, both);
+  renameSync(used, used + ".saved");
+  mkdirSync(used); // Prevent saving the remaining, still-held player.
+  try {
+    store.reset(); await live.hello();
+    assert.equal(readFileSync(ledger, "utf8"), both);
+    assert.equal((await gone.poll()).speak.stop, true);
+    assert.equal((await live.poll()).capture, false);
+  } finally {
+    rmSync(used, { recursive: true });
+    renameSync(used + ".saved", used);
+  }
+  store.reset(); await live.hello();
+  assert.equal((await gone.poll()).speak, null);
+  assert.deepEqual(entries(), [{ jobId: liveStop.id, instance: live.instance, purpose: "ask" }]);
+  const pending = await live.poll();
+  assert.equal(pending.capture, false);
+  assert.deepEqual(pending.speak, liveStop);
+  assert.equal((await live.event(liveStop.id, "ended")).status, 200);
+  assert.equal((await live.poll()).capture, true);
+});
 
 test("repairing an unreadable launch receipt requests silence from the recovered instance", async () => {
   const p = player();

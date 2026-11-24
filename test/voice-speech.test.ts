@@ -133,3 +133,37 @@ test("stalled preparation fails on its deadline, advances the queue and discards
   assert.equal(manager.event(second.id, instance, "ended"), "accepted");
   assert.equal(manager.held, false);
 });
+
+test("cancelling active preparation aborts and stops synthesis before starting the next job", async t => {
+  const home = mkdtempSync(join(tmpdir(), "speech-cancel-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const { instance, proof } = fixtureVoiceSupervisor();
+  const events: string[] = [];
+  let complete!: () => void;
+  const manager = new VoiceSpeechManager({
+    directory: join(home, "voice"), now: Date.now, changed() {},
+    target: () => ({ instance, voice: { engine: "neural", id: VOICE_SPEECH_DEFAULT_NEURAL } }),
+    synthesizer: { warm() {}, stop() { events.push("stop"); }, synthesize: (text, _voice, signal) => new Promise(resolve => {
+      events.push("start " + text);
+      signal?.addEventListener("abort", () => events.push("abort " + text), { once: true });
+      complete = () => resolve({ wav: new Uint8Array([1]), durationMs: 10 });
+    }) },
+  });
+  t.after(() => manager.dispose());
+  manager.supervised(instance, "started", proof("started"));
+  const first = manager.open("audition", "first", null)!;
+  const completeFirst = complete;
+  const dropped = manager.open("audition", "unused", null)!;
+  const second = manager.open("audition", "second", null)!;
+  manager.stop(dropped.id);
+  assert.deepEqual(events, ["start first"]);
+  manager.stop(first.id);
+  assert.deepEqual(events, ["start first", "abort first", "stop", "start second"]);
+  assert.equal(manager.held, false);
+  completeFirst(); await Promise.resolve();
+  assert.equal(manager.speak(instance), null);
+  assert.equal(manager.audio(first.id, instance), undefined);
+  complete(); await Promise.resolve();
+  assert.equal(manager.speak(instance)?.id, second.id);
+  assert.equal(first.state, "stopped");
+});

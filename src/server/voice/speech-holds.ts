@@ -78,7 +78,14 @@ export class SpeechHolds {
       if (new Set(holds.map(h => h.jobId)).size !== holds.length) throw new Error("Duplicate job");
       // Older daemons could already have handed out one of these jobs before the marker existed.
       if (holds.length && !mayExist(this.usedPath)) this.write(this.usedPath, true);
-      return { holds, unknown: holds.some(h => "supervisor" in h) };
+      // A crash can land between recording a signed exit and saving the remaining holds.
+      // Mutable slot names, including their last observed occupants, never prove that exit.
+      const outstanding = holds.filter(hold => {
+        const receipt = "instance" in hold ? announcementName(hold.instance) : hold.supervisor;
+        return !receipt.startsWith("announced-") || this.exitRecorded(receipt) !== true;
+      });
+      const recovered = outstanding.length < holds.length && this.save(outstanding) ? outstanding : holds;
+      return { holds: recovered, unknown: recovered.some(h => "supervisor" in h) };
     } catch (error) {
       const ledgerMissing = missing(error, this.path);
       const holds = this.discover({ ledgerMissing });

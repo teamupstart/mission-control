@@ -71,6 +71,7 @@ export class RecentlyHeard {
 
 interface OpenCard {
   answer?: VoiceAnswer;
+  lastCorrection?: ActionTime;
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
   card: VoiceCard;
@@ -387,7 +388,7 @@ export class VoiceRouter {
       entry.rule = "switch-answer";
       const index = spokenIndex(correction[1]!);
       if (review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[index]) {
-        return this.prepareAnswer(latest, review, "option " + (index + 1), false, utterance.id).then(() => true);
+        return this.prepareAnswer(latest, review, "option " + (index + 1), false, { id: utterance.id, time }).then(() => true);
       }
       return true;
     }
@@ -449,11 +450,11 @@ export class VoiceRouter {
     this.publish({ ...item.card, state: "cancelled", reason: "question-notice", detail, deadline: null });
   }
 
-  private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean, revisionId?: string): Promise<void> {
-    const previousId = item.card.id;
-    const id = revisionId ?? previousId;
+  private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean,
+    correction?: { id: string; time: ActionTime }): Promise<void> {
+    const id = correction?.id ?? item.card.id;
     const signal = this.lifetime.signal;
-    if (!revisionId) {
+    if (!correction) {
       // Reserve the capture's place while an option question is at the model.
       item.card = { ...item.card, state: "resolving", candidates: [] };
       item.modelStep = new AbortController();
@@ -462,28 +463,33 @@ export class VoiceRouter {
     }
     const target = item.card.parts[0]?.target ?? null;
     const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);
+    // A concurrent correction can have changed the action ID while matching. Compare
+    // capture times on the live item; its original time still orders spoken Cancel.
+    const previousId = item.card.id;
     if (signal.aborted || this.open.get(previousId) !== item || this.state().mode === "off") return;
+    if (correction && offsetUs(correction.time, item.lastCorrection ?? item.time) < 0) return;
     if (!this.questions!.pending().some(q => q.id === review.id)) {
       this.take(item);
       this.questionNotice(item, "That question is already settled.");
       return;
     }
     if (!result || result === "matcher-failed") {
-      if (revisionId) return;
+      if (correction) return;
       this.take(item);
       this.questionNotice(item, result === "matcher-failed" ? "Could not match an option. Try again." : "No matching option.");
       return;
     }
     for (const other of this.open.values()) {
       if (other !== item && other.answer?.reviewId === review.id) {
-        if (offsetUs(other.time, item.time) > 0 || !this.cancel(other.card.id)) { this.take(item); return; }
+        if (offsetUs(other.lastCorrection ?? other.time, correction?.time ?? item.time) > 0 || !this.cancel(other.card.id)) { this.take(item); return; }
       }
     }
     clearTimeout(item.timer);
     const window = this.window();
     const windowMs = window.enabled ? window.seconds * 1000 : 0;
     const deadline = Date.now() + windowMs;
-    if (revisionId) {
+    if (correction) {
+      item.lastCorrection = correction.time;
       // Replace the action in place so delayed buttons cannot act on the new answer,
       // while spoken Cancel still follows the original capture order.
       this.open.delete(previousId);
@@ -493,7 +499,7 @@ export class VoiceRouter {
       action.cancel = () => this.cancel(id);
       if (!item.answer?.footerWindowId) this.questions!.removeCompanion(previousId);
     }
-    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched: !!revisionId,
+    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched: !!correction,
       footerWindowId: this.openCards.footerOwner(review.id) };
     item.card = { ...item.card, id, state: "pending", reason: "voice-answer", questionTitle: review.title, deadline, windowMs,
       parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };

@@ -494,3 +494,50 @@ test("a late report from a timed-out request cannot reinstate a closed card on t
   await say("reply, tomorrow");
   assert.deepEqual(answers(), []);
 });
+
+test("an unchanged report retry preserves a captured reply but a changed focus rejects it", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const first = question();
+  const second = question("Which cache?");
+  const router = registry.voiceRouter!;
+  const windowId = "retry-focus";
+  t.after(router.openCards.connect(windowId));
+  const report = (ids: string[], focus: string, revision: number) => put("/api/voice/open-cards", {
+    windowId, focused: true, cards: ids.map(id => ({ kind: "question", id, focused: id === focus })),
+  }, { "x-voice-focus-at-us": "100", "x-voice-report-revision": String(revision) });
+  const reply = (id: string, capturedAt: number) => router.accept({ id, capturedAt, backend: "fluidaudio", text: "reply, option B", words: [] });
+  await report([first.id, second.id], second.id, 1);
+  t.mock.timers.tick(10);
+  await report([first.id, second.id], second.id, 2);
+  await report([second.id, first.id], second.id, 3);
+  await reply("before-retry", now + 5);
+  assert.equal(answers()[0]?.reviewId, second.id);
+  await say("cancel");
+  t.mock.timers.tick(10);
+  await report([second.id, first.id], first.id, 4);
+  await reply("before-focus-change", now + 15);
+  assert.deepEqual(answers(), []);
+});
+
+test("late and concurrent corrections keep the newest captured choice and its countdown", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const q = question();
+  const correct = (choice: string, id: string, capturedAt: number) => registry.voiceRouter!.accept({
+    id, capturedAt, backend: "fluidaudio", text: "no, " + choice, words: [],
+  });
+  await say("Steve, option A", "initial");
+  t.mock.timers.tick(100);
+  await correct("B", "newer", now + 50);
+  const staged = answers()[0]!;
+  t.mock.timers.tick(100);
+  await correct("A", "late", now + 25);
+  assert.deepEqual(answers(), [staged]);
+  await Promise.all([correct("A", "next", now + 150), correct("B", "last", now + 175)]);
+  assert.equal(answers()[0]?.id, "last");
+  assert.equal(answers()[0]?.text, "Postgres");
+  t.mock.timers.tick(1001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.getReview(q.id)?.selections, [{ decisionId: "q", selected: ["postgres"], other: null }]);
+});

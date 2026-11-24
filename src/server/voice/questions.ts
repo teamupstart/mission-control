@@ -17,6 +17,7 @@ export class VoiceOpenCards {
   private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number }>();
   private clockSkewMs = 0;
   private changedAt = 0;
+  private replyState?: string;
   private latestFocusUs = 0;
   private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number }>();
 
@@ -28,19 +29,13 @@ export class VoiceOpenCards {
     const previous = this.reports.get(windowId);
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
     const token = { floorUs: this.latestFocusUs, clockOffsetUs: previous?.clockOffsetUs ?? this.clockSkewMs * 1000 };
-    const beforeConnect = this.current;
     this.streams.set(windowId, token);
-    if (previous) {
-      if (this.current !== beforeConnect) this.changedAt = Date.now();
-      this.changed();
-    }
+    if (previous) this.reportChanged();
     return () => {
       if (this.streams.get(windowId) !== token) return;
-      const beforeDisconnect = this.current;
       this.streams.delete(windowId);
-      if (this.current !== beforeDisconnect) this.changedAt = Date.now();
       // Keep the report for reconnection, but its footer cannot show a live countdown.
-      if (this.reports.has(windowId)) this.changed();
+      if (this.reports.has(windowId)) this.reportChanged();
       setTimeout(() => {
         if (this.streams.has(windowId)) return;
         if (this.reports.delete(windowId)) this.changed();
@@ -61,14 +56,26 @@ export class VoiceOpenCards {
     // A focus transition is dated by the observing dashboard, before HTTP delivery.
     const last = this.reports.get(report.windowId);
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
-    const previous = this.current;
     // A standalone surface keeps its stream but ceases to be a dashboard. Retain
     // the order of its withdrawal so an in-flight report cannot resurrect its footer.
     this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs });
     if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
-    if (this.current !== previous) this.changedAt = Date.now();
-    this.changed();
+    this.reportChanged();
     return true;
+  }
+
+  private reportChanged(): void {
+    const current = this.current;
+    // Report retries and DOM reordering leave the same questions eligible for a reply.
+    // With one drawn question, keyboard focus within the card is immaterial.
+    const state = current?.cards.length ? JSON.stringify([current.windowId, current.cards
+      .toSorted((a, b) => a.id.localeCompare(b.id))
+      .map(card => [card.id, current.cards.length > 1 && card.focused])]) : undefined;
+    if (state !== this.replyState) {
+      this.replyState = state;
+      this.changedAt = Date.now();
+    }
+    this.changed();
   }
 
   private get current(): OpenCardsReport | undefined {
@@ -104,6 +111,7 @@ export class VoiceOpenCards {
   }
 
   clear(): void {
+    this.replyState = undefined;
     this.latestFocusUs = 0;
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
     for (const stream of this.streams.values()) {

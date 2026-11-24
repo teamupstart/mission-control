@@ -75,13 +75,18 @@ export class RepositoryArtifactStorage {
     }
   }
 
-  async restoreAbandoned(path: string, kind: "pending" | "leases") {
+  reserveUnmeasured(path: string) {
     // Fail closed if the surviving payload cannot be measured. The next cleanup
     // can still remove it or replace this conservative charge with a precise one.
     const old = this.accounts.get(path)?.total ?? 0;
     const reserved = Math.max(old, this.temporaryLimit);
     this.temporaryBytes += reserved - old;
     this.accounts.set(path, { required: 0, total: reserved, displaced: 0 });
+    return reserved;
+  }
+
+  async restoreAbandoned(path: string, kind: "pending" | "leases") {
+    const reserved = this.reserveUnmeasured(path);
     const displaced = kind === "pending" ? await payloadBytes(join(path, "previous"), 1) : 0;
     const total = kind === "pending" ? displaced + await payloadBytes(join(path, "artifact"), 1)
       : await payloadBytes(join(path, "objects"), 2) + await payloadBytes(join(path, "shallow"), 0);

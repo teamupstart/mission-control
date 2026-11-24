@@ -1,8 +1,9 @@
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
-import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
-import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
+import { filedReviewReceipt, OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
+import { ASYNC_INPUT_FLAG, decideWaitMode, FILED_PLAN_DECISIONS_FLAG } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
@@ -280,6 +281,7 @@ import {
   BulkUpdateTasksSchema,
   BulkDeleteTasksSchema,
   UpdatePersonaSchema,
+  UpdatePersonaRepositoryAccessSchema,
   ArchivePersonaSchema,
   CreateWorkflowSchema,
   UpdateWorkflowSchema,
@@ -645,6 +647,7 @@ import {
   getSkillsAcks,
   loadConversationResolvedReviews,
   loadReviewsByIds,
+  blockReviewVoiceConversion,
   loadReview,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
@@ -2602,6 +2605,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
     const parsed = await parseBody(c, CreatePersonaSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.repositoryAccess === "read" && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return c.json({ error: "Persona repository access preview is off" }, 403);
     const result = manager.create(parsed.data);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona, 201) : personaFailure(c, result);
@@ -2654,6 +2658,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     } catch (cause) {
       return personaSourceFailure(c, cause);
     }
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
+  app.patch("/api/personas/:id/repository-access", bodyLimit({
+    maxSize: PERSONA_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Persona request is too large" }, 413),
+  }), async (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdatePersonaRepositoryAccessSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return c.json({ error: "Persona repository access preview is off" }, 403);
+    const result = manager.setRepositoryAccess(c.req.param("id"), parsed.data);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
   });
@@ -3079,7 +3096,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
     const parsed = await parseBody(c, PublishWorkflowSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.publish(c.req.param("id"), parsed.data.expectedDraftRevision);
+    const result = manager.publish(c.req.param("id"), parsed.data.expectedDraftRevision, undefined, parsed.data.requestId);
     if (!result.ok && result.reason === "validation") {
       return c.json({ error: "workflow validation failed", code: "workflow_validation", diagnostics: result.diagnostics ?? [] }, 422);
     }
@@ -3330,6 +3347,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowId,
       session,
     }));
+  });
+  app.get("/api/workflow-runs/:id/repository-queries", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const rawAfter = c.req.query("after");
+    const after = rawAfter === undefined ? 0 : Number(rawAfter);
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? 20 : Number(rawLimit);
+    if (!Number.isSafeInteger(after) || after < 0) {
+      return c.json({ error: "after must be a non-negative event id" }, 400);
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+      return c.json({ error: "limit must be an integer from 1 through 20" }, 400);
+    }
+    const page = manager.store.repositoryQueries(c.req.param("id"), after, limit);
+    return page ? c.json(page) : c.json({ error: "no such workflow run" }, 404);
   });
   app.get("/api/workflow-runs/:id/events", (c) => {
     const manager = workflowManager();
@@ -5331,14 +5364,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const waitOptions = {
       ...(wait === "message" ? { waitMode: "message" as const } : {}),
       callerPolls: parsed.data.asyncCapable !== true,
+      convertible: parsed.data.convertible === true,
       ...(revises !== undefined ? { revises } : {}),
     };
     // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
     // answer names the row's own mode rather than the one this ask would have had.
-    const created = (review: ReviewItem, receiptOptions: { bundleApproved?: boolean } = {}) => {
-      if (review.waitMode !== "message") return c.json({ id: review.id, sessionId: session.id, wait: "call" });
-      const receipt = isFiledGate(review) ? filedPlanReceipt(review, receiptOptions) : asyncInputReceipt(review);
-      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt });
+    const created = (review: ReviewItem) => {
+      if (review.waitMode !== "message") {
+        if (parsed.data.convertible !== true) blockReviewVoiceConversion(review.id);
+        return c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      }
+      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: filedReviewReceipt(review) });
     };
     try {
       const target = parsed.data.managedPlan;
@@ -5391,7 +5427,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
             remaining, waitOptions);
           recordStandingFollowUp(followUp.id, approvedId);
-          return created(followUp, { bundleApproved: true });
+          return created(followUp);
         }
         const review = reviews.create(session.id, kind, title, fullBody, allDecisions, waitOptions);
         bindPlanReview(authority, input, review.id, manager);
@@ -5406,7 +5442,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       });
       return created(review);
     } catch (error) {
-      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal) return c.json({ error: error.message }, 409);
+      if (error instanceof OpenQuestionLimitError || error instanceof RevisionRefusal || error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
       return planFailure(c, error);
     }
   }
@@ -5685,9 +5721,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
     const ended = new AbortController();
     const release = openEndedRequests.add(() => ended.abort());
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
-    if (!review) return c.json({ error: "no such review" }, 404);
-    return c.json(review);
+    try {
+      const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS,
+        AbortSignal.any([ended.signal, c.req.raw.signal]), c.req.query("convertible") === "1");
+      if (!review) return c.json({ error: "no such review" }, 404);
+      return c.json(review);
+    } catch (error) {
+      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 409);
+      throw error;
+    } finally {
+      release();
+    }
   });
 
   app.post("/mcp/reviews/:id/detach", async (c) => {
@@ -9405,9 +9449,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
       const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
-      if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      const held = session.pendingReviews > 0 || session.state === "awaiting_review";
-      return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
+      const turn = result.pendingTurn;
+      if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
+      reviews.tryFileForQueuedSpeech(session.id);
+      const held = registry.hasPendingReviewCall(session.id) || registry.getSession(session.id)?.state === "awaiting_review";
+      return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider);
 

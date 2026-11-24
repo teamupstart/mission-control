@@ -623,6 +623,13 @@ export class VoiceRouter {
     return true;
   }
 
+  releaseSpokenHold(turnId: string): void {
+    const receipt = this.outbox.get(turnId);
+    if (!receipt || receipt.delivery.results[receipt.index]?.outcome !== "held") return;
+    receipt.delivery.results[receipt.index] = { outcome: "queued" };
+    if (receipt.delivery.ready) this.publishDelivery(receipt.delivery);
+  }
+
   settleSpoken(turnId: string, outcome: SpokenSettlement): void {
     const receipt = this.outbox.get(turnId);
     if (!receipt) return;

@@ -1,3 +1,5 @@
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { useEffect, useRef, useState } from "react";
 import type {
   PersonaView,
@@ -32,6 +34,7 @@ export function WorkflowVersionDetail({
   sessionActions?: SessionAction[];
   onBindVersion?: (version: WorkflowVersion) => void;
 }): React.JSX.Element {
+  const accessPreview = useFeatureFlag(PERSONA_REPOSITORY_ACCESS_FLAG_ID);
   const live = new Map(personas.map((persona) => [persona.id, persona]));
   const liveActions = new Map(sessionActions.map((action) => [action.id, action]));
   return (
@@ -86,6 +89,7 @@ export function WorkflowVersionDetail({
                 printed only the winner could not tell an operator whether editing the Persona
                 would change anything - and it would not. */}
             <div className="workflow-version-routing">
+              {(accessPreview || node.persona.repositoryAccess === "read") && <p>{node.persona.repositoryAccess === "read" ? "Read-only repository access" : "No repository access"}</p>}
               <p>Persona default · {snapshotRoutingLabel(node.persona)}</p>
               <p>
                 {node.executionOverride

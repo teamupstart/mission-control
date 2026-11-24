@@ -973,6 +973,13 @@ export async function compactWorkflowContext(
     : await reconcileWorkflowCoverage(compacted, raw.coverage ?? [], deps));
 }
 
+// Discard relinquishes the candidate before filesystem cleanup. Reconciliation
+// can finish removing it without changing the original capture or cancellation result.
+export async function discardWorkflowCandidate<C>(owner: { discard(candidate: C): Promise<void> }, candidate: C) {
+  try { await owner.discard(candidate); }
+  catch (error) { workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) }); }
+}
+
 interface RepositoryCaptureSeam<T, C extends { readonly boundary: string }> {
   sampleBoundary(): Promise<string>;
   prepare(captured: T): Promise<C>;
@@ -1007,14 +1014,7 @@ export async function captureStableWorkflowContext<T, C extends { readonly bound
           && await seam.stillCurrent(candidate);
         if (accepted) return { captured, candidate };
       } finally {
-        if (!accepted) {
-          try { await seam.discard(candidate); }
-          catch (error) {
-            // Discard relinquishes the candidate before filesystem cleanup. Its
-            // marker lets reconciliation finish without overriding this guard.
-            workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) });
-          }
-        }
+        if (!accepted) await discardWorkflowCandidate(seam, candidate);
       }
     } catch (error) {
       if (!(error instanceof RepositoryCaptureChanged)) throw error;

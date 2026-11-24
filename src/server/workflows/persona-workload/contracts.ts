@@ -6,6 +6,7 @@ import type {
 } from "@shared/repository-access.ts";
 
 export interface PersonaWorkloadExecutor {
+  readonly repositoryEvidenceCapability?: string;
   dispatch(
     request: PersonaWorkloadRequest,
     signal: AbortSignal,

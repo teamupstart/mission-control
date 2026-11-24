@@ -204,6 +204,10 @@ export class PersonaManager {
     );
   }
 
+  setRepositoryAccess(id: string, input: { expectedAccessRevision: number; repositoryAccess: NonNullable<CreatePersona["repositoryAccess"]> }): PersonaMutation {
+    return this.publish(this.store.setPersonaRepositoryAccess(id, input.expectedAccessRevision, input.repositoryAccess, Date.now()));
+  }
+
   update(id: string, input: UpdatePersona, now = Date.now()): PersonaMutation {
     const { expectedRevision, ...patch } = input;
     const refused = this.unsupportedEffort(id, input);

@@ -1056,22 +1056,22 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
 
 test("a spoken pick finds the only matching unsure card, even when it is older", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  await say("Steven ask Will about the build", "older");
-  await say("Steven ask Bill about the release", "newer");
-  await resolved("newer");
+  await say("Steven ask Will about the build", "matching-older");
+  await say("Steven ask Bill about the release", "matching-newer");
+  await resolved("matching-newer");
   t.mock.timers.setTime(Date.now() + 1);
   await say("Steve");
-  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["older", "unsure"], ["newer", "unsure"]]);
+  assert.deepEqual(cards.map((card) => [card.id, card.state]), [["matching-older", "unsure"], ["matching-newer", "unsure"]]);
   assert.equal((await readHeard())[0]?.rule, "ambiguous-pick");
 
   await say("Will.");
   assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [
-    ["newer", "unsure"], ["older", "pending"],
+    ["matching-newer", "unsure"], ["matching-older", "pending"],
   ]);
   assert.deepEqual(cards.at(-1)?.parts.map(p => [p.target?.name, p.text]), [
     ["Steve", "ask"], ["Will", "about the build"],
   ]);
-  assert.equal((await act("older", "send-now")).status, 200);
+  assert.equal((await act("matching-older", "send-now")).status, 200);
   assert.equal(queued("Steve").at(-1), "ask");
   assert.equal(queued("Will").at(-1), "about the build");
 });
@@ -1106,11 +1106,11 @@ test("a delayed spoken pick can only queue choices that were offered when it was
   const postAt = (id: string, text: string, capturedAt: number) =>
     post(utterancePath(), { ...capture(text, id), capturedAt }, token);
   const before = queued("Will");
-  await postAt("older", "Steven ask Will about yesterday", now - 300);
-  await resolved("older");
+  await postAt("delayed-older", "Steven ask Will about yesterday", now - 300);
+  await resolved("delayed-older");
   t.mock.timers.setTime(now - 100);
-  await postAt("newer", "Steven ask Will about tomorrow", now - 100);
-  await resolved("newer");
+  await postAt("delayed-newer", "Steven ask Will about tomorrow", now - 100);
+  await resolved("delayed-newer");
   t.mock.timers.setTime(now);
   await postAt("too-early", "Will", now - 400);
   assert.deepEqual(queued("Will"), before);
@@ -1119,7 +1119,7 @@ test("a delayed spoken pick can only queue choices that were offered when it was
   assert.deepEqual(queued("Will"), [...before, "about yesterday"]);
   assert.equal(queued("Steve").at(-1), "ask");
   assert.equal((await readHeard()).find((entry) => entry.id === "between")?.rule, "pick");
-  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "unsure"]]);
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["delayed-newer", "unsure"]]);
 });
 
 test("a quote immediately after the address comma survives the preview and queued delivery", async () => {

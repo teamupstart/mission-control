@@ -61,7 +61,9 @@ test("Documentation Review composes the documentation gate and three specialists
   for (const node of version.graph.nodes.filter(node => node.kind === "persona")) {
     assert.equal(node.recheckAfterRepair, true);
   }
-  assert.deepEqual(PublishedWorkflowGraphSchema.parse(version.graph), version.graph);
+  const parsed = PublishedWorkflowGraphSchema.parse(version.graph);
+  assert.deepEqual(parsed, { ...version.graph, nodes: version.graph.nodes.map(node => node.kind === "persona"
+    ? { ...node, persona: { ...node.persona, repositoryAccess: "none" } } : node) });
 });
 
 test("repair policy survives stage edits without changing neighboring judges", () => {

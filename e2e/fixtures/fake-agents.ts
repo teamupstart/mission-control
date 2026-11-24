@@ -988,6 +988,13 @@ setInterval(() => {
 }, 250);
 `;
 
+/** Install Codex and the local module its one-shot Voice fixture imports beside it. */
+export function writeFakeCodex(path: string): void {
+  copyFileSync(fileURLToPath(new URL("./voice-split-answer.ts", import.meta.url)), join(dirname(path), "voice-split-answer.ts"));
+  copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), path);
+  chmodSync(path, 0o755);
+}
+
 /**
  * Write the recording fakes into `home` and return their paths.
  *
@@ -1010,9 +1017,7 @@ export function writeFakeAgents(home: string): FakeAgents {
   // Claude's vendored SDK actually sniffs the extension: `spawnAppServer` execs the resolved
   // path directly, so the shebang is what picks the interpreter either way.
   const codex = join(binDir, "fake-codex");
-  copyFileSync(fileURLToPath(new URL("./voice-split-answer.ts", import.meta.url)), join(binDir, "voice-split-answer.ts"));
-  copyFileSync(fileURLToPath(new URL("./fake-codex.mjs", import.meta.url)), codex);
-  chmodSync(codex, 0o755);
+  writeFakeCodex(codex);
   writeCodexCatalogMode(home, "success");
 
   const pi = join(binDir, "fake-pi");

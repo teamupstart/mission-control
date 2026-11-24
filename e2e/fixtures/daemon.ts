@@ -27,6 +27,7 @@ import {
   piCatalogControlPath,
   piSdkModelsPath,
   writeFakeAgents,
+  writeFakeCodex,
 } from "./fake-agents.ts";
 import {
   conductorEngineerStatePath,
@@ -318,8 +319,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
-    copyFileSync(bins.codex, join(daemonPathBin, "codex"));
-    chmodSync(join(daemonPathBin, "codex"), 0o755);
+    writeFakeCodex(join(daemonPathBin, "codex"));
   }
   if (piOnLoginShellOnly || conductorNodeVersion !== undefined) {
     if (piOnLoginShellOnly) {

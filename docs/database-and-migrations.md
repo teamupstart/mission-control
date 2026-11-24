@@ -236,7 +236,8 @@ replayed with the same outbox ID and revision, it receives a new UUID. A late re
 first handoff cannot retire the new row or confirm its reservation.
 A restart before the guard leaves no transcript reservation. After the guard, the ledger can
 bind the spoken words even after the pending row retires. For databases from earlier builds
-of this phase, an existing native binding or client message ID preserves the disclosure.
+of this phase, an existing native binding preserves the disclosure. A reserved client ID
+still needs a matching transcript entry or a runtime receipt.
 A legacy reservation with only a text match lacks proof that its attempt reached handoff.
 
 The Claude and Codex SDKs receive the reservation UUID as a user-message identifier on
@@ -245,6 +246,12 @@ a runtime delivery receipt for that specific outbox revision. The daemon records
 same transaction that retires the delivered outbox row. A retry, discard, or operator marking
 an uncertain attempt sent cannot supply that receipt. A confirmation without a recorded receiving
 generation also leaves the current work cycle alone.
+
+For SDK messages, `message_ts` records that the daemon saw the client UUID and matching payload
+in the native transcript. A reserved UUID alone leaves this field null. Abandoning an unconfirmed
+attempt sets `abandoned_at` once. Startup gives existing orphans the same reconciliation window.
+After 24 hours the hourly sweep reads available transcripts and deletes unmatched payloads.
+Pending uncertain attempts remain available for the operator to resolve.
 
 For a confirmed transport without client identifiers, a file created after reservation
 supplies the starting boundary only if its creation millisecond is strictly later than the reservation.

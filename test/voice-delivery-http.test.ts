@@ -186,6 +186,66 @@ test("hibernated task queues on the resumed binding and stopped agents get their
   assert.equal(resume.mock.callCount(), 1);
 });
 
+function signal() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("overlapping spoken messages share one hibernated resume and queue each active delivery", async t => {
+  const sleeping = { ...name("Mira"), state: "hibernated" as const, sessionId: null };
+  roster.push(sleeping);
+  t.after(() => { roster.splice(roster.indexOf(sleeping), 1); });
+  const gate = signal();
+  const task = mkTask({ id: "Mira", status: "hibernated", hibernation: {
+    sessionId: "sdk:old", runtime: "sdk", agentSessionId: "c", noteKey: "c", hibernatedAt: 1,
+    checkout: null, permissionMode: null, blocker: null, failure: null,
+  } });
+  const getTask = registry.getTask.bind(registry);
+  t.mock.method(registry, "getTask", (id: string) => id === task.id ? task : getTask(id));
+  const eviction = t.mock.method(registry, "waitForPendingEviction", () => gate.promise);
+  const resume = t.mock.method(HibernationManager.prototype, "resume", async (id: string) => ({
+    ok: true as const, task: mkTask({ id, sessionId: "sdk:Bill", status: "running" }),
+  }));
+  await say("Mira, inspect the build", "first-wake");
+  await say("Mira, run the tests", "second-wake");
+  const first = act("first-wake", "send-now");
+  const second = act("second-wake", "send-now");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(eviction.mock.calls.map(call => call.arguments), [["sdk:old"]]);
+  assert.equal(resume.mock.callCount(), 0);
+  gate.resolve();
+  await Promise.all([first, second]);
+  assert.equal(resume.mock.callCount(), 1);
+  assert.deepEqual(queued("Bill"), ["inspect the build", "run the tests"]);
+  assert.deepEqual((await readHeard()).map(e => e.outcome), ["queued", "queued"]);
+});
+
+test("a cancelled spoken message cannot queue through a resume shared with a later capture", async t => {
+  const sleeping = { ...name("Mira"), state: "hibernated" as const, sessionId: null };
+  roster.push(sleeping);
+  t.after(() => { roster.splice(roster.indexOf(sleeping), 1); });
+  const gate = signal();
+  const entered = signal();
+  const resume = t.mock.method(HibernationManager.prototype, "resume", async (id: string) => {
+    entered.resolve();
+    await gate.promise;
+    return { ok: true as const, task: mkTask({ id, sessionId: "sdk:Bill", status: "running" }) };
+  });
+  await say("Mira, inspect the build", "cancelled-wake");
+  const first = act("cancelled-wake", "send-now");
+  await entered.promise;
+  registry.voiceRouter!.reset();
+  await say("Mira, run the tests", "active-wake");
+  const second = act("active-wake", "send-now");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  gate.resolve();
+  await Promise.all([first, second]);
+  assert.equal(resume.mock.callCount(), 1);
+  assert.deepEqual(queued("Bill"), ["run the tests"]);
+  assert.deepEqual((await readHeard()).map(e => [e.id, e.outcome]), [["active-wake", "queued"]]);
+});
+
 test("a refused hibernated resume reports the reason and never queues the spoken message", async t => {
   roster.push({ ...name("Nora"), state: "hibernated", sessionId: null });
   t.after(() => { roster.pop(); });

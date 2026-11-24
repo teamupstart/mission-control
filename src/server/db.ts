@@ -3856,6 +3856,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
+  addColumn(d, "session_spoken_turns", "abandoned_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_abandoned ON session_spoken_turns(abandoned_at) WHERE abandoned_at IS NOT NULL");
   addColumn(d, "session_work_cycles", "spoken_hold", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_cycles", "spoken_hold_since", "INTEGER");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
@@ -13349,13 +13351,34 @@ export function deleteSpokenTurn(id: string): void {
   openDb().prepare("DELETE FROM session_spoken_turns WHERE id = ?").run(id);
 }
 
-/** Settling an outbox attempt can release its private payload only if it has no native ID or runtime receipt. */
-function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: string | null): void {
+/** A client UUID can still appear in the transcript after a crash. Start its reconciliation window once. */
+function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: string | null, now: number): void {
   if (!reservationId) return;
   const row = d.prepare(`DELETE FROM session_spoken_turns
     WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL RETURNING note_key`)
     .get(reservationId) as { note_key: string } | undefined;
   if (row) discardedSpokenKeys.add(row.note_key);
+  else d.prepare(`UPDATE session_spoken_turns SET abandoned_at = ?
+    WHERE id = ? AND message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NULL AND abandoned_at IS NULL`)
+    .run(now, reservationId);
+}
+
+export function observeSpokenClientReceipt(id: string, messageTs: number): void {
+  openDb().prepare(`UPDATE session_spoken_turns SET message_ts = ?, abandoned_at = NULL
+    WHERE id = ? AND message_id = id AND message_ts IS NULL`).run(messageTs, id);
+}
+
+export function expiredSpokenReservations(cutoff: number): Array<{ noteKey: string; offset: number }> {
+  return openDb().prepare(`SELECT note_key AS noteKey, MIN(COALESCE(transcript_offset, 0)) AS offset
+    FROM session_spoken_turns WHERE abandoned_at <= ? GROUP BY note_key`).all(cutoff) as { noteKey: string; offset: number }[];
+}
+
+export function deleteExpiredSpokenReservations(cutoff: number): number {
+  const removed = openDb().prepare(`DELETE FROM session_spoken_turns
+    WHERE abandoned_at <= ? AND message_ts IS NULL AND runtime_confirmed_at IS NULL RETURNING note_key`)
+    .all(cutoff) as { note_key: string }[];
+  for (const row of removed) discardedSpokenKeys.add(row.note_key);
+  return removed.length;
 }
 
 const discardedSpokenKeys = new Set<string>();
@@ -15468,7 +15491,7 @@ function transitionPendingTurn(
         WHERE id = ? AND state = ? AND revision = ? RETURNING *`)
       .get(to, now, to, lastError, id, from, revision) as PendingTurnRow | undefined;
     if (!row) return null;
-    if (to === "queued") discardUnconfirmedSpokenReservation(d, row.spoken_reservation_id);
+    if (to === "queued") discardUnconfirmedSpokenReservation(d, row.spoken_reservation_id, now);
     return rowToPendingTurn(row);
   };
   return to === "queued" && !d.isTransaction ? inTransaction(transition) : transition();
@@ -15548,7 +15571,7 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
       .get(id, state, revision, reservationId) as {
         receivingKey: string; spoken: number; generation: number | null; reservationId: string | null; handoffAt: number | null;
       } | undefined;
-    if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId);
+    if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId, deliveredAt);
     if (retired?.spoken && retired.generation !== null) {
       if (reservationId !== null) {
         d.prepare("UPDATE session_spoken_turns SET runtime_confirmed_at = ? WHERE id = ?").run(deliveredAt, reservationId);
@@ -15606,7 +15629,8 @@ export function clearPendingTurns(noteKey: string, preserveIds: readonly string[
     const rows = d.prepare(`DELETE FROM pending_turns WHERE note_key = ? ${preserve}
       RETURNING id, spoken_words IS NOT NULL AS spoken, spoken_reservation_id AS reservationId`)
       .all(noteKey, ...preserveIds) as { id: string; spoken: number; reservationId: string | null }[];
-    for (const row of rows) discardUnconfirmedSpokenReservation(d, row.reservationId);
+    const now = Date.now();
+    for (const row of rows) discardUnconfirmedSpokenReservation(d, row.reservationId, now);
     return { count: rows.length, spokenIds: rows.filter(row => row.spoken).map(row => row.id) };
   };
   return d.isTransaction ? clear() : inTransaction(clear);
@@ -15668,6 +15692,11 @@ export function recoverSendingPendingTurns(now: number): number {
           AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain')
       ) RETURNING note_key`).all() as { note_key: string }[];
     for (const row of removed) discardedSpokenKeys.add(row.note_key);
+    // Older builds retained abandoned client UUIDs indefinitely. Preserve time to find their native receipt.
+    d.prepare(`UPDATE session_spoken_turns SET abandoned_at = ?
+      WHERE message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NULL AND abandoned_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = session_spoken_turns.outbox_turn_id
+          AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain'))`).run(now);
     return Number(updated.changes);
   };
   return d.isTransaction ? recover() : inTransaction(recover);

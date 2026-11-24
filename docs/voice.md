@@ -103,7 +103,8 @@ actually submitted to the operator queue follows the queue’s normal durable de
 An idle agent starts a turn. A busy agent receives the message after its current turn ends.
 Only non-spoken outbox rows offer **Steer now** and **Interrupt and deliver**.
 A blocking question holds delivery until it is answered. A hibernated task resumes its
-conversation before the daemon queues the message. Recently heard and the card show `queued` (or
+conversation before the daemon queues the message. Messages that arrive while that task is waking
+share the resume. Each message still has its own outbox row and receipt. Recently heard and the card show `queued` (or
 `held` for a blocking question, including after resume) until the outbox confirms the handoff.
 Replaying a capture while its outbox row exists reuses that row for the same conversation and spoken words.
 Confirmation changes the outcome to `sent`. Recalling an unsent message changes it to `cancelled`.
@@ -117,6 +118,9 @@ follow-up task.
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation
 labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
+After a crash, abandoning an uncertain SDK send gives the daemon 24 hours to find the client
+message ID and matching words in the transcript. The next hourly cleanup checks available
+transcripts and removes payloads that still have neither a runtime receipt nor a transcript match.
 
 ## Turning voice on
 

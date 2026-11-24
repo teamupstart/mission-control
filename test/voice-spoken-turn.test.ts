@@ -328,6 +328,54 @@ test("abandoning an uncertain native-ID attempt preserves its exact-match disclo
   assert.equal(spokenLedger.bound(conversation, [actual]).rows.get(actual.id)?.received, words);
 });
 
+test("abandoned SDK reservations expire after reconciliation and only exact transcript receipts survive", async () => {
+  const { pruneAbandonedSpokenTurns, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const transcript = fakeTranscript();
+  const words = "inspect the build";
+  const received = spokenMessageText(words, { openQuestions: null, unseenReports: null });
+  const now = Date.now();
+  const cases = ["discarded", "retry", "legacy-orphan", "previously-read", "unread", "confirmed", "uncertain"];
+  for (const kind of cases) {
+    const key = "sdk-expiry-" + kind;
+    const attempt = claimSpoken(key, words, received);
+    const conversation = transcript.conversation(key);
+    const row = reserveSpokenTurn(conversation, words, received, true, attempt, now);
+    if (kind === "legacy-orphan") db.openDb().prepare("DELETE FROM pending_turns WHERE id = ?").run(attempt.id);
+    else if (kind === "confirmed") assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+    else {
+      const uncertain = db.markPendingTurnUncertain(attempt.id, attempt.revision, "interrupted", now)!;
+      if (kind === "retry") assert.ok(db.retryPendingTurn(attempt.id, uncertain.revision, now));
+      else if (kind !== "uncertain") db.clearPendingTurns(key);
+    }
+    if (kind === "previously-read" || kind === "unread") {
+      const message = transcript.append("native-" + kind, received, now);
+      message.clientMessageId = row.id;
+      if (kind === "previously-read") assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.id, row.id);
+    } else {
+      transcript.append("typed-" + kind, received, now);
+    }
+  }
+  db.recoverSendingPendingTurns(now);
+  const later = now + DELIVERY_LAG_MS;
+  assert.equal(pruneAbandonedSpokenTurns(later - 1, () => null), 0);
+  db.closeDb();
+  spokenLedger.forgetCaches();
+  db.recoverSendingPendingTurns(later);
+  for (const kind of cases) assert.equal(spokenLedger.rows("sdk-expiry-" + kind).length, 1);
+  assert.equal(pruneAbandonedSpokenTurns(later + 60_000, key =>
+    key.endsWith("-previously-read") ? null : transcript.conversation(key).transcript), 3);
+  for (const kind of cases) {
+    const key = "sdk-expiry-" + kind;
+    const retained = ["previously-read", "unread", "confirmed", "uncertain"].includes(kind);
+    assert.equal(spokenLedger.rows(key).length, Number(retained), kind);
+    assert.equal(db.loadSpokenTurns(key)[0]?.received, retained ? received : undefined, kind);
+  }
+  const sameTimestamp = transcript.append("typed-after-native", received, now);
+  const conversation = transcript.conversation("sdk-expiry-previously-read");
+  assert.equal(spokenLedger.bound(conversation, [sameTimestamp]).rows.has(sameTimestamp.id), false);
+});
+
 test("startup removes an older orphan payload while retaining the still-uncertain handoff", async () => {
   const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const words = "inspect";

@@ -380,6 +380,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { pruneAbandonedSpokenTurns } from "./delivery-ledgers.ts";
 import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
 import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
@@ -9583,6 +9584,15 @@ export class Registry extends EventEmitter {
    */
   pruneDelegatedTurns(olderThan: number): number {
     return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
+  }
+
+  pruneAbandonedSpokenTurns(now: number): number {
+    if (!this.sweptSessions) return 0;
+    const byKey = new Map([...this.sessions.values()].map(session => [noteKeyFor(session), session]));
+    return pruneAbandonedSpokenTurns(now, key => {
+      const session = byKey.get(key);
+      return session ? sessionMessages(session) : null;
+    });
   }
 
   /**

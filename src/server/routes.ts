@@ -9310,6 +9310,26 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
+  const voiceResumes = new Map<string, {
+    active: Set<() => boolean>;
+    result: Promise<Awaited<ReturnType<typeof hibernation.resume>> | null>;
+  }>();
+  function resumeForVoice(taskId: string, active: () => boolean) {
+    const pending = voiceResumes.get(taskId);
+    if (pending) {
+      pending.active.add(active);
+      return pending.result;
+    }
+    const waiters = new Set([active]);
+    const result = (async () => {
+      const record = registry.getTask(taskId)?.hibernation;
+      if (record?.runtime === "sdk") await registry.waitForPendingEviction(record.sessionId);
+      if (!featureEnabled(VOICE_FLAG) || ![...waiters].some(stillActive => stillActive())) return null;
+      return hibernation.resume(taskId);
+    })().finally(() => voiceResumes.delete(taskId));
+    voiceResumes.set(taskId, { active: waiters, result });
+    return result;
+  }
   registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
     openQuestions: sessionId => reviews.openAsks(sessionId).length,
     async deliver(target, text, utteranceId, command, active) {
@@ -9317,12 +9337,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       let sessionId = target.sessionId;
       if (target.state === "hibernated") {
         if (command === "stop" || !target.taskId) return "not-running";
-        const record = registry.getTask(target.taskId)?.hibernation;
-        if (record?.runtime === "sdk") await registry.waitForPendingEviction(record.sessionId);
-        if (!active?.() || !featureEnabled(VOICE_FLAG)) return { outcome: "failed", detail: "Voice delivery cancelled." };
-        const resumed = await hibernation.resume(target.taskId);
+        if (!active?.()) return { outcome: "failed", detail: "Voice delivery cancelled." };
+        const resumed = await resumeForVoice(target.taskId, active);
+        if (!resumed || !active() || !featureEnabled(VOICE_FLAG)) return { outcome: "failed", detail: "Voice delivery cancelled." };
         if (!resumed.ok) return { outcome: "failed", detail: resumed.error };
-        if (!active?.() || !featureEnabled(VOICE_FLAG)) return { outcome: "failed", detail: "Voice delivery cancelled." };
         sessionId = resumed.task.sessionId;
       }
       const session = sessionId && registry.getSession(sessionId);

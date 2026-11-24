@@ -68,6 +68,8 @@ export interface DeliveryStore<Row extends BindableDelivery> {
   contest(id: string, contested: boolean): void;
   /** Write-once: false when the row was already bound. */
   bind(id: string, messageId: string, messageTs: number): boolean;
+  /** Persist the first transcript observation of a client-supplied UUID. */
+  observeClientReceipt?(id: string, messageTs: number): void;
   /**
    * The label a row would show. Two unbound rows of the same words with the same sender
    * cannot be credited to the wrong one, so they race nobody; different senders contest.
@@ -606,7 +608,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     for (const row of rows) {
       const key = turnKey(row.fingerprint, row.messageTs);
       // A row whose own turn is on this page answers by id and is no fallback candidate.
-      if (key && row.messageId !== null && !pageIds.has(row.messageId)) keyed.get(key)?.rows.push(row);
+      if (key && row.messageId !== null && row.messageId !== row.id && !pageIds.has(row.messageId)) keyed.get(key)?.rows.push(row);
     }
     for (const m of messages) {
       const fingerprint = prints.get(m.id);
@@ -617,6 +619,10 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const exact = byId.get(m.id) ??
         (clientReceipt && clientReceipt.id === clientReceipt.messageId ? clientReceipt : undefined);
       if (exact && (exact.messageId !== exact.id || exact.fingerprint === fingerprint)) {
+        if (exact.messageId === exact.id && exact.messageTs === null && this.store.observeClientReceipt) {
+          this.store.observeClientReceipt(exact.id, m.ts);
+          exact.messageTs = m.ts;
+        }
         result.rows.set(m.id, exact);
         continue;
       }

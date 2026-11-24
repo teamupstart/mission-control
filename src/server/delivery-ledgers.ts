@@ -8,8 +8,10 @@ import {
   contestReviewDelivery,
   contestSpokenTurn,
   deleteDelegatedTurn,
+  deleteExpiredSpokenReservations,
   deleteReviewDelivery,
   deleteSpokenTurn,
+  expiredSpokenReservations,
   insertDelegatedTurn,
   insertReviewDelivery,
   insertSpokenTurn,
@@ -17,12 +19,13 @@ import {
   loadReviewDeliveries,
   loadSpokenTurns,
   moveSpokenTurns,
+  observeSpokenClientReceipt,
   takeDiscardedSpokenKeys,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
   type SpokenTurnRow,
 } from "./db.ts";
-import { DeliveryLedger, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
+import { DELIVERY_LAG_MS, DeliveryLedger, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
 export {
@@ -99,6 +102,7 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   remove: deleteSpokenTurn,
   contest: contestSpokenTurn,
   bind: bindSpokenTurn,
+  observeClientReceipt: observeSpokenClientReceipt,
   sender: row => row.spokenWords,
 });
 
@@ -113,6 +117,31 @@ export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWord
 
 export function followSpokenConversationKey(sessionId: string, fromKey: string, toKey: string): void {
   if (fromKey === sessionId && fromKey !== toKey && moveSpokenTurns(fromKey, toKey)) spokenLedger.forgetCaches();
+}
+
+/** Give each abandoned SDK attempt one final transcript walk, including conversations nobody has opened. */
+export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: string) => DeliveryConversation["transcript"]): number {
+  const cutoff = now - DELIVERY_LAG_MS;
+  const candidates = expiredSpokenReservations(cutoff);
+  if (!candidates.length) return 0;
+  for (const { noteKey, offset } of candidates) {
+    const transcript = transcriptFor(noteKey);
+    if (!transcript) continue;
+    let from = offset;
+    for (;;) {
+      let page;
+      try {
+        page = transcript.read.after(transcript.path, from, 50);
+      } catch (error) {
+        console.warn("[voice] Could not reconcile abandoned spoken receipts:", error instanceof Error ? error.message : String(error));
+        break;
+      }
+      spokenLedger.bound({ key: noteKey, transcript }, page.messages, now);
+      if (page.atEnd || page.end <= from) break;
+      from = page.end;
+    }
+  }
+  return deleteExpiredSpokenReservations(cutoff);
 }
 
 registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger]);

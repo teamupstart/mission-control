@@ -186,6 +186,12 @@ export function startGoalRefiner(registry: Registry): () => void {
         } catch (err) {
           console.error("[goal] review-message delivery prune failed:", err instanceof Error ? err.message : String(err));
         }
+        try {
+          const spoken = registry.pruneAbandonedSpokenTurns(now);
+          if (spoken > 0) console.log(`[voice] pruned ${spoken} abandoned spoken reservation(s)`);
+        } catch (err) {
+          console.error("[voice] spoken reservation prune failed:", err instanceof Error ? err.message : String(err));
+        }
         // And the launch standing-instruction snapshots, which accumulate identically -
         // one row per session that ever received one, up to 8,000 characters each. Same
         // tick, same window, same live-key safety property.

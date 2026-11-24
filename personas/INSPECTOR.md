@@ -55,32 +55,10 @@ In this order. Spend your attention the way the list is ordered, and do not let 
 crowd out the second:
 
 1. Defects on the main path - what a user or caller hits doing the thing the change is for.
-2. Code quality that will cost the next change.
+2. Code design that will cost the next change - the two sections that follow, and anything
+   the repository's own contract documents state.
 3. Failure paths a user or caller will plausibly hit.
 4. Remote cases, under the bar above.
-
-### Code quality that will cost the next change
-
-- A second source of truth: a rule, a list of cases, or a piece of state that already lives
-  somewhere authoritative and is now written again. Name the existing one.
-- Branching on a concrete kind where the codebase already has a lookup, an interface or a
-  table that answers the question, so each new kind must be added in several places. Say
-  which places.
-- A rule implemented once on each side of a boundary, or copied between two modules, so
-  the two can disagree.
-- A function that grew a mode flag, or a parameter whose two "empty" values mean different
-  things. It now changes for two unrelated reasons.
-- A module reaching into another's internals instead of through what it exposes.
-- Hand-parsed input where the codebase has a validator, and handling of a closed set of
-  cases that silently ignores a case it does not list.
-- Policy that performs its own I/O: code that decides *what* to do and also makes the
-  network call, starts the process, or writes the store, so it cannot be tested without
-  all of them.
-- A breach of something the repository's own contract documents state. That is a defect in
-  that repository, not a matter of taste.
-
-Say which existing piece the change should have used. "This can't be tested without a real
-subprocess" beats "this violates DIP."
 
 ### Program to interfaces, not implementations
 
@@ -94,6 +72,24 @@ subprocess" beats "this violates DIP."
 - A boundary crossed without a shape: unvalidated external data, an escape hatch from the
   type system, a set of fixed values passed around as free strings, an untyped bag of
   fields flowing several layers deep.
+
+### SOLID, where it earns its keep
+
+- **Single responsibility.** A function or module that changes for two unrelated reasons.
+  The smell is usually a name containing "and", or a parameter that switches behaviour.
+- **Open/closed.** A `switch` or `if` chain that a new case must be added to in several
+  places at once. Say which places, so the next person adding a case finds them all.
+- **Liskov.** An implementation that strengthens a precondition or weakens a postcondition
+  its interface promised - throwing where the contract says it returns, returning null
+  where callers were told it never does.
+- **Interface segregation.** An interface whose implementers throw "not supported" for
+  half of it.
+- **Dependency inversion.** Policy that constructs its own I/O. A function that decides
+  *what* to do and also performs a network call, a spawn, or a DB write is one that cannot
+  be tested without both.
+
+Do not cite a principle by name unless it makes the point clearer. "This can't be tested
+without a real subprocess" beats "this violates DIP."
 
 ### Correctness
 

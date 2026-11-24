@@ -43170,7 +43170,16 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   position: relative; height: 3px; background: var(--vi);
   box-shadow: 0 0 14px 1px color-mix(in oklab, var(--vi) 65%, transparent);
 }
-.app > .vi-edge-line { position: fixed; inset: 0 0 auto; z-index: 11; pointer-events: none; }
+.app:has(> .vi-edge-line) {
+  --vi-edge-strip-height: 3px;
+  --vi-edge-tab-height: 1.25rem;
+}
+.app > .vi-edge-line {
+  position: fixed; inset: 0 0 auto; height: var(--vi-edge-strip-height); z-index: 11; pointer-events: none;
+}
+.app > .vi-edge-line .vi-edge { height: var(--vi-edge-tab-height); }
+/* Keep the centered mute tab above the measured row, including its topmost click targets. */
+.app > .vi-edge-line ~ header.topbar { padding-top: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)); }
 .vi-edge-line.vi-muted { box-shadow: none; background: var(--border); }
 .vi-edge {
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%); pointer-events: auto;

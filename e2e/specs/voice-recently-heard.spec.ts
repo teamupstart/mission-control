@@ -87,3 +87,23 @@ test("a failed history read shows an alert and retains entries until a successfu
   await expect(original).toBeVisible();
   await expect(error).toHaveCount(0);
 });
+
+test("an initial history failure replaces Loading with an unavailable state until polling recovers", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.route("**/api/voice/heard", route => route.fulfill({ status: 503 }));
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const history = page.getByRole("region", { name: "Recently heard" });
+  await expect(history.getByRole("alert")).toHaveText("Could not read recent utterances.");
+  await expect(history.getByRole("cell", { name: "History unavailable." })).toBeVisible();
+  await expect(history.getByText("Loading…")).toHaveCount(0);
+  await expect(history.getByRole("button", { name: "Clear" })).toBeDisabled();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await history.screenshot({ path: join(mkdtempSync(join(root, "initial-read-")), "unavailable.png") });
+  }
+  expect((await say(daemon, "History is readable again")).ok).toBe(true);
+  await page.unroute("**/api/voice/heard");
+  await expect(history.getByRole("cell", { name: "History is readable again" })).toBeVisible();
+  await expect(history.getByRole("alert")).toHaveCount(0);
+});

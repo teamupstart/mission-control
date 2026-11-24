@@ -1,9 +1,9 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
-import { enableVoice } from "../fixtures/voice.ts";
+import { enableVoice, sendHello } from "../fixtures/voice.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -485,18 +485,45 @@ test("a fifth pulse segment, to read, still never stacks the bar while rungs rem
   expect(stacked, "the five-segment bar stacked while it still had rungs in hand").toEqual([]);
 });
 
-test("adding the voice segment keeps the busy title bar on one row", async ({ dashboard, daemon }) => {
+test("the edge mute tab leaves busy title-bar controls clickable on one row", async ({ dashboard, daemon }) => {
   await busyFleet(dashboard, daemon);
   await enableVoice(daemon);
   await dashboard.goto(daemon.baseURL + "/#/settings/voice");
   await dashboard.getByRole("checkbox", { name: "Top-bar segment" }).check();
+  await dashboard.getByRole("checkbox", { name: "Edge light" }).check();
+  const edge = dashboard.locator("button.vi-edge");
+  await expect(edge).toBeVisible();
   await expect(dashboard.locator(".pulse .pulse-seg")).toHaveCount(5);
   await dashboard.evaluate(() => document.documentElement.classList.add("is-desktop"));
   for (const width of [1500, 1280, 1024, 900, 760, 720]) {
     await dashboard.setViewportSize({ width, height: 700 });
     expect((await readBar(dashboard)).rows, `voice segment at ${width}px`).toBe(1);
-    if (width === 720 && process.env.MC_E2E_EVIDENCE) {
-      await dashboard.locator("header.topbar").screenshot({ path: artifactsDir("voice-window") + "narrow-topbar.png" });
-    }
+    const covered = await edge.evaluate(tab => {
+      const edgeRect = tab.getBoundingClientRect();
+      return Array.from(document.querySelectorAll("header.topbar button")).flatMap(button => {
+        const rect = button.getBoundingClientRect();
+        const left = Math.max(rect.left, edgeRect.left);
+        const right = Math.min(rect.right, edgeRect.right);
+        const top = Math.max(rect.top, edgeRect.top);
+        const bottom = Math.min(rect.bottom, edgeRect.bottom);
+        if (right <= left || bottom <= top) return [];
+        const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+        return tab.contains(hit) ? [button.getAttribute("aria-label") || button.textContent] : [];
+      });
+    });
+    expect(covered, `covered title-bar controls at ${width}px`).toEqual([]);
   }
+  expect(await sendHello(daemon)).toBe(200);
+  await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await dashboard.locator("header.topbar").screenshot({ path: join(mkdtempSync(join(root, "edge-")), "narrow-topbar.png") });
+  }
+  const library = dashboard.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: /Library/ });
+  await library.click({ position: { x: 8, y: 3 } });
+  await expect(library).toHaveAttribute("aria-current", "page");
+  await expect(edge).toHaveAccessibleName("Voice: listening. Mute");
+  await edge.click();
+  await expect(dashboard.locator("button.vi-status-line")).toHaveAccessibleName("Voice: muted. Unmute");
 });

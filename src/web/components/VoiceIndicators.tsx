@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   voiceCapable, VOICE_INDICATOR_IDS, type VoiceConfig, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
@@ -89,17 +89,28 @@ export function useVoiceComposerHint(sessionId: string): string | null {
 export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Element | null {
   const voice = useContext(VoiceWindow);
   const ui = useUiConfig();
-  const [error, setError] = useState("");
-  if (!voice || voice.state.mode === "off" || !ui.voice.indicators.includes(id)) return null;
+  const [error, setError] = useState<{ muted: boolean; message: string } | null>(null);
+  const mode = voice?.state.mode;
+  const selected = ui.voice.indicators.includes(id);
+  // An unavailable listener cannot confirm an unmute. Any active window can confirm a retry.
+  const confirmedMute = mode === "unavailable" ? undefined : mode === "muted";
+  useEffect(() => {
+    if (!error) return;
+    if (!selected || !mode || mode === "off" || confirmedMute === error.muted) {
+      setError(null);
+    }
+  }, [confirmedMute, error, mode, selected]);
+  if (!voice || voice.state.mode === "off" || !selected) return null;
   const { state, settings, openSetup } = voice;
   const chord = state.mode !== "unavailable" && hotkeyShown(state, settings.config) ? settings.config?.hotkey : null;
   const activate = async () => {
     if (state.mode === "unavailable") return openSetup();
-    const response = await api.setVoiceMuted(state.mode !== "muted");
-    setError(response.ok ? "" : response.error ?? "Could not change voice mute.");
+    const muted = state.mode !== "muted";
+    const response = await api.setVoiceMuted(muted);
+    setError(response.ok ? null : { muted, message: response.error ?? "Could not change voice mute." });
   };
   return <><VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={() => void activate()} />
-    {error && <span className="settings-error" role="alert">{error}</span>}</>;
+    {error && <span className="settings-error" role="alert">{error.message}</span>}</>;
 }
 
 const previewModes = ["listening", "muted", "auto-muted", "push-to-talk"] as const;

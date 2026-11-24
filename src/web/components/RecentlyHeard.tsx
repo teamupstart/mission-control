@@ -74,6 +74,7 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     setClearing(false);
   }
   const now = Date.now();
+  const initialStatus = readError ? "History unavailable." : "Loading…";
   return <section aria-label="Recently heard" className="rh-dialog" data-anchor="voice/heard">
     <header className="rh-dialog-head"><strong>Recently heard</strong><span className="dim">{entries && `${entries.length} recent`}</span>
       <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={!entries?.length || clearing} onClick={() => void clear()}>Clear</button></Tooltip>
@@ -83,7 +84,7 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     <div className="rh-scroll"><table className="rh-table" aria-label="Recently heard utterances">
       <thead><tr>{["Ago", "Heard", "Matched", "Decided by", "Outcome"].map(title => <th scope="col" key={title}>{title}</th>)}</tr></thead>
       <tbody>{entries?.length ? entries.map(entry => <HeardRow key={entry.id} entry={entry} now={now} roster={roster} />) :
-        <tr><td colSpan={5} className="rh-empty-cell">{entries ? <p className="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p> : "Loading…"}</td></tr>}</tbody>
+        <tr><td colSpan={5} className="rh-empty-cell">{entries ? <p className="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p> : initialStatus}</td></tr>}</tbody>
     </table></div>
     <footer className="rh-dialog-foot"><p className="rh-privacy">Kept in memory, cleared when Mission Control quits. Audio is not stored.</p></footer>
   </section>;

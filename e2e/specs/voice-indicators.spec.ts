@@ -1,5 +1,7 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
 import { test, expect } from "../fixtures/test.ts";
 import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -138,7 +140,7 @@ test("five selected indicators follow the daemon and advertise only a registered
   } finally { listener.stop(); }
 });
 
-test("a failed mute shows the reason and keeps the indicator listening until a retry succeeds", async ({ dashboard: page, daemon }) => {
+test("a failed mute keeps the indicator listening until a peer retries, then the error stays cleared", async ({ dashboard: page, daemon, context }) => {
   await enableVoice(daemon);
   const listener = await beListener(daemon);
   try {
@@ -153,8 +155,13 @@ test("a failed mute shows the reason and keeps the indicator listening until a r
     const error = page.getByRole("alert").filter({ hasText: "Listener could not mute." });
     await expect(error).toBeVisible();
     await expect(mute).toHaveText(/Listening/);
-    await mute.click();
-    await expect(page.getByRole("button", { name: "Voice: muted. Unmute", exact: true })).toBeVisible();
+    const peer = await context.newPage();
+    await peer.goto(daemon.baseURL);
+    await peer.getByRole("button", { name: "Voice: listening. Mute" }).click();
+    await expect(page.getByRole("button", { name: "Voice: muted. Unmute" })).toBeVisible();
+    await expect(error).toHaveCount(0);
+    await peer.getByRole("button", { name: "Voice: muted. Unmute" }).click();
+    await expect(mute).toBeVisible();
     await expect(error).toHaveCount(0);
   } finally {
     listener.stop();
@@ -190,4 +197,45 @@ test("a failed indicator save shows an alert and restores the previous selection
   await topbar.check();
   await expect(error).toHaveCount(0);
   await expect(segment).toBeVisible();
+});
+
+// The console always sends the keyboard shortcut to the transcript. Mount the actual fallback
+// with no transcript owner, using the same dev-dashboard fixture as dispatch-modes.spec.ts.
+test("the Action Bar fallback keeps its message label and typed draft across mute changes", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const dev = await startDevDashboard(daemon);
+  const listener = await beListener(daemon);
+  try {
+    const task = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
+      repoRoot: daemon.repo, intent: "Test the fallback composer", title: "Voice fixture",
+      kind: "ship", agent: "claude", runtime: "sdk", workflowId: null, callSign: "Will",
+    } });
+    expect(task.ok(), await task.text()).toBe(true);
+    await page.goto(dev.origin + "/#/settings/voice");
+    const selection = page.getByRole("checkbox", { name: "Composer microphone" });
+    await selection.check();
+    await expect(selection).toBeEnabled();
+    await page.goto(dev.origin);
+    const fixture = fileURLToPath(new URL("../fixtures/voice-action-bar-mount.tsx", import.meta.url));
+    await page.evaluate(async path => (await import(/* @vite-ignore */ `/@fs${path}`)).mountFallback(), fixture);
+    const form = page.locator(".actions .compose");
+    const message = form.getByRole("textbox", { name: "Message to send…", exact: true });
+    await expect(message).toHaveAccessibleDescription('Message to send… or say "Will, …"');
+    await form.getByRole("button", { name: "Voice: listening. Mute" }).click();
+    await expect(message).toHaveAccessibleDescription("Voice is muted");
+    await message.fill("A typed message");
+    await message.press("Shift+Enter");
+    await expect(message).toHaveValue("A typed message\n");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await form.screenshot({ path: join(mkdtempSync(join(root, "action-bar-")), "muted.png") });
+    }
+    await form.getByRole("button", { name: "Voice: muted. Unmute" }).click();
+    await expect(message).toHaveAccessibleDescription('Message to send… or say "Will, …"');
+    await expect(message).toHaveValue("A typed message\n");
+  } finally {
+    listener.stop();
+    dev.stop();
+  }
 });

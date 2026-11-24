@@ -22,7 +22,6 @@ test("the status line leaves the last row visible at the minimum desktop size", 
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     const output = execFileSync(createRequire(import.meta.url)("electron"), [
-      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
       `--user-data-dir=${join(dir, "profile")}`,
       fileURLToPath(new URL("fixtures/voice-status-line-browser.cjs", import.meta.url)),
       "--pages", path,

@@ -1,3 +1,5 @@
+import { publicationCheckoutRevision, PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -135,14 +137,15 @@ import {
 import type { InspectionUpdated, InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
-import { injectPrompt, type InjectResult } from "../actions.ts";
+import { injectPrompt, type InjectResult, type PromptWriteGuard } from "../actions.ts";
 import {
   confirmReservedInjection,
   recordInjection,
   releaseInjection,
   reserveInjection,
-  AutomatedAttributionError,
 } from "../injections.ts";
+import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
+import { onSend } from "../delivery-binding.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -170,6 +173,9 @@ import {
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
+  probeMatchesRepositoryContent,
+  confirmedTerminalWorkflowTurn,
+  terminalSubmissionBoundary,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
@@ -207,6 +213,7 @@ import {
 } from "./external-binding.ts";
 import {
   WorkflowStore,
+  type ForemanCompletionStoreInput,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
   type WorkflowStoreWrite,
@@ -384,6 +391,7 @@ export interface WorkflowManagerOptions {
    * checkout, and a workflow test must be able to drive the observer without one.
    */
   readEvidenceProbe?: typeof readWorkflowEvidenceProbe;
+  publicationCheckoutRevision?: typeof publicationCheckoutRevision;
   /**
    * The three reads a completion adapter's proof is built from, injectable for the reason
    * every seam above is: two of them shell out to git in the session's checkout and the third
@@ -1466,7 +1474,7 @@ export class WorkflowManager {
    * session that completes with no review anywhere is the failure this phase exists to
    * prevent.
    */
-  private repoRunTargets(session: Session, anchor: WorkflowBinding): WorkflowBinding[] {
+  private repoRunTargets(session: Session, anchor: WorkflowBinding, verifySiblingWorktrees = false): WorkflowBinding[] {
     // A sibling binding submitted directly reviews its own repository and nothing else. Only
     // the conversation's own binding fans out, so a manual resubmission of repo B's run can
     // never quietly start repo A's. Falsy reads as the session's own, the same rule
@@ -1489,6 +1497,12 @@ export class WorkflowManager {
     for (const { ref } of reviewable) {
       const binding = ref.role === "primary" ? anchor : this.ensureRepoBinding(anchor, ref);
       if (binding) {
+        // A sibling binding owns one checkout. Moving the task's worktree cannot transfer
+        // an active repair or a completed publication to that new checkout.
+        if (verifySiblingWorktrees && ref.role === "secondary" && (!ref.worktreePath || !binding.sessionCwd
+          || canonicalWorktreePath(binding.sessionCwd) !== canonicalWorktreePath(ref.worktreePath))) {
+          throw new Error(`Foreman completion repository ownership changed for ${ref.repoRoot}: rebind the workflow to the current worktree`);
+        }
         targets.push(binding);
         continue;
       }
@@ -3867,11 +3881,7 @@ export class WorkflowManager {
       node.kind === "session_action" && node.action.requiredSkillId ? [node.action.requiredSkillId] : []) ?? []);
   }
 
-  async claimCompletion(
-    sessionId: string,
-    claim: WorkflowCompletionClaim,
-    now = Date.now(),
-  ): Promise<WorkflowCompletionClaimResult> {
+  private currentCompletionSession(sessionId: string, claim: WorkflowCompletionClaim): Session {
     const session = this.registry.getSession(sessionId);
     if (!session || session.state === "exited") {
       throw new Error("The completion target session is not live");
@@ -3903,6 +3913,15 @@ export class WorkflowManager {
     if (claim.expectedPlanPublication && !samePlanPublicationContext(
       claim.expectedPlanPublication, this.planPublicationContext(sessionId),
     )) throw new Error("Foreman plan publication ownership is no longer current");
+    return session;
+  }
+
+  async claimCompletion(
+    sessionId: string,
+    claim: WorkflowCompletionClaim,
+    now = Date.now(),
+  ): Promise<WorkflowCompletionClaimResult> {
+    let session = this.currentCompletionSession(sessionId, claim);
     // Resolve a matching historical prompted guard before entering the claim
     // transaction. A rejected legacy replay must persist its compatibility consume;
     // doing this inside the transaction would roll that migration back with the claim.
@@ -3923,37 +3942,73 @@ export class WorkflowManager {
     // One settled turn, one run per repository it changed. `repoRunTargets` returns
     // `[anchor]` for every single-repo conversation, so everything below is one claim against
     // one binding exactly as it always was.
-    const targets = this.repoRunTargets(session, anchor);
-    let answer: WorkflowCompletionClaimResult | null = null;
-    let lead: { result: WorkflowCompletionClaimResult; activate: PreparedWorkflowRun } | null = null;
-    const siblings: PreparedWorkflowRun[] = [];
-    // Every claim is made HERE, synchronously and in order, before any evidence is read. The
-    // durable half of a completion - the guard, the runs, the submissions - is what the reply
-    // speaks for, and it must not depend on how long a git read takes.
-    for (const [index, target] of targets.entries()) {
-      // The FIRST target spends the completion boundary; the rest ride the same proof. One
-      // settled turn is one boundary however many repositories it touched, and consuming the
-      // guard again would throw on a guard that is no longer armed. It is deliberately the
-      // first rather than the primary: a task whose primary is untouched has no primary run,
-      // and the boundary must still be spent by the review that does exist.
-      const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now);
-      if (index === 0) {
-        answer = claimed.result;
-        // A refused lead is the whole answer - nothing was claimed, the guard is still armed,
-        // and starting sibling runs off an unclaimed proof would review a turn Foreman has
-        // not accepted.
-        if (!claimed.result.claimed) return claimed.result;
-        this.queues.refresh(target.noteKey);
+    const targets = this.repoRunTargets(session, anchor, true);
+    // Only a completed publication needs a git read before the claim. Probe each checkout
+    // independently, then revalidate ownership before spending the shared generation.
+    const primaryCheckout = workflowCheckoutPath(anchor, session);
+    const latestRuns = claim.completionKind === "prompted" ? targets.map(target => this.store.latestRunForBinding(target.id)) : [];
+    const deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS;
+    const probes = targets.flatMap((target, i) => this.publicationComparison(target, latestRuns[i] ?? null, session, claim, deadline) ?? []);
+    // Only synchronous work consumes the daemon's blocking budget. The asynchronous
+    // evidence capture can legitimately take seconds on an unchanged repository.
+    const remainingVerificationMs = Math.max(0, deadline - performance.now());
+    const comparisons = probes.length ? await Promise.all(probes) : [];
+    if (probes.length) {
+      session = this.currentCompletionSession(sessionId, claim);
+      if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
+        throw new Error("Foreman completion session is no longer idle for handoff");
       }
-      if (!claimed.activate) continue;
-      const prepared: PreparedWorkflowRun = {
-        ...claimed.activate,
-        previousFingerprint: claimed.previousFingerprint,
-      };
-      if (index === 0) lead = { result: claimed.result, activate: prepared };
+      const current = this.store.activeBindingForNote(noteKeyFor(session));
+      const currentTargets = current && current.id === anchor.id && current.triggerMode === "foreman_complete"
+        ? this.repoRunTargets(session, current, true) : [];
+      if (primaryCheckout !== workflowCheckoutPath(anchor, session) || targets.length !== currentTargets.length || targets.some((target, i) =>
+        target.id !== currentTargets[i]?.id || target.workflowVersionId !== currentTargets[i]?.workflowVersionId
+        || target.sessionId !== currentTargets[i]?.sessionId || target.sessionCwd !== currentTargets[i]?.sessionCwd)) {
+        throw new Error("Foreman completion repository ownership changed during publication comparison");
+      }
+    }
+    // One conversation supplies the frozen ask and one generation to all its repositories.
+    const intent = this.freezeRunIntent(anchor, now);
+    if (!intent) return { claimed: false, reason: "no_binding" };
+    const inputs: ForemanCompletionStoreInput[] = targets.map((binding, index) => ({
+      binding,
+      ...(probes.length ? { expectedLatestRunId: latestRuns[index]?.id ?? null } : {}),
+      publicationComparison: comparisons.find(comparison => comparison.bindingId === binding.id),
+      completionKind: claim.completionKind,
+      marker: claim.marker,
+      expectedWorkCycle: claim.expectedWorkCycle,
+      summary: claim.summary,
+      evidenceFingerprint: claim.evidenceFingerprint,
+      evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
+      expectedIntent: claim.expectedIntent,
+      expectedPlanPublication: claim.expectedPlanPublication,
+      runId: randomUUID(),
+      submissionId: randomUUID(),
+      retireGuard: index === 0,
+      guardCwd: session.cwd,
+      intent,
+      now,
+    }));
+    const reservations = this.store.claimForemanCompletions(inputs, remainingVerificationMs);
+    const answer = reservations[0]?.result;
+    if (!answer) throw new Error("Claimed Foreman completion produced no run");
+    if (!answer.claimed) return answer;
+    this.queues.refresh(anchor.noteKey);
+    let lead: PreparedWorkflowRun | null = null;
+    const siblings: PreparedWorkflowRun[] = [];
+    for (const [index, stored] of reservations.entries()) {
+      if (!stored.run) continue;
+      this.publishRun(stored.run.id);
+      if (!stored.submission) continue;
+      const prepared = this.resumeReservedCapture(stored.binding, stored.run, stored.submission, now)
+        ?? (stored.created ? {
+          binding: stored.binding, run: stored.run, submission: stored.submission,
+          previousFingerprint: stored.previousFingerprint,
+        } : null);
+      if (!prepared) continue;
+      if (index === 0) lead = prepared;
       else siblings.push(prepared);
     }
-    if (!answer) throw new Error("Claimed Foreman completion produced no run");
     if (!lead) {
       // Nothing for the lead to capture - an already-claimed replay, or a run that was
       // blocked rather than resubmitted. The siblings still get theirs.
@@ -3975,111 +4030,74 @@ export class WorkflowManager {
     // The same reasoning `activateSiblingRuns` already carries for the manual paths, applied
     // here rather than restated: the caller learns nothing from a sibling's git read.
     const leadCapture = this.captureAndActivate(
-      lead.activate.binding,
-      lead.activate.run,
-      lead.activate.submission,
-      lead.activate.previousFingerprint,
+      lead.binding,
+      lead.run,
+      lead.submission,
+      lead.previousFingerprint,
       false,
     ).catch((error) => {
       console.error(
         `[workflow] could not capture the review of ${
-          lead?.activate.binding.repoRoot || session.repoRoot
+          lead?.binding.repoRoot || session.repoRoot
         }: ${error instanceof Error ? error.message : String(error)}`,
       );
       return { ok: false as const, reason: "capture_failed" as const, message: "" };
     });
     this.activateSiblingRuns(siblings);
     const activated = await leadCapture;
-    if (!activated.ok && lead.result.claimed) {
+    if (!activated.ok) {
       return {
         claimed: true,
-        runId: lead.result.runId,
-        submissionId: lead.result.submissionId,
+        runId: answer.runId,
+        submissionId: answer.submissionId,
         state: "blocked",
       };
     }
     return answer;
   }
 
-  /**
-   * Offer one settled turn's proof to one repository's binding.
-   *
-   * Split out of `claimCompletion` so the fan-out reads as "the same claim, once per
-   * repository" rather than as two code paths. Every branch the store's transaction can take
-   * - a fresh run, another repair round on a waiting one, an already-claimed replay, a run
-   * that has run out of budget - applies per repository, which is what independent repair
-   * budgets mean in practice.
-   *
-   * A sibling's failure is contained rather than fatal. The lead has already spent the
-   * boundary by the time one can happen, so throwing would leave the conversation with no
-   * review at all and a guard nobody can re-arm; a repository whose run failed to start is
-   * visible as a repository with no run, and the operator can start one.
-   */
-  private claimCompletionForRepo(
+  /** A completed publication owns a later idle handoff only while its accepted work still matches. */
+  private publicationComparison(
     binding: WorkflowBinding,
-    claim: WorkflowCompletionClaim,
-    retireGuard: boolean,
+    run: WorkflowRun | null,
     session: Session,
-    now: number,
-  ): {
-    result: WorkflowCompletionClaimResult;
-    activate: PreparedWorkflowRun | null;
-    previousFingerprint: string | undefined;
-  } {
-    const nothing = {
-      result: { claimed: false, reason: "no_binding" } as WorkflowCompletionClaimResult,
-      activate: null,
-      previousFingerprint: undefined,
-    };
-    // Frozen before the claim transaction, because the transaction may create a run and a run
-    // may not exist without an ask. A binding whose conversation cannot be read has nothing
-    // to review, which is what `nothing` already says for every other reason that is true.
-    const intent = this.freezeRunIntent(binding, now);
-    if (!intent) return nothing;
-    let stored;
-    try {
-      stored = this.store.claimForemanCompletion({
-        binding,
-        completionKind: claim.completionKind,
-        marker: claim.marker,
-        expectedWorkCycle: claim.expectedWorkCycle,
-        summary: claim.summary,
-        evidenceFingerprint: claim.evidenceFingerprint,
-        evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
-        expectedIntent: claim.expectedIntent,
-        expectedPlanPublication: claim.expectedPlanPublication,
-        runId: randomUUID(),
-        submissionId: randomUUID(),
-        retireGuard,
-        // The CONVERSATION's checkout, never this repository's: a Foreman queue belongs to
-        // the session, and the lead binding here can be an attached repository's when the
-        // primary is the one that went untouched.
-        guardCwd: session.cwd,
-        intent,
-        now,
-      });
-    } catch (error) {
-      if (retireGuard) throw error;
-      console.error(
-        `[workflow] could not claim the review of ${binding.repoRoot}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return nothing;
-    }
-    if (!stored.result.claimed) return { ...nothing, result: stored.result };
-    if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
-    this.publishRun(stored.run.id);
-    const resumed = stored.submission
-      ? this.resumeReservedCapture(stored.binding, stored.run, stored.submission, now)
-      : null;
-    return {
-      result: stored.result,
-      activate: resumed ?? (stored.created && stored.submission
-        ? { binding: stored.binding, run: stored.run, submission: stored.submission }
-        : null),
-      previousFingerprint: resumed?.previousFingerprint ?? stored.previousFingerprint,
-    };
+    claim: WorkflowCompletionClaim,
+    deadline: number,
+  ): Promise<{ bindingId: string; runId: string; stillMatches: (deadline: number) => boolean }> | null {
+    if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
+    const source = run?.intent?.intentSource;
+    if (!run || run.status !== "completed" || run.workflowVersionId !== binding.workflowVersionId
+      || source?.objectiveVersion !== claim.expectedIntent.objectiveVersion
+      || source.promptRevision !== claim.expectedIntent.promptRevision
+      || source.resolvedPromptRevision !== source.promptRevision) return null;
+
+    const acceptedTree = this.store.publicationHandoffTree(run.id, claim.expectedWorkCycle.generation);
+    if (!acceptedTree) return null;
+    const submission = this.store.latestSubmission(run.id);
+    if (submission?.status !== "completed") return null;
+    const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!context.success || context.data.session.cwd !== workflowCheckoutPath(binding, session)) return null;
+    const evidence = context.data.evidence;
+    if (!evidence.headSha || !evidence.contentTreeOid || workflowPublicationTree(evidence) !== acceptedTree) return null;
+    const publication = evidence.publication;
+    const unpublished = publication
+      ? publication.unpublishedPaths.length > 0 || publication.pathsTruncated || Boolean(publication.artifactProblems?.length)
+      : evidence.workingTreeDirty;
+    if (unpublished) return null;
+    // Missing repository proof cannot retire a new review opportunity.
+    const checkout = context.data.session.cwd;
+    if (!checkout) return null;
+    const retained = publication?.localArtifacts ?? [];
+    const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
+    const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
+    const owner = { bindingId: binding.id, runId: run.id };
+    return this.probeRepository(binding, submission).then(
+      probe => {
+        const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
+        return { ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before };
+      },
+      () => ({ ...owner, stillMatches: () => false }),
+    );
   }
 
   /**
@@ -7023,49 +7041,74 @@ export class WorkflowManager {
       return;
     }
     const expectedPane = paneToken(session);
+    const conversation = { key: sending.noteKey, transcript: null as ReturnType<typeof sessionMessages> };
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
-    // Claimed BEFORE the first byte. The agent's prompt hook can report this packet back while
-    // the write is still unresolved, and an echo that arrives with no authorship on file is
-    // captured as the human's Goal - which for a repair packet means the next round reviews
-    // the work against Mission Control's own previous complaint.
-    // A reservation refused because its attribution could not be stored typed nothing: refused
-    // below as a delivery that never reached the pane, without calling the transport.
     let attributionRefused: string | null = null;
-    try {
-      reserveInjection(session.id, sending.payload, "workflow", () => {
-        // The Registry consumes this receipt after recording the prompt's work episode.
-        // A later human retype has no receipt, even when its text equals this packet.
-        if (sending.kind !== "session_action") return;
-        const episode = this.registry.recordedWorkEpisodeForSession(session.id);
-        if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
-        try {
-          this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
-            deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
-            promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+    let receipt: ReturnType<typeof workflowDeliveryLedger.reserve> | undefined;
+    let clientMessageId: string | undefined;
+    let terminalSubmit: ReturnType<typeof terminalSubmissionBoundary> = null;
+    let competingSend = false;
+    let stopObservingSends: (() => void) | undefined;
+    const reserveAtWrite: PromptWriteGuard = (phase, receiptTarget) => {
+      const block = this.deliveryBlock(sending, expectedPane)
+        ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
+          ? "inspector_feedback_superseded" : null);
+      if (block || phase === "preflight") return block;
+      if (phase === "submit") {
+        terminalSubmit = receipt ? terminalSubmissionBoundary(sessionMessages(this.registry.getSession(session.id)!)) : null;
+        return null;
+      }
+      if (receipt) return null;
+      // Sample after the pane mode check or SDK send queue, immediately before writing.
+      // A human copy already in the transcript must stay on the earlier side of the offset.
+      try {
+        conversation.transcript = sessionMessages(this.registry.getSession(session.id)!);
+        receipt = workflowDeliveryLedger.reserve(conversation, sending.payload, row => ({
+          ...row, deliveryId: sending.id, transcriptPath: conversation.transcript?.path ?? null,
+          messageId: receiptTarget ? row.id : null,
+        }));
+        if (receiptTarget) {
+          clientMessageId = receipt.id;
+          receiptTarget.clientMessageId = clientMessageId;
+        } else {
+          const fingerprint = receipt.fingerprint;
+          stopObservingSends = onSend((other, words) => {
+            if (other.key === sending.noteKey && words === fingerprint) competingSend = true;
           });
-        } catch (error) {
-          workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
-            error: error instanceof Error ? error.name : "unknown" });
         }
-      });
-    } catch (error) {
-      if (!(error instanceof AutomatedAttributionError)) throw error;
-      attributionRefused = error.message;
-    }
+        reserveInjection(session.id, sending.payload, "workflow", hook => {
+          if (hook?.transcriptPath && hook.transcriptPath === terminalSubmit?.transcript.path) {
+            terminalSubmit.hookAt = hook.ts ?? null;
+          }
+          // The Registry consumes this receipt after recording the prompt's work episode.
+          // A later human retype has no receipt, even when its text equals this packet.
+          if (sending.kind !== "session_action") return;
+          const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+          if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+          try {
+            this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+              deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+              promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+            });
+          } catch (error) {
+            workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+              error: error instanceof Error ? error.name : "unknown" });
+          }
+        });
+        return null;
+      } catch (error) {
+        attributionRefused = error instanceof Error ? error.message : "Could not reserve workflow packet attribution";
+        return attributionRefused;
+      }
+    };
     let result: InjectResult;
-    if (attributionRefused !== null) result = { ok: false, error: attributionRefused, pasted: false, submitVerified: false };
-    else try {
-      result = await this.inject(
-        session,
-        sending.payload,
-        undefined,
-        () => this.deliveryBlock(sending, expectedPane)
-          ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
-            ? "inspector_feedback_superseded" : null),
-      );
+    try {
+      result = await this.inject(session, sending.payload, undefined, reserveAtWrite);
     } catch (error) {
       this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
       return;
+    } finally {
+      stopObservingSends?.();
     }
     if (!result.ok) {
       if (result.pasted === false) {
@@ -7075,30 +7118,20 @@ export class WorkflowManager {
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         // Only a reservation this send made: a refused one recorded nothing, and releasing would
         // give back an earlier reservation of the same text.
-        if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
-        if (result.error === "inspector_feedback_superseded") {
-          if (this.store.getDelivery(sending.id)?.state === "sending") {
-            this.store.setDeliveryState(sending.id, "prepared", null);
-          }
-          this.publishRun(sending.runId);
-          return;
-        }
-        // The operator paused the session while this packet was on its way: the guard refused
-        // for the pause, not for anything wrong with the packet. Held exactly as the check at
-        // the top holds one - back to `prepared`, the run left as it is, offered again when the
-        // pause lifts - never refused with the run blocked.
-        if (result.error === PAUSED_SESSION_REASON) {
-          if (this.store.getDelivery(sending.id)?.state === "sending") {
-            this.store.setDeliveryState(sending.id, "prepared", null);
+        const requeue = result.error === "inspector_feedback_superseded" || result.error === PAUSED_SESSION_REASON;
+        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
+        const refused = this.store.finishDeliverySend(sending.id, requeue ? "prepared" : "refused",
+          requeue ? null : reason, Date.now(), receipt?.id);
+        if (receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
+        if (result.pasted === false && receipt && attributionRefused === null) releaseInjection(session.id, sending.payload);
+        if (requeue) {
+          if (refused && result.error === PAUSED_SESSION_REASON) {
             this.pausedDeliveries.add(sending.id);
-            // Lifted while the write was in flight: the resume that would offer it has passed.
             if (!this.registry.getSession(sending.sessionId)?.pause) this.offerResumedDeliveries(sending.sessionId);
           }
           this.publishRun(sending.runId);
           return;
         }
-        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
-        const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;
         this.store.setRunState(
           sending.runId,
@@ -7121,14 +7154,26 @@ export class WorkflowManager {
       this.markDeliveryUncertain(sending, result.error ?? "delivery_outcome_unknown");
       return;
     }
-    const transcript = sessionMessages(session);
+    const live = this.registry.getSession(sending.sessionId);
+    const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
+    // The SDK's client id can identify a delayed echo. A pane's acknowledgment alone cannot.
+    const usableReceipt = clientMessageId && result.submitVerified ? receipt : undefined;
+    const terminalTurn = !usableReceipt && result.submitVerified && receipt && !receipt.contested && !competingSend
+      ? confirmedTerminalWorkflowTurn(terminalSubmit, receipt.fingerprint) : null;
+    terminalSubmit = null;
     const confirmed = this.store.confirmDeliverySend(
       sending.id,
       transcriptAnchor,
       result.submitVerified,
+      Date.now(),
+      usableReceipt?.transcriptOffset ?? null,
+      usableReceipt ? { clientMessageId: usableReceipt.id, transcriptPath: usableReceipt.transcriptPath ?? transcript?.path }
+        : { unusableReceiptId: receipt?.id, terminalTurn },
     );
+    if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;
+    if (usableReceipt) workflowDeliveryLedger.forgetConversation(sending.noteKey);
     // Settles the reservation above rather than adding to it: recording afresh would owe a
     // second echo for one delivery, and the surplus would be spent silencing a later human turn.
     this.confirmInjection(session.id, sending.payload, "workflow");

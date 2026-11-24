@@ -47,6 +47,7 @@ test("upgrade from 54 leaves typed rows untouched, and spoken composition surviv
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_generation;
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_at;
     ALTER TABLE pending_turns DROP COLUMN spoken_reservation_id;
+    ALTER TABLE pending_turns DROP COLUMN spoken_claim_id;
     ALTER TABLE pending_turns DROP COLUMN spoken_proof_failures;
     ALTER TABLE pending_turns DROP COLUMN spoken_requires_guard;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold;
@@ -70,12 +71,17 @@ test("upgrade from 54 leaves typed rows untouched, and spoken composition surviv
   assert.equal(claimed.spokenWords, words);
   db.closeDb();
   const replay = { id: queued.id, noteKey: key, spokenWords: words, text: words, now: 6 };
-  assert.deepEqual(db.createPendingTurn(replay), claimed);
+  const { spokenClaimId, ...publicTurn } = claimed;
+  assert.ok(spokenClaimId);
+  assert.equal(db.openDb().prepare("SELECT spoken_claim_id FROM pending_turns WHERE id = ?").get(queued.id)?.spoken_claim_id, spokenClaimId);
+  assert.deepEqual(db.createPendingTurn(replay), publicTurn);
   assert.throws(() => db.createPendingTurn({ ...replay, noteKey: "other" }), /different outbox message/);
   assert.throws(() => db.createPendingTurn({ ...replay, spokenWords: "different" }), /different outbox message/);
   const released = db.releasePendingTurn(claimed.id, claimed.revision, "transport refused", 6)!;
   db.closeDb();
   const retry = db.claimNextPendingTurn(key, 7, released, () => assert.fail("retry composed twice"))!;
+  assert.ok(retry.spokenClaimId);
+  assert.notEqual(retry.spokenClaimId, spokenClaimId);
   assert.equal(retry.text, claimed.text);
   assert.equal(db.openDb().prepare("SELECT composed_at FROM pending_turns WHERE id = ?").get(queued.id)?.composed_at, 5);
   expectHumanEcho("sdk:test", retry.text, { noteKey: key, cycle: undefined, now: 7 });
@@ -105,6 +111,47 @@ test("preparation settlement cannot spend a replacement spoken claim's retry bud
   }
   assert.deepEqual(db.failSpokenPreparation(replacement, 5, "proof failed"), { noteKey: key, exhausted: false });
   assert.equal(db.listPendingTurns(key)[0]?.state, "queued");
+});
+
+test("stale preparation failure preserves a replacement's retry budget with identical timestamps", () => {
+  const key = "same-time-preparation-replay";
+  const claim = () => {
+    const queued = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: 1 });
+    return db.claimNextPendingTurn(key, 2, queued, words => words)!;
+  };
+  const original = claim();
+  assert.ok(db.deleteClaimedPendingTurn(original.id, original.revision));
+  const replacement = claim();
+  assert.equal(replacement.revision, original.revision);
+  assert.notEqual(replacement.spokenClaimId, original.spokenClaimId);
+
+  assert.equal(db.failSpokenPreparation(original, 3, "stale failure"), null);
+  const row = db.openDb().prepare("SELECT state, spoken_proof_failures FROM pending_turns WHERE id = ? AND spoken_claim_id = ?")
+    .get(key, replacement.spokenClaimId);
+  assert.equal(row?.state, "sending");
+  assert.equal(row.spoken_proof_failures, 0);
+});
+
+for (const [scenario, createdAt, claimedAt] of [
+  ["changed creation time", 2, 3],
+  ["changed claim time", 1, 4],
+  ["identical timestamps", 1, 3],
+] as const) test(`a pre-handoff refusal cannot requeue a replacement (${scenario}) or a claim past handoff`, () => {
+  const key = `pre-handoff-refusal-replay-${scenario}`;
+  const make = (createdAt: number, claimedAt: number) => {
+    const row = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: createdAt });
+    return db.claimNextPendingTurn(key, claimedAt, row, words => words)!;
+  };
+  const original = make(1, 3);
+  db.clearPendingTurns(key);
+  const replay = make(createdAt, claimedAt);
+  assert.equal(replay.revision, original.revision);
+  assert.equal(db.releaseUnreservedSpokenClaim(original, "old refusal", 5), null);
+  assert.equal(db.listPendingTurns(key)[0]?.state, "sending");
+  assert.ok(db.recordSpokenHandoff(replay.id, replay.revision, 0, 6));
+  assert.equal(db.releaseUnreservedSpokenClaim(replay, "late refusal", 7), null);
+  assert.equal(db.listPendingTurns(key)[0]?.state, "sending");
+  db.clearPendingTurns(key);
 });
 
 test("a refused spoken release fences the attempt and rolls the queue transition back if withdrawal fails", async () => {

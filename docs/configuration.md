@@ -532,3 +532,9 @@ and missing or nonnumeric stored values use 30. It is independent of `MISSION_WO
 
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.
+
+## Voice listener backend
+
+Set `MISSION_VOICE_BACKEND` to `auto`, `fluidaudio` or `sherpa-onnx` to override
+the stored voice backend for the daemon process. The development launcher also
+accepts `--backend`. See [Voice addressing](voice.md) for model setup and file input.

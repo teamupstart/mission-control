@@ -23,7 +23,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
   const jobs = Object.fromEntries(
     [
       ...workflow.matchAll(
-        /^([ \t]*)(dependencies(?:-node-(?:24|26))?|gates|unit(?:-node-(?:24|26))?|e2e|package):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
+        /^([ \t]*)(dependencies(?:-node-(?:24|26))?|gates|voice-recognizer|unit(?:-node-(?:24|26))?|e2e|package):[ \t]*\r?\n([\s\S]*?)(?=^\1(?![ \t])[a-zA-Z][\w-]*:[ \t]*(?:\r?\n|$)|(?![\s\S]))/gm,
       ),
     ].map(([, , job, body]) => [job, body]),
   );
@@ -88,6 +88,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         dependencies24: runner("dependencies-node-24"),
         dependencies26: runner("dependencies-node-26"),
         gates: runner("gates"),
+        voiceRecognizer: runner("voice-recognizer"),
         unit24: runner("unit-node-24"),
         unit26: runner("unit-node-26"),
         e2e: runner("e2e"),
@@ -109,10 +110,12 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       dependencyInstallCommands: ["dependencies-node-24", "dependencies-node-26"].map((job) =>
         capture(jobs[job], /- name: Install dependencies[\s\S]*?^[ \t]+run:[ \t]*(.+?)[ \t]*$/m)
       ),
-      consumerNeeds: ["gates", "unit-node-24", "unit-node-26", "e2e"].map((job) =>
+      voiceRecognizerRequired: jobValue("voice-recognizer", "MISSION_VOICE_RECOGNIZER_JOB"),
+      voiceRecognizerTest: capture(jobs["voice-recognizer"], /- run: (node --test .+)/),
+      consumerNeeds: ["gates", "voice-recognizer", "unit-node-24", "unit-node-26", "e2e"].map((job) =>
         jobValue(job, "needs")
       ),
-      consumerRestores: [jobs.gates, unitAction, jobs.e2e].map((source) => ({
+      consumerRestores: [jobs.gates, jobs["voice-recognizer"], unitAction, jobs.e2e].map((source) => ({
         action: capture(source, /- name: Restore node_modules[\s\S]*?uses: (actions\/cache\/restore@v\d+)/),
         failOnMiss: capture(source, /^[ \t]+fail-on-cache-miss:[ \t]*(.+?)[ \t]*$/m),
         repeatsInstall: /- name: Install dependencies/.test(source ?? ""),
@@ -160,6 +163,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
       runners: {
         dependencies24: { scalar: "ubuntu-latest", group: null, label: null },
         dependencies26: { scalar: "ubuntu-latest", group: null, label: null },
+        voiceRecognizer: { scalar: "ubuntu-latest", group: null, label: null },
         gates: { scalar: "ubuntu-latest", group: null, label: null },
         unit24: { scalar: "ubuntu-latest", group: null, label: null },
         unit26: { scalar: "ubuntu-latest", group: null, label: null },
@@ -179,7 +183,10 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         "npm ci --prefer-offline --no-audit --no-fund",
         "npm ci --prefer-offline --no-audit --no-fund",
       ],
+      voiceRecognizerRequired: "'1'",
+      voiceRecognizerTest: "node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts",
       consumerNeeds: [
+        "dependencies-node-24",
         "dependencies-node-24",
         "dependencies-node-24",
         "dependencies-node-26",
@@ -189,8 +196,9 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
         { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
+        { action: "actions/cache/restore@v5", failOnMiss: "true", repeatsInstall: false },
       ],
-      cacheActionVersions: ["v5", "v5", "v5", "v5"],
+      cacheActionVersions: ["v5", "v5", "v5", "v5", "v5"],
       unitWorkers: ["'4'", "'4'"],
       unitShardTotals: [null, null],
       unitShards: [

@@ -77,6 +77,11 @@ export function stateDir() {
   return join(homedir(), STATE_DIRS[0]);
 }
 
+/** Public TLS identity published by the daemon that owns this state home and API port. */
+export function desktopVoiceEndpointPath(home = stateDir(), port = PORT) {
+  return join(home, `desktop-voice-${port}.json`);
+}
+
 /**
  * Move a state dir left behind by an older name onto the current one. Returns the
  * `{ from, to }` it moved, or null when there was nothing to do.

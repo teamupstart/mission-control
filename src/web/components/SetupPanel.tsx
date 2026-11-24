@@ -715,20 +715,40 @@ function VoiceModelRemedy({ label, note }: { label: string; note: string }): Rea
   );
 }
 
-/**
- * Microphone access. Nothing in the dashboard can grant it: macOS asks when voice first listens,
- * and a denial is undone in System Settings. Check again re-reads what the listener or the desktop
- * app last reported.
- */
-function MicrophoneRemedy({ label, note, onRepaired }: { label: string; note: string; onRepaired(): void }): React.JSX.Element {
+function MicrophoneRemedy({ label, note, action, onRepaired }: {
+  label: string; note: string; action?: "settings" | "ask"; onRepaired(): void;
+}): React.JSX.Element {
+  const desktop = typeof window !== "undefined" ? window.missionDesktop : undefined;
+  const fix = desktop?.fixVoiceMicrophone;
+  const check = desktop?.checkVoiceMicrophone;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function apply(run: NonNullable<typeof fix>) {
+    setBusy(true);
+    setError("");
+    try {
+      if (await run() === "unavailable") setError("Desktop microphone controls are unavailable. Check that Voice is enabled.");
+      else onRepaired();
+    }
+    catch { setError("Could not access the macOS microphone controls."); }
+    finally { setBusy(false); }
+  }
   return (
     <div className="setup-remedy-actions">
-      <p className="setup-remedy-note">{note}</p>
+      {!fix && <p className="setup-remedy-note">{desktop?.isDesktop ? "Microphone controls are unavailable in this desktop app." : note}</p>}
       <div className="setup-run-controls">
-        <Tooltip label="Read the microphone permission again">
-          <button type="button" className="btn btn-ghost" onClick={onRepaired}>{label}</button>
-        </Tooltip>
+        {fix && action && (
+          <Tooltip label={action === "settings" ? "Open the macOS Microphone privacy pane" : "Ask macOS to allow Mission Control to use the microphone"}>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void apply(fix)}>
+              {action === "settings" ? "Open System Settings" : "Ask macOS"}
+            </button>
+          </Tooltip>
+        )}
+        {(!fix || action !== "ask") && <Tooltip label="Read the microphone permission again">
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={check ? () => void apply(check) : onRepaired}>{label}</button>
+        </Tooltip>}
       </div>
+      {error && <p role="alert">{error}</p>}
     </div>
   );
 }
@@ -750,7 +770,7 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
     return <VoiceModelRemedy label={remedy.label} note={remedy.note} />;
   }
   if (remedy.kind === "microphone-access") {
-    return <MicrophoneRemedy label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
+    return <MicrophoneRemedy action={remedy.action} label={remedy.label} note={remedy.note} onRepaired={onRepaired} />;
   }
   if (remedy.kind === "service") {
     return (
@@ -1312,6 +1332,14 @@ export function SetupPanel({
   // reports the new truth rather than waiting for the operator to press Re-check on a
   // question they have already answered.
   const refresh = state.refresh;
+  // The shell can obtain or lose access after Setup's initial probe, including while
+  // macOS has focus. Re-read the daemon's merged listener/shell reading on a transition.
+  const microphone = voice?.capabilities.microphone;
+  const microphoneStatus = microphone && (microphone.available ? "granted" : microphone.reason ?? "unknown");
+  useEffect(() => {
+    if (microphoneStatus !== undefined) void refresh();
+  }, [microphoneStatus, refresh]);
+
   const onRepaired = useCallback(() => { void refresh(); }, [refresh]);
 
   // Chosen, not derived on every read. `null` means "nobody has chosen", which is the only

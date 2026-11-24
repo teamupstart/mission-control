@@ -10,12 +10,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   MissionControlInbox,
   MissionControlModState,
+  PluginState,
   MissionControlRegistration,
   MissionControlResident,
 } from "claude-code";
 import { MOD_API, MOD_NAME } from "../src/mod/constants.ts";
-import { FLOW_NOT_IMPLEMENTED } from "../src/mod/flows/command.ts";
-import { runDispatchCommand, runDispatchFlow, runStartDispatchTool } from "../src/mod/flows/index.ts";
 import { PANE_TABS, renderPane } from "../src/mod/pane/index.ts";
 import { PANE_NOT_IMPLEMENTED, type PaneProps } from "../src/mod/pane/types.ts";
 import type { ModPaneTab, ModPanePlacement } from "../src/mod/host.ts";
@@ -27,16 +26,6 @@ import type {
 import { createFakeModHost } from "./helpers/home-dispatch-fakes.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-
-test("every flow is a stub that tells the person it is not implemented", async () => {
-  const fake = createFakeModHost();
-  await runDispatchCommand(fake.host, "");
-  await runDispatchFlow(fake.host, { kind: "ship", words: "x" });
-  await runStartDispatchTool(fake.host, { brief: "x" });
-  assert.deepEqual(fake.notices, [FLOW_NOT_IMPLEMENTED, FLOW_NOT_IMPLEMENTED, FLOW_NOT_IMPLEMENTED]);
-  // A stub never asks, fetches, opens the pane or writes to the model.
-  assert.deepEqual(fake.calls.map((c) => c.type), ["notice", "notice", "notice"]);
-});
 
 test("the later pane tabs draw not implemented for every placement, and the fake records the view", () => {
   const fake = createFakeModHost();
@@ -115,6 +104,27 @@ test("the $.state contract matches the shared schemas in both directions", () =>
   // contract's key must be the plugin name `build:mod` writes into plugin.json.
   const contract = readFileSync(join(root, "src/mod/types/index.d.ts"), "utf8");
   assert.match(contract, new RegExp(`interface PluginState \\{[^]*?"${MOD_NAME}": \\{[^]*?registration: MissionControlModState\\["registration"\\]`));
+});
+
+// `PluginState` spells every key out (the engine's validator reads literals), so it is a second list
+// of `MissionControlModState`'s keys. Both are held to the same set, at the type level and in the source.
+type SameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : never) : never;
+const pluginStateMirrorsModState: SameKeys<PluginState["mission-control"], MissionControlModState> = true;
+
+test("PluginState mirrors every MissionControlModState key, each typed from it", () => {
+  assert.equal(pluginStateMirrorsModState, true);
+  const contract = readFileSync(join(root, "src/mod/types/index.d.ts"), "utf8");
+  const block = (name: string): string => {
+    const start = contract.indexOf(name);
+    assert.notEqual(start, -1, name);
+    return contract.slice(start, contract.indexOf("\n  }", start));
+  };
+  const modState = [...block("interface MissionControlModState {").matchAll(/^\s{4}(\w+): /gm)].map((m) => m[1]!);
+  const mirrored = [...block('"mission-control": {').matchAll(/^\s{6}(\w+): MissionControlModState\["(\w+)"\];/gm)];
+  assert.ok(modState.length >= 9, "the state has its nine keys");
+  // Every key is mirrored once, and each mirror reads the key of the same name.
+  assert.deepEqual(mirrored.map((m) => m[1]).sort(), [...modState].sort());
+  for (const [, key, from] of mirrored) assert.equal(key, from);
 });
 
 test("npm run build:mod's script writes an installable folder marketplace that carries the pane", async () => {

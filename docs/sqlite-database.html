@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 141 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 142 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>141</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>142</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -605,7 +605,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>37 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>38 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot holding its optional repository-neutral default argv, run budget, timeout, skip-or-block policies, revision, and timestamps. Seeded on first open, so all five rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
@@ -640,6 +640,7 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_node_attempts</code><p>Each attempt to execute one graph node against one submission, including frozen Persona, session-action, or upstream Check evidence and its verdict or output.</p></div>
                 <div class="table-row"><code>workflow_edge_receipts</code><p>Deduplicated proof that a source attempt activated one graph edge for a submission.</p></div>
                 <div class="table-row"><code>workflow_deliveries</code><p>Durable packets sent to sessions, including payload hashes and prepared, sending, delivered, uncertain, refused, or cancelled lifecycle.</p></div>
+                <div class="table-row"><code>workflow_delivery_turns</code><p>Each workflow packet send records its transcript path, starting offset, and fingerprint. Its receipt binds to one native turn so frozen decisions preserve later human copies.</p></div>
                 <div class="table-row"><code>workflow_llm_calls</code><p>Provider/model, timing, bytes, cost, state, and error metadata for workflow-owned model calls.</p></div>
                 <div class="table-row"><code>workflow_events</code><p>Append-only operator-visible run audit events.</p></div>
                 <div class="table-row"><code>workflow_binding_claims</code><p>Idempotent external-orchestrator ownership of a workflow binding.</p></div>

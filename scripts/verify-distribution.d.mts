@@ -4,6 +4,7 @@ import type { DistributionFiles } from './distribution-contract.mjs';
 import type { DistributionToolResult } from './distribution-diagnostics.mjs';
 
 type PublisherPolicy = ReturnType<typeof binaryPublisherPolicy>;
+export function verifyMicrophoneAccess(app: string, run?: (command: string, args: string[], input?: string) => {stdout: string}): void;
 export function verifyDistributionApp(app: string, metadata: BinaryBuildMetadata, policy: PublisherPolicy): Promise<void>;
 export function verifyDistributionDmg(dmg: string, policy: PublisherPolicy): Promise<void>;
 export function verifyDistributionDmgRoot(mount: string, appBundleName: string): void;

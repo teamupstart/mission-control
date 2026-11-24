@@ -85,7 +85,8 @@ export class VoiceStateStore {
 
   hostNowUs(): number { return (this.deps.hostNowUs ?? voiceHostTimeUs)(); }
 
-  private backendSelected(backend: VoiceBackend): boolean {
+  /** Model lookup and hello must agree on which listeners the daemon can admit. */
+  backendSelected(backend: VoiceBackend): boolean {
     const configured = this.deps.config().backend;
     return configured === "auto" || configured === backend;
   }
@@ -174,6 +175,7 @@ export class VoiceStateStore {
       this.modeRevision++;
     }
     return {
+      muted: config.muted,
       mode,
       modeVersion: { source: this.source, revision: this.modeRevision },
       reasons,

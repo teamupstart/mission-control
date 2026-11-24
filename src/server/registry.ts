@@ -10856,8 +10856,8 @@ export class Registry extends EventEmitter {
     prompt: string,
   ): boolean {
     const submitted = spec.submittedPromptText(evt);
-    const delivered = (submitted !== null && claimInjectionEcho(s.id, submitted) !== undefined)
-      || claimInjectionEcho(s.id, prompt) !== undefined;
+    const delivered = (submitted !== null && claimInjectionEcho(s.id, submitted, evt) !== undefined)
+      || claimInjectionEcho(s.id, prompt, evt) !== undefined;
     return delivered && !this.isRelayedWorkItemIntent(s, submitted, prompt);
   }
 

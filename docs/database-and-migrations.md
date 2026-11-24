@@ -311,11 +311,11 @@ size cannot establish which turn was spoken.
 
 ## Repository review compatibility
 
-Schema 56 stores Persona grants, frozen graph fingerprints, workload ownership and body-free
+Schema 60 stores Persona grants, frozen graph fingerprints, workload ownership and body-free
 query records. Historical graph JSON is preserved byte for byte. Missing access resolves to
 `none` when read. A daemon encountering a newer schema stops before applying schema changes.
 
-For a writer-disabled deployment or rollback, use a build that understands schema 56 and
+For a writer-disabled deployment or rollback, use a build that understands schema 60 and
 disable the Persona repository access preview. Existing runs and their repository citations
 remain readable. A pre-migration backup predates later operator changes. Restoring it is
 disaster recovery. Downgrading a live database to a build that cannot read its citations is

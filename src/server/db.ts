@@ -330,8 +330,12 @@ let db: DatabaseSync | undefined;
 // 54: content-addressed repository artifacts, durable cleanup intent and submission claims.
 //     Historical submissions acquire no claim. Readiness is checked on first activation.
 // 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
-// 56: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 56;
+// 56: unique identities for spoken outbox claims before runtime handoff.
+// 57: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
+// 58: index retained workflow deliveries that have an active native receipt.
+// 59: seek unresolved workflow receipts by delivery state and age on cold reads.
+// 60: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 60;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -493,7 +497,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     // Earlier artifact previews installed a broader running-status guard. Replace it atomically
     // with the current definition below, preserving existing claims and submissions.
     if (databaseSchemaVersion(d) < 54) d.exec("DROP TRIGGER IF EXISTS repository_activation_required");
-    if (databaseSchemaVersion(d) < 56) d.exec("DROP TRIGGER IF EXISTS repository_capture_failed");
+    if (databaseSchemaVersion(d) < 60) d.exec("DROP TRIGGER IF EXISTS repository_capture_failed");
     createSchemaObjects(d);
     d.exec("COMMIT;");
   } catch (error) {
@@ -1461,6 +1465,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
+      publication_handoff_generation INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
@@ -1890,6 +1895,22 @@ function createSchemaObjects(d: DatabaseSync): void {
       ON workflow_deliveries(run_id, created_at);
     -- The two node_attempt_id indexes are created by migrate() beside their ALTER, for the
     -- reason spelled out on workflow_submissions above.
+
+    CREATE TABLE IF NOT EXISTS workflow_delivery_turns (
+      id                TEXT PRIMARY KEY,
+      delivery_id       TEXT NOT NULL REFERENCES workflow_deliveries(id) ON DELETE CASCADE,
+      transcript_path   TEXT,
+      note_key          TEXT NOT NULL,
+      fingerprint       TEXT NOT NULL,
+      delivered_at      INTEGER NOT NULL,
+      transcript_offset INTEGER,
+      contested         INTEGER NOT NULL,
+      message_id        TEXT,
+      discarded_at      INTEGER,
+      message_ts        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_key ON workflow_delivery_turns(note_key);
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_delivery ON workflow_delivery_turns(delivery_id);
 
     CREATE TABLE IF NOT EXISTS workflow_llm_calls (
       id               TEXT PRIMARY KEY,
@@ -3968,6 +3989,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "spoken_handoff_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
+  addColumn(d, "pending_turns", "spoken_claim_id", "TEXT");
   addColumn(d, "pending_turns", "spoken_requires_guard", "INTEGER");
   addColumn(d, "session_other_sends", "spoken_boundary", "TEXT");
   addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
@@ -4096,8 +4118,38 @@ function migrate(d: DatabaseSync): void {
   // evidence and delivery payloads. The sweep fills them only after its transaction
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
+  addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
+  addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  addColumn(d, "workflow_deliveries", "has_transcript_receipt", "INTEGER NOT NULL DEFAULT 0");
+  if (databaseSchemaVersion(d) < 58) {
+    d.exec(`UPDATE workflow_deliveries SET has_transcript_receipt = 1
+      WHERE id IN (SELECT delivery_id FROM workflow_delivery_turns WHERE discarded_at IS NULL)`);
+  }
   d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_window
+      ON workflow_deliveries(note_key, session_id, delivered_at DESC, id DESC)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_unresolved
+      ON workflow_deliveries(note_key, session_id, state, updated_at)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL AND delivered_at IS NULL;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_inserted AFTER INSERT ON workflow_delivery_turns
+      WHEN NEW.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = 1 WHERE id = NEW.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_removed AFTER DELETE ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_discarded AFTER UPDATE OF discarded_at ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL AND NEW.discarded_at IS NOT NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution
       ON workflow_deliveries(session_id, note_key, delivered_at DESC)
       WHERE delivered_at IS NOT NULL AND payload_pruned_at IS NULL;
@@ -15576,13 +15628,15 @@ export function createPendingTurn(input: {
   }
 }
 
+export type ClaimedPendingTurn = PendingTurn & { spokenClaimId: string | null };
+
 /** Claim the FIFO head or an explicitly selected row, never past an unresolved delivery. */
 export function claimNextPendingTurn(
   noteKey: string,
   now: number,
   selected?: { id: string; revision: number },
   composeSpoken?: (words: string) => string,
-): PendingTurn | null {
+): ClaimedPendingTurn | null {
   const d = openDb();
   d.exec("BEGIN IMMEDIATE");
   try {
@@ -15613,16 +15667,17 @@ export function claimNextPendingTurn(
       row.text = composeSpoken(row.spoken_words);
       row.composed_at = now;
     }
+    const spokenClaimId = row.spoken_words === null ? null : randomUUID();
     const changed = d
       .prepare(
         `UPDATE pending_turns
             SET state = 'sending', revision = revision + 1, updated_at = ?,
-                claimed_at = ?, last_error = NULL, text = ?, composed_at = ?,
+                claimed_at = ?, spoken_claim_id = ?, last_error = NULL, text = ?, composed_at = ?,
                 spoken_requires_guard = CASE WHEN spoken_words IS NOT NULL THEN 1 END,
                 spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_handoff_at = NULL, spoken_reservation_id = NULL
           WHERE id = ? AND state = 'queued' AND revision = ?`,
       )
-      .run(now, now, row.text, row.composed_at, row.id, row.revision).changes;
+      .run(now, now, spokenClaimId, row.text, row.composed_at, row.id, row.revision).changes;
     if (changed !== 1) {
       d.exec("ROLLBACK");
       return null;
@@ -15634,6 +15689,7 @@ export function claimNextPendingTurn(
       revision: row.revision + 1,
       updatedAt: now,
       claimedAt: now,
+      spokenClaimId,
       lastError: null,
     };
   } catch (err) {
@@ -15777,20 +15833,33 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
   );
 }
 
+type SpokenClaim = Pick<ClaimedPendingTurn, "id" | "revision" | "spokenClaimId">;
+// A capture can be replayed with the same id and revision. A refusal before the guard
+// applies only to the sending row originally claimed, while it still has no handoff.
+const unreservedSpokenClaim = `id = ? AND state = 'sending' AND revision = ? AND spoken_claim_id = ?
+  AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`;
+
+export function releaseUnreservedSpokenClaim(turn: SpokenClaim, error: string, now: number): PendingTurn | null {
+  return inTransaction(() => {
+    const { id, revision, spokenClaimId } = turn;
+    if (!openDb().prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, spokenClaimId)) return null;
+    const row = releasePendingTurn(id, revision, error, now);
+    if (!row) throw new Error("The spoken refusal was not saved");
+    return row;
+  });
+}
+
 /** Verification failed before the runtime guard. Share one retry budget across worker and revision failures. */
-export function failSpokenPreparation(turn: Pick<PendingTurn, "id" | "revision" | "createdAt" | "claimedAt">, now: number, retryDetail: string):
+export function failSpokenPreparation(turn: SpokenClaim, now: number, retryDetail: string):
   { noteKey: string; exhausted: boolean } | null {
   return inTransaction(() => {
-    const { id, revision, createdAt, claimedAt } = turn;
+    const { id, revision, spokenClaimId } = turn;
     const d = openDb();
-    // An operator can discard a capture and repeat its id. Only settle the original claim.
-    const claim = `id = ? AND state = 'sending' AND revision = ? AND created_at = ? AND claimed_at IS ?
-      AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`;
     const row = d.prepare(`UPDATE pending_turns SET spoken_proof_failures = spoken_proof_failures + 1
-      WHERE ${claim} RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision, createdAt, claimedAt) as
+      WHERE ${unreservedSpokenClaim} RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision, spokenClaimId) as
       { noteKey: string; failures: number } | undefined;
     if (!row) {
-      if (d.prepare(`SELECT 1 FROM pending_turns WHERE ${claim}`).get(id, revision, createdAt, claimedAt)) {
+      if (d.prepare(`SELECT 1 FROM pending_turns WHERE ${unreservedSpokenClaim}`).get(id, revision, spokenClaimId)) {
         throw new Error("Could not record the failed spoken preparation");
       }
       return null;

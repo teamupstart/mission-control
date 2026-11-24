@@ -197,13 +197,14 @@ export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
-export interface VoiceListenerDirective {
-  capture: boolean;
-  roster: string[];
-  inputDevice: string;
-  pauseMs?: number | null;
-  revision: string;
-}
+export const VoiceListenerDirectiveSchema = z.object({
+  capture: z.boolean(),
+  roster: z.array(z.string()),
+  inputDevice: z.string(),
+  pauseMs: z.number().nullable().optional(),
+  revision: z.string().min(1),
+});
+export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
 
 /**
  * Why voice is unavailable, in the order they are reported.
@@ -292,6 +293,8 @@ export interface VoiceHotkeyError {
  * follow it.
  */
 export interface VoiceState {
+  /** Manual mute can also be set while the mode reads unavailable. */
+  muted?: boolean;
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
    * Absent on the off state and on snapshots from older daemons. */
@@ -409,6 +412,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.mode,
     state.modeVersion?.source,
     state.modeVersion?.revision,
+    state.muted ?? false,
     state.reasons,
     capabilities,
     state.configuredHotkey,

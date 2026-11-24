@@ -93,14 +93,16 @@ export function ownElectronBackgroundStart<
 export async function drainBackgroundStart(
   ownership: Pick<BackgroundStartOwnership<unknown, unknown>, "stop"> | null,
   timeoutMs = BACKGROUND_DRAIN_TIMEOUT_MS,
+  listener?: BackgroundProcess | null,
 ): Promise<"drained" | "timed-out"> {
-  if (!ownership) return "drained";
+  if (!ownership && !listener) return "drained";
   let timer: ReturnType<typeof setTimeout> | null = null;
   const deadline = new Promise<"timed-out">((resolve) => {
     timer = setTimeout(() => resolve("timed-out"), timeoutMs);
   });
   try {
-    return await Promise.race([ownership.stop().then(() => "drained" as const, () => "drained" as const), deadline]);
+    const stopping = Promise.allSettled([ownership?.stop(), listener?.stop()]);
+    return await Promise.race([stopping.then(() => "drained" as const), deadline]);
   } finally {
     if (timer) clearTimeout(timer);
   }

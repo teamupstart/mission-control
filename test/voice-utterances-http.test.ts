@@ -22,7 +22,7 @@ const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
-const { VOICE_REQUIRED_FLAGS, VOICE_HELLO_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } = await import("../src/shared/voice.ts");
+const { VOICE_REQUIRED_FLAGS, VOICE_HELLO_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION, VOICE_SHELL_REPORT_LAPSE_MS } = await import("../src/shared/voice.ts");
 const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { closeDb } = await import("../src/server/db.ts");
@@ -446,6 +446,25 @@ test("a fresh snapshot with a stale key event renews call state and applies perm
   assert.equal((await report({ ...idle, reportedAtHostUs: 16_310_000, microphone: "denied" })).mode, "unavailable");
   assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "denied", source: "shell" });
   assert.equal(voiceStateStore.releasedCapture(held), undefined, "a discarded hold cannot be revived");
+});
+
+test("a new call cannot renew a released hold when the shell lease lapse timer is late", async t => {
+  let elapsed = performance.now();
+  t.mock.method(performance, "now", () => elapsed);
+  const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
+  await report({ reportedAtHostUs: 100_000, pushToTalk: true });
+  const held = voiceStateStore.directive().revision;
+  await report({ reportedAtHostUs: 300_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 250_000 });
+  assert.equal(voiceStateStore.releasedCapture(held)?.at, 250);
+  elapsed += VOICE_SHELL_REPORT_LAPSE_MS; // No intervening timer, poll or publication.
+  await report({ reportedAtHostUs: 15_300_000, pushToTalk: false });
+  const delayed = await app.request(utterancePath(held), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": "100000", "x-voice-capture-end-host-ms": "250",
+  }, body: JSON.stringify(capture("Will stale command")) });
+  assert.deepEqual(await delayed.json(), { accepted: false });
+  assert.deepEqual(voiceStateStore.drainingRevisions(), []);
+  assert.deepEqual(await readHeard(), []);
 });
 
 test("a newer idle report closes an inferred hold when key-up predates its first snapshot", async () => {

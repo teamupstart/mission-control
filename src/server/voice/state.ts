@@ -255,9 +255,13 @@ export class VoiceStateStore {
       if (order > (this.deps.hostNowUs ?? voiceHostTimeUs)()) return;
       this.lastReportHostUs = order;
     }
+    // Apply a missed lapse before a new snapshot can restore the previous mode.
+    // This revokes its held and released revisions just as the timer would.
+    const expired = this.report && at - this.report.at >= VOICE_SHELL_REPORT_LAPSE_MS;
+    if (expired) this.directive();
     const pushToTalk = report.pushToTalk && order !== undefined;
     const lastChange = this.report?.keyChangedHostUs ?? null;
-    const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;
+    const heldSince = this.report?.report.pushToTalk && !expired ? lastChange : null;
     const stamp = pushToTalk ? report.pushToTalkPressedAtHostUs : report.pushToTalkReleasedAtHostUs;
     const eventAt = stamp !== undefined && order !== undefined && stamp <= order ? stamp : undefined;
     const latestKey = Math.max(lastChange ?? -1, this.lastPhysicalKeyHostUs);

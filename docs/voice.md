@@ -177,7 +177,8 @@ Recently heard displays the original Unix `capturedAt`. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. Successive key presses during the
 same call preserve the release exception. Manual mute, a change of recipient, listener or input,
-or leaving the call revokes it.
+or leaving the call revokes it. When the shell lease lapses, a new call cannot
+restore an earlier call's released revisions.
 With the window off the daemon acknowledges the capture as soon as it claims delivery.
 The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit

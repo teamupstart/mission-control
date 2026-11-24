@@ -24,10 +24,14 @@ function world(on, { flag, minModApi = 1 }) {
   // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
   mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
-  on('session.id', () => ({ value: seen.ids?.shift() ?? 's1' }))
-  on('fs.read', async () => { if (seen.holdRead) await seen.holdRead; return { value: 'a-token' } })
+  // A test can hold the session id read (session start is then mid-way) and learn when it was entered.
+  on('session.id', async () => { if (seen.holdSessionId) { seen.onSessionIdHeld?.(); await seen.holdSessionId } return { value: seen.ids?.shift() ?? 's1' } })
+  // `onReadHeld` fires as a held token read is entered, so a test waits on that instead of a sleep.
+  on('fs.read', async () => { if (seen.holdRead) { seen.onReadHeld?.(); await seen.holdRead } return { value: 'a-token' } })
   on('http.fetch', async (_, e) => {
     seen.urls.push(e.url)
+    // A request that never settles, for the deadline test.
+    if (seen.hang?.(e.url)) return new Promise(() => {})
     if (seen.holdFirstSessionsReply && e.url.endsWith('/dispatch/sessions') && !seen.heldOnce) { seen.heldOnce = true; await seen.holdFirstSessionsReply }
     if (e.url.endsWith('/dispatch/answers')) {
       const body = JSON.parse(e.init.body)
@@ -372,10 +376,12 @@ test('a request held by the token read is not sent when the session ends meanwhi
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
   let release
+  const entered = new Promise((resolve) => { seen.onReadHeld = resolve })
   seen.holdRead = new Promise((resolve) => { release = resolve })
   const before = seen.urls.length
   await $.command.run(COMMAND('ship add retries'))
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  // The command's request is inside the held token read: only now does ending the session exercise the guard.
+  await entered
   await $.session.end({ reason: 'other', sessionId: 's1' })
   release()
   await new Promise((resolve) => setTimeout(resolve, 200))
@@ -704,6 +710,91 @@ test('text typed under Other reaches the draft as the description, through the r
   const update = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts/d1'))
   expect(update.body.words).toBe('tidy the logging module')
   expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
+})
+
+test('picking "Type it under Other" through the real dialog adapter asks again instead of cancelling', async ($, on) => {
+  const seen = dispatchWorld(on)
+  dispatchRoutes(seen, { needsDescription: true })
+  on('prompt.fill', () => ({ isFilled: false }))
+  const logs = []
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  // The person clicks the pointer option first (a pick of its label), then types under Other.
+  let taskAsks = 0
+  answerDialogs(on, seen, (q) => q.header === 'Task' ? (taskAsks++ === 0 ? 'Type it under Other' : 'tidy the logging module') : q.header === 'Confirm' ? 'Start now' : q.options[0].label)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  await $.command.run(COMMAND('ship x'))
+  await settle(() => seen.bodies?.some((b) => b.url.endsWith('/confirm')))
+  expect(seen.asked.filter((h) => h === 'Task').length).toBe(2)
+  expect(seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts/d1')).body.words).toBe('tidy the logging module')
+  expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
+  expect(logs.some((t) => t.startsWith('Cancelled.'))).toBe(false)
+})
+
+test('a prompt submitted while the session is still starting is not lost: no banner appears after it', async ($, on) => {
+  const seen = dispatchWorld(on)
+  on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
+  // Hold the start mid-way (before its core exists), and know when it is held.
+  let release
+  const held = new Promise((resolve) => { seen.onSessionIdHeld = resolve })
+  seen.holdSessionId = new Promise((resolve) => { release = resolve })
+  const starting = $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await held
+  await $.prompt.submit({ text: 'rename the helper', origin: { kind: 'composer' } })
+  seen.holdSessionId = null
+  release()
+  await starting
+  await settle(() => seen.statuses.length > 0)
+  const ui = await $.ui.mount(ABOVE)
+  // The session is active (the band draws), but the banner's moment passed with that prompt.
+  expect(await ui.find({ type: 'Button', key: 'open-needs-you' })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Dispatch, check on/ })).toBe(undefined)
+  await ui.unmount()
+})
+
+test('a refused retry does not give back the pane its session still holds, so a late stale open cannot close it', async ($, on) => {
+  const seen = dispatchWorld(on)
+  const logs = []
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  // The first session's next open is held in flight.
+  let releaseStale
+  seen.holdOpens = [new Promise((resolve) => { releaseStale = resolve })]
+  const openedBefore = seen.opened.length
+  await $.command.run(COMMAND('inbox'))
+  await settle(() => seen.opened.length > openedBefore)
+  // Its replacement starts and opens its own pane, which succeeds.
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.opened.length >= openedBefore + 2)
+  // The replacement retries an open and the engine refuses it.
+  seen.failOpen = true
+  await $.command.run(COMMAND('inbox'))
+  await settle(() => logs.some((t) => /could not finish that dispatch/.test(t)))
+  seen.failOpen = false
+  // The stale open now finishes: the replacement still holds the pane, so nothing is closed.
+  const closedBefore = seen.closed.length
+  releaseStale()
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(seen.closed.length).toBe(closedBefore)
+})
+
+test('a daemon request that never settles is given up after the deadline, so polling resumes', async ($, on) => {
+  const seen = dispatchWorld(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  // The next inbox poll hangs forever; while it does, later ticks find the poll busy and send nothing.
+  seen.hang = (url) => url.includes('/dispatch/inbox')
+  await seen.clock.advance(5000)
+  const atHang = seen.urls.length
+  await seen.clock.advance(5000)
+  expect(seen.urls.length).toBe(atHang)
+  // The daemon answers again; once the deadline passes, the hung request is abandoned and polling resumes.
+  seen.hang = null
+  await seen.clock.advance(30000)
+  await seen.clock.advance(5000)
+  await settle(() => seen.urls.length > atHang)
+  expect(seen.urls.length).toBeGreaterThan(atHang)
 })
 
 test('the pane commands drive the drawn pane: check shows Tasks, inbox shows Needs you again', async ($, on) => {

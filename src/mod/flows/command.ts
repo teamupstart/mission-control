@@ -2,7 +2,7 @@ import { HOME_DISPATCH_OFFERED_KINDS } from "@shared/dispatch-options.ts";
 import type { TaskKind } from "@shared/types.ts";
 import { LAUNCHER_ENABLED } from "../constants.ts";
 import type { ModHost, ModPaneOpen } from "../host.ts";
-import { PANE_WIDER_NOTICE, describeDraft, remindOrDropWaitingDraft, runDispatchFlow, type FlowResult } from "./dispatch.ts";
+import { DRAFT_EXPIRED_RESTART_NOTICE, PANE_WIDER_NOTICE, describeDraft, remindOrDropWaitingDraft, runDispatchFlow, type FlowResult } from "./dispatch.ts";
 import type { FlowSession } from "./routes.ts";
 
 /**
@@ -15,7 +15,7 @@ import type { FlowSession } from "./routes.ts";
  * | `check`, `check {taskId}`  | Opens the pane on Tasks, or on that task's row                    |
  * | `pane`                     | Opens the pane as it was                                          |
  * | `{taskId}`                 | Opens the pane on that task, when the inbox lists it              |
- * | any text, a draft waiting  | The description, word for word                                    |
+ * | any text, a draft waiting  | The description, word for word (a new brief if the draft expired) |
  * | any other text             | A brief: the dialogs start at Kind                                |
  *
  * A pane argument counts only when it is the whole argument, so `check the flaky logs` is a
@@ -70,6 +70,12 @@ export async function runDispatchCommand(host: CommandHost, session: FlowSession
     // The raw argument: spaces the person typed around the description are theirs.
     const described = await describeDraft(host, session, waiting, args);
     if (described) return described;
+    // The draft expired under the person. What they typed was a description, never a pane word or
+    // a kind (`inbox` here is what the task should do), so it becomes a new brief, and they are told why
+    // the dialogs start again.
+    if (session.live && !session.live()) return { outcome: "cancelled", line: "cancelled" };
+    host.notice(DRAFT_EXPIRED_RESTART_NOTICE);
+    return runDispatchFlow(host, session, { entry: "command", words: text });
   }
 
   const words = text.split(/\s+/);

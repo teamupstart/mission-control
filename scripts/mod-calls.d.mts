@@ -3,5 +3,5 @@ export interface ModCallsAllowlist {
   prefixes: string[];
 }
 export function isAllowedModCall(path: string, allowed: ModCallsAllowlist): boolean;
+export function pathLiterals(source: string, fileName?: string): string[];
 export function findDisallowedModCalls(root: string): { file: string; path: string }[];
-export function stripComments(text: string): string;

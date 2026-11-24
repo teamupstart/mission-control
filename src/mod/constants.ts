@@ -13,6 +13,14 @@ export const PANE_REQUEST_ID = "mission";
 /** How often the mod asks the daemon for the inbox (and, while not connected, for health), in ms. */
 export const POLL_INTERVAL_MS = 5000;
 
+/**
+ * How long one daemon request may take before the mod treats the daemon as down. `$.http.fetch` has
+ * no deadline of its own, and the poll runs one tick at a time, so a request that never settles would
+ * stop the glance layer for the rest of the session. Generous on purpose: a confirm that starts a task
+ * waits for the launch, and reporting "down" for a slow start would mislead the person.
+ */
+export const DAEMON_REQUEST_DEADLINE_MS = 30_000;
+
 declare const __MOD_VERSION__: string | undefined;
 
 /**

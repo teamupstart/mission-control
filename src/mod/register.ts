@@ -1,7 +1,7 @@
 import { dispatchIntentFor } from "@shared/home-dispatch.ts";
 import type { CoreHost, CoreStateKey, ModAskAnswer, ModAskQuestion, ModBand, ModHost, ModPaneOpen, ModPaneTab, ModState } from "./host.ts";
 import { createModCore, type ModCore } from "./core.ts";
-import { DISPATCH_COMMAND, DISPATCH_TOOL, DISPATCH_TOOL_ID, MOD_VERSION, PANE_REQUEST_ID } from "./constants.ts";
+import { DAEMON_REQUEST_DEADLINE_MS, DISPATCH_COMMAND, DISPATCH_TOOL, DISPATCH_TOOL_ID, MOD_VERSION, PANE_REQUEST_ID } from "./constants.ts";
 import { FLOW_FAILED_TEXT, reportFlowFailure } from "./flows/failure.ts";
 import { FLOW_BUSY_TEXT, createFlowGate, type FlowGate } from "./flows/gate.ts";
 import { START_DISPATCH_DESCRIPTION, START_DISPATCH_SCHEMA, intentNudge, runDispatchCommand, runStartDispatchTool } from "./flows/index.ts";
@@ -39,6 +39,10 @@ export function register(on: EngineOn, _options: unknown): void {
   // Each session start or end invalidates the work of the one before it: a startup still awaiting
   // the engine or the daemon checks its number again after every await and drops out when stale.
   let generation = 0;
+  // The generation in which a prompt was submitted before that session's core existed (0: none). A
+  // start is still awaiting the engine and the daemon when the person can already type, and the
+  // core built afterwards must know the banner's moment has passed.
+  let promptBeforeCore = 0;
   // Which session's host holds the pane, so a stopped session's late cleanup cannot close the
   // pane its replacement opened (the pane has one id and a late `open` or `close` acts on it).
   const pane: PaneHolder = { owner: null, closing: Promise.resolve(), writes: Promise.resolve() };
@@ -84,6 +88,9 @@ export function register(on: EngineOn, _options: unknown): void {
       interactive: e.isInteractive,
     });
     core = started;
+    // A prompt this session submitted while its core was being built: applied before `start()`, so
+    // the banner the registration would draw never appears after the person has started typing.
+    if (promptBeforeCore === mine) started.promptSubmitted();
     // The pane's own state (open item, typed text, receipt) lives and dies with the session.
     view.pane = createPaneController({
       host,
@@ -116,7 +123,9 @@ export function register(on: EngineOn, _options: unknown): void {
   });
 
   on("prompt.submit", async ($, e, next) => {
-    core?.promptSubmitted();
+    // Recorded against the session it arrived in: a later start's core is not told about it.
+    if (core) core.promptSubmitted();
+    else promptBeforeCore = generation;
     // The intent nudge (7.20): one line of context, only in an active home session, and only
     // when the prompt names Mission Control with a run or schedule word. The tool works without it.
     const intent = core?.phase() === "active" && typeof e.text === "string" ? dispatchIntentFor(e.text) : null;
@@ -393,6 +402,38 @@ interface PaneHolder {
   closing: Promise<void>;
 }
 
+/**
+ * `work`, or a rejection once `ms` pass without it settling. The timer is `$.clock` (the engine's
+ * own, and the one the engine tests drive), and it is cancelled as soon as either side wins.
+ *
+ * `work` is observed before the timer is asked for: if the engine refuses the timer (its session is
+ * being torn down), the request's own rejection must still have a handler, or it surfaces as an
+ * unhandled rejection. Without a timer the request is only unbounded, as it was before.
+ */
+function withDeadline<T>($: Engine, work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let timer: { cancel: () => void } | null = null;
+    work.then(
+      (value) => {
+        timer?.cancel();
+        resolve(value);
+      },
+      (error: unknown) => {
+        timer?.cancel();
+        reject(error);
+      },
+    );
+    try {
+      timer = $.clock.every(ms, () => {
+        timer?.cancel();
+        reject(new Error(`Mission Control did not answer within ${ms / 1000} s`));
+      });
+    } catch {
+      // No timer: the request settles, or not, on its own terms.
+    }
+  });
+}
+
 /** The session a host belongs to, and the shared holder of the pane. */
 interface HostSession {
   pane: PaneHolder;
@@ -450,11 +491,13 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       const token = await readDaemonToken(env, (file) => $.fs.read(file));
       // The token read above may have outlasted the session that asked: recheck as the request leaves.
       if (init?.guard && !init.guard()) throw new Error("the session ended before the request was sent");
-      const reply = await $.http.fetch(`${baseUrl}${path}`, {
+      // Bounded, so a request that never settles rejects (the callers read that as "down") instead
+      // of holding the poll's one-at-a-time tick for the rest of the session.
+      const reply = await withDeadline($, $.http.fetch(`${baseUrl}${path}`, {
         method: init?.method ?? "GET",
         headers: { "x-harness-token": token, "x-harness-surface": "mod", "content-type": "application/json" },
         ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      });
+      }), DAEMON_REQUEST_DEADLINE_MS);
       return { status: reply.status, text: reply.text };
     },
     clockEvery: (ms, tick) => {
@@ -468,6 +511,9 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       // A command that outlived its session neither retargets nor opens the pane.
       const stale = (): boolean => session.mine !== session.current() || (opts.guard !== undefined && !opts.guard());
       if (stale()) return { isPlaced: false };
+      // Whether this session already held the pane (an earlier open of its own succeeded). A refused
+      // retry must not give that claim back: it was not this open's to give.
+      const heldBefore = session.pane.owner === session.mine;
       // Claim the pane before anything pends, so an older session's late open sees this one owns it
       // and does not close it.
       session.pane.owner = session.mine;
@@ -501,9 +547,10 @@ async function createHost($: Engine, view: GlanceView, session: HostSession): Pr
       try {
         opened = await $.ui.open({ id: PANE_REQUEST_ID, title: "Mission Control", ...(opts.focus ? { focus: true as const } : {}) });
       } catch (error) {
-        // The engine refused: no pane was placed, so the claim made above is given back (only this
-        // session's own; a replacement that has claimed it since keeps it) before the caller sees the error.
-        releaseClaim(session.pane, session.mine);
+        // The engine refused: no pane was placed by this open, so the claim it made is given back (only
+        // this session's own; a replacement that has claimed it since keeps it) before the caller sees
+        // the error. A claim the session held before this open stays: its earlier pane is still open.
+        if (!heldBefore) releaseClaim(session.pane, session.mine);
         throw error;
       }
       if (!stale()) return { isPlaced: opened.isPlaced };

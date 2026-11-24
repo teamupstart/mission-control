@@ -10,7 +10,7 @@ import { createModCore, DAEMON_DOWN_NOTICE, type ModSessionFacts } from "../src/
 import { daemonBaseUrl, readDaemonToken, tokenFileCandidates } from "../src/mod/daemon-link.ts";
 import type { ModState } from "../src/mod/host.ts";
 import type { HomeDispatchInbox } from "../src/shared/home-dispatch.ts";
-import { findDisallowedModCalls, isAllowedModCall, stripComments } from "../scripts/mod-calls.mjs";
+import { findDisallowedModCalls, isAllowedModCall, pathLiterals } from "../scripts/mod-calls.mjs";
 import { isFlagOffAnswer } from "../src/mod/client.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -662,17 +662,15 @@ test("the mod-calls scan ignores a path quoted in a comment and still catches a 
     assert.deepEqual(findDisallowedModCalls(root), []);
     writeFileSync(join(root, "src/mod/call.ts"), 'export const bad = "/api/secret"; // fine\n');
     assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/secret"]);
-    // A `//` inside a string is not a comment.
-    assert.equal(stripComments('const u = "http://x/api/y"; // gone').includes("gone"), false);
-    assert.equal(stripComments('const u = "http://x/api/y";').includes("/api/y"), true);
+    // A `//` inside a string is not a comment, and a trailing comment is not a literal.
+    assert.deepEqual(pathLiterals('const u = "http://x/api/y"; // "/api/gone"'), ["http://x/api/y"]);
     // A regex literal that ends in `//` is not a comment: a disallowed path later on the line is still found.
     writeFileSync(join(root, "src/mod/call.ts"), 'const parts = path.split(/\\//); const bad = "/api/hidden"; // trailing\n');
     assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/hidden"]);
     // Division and a slash inside a regex class do not confuse it, and a comment after them is still blanked.
     const tricky = 'const half = total / 2; const re = /[/]x/g; const ok = "/api/health"; // "/api/gone"';
-    assert.equal(stripComments(tricky).includes("/api/gone"), false);
-    assert.equal(stripComments(tricky).includes("/api/health"), true);
-    assert.equal(stripComments('return /a\\/b/.test(x) && "/api/seen"').includes("/api/seen"), true);
+    assert.deepEqual(pathLiterals(tricky), ["/api/health"]);
+    assert.deepEqual(pathLiterals('return /a\\/b/.test(x) && "/api/seen"'), ["/api/seen"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -831,6 +829,36 @@ test("the mod-calls scan judges a plain quoted string whole: ${ is only an inter
     // The same text in a template is dynamic, so its static prefix is judged.
     assert.deepEqual(scan("fetch(`/api/health${b}/secret`);\n"), []);
     assert.deepEqual(scan("fetch(`/api/foo${bar}/secret`);\n"), ["/api/foo"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the mod-calls scan reads source with a real tokenizer: no regex, comment or space can hide a call", () => {
+  const root = mkdtempSync(join(tmpdir(), "mod-calls-tokens-"));
+  try {
+    mkdirSync(join(root, "src/mod"), { recursive: true });
+    writeFileSync(join(root, "src/mod/allowed-calls.json"), JSON.stringify({ exact: ["/api/health"], prefixes: ["/dispatch/"] }));
+    const scan = (source: string) => {
+      writeFileSync(join(root, "src/mod/case.ts"), source);
+      return findDisallowedModCalls(root).map((f) => f.path);
+    };
+    // A path whose query has a space is one literal, judged whole.
+    assert.deepEqual(scan('fetch("/api/tasks?search=needs review");\n'), ["/api/tasks?search=needs review"]);
+    assert.deepEqual(scan("fetch(`/api/tasks?q=a b`);\n"), ["/api/tasks?q=a b"]);
+    assert.deepEqual(scan('fetch("/dispatch/inbox?repo=my repo");\n'), []);
+    // A regex after a control-flow condition is a regex: its closing `//` does not hide a later call.
+    assert.deepEqual(scan('if (ok) /\\//.test(value); const bad = "/api/hidden";\n'), ["/api/hidden"]);
+    assert.deepEqual(scan('while (x) /\\//.exec(v); const bad = "/api/loop";\n'), ["/api/loop"]);
+    // A regex inside `${}` with a brace in it does not end the template early, so a URL's `//` after
+    // it is inside a string and a later call is still found.
+    assert.deepEqual(scan("const s = `${/[}]/.test(`http://x`)}`; const bad = \"/api/hidden\";\n"), ["/api/hidden"]);
+    // A comment inside `${}` is a comment: the path it quotes is not a call.
+    assert.deepEqual(scan('const s = `/dispatch/${id /* "/api/comment-only" */}`;\n'), []);
+    // .tsx files are read as TSX, and a JSX attribute's string is a literal like any other.
+    writeFileSync(join(root, "src/mod/case.ts"), "export {};\n");
+    writeFileSync(join(root, "src/mod/view.tsx"), 'export const v = <a href="/api/jsx">x</a>;\n');
+    assert.deepEqual(findDisallowedModCalls(root).map((f) => f.path), ["/api/jsx"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

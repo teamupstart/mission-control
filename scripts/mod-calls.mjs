@@ -2,8 +2,14 @@
 // `/dispatch/*` and nowhere else. `src/mod/allowed-calls.json` is the allowlist; this scans the
 // mod's source for any path literal that starts a daemon route and is not on it. Shared by
 // `smoke-bundles.mjs` and `test/home-dispatch-mod-core.test.ts`, so there is one definition.
+//
+// The source is read by the TypeScript parser, not by hand. Which `/` starts a regular expression,
+// where a template's `${}` ends, and what is a comment are questions only a real tokenizer answers
+// in every case; a hand-written one was patched once per case a review found. Comments are not
+// nodes, so prose that quotes an example path never counts, and every literal is seen whole.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 
 /** Every `.ts` and `.tsx` file under `dir`. */
 function sourceFiles(dir) {
@@ -22,115 +28,26 @@ export function isAllowedModCall(path, allowed) {
   return allowed.exact.includes(bare) || allowed.prefixes.some((prefix) => bare.startsWith(prefix));
 }
 
-/**
- * Whether a `/` here starts a regular expression rather than dividing: after an operator, an open
- * bracket, a separator, a keyword like `return`, or at the start of the file.
- */
-function startsRegex(out) {
-  const before = out.trimEnd();
-  if (before === "") return true;
-  if ("(,=:[!&|?{};+-*%<>~^".includes(before.at(-1))) return true;
-  return /(?:^|[^\w])(?:return|typeof|case|in|of|void|delete|throw|yield|await)$/.test(before);
-}
+/** Whether a literal's static text starts a daemon route, and so is judged. */
+const startsDaemonRoute = (text) => text.startsWith("/api") || text.startsWith("/dispatch");
 
 /**
- * The index just past a regular expression literal whose opening `/` is at `i`. An escaped character
- * and a `[...]` class are walked whole, so a `/`, `{` or `}` inside either does not end it.
+ * The static text of every string and template literal in `source`, in source order. A quoted
+ * string and a template with no `${}` are static, so their whole text is a path (`"/api/a${b}/c"` is
+ * that exact path). A template with `${}` is built at run time, so only the text before its first
+ * `${` is known (`/dispatch/drafts/${id}` is `/dispatch/drafts/`). Literals nested inside a `${}`
+ * are visited too.
  */
-function skipRegex(text, i) {
-  let j = i + 1;
-  let inClass = false;
-  while (j < text.length && text[j] !== "\n") {
-    if (text[j] === "\\") j += 2;
-    else if (text[j] === "[") { inClass = true; j += 1; }
-    else if (text[j] === "]") { inClass = false; j += 1; }
-    else if (text[j] === "/" && !inClass) return j + 1;
-    else j += 1;
-  }
-  return j;
-}
-
-/** The index just past a quoted string that starts at `i`. */
-function skipString(text, i) {
-  const quote = text[i];
-  let j = i + 1;
-  while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
-  return j + 1;
-}
-
-/**
- * The index just past a template literal that starts at `i` (a backtick). A `${ ... }` inside it is
- * code, so it is walked on its own terms: its braces are counted, and strings and further template
- * literals in it (`/api/${flag ? `a` : `b`}`) are skipped whole instead of closing the outer one.
- */
-function skipTemplate(text, i) {
-  let j = i + 1;
-  while (j < text.length) {
-    const c = text[j];
-    if (c === "\\") j += 2;
-    else if (c === "`") return j + 1;
-    else if (c === "$" && text[j + 1] === "{") j = skipExpression(text, j + 2);
-    else j += 1;
-  }
-  return text.length;
-}
-
-/** The index just past the `}` that closes a `${` whose expression starts at `j`. */
-function skipExpression(text, j) {
-  const start = j;
-  let depth = 1;
-  while (j < text.length && depth > 0) {
-    const c = text[j];
-    if (c === '"' || c === "'") j = skipString(text, j);
-    else if (c === "`") j = skipTemplate(text, j);
-    else if (c === "/" && text[j + 1] === "/") while (j < text.length && text[j] !== "\n") j += 1;
-    else if (c === "/" && text[j + 1] === "*") {
-      const end = text.indexOf("*/", j + 2);
-      j = end === -1 ? text.length : end + 2;
-    } else if (c === "/" && startsRegex(text.slice(start, j))) {
-      // A regex literal is one unit: a `{` or `}` in it (`/\{/`, `/a{2}/`) is not a brace of the code.
-      j = skipRegex(text, j);
-    } else {
-      if (c === "{") depth += 1;
-      else if (c === "}") depth -= 1;
-      j += 1;
-    }
-  }
-  return j;
-}
-
-/**
- * The source with its comments blanked, so prose that quotes an example path is not mistaken for
- * a call. Strings, template literals (with their nested `${}` code) and regular expression literals
- * are walked as units, so a `//` inside one (a URL, or the end of a regex like `/\//`) is not a
- * comment and nothing after it on the line is hidden from the scan.
- */
-export function stripComments(text) {
-  let out = "";
-  for (let i = 0; i < text.length; ) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (c === "/" && next === "/") {
-      while (i < text.length && text[i] !== "\n") i += 1;
-    } else if (c === "/" && next === "*") {
-      const end = text.indexOf("*/", i + 2);
-      const stop = end === -1 ? text.length : end + 2;
-      // Keep the line breaks so nothing else shifts.
-      out += text.slice(i, stop).replace(/[^\n]/g, " ");
-      i = stop;
-    } else if (c === "/" && startsRegex(out)) {
-      const stop = skipRegex(text, i);
-      out += text.slice(i, stop);
-      i = stop;
-    } else if (c === '"' || c === "'" || c === "`") {
-      const stop = c === "`" ? skipTemplate(text, i) : skipString(text, i);
-      out += text.slice(i, stop);
-      i = stop;
-    } else {
-      out += c;
-      i += 1;
-    }
-  }
+export function pathLiterals(source, fileName = "source.ts") {
+  const kind = fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false, kind);
+  const out = [];
+  const visit = (node) => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) out.push(node.text);
+    else if (ts.isTemplateExpression(node)) out.push(node.head.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
   return out;
 }
 
@@ -139,21 +56,8 @@ export function findDisallowedModCalls(root) {
   const allowed = JSON.parse(readFileSync(join(root, "src/mod/allowed-calls.json"), "utf8"));
   const found = [];
   for (const file of sourceFiles(join(root, "src/mod"))) {
-    const text = stripComments(readFileSync(file, "utf8"));
-    // A literal that begins with `/api` or `/dispatch`. A plain `"` or `'` string is static: its whole
-    // text up to the closing quote is judged, `${` and all (`"/api/a${b}/c"` is that exact path). A
-    // template literal is judged by its static prefix up to a `${`, since the rest is built at run
-    // time (`/dispatch/drafts/${id}` is `/dispatch/drafts/`, and `/api/${x}` is `/api/`). In a
-    // template a lone `$` is an ordinary character; only `${` ends the static text.
-    const literals = [
-      /(["'])(\/(?:api|dispatch)(?:(?!\1)\S)*)\1/g,
-      /`(\/(?:api|dispatch)(?:[^`\s$]|\$(?!\{))*)(?:`|\$\{)/g,
-    ];
-    for (const pattern of literals) {
-      for (const match of text.matchAll(pattern)) {
-        const path = match[2] ?? match[1];
-        if (!isAllowedModCall(path, allowed)) found.push({ file, path });
-      }
+    for (const path of pathLiterals(readFileSync(file, "utf8"), file)) {
+      if (startsDaemonRoute(path) && !isAllowedModCall(path, allowed)) found.push({ file, path });
     }
   }
   return found;

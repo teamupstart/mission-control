@@ -8,7 +8,15 @@ import { runDispatchCommand, runLauncher } from "../src/mod/flows/command.ts";
 import { PANE_WIDER_NOTICE } from "../src/mod/flows/command.ts";
 import { createFlowGate } from "../src/mod/flows/gate.ts";
 import { FLOW_FAILED_TEXT, reportFlowFailure } from "../src/mod/flows/failure.ts";
-import { DESCRIBE_NOTICE, EXPIRED_NOTICE, isRepoSelectorRefusal } from "../src/mod/flows/dispatch.ts";
+import { TEXT_POINTER_HINT, TEXT_POINTER_LABEL } from "../src/mod/flows/dialogs.ts";
+import {
+  DESCRIBE_NOTICE,
+  DRAFT_EXPIRED_RESTART_NOTICE,
+  DROP_FAILED_NOTICE,
+  EXPIRED_NOTICE,
+  filedButNotStarted,
+  isRepoSelectorRefusal,
+} from "../src/mod/flows/dispatch.ts";
 import { START_DISPATCH_DESCRIPTION, intentNudge, runStartDispatchTool } from "../src/mod/flows/tool.ts";
 import type { ModAskAnswer, ModAskQuestion } from "../src/mod/host.ts";
 import {
@@ -712,16 +720,23 @@ test("a blank command while a draft waits reminds first and drops the draft on t
 });
 
 test("a second blank command drops the waiting draft at the daemon, says so, and starts over", async () => {
-  const { fake, filed } = world();
+  const { fake, filed, drafts } = world();
   const session = { ...SESSION, reminded: new Set<string>() };
   await runDispatchCommand(fake.host, session, "");
   const draftId = (await fake.host.paneState.get("draftId"))!;
   await runDispatchCommand(fake.host, session, "");
-  await runDispatchCommand(fake.host, session, "");
+  const dialogsBeforeDrop = fake.dialogs.length;
+  const restarted = await runDispatchCommand(fake.host, session, "");
   assert.ok(fake.notices.includes("Dropped the draft that was waiting for its description."));
   assert.deepEqual(filed.filter((f) => f.draftId === draftId).map((f) => f.choice), ["cancel"]);
-  // A new draft is waiting now, not the dropped one.
-  assert.notEqual(await fake.host.paneState.get("draftId"), draftId);
+  // It started over: a fresh Start dialog opened after the drop, and a new draft is waiting, one
+  // the daemon holds. (Clearing the marker to null without restarting would fail every line here.)
+  assert.equal(fake.dialogs[dialogsBeforeDrop]?.header, "Start");
+  assert.equal(restarted.outcome, "waiting");
+  const newDraftId = await fake.host.paneState.get("draftId");
+  assert.equal(typeof newDraftId, "string");
+  assert.notEqual(newDraftId, draftId);
+  assert.ok(drafts.has(newDraftId!));
 });
 
 test("a draft answer that arrives after the session ended fills no prompt and opens no dialog", async () => {
@@ -1182,4 +1197,134 @@ test("when the waiting marker is not saved, the prompt box is cleared before the
   assert.deepEqual(fake.prompts, ["/mission-dispatch ", ""]);
   assert.ok(fake.dialogs.some((d) => d.header === "Task"));
   assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+});
+
+/** Picks the text dialog's pointer option `pointers` times at `header`, then types `typed`. */
+function pointerThenType(header: string, typed: string, pointers = 1) {
+  let picked = 0;
+  return (q: ModAskQuestion): ModAskAnswer => {
+    if (q.header === header) return picked++ < pointers ? { kind: "pick", label: TEXT_POINTER_LABEL } : { kind: "other", text: typed };
+    return q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label };
+  };
+}
+
+test("picking 'Type it under Other' at the description asks again with a hint, and the dispatch goes on", async () => {
+  const { fake, filed, daemon } = world({ host: { answers: pointerThenType("Task", "tidy the logging module") } });
+  fake.host.fillPrompt = () => false;
+  const result = await runDispatchCommand(fake.host, SESSION, "");
+  const asks = fake.dialogs.filter((d) => d.header === "Task");
+  assert.equal(asks.length, 2);
+  assert.ok(asks[0]!.options.some((o) => o.label === TEXT_POINTER_LABEL));
+  assert.ok(asks[1]!.question.startsWith(TEXT_POINTER_HINT));
+  // Not cancelled: the typed text reached the draft and the task started.
+  assert.equal(result.outcome, "started");
+  assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+  const described = daemon.requests.find((r) => r.pattern === "/dispatch/drafts/:id" && (r.body as { words?: string }).words !== undefined);
+  assert.equal((described!.body as { words: string }).words, "tidy the logging module");
+  assert.ok(fake.notices.every((n) => n !== "Cancelled. Nothing was created."));
+});
+
+test("picking 'Type it under Other' at the repository question asks again, and the typed repository is used", async () => {
+  const { fake, filed, daemon } = world({ needsRepo: true, host: { answers: pointerThenType("Repo", "/fake/other") } });
+  const result = await runDispatchCommand(fake.host, SESSION, "ship add retries");
+  assert.equal(fake.dialogs.filter((d) => d.header === "Repo").length, 2);
+  assert.equal(result.outcome, "started");
+  assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+  assert.ok(daemon.requests.some((r) => r.pattern === "/dispatch/drafts/:id" && (r.body as { repo?: string }).repo === "/fake/other"));
+});
+
+test("the text question is bounded: picking the pointer every time ends as a cancel, and an ended session is not asked again", async () => {
+  const stubborn = world({ host: { answers: pointerThenType("Task", "never typed", 99) } });
+  stubborn.fake.host.fillPrompt = () => false;
+  const result = await runDispatchCommand(stubborn.fake.host, SESSION, "");
+  assert.equal(stubborn.fake.dialogs.filter((d) => d.header === "Task").length, 3);
+  assert.equal(result.outcome, "cancelled");
+  assert.deepEqual(stubborn.filed.map((f) => f.choice), ["cancel"]);
+
+  // The session ends while the first ask is open: the pointer pick opens no second dialog.
+  let live = true;
+  const ending = world({
+    host: {
+      answers: (q) => {
+        if (q.header === "Task") { live = false; return { kind: "pick", label: TEXT_POINTER_LABEL }; }
+        return { kind: "pick", label: q.options[0]!.label };
+      },
+    },
+  });
+  ending.fake.host.fillPrompt = () => false;
+  await runDispatchCommand(ending.fake.host, { ...SESSION, live: () => live }, "");
+  assert.equal(ending.fake.dialogs.filter((d) => d.header === "Task").length, 1);
+});
+
+test("text typed for an expired draft becomes a new brief, even when it reads like a pane word", async () => {
+  const { daemon, fake } = world();
+  await runDispatchCommand(fake.host, SESSION, "");
+  assert.ok(await fake.host.paneState.get("draftId"));
+  daemon.override("POST /dispatch/drafts/:id", () => ({ status: 404, body: { error: "no such draft" } }));
+  const dialogsBefore = fake.dialogs.length;
+  await runDispatchCommand(fake.host, SESSION, "inbox");
+  // The pane was not opened, the person was told why the dialogs start again, and the text is the brief.
+  assert.deepEqual(fake.paneOpens, []);
+  assert.ok(fake.notices.includes(DRAFT_EXPIRED_RESTART_NOTICE));
+  assert.equal(fake.dialogs[dialogsBefore]?.header, "Kind");
+  assert.ok(daemon.requests.some((r) => r.pattern === "/dispatch/dispatch-options" && (r.body as { brief?: string }).brief === "inbox"));
+  const created = daemon.requests.filter((r) => r.pattern === "/dispatch/drafts").at(-1)!;
+  assert.equal((created.body as { words?: string }).words, "inbox");
+  // A kind word is not taken as the fast path either: the whole text is the brief.
+  const fast = world();
+  await runDispatchCommand(fast.fake.host, SESSION, "");
+  fast.daemon.override("POST /dispatch/drafts/:id", () => ({ status: 404, body: { error: "no such draft" } }));
+  const before = fast.fake.dialogs.length;
+  await runDispatchCommand(fast.fake.host, SESSION, "ship it today");
+  assert.equal(fast.fake.dialogs[before]?.header, "Kind");
+});
+
+test("only the daemon's 409 filed-but-not-started answer is a backlog receipt; an unreadable 200 stays unreadable", async () => {
+  // A 200 with a task id that this build cannot read (no `choice`) may describe a task that started.
+  const unreadable = world();
+  unreadable.daemon.override("POST /dispatch/drafts/:id/confirm", () => ({ body: { taskId: "mc-ran", started: true } }));
+  const result = await runDispatchCommand(unreadable.fake.host, SESSION, "ship add retries");
+  assert.equal(result.outcome, "refused");
+  assert.equal(result.line, "Mission Control sent a result this build cannot read.");
+  assert.ok(unreadable.fake.notices.every((n) => !/backlog/.test(n)));
+
+  // The predicate itself: only status 409, a task id, and started false.
+  const refused = (status: number, body: Record<string, unknown>) => ({ ok: false, kind: "refused", status, error: "x", body }) as const;
+  assert.equal(filedButNotStarted(refused(409, { taskId: "mc-1", started: false })), "mc-1");
+  assert.equal(filedButNotStarted(refused(200, { taskId: "mc-1", started: false })), null);
+  assert.equal(filedButNotStarted(refused(409, { taskId: "mc-1" })), null);
+  assert.equal(filedButNotStarted(refused(409, { taskId: "", started: false })), null);
+  assert.equal(filedButNotStarted(refused(500, { taskId: "mc-1", started: false })), null);
+  assert.equal(filedButNotStarted({ ok: false, kind: "down" }), null);
+});
+
+test("a drop that does not reach the daemon keeps the draft waiting, says so, and the next blank retries it", async () => {
+  const { daemon, fake, filed, drafts } = world();
+  const session = { ...SESSION, reminded: new Set<string>() };
+  await runDispatchCommand(fake.host, session, "");
+  const draftId = (await fake.host.paneState.get("draftId"))!;
+  await runDispatchCommand(fake.host, session, "");
+  // The drop: the daemon is down.
+  daemon.setDown(true);
+  const failed = await runDispatchCommand(fake.host, session, "");
+  assert.equal(failed.outcome, "refused");
+  assert.ok(fake.notices.at(-1)!.startsWith(DROP_FAILED_NOTICE));
+  assert.match(fake.notices.at(-1)!, /Mission Control is not running/);
+  assert.ok(fake.notices.every((n) => n !== "Dropped the draft that was waiting for its description."));
+  assert.equal(await fake.host.paneState.get("draftId"), draftId);
+  assert.ok(drafts.has(draftId));
+  // The daemon is back: the next blank command drops it (no second reminder first) and starts over.
+  daemon.setDown(false);
+  await runDispatchCommand(fake.host, session, "");
+  assert.deepEqual(filed.filter((f) => f.draftId === draftId).map((f) => f.choice), ["cancel"]);
+  assert.ok(fake.notices.includes("Dropped the draft that was waiting for its description."));
+
+  // The daemon's own "no such draft" still counts as dropped: the draft is gone either way.
+  const expired = world();
+  const s2 = { ...SESSION, reminded: new Set<string>() };
+  await runDispatchCommand(expired.fake.host, s2, "");
+  await runDispatchCommand(expired.fake.host, s2, "");
+  expired.daemon.override("POST /dispatch/drafts/:id/confirm", () => ({ status: 404, body: { error: "no such draft" } }));
+  await runDispatchCommand(expired.fake.host, s2, "");
+  assert.ok(expired.fake.notices.includes("Dropped the draft that was waiting for its description."));
 });

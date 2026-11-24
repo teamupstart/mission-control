@@ -29,6 +29,10 @@ export const EXPIRED_NOTICE = "That dispatch has expired or is unknown. Run /mis
 export const DESCRIBE_NOTICE = "Type what this task should do, then press Enter.";
 export const DROP_HINT = "Press Enter again with nothing typed to drop this draft and start over.";
 export const DROPPED_NOTICE = "Dropped the draft that was waiting for its description.";
+/** Said, before the reason, when a drop the person asked for did not reach the daemon; the draft still waits. */
+export const DROP_FAILED_NOTICE = "Could not drop the waiting draft, so it is still waiting. Press Enter again with nothing typed to retry.";
+/** Said when the description was for a draft that has expired: the text starts a new dispatch instead. */
+export const DRAFT_EXPIRED_RESTART_NOTICE = "That draft had expired, so this starts a new dispatch with what you typed.";
 export const CANCELLED_LINE = "cancelled";
 /** The one line shown when the pane cannot be placed (7.11); `command.ts` re-exports it. */
 export const PANE_WIDER_NOTICE = "the pane will open when the window is wider";
@@ -119,19 +123,20 @@ const REPO_ATTEMPTS = 3;
  */
 async function retryRepository<T>(
   host: FlowHost,
+  session: FlowSession,
   attempt: (repo: string | undefined) => Promise<Outcome<T>>,
   options: { askFirst: boolean },
 ): Promise<Outcome<T> | { ok: false; kind: "cancelled" }> {
   let repo: string | undefined;
   if (options.askFirst) {
-    repo = await askText(host, "Repo", NEEDS_REPO_QUESTION);
+    repo = await askText(host, "Repo", NEEDS_REPO_QUESTION, session);
     if (repo === undefined) return { ok: false, kind: "cancelled" };
   }
   for (let tries = 1; ; tries += 1) {
     const result = await attempt(repo);
     if (result.ok || result.kind !== "refused" || !isRepoSelectorRefusal(result)) return result;
     if (tries >= REPO_ATTEMPTS) return result;
-    repo = await askText(host, "Repo", `${result.error}. ${NEEDS_REPO_QUESTION}`);
+    repo = await askText(host, "Repo", `${result.error}. ${NEEDS_REPO_QUESTION}`, session);
     if (repo === undefined) return { ok: false, kind: "cancelled" };
   }
 }
@@ -142,7 +147,7 @@ export async function createDraftAsking(
   session: FlowSession,
   fields: Parameters<typeof createDraft>[2],
 ): Promise<Outcome<HomeDispatchDraftSummary> | { ok: false; kind: "cancelled" }> {
-  return retryRepository(host, (repo) => createDraft(host, session, repo === undefined ? fields : { ...fields, repo }), { askFirst: false });
+  return retryRepository(host, session, (repo) => createDraft(host, session, repo === undefined ? fields : { ...fields, repo }), { askFirst: false });
 }
 
 /** Fills the prompt box for the description, or asks for it in a dialog when it cannot be filled (S12). */
@@ -187,7 +192,7 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
     }
     if (gone(session)) return ended();
   }
-  const words = await askText(host, "Task", "What should this task do? Type it under Other.");
+  const words = await askText(host, "Task", "What should this task do? Type it under Other.", session);
   if (words === undefined) return cancel(host, session, summary.draftId);
   const updated = await updateDraft(host, session, summary.draftId, { words });
   return updated.ok ? confirmLoop(host, session, updated.value, undefined) : fail(host, updated);
@@ -296,6 +301,18 @@ async function changeSomething(host: FlowHost, session: FlowSession, summary: Ho
   return updated.value;
 }
 
+/**
+ * The task id of the daemon's one filed-but-not-started answer to a confirm: `409` with
+ * `{ error, taskId, started: false }` (the task exists, shelved). Anything else carrying a task id
+ * is not that answer. A 200 this build cannot read may describe a task that did start, so calling it
+ * a backlog receipt would tell the person the opposite of what happened; it stays unreadable.
+ */
+export function filedButNotStarted(outcome: Outcome<unknown>): string | null {
+  if (outcome.ok || outcome.kind !== "refused" || outcome.status !== 409) return null;
+  const { taskId, started } = outcome.body;
+  return typeof taskId === "string" && taskId !== "" && started === false ? taskId : null;
+}
+
 /** Files the draft and tells the person the outcome (7.11). */
 async function file(host: FlowHost, session: FlowSession, summary: HomeDispatchDraftSummary, choice: "start" | "backlog"): Promise<FlowResult> {
   const result = await confirmDraft(host, session, summary.draftId, choice);
@@ -307,8 +324,8 @@ async function file(host: FlowHost, session: FlowSession, summary: HomeDispatchD
     return { outcome: result.value.started ? "started" : "backlog", line, ...(result.value.taskId ? { taskId: result.value.taskId } : {}) };
   }
   // A start the daemon refused after filing the task: the task exists, shelved.
-  const filed = result.kind === "refused" && typeof result.body.taskId === "string" ? result.body.taskId : null;
-  if (filed && result.kind === "refused") {
+  const filed = filedButNotStarted(result);
+  if (filed !== null && result.kind === "refused") {
     const line = `Saved ${filed} to the backlog; it did not start: ${result.error}`;
     tell(host, session, line);
     return { outcome: "backlog", line, taskId: filed };
@@ -329,7 +346,7 @@ async function askRepo(host: FlowHost, session: FlowSession, pages: ReturnType<t
   if (pick.value !== "other") return { kind: "repo", value: pick.value };
   // No second dialog for a session that ended under the first.
   if (gone(session)) return { kind: "cancelled" };
-  const typed = await askText(host, "Repo", NEEDS_REPO_QUESTION);
+  const typed = await askText(host, "Repo", NEEDS_REPO_QUESTION, session);
   return typed === undefined ? { kind: "cancelled" } : { kind: "repo", value: typed };
 }
 
@@ -347,7 +364,7 @@ export async function completeDraft(
   if (summary.needs.includes("repo")) {
     // The same policy as creating a draft with a repository named up front.
     const draftId = summary.draftId;
-    const updated = await retryRepository(host, (repo) => updateDraft(host, session, draftId, { repo: repo ?? "" }), { askFirst: true });
+    const updated = await retryRepository(host, session, (repo) => updateDraft(host, session, draftId, { repo: repo ?? "" }), { askFirst: true });
     if (!updated.ok) return updated.kind === "cancelled" ? cancel(host, session, draftId) : fail(host, updated);
     summary = updated.value;
   }
@@ -449,9 +466,17 @@ export async function remindOrDropWaitingDraft(host: FlowHost, session: FlowSess
     host.notice(`${DESCRIBE_NOTICE} ${DROP_HINT}`);
     return { outcome: "waiting", line: DESCRIBE_NOTICE };
   }
-  reminded.delete(draftId);
-  await confirmDraft(host, session, draftId, "cancel");
+  const dropped = await confirmDraft(host, session, draftId, "cancel");
   if (session.live && !session.live()) return { outcome: "cancelled", line: CANCELLED_LINE };
+  // Only a cancel the daemon took, or its word that the draft is already gone, retires the marker.
+  // Anything else (a daemon that is down, a refusal) leaves the draft waiting and still reminded, so
+  // the next blank command tries the drop again instead of losing a draft that still exists.
+  if (!dropped.ok && !isNoSuchDraft(dropped)) {
+    const line = `${DROP_FAILED_NOTICE} ${unreachableLine(dropped)}`;
+    host.notice(line);
+    return { outcome: "refused", line };
+  }
+  reminded.delete(draftId);
   await host.paneState.set("draftId", null);
   // Clearing the marker may have outlasted the session: nothing is said and nothing starts over.
   if (gone(session)) return ended();

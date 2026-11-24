@@ -164,3 +164,29 @@ test("Clear deletes retained speech while the next history poll is stalled after
   await expect(history.getByRole("cell", { name: "After the deletion" })).toBeVisible();
   await expect(history.getByRole("cell", { name: "Speech heard during the stalled poll" })).toHaveCount(0);
 });
+
+test("a stalled history read reports a failure and retries without losing the last known rows", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  expect((await say(daemon, "Last confirmed row")).ok).toBe(true);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const history = page.getByRole("region", { name: "Recently heard" });
+  const original = history.getByRole("cell", { name: "Last confirmed row" });
+  await expect(original).toBeVisible();
+  const stalled = Promise.withResolvers<Route>();
+  await page.route(daemon.baseURL + "/api/voice/heard", route => stalled.resolve(route), { times: 1 });
+  const read = await stalled.promise;
+  try {
+    expect((await say(daemon, "Speech during the stalled read")).ok).toBe(true);
+    await expect(history.getByRole("alert")).toHaveText("Could not read recent utterances.");
+    await expect(original).toBeVisible();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await history.screenshot({ path: join(mkdtempSync(join(root, "deadline-")), "retained.png") });
+    }
+    await expect(history.getByRole("cell", { name: "Speech during the stalled read" })).toBeVisible();
+    await expect(history.getByRole("alert")).toHaveCount(0);
+  } finally {
+    await read.abort();
+  }
+});

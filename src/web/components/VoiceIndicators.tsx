@@ -4,7 +4,7 @@ import {
 } from "@shared/voice.ts";
 import { api } from "../lib/api.ts";
 import { formatChord } from "../lib/keybindings.ts";
-import { updateUiConfig, useUiConfig } from "../lib/uiConfig.ts";
+import { updateVoiceIndicator, useUiConfig } from "../lib/uiConfig.ts";
 import { useVoiceConfig, type VoiceConfigState } from "../useVoiceConfig.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -130,16 +130,16 @@ const previewModes = ["listening", "muted", "auto-muted", "push-to-talk"] as con
 export function VoiceIndicatorSettings(): React.JSX.Element {
   const { voice } = useUiConfig();
   const [error, setError] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState<{ id: VoiceIndicatorId; enabled: boolean } | null>(null);
   return <fieldset className="settings-group vi-settings" data-anchor="voice/indicators">
     <legend className="settings-group-label">In the window</legend>
     {VOICE_INDICATOR_IDS.map(id => <div className="vi-choice" key={id}>
       <Tooltip label={`Show the ${styles[id].toLowerCase()} in the window`}><label>
-        <input type="checkbox" disabled={saving} checked={voice.indicators.includes(id)} onChange={async e => {
-          const indicators = e.target.checked ? [...voice.indicators, id] : voice.indicators.filter(item => item !== id);
-          setSaving(true);
-          setError(!await updateUiConfig({ voice: { ...voice, indicators } }));
-          setSaving(false);
+        <input type="checkbox" disabled={saving !== null} checked={saving?.id === id ? saving.enabled : voice.indicators.includes(id)} onChange={async e => {
+          const enabled = e.target.checked;
+          setSaving({ id, enabled });
+          setError(!await updateVoiceIndicator(id, enabled));
+          setSaving(null);
         }} /> {styles[id]}
       </label></Tooltip>
       <div className="vi-samples">{previewModes.map(mode => <div className="vi-sample" key={mode}>

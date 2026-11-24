@@ -10,7 +10,7 @@ import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
-import { VOICE_FLAG } from "@shared/voice.ts";
+import { VOICE_FLAG, VOICE_INDICATORS_MAX, type VoiceIndicatorId } from "@shared/voice.ts";
 import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
@@ -158,6 +158,15 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
   persistUiConfig(next, stored, patch.skin !== undefined);
   if (patch.skin !== undefined) syncWindowBackground(next.skin);
   return next;
+}
+
+/** The daemon reads and writes synchronously, so independent checkbox edits compose. */
+export function setVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): string[] | null {
+  const voice = getUiConfig().voice;
+  if (voice.indicators.includes(id) === enabled) return voice.indicators;
+  if (enabled && voice.indicators.length >= VOICE_INDICATORS_MAX) return null;
+  const indicators = enabled ? [...voice.indicators, id] : voice.indicators.filter(item => item !== id);
+  return setUiConfig({ voice: { ...voice, indicators } }).voice.indicators;
 }
 
 /**

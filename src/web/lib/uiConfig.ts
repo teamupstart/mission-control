@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
+import type { VoiceIndicatorId } from "@shared/voice.ts";
 import { api, fetchUiConfig } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
@@ -201,6 +202,14 @@ function subscribe(cb: () => void): () => void {
  * holding no copy of the overrides it derives from.
  */
 export const subscribeUiConfig = subscribe;
+
+/** Persist only the checkbox that changed and adopt the daemon's merged selection. */
+export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<boolean> {
+  const result = await api.setVoiceIndicator(id, enabled);
+  if (!result.ok || !result.indicators) return false;
+  commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
+  return true;
+}
 function getSnapshot(): UiConfig {
   return current;
 }

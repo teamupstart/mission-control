@@ -176,6 +176,35 @@ test("a failed mute keeps the indicator listening until a peer retries, then the
   }
 });
 
+test("two windows selecting different indicators preserve both choices in the daemon", async ({ dashboard: page, context, daemon }) => {
+  await enableVoice(daemon);
+  const peer = await context.newPage();
+  const settings = daemon.baseURL + "/#/settings/voice";
+  await Promise.all([page.goto(settings), peer.goto(settings)]);
+  for (const window of [page, peer]) {
+    await expect(window.getByRole("checkbox", { name: "Status line" })).toBeChecked();
+    await expect(window.getByRole("checkbox", { name: "Floating button" })).not.toBeChecked();
+    await expect(window.getByRole("checkbox", { name: "Edge light" })).not.toBeChecked();
+  }
+  await Promise.all([
+    page.getByRole("checkbox", { name: "Edge light" }).check(),
+    peer.getByRole("checkbox", { name: "Floating button" }).check(),
+  ]);
+  await expect.poll(async () => {
+    const { config } = await (await page.request.get(daemon.baseURL + "/api/ui/config")).json();
+    return config.voice.indicators.sort();
+  }).toEqual(["edge", "floating", "status-line"]);
+  await page.reload();
+  for (const name of ["Edge light", "Floating button", "Status line"]) {
+    await expect(page.getByRole("checkbox", { name })).toBeChecked();
+  }
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await page.getByRole("group", { name: "In the window" }).screenshot({ path: join(mkdtempSync(join(root, "merged-")), "choices.png") });
+  }
+});
+
 test("a failed indicator save shows an alert and restores the previous selection and top bar", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");
@@ -186,9 +215,9 @@ test("a failed indicator save shows an alert and restores the previous selection
   await expect(statusLine).toBeChecked();
   await expect(topbar).not.toBeChecked();
 
-  await page.route("**/api/ui/config", route => {
+  await page.route("**/api/voice/indicators", route => {
     const request = route.request();
-    if (request.method() === "PUT" && request.postDataJSON().voice?.indicators?.includes("topbar")) {
+    if (request.method() === "PUT" && request.postDataJSON().id === "topbar") {
       return route.fulfill({ status: 503, json: { error: "Settings could not be saved." } });
     }
     return route.continue();
@@ -201,7 +230,7 @@ test("a failed indicator save shows an alert and restores the previous selection
   await expect(statusLine).toBeChecked();
   await expect(segment).toHaveCount(0);
 
-  await page.unroute("**/api/ui/config");
+  await page.unroute("**/api/voice/indicators");
   await topbar.check();
   await expect(error).toHaveCount(0);
   await expect(segment).toBeVisible();

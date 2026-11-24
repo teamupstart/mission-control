@@ -48,18 +48,18 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   const generation = useRef(0);
   useEffect(() => {
     if (clearing) return;
-    let alive = true;
+    const lifecycle = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       const current = generation.current;
-      const read = await fetchRecentlyHeard();
-      if (!alive || current !== generation.current) return;
+      const read = await fetchRecentlyHeard(AbortSignal.any([lifecycle.signal, AbortSignal.timeout(5000)]));
+      if (lifecycle.signal.aborted || current !== generation.current) return;
       if (read) setEntries(read.entries);
       setReadError(read ? "" : "Could not read recent utterances.");
       timer = setTimeout(() => void poll(), 1500);
     }
     void poll();
-    return () => { alive = false; clearTimeout(timer); };
+    return () => { lifecycle.abort(); clearTimeout(timer); };
   }, [clearing]);
   async function clear() {
     generation.current++;

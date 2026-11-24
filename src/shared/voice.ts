@@ -137,6 +137,10 @@ export type VoiceConfirmationPlacement = (typeof VOICE_CONFIRMATION_PLACEMENTS)[
 /** The in-window indicators Phase 7 draws, each mounted while its id is listed. */
 export const VOICE_INDICATOR_IDS = ["status-line", "topbar", "floating", "edge", "composer"] as const;
 export type VoiceIndicatorId = (typeof VOICE_INDICATOR_IDS)[number];
+export const VoiceIndicatorSelectionSchema = z.object({
+  id: z.enum(VOICE_INDICATOR_IDS),
+  enabled: z.boolean(),
+}).strict();
 
 /** The bound on `ui.voice.indicators`, far above the five ids that exist. */
 export const VOICE_INDICATORS_MAX = 32;

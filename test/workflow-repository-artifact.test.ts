@@ -1037,8 +1037,18 @@ test("promotion repairs an owned corrupt digest from verified bytes and preserve
   mkdirSync(unknown);
   await assert.rejects(f.service.promote(candidate, id));
   assert.ok(lstatSync(unknown).isDirectory());
+  const pending = join(f.root, "pending", candidate.id);
+  assert.equal(existsSync(join(pending, "promotion")), false);
+  await f.service.discard(candidate);
+  assert.equal(existsSync(pending), false);
+  // Replay an older intent written before discovering the foreign entry.
+  const legacy = interruptedCapture(f);
+  writeFileSync(join(f.root, "pending", legacy.id, "promotion"), legacy.digest);
+  assert.deepEqual(await f.service.reconcile(), { deleted: 1, orphans: 0 });
+  assert.ok(lstatSync(unknown).isDirectory());
+  assert.equal(f.service.activeSnapshot(first.submissionId), null);
   rmSync(unknown, { recursive: true });
-  const second = await f.service.promote(candidate, id);
+  const second = await f.service.promote(await f.prepare(), id);
   assert.equal(second.digest, first.digest);
   f.store.commitRepositoryCaptureActivation(second);
   assert.deepEqual(readFileSync(path), valid);
@@ -1178,6 +1188,40 @@ test("cleanup records a retry and logs the filesystem code when unlink fails", a
   ]);
   await f.service.reconcile();
   assert.deepEqual(f.service.artifacts(), []);
+});
+
+test("digest deletion keeps cleanup ownership until the parent sync succeeds on retry", async (t) => {
+  const f = fixture(t);
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  await f.service.release(snapshot.submissionId);
+  const parent = join(f.root, "digests"), path = join(parent, snapshot.digest);
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const inode = lstatSync(parent).ino, sync = fs.fsyncSync;
+  let attempts = 0;
+  const fail = t.mock.method(fs, "fsyncSync", (fd: number) => {
+    if (fs.fstatSync(fd).ino === inode) {
+      assert.equal(existsSync(path), false);
+      attempts++;
+      throw Object.assign(new Error("directory sync failed"), { code: "EIO" });
+    }
+    sync(fd);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (let n = 1; n <= 2; n++) {
+      assert.equal((await f.service.reconcile()).deleted, 0);
+      assert.equal(attempts, n);
+      assert.equal(f.service.artifacts().find(row => row.digest === snapshot.digest)?.state, "cleanup_pending");
+      assert.ok(f.db.prepare("SELECT 1 FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(snapshot.submissionId));
+    }
+  } finally {
+    fail.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(await f.service.reconcile(), { deleted: 1, orphans: 0 });
+  assert.deepEqual(f.service.artifacts(), []);
+  assert.equal(f.db.prepare("SELECT 1 FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(snapshot.submissionId), undefined);
 });
 
 test("capture discards stale candidates on retry and on boundary exceptions", async () => {
@@ -1811,6 +1855,24 @@ test("publication intent recovers a rename without a committed row and refuses u
   const foreign = join(f.root, "digests", "a".repeat(64));
   mkdirSync(foreign);
   writeFileSync(join(foreign, "unowned"), "preserve");
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const inode = lstatSync(dirname(dest)).ino, fsync = fs.fsyncSync;
+  const fail = t.mock.method(fs, "fsyncSync", (fd: number) => {
+    if (fs.fstatSync(fd).ino === inode) throw Object.assign(new Error("directory sync failed"), { code: "EIO" });
+    fsync(fd);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await f.service.reconcile()).orphans, 2);
+      assert.ok(existsSync(join(parent, "promotion")));
+      assert.equal(existsSync(dest), false);
+    }
+  } finally {
+    fail.mock.restore();
+    syncBuiltinESMExports();
+  }
   assert.equal((await f.service.reconcile()).orphans, 1);
   assert.ok(existsSync(foreign));
   assert.ok(!existsSync(parent) && !existsSync(dest));

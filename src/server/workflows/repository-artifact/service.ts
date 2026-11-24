@@ -69,11 +69,11 @@ function syncDirectory(path: string) {
 
 // Only flat artifact files may be removed or displaced, even in a digest directory we own.
 function publishedFiles(path: string) {
-  if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) unavailable();
+  if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) return null;
   const files = readdirSync(path);
   for (const file of files) {
     if ((file !== "manifest.json" && !oid.safeParse(file).success) || !lstatSync(join(path, file)).isFile())
-      unavailable();
+      return null;
   }
   return files;
 }
@@ -193,6 +193,9 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     syncDirectory(this.root);
     syncDirectory(dirname(this.root));
   }
+  private syncDigestParent(namespace: string | undefined) {
+    syncDirectory(namespace ?? (existsSync(this.root) ? this.root : dirname(this.root)));
+  }
   private allocate(kind: Marker["kind"]) {
     const marker: Marker = { kind, id: randomUUID(), nonce: randomUUID(), createdAt: Date.now() };
     const path = join(this.namespace(kind), marker.id);
@@ -288,6 +291,8 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       if (!existing || signal.aborted || !isArtifactIntegrityFailure(error) || !this.ownership.hasArtifact(digest))
         throw error;
       this.ownership.unavailable(digest);
+      // Refuse an unknown layout before the caller records a replacement intent.
+      if (!publishedFiles(dest)) unavailable();
       manifest = await verifyDirectory(src, digest, signal, { syncFiles: true });
       replace = true;
     }
@@ -302,7 +307,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       this.syncAllocationPath(pending);
       if (replace) {
         const previous = join(pending, "previous");
-        publishedFiles(dest);
+        if (!publishedFiles(dest)) unavailable();
         renameSync(dest, previous);
         syncRename();
         try {
@@ -325,6 +330,15 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     if (!lstatSync(intent).isFile()) unavailable();
     const digest = digestSchema.parse(readFileSync(intent, "utf8"));
     if (this.ownership.hasArtifact(digest)) {
+      const namespace = this.namespace("digests", false);
+      const dest = namespace && join(namespace, digest);
+      // An earlier writer could record an intent before discovering foreign entries.
+      // The untouched candidate and absence of a displaced directory prove no swap began.
+      if (dest && lstatSync(dest, { throwIfNoEntry: false }) && existsSync(join(pending, "artifact")) &&
+          !existsSync(join(pending, "previous")) && !publishedFiles(dest)) {
+        this.ownership.unavailable(digest);
+        return;
+      }
       // The intent precedes publication. Replaying it verifies whichever copy
       // survived, including when a missing directory left no "previous" backup.
       // Only the original transaction can attach the incoming submission.
@@ -334,12 +348,18 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       return;
     }
     const root = this.namespace("digests", false);
-    if (!root) return;
+    if (!root || !existsSync(join(root, digest))) {
+      this.syncDigestParent(root);
+      return;
+    }
     const path = join(root, digest);
     if (existsSync(join(pending, "artifact"))) return;
-    if (!existsSync(path)) return;
     await verifyDirectory(path, digest, AbortSignal.timeout(600_000));
-    if (!this.ownership.cleanup(digest, () => renameSync(path, join(pending, "artifact")))) unavailable();
+    if (!this.ownership.cleanup(digest, () => {
+      renameSync(path, join(pending, "artifact"));
+      syncDirectory(pending);
+      this.syncDigestParent(root);
+    })) unavailable();
   }
   async discard(candidate: WorkflowRepositoryArtifactCandidate) {
     await this.exclusive(async () => {
@@ -492,10 +512,14 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         if (row.state === "cleanup_pending") {
           if (
             this.ownership.cleanup(row.digest, () => {
-              if (!root || !present.has(row.digest)) return;
-              const path = join(root, row.digest);
-              for (const file of publishedFiles(path)) unlinkSync(join(path, file));
-              rmdirSync(path);
+              if (root && present.has(row.digest)) {
+                const path = join(root, row.digest);
+                for (const file of publishedFiles(path) ?? unavailable()) unlinkSync(join(path, file));
+                rmdirSync(path);
+              }
+              // A prior removal may have succeeded while its sync failed. Persist
+              // the observed absence before SQLite forgets who owned these bytes.
+              this.syncDigestParent(root);
             })
           )
             deleted++;

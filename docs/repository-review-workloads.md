@@ -139,7 +139,8 @@ read error or a failure writing a private lease leaves the digest ready so any h
 In either case the submission can still resume or retry.
 Promoting a fresh, verified copy of the same digest can repair its existing claims. The
 service replaces only a digest directory it owns and whose contents match the flat file
-layout. If publication is interrupted, reconciliation replays the recorded intent for
+layout. It checks that layout before recording an intent. A rejected candidate can
+be discarded while foreign entries stay in place. If publication is interrupted, reconciliation replays the recorded intent for
 existing holders. It verifies the published copy or, if the directory is still missing,
 verifies and installs the pending copy. The interrupted submission acquires a claim only
 through a successful promotion transaction.
@@ -148,7 +149,9 @@ from verified files, along with the layer descriptor used by the MCP. This works
 the checkout and its Git common directory have disappeared.
 
 Failed capture, submission deletion and evidence retention release claims. The digest row
-itself holds cleanup intent and any retryable deletion error. Publication and release commit
+itself holds cleanup intent and any retryable deletion error. Cleanup syncs the
+digest parent before deleting the ownership row, including on retry when the digest
+directory is already gone. Publication and release commit
 their final row states atomically, so neither operation needs a separately committed
 intermediate state. Startup releases provisional
 claims and reclaims marked pending and lease directories. A submission still capturing

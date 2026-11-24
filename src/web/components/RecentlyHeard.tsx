@@ -5,6 +5,8 @@ import { api, fetchRecentlyHeard } from "../lib/api.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
+const HISTORY_REQUEST_TIMEOUT_MS = 5000;
+
 const ruleLabels: Record<string, string> = {
   exact: "exact first word", phonetic: "sounds like", "near-miss": "near miss rejected",
   "no-name": "no opening name", "no-message": "name without a message",
@@ -52,7 +54,7 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       const current = generation.current;
-      const read = await fetchRecentlyHeard(AbortSignal.any([lifecycle.signal, AbortSignal.timeout(5000)]));
+      const read = await fetchRecentlyHeard(AbortSignal.any([lifecycle.signal, AbortSignal.timeout(HISTORY_REQUEST_TIMEOUT_MS)]));
       if (lifecycle.signal.aborted || current !== generation.current) return;
       if (read) setEntries(read.entries);
       setReadError(read ? "" : "Could not read recent utterances.");
@@ -64,8 +66,11 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   async function clear() {
     generation.current++;
     setClearing(true);
-    const result = await api.clearRecentlyHeard();
-    if (result.ok) {
+    const deadline = AbortSignal.timeout(HISTORY_REQUEST_TIMEOUT_MS);
+    const result = await api.clearRecentlyHeard(deadline);
+    if (deadline.aborted) {
+      setClearError("Clear timed out. Deletion is unconfirmed. Check the history and retry.");
+    } else if (result.ok) {
       setEntries([]);
       setReadError("");
       setClearError("");

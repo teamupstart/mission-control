@@ -2505,7 +2505,7 @@ export const api = {
   // --- Voice, behind its preview flag (404 while it is off) ---
   setVoiceConfig: (patch: VoiceConfigPatch) =>
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
-  clearRecentlyHeard: () => del("/api/voice/heard"),
+  clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean) =>
     put<ActionResult & { indicators?: string[] }>("/api/voice/indicators", { id, enabled }),
   setVoiceMuted: (muted: boolean) =>

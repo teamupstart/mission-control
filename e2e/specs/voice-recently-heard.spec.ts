@@ -190,3 +190,52 @@ test("a stalled history read reports a failure and retries without losing the la
     await read.abort();
   }
 });
+
+for (const deleted of [false, true]) {
+  const outcome = deleted ? "the daemon deleted the original row" : "the daemon retained the original row";
+  test(`a stalled Clear reports an unconfirmed deletion, polls and permits retry when ${outcome}`, async ({ dashboard: page, daemon }) => {
+    await enableVoice(daemon);
+    expect((await say(daemon, "Original row")).ok).toBe(true);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const history = page.getByRole("region", { name: "Recently heard" });
+    const original = history.getByRole("cell", { name: "Original row" });
+    const clear = history.getByRole("button", { name: "Clear" });
+    const alert = history.getByRole("alert");
+    await expect(original).toBeVisible();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let holdDelete = true;
+    await page.route("**/api/voice/heard", async route => {
+      if (route.request().method() !== "DELETE" || !holdDelete) return route.continue();
+      holdDelete = false;
+      if (deleted) expect((await route.fetch()).ok()).toBe(true);
+      started.resolve();
+      await release.promise;
+      await route.abort();
+    });
+    try {
+      await clear.click();
+      await started.promise;
+      await expect(clear).toBeDisabled();
+      expect((await say(daemon, "Speech while Clear was pending")).ok).toBe(true);
+      await expect(alert).toHaveText("Clear timed out. Deletion is unconfirmed. Check the history and retry.");
+      await expect(clear).toBeEnabled();
+      await expect(history.getByRole("cell", { name: "Speech while Clear was pending" })).toBeVisible();
+      await expect(original).toHaveCount(deleted ? 0 : 1);
+      if (process.env.MC_E2E_EVIDENCE && !deleted) {
+        const root = artifactsDir("voice-window");
+        mkdirSync(root, { recursive: true });
+        await page.mouse.move(1, 1);
+        await clear.blur();
+        await expect(page.locator(".tooltip")).toHaveCount(0);
+        await history.screenshot({ path: join(mkdtempSync(join(root, "clear-deadline-")), "retry.png") });
+      }
+      await clear.click();
+      await expect(history).toContainText("Nothing heard yet.");
+      await expect(alert).toHaveCount(0);
+      expect((await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries).toEqual([]);
+    } finally {
+      release.resolve();
+    }
+  });
+}

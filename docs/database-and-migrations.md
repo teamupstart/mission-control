@@ -251,7 +251,8 @@ every spoken handoff. For a transport without client identifiers, binding by tex
 a runtime delivery receipt for that specific outbox revision. The daemon records the receipt in the
 same transaction that retires the delivered outbox row. A retry, discard, or operator marking
 an uncertain attempt sent cannot supply that receipt. A confirmation without a recorded receiving
-generation also leaves the current work cycle alone.
+generation also leaves the current work cycle alone. After restart, a guarded uncertain terminal
+attempt still contests a later delegated or review delivery of identical words until settlement.
 
 A runtime receipt for text-only delivery also records its confirmation order in the ledger.
 The transcript stream compares its last confirmed reservation ID with the reader's receipt.
@@ -289,7 +290,8 @@ The live dashboard and backward history pages verify visible text-bound receipts
 Each page requests its distinct handoff offsets and its fixed end. If the file grows during
 verification, matching proofs on either side of a reread validate the original page while the
 writer continues appending. A changed prefix or replaced file invalidates the disclosure.
-An unrelated append needs no disclosure proof.
+A visible match can require a search from handoff through older pages. The daemon yields between
+those pages and rechecks the file revision before binding. An unrelated append needs no disclosure proof.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
 The same transaction records the conversation and fingerprint in `session_spoken_releases`.
 The next ledger read rechecks competing deliveries and acknowledges that release atomically,

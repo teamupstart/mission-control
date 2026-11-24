@@ -548,6 +548,34 @@ test("immediate retry after discarding a warm text-only reservation discloses on
   }
 });
 
+test("after restart an uncertain terminal paste still contests a later delegated or review send before its native turn is flushed", async () => {
+  const { delegatedLedger, reviewLedger, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+  const { reserveReviewDelivery } = await import("../src/server/review-deliveries.ts");
+  const { wrapReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+  const words = wrapReviewEnvelope("answer", ["b99fa7da-f9dd-4bab-9e44-691bac441a4c"], "Inspect the build");
+  const now = Date.now();
+  for (const sender of ["delegated", "review"]) {
+    const key = "uncertain-paste-before-" + sender;
+    const fake = fakeTranscript();
+    const conversation = fake.conversation(key);
+    reserveSpokenTurn(conversation, words, words, false, claimSpoken(key, words, words), now);
+    db.closeDb();
+    db.recoverSendingPendingTurns(now + 1);
+    forgetDeliveryBindingState();
+    assert.equal(db.listPendingTurns(key)[0]?.state, "uncertain");
+    if (sender === "review") assert.ok(reserveReviewDelivery(conversation, words, undefined, now + 2));
+    else delegatedLedger.reserve(conversation, words, base => ({ ...base, controllerId: "sdk:sender", controllerName: "Sender" }), now + 2);
+    const rival = sender === "review" ? reviewLedger : delegatedLedger;
+    const turn = fake.append("late-flush", words, now + 3);
+    assert.equal(rival.rows(key)[0]?.contested, true);
+    forgetDeliveryBindingState();
+    assert.equal(rival.bound(conversation, [turn]).rows.size, 0);
+    assert.equal(spokenLedger.bound(conversation, [turn]).rows.size, 0);
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null, "arbitration retained the reservation without granting a receipt");
+  }
+});
+
 test("withdrawing uncertain speech reconsiders delegated and review senders after commit and restart", async () => {
   const { delegatedLedger, reviewLedger, reserveSpokenTurn, noteOtherSend } = await import("../src/server/delivery-ledgers.ts");
   const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
@@ -854,6 +882,50 @@ test("unrelated appends do not rescan the suffix of an unmatched spoken receipt"
   appendFileSync(path, line("later-repeat", words));
   assert.equal(spokenLedger.bound(conversation, nativeAfter(path, beforeRepeat).messages).rows.size, 0);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "first-match");
+});
+
+test("a visible spoken match beyond a large suffix yields between pages and restarts on a concurrent rewrite", async t => {
+  const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-visible-scan-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const now = Date.now();
+  const words = "check the logs";
+  const line = (id: string, text: string) => JSON.stringify({ type: "user", uuid: id,
+    timestamp: new Date(now).toISOString(), message: { role: "user", content: text } }) + "\n";
+  const history = Array.from({ length: 600 }, (_, i) => line("history-" + i, "x".repeat(4096))).join("");
+  const prefix = line("prefix", "previous turn");
+  const native = claudeTranscript.messages!;
+  for (const rewrite of [false, true]) {
+    const key = "visible-scan-" + rewrite;
+    const path = join(dir, key + ".jsonl");
+    writeFileSync(path, prefix);
+    let pages = 0;
+    let serviced = 0;
+    const read = { ...native, after: (...args: Parameters<typeof native.after>) => {
+      const page = native.after(...args);
+      if (!page.atEnd) {
+        pages++;
+        setImmediate(() => {
+          serviced++;
+          if (rewrite && serviced === 1) writeFileSync(path, prefix + history + line("new-first", words) + line("repeat", words));
+        });
+      }
+      return page;
+    } };
+    const conversation = { key, transcript: { path, read } };
+    const attempt = claimSpoken(key, words, words);
+    const row = reserveSpokenTurn(conversation, words, words, false, attempt, now);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+    appendFileSync(path, history + line("old-first", words) + line("repeat", words));
+    const repeat = native.after(path, Buffer.byteLength(prefix + history + line("old-first", words))).messages;
+    const found = await withSpokenReadProofs(conversation, repeat, prepared => spokenLedger.bound(prepared, repeat));
+    assert.equal(found.rows.size, 0, "a later visible copy cannot take the earlier receipt");
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageId, rewrite ? "new-first" : "old-first");
+    assert.ok(pages > 5);
+    assert.equal(serviced, pages, "daemon work ran between every forward and timestamp-uniqueness page");
+    t.diagnostic(`Searched ${Buffer.byteLength(history)} bytes with ${serviced} interleaved callbacks (rewrite=${rewrite}).`);
+  }
 });
 
 test("a rewritten transcript suffix is searched again from the confirmed spoken handoff", async t => {

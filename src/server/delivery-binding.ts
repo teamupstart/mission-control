@@ -53,6 +53,8 @@ const BIND_PAGE_TURNS = 50;
 export interface DeliveryConversation {
   key: string;
   transcript: SessionMessages | null;
+  /** The page's spoken walks completed cooperatively. These rows have a unique timestamp fallback. */
+  preparedSpokenFallbacks?: ReadonlySet<string>;
 }
 
 /** One table's persistence, and who its rows would be credited to. */
@@ -218,6 +220,24 @@ function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
 }
 
 type SpokenCandidate = (row: BindableDelivery) => boolean;
+
+function visibleSpokenCandidate(key: string, messages: readonly TranscriptMessage[]): SpokenCandidate {
+  let times: Map<string, number[]> | undefined;
+  return row => {
+    if (!times) {
+      times = new Map();
+      const claimed = claimedTurns(key);
+      for (const m of messages) {
+        if (m.role !== "user" || !m.text || isClaimed(m, claimed)) continue;
+        const fingerprint = injectionFingerprint(m.text);
+        const seen = times.get(fingerprint);
+        if (seen) seen.push(m.ts);
+        else times.set(fingerprint, [m.ts]);
+      }
+    }
+    return times.get(row.fingerprint)?.some(ts => ts >= row.deliveredAt && ts - row.deliveredAt <= DELIVERY_LAG_MS) ?? false;
+  };
+}
 
 /** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
 function bindAll(conversation: DeliveryConversation, now: number, candidate?: SpokenCandidate): void {
@@ -466,7 +486,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
   bindLanded(noteKey: string, transcript: SessionMessages, now: number,
-    options: { candidate?: SpokenCandidate; pruneRow?: string } = {}): boolean {
+    options: { candidate?: SpokenCandidate; pagedRow?: string; strict?: boolean } = {}): boolean {
     const rows = this.rows(noteKey);
     let version: string | undefined;
     if (rows.length && this.store.textBoundary) {
@@ -487,8 +507,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     }
     const pending = rows.filter(row => row.messageId === null && !row.contested &&
       (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !options.candidate || options.candidate(row)) &&
-      (options.pruneRow === undefined || row.id === options.pruneRow));
-    return !pending.length || this.bindPending(pending, transcript, now, options.pruneRow !== undefined, version);
+      (options.pagedRow === undefined || row.id === options.pagedRow));
+    return !pending.length || this.bindPending(pending, transcript, now, options.strict ?? false, options.pagedRow !== undefined, version);
   }
 
   /** Recheck persisted rows before deletion, even if an earlier best-effort read found nothing. */
@@ -502,8 +522,40 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== version) {
           throw new Error("Spoken cleanup interrupted or transcript changed");
         }
-      } while (!this.bindLanded(noteKey, transcript, now, { pruneRow: row.id }));
+      } while (!this.bindLanded(noteKey, transcript, now, { pagedRow: row.id, strict: true }));
     }
+  }
+
+  /** Page the spoken lookup before rendering. Re-read claims after each yield, and only bind
+   * against the same file revision. The forward walk still starts at the recorded handoff. */
+  async prepareProjection(key: string, transcript: SessionMessages, messages?: TranscriptMessage[]): Promise<Set<string> | null> {
+    const version = transcript.read.snapshot?.(transcript.path)?.version;
+    const current = () => transcript.read.snapshot?.(transcript.path)?.version === version;
+    const fallbacks = new Set<string>();
+    if (!version) return fallbacks;
+    const now = Date.now();
+    const candidate = messages ? visibleSpokenCandidate(key, messages) : (row: Row) => this.deferredBindings.has(row.id);
+    const pending = this.rows(key).filter(row => row.messageId === null && !row.contested && candidate(row));
+    for (const row of pending) {
+      while (current() && !this.bindLanded(key, transcript, now, { pagedRow: row.id })) await yieldToDaemon();
+      if (!current()) return null;
+    }
+    if (!messages?.length) return fallbacks;
+    const pageIds = new Set(messages.map(m => m.id));
+    const timestamps = new Set(messages.filter(m => m.role === "user" && m.text && m.ts > 0)
+      .map(m => turnKey(injectionFingerprint(m.text!), m.ts)));
+    for (const row of this.rows(key)) {
+      if (!row.messageId || row.messageId === row.id || pageIds.has(row.messageId) ||
+          !timestamps.has(turnKey(row.fingerprint, row.messageTs))) continue;
+      // A parser can synthesize a different ID for the same native record on another read.
+      // Its uniqueness check can span the entire file as well.
+      this.bindLanded(key, transcript, now, { candidate: () => false });
+      let unique: boolean | undefined;
+      while (current() && (unique = this.uniqueAtTimestamp(row, transcript, true)) === undefined) await yieldToDaemon();
+      if (!current()) return null;
+      if (unique) fallbacks.add(row.id);
+    }
+    return fallbacks;
   }
 
   /** Offsets this page (or a quiet feed retry) can need. SDK UUIDs never need a prefix proof. */
@@ -521,7 +573,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   /** An open feed can finish a deferred binding even if the native writer has gone quiet. */
   retryDeferredBindings(conversation: DeliveryConversation): void {
     this.flushClientObservations(conversation.key);
-    if (!this.deferredBindings.size) return;
+    if (!this.deferredBindings.size || conversation.preparedSpokenFallbacks) return;
     const pending = this.rows(conversation.key).filter(row => this.deferredBindings.has(row.id));
     if (pending.length) {
       const fingerprints = new Set(pending.map(row => row.fingerprint));
@@ -591,7 +643,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Walk the transcript forward from each unbound row's offset, in reservation order, and bind
    * the row to the first user turn with its words that no earlier row has claimed.
    */
-  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, version?: string): boolean {
+  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, singlePage: boolean, version?: string): boolean {
     // Claimed by id only: one walk reads ids consistently, and a timestamp two identical turns
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
@@ -624,7 +676,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           }
           if (found || closed || page.atEnd || page.end <= from) break;
           from = page.end;
-          if (requireReadable) {
+          if (singlePage) {
             this.scanned.set(row.id, from);
             return false;
           }
@@ -671,7 +723,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * whole file, never on one page: a page holding only an operator repeat written in the same
    * millisecond would otherwise see one candidate and credit the repeat to the delivery.
    */
-  private uniqueAtTimestamp(row: Row, transcript: SessionMessages): boolean {
+  private uniqueAtTimestamp(row: Row, transcript: SessionMessages, singlePage = false): boolean | undefined {
     const state = this.twins.get(row.id) ?? { from: 0, count: 0, final: false };
     this.twins.set(row.id, state);
     try {
@@ -692,6 +744,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           break;
         }
         state.from = page.end;
+        if (singlePage) return undefined;
       }
     } catch (err) {
       console.error(`[transcript] could not read ${this.store.label}'s timestamp:`, err instanceof Error ? err.message : String(err));
@@ -733,21 +786,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // Projection only needs spoken receipts that could own a turn on this page. A
     // candidate still searches forward from handoff, so a later visible copy cannot
     // steal an earlier native turn off screen. Reservations and pruning reconcile all rows.
-    let times: Map<string, number[]> | undefined;
-    bindAll(conversation, now, row => {
-      if (!times) {
-        times = new Map();
-        const claimed = claimedTurns(conversation.key);
-        for (const m of messages) {
-          if (m.role !== "user" || !m.text || isClaimed(m, claimed)) continue;
-          const fingerprint = injectionFingerprint(m.text);
-          const seen = times.get(fingerprint);
-          if (seen) seen.push(m.ts);
-          else times.set(fingerprint, [m.ts]);
-        }
-      }
-      return times.get(row.fingerprint)?.some(ts => ts >= row.deliveredAt && ts - row.deliveredAt <= DELIVERY_LAG_MS) ?? false;
-    });
+    bindAll(conversation, now, conversation.preparedSpokenFallbacks ? () => false : visibleSpokenCandidate(conversation.key, messages));
     const fingerprints = new Set(rows.map((row) => row.fingerprint));
     // Deliveries that cannot be bound - contested, or sent without a known boundary. A turn with
     // their words written inside one's window could be that delivery, so no sender may be named
@@ -805,7 +844,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const key = turnKey(fingerprint, m.ts);
       const entry = key ? keyed.get(key) : undefined;
       const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
-      if (row && conversation.transcript && this.uniqueAtTimestamp(row, conversation.transcript)
+      if (row && conversation.transcript && (this.store.textBoundary && conversation.preparedSpokenFallbacks
+        ? conversation.preparedSpokenFallbacks.has(row.id) : this.uniqueAtTimestamp(row, conversation.transcript))
           && this.boundTextIntact(row, conversation.transcript)) result.rows.set(m.id, row);
       else if (couldBe(fingerprint, m)) result.ambiguous.add(m.id);
     }

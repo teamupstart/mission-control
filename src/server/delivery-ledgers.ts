@@ -222,9 +222,12 @@ export async function withSpokenReadProofs<T>(conversation: DeliveryConversation
     };
     const valid = () => anchored ? !!snapshot() : read.snapshot?.(path)?.version === version;
     if (capture && !valid()) continue;
-    const result = project({ ...conversation, transcript: { path, read: { ...read, snapshot,
-      boundary: (_path, offset) => offset !== undefined && capture && valid() ? capture.proofs.get(offset) ?? null : null,
-    } } });
+    const verified = { path, read: { ...read, snapshot,
+      boundary: (_path: string, offset?: number) => offset !== undefined && capture && valid() ? capture.proofs.get(offset) ?? null : null,
+    } };
+    const preparedSpokenFallbacks = await spokenLedger.prepareProjection(conversation.key, verified, messages);
+    if (!preparedSpokenFallbacks || (capture && !valid())) continue;
+    const result = project({ ...conversation, transcript: verified, preparedSpokenFallbacks });
     if (valid() || (!capture && !spokenLedger.projectionOffsets(conversation.key, read.snapshot?.(path)?.version, messages).length)) return result;
   }
   throw new SpokenTranscriptChanged();

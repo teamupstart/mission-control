@@ -227,11 +227,12 @@ test("settling an uncertain spoken handoff after restart holds only its original
   }
 });
 
-test("marking an unstamped spoken attempt sent leaves idle and unrelated working cycles alone", () => {
+test("marking a legacy unstamped spoken attempt sent leaves idle and unrelated working cycles alone", () => {
   for (const working of [false, true]) {
     const key = "unstamped-" + working;
     const row = db.createPendingTurn({ id: key, noteKey: key, text: "inspect", spokenWords: "inspect", now: 1 });
     assert.ok(db.claimNextPendingTurn(key, 2, row, words => words));
+    db.openDb().prepare("UPDATE pending_turns SET spoken_requires_guard = NULL WHERE id = ?").run(row.id);
     db.closeDb();
     db.recoverSendingPendingTurns(3);
     if (working) db.markWorkCycleActive(key, 4);

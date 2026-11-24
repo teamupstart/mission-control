@@ -13362,7 +13362,7 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
             transcript_cwd AS transcriptCwd, transcript_path AS transcriptPath
        FROM session_spoken_turns WHERE note_key = ? AND (message_id IS NOT NULL OR runtime_confirmed_at IS NOT NULL
          OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.spoken_reservation_id = session_spoken_turns.id
-           AND p.state = 'sending' AND p.spoken_handoff_generation IS NOT NULL))
+           AND p.state IN ('sending', 'uncertain') AND p.spoken_handoff_generation IS NOT NULL))
        ORDER BY rowid`,
   ).all(noteKey) as unknown as Array<Omit<SpokenTurnRow, "contested"> & { contested: number }>;
   return rows.map(row => ({ ...row, contested: row.contested === 1 }));

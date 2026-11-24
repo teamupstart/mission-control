@@ -10,7 +10,7 @@ struct Directive: Decodable {
 }
 
 struct Hello: Encodable {
-    let version = "3.0"
+    let version = "4.0"
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
     let modelLoaded: Bool
@@ -44,13 +44,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    func request(_ route: String, revision: String? = nil, endedAt: Int64? = nil, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
+    func request(_ route: String, revision: String? = nil, capture: (startUs: Int64, endMs: Int64)? = nil, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
-        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || endedAt != nil ? 30 : 5)
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
-        if let endedAt { req.setValue(String(endedAt), forHTTPHeaderField: "x-voice-capture-end-host-ms") }
+        if let capture {
+            req.setValue(String(capture.startUs), forHTTPHeaderField: "x-voice-capture-start-host-us")
+            req.setValue(String(capture.endMs), forHTTPHeaderField: "x-voice-capture-end-host-ms")
+        }
         if let body {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -65,9 +68,9 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         return (data, http)
     }
 
-    func postUtterance(revision: String, endedAt: Int64, body: Data) async throws -> HTTPURLResponse {
+    func postUtterance(revision: String, capture: (startUs: Int64, endMs: Int64), body: Data) async throws -> HTTPURLResponse {
         try await Self.postWithHeldRetries(revision: revision) {
-            try await self.request("voice/utterances", revision: revision, endedAt: endedAt, body: body).1
+            try await self.request("voice/utterances", revision: revision, capture: capture, body: body).1
         }
     }
 
@@ -253,7 +256,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }
                                     guard let words else { return }
                                     let http = try await daemon.postUtterance(revision: next.revision,
-                                        endedAt: segment.endedAt, body: JSONEncoder().encode(words))
+                                        capture: (segment.startedAtHostUs, segment.endedAt), body: JSONEncoder().encode(words))
                                     // The POST can also beat the key-up directive back to the helper.
                                     guard http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
                                           let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),

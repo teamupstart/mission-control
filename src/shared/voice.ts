@@ -416,13 +416,14 @@ export function voiceStateOff(): VoiceState {
 // ---- the listener's hello and the shell's report ----
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
-export const VOICE_LISTENER_PROTOCOL_MAJOR = 3;
+export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** Response headers on the capture-off directive for an explicit push-to-talk key release. */
 export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
 export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
 export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
+export const VOICE_CAPTURE_START_HEADER = "x-voice-capture-start-host-us";
 export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
 export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
 export const VoiceListenerIdSchema = z.uuid();

@@ -36,6 +36,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const modelDir = slowLoad ? join(dir, "slow-load") : dir;
     if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
+    const captureBounds: { start: unknown; end: unknown }[] = [];
     const heldAttempts: number[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
     const server = createServer(async (req, res) => {
@@ -68,6 +69,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
         }
         if (posted.length === 0) res.statusCode = firstPostStatus;
         posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
+        captureBounds.push({ start: req.headers["x-voice-capture-start-host-us"], end: req.headers["x-voice-capture-end-host-ms"] });
       }
       res.end("{}");
     });
@@ -103,7 +105,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
     apply(initial, "first", true);
-    return { events, diagnostics, posted, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
+    return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
   }
 
   it("explains the authorized-terminal prerequisite on first launch and keeps unapproved capture closed", async t => {
@@ -119,11 +121,11 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     assert.equal(diagnostics.filter(line => line.includes("terminal app that already has microphone access")).length, 1);
   });
 
-  it("finishes the outstanding loading heartbeat before publishing protocol 3.0 readiness", async (t) => {
+  it("finishes the outstanding loading heartbeat before publishing protocol 4.0 readiness", async (t) => {
     const { hellos } = await launch(t, { slowLoad: true });
     await until(() => hellos.length >= 3, "ready hello and delayed heartbeat");
     assert.deepEqual(hellos.map(h => h.modelLoaded), [false, false, true]);
-    assert.ok(hellos.every(h => h.version === "3.0"));
+    assert.ok(hellos.every(h => h.version === "4.0"));
   });
 
   it("a stopped engine refreshes the directive and reopens the same selection with fresh audio", async (t) => {
@@ -192,7 +194,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
 
   it("delivers every phrase in a hold in order only after confirmed release", async t => {
-    const { events, posted, nextPoll, apply } = await launch(t, { held: true });
+    const { events, posted, captureBounds, nextPoll, apply } = await launch(t, { held: true });
     await until(() => events.includes("holding audio"), "held microphone");
     const release = await nextPoll("first");
     assert.deepEqual(posted, []);
@@ -201,6 +203,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     apply(release, "off", false);
     await until(() => posted.length === 5, "complete phrases and tail");
     assert.deepEqual(posted, ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(text => ({ text, revision: "first" })));
+    assert.deepEqual(captureBounds, posted.map(() => ({ start: "125", end: "1" })));
     assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 

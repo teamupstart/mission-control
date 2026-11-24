@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
   VOICE_CAPTURE_END_HEADER,
+  VOICE_CAPTURE_START_HEADER,
   VOICE_DRAINING_REVISIONS_HEADER,
   VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER,
@@ -181,9 +182,12 @@ export function registerVoiceUtteranceRoutes(
     const release = revision ? voiceStateStore.releasedCapture(revision) : undefined;
     const heldBeforeRelease = release !== undefined && revision === release.revision;
     if (heldBeforeRelease) {
+      const startHeader = c.req.header(VOICE_CAPTURE_START_HEADER);
+      const startUs = startHeader ? Number(startHeader) : NaN;
       const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
       const end = endHeader ? Number(endHeader) : NaN;
-      if (!Number.isSafeInteger(end) || end < release.pressedAt || end > release.at) {
+      if (!Number.isSafeInteger(startUs) || startUs < release.pressedAtUs ||
+          !Number.isSafeInteger(end) || end > release.at || startUs >= end * 1000) {
         c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
         c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
         return c.json({ accepted: false });

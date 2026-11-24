@@ -174,17 +174,17 @@ test("a hello with an unknown major version is refused, and the state says why",
   h.store.acceptHello(listenerId, HELLO);
   const refused = h.store.acceptHello(listenerId, { ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*3\.0/);
+  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.0/);
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);
   assert.equal(state.capabilities.listener?.available, false);
   assert.match(state.capabilities.listener?.reason ?? "", /protocol 1\.0/);
   // A minor version is not compared.
-  assert.equal(h.store.acceptHello(listenerId, { ...HELLO, version: "3.7.2" }).ok, true);
+  assert.equal(h.store.acceptHello(listenerId, { ...HELLO, version: "4.7.2" }).ok, true);
   assert.deepEqual(h.store.state().capabilities.listener, { available: true, reason: null });
   // And the refusal lapses like a hello.
-  h.store.acceptHello(listenerId, { ...HELLO, version: "4" });
+  h.store.acceptHello(listenerId, { ...HELLO, version: "3.0" });
   h.advance(VOICE_HELLO_LAPSE_MS);
   assert.equal(h.store.state().capabilities.listener, undefined);
 });

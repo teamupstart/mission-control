@@ -105,6 +105,17 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testShortRosterEntryAllowsCorrectionOfExplicitLongerAddress() {
+        var text = "Will Smyth, check the build"
+        var words = text.split(separator: " ").enumerated().map {
+            TimedWord(text: String($0.element), startMs: Double($0.offset * 100), endMs: Double($0.offset * 100 + 80))
+        }
+        Recognizer.applyAddressCorrection("Will Smith", in: 0..<2, roster: ["Will", "Will Smith"], text: &text, words: &words)
+        XCTAssertEqual(text, "Will Smith, check the build")
+        XCTAssertEqual(words.map(\.text), ["Will", "Smith,", "check", "the", "build"])
+        XCTAssertEqual(words.map(\.startMs), [0, 100, 200, 300, 400])
+    }
+
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var gate = SpeechGate()
         let speech = Array(repeating: Float(0.1), count: 320)
@@ -251,6 +262,19 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(clipped.startNs, startNs)
         XCTAssertEqual(clipped.startedAtHostMs, 1000)
         XCTAssertEqual(clipped.endedAt, 1001)
+    }
+
+    func testKeyUpInsideQuietLeadInCannotDeliverPostReleaseSpeech() throws {
+        let quiet = Array(repeating: Float(0), count: 2400)
+        let voiced = Array(repeating: Float(0), count: 80) + Array(repeating: Float(0.1), count: 240)
+        var gate = SpeechGate(held: true)
+        XCTAssertNil(gate.feed(quiet, active: false, endNs: 150_000_000))
+        XCTAssertNil(gate.feed(voiced, active: true, endNs: 170_000_000))
+        let full = try XCTUnwrap(gate.finish(tail: [], at: 170))
+        for cutoff: Int64 in [140, 150, 155] {
+            XCTAssertTrue(full.through(cutoff) == nil, "release retained only quiet samples")
+        }
+        XCTAssertEqual(full.through(156)?.samples.count, 2496)
     }
 
     func testDelayedTapUsesCaptureTimeToKeepTheLastWordAndExcludeAudioAfterKeyUp() async throws {
@@ -486,7 +510,7 @@ final class ListenerTests: XCTestCase {
     func testHeldAudioOverflowDiscardsTheWholeHoldIncludingLaterSpeech() {
         let pcm = Array(repeating: Float(0.5), count: 32)
         var hold = HeldSpeech(limit: 48)
-        for i in 0..<4 { hold.append(Segment(samples: pcm, startNs: Int64(i) * 2_000_000, capturedAt: 1000 + Int64(i) * 2)) }
+        for i in 0..<4 { hold.append(Segment(samples: pcm, startNs: Int64(i) * 2_000_000, capturedAt: 1000 + Int64(i) * 2, firstVoicedSample: 0)) }
         XCTAssertEqual(hold.finish(at: 2)?.map { $0.samples.count }, [32])
         XCTAssertEqual(hold.finish(at: 3)?.map { $0.samples.count }, [32, 16])
         XCTAssertEqual(hold.finish(at: 3)?.map(\.capturedAt), [1000, 1002])
@@ -546,7 +570,7 @@ final class ListenerTests: XCTestCase {
         XCTAssertNil(recognizer.ctc)
         let boosting = try await recognizer.prime(["Steve"])
         XCTAssertNil(boosting)
-        let segment = Segment(samples: try samples(from: corpus.appending(path: "Steve-0.wav")), startNs: 1_000_000_000, capturedAt: 1000)
+        let segment = Segment(samples: try samples(from: corpus.appending(path: "Steve-0.wav")), startNs: 1_000_000_000, capturedAt: 1000, firstVoicedSample: 0)
         let utterance = try await recognizer.transcribe(segment, boosting: boosting)
         let result = try XCTUnwrap(utterance)
         XCTAssertEqual(result.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])

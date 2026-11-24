@@ -15,6 +15,7 @@ struct Device: Encodable {
 final class Segment {
     let label: String
     let endedAt: Int64
+    let startedAtHostUs: Int64 = 125
     init(_ label: String, endedAt: Int64 = 1) { self.label = label; self.endedAt = endedAt }
     func through(_ release: Int64) -> Segment? {
         endedAt > release ? Segment(label + "-clipped", endedAt: release) : self

@@ -239,7 +239,7 @@ test("protocol 1.0 is refused at hello before unversioned captures can start", a
   assert.equal((await hello({ version: "two" })).status, 400, "a version that is not one is a 400");
 });
 
-test("protocol 3 requires a process UUID and a legacy hello cannot displace a live owner", async () => {
+test("a process UUID is required and a legacy hello cannot displace a live owner", async () => {
   const body = { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION, devices: [], modelLoaded: true, microphone: "granted" };
   const send = (version: string, id?: string) => json("/voice/listener/hello", "POST", { ...body, version },
     { "x-harness-token": token, ...(id && { "x-voice-listener-id": id }) });

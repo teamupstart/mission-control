@@ -66,8 +66,10 @@ struct Segment {
     let samples: [Float]
     let startNs: Int64
     let capturedAt: Int64 // Unix milliseconds fixed when speech starts
+    let firstVoicedSample: Int
     // Capture and release boundaries use milliseconds since the monotonic host-clock origin.
     var startedAtHostMs: Int64 { startNs / 1_000_000 }
+    var startedAtHostUs: Int64 { startNs / 1000 }
     var endedAt: Int64 { (startNs + Int64(samples.count) * Self.sampleNs + 999_999) / 1_000_000 }
 
     static func completeSamples(_ count: Int, startingAt startNs: Int64, through releaseMs: Int64) -> Int {
@@ -78,13 +80,13 @@ struct Segment {
 
     func through(_ release: Int64) -> Segment? {
         let count = Self.completeSamples(samples.count, startingAt: startNs, through: release)
-        guard count > 0 else { return nil }
+        guard count > firstVoicedSample else { return nil }
         if count == samples.count { return self }
         return prefix(count)
     }
 
     func prefix(_ count: Int) -> Segment {
-        Segment(samples: Array(samples.prefix(count)), startNs: startNs, capturedAt: capturedAt)
+        Segment(samples: Array(samples.prefix(count)), startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample)
     }
 }
 
@@ -96,6 +98,7 @@ private func captureUnixMs(_ startNs: Int64) -> Int64 {
 
 // Keep an onset lead-in and bound the audio retained between speech boundaries.
 struct SpeechGate {
+    static let activityFloor: Float = 0.004
     private static let silenceSamples = 12_800
     private static let maxSegmentSamples = 16_000 * 30
     private var lead: [Float] = []
@@ -103,6 +106,7 @@ struct SpeechGate {
     private var quiet = 0
     private var startNs: Int64 = 0
     private var capturedAt: Int64 = 0
+    private var firstVoicedSample = 0
     private var discarding = false
     private let held: Bool
     private var overflowPrefix: Segment?
@@ -113,6 +117,10 @@ struct SpeechGate {
         let interruptedSpeech = discarding || !samples.isEmpty
         self = SpeechGate(held: held)
         discarding = interruptedSpeech
+    }
+
+    private func segment(_ pcm: [Float]) -> Segment {
+        Segment(samples: pcm, startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample)
     }
 
     // Key-up is an explicit end of speech. Silence alone or a discarded prefix
@@ -126,9 +134,8 @@ struct SpeechGate {
             return prefix.through(release)
         }
         guard !discarding, !samples.isEmpty else { return nil }
-        let segment = Segment(samples: samples + tail, startNs: startNs, capturedAt: capturedAt).through(release)
-        guard let segment, segment.samples.count <= Self.maxSegmentSamples else { return nil }
-        return segment
+        guard let clipped = segment(samples + tail).through(release), clipped.samples.count <= Self.maxSegmentSamples else { return nil }
+        return clipped
     }
 
     mutating func feed(_ frame: [Float], active: Bool, endNs: Int64,
@@ -144,6 +151,7 @@ struct SpeechGate {
             }
             startNs = endNs - Int64(lead.count + frame.count) * Segment.sampleNs
             capturedAt = toUnixMs(startNs)
+            firstVoicedSample = lead.count + (frame.firstIndex { abs($0) > Self.activityFloor } ?? frame.count)
             samples = lead
             lead.removeAll()
         }
@@ -157,14 +165,14 @@ struct SpeechGate {
             samples.append(contentsOf: frame.prefix(count))
             if ended {
                 defer { samples.removeAll() }
-                return Segment(samples: samples, startNs: startNs, capturedAt: capturedAt)
+                return segment(samples)
             }
             if samples.count < Self.maxSegmentSamples { return nil }
         }
         // Drop the entire unfinished instruction. Its tail must never start another segment.
         if held && !discarding {
             samples.append(contentsOf: frame.prefix(Self.maxSegmentSamples - samples.count))
-            overflowPrefix = Segment(samples: samples, startNs: startNs, capturedAt: capturedAt)
+            overflowPrefix = segment(samples)
         }
         samples.removeAll()
         discarding = !ended
@@ -217,7 +225,7 @@ final class SpeechSegmenter {
             // internal hangover can mark digital silence as speech; start counting
             // our own 800 ms boundary immediately when the signal is already quiet.
             let voiced = fvad_process(detector, pcm, pcm.count) == 1
-            let active = voiced && pending.reduce(0) { $0 + $1 * $1 } > Float(pending.count) * 0.000016
+            let active = voiced && pending.reduce(0) { $0 + $1 * $1 } > Float(pending.count) * SpeechGate.activityFloor * SpeechGate.activityFloor
             let frameEnd = endNs - Int64(samples.count - offset) * Segment.sampleNs
             if let segment = gate.feed(pending, active: active, endNs: frameEnd) { result.append(segment) }
             pending.removeAll(keepingCapacity: true)

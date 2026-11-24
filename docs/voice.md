@@ -38,7 +38,8 @@ closed. Run the development command from a terminal app that already has microph
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
 prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
-On startup and every ten seconds, the helper posts protocol 3.0 to `/voice/listener/hello`.
+On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
+Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
 Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
 directive poll and utterance POST, alongside the daemon token. The first compatible hello
 claims the listener lease. While its microphone permission is granted, a second process
@@ -160,9 +161,11 @@ anything reaches Recently heard, a card or the queue. If the same key is still h
 The listener retries the same POST and utterance ID after at least 250 ms. It drops that
 segment after three attempts or 55 seconds, including time spent waiting for a response,
 and continues with later speech. During auto-mute following key-up,
-the daemon accepts the same owner's held revision for segments ending by the release
-timestamp. The listener clips on 16 kHz sample boundaries and rounds the exclusive end up
-to host milliseconds for `x-voice-capture-end-host-ms`. The router uses the Unix
+the daemon accepts the same owner's held revision for segments contained within the key interval.
+The listener rounds the first sample down to host microseconds in `x-voice-capture-start-host-us`.
+It clips on 16 kHz sample boundaries and rounds the exclusive end up to host milliseconds
+for `x-voice-capture-end-host-ms`. A clipped prefix containing only quiet lead-in is discarded.
+The router uses the Unix
 `capturedAt` time for history and for ordering a spoken action against dashboard actions. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. Successive key presses during the

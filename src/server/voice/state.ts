@@ -70,7 +70,7 @@ export class VoiceStateStore {
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
-  private releases = new Map<string, { pressedAt: number; at: number }>();
+  private releases = new Map<string, { pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
@@ -279,7 +279,7 @@ export class VoiceStateStore {
       // Keep the wire header and drain backlog bounded even if a client never posts.
       if (this.releases.size >= 8) this.releases.delete(this.releases.keys().next().value!);
       // Only the wire cutoff rounds down. Event ordering keeps the full host timestamp.
-      this.releases.set(held.revision, { pressedAt: Math.floor(heldSince / 1000), at: Math.floor(eventAt / 1000) });
+      this.releases.set(held.revision, { pressedAtUs: heldSince, at: Math.floor(eventAt / 1000) });
       this.latestRelease = held.revision;
     }
     this.publish();

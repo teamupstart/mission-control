@@ -73,6 +73,13 @@ const flag = (name: string): string | undefined => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 
+function runLabel(label: string | undefined): string {
+  if (!label?.trim() || label === "." || label === ".." || label.startsWith("--") || /[/\\:\p{Cc}]/u.test(label)) {
+    throw new Error("Retest label must be a single file name.");
+  }
+  return label;
+}
+
 function rangeArgument(name: string, fallback: number, minimum: number): number {
   if (!args.includes(name)) return fallback;
   const raw = flag(name) ?? "";
@@ -175,7 +182,7 @@ async function run(): Promise<void> {
   const runner = flag("--runner") ?? "claude";
   if (runner !== "claude" && runner !== "codex") throw new Error("Use --runner claude or codex.");
   const casesPath = flag("--cases") ?? "scripts/voice-spike/routing-holdout.json";
-  const label = flag("--label") ?? `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`;
+  const label = runLabel(args.includes("--label") ? flag("--label") : `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`);
   const lockDir = join(OUT, `retest-${label}.lock.d`);
   const ops = realHelperLockOperations();
   const claim = acquireHelperLock(lockDir, ops);
@@ -253,7 +260,8 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
 }
 
 if (args[0] === "--summarize") {
-  for (const label of args.slice(1)) summarize(label);
+  if (args.length < 2) throw new Error("--summarize requires a retest label.");
+  for (const label of args.slice(1).map(runLabel)) summarize(label);
 } else {
   await run();
 }

@@ -73,8 +73,8 @@ test("offline retest summaries distinguish transport-specific results from histo
   const summarize = (transports: (string | undefined)[]) => {
     const rows = transports.map((transport, index) => ({ id: String(index), runner: "claude", transport,
       category: "split", expected: "split", choice: "split", confidence: 1, member: true, ms: 200, error: null }));
-    writeFileSync(join(out, "retest-fixture.jsonl"), rows.map(row => JSON.stringify(row)).join("\n"));
-    return retest("--summarize", "fixture");
+    writeFileSync(join(out, "retest-fixture A+B.1.jsonl"), rows.map(row => JSON.stringify(row)).join("\n"));
+    return retest("--summarize", "fixture A+B.1");
   };
   for (const mixed of [["sdk", "print"], ["sdk", undefined]]) {
     const result = summarize(mixed);
@@ -172,6 +172,17 @@ test("the retest measures the unrounded deadline for recorded calls", () => {
     assert.equal(summary.overDeadline, ms < 5000 ? 0 : 1);
     const split = summary.byFloor[0].perCategory.find((c: { category: string }) => c.category === "split");
     assert.equal(split.acceptedBeforeDeadline, ms < 5000 ? 1 : 0);
+  }
+});
+
+test("retest and summary labels must be single file names", () => {
+  for (const label of ["batch/one", "batch\\one", ""]) {
+    for (const args of [["--yes", "--cases", "unused.json", "--label", label], ["--summarize", label]]) {
+      const result = retest(...args);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /label must be a single file name/i);
+      assert.equal(result.stdout, "");
+    }
   }
 });
 

@@ -15,6 +15,7 @@ import {
   UNKNOWN_TERMINAL_GUIDANCE,
   launchWorkKey,
   newLaunchFailure,
+  type PendingTerminalLaunch,
   type TaskLaunchFailure,
 } from "@shared/launch-failure.ts";
 import { TerminalLaunchError } from "./terminal/launch-error.ts";
@@ -1451,7 +1452,7 @@ export class Dispatcher {
         : unconfirmedSpawn ? null : false);
       if (alive !== false) {
         const pendingTerminal = alive === null && !cur.homeName && err instanceof UnconfirmedDispatchError
-          ? err.exitRecord.persist(err.deadline) : undefined;
+          ? err.pendingTerminal : undefined;
         this.patch(taskId, {
           status: "failed",
           // Its agent and worktree are kept, so this failure is answered by opening or
@@ -1492,14 +1493,10 @@ export class Dispatcher {
             }).catch((error) => {
               console.warn(`[dispatch] could not reconcile late terminal exit for task ${taskId}:`, error);
             }).finally(() => {
-              err.exitRecord.close();
-              if (pendingTerminal && this.registry.getTask(taskId)?.launchFailure?.pendingTerminal?.receipt !== pendingTerminal.receipt) {
-                discardTerminalReceipt(pendingTerminal.receipt);
-              }
+              err.close(this.registry.getTask(taskId)?.launchFailure?.pendingTerminal);
               if (currentAttempt()) this.dispatchAttempts.delete(taskId);
             });
           }
-          if (!awaitingLateExit && pendingTerminal) discardTerminalReceipt(pendingTerminal.receipt);
         }
       } else {
         this.patch(taskId, {
@@ -1518,7 +1515,7 @@ export class Dispatcher {
       // that agent does. A no-op for an embedded launch.
       settleTerminalLaunchWorkUnit(expectedWorkUnit, launchSucceeded ? "succeeded" : "failed");
       if (!awaitingLateExit) {
-        uncertainTerminal?.exitRecord.close();
+        uncertainTerminal?.close(this.registry.getTask(taskId)?.launchFailure?.pendingTerminal);
         if (currentAttempt()) this.dispatchAttempts.delete(taskId);
       }
       // A Pi wrapper's answer outlives its state home on purpose; this attempt is done with it.
@@ -3777,6 +3774,7 @@ export async function spawnUniquely(
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   let pending: ReturnType<typeof retainPendingTerminalHome> | undefined;
   let exitRecord: ReturnType<typeof observeTerminalWrapperExit> | undefined;
+  let receipt: string | undefined;
   let handoff: Awaited<ReturnType<typeof terminalEnvironmentArgv>> | undefined;
   try {
     exitRecord = observeTerminalWrapperExit(effectiveStateHome);
@@ -3791,30 +3789,40 @@ export async function spawnUniquely(
     } else {
       argv = dispatchLaunchArgv(cwd, agentBin, agentArgs, effectiveStateHome, extraEnv, fallbackAgentArgs);
     }
+    // A pane can run its EXIT trap and remove the source before the backend replies.
+    receipt = exitRecord.pinReceipt();
     return await spawnWrappedUniquely(baseName, shortId, cwd, argv, effectiveStateHome, terminalBackend, deps, ownsLaunch);
   } catch (error) {
-    if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord) {
+    if (error instanceof TerminalLaunchError && error.outcomeUnknown && exitRecord && receipt) {
       pending ??= retainPendingTerminalHome(effectiveStateHome, RESUME_START_MS, exitRecord.revokeUnstarted);
       const record = exitRecord;
-      exitRecord = undefined; // The dispatcher owns the observation until the attempt settles.
-      throw new UnconfirmedDispatchError(error.message, pending.deadline, pending.unstarted, record);
+      exitRecord = undefined; // The dispatcher takes ownership of both the descriptor and the pin.
+      throw new UnconfirmedDispatchError(error.message, { receipt, deadline: pending.deadline }, pending.unstarted, record);
     }
     await handoff?.dispose();
     if (pending) pending.release();
     else cleanupDisposableAgentStateHome(effectiveStateHome);
     throw error;
   } finally {
-    exitRecord?.close();
+    if (exitRecord) {
+      exitRecord.close();
+      if (receipt) discardTerminalReceipt(receipt);
+    }
   }
 }
 
 class UnconfirmedDispatchError extends TerminalLaunchError {
   constructor(
     message: string,
-    readonly deadline: number,
+    readonly pendingTerminal: PendingTerminalLaunch,
     readonly unstarted: Promise<boolean>,
     readonly exitRecord: ReturnType<typeof observeTerminalWrapperExit>,
   ) { super(message, true); }
+
+  close(persisted: PendingTerminalLaunch | undefined): void {
+    this.exitRecord.close();
+    if (persisted?.receipt !== this.pendingTerminal.receipt) discardTerminalReceipt(this.pendingTerminal.receipt);
+  }
 }
 
 /** Managed counterpart: preparation is the sole command source and owns launch cleanup. */

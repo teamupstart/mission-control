@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -13,7 +13,8 @@ import { build } from "esbuild";
 import { originAndCloneAt } from "./helpers/git-fixture.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { fakeEmulator, fakeMultiplexer, fakeTerminals, OK } from "./helpers/terminal-fakes.ts";
-import { launchFailureOutcome } from "../src/shared/launch-failure.ts";
+import { launchFailureOutcome, type PendingTerminalLaunch } from "../src/shared/launch-failure.ts";
+import { restoredTerminalInactive, WRAPPER_EXIT_FILE } from "../src/server/terminal/dispatch-observation.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { shellWords, wrapperAgentCommand } from "../src/server/terminal/shell.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
@@ -164,9 +165,18 @@ ${scenario === "already-exited" ? "" : "process.stdin.resume();"}
     },
   } });
   const { RESUME_START_MS } = await import("../src/server/terminal/resume-lease.ts");
+  let earlyReceipt: PendingTerminalLaunch | undefined;
+  let restoredExit: Promise<boolean> | undefined;
   const retained = new Promise<void>((resolve) => {
     t.after(registry.subscribe(() => {
-      if (registry.getTask(task.id)?.launchFailure?.sessionKept) resolve();
+      const failure = registry.getTask(task.id)?.launchFailure;
+      if (!failure?.sessionKept) return;
+      if (scenario === "already-exited" && failure.pendingTerminal && !earlyReceipt) {
+        earlyReceipt = failure.pendingTerminal;
+        // At this point the wrapper already removed its home. Restart has only the persisted receipt.
+        restoredExit = restoredTerminalInactive(earlyReceipt, () => true);
+      }
+      resolve();
     }));
   });
   if (timesOut) t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -202,6 +212,8 @@ ${scenario === "already-exited" ? "" : "process.stdin.resume();"}
     return;
   }
   if (scenario === "already-exited") {
+    assert.ok(earlyReceipt && await restoredExit, "restart can prove the exit before the live dispatcher settles it");
+    assert.equal(await restoredTerminalInactive(earlyReceipt, () => true), false, "settlement released the receipt");
     assert.equal(launched.status, "failed");
     assert.equal(launched.launchFailure?.terminalInactive, true, "the confirmed exit was handled before the startup deadline");
     assert.equal(launched.worktreePath, null);
@@ -388,12 +400,17 @@ test("dispatch state-home cleanup follows wrapper startup across the handoff dea
     let command: readonly string[] = [];
     const mux = fakeMultiplexer({ sessions: {
       names: PLAIN_NAMES, attachArgv: null, rename: async () => OK, kill: null, alive: null, closeIfOnlyPane: null,
-      async spawnDetached({ argv, name }) { command = argv; return { ...OK, session: name }; },
+      async spawnDetached({ argv, name }) {
+        assert.equal(statSync(join(stateHome, WRAPPER_EXIT_FILE)).nlink, 2, "receipt pinned before backend submission");
+        command = argv;
+        return { ...OK, session: name };
+      },
     } });
     t.mock.timers.enable({ apis: ["setTimeout"] });
     await spawnUniquely("delayed", "1", dir, bin, args, stateHome, "tmux", {}, null,
       { extraEnv: { LISTED: "fixture" }, missing: [] }, fakeTerminals(mux, fakeEmulator()));
     assert.ok(existsSync(stateHome));
+    assert.equal(statSync(join(stateHome, WRAPPER_EXIT_FILE)).nlink, 1, "successful submission released its pin");
     return { command, stateHome };
   }
 

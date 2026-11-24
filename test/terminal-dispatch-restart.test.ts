@@ -28,7 +28,7 @@ const launch = `
   const guard = observeTerminalWrapperExit(home);
   const argv = isolatedAgentArgv(["/bin/sh", "-c", "echo ready; read -r done || exit 0"], { stateHome: home });
   const pending = retainPendingTerminalHome(home, 120000, guard.revokeUnstarted);
-  const record = guard.persist(pending.deadline);
+  const record = { receipt: guard.pinReceipt(), deadline: pending.deadline };
   console.log(JSON.stringify({ home, argv, record }));
   process.stdin.resume();
 `;

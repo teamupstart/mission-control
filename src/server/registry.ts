@@ -914,8 +914,8 @@ function bucketedAge(ms: number | null): number | null {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
-  /** A partial first scan can lack the wrapper. Try again once its launch home appears. */
-  private readonly checkedWarningHomes = new Set<string>();
+  /** A successful partial lookup (null) is checked again when the wrapper home appears. */
+  private readonly checkedWarningHomes = new Map<string, string | null>();
   /** Accepted steers the agent has not read yet, by note key. See `recordSteeredTurn`. */
   private readonly steered = new Map<string, SteeredTurn[]>();
   /** The last few receipts per note key, for the conversation's "received" label. */
@@ -3333,10 +3333,15 @@ export class Registry extends EventEmitter {
         base.missingEnvironment = launched.missingEnvironment;
       });
     }
-    if (d.startedAt && (!prev || (d.missionLaunchHome && !this.checkedWarningHomes.has(d.syntheticId)))) {
-      const missing = restoreTerminalLaunchWarning(d.syntheticId, d.missionLaunchHome);
-      if (missing) base.missingEnvironment = missing;
-      if (d.missionLaunchHome && missing !== null) this.checkedWarningHomes.add(d.syntheticId);
+    const checkedHome = this.checkedWarningHomes.get(d.syntheticId);
+    if (d.startedAt && (checkedHome === undefined || (checkedHome === null && d.missionLaunchHome))) {
+      try {
+        const missing = restoreTerminalLaunchWarning(d.syntheticId, d.missionLaunchHome);
+        if (missing) base.missingEnvironment = missing;
+        if (missing !== null) this.checkedWarningHomes.set(d.syntheticId, d.missionLaunchHome ?? null);
+      } catch {
+        // Publish the session with its current warning and retry the failed read or bind on the next scan.
+      }
     }
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.

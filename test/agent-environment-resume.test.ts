@@ -164,6 +164,40 @@ test("launchPreparedResume invokes the caller's resolver once at launch and publ
   }
 });
 
+test("terminal discovery survives warning read and bind failures and retries both on the next scan", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const { rememberTerminalLaunchWarning } = await import("../src/server/terminal-launch-warnings.ts");
+  const { expectTerminalLaunchWorkUnit } = await import("../src/server/terminal-launch-work-units.ts");
+  const launchHome = mkdtempSync(join(home, "warning-retry-"));
+  const discovery: DiscoveredSession = { syntheticId: "proc:ttys123:456:1000", agent: "claude", name: "claude", nameSource: "process",
+    cwd, gitBranch: null, repoRoot: cwd, gitRoot: cwd, pid: 456, tty: "ttys123", terminals: [], startedAt: 1000,
+    missionLaunched: true, missionLaunchHome: launchHome };
+  expectTerminalLaunchWorkUnit(launchHome, null, null, [token]);
+  rememberTerminalLaunchWarning(launchHome, [removable]);
+  const db = openDb();
+  const registry = new Registry();
+  db.exec("CREATE TEMP TRIGGER fail_warning_bind BEFORE UPDATE ON terminal_launch_warnings BEGIN SELECT RAISE(ABORT, 'fixture bind failure'); END");
+  try {
+    registry.applyDiscovery([discovery]);
+    assert.deepEqual(registry.getSession(discovery.syntheticId)?.missingEnvironment, [token]);
+    registry.applyDiscovery([{ ...discovery, gitBranch: "next-scan" }]);
+    assert.equal(registry.getSession(discovery.syntheticId)?.gitBranch, "next-scan");
+    assert.deepEqual(registry.getSession(discovery.syntheticId)?.missingEnvironment, [token]);
+  } finally { db.exec("DROP TRIGGER fail_warning_bind"); }
+  registry.applyDiscovery([discovery]);
+  assert.deepEqual(registry.getSession(discovery.syntheticId)?.missingEnvironment, [removable]);
+
+  const restarted = new Registry();
+  const partial = { ...discovery, missionLaunchHome: null, missionLaunched: false };
+  db.exec("ALTER TABLE terminal_launch_warnings RENAME TO unavailable_warnings");
+  try {
+    restarted.applyDiscovery([partial]);
+    assert.ok(restarted.getSession(discovery.syntheticId), "partial discovery registered the live process despite the failed read");
+  } finally { db.exec("ALTER TABLE unavailable_warnings RENAME TO terminal_launch_warnings"); }
+  restarted.applyDiscovery([partial]);
+  assert.deepEqual(restarted.getSession(discovery.syntheticId)?.missingEnvironment, [removable]);
+});
+
 test("a restarted daemon restores the terminal launch warning only to its original process", async () => {
   writeProfile(true);
   writeFileSync(process.env.MISSION_CLAUDE_BIN!, "#!/bin/sh\nexit 0\n", { mode: 0o700 });

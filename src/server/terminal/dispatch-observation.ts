@@ -85,19 +85,16 @@ function observe(home: string, fd: number, readOwner: typeof readTerminalWrapper
   return {
     confirmed: () => outcome() === true,
     revokeUnstarted: () => revokeUnstartedWrapper(home, identity),
-    persist(deadline: number): PendingTerminalLaunch | undefined {
-      // Only an ambiguous backend outcome needs a link surviving the daemon's descriptor.
-      const file = fstatSync(fd);
-      const receipt = receiptName(home, file);
-      if (!TERMINAL_RECEIPT_NAME.test(receipt) || dirname(home) !== DISPOSABLE_STATE_ROOT) return;
-      try {
-        if (!privateDirectory(home)) return;
-        const source = join(home, WRAPPER_EXIT_FILE);
-        if (!sameFile(lstatSync(source), file)) return;
-        linkSync(source, join(receiptDirectory(true), receipt));
-        pinned = true;
-        return { receipt, deadline };
-      } catch { return; } // The wrapper can already have exited. A missing record proves nothing.
+    pinReceipt(): string {
+      const receipt = receiptName(home, identity);
+      const source = join(home, WRAPPER_EXIT_FILE);
+      if (!TERMINAL_RECEIPT_NAME.test(receipt) || dirname(home) !== DISPOSABLE_STATE_ROOT
+        || !privateDirectory(home) || !sameFile(lstatSync(source), identity)) {
+        throw new Error("Could not pin the terminal wrapper exit receipt");
+      }
+      linkSync(source, join(receiptDirectory(true), receipt));
+      pinned = true;
+      return receipt;
     },
     async waitForExit(stillOwned: () => boolean): Promise<boolean> {
       let owner: LaunchProcess | null = null;

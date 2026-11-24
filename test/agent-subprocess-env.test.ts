@@ -494,8 +494,7 @@ test("persistent inventory loss retires the observer with an uncertain result an
   t.after(() => cleanupDisposableAgentStateHome(home));
   const inventory = t.mock.fn(async () => "unknown" as const);
   const observation = observeTerminalWrapperExit(home, inventory);
-  const pending = observation.persist(Date.now());
-  assert.ok(pending);
+  const pending = { receipt: observation.pinReceipt(), deadline: Date.now() };
   t.after(() => discardTerminalReceipt(pending.receipt));
   writeFileSync(join(home, LAUNCH_PID_FILE), "42\n");
   t.mock.timers.enable({ apis: ["setTimeout"] });

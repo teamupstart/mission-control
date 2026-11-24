@@ -101,8 +101,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.330",
     "@codemirror/language-data": "^6.5.2",
-    "@earendil-works/pi-ai": "1.5.2",
-    "@earendil-works/pi-coding-agent": "^1.6.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
     "@hono/node-server": "^1.19.17",
     "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1.31.0",

@@ -339,6 +339,26 @@ test("space before an address's closing quote preserves bare and quoted stop beh
   assert.equal(interrupts.length, before + 2);
 });
 
+test("mismatched address wrappers stay in the queued message and cannot trigger a stop", async () => {
+  const before = interrupts.length;
+  for (const [captureText, message] of [
+    ["[Will, ) stop", ") stop"], ["“Will, ’ stop", "’ stop"], ["[Will), stop", "), stop"],
+    ["「[Will, ] 』 stop", "』 stop"],
+  ] as const) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  for (const captureText of ["[Will, ] stop", "「[Will, ] 」 stop"]) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
+});
+
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
   await say("Will, " + body, "mention");

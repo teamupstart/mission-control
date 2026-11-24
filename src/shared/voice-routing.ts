@@ -80,11 +80,15 @@ function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[]
   return null;
 }
 
-function closesWrapper(opener: string, closer: string): boolean {
-  if (opener === '"' || opener === "'") return closer === opener;
-  if (/\p{Ps}/u.test(opener)) return /\p{Pe}/u.test(closer);
-  return /\p{Pf}/u.test(closer);
-}
+// Unicode paired brackets and typographic quote pairs. An unknown closer stays in the message.
+const WRAPPER_PAIRS = new Set(`
+  "" '' () [] {} «» ‹› ‘’ “” ‛’ ‟” ‚’ „” 〝〞 〝〟
+  ༺༻ ༼༽ ᚛᚜ ⁅⁆ ⁽⁾ ₍₎ ⌈⌉ ⌊⌋ 〈〉 ❨❩ ❪❫ ❬❭ ❮❯ ❰❱ ❲❳ ❴❵
+  ⟅⟆ ⟦⟧ ⟨⟩ ⟪⟫ ⟬⟭ ⟮⟯ ⦃⦄ ⦅⦆ ⦇⦈ ⦉⦊ ⦋⦌ ⦍⦐ ⦏⦎ ⦑⦒ ⦓⦔ ⦕⦖ ⦗⦘
+  ⧘⧙ ⧚⧛ ⧼⧽ ⸂⸃ ⸄⸅ ⸉⸊ ⸌⸍ ⸜⸝ ⸠⸡ ⸢⸣ ⸤⸥ ⸦⸧ ⸨⸩ ⹕⹖ ⹗⹘ ⹙⹚ ⹛⹜
+  〈〉 《》 「」 『』 【】 〔〕 〖〗 〘〙 〚〛 ︗︘ ︵︶ ︷︸ ︹︺ ︻︼ ︽︾ ︿﹀ ﹁﹂ ﹃﹄ ﹇﹈
+  ﹙﹚ ﹛﹜ ﹝﹞ （） ［］ ｛｝ ｟｠ ｢｣
+`.trim().split(/\s+/u));
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
 function messageAfterAddress(text: string, end: number): string {
@@ -94,11 +98,15 @@ function messageAfterAddress(text: string, end: number): string {
   const address = text.slice(0, end).trimStart();
   const opening = address.match(/^[\p{Ps}\p{Pi}"'\s]+/u)?.[0].replace(/\s/gu, "") ?? "";
   const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
-  // Some closing marks are attached to the final name token and have already been consumed.
-  const closed = trailing.match(/[\p{Pe}\p{Pf}"']/gu)?.length ?? 0;
-  for (const opener of [...opening].reverse().slice(closed)) {
+  const wrappers = [...opening];
+  for (const mark of trailing.matchAll(/[\p{Pe}\p{Pf}"']/gu)) {
+    if (!WRAPPER_PAIRS.has((wrappers.pop() ?? "") + mark[0])) {
+      return text.slice(end - trailing.length + mark.index).trimEnd();
+    }
+  }
+  for (const opener of wrappers.reverse()) {
     const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
-    if (!closing || !closesWrapper(opener, closing[1]!)) break;
+    if (!closing || !WRAPPER_PAIRS.has(opener + closing[1])) break;
     bodyStart += closing[0].length;
   }
   if (bodyStart > separatorLength) {

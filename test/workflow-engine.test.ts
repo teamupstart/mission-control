@@ -1,7 +1,7 @@
-import { after, test } from "node:test";
+import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
@@ -3132,4 +3132,150 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
       }
     }
   } finally { await engine.stop(); store.cancelRun(`run-${id}`, "test cleanup", clock); }
+});
+
+async function captureRepositoryFixture(t: TestContext, store: InstanceType<typeof WorkflowStore>, submissionId: string) {
+  const { execFileSync } = await import("node:child_process");
+  const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+  const directory = mkdtempSync(join(tmpdir(), "mission-repository-review-supervision-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q", directory]);
+  writeFileSync(join(directory, "submitted.txt"), "submitted\n");
+  const service = WorkflowRepositoryArtifactService.forRoot(store);
+  const signal = new AbortController().signal;
+  store.setSubmissionState(submissionId, "capturing");
+  const snapshot = await service.promote(await service.prepare({ checkout: directory, sourceBase: null }, signal), submissionId);
+  store.commitRepositoryCaptureActivation({ ...snapshot, capture: {
+    context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: null,
+    fingerprint: "frozen", repositoryFingerprint: "repository",
+  } });
+}
+
+for (const timing of ["before initial dispatch", "before provider retry", "during executor setup"] as const) {
+  test(`repository preview disabled ${timing} blocks the frozen read grant`, async (t) => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+    const setPreview = (enabled: boolean) => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled });
+    setPreview(true);
+    t.after(() => setPreview(false));
+    const id = timing.replaceAll(" ", "-");
+    const runId = `run-${id}`;
+    const submissionId = `submission-${id}`;
+    const store = seedSubmission(id, {
+      ...providerRetryGraph,
+      nodes: providerRetryGraph.nodes.map(node => node.kind === "persona"
+        ? { ...node, persona: { ...node.persona, repositoryAccess: "read" } } : node),
+    });
+    await captureRepositoryFixture(t, store, submissionId);
+    let clock = Date.now();
+    let launches = 0;
+    const ordinaryRunner = t.mock.fn(() => { throw new Error("Unexpected prompt-only dispatch"); });
+    const engine = new WorkflowEngine(store, () => {}, {
+      now: () => clock,
+      runnerFor: ordinaryRunner,
+      repositoryExecutor: {
+        get repositoryEvidenceCapability() {
+          // Apply the live change after setup begins, just before the executor is handed the request.
+          if (timing === "during executor setup") setPreview(false);
+          return REPOSITORY_EVIDENCE_CAPABILITY;
+        },
+        async *dispatch(request) {
+          launches++;
+          yield {
+            type: "terminal", eventId: randomUUID(), sequence: 1, timestamp: clock,
+            workloadId: request.workloadId, attemptId: request.attemptId, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+            result: { status: "failed", code: "provider_unavailable", providerFailure: "retryable" },
+          };
+        },
+        async cancel() {},
+        async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
+      },
+    });
+    engine.activateSubmission(submissionId);
+    if (timing === "before initial dispatch") setPreview(false);
+    engine.start();
+    try {
+      if (timing === "before provider retry") {
+        await waitFor(() => store.latestAttemptForNode(submissionId, "p")?.state === "retry_wait");
+        setPreview(false);
+        clock = store.latestAttemptForNode(submissionId, "p")!.retryAt!;
+        engine.wake();
+      }
+      await waitFor(() => store.getRun(runId)?.status === "blocked");
+      const attempt = store.latestAttemptForNode(submissionId, "p")!;
+      assert.equal(ordinaryRunner.mock.callCount(), 0);
+      assert.equal(launches, timing === "before provider retry" ? 1 : 0);
+      assert.equal(store.listLlmCallPage(runId).items.length, timing === "before initial dispatch" ? 0 : 1);
+      assert.equal(openDb().prepare("SELECT id FROM workflow_repository_workloads WHERE attempt_id=?").get(attempt.id), undefined);
+      assert.equal(attempt.state, "error");
+      assert.equal(attempt.attempt, timing === "before provider retry" ? 2 : 1);
+      assert.match(attempt.error ?? "", /Persona repository access preview is off/);
+      assert.deepEqual(store.listReceipts(submissionId).map(receipt => receipt.edgeId), ["s-p"]);
+    } finally {
+      await engine.stop();
+    }
+  });
+}
+
+test("repository review verifies executor capability, event order, and attempt ownership before accepting a verdict", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { RepositoryReview } = await import("../src/server/workflows/repository-review.ts");
+  const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+  const id = "repository-supervision";
+  const store = seedSubmission(id, graph);
+  const submissionId = `submission-${id}`;
+  const runId = `run-${id}`;
+  const reviewer = { ...persona("p1", "Reviewer", "claude", "Review"), repositoryAccess: "read" as const };
+  const signal = new AbortController().signal;
+  await captureRepositoryFixture(t, store, submissionId);
+  store.setRunState(runId, "running", "persona_review", null);
+  applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "persona-repository-access", enabled: false }));
+  type Executor = import("../src/server/workflows/persona-workload/contracts.ts").PersonaWorkloadExecutor;
+  const scenarios = ["unsupported", "conflict", "gap", "equal replay", "stale"] as const;
+  for (const [index, scenario] of scenarios.entries()) {
+    const attempt = index + 1;
+    const attemptId = randomUUID(), callId = randomUUID();
+    store.insertAttempt({ id: attemptId, submissionId, nodeId: "p1", attempt, state: "running",
+      persona: reviewer, inputFingerprint: "frozen", now: 5 });
+    store.insertLlmCall({ id: callId, runId, submissionId, nodeAttemptId: attemptId, purpose: "persona_review",
+      runner: "claude", model: "fake-model", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
+      durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
+    let launches = 0;
+    const executor: Executor = {
+      repositoryEvidenceCapability: scenario === "unsupported" ? "older" : REPOSITORY_EVIDENCE_CAPABILITY,
+      async *dispatch(request) {
+        launches++;
+        const envelope = { workloadId: request.workloadId, attemptId, timestamp: 7 };
+        const accepted = { ...envelope, type: "accepted" as const, eventId: randomUUID(), sequence: 1 };
+        yield accepted;
+        if (scenario === "conflict") yield { ...accepted, timestamp: 8 };
+        if (scenario === "equal replay") yield accepted;
+        yield { ...envelope, type: "repository_verified", eventId: randomUUID(), sequence: scenario === "gap" ? 3 : 2 };
+        yield { ...envelope, type: "persona_started", eventId: randomUUID(), sequence: 3 };
+        if (scenario === "stale") store.cancelRun(runId, "operator cancelled", Date.now());
+        yield { ...envelope, type: "terminal", eventId: randomUUID(), sequence: 4, capability: REPOSITORY_EVIDENCE_CAPABILITY,
+          result: { status: "completed", usage: {}, result: { kind: "persona_verdict", verdict: {
+            verdict: "pass", approvalDetails: { reason: "Verified", evidence: [] }, summary: "Verified", confidence: 1,
+          } } } };
+      },
+      async cancel() {},
+      async reconcile(workloadId) { return { workloadId, state: "unknown", events: [] }; },
+    };
+    const response = new RepositoryReview(store, executor).run({
+      attemptId, submissionId, persona: reviewer, execution: { provider: "claude", model: "fake-model" },
+      accounting: { runId, purpose: "persona_review", attempt: 1, callId }, images: [], prompt: "Review",
+      deadline: Date.now() + 30_000,
+    }, signal);
+    if (scenario === "equal replay") assert.equal(JSON.parse(await response).verdict, "pass");
+    else await assert.rejects(response, {
+      unsupported: /executor capability mismatch/i, conflict: /conflicting repository event/i,
+      gap: /sequence mismatch/i, stale: /ownership expired/i,
+    }[scenario]);
+    assert.equal(launches, scenario === "unsupported" ? 0 : 1);
+    const rows = openDb().prepare("SELECT sequence FROM workflow_repository_events WHERE workload_id=? ORDER BY sequence").all(callId);
+    assert.deepEqual(rows.map(row => row.sequence), {
+      unsupported: [], conflict: [1], gap: [1], stale: [1, 2, 3], "equal replay": [1, 2, 3, 4],
+    }[scenario]);
+  }
 });

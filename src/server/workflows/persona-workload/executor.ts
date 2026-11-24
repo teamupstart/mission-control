@@ -1,3 +1,4 @@
+import { ProviderFailure } from "../../llm/provider-failure.ts";
 import { FIXED_OS_EXECUTABLES } from "../../executables/catalog.ts";
 import { openRepositoryAuditJournal } from "./audit-journal.ts";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
@@ -5,6 +6,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  REPOSITORY_EVIDENCE_CAPABILITY,
   PersonaWorkloadRequestSchema,
   PersonaWorkloadResultSchema,
   PersonaWorkloadVerdictSchema,
@@ -43,6 +45,7 @@ export interface LocalPersonaWorkloadExecutorOptions {
 }
 /** Unwired reference executor. Durable dispatch and reconciliation belong to Phase 3. */
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
+  readonly repositoryEvidenceCapability = REPOSITORY_EVIDENCE_CAPABILITY;
   private readonly jobs = new Map<string, Job>();
   private readonly cancelled = new Map<string, number>();
   constructor(private readonly options: LocalPersonaWorkloadExecutorOptions) {}
@@ -297,6 +300,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         usage: output.usage,
       });
     } catch (error) {
+      if (error instanceof ProviderFailure) result = { status: "failed", code: "provider_unavailable", providerFailure: error.kind };
       if (error instanceof RepositoryCapabilityError)
         result = { status: "failed", code: "capability_mismatch", capabilityReason: error.reason };
     } finally {
@@ -333,7 +337,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       }
       if (auditFailed) result = { status: "failed", code: "audit_unavailable" };
       if (result.status === "failed" && usage) result = { ...result, usage };
-      emit({ type: "terminal", result });
+      emit({ type: "terminal", capability: request.requiredCapability, result });
       job.terminal = true;
     }
   }

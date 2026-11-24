@@ -1,0 +1,47 @@
+import { Tooltip } from "../components/Tooltip.tsx";
+import type { WorkflowRunDetail } from "@shared/workflow.ts";
+import { useEffect, useState } from "react";
+import type { RepositoryEvidenceHandle, RepositoryQueryAuditMetadata } from "@shared/repository-access.ts";
+import { workflowRequest } from "./workflowApi.ts";
+
+export function repositoryCitationLabel(handle: RepositoryEvidenceHandle): string {
+  const range = handle.range;
+  if (range.kind === "line") return `${handle.path} · lines [${range.startLine}, ${range.endLineExclusive})`;
+  if (range.kind === "byte") return `${handle.path} · bytes [${range.startByte}, ${range.endByteExclusive})`;
+  return `${handle.path} · old [${range.oldStartLine}, ${range.oldEndLineExclusive}), new [${range.newStartLine}, ${range.newEndLineExclusive})`;
+}
+
+type Page = { items: { id: number; audit: RepositoryQueryAuditMetadata }[]; nextAfter: number | null };
+
+export function RepositoryQueryHistory({ runId, review }: { runId: string; review: NonNullable<WorkflowRunDetail["repositoryReview"]> }) {
+  const { queries: count, snapshot } = review;
+  const [after, setAfter] = useState(0);
+  const [page, setPage] = useState<Page | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    setError("");
+    void workflowRequest<Page>(`/api/workflow-runs/${encodeURIComponent(runId)}/repository-queries?after=${after}&limit=10`, {
+      signal: controller.signal,
+    }).then(result => { if (!controller.signal.aborted) setPage(result); })
+      .catch(() => { if (!controller.signal.aborted) setError("Repository queries could not be loaded."); });
+    return () => controller.abort();
+  }, [runId, after, count]);
+  return <section className="wf-run-section" aria-label="Repository queries">
+    <header className="wf-run-section-head"><h4>Repository queries</h4><strong>{count} recorded</strong></header>
+    {snapshot && <p>Snapshot <code>{snapshot.digest.slice(0, 12)}</code> · {snapshot.state} · {snapshot.retainedCommits} retained commits{snapshot.bounded && " · retained history boundary"}</p>}
+    <p>{review.bytes} bytes · {count - review.denied - review.failed - review.cancelled} allowed · {review.denied} denied · {review.truncated} truncated · {review.failed} failed · {review.cancelled} cancelled</p>
+    {error && <p role="alert">{error}</p>}
+    {page?.items.map(({ id, audit }) => <details key={id}>
+      <Tooltip label="Inspect query timing and returned ranges"><summary>{audit.operation} · {audit.code ?? audit.status} · {audit.items} {audit.items === 1 ? "item" : "items"}{audit.truncated && " · truncated"}</summary></Tooltip>
+      <p>{audit.bytes} bytes · {audit.durationMs} ms</p>
+      <p>Query <code>{audit.inputHash.slice(0, 12)}</code>{audit.hasNextPage && " · next page available"}</p>
+      {audit.handles.slice(0, 3).map(handle => <p key={handle.evidenceHandleId}><code>{repositoryCitationLabel(handle)}</code></p>)}
+      {audit.handles.length > 3 && <details><Tooltip label="Show the remaining ranges from this query"><summary>{audit.handles.length - 3} more returned ranges</summary></Tooltip>
+        {audit.handles.slice(3).map(handle => <p key={handle.evidenceHandleId}><code>{repositoryCitationLabel(handle)}</code></p>)}
+      </details>}
+    </details>)}
+    {after > 0 && <Tooltip label="Return to the earliest recorded queries"><button className="btn" onClick={() => setAfter(0)}>First queries</button></Tooltip>}
+    {page?.nextAfter != null && <Tooltip label="Show the next page of recorded queries"><button className="btn" onClick={() => setAfter(page.nextAfter!)}>Next queries</button></Tooltip>}
+  </section>;
+}

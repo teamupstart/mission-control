@@ -379,3 +379,13 @@ blocked by an unrelated live process, the failure explains that recovery is stil
 
 See [update relaunch safeguards](desktop-and-packaging.md#update-relaunch-safeguards) for the
 verification, retry and rollback boundaries.
+
+## A repository-enabled Persona is blocked
+
+Open the run and inspect the failed reviewer and Repository queries. A snapshot failure during
+capture means a stable submitted state could not be sealed. Resubmit after the checkout is
+stable. A workload failure after capture uses the original artifact on retry. Check the
+provider executable, its supported build, and the preview setting before choosing **Retry
+the failed call**. A denied path or a history boundary can be an ordinary query outcome.
+A missing artifact, capability mismatch or invalid citation prevents a successful verdict.
+[Provider isolation and the executable gate](repository-review-workloads.md#provider-isolation-and-the-executable-gate)

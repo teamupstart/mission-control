@@ -1,3 +1,4 @@
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
@@ -279,6 +280,7 @@ import {
   BulkUpdateTasksSchema,
   BulkDeleteTasksSchema,
   UpdatePersonaSchema,
+  UpdatePersonaRepositoryAccessSchema,
   ArchivePersonaSchema,
   CreateWorkflowSchema,
   UpdateWorkflowSchema,
@@ -2580,6 +2582,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
     const parsed = await parseBody(c, CreatePersonaSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.repositoryAccess === "read" && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return c.json({ error: "Persona repository access preview is off" }, 403);
     const result = manager.create(parsed.data);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona, 201) : personaFailure(c, result);
@@ -2632,6 +2635,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     } catch (cause) {
       return personaSourceFailure(c, cause);
     }
+    if (result.ok) workflows?.refreshSummaries();
+    return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
+  app.patch("/api/personas/:id/repository-access", bodyLimit({
+    maxSize: PERSONA_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Persona request is too large" }, 413),
+  }), async (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdatePersonaRepositoryAccessSchema);
+    if (!parsed.ok) return parsed.res;
+    if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return c.json({ error: "Persona repository access preview is off" }, 403);
+    const result = manager.setRepositoryAccess(c.req.param("id"), parsed.data);
     if (result.ok) workflows?.refreshSummaries();
     return result.ok ? c.json(result.persona) : personaFailure(c, result);
   });
@@ -3308,6 +3324,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       workflowId,
       session,
     }));
+  });
+  app.get("/api/workflow-runs/:id/repository-queries", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const rawAfter = c.req.query("after");
+    const after = rawAfter === undefined ? 0 : Number(rawAfter);
+    const rawLimit = c.req.query("limit");
+    const limit = rawLimit === undefined ? 20 : Number(rawLimit);
+    if (!Number.isSafeInteger(after) || after < 0) {
+      return c.json({ error: "after must be a non-negative event id" }, 400);
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
+      return c.json({ error: "limit must be an integer from 1 through 20" }, 400);
+    }
+    const page = manager.store.repositoryQueries(c.req.param("id"), after, limit);
+    return page ? c.json(page) : c.json({ error: "no such workflow run" }, 404);
   });
   app.get("/api/workflow-runs/:id/events", (c) => {
     const manager = workflowManager();

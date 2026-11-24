@@ -663,11 +663,12 @@ Foreman's existing PR pass requests a bound CodeRabbit injection. The existing `
 rebuilds ownership and consent, assembles the text, claims current root generations atomically,
 and rechecks under the existing terminal/SDK write lock. No other process writes SQLite.
 
-## Unwired repository review workloads
+## Workflow repository reviews
 
-The [repository review foundation](../repository-review-workloads.md) owns the separate
-repository MCP bundle and isolated SDK workload adapters. It accepts an injected verified
-view lease and emits only metadata in its audit events. The daemon's Phase 2
-`WorkflowRepositoryArtifactService` seals the submitted checkout and materializes a verified
-view for a review workload. `WorkflowManager` reconciles repository artifacts during retention.
-Enabling capture for Workflow submissions and dispatching Persona reviews belong to Phase 3.
+`workflowRequiresRepositoryCapture` examines the pinned graph. A read-enabled Persona selects
+the artifact sealing path in `WorkflowManager`. The manager checks reserved evidence and external
+artifact expectations before promoting the candidate. It activates the ready claim before the
+engine schedules a reviewer. The supervisor binds the resolved execution and model call to the
+active submission claim. The isolated SDK process reads a private view through the repository
+MCP and returns its verdict with opaque evidence references. The daemon records sequenced audit
+metadata and validates each reference against the same call. [Repository review workloads](../repository-review-workloads.md)

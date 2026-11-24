@@ -147,7 +147,10 @@ export class RepositoryOwnership {
       db
         .prepare(
           `UPDATE workflow_repository_snapshot_claims SET state='released',
-      released_at=? WHERE state IN ('provisional','release_pending')`,
+      released_at=? WHERE state='release_pending' OR (state='provisional' AND NOT EXISTS
+        (SELECT 1 FROM workflow_submissions s JOIN workflow_runs r ON r.id=s.run_id WHERE s.id=submission_id
+          AND (s.status='waiting_for_evidence_readiness' OR (s.status='failed' AND r.current_phase='evidence_reconciliation_error')
+               OR EXISTS (SELECT 1 FROM workflow_submissions child WHERE child.parent_submission_id=s.id AND child.status='capturing' AND child.refinement_reason='evidence_recovery'))))`,
         )
         .run(Date.now()),
     );

@@ -191,6 +191,7 @@ export interface EvidenceReadinessPacketInput {
 }
 
 function evidenceLine(reference: EvidenceRef): string {
+  if (reference.kind === "repository") return `[repository] ${reference.operationId} / ${reference.evidenceHandleId}`;
   const location = reference.path
     ? ` (${reference.path}${reference.line ? `:${reference.line}` : ""})`
     : reference.line

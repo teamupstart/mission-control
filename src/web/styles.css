@@ -43315,3 +43315,15 @@ body.foreman-sidecar-open .modal-backdrop {
   font: inherit;
   font-size: 12px;
 }
+
+
+.persona-repository-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem 1rem;
+  padding-block: .8rem;
+}
+.persona-repository-access label { display: grid; gap: .35rem; }
+.persona-repository-access details { flex-basis: 100%; max-width: 68ch; }
+.persona-repository-access summary { cursor: pointer; }

@@ -1,8 +1,11 @@
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { RepositoryQueryHistory, repositoryCitationLabel } from "./RepositoryQueryHistory.tsx";
 import { workflowHasUnpublishedChanges, workflowPublicationRetained } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { useLibraryEscape } from "../library/useLibraryEscape.ts";
 import { featureAction } from "../lib/experience.ts";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type {
   EvidenceRef,
@@ -291,14 +294,19 @@ function ErrorLine({
   );
 }
 
+const RepositoryCitations = createContext<NonNullable<WorkflowRunDetail["repositoryReview"]>["citations"]>({});
+
 function EvidenceList({ evidence }: { evidence: EvidenceRef[] }): React.JSX.Element | null {
+  const citations = useContext(RepositoryCitations);
   if (evidence.length === 0) return null;
   return (
     <ul className="wf-run-evidence">
       {evidence.map((item, index) => (
         <li key={`${item.kind}:${item.path ?? ""}:${item.line ?? ""}:${index}`}>
           <code>{item.kind}{item.path ? ` · ${item.path}` : ""}{item.line ? `:${item.line}` : ""}</code>
-          <span>{item.quote}</span>
+          <span>{item.kind === "repository"
+            ? citations[item.evidenceHandleId] ? repositoryCitationLabel(citations[item.evidenceHandleId]!) : "Repository range unavailable"
+            : item.quote}</span>
         </li>
       ))}
     </ul>
@@ -647,6 +655,13 @@ function SessionActionCard({
   );
 }
 
+function useFrozenAccessLabel(attempt: WorkflowNodeAttempt) {
+  const preview = useFeatureFlag(PERSONA_REPOSITORY_ACCESS_FLAG_ID);
+  if (!attempt.persona) return null;
+  if (attempt.persona.repositoryAccess === "read") return "Read-only repository access";
+  return preview ? "No repository access" : null;
+}
+
 function VerdictCard({
   attempt,
   verdict,
@@ -657,6 +672,7 @@ function VerdictCard({
   meta: ReturnType<typeof verdictMeta>;
 }): React.JSX.Element {
   const parts = [
+    useFrozenAccessLabel(attempt),
     recordedRoutingLabel(meta),
     meta.durationMs === null ? null : `${Math.round(meta.durationMs / 1000)}s`,
     meta.costUsd === null ? "cost unavailable" : `$${meta.costUsd.toFixed(4)}`,
@@ -724,6 +740,7 @@ function AttemptCard({
   attempt: WorkflowNodeAttempt;
   name: string;
 }): React.JSX.Element {
+  const access = useFrozenAccessLabel(attempt);
   return (
     <article className="wf-run-card wf-run-attempt">
       <header className="wf-run-card-head">
@@ -732,6 +749,7 @@ function AttemptCard({
       </header>
       <p className="wf-run-meta">
         {[
+          access,
           recordedRoutingLabel(attempt),
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
@@ -3754,6 +3772,7 @@ export function WorkflowRunView({
     setGrantAnnouncement(`${grantNotice} ${parkedSentence ?? "The review can continue."}`);
   }, [grantNotice, parkedSentence]);
   return (
+    <RepositoryCitations.Provider value={detail.repositoryReview?.citations ?? {}}>
     <section className="wf-run-detail">
       <p className="sr-only" aria-live="assertive">{uncertainAnnouncement}</p>
       <p className="sr-only" aria-live="polite">{grantAnnouncement}</p>
@@ -4434,6 +4453,8 @@ export function WorkflowRunView({
         ]}
       />
 
+      {detail.repositoryReview && <RepositoryQueryHistory key={detail.run.id} runId={detail.run.id} review={detail.repositoryReview} />}
+
       <section className="wf-run-section">
         <header className="wf-run-section-head">
           <h4>Workflow-owned model calls</h4>
@@ -4632,6 +4653,7 @@ export function WorkflowRunView({
         </dl>
       </details>
     </section>
+    </RepositoryCitations.Provider>
   );
 }
 

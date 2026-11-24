@@ -24,7 +24,16 @@ export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
+export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: PERSONA_REPOSITORY_ACCESS_FLAG_ID,
+    label: "Persona repository access",
+    description: "Give selected workflow reviewers read-only access to the submitted checkout.",
+    stage: "preview",
+    keywords: ["workflows", "review", "repository", "persona"],
+  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",

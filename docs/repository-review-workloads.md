@@ -1,14 +1,15 @@
-# Repository review workload foundation
+# Repository review workloads
 
-Mission Control provides an internal executor, repository MCP and portable checkout artifact
-service. Workflow submissions continue to use the existing prompt evidence by default.
+Workflow versions can grant a Persona read access to the submitted checkout. The default
+access mode is `none`. One or more read-enabled Personas in a published graph select a single
+repository capture for the submission.
 Commands and the Inspector gate still pin their existing review commit and publication tree.
 
 ## Ownership and data flow
 
 ```mermaid
 flowchart LR
-  Harness[Internal harness] --> Executor[LocalPersonaWorkloadExecutor]
+  Harness[Workflow engine and repository review supervisor] --> Executor[LocalPersonaWorkloadExecutor]
   Executor --> Materializer[Injected artifact materializer]
   Materializer --> Lease[Verified sparse view lease]
   Executor --> Provider[One Claude or Codex SDK session]
@@ -24,7 +25,7 @@ flowchart LR
 kind is append-only: `persona_verdict` is the sole current member. Later work can append
 `inspector_verdict` without replacing the transport. Resolved provider, model and effort live
 in `request.execution`; the frozen Persona remains separate. Prompt, daemon-owned images,
-call-ledger identity and returned usage survive this boundary. This phase writes no ledger.
+call-ledger identity and returned usage survive this boundary. The daemon records the model call, terminal usage and ordered query metadata.
 
 `WorkflowRepositoryArtifactService.forRoot` gives the manager and supervisor the same
 daemon-owned materializer for a canonical artifact directory. The supervisor can install
@@ -41,7 +42,7 @@ An index-only edit between the prompt read and preparation therefore discards th
 candidate and retries the entire read, even when HEAD, worktree bytes and porcelain
 status all stay the same. A cleanup failure on a rejected candidate is logged.
 Reconciliation retries removal, and the boundary check keeps its original outcome.
-The default caller leaves the callback absent.
+Submissions whose pinned graph only uses prompt evidence leave the callback absent.
 
 The version 1 directory contains a canonical JSON manifest and flat files named by Git
 object id. Each object file holds its Git type and size header followed by its original
@@ -284,6 +285,10 @@ schemas. The repository's provider-schema registry tests both rendering and pars
 The dedicated adapters use the installed Claude Agent SDK and Codex SDK. They start one session
 in an empty temporary home and working directory, use native image inputs and structured output,
 and close the provider/MCP before releasing the view. They do not widen `LlmRunner`.
+
+The isolated provider environment accepts `OPENAI_API_KEY` for Codex or
+`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` for Claude. The repository MCP receives
+a separate environment with its descriptor and the configured Node executable.
 
 Claude has no built-in tools or settings sources, uses strict launch-only MCP configuration,
 and permits only the eight repository names. Its initialization inventory is checked.

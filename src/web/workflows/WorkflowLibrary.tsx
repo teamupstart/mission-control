@@ -326,7 +326,11 @@ export function WorkflowLibrary({
       : null,
     [personas, sessionActions, workflow?.completionPolicy, workflow?.draft],
   );
-  const alreadyPublished = Boolean(workflow && draft.versions.some((version) => version.sourceDraftRevision === workflow.draftRevision));
+  const currentVersion = draft.versions.find(version => version.id === workflow?.currentVersionId);
+  const frozenReadIds = new Set(currentVersion?.readPersonaIds);
+  const accessChanged = workflow?.draft.nodes.some(node => node.kind === "persona"
+    && frozenReadIds.has(node.personaId) !== (personas.find(persona => persona.id === node.personaId)?.repositoryAccess === "read"));
+  const alreadyPublished = Boolean(workflow && currentVersion?.sourceDraftRevision === workflow.draftRevision && !accessChanged);
   // The same rule the daemon enforces in `deleteWorkflowCas`, and BOTH halves of it for the
   // same reason the store checks both: `currentVersionId` is the pointer, the version list is
   // the truth. The pointer is what makes this correct on first paint - it arrives with the

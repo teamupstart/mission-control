@@ -137,7 +137,8 @@ import {
   DEFAULT_WORKFLOW_POLICY,
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
-  EVIDENCE_REF_KINDS,
+  CONTEXT_EVIDENCE_REF_KINDS,
+  PERSONA_REPOSITORY_ACCESS_MODES,
   PERSONA_FINDING_BASES,
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
@@ -6279,7 +6280,14 @@ export const PersonaGuidanceSchema = z
     message: `Persona guidance exceeds ${WORKFLOW_LIMITS.personaGuidanceBytes} UTF-8 bytes`,
   });
 
+
+export const UpdatePersonaRepositoryAccessSchema = z.strictObject({
+  expectedAccessRevision: z.number().int().nonnegative(),
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES),
+});
+
 export const CreatePersonaSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).optional(),
   name: PersonaNameSchema,
   description: PersonaDescriptionSchema.optional().default(""),
   guidanceMarkdown: PersonaGuidanceSchema,
@@ -6392,6 +6400,7 @@ export const WorkflowPointSchema = z.object({
 });
 
 export const PersonaSnapshotSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("none"),
   sourcePersonaId: WorkflowIdSchema,
   sourceRevision: z.number().int().positive(),
   name: PersonaNameSchema,
@@ -6781,8 +6790,8 @@ export const WorkflowJsonSchema: z.ZodType<WorkflowJson, WorkflowJson> = z.lazy(
 );
 
 const WorkflowVerdictTextSchema = z.string().trim().min(1);
-export const WorkflowEvidenceRefSchema = z.object({
-  kind: z.enum(EVIDENCE_REF_KINDS),
+export const WorkflowContextEvidenceRefSchema = z.object({
+  kind: z.enum(CONTEXT_EVIDENCE_REF_KINDS),
   quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
@@ -6803,6 +6812,16 @@ export const WorkflowEvidenceRefSchema = z.object({
     });
   }
 });
+
+export const RepositoryEvidenceReferenceSchema = z.strictObject({
+  kind: z.literal("repository"),
+  operationId: z.uuid(),
+  evidenceHandleId: z.uuid(),
+});
+
+export const WorkflowEvidenceRefSchema = z.discriminatedUnion("kind", [
+  WorkflowContextEvidenceRefSchema, RepositoryEvidenceReferenceSchema,
+]);
 
 /**
  * A string pattern rather than `z.custom`: this schema is part of MCP tool input, and the MCP

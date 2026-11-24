@@ -1,3 +1,7 @@
+import { RepositoryReview } from "./repository-review.ts";
+import type { PersonaWorkloadExecutor } from "./persona-workload/contracts.ts";
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 import { workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
 import { CODERABBIT_ALLOWANCE_REMEDY, resolveCodeRabbitComparison } from "./coderabbit.ts";
@@ -122,6 +126,7 @@ import type { StackDiffBase } from "../stacking/diff-base.ts";
 import type { WorkflowBinding } from "@shared/workflow.ts";
 
 export interface WorkflowEngineOptions {
+  repositoryExecutor?: PersonaWorkloadExecutor;
   /**
    * Stacked pull requests: the verified base a stacked task's review compares against, for
    * the CodeRabbit merge base. Null for every other binding. Throws when the base could not
@@ -465,6 +470,7 @@ export class WorkflowEngine {
   private readonly workflowPolicy: () => WorkflowPolicy;
   private readonly workflowCommand: (slot: WorkflowCheckSlot) => WorkflowCommandView | null;
   private readonly stackDiffBase: NonNullable<WorkflowEngineOptions["stackDiffBase"]>;
+  private readonly repositoryReview: RepositoryReview;
   private stopped = true;
   private checkShutdown = new AbortController();
   private pumping = false;
@@ -484,6 +490,7 @@ export class WorkflowEngine {
     private readonly onRunChanged: (runId: string) => void = () => {},
     options: WorkflowEngineOptions = {},
   ) {
+    this.repositoryReview = new RepositoryReview(store, options.repositoryExecutor);
     this.limit = options.schedule
       ?? createReviewScheduler(options.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
     this.now = options.now ?? Date.now;
@@ -1141,13 +1148,15 @@ export class WorkflowEngine {
       this.handleInfrastructureFailure(claimed, run.id, "The persisted workflow context is invalid");
       return;
     }
-    const prompt = buildPersonaPrompt(
+    const readRepository = node.persona.repositoryAccess === "read";
+    const basePrompt = buildPersonaPrompt(
       node.persona,
       context.data,
       claimed.operatorDirective ?? null,
       claimed.checkEvidence ?? [],
       claimed.reviewInput,
     );
+    const prompt = readRepository ? basePrompt + "\n\nRead the submitted checkout through the repository MCP. Page truncated results. History is bounded; respect history_boundary and revision_out_of_range. Cite a returned item using only {kind: 'repository', operationId, evidenceHandleId}, copied from that query. Shell, writes, host files and network are unavailable." : basePrompt;
     let images: readonly LlmImageInput[];
     try {
       images = resolveSubmissionImageInputs(this.store, submission.id);
@@ -1160,9 +1169,9 @@ export class WorkflowEngine {
     const currentCheckAttemptIds = new Set(
       (claimed.checkEvidence ?? []).map((evidence) => evidence.attemptId),
     );
-    let runner: LlmRunner;
+    let runner: LlmRunner | undefined;
     try {
-      runner = this.runnerFor(execution.runner.id);
+      if (!readRepository) runner = this.runnerFor(execution.runner.id);
     } catch (error) {
       this.handleInfrastructureFailure(claimed, run.id, String(error));
       return;
@@ -1232,6 +1241,10 @@ export class WorkflowEngine {
     // process observed. A restart only knows the persisted basis, so it keeps the generic text.
     let replyMiss: ModelReplyMiss | null = null;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
+      if (readRepository && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) {
+        this.handleInfrastructureFailure(claimed, run.id, "Persona repository access preview is off", true);
+        return;
+      }
       const providerState = claimed.reviewInput
         ? this.store.personaProviderRetryState(claimed.reviewInput.operationId) : null;
       const remainingMs = providerState
@@ -1243,7 +1256,12 @@ export class WorkflowEngine {
       const correction = violation
         ?? (replyMiss ? `the prior reply ${replyMissClause(replyMiss)}` : "the prior reply could not be executed or parsed");
       const result = await runStructured(
-        (request) => runner.run(request, {
+        (request) => readRepository ? this.repositoryReview.run({
+          attemptId: claimed.id, submissionId: submission.id, persona: node.persona, prompt: request,
+          accounting: { runId: run.id, purpose: "persona_review", attempt: index + 1, callId: callIds.get(index + 1)! },
+          execution: { provider: execution.runner.id, model: execution.model.id, ...(effort ? { effort } : {}) },
+          images: [...images], deadline: Date.now() + Math.min(PERSONA_TIMEOUT_MS, remainingMs),
+        }, this.checkShutdown.signal) : runner!.run(request, {
           model: execution.model.id,
           ...(effort ? { effort } : {}),
           timeoutMs: Math.min(PERSONA_TIMEOUT_MS, remainingMs),
@@ -1251,7 +1269,7 @@ export class WorkflowEngine {
         }),
         index === 0 ? prompt : `${prompt}\n\nCorrection required: ${correction}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
         (raw) => {
-          const reply = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          const reply = parsePersonaVerdictReply(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds, readRepository);
           replyMiss = reply instanceof ModelReplyMiss ? reply : null;
           const parsed = replyMiss ? null : reply as PersonaVerdict;
           violation = parsed && claimed.reviewInput ? personaContractViolation(parsed) : null;
@@ -1268,7 +1286,7 @@ export class WorkflowEngine {
         },
         `${node.persona.name} Persona`,
         { start: (_attempt, request) => observer.start(index + 1, request), finish: (_attempt, result) => observer.finish(index + 1, result) },
-        claimed.reviewInput ? { shapeGuaranteed: true } : undefined,
+        claimed.reviewInput || readRepository ? { shapeGuaranteed: true } : undefined,
       );
       if (result.kind === "ok") { verdict = result.value; break; }
       if (result.providerFailure) {
@@ -2051,6 +2069,7 @@ export class WorkflowEngine {
   }
 
   private recover(): void {
+    this.repositoryReview.interrupt();
     for (const run of this.store.listRuns()) {
       if (["completed", "cancelled", "failed"].includes(run.status)) continue;
       this.store.interruptRunningLlmCalls(run.id, this.now());

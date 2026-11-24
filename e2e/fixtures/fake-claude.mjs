@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+if (process.cwd().endsWith("/provider") && process.cwd().includes("/mission-repository-workload-")) {
+  const { runFakeRepositoryReview } = await import("./fake-repository-review.mjs");
+  await runFakeRepositoryReview("claude", process.argv.slice(2));
+  process.exit(0);
+}
+
 import { tmpdir } from "node:os";
 /**
  * A stand-in for the `claude` binary, speaking enough of Claude Code's control protocol

@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+if (process.env.CODEX_HOME?.endsWith("/provider") && process.env.CODEX_HOME.includes("/mission-repository-workload-")) {
+  const { runFakeRepositoryReview } = await import("./fake-repository-review.mjs");
+  await runFakeRepositoryReview("codex", process.argv.slice(2));
+  process.exit(0);
+}
+
 /**
  * A stand-in for the `codex` binary, speaking enough of `codex app-server` for the daemon's
  * Codex SDK driver to bind a thread, run turns, and go idle.

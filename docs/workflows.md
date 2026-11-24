@@ -3138,3 +3138,17 @@ warnings as well as inline review findings; YAML enablement alone does not enabl
 On the Workflow runs page, press **Esc** to return to the selected run’s bound session.
 An open overlay closes first. When a text field has focus, the first press leaves the field.
 Runs whose bound session is no longer available stay on the Runs page.
+
+## Give a Persona read access to the submitted checkout
+
+Enable **Persona repository access** in Settings under Feature Flags. In Library, open the
+Persona, choose **Read-only repository access**, and save the setting. Publish your workflow
+and bind the new version to use it. The setting defaults to **No repository access**. A built-in
+Persona stores its local access override separately from its shipped guidance. Version History
+shows the permission frozen at publication and identifies older snapshots as outdated.
+
+Submitting starts an asynchronous capture. Once the submission is captured, later changes to
+the worktree cannot affect its review. Runs shows repository queries, denials, truncation and
+the path and exact range for each repository citation. Ranges use an exclusive upper bound.
+A blocked review can be retried against its original captured checkout.
+[Repository review workloads](repository-review-workloads.md)

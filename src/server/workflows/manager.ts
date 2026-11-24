@@ -7,7 +7,11 @@ import type { TaskManager } from "../tasks.ts";
 import { LocalPlanPublication, freezeLocalPlanSubmission, verifyLocalPlanEvidence, localPlanRecoveryPending } from "../plans/publication.ts";
 import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferProtectsBinding, transferForTask, taskWorkflowTransferred, TRANSFER_HOLD_REASON } from "../session-transfers/store.ts";
 import { isActiveTask } from "@shared/task-status.ts";
-import type { RawWorkflowContext } from "./context.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
+import type { WorkflowRepositoryArtifactCandidate } from "./repository-artifact/service.ts";
+import type { WorkflowRawCaptureRead, RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
@@ -7266,6 +7270,10 @@ export class WorkflowManager {
   ): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
     // The root's durable boundary also covers Foreman capture and interrupted retries.
     allowUnchanged ||= this.store.submissionRequiresFreshPublishedReview(submission.id);
+    let candidate: WorkflowRepositoryArtifactCandidate | undefined;
+    let releaseClaim = false;
+    let digest: string | undefined;
+    let sealing = false;
     try {
       // A run leaving `waiting_for_session` releases the turn its repair packet was holding.
       // Scheduled before the capture lock rather than after the capture, because a sibling
@@ -7334,8 +7342,12 @@ export class WorkflowManager {
       const version = this.store.getWorkflowVersionById(runRow.workflowVersionId);
       const recovered = submission.refinementReason === "evidence_recovery"
         ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
-      const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await captureStableWorkflowContext(
-        () => (this.options.readContextRaw ?? readWorkflowContextRaw)(
+      const needsRepository = version && workflowRequiresRepositoryCapture(version.graph);
+      if (needsRepository && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) {
+        sealing = true;
+        throw new Error("Persona repository access preview is off");
+      }
+      const read = () => (this.options.readContextRaw ?? readWorkflowContextRaw)(
           this.registry,
           binding,
           this.priorFeedback(run.id),
@@ -7346,13 +7358,35 @@ export class WorkflowManager {
           frozenIntent,
           version?.graph,
           this.store.listReservedWorkflowEvidence(submission.id).filter((item) => item.evidenceKind === "text"),
-        ),
-        (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
+        );
+      const changed = (candidate: WorkflowRawCaptureRead) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
           binding,
           candidate.boundary,
-        ),
-      );
+        );
+      const capture = async () => {
+        if (!needsRepository) return captureStableWorkflowContext(read, changed);
+        sealing = true;
+        const service = this.repositoryArtifacts;
+        const session = binding.sessionId && this.registry.getSession(binding.sessionId);
+        const checkout = session && workflowCheckoutPath(binding, session);
+        if (!checkout) throw new Error("The submission has no local repository checkout");
+        const signal = AbortSignal.timeout(600_000);
+        const prepared = await captureStableWorkflowContext(read, changed, {
+          sampleBoundary: () => service.sampleBoundary(checkout, signal),
+          prepare: (value) => {
+            if (value.repositoryCapture?.checkout !== checkout) throw new Error("The submitted checkout changed");
+            return service.prepare(value.repositoryCapture, signal);
+          },
+          stillCurrent: (item) => service.stillCurrent(item, signal),
+          discard: (item) => service.discard(item),
+        });
+        if (!prepared) throw new Error("The repository changed during both capture attempts");
+        candidate = prepared.candidate;
+        sealing = false;
+        return prepared.captured;
+      };
+      const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await capture();
       if (!this.captureIsActive(run.id, submission.id)) {
         return {
           ok: false,
@@ -7458,6 +7492,17 @@ export class WorkflowManager {
         artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
+      if (needsRepository) {
+        sealing = true;
+        if (candidate) {
+          digest = (await this.repositoryArtifacts.promote(candidate, submission.id)).digest;
+          candidate = undefined;
+        } else {
+          digest = this.store.inheritRepositoryClaim(submission.id);
+        }
+        releaseClaim = true;
+        sealing = false;
+      }
       const priorCapture = WorkflowContextSnapshotSchema.safeParse(submission.context);
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
@@ -7779,8 +7824,10 @@ export class WorkflowManager {
           sourceSubmissionId: selectionSource?.id ?? null,
         }),
       });
-      const fingerprint = workflowContextFingerprint(context);
-      const repositoryFingerprint = workflowRepositoryFingerprint(context);
+      const withDigest = (value: string) => digest
+        ? createHash("sha256").update(JSON.stringify([value, digest])).digest("hex") : value;
+      const fingerprint = withDigest(workflowContextFingerprint(context));
+      const repositoryFingerprint = withDigest(workflowRepositoryFingerprint(context));
       const shippingOnlyContinuation = submission.refinementReason === "session_action"
         && submission.continuationNodeId !== null
         && version !== null
@@ -7808,14 +7855,19 @@ export class WorkflowManager {
             pendingPullRequestAction: version != null
               && workflowHasPendingPullRequestAction(version.graph, submission.continuationNodeId),
             });
-      const runnable = this.store.updateSubmissionCapture(submission.id, {
+      const finalCapture = {
         context: workflowJson(context),
         evidence: workflowJson(context.evidence),
         fingerprint,
         repositoryFingerprint,
         readiness,
-        status: "running",
-      }, Date.now());
+      };
+      // Guards can inspect the candidate before the repository claim and final
+      // context become durable together. A readiness hold freezes it separately.
+      const runnable = digest ? {
+        ...currentSubmission, context: finalCapture.context, evidence: finalCapture.evidence,
+        evidenceFingerprint: fingerprint, repositoryFingerprint, readiness,
+      } : this.store.updateSubmissionCapture(submission.id, { ...finalCapture, status: "running" });
       /*
        * The WORK, not the submission's identity.
        *
@@ -7918,12 +7970,14 @@ export class WorkflowManager {
       }
       if (enforcingReadiness && context.reconciliation?.status !== "complete"
           && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
+        if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
         const blocked = this.store.failEvidencePreparation({
           submissionId: submission.id, kind: "mapping",
           automatic: this.automaticEvidencePreparation(binding, submission),
           detail: { submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete" },
           now: Date.now(),
         });
+        releaseClaim = false; // Mapping recovery inherits the frozen context and its exact artifact.
         this.store.appendEvent(run.id, "evidence_reconciliation_error", {
           submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
         }, Date.now());
@@ -7931,7 +7985,9 @@ export class WorkflowManager {
         return { ok: true, value: { run: blocked, submission: this.store.getSubmission(submission.id)! } };
       }
       if (enforcingReadiness && readiness?.status === "gaps") {
+        if (digest) this.store.updateSubmissionCapture(submission.id, finalCapture);
         if (this.continueExhaustedEvidenceReadiness(run.id, submission.id, binding, Date.now())) {
+          releaseClaim = false;
           return { ok: true, value: { run: this.store.getRun(run.id)!, submission: runnable } };
         }
         const waitedAt = Date.now();
@@ -7956,14 +8012,19 @@ export class WorkflowManager {
           segment: submission.segment,
           gapCodes: readiness.gapCodes,
         }, waitedAt, `evidence-readiness-wait:${submission.id}`);
+        releaseClaim = false; // Readiness override activates this exact claim.
         this.publishRun(run.id);
         this.scheduleEvidenceReadinessDelivery(submission.id);
         return { ok: true, value: { run: waitingRun, submission: waitingSubmission } };
       }
+      if (digest) {
+        this.store.commitRepositoryCaptureActivation({ submissionId: submission.id, digest, capture: finalCapture });
+        releaseClaim = false;
+      }
       this.engine.activateSubmission(submission.id);
       const updatedRun = this.store.getRun(run.id) ?? run;
       this.publishRun(run.id);
-      return { ok: true, value: { run: updatedRun, submission: runnable } };
+      return { ok: true, value: { run: updatedRun, submission: digest ? this.store.getSubmission(submission.id)! : runnable } };
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7975,7 +8036,7 @@ export class WorkflowManager {
         const failingItem = imageFailure ? error.item : null;
         const detail = {
           error: message,
-          ...(imageFailure ? { code: error.code } : {}),
+          ...(imageFailure ? { code: error.code } : sealing ? { code: "repository_capture_unavailable" } : {}),
           ...(failingItem
             ? { itemName: failingItem.displayName, itemClientId: failingItem.clientItemId }
             : {}),
@@ -8010,6 +8071,9 @@ export class WorkflowManager {
         reason: "stale_capture",
         message: `Workflow evidence capture failed: ${message}`,
       };
+    } finally {
+      if (candidate) await this.repositoryArtifacts.discard(candidate);
+      if (releaseClaim) await this.repositoryArtifacts.release(submission.id);
     }
   }
 

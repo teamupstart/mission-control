@@ -1,3 +1,6 @@
+import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import type { PersonaRepositoryAccess } from "@shared/workflow.ts";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -475,11 +478,37 @@ export function PersonaEditor({
   const [guidanceMode, setGuidanceMode] = useState<"editor" | "preview">("editor");
   const archived = persona?.archivedAt != null;
   const builtin = persona?.builtin === true;
+  const accessPreview = useFeatureFlag(PERSONA_REPOSITORY_ACCESS_FLAG_ID);
+  const [accessEdit, setAccessEdit] = useState<{ value: PersonaRepositoryAccess; revision: number } | null>(null);
+  const access = accessEdit?.value ?? persona?.repositoryAccess ?? "none";
+  const accessChanged = accessEdit !== null && access !== (persona?.repositoryAccess ?? "none");
+  async function saveAccess() {
+    if (!persona || !accessEdit || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await personaRequest<PersonaView>(`/api/personas/${persona.id}/repository-access`, {
+        method: "PATCH", body: JSON.stringify({ repositoryAccess: access, expectedAccessRevision: accessEdit.revision }),
+      });
+      setAccessEdit(null);
+      setLoadedRevision(saved.revision);
+      onSaved(saved);
+    } catch (cause) {
+      const refusal = cause as Error & { status?: number; body?: { current?: PersonaView } };
+      if (refusal.status === 409 && refusal.body?.current) {
+        setAccessEdit(null);
+        onSaved(refusal.body.current);
+      }
+      setError(refusal.message || "Could not save repository access");
+    } finally {
+      setSaving(false);
+    }
+  }
   const provenance = persona?.provenance ?? null;
   // A built-in has no source path, and an archived Persona is read-only - re-import is a write.
   const canReimport = persona !== null && provenance !== null && !archived && !builtin;
 
-  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
+  useEffect(() => onDirtyChange(dirty || accessChanged), [dirty, accessChanged, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   // An SSE update for this Persona may arrive while the editor owns typed text. Clean drafts
@@ -545,7 +574,7 @@ export function PersonaEditor({
       const create = persona === null || asDuplicate;
       const name = asDuplicate ? `${submittedDraft.name || "Persona"} copy` : submittedDraft.name;
       const body = create
-        ? { ...submittedDraft, name, runner: knownRunner(submittedDraft.runner) }
+        ? { ...submittedDraft, name, runner: knownRunner(submittedDraft.runner), ...(accessPreview ? { repositoryAccess: access } : {}) }
         : updateBody!;
       const saved = await personaRequest<PersonaView>(
         create ? "/api/personas" : `/api/personas/${persona.id}`,
@@ -565,6 +594,11 @@ export function PersonaEditor({
       setDraft(reconciled.draft);
       setLoadedRevision(saved.revision);
       setDirty(reconciled.dirty);
+      if (!create) {
+        // Saving guidance advances the custom Persona's shared CAS revision.
+        setAccessEdit(edit => edit && edit.revision === loadedRevision
+          ? { ...edit, revision: saved.repositoryAccessRevision ?? saved.revision } : edit);
+      }
       setConflict(null);
       onSaved(saved);
     } catch (cause) {
@@ -854,6 +888,33 @@ export function PersonaEditor({
           default.
         </p>
       ) : null}
+
+      {accessPreview && (
+        <section className="persona-repository-access" aria-label="Repository permissions">
+          <label>Repository access
+            <Tooltip label="Choose which repository files this reviewer may read">
+            <select value={access} disabled={archived || saving} onChange={(event) => {
+              setAccessEdit({ value: event.target.value as PersonaRepositoryAccess,
+                revision: accessEdit?.revision ?? persona?.repositoryAccessRevision ?? 0 });
+              onDraftEdit();
+            }}>
+              <option value="none">No repository access</option>
+              <option value="read">Read-only repository access</option>
+            </select></Tooltip>
+          </label>
+          {persona && !archived && <Tooltip label="Save this access setting for future workflow publications"><button className="btn" disabled={!accessChanged || saving || dirty}
+            onClick={() => void saveAccess()}>Save repository access</button></Tooltip>}
+          <details>
+            <Tooltip label="Show eligible files, limits and publication behavior"><summary>What the reviewer can read</summary></Tooltip>
+            <p>The reviewer can read eligible committed, staged, unstaged and nonignored untracked files from the submitted checkout.
+              Known secret-bearing paths and their blob contents are excluded. Allowed text is scrubbed.</p>
+            <p>History includes up to 2,048 commits and 512 MiB of additional historical blobs.
+              Queries beyond the retained history report a boundary. Shell commands, writes, host files,
+              Git internals, network access and unrestricted provider tools are unavailable.</p>
+            <p>Publish a workflow version to freeze this setting.{builtin && " This local override applies to workflows you publish. Shipped workflow versions keep their original settings."}</p>
+          </details>
+        </section>
+      )}
 
       <section className="persona-guidance" aria-label="Persona guidance" ref={tourGuidanceRef}>
         <header className="file-toolbar persona-guidance-toolbar">

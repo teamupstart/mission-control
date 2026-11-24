@@ -220,3 +220,15 @@ backup is pending and is cleared on success or failure. This preserves the onlin
 and its WAL semantics; it neither changes the scheduling clock nor times out a still-active
 SQLite operation. `test/database-backup-idle.test.ts` exercises an otherwise quiet child
 process with a parent watchdog and verifies that the helper leaves no timer behind.
+
+## Repository review compatibility
+
+Schema 55 stores Persona grants, frozen graph fingerprints, workload ownership and body-free
+query records. Historical graph JSON is preserved byte for byte. Missing access resolves to
+`none` when read. A daemon encountering a newer schema stops before applying schema changes.
+
+For a writer-disabled deployment or rollback, use a build that understands schema 55 and
+disable the Persona repository access preview. Existing runs and their repository citations
+remain readable. A pre-migration backup predates later operator changes. Restoring it is
+disaster recovery. Downgrading a live database to a build that cannot read its citations is
+unsupported.

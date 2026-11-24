@@ -221,3 +221,11 @@ with the flag and that the roster lists what they set.
 A Settings category behind a flag declares it as `flag` in `SETTINGS_CATEGORIES`, and
 `settingsCategoryAvailable(id, flags)` is its one gate for the rail, the page, settings search
 and the palette.
+
+## Persona repository access
+
+The `persona-repository-access` preview enables the Persona editor control and repository
+review dispatch. If the preview is off when a queued or retried read-enabled reviewer is
+dispatched, the run blocks before that reviewer can access the checkout. Published grants
+and audit history remain readable. Publish a new workflow version after granting or
+removing read access. [Workflow instructions](workflows.md#give-a-persona-read-access-to-the-submitted-checkout)

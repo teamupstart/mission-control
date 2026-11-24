@@ -1237,3 +1237,61 @@ test("a mod-calls verdict is shared with the closing doctor only after the build
     await r.cleanup();
   }
 });
+
+test("two overlapping stages of the same mod are serialized, so neither removes the other's published build", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-race-"));
+  try {
+    const first = join(dir, "build-a");
+    const second = join(dir, "build-b");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(first, "1.0.0");
+    writeModBuild(second, "1.1.0");
+    await stageMod({ source: first, dest });
+    // Each run's validation pauses, so without a lock the two would interleave their renames.
+    let inside = 0;
+    let peak = 0;
+    const slow = async () => {
+      inside += 1;
+      peak = Math.max(peak, inside);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      inside -= 1;
+    };
+    const results = await Promise.all([
+      stageMod({ source: first, dest, validate: slow }),
+      stageMod({ source: second, dest, validate: slow }),
+      stageMod({ source: second, dest, validate: slow }),
+    ]);
+    assert.equal(peak, 1, "only one run is staging at a time");
+    assert.deepEqual(results.map((r) => r.version).sort(), ["1.0.0", "1.1.0", "1.1.0"]);
+    const published = JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version;
+    assert.ok(["1.0.0", "1.1.0"].includes(published), "a complete build is published");
+    assert.deepEqual(readdirSync(join(dir, "state")), ["mod"], "no lock, staging or backup folder is left");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a lock left by a dead run is taken over, and one held by a running run is waited for and then reported", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-lock-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    const plantLock = (pid: number) => {
+      mkdirSync(dest + ".lock", { recursive: true });
+      writeFileSync(join(dest + ".lock", "owner"), String(pid));
+    };
+    // A run that was killed: its lock names a process that is gone.
+    plantLock(2147483646);
+    assert.equal((await stageMod({ source, dest })).version, "1.0.0");
+    assert.deepEqual(readdirSync(join(dir, "state")), ["mod"]);
+
+    // A run that is still going (this test's parent process stands in for it): wait, then say so, and touch nothing.
+    plantLock(process.ppid);
+    await assert.rejects(stageMod({ source, dest, lockTimeoutMs: 300 }), new RegExp("another mctl setup \\(process " + process.ppid + "\\) is staging the mod"));
+    assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0");
+    assert.ok(existsSync(dest + ".lock"), "the other run's lock is left alone");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

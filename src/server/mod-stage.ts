@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { MOD_NAME as PLUGIN_NAME } from "../mod/constants.ts";
 
@@ -106,7 +106,7 @@ async function sweepStaleSiblings(dest: string): Promise<void> {
   }
 }
 
-export async function stageMod(options: {
+interface StageOptions {
   source: string;
   dest: string;
   /** The rename used to publish; a test injects one that fails part way through the swap. */
@@ -118,7 +118,11 @@ export async function stageMod(options: {
    * published mod as it was, so a build that setup's own checks reject never displaces a working one.
    */
   validate?: (stagingDir: string) => Promise<void>;
-}): Promise<StagedMod> {
+  /** How long to wait for another run that is staging the same mod, in ms. Default 30 s. */
+  lockTimeoutMs?: number;
+}
+
+async function stageModLocked(options: StageOptions): Promise<StagedMod> {
   const { source, dest } = options;
   const move = options.rename ?? rename;
   const copy = options.copy ?? cp;
@@ -176,4 +180,57 @@ export async function stageMod(options: {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A lock this old is taken to be left by a run that hung or was killed, whatever its process id says. */
+const LOCK_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Takes the lock that serializes stagers of one `dest`: a `{dest}.lock` folder, created atomically.
+ * Without it two overlapping runs could each rename the other's freshly published build aside as
+ * its own backup and then delete it. A lock whose owner is gone (or is very old) is taken over; one
+ * whose owner is running is waited for, then reported, so the person is told rather than left
+ * with a mod one run silently removed.
+ */
+async function acquireLock(dest: string, timeoutMs: number): Promise<() => Promise<void>> {
+  const lock = dest + ".lock";
+  const owner = join(lock, "owner");
+  const deadline = Date.now() + timeoutMs;
+  await mkdir(dirname(dest), { recursive: true });
+  for (;;) {
+    try {
+      await mkdir(lock);
+      await writeFile(owner, String(process.pid));
+      return () => rm(lock, { recursive: true, force: true }).catch(() => undefined);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let pid = NaN;
+    let age = 0;
+    try {
+      pid = Number((await readFile(owner, "utf8")).trim());
+      age = Date.now() - (await stat(owner)).mtimeMs;
+    } catch {
+      // No owner file yet: the holder is between creating the folder and writing it. Judge by the folder's age.
+      age = await stat(lock).then((s) => Date.now() - s.mtimeMs, () => 0);
+    }
+    const dead = Number.isInteger(pid) && pid > 0 ? !isRunning(pid) : age > 5000;
+    if (dead || age > LOCK_STALE_MS) {
+      await rm(lock, { recursive: true, force: true }).catch(() => undefined);
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("another mctl setup (process " + (Number.isInteger(pid) ? pid : "unknown") + ") is staging the mod; wait for it to finish, then run `mctl setup` again");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+export async function stageMod(options: StageOptions): Promise<StagedMod> {
+  const release = await acquireLock(options.dest, options.lockTimeoutMs ?? 30_000);
+  try {
+    return await stageModLocked(options);
+  } finally {
+    await release();
+  }
 }

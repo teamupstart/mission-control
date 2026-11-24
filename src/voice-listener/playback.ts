@@ -20,6 +20,7 @@ export async function playRecording(client: ListenerClient,
   const segments = open(lifetime.signal);
   async function hello() {
     const response = await client.hello({}, lifetime.signal);
+    await response.body?.cancel();
     if (!response.ok) throw new Error("Listener hello refused: " + response.status);
   }
   async function heartbeat() {
@@ -45,7 +46,10 @@ export async function playRecording(client: ListenerClient,
         console.warn("Voice listener dropped one segment after waiting for push-to-talk release.");
         continue;
       }
-      if (!response.ok) throw new Error("Utterance HTTP " + response.status);
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error("Utterance HTTP " + response.status);
+      }
       if (!(await response.json()).accepted) {
         const current = await client.poll(undefined, lifetime.signal);
         if (current.revision === directive.revision) throw new Error("Daemon refused the capture");

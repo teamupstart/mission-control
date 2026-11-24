@@ -384,11 +384,13 @@ for (const [failure, error] of [
   ["rejected capture", "Daemon refused the capture"],
 ] as const) {
   test(`sherpa closes the segment iterator on ${failure}`, async t => {
+    const released: string[] = [];
+    const response = (name: string, status: number) => new Response(new ReadableStream({ cancel() { released.push(name); } }), { status });
     const client = new ListenerClient("http://localhost", tokenPath(), async url => {
       switch (new URL(url).pathname) {
-        case "/voice/listener/hello": return new Response(null, { status: failure === "refused hello" ? 409 : 200 });
+        case "/voice/listener/hello": return response("hello", failure === "refused hello" ? 409 : 200);
         case "/voice/listener/directive": return Response.json({ revision: "unchanged", capture: true, roster: [], inputDevice: "built-in" });
-        case "/voice/utterances": return Response.json({ accepted: false }, { status: failure === "failed post" ? 503 : 200 });
+        case "/voice/utterances": return failure === "failed post" ? response("utterance", 503) : Response.json({ accepted: false });
         default: throw new Error("Unexpected request " + url);
       }
     });
@@ -398,6 +400,7 @@ for (const [failure, error] of [
       text: "test", tokens: [], timestamps: [], durations: [],
     })), { message: error });
     assert.equal(close.mock.callCount(), 1);
+    assert.deepEqual(released, failure === "failed post" ? ["hello", "utterance"] : ["hello"]);
     assert.equal(segments.next().done, true);
   });
 }

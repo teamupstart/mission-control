@@ -37,7 +37,10 @@ export class ListenerClient {
 
   async poll(revision?: string, signal?: AbortSignal): Promise<VoiceListenerDirective & { held?: true }> {
     const response = await this.request("/voice/listener/directive" + (revision ? "?revision=" + encodeURIComponent(revision) : ""), undefined, signal);
-    if (!response.ok) throw new Error("Directive HTTP " + response.status);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error("Directive HTTP " + response.status);
+    }
     const directive = VoiceListenerDirectiveSchema.safeParse(await response.json());
     if (!directive.success) throw new Error("Invalid voice listener directive");
     return response.headers.get(VOICE_HELD_REVISION_HEADER) === directive.data.revision

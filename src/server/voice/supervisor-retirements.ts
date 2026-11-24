@@ -14,6 +14,8 @@ const REPORT_TIMEOUT_MS = 5000;
 
 export async function reportBeforeDeadline(report: SupervisorReporter, instance: string, state: SupervisorReportState, proof: string, stop?: AbortSignal) {
   const deadline = new AbortController();
+  const expiresAt = performance.now() + REPORT_TIMEOUT_MS;
+  const expire = () => deadline.abort(new Error("Voice supervisor " + state + " report timed out."));
   const signal = stop ? AbortSignal.any([stop, deadline.signal]) : deadline.signal;
   signal.throwIfAborted();
   let onAbort: () => void;
@@ -21,11 +23,12 @@ export async function reportBeforeDeadline(report: SupervisorReporter, instance:
     onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-  const timer = setTimeout(() => deadline.abort(new Error("Voice supervisor " + state + " report timed out.")), REPORT_TIMEOUT_MS);
+  const timer = setTimeout(expire, REPORT_TIMEOUT_MS);
   if (state === "exited") timer.unref();
   try {
     // An adapter may ignore cancellation. Its late response cannot acknowledge this attempt.
     const result = await Promise.race([aborted, report(instance, state, proof, signal)]);
+    if (performance.now() >= expiresAt) expire();
     signal.throwIfAborted();
     return result;
   } finally {

@@ -56,14 +56,10 @@ export class VoiceSpeechManager {
   constructor(private readonly deps: SpeechDeps) {
     this.synth = deps.synthesizer ?? unavailable;
     this.ledger = new SpeechHolds(deps.directory);
-    this.recover();
-    this.awaitingRestartGrant = this.ledger.hasPriorSpeech();
-  }
-
-  private recover() {
     const { holds, unknown } = this.ledger.load();
     this.unknown = unknown && holds.length > 0;
     for (const hold of holds) this.recoverHold(hold);
+    this.awaitingRestartGrant = this.ledger.hasPriorSpeech();
   }
 
   private recoverHold(hold: Hold) {
@@ -90,8 +86,6 @@ export class VoiceSpeechManager {
       this.synth.stop();
     } else if (this.held) {
       for (const item of this.items()) if (!item.unanswered) this.confirm(item);
-    } else {
-      this.recover();
     }
   }
 

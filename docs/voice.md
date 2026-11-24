@@ -1025,7 +1025,8 @@ daemon reports the listener unavailable and fails jobs still waiting to play. Ca
 reports playback ended or its supervisor confirms process exit. Switching off
 the preview still lets the holder poll for Stop and either party confirm silence,
 including after a daemon restart. A supervisor can still retire its recorded launch
-after the last playback hold ends. A currently trusted supervisor can also report
+after the last playback hold ends. Switching Voice back on uses the daemon's
+current holds, so an idle listener can resume capture immediately. A currently trusted supervisor can also report
 an exit before its start arrives, even with the preview off. The daemon persists
 that exit so a delayed start cannot register the dead child after re-enabling Voice.
 New speech jobs require the preview to be on.

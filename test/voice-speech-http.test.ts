@@ -849,6 +849,30 @@ test("a stalled start times out before spawning and retires the accepted launch 
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
 });
 
+test("start acknowledgements respect monotonic elapsed time even before the timer callback runs", async t => {
+  let now = performance.now();
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => { signer.pauseExitRetries(); Object.assign(process.env, fixtureSupervisorEnv); });
+  Object.assign(process.env, signer.daemonEnv);
+  const peer = player();
+  for (const elapsed of [4999, 5000, 5100]) {
+    const reports: string[] = [];
+    const launch = signer.launch(home, process.execPath, ["\0"], {}, async (instance, state, proof) => {
+      assert.equal((await peer.report(state, instance, proof)).status, 200);
+      reports.push(state);
+      if (state === "started") now += elapsed;
+    });
+    // The invalid argv reaches spawn only when the start acknowledgement is on time.
+    if (elapsed < 5000) await assert.rejects(launch, { code: "ERR_INVALID_ARG_VALUE" });
+    else await assert.rejects(launch, /started report timed out/);
+    await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
+    assert.deepEqual(reports, ["started", "exited"]);
+    assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+  }
+});
+
 for (const disconnected of [false, true]) test("the first supervised same-account child protects recovery files and retires on OS exit " +
   (disconnected ? "after reconnect" : "while connected"), async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
@@ -1416,6 +1440,27 @@ for (const proof of ["ended", "exited"] as const) {
     assert.equal((await peer.poll()).capture, true);
   });
 }
+
+test("re-enabling Voice preserves an idle listener's capture while a daemon restart recovers its outstanding launch", async () => {
+  const listener = player();
+  await listener.announce(); await listener.hello();
+  assert.throws(() => statSync(ledger), { code: "ENOENT" });
+  assert.equal((await listener.poll()).capture, true);
+  toggle(false);
+  assert.equal((await listener.request("/voice/listener/directive")).status, 404);
+  toggle(true); await listener.hello();
+  const idle = await listener.poll();
+  assert.equal(idle.capture, true);
+  assert.equal(idle.speak, null);
+  assert.equal(store.state().speech.job, null);
+  assert.throws(() => statSync(ledger), { code: "ENOENT" });
+  store.reset(); await listener.hello();
+  const recovered = await listener.poll();
+  assert.equal(recovered.capture, false);
+  assert.equal(recovered.speak.stop, true);
+  assert.equal((await listener.event(recovered.speak.id, "ended")).status, 200);
+  assert.equal((await listener.poll()).capture, true);
+});
 
 test("with Voice off a signed exit retires a recorded launch after its last playback hold ended", async () => {
   const holder = player(), peer = player(crypto.randomUUID());

@@ -12,6 +12,7 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
+import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
 import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
 import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
@@ -888,7 +889,7 @@ export class VoiceRouter {
   }
 
   private openQuestionCount(card: VoiceCard): number {
-    const ids = new Set(card.parts.map(part => part.target?.sessionId));
+    const ids = new Set(card.parts.map(part => part.target?.sessionId ?? part.restoredSession?.id));
     let count = 0;
     for (const id of ids) if (id) count += this.deliverer.openQuestions?.(id) ?? 0;
     return count;
@@ -1041,15 +1042,16 @@ export class VoiceRouter {
     }
     if (!missing.length) return;
     const { mode, roster } = this.state();
-    const target = roster.find(row => row.sessionId === session.id);
-    if (mode === "off" || !target) return;
+    if (mode === "off") return;
+    const target = roster.find(row => row.sessionId === session.id) ?? null;
+    const restoredSession = target ? undefined : { id: session.id, name: agentDisplayName(sessionDisplayNameInput(session, [])).name };
     for (const turn of missing) {
       const id = turn.id.slice(VOICE_TURN_PREFIX.length);
       // Split parts append # and their index to the URL-unreserved capture ID. The
       // live delivery owns every part, even before its queue callback registers a receipt.
       if (this.delivering.has(id.split("#", 1)[0]!)) continue;
       const card: VoiceCard = { id, state: "held", deadline: null,
-        parts: [{ target, text: turn.spokenWords!, turnId: turn.id }], candidates: [], reason: "outbox",
+        parts: [{ target, restoredSession, text: turn.spokenWords!, turnId: turn.id }], candidates: [], reason: "outbox",
         openQuestions: this.deliverer.openQuestions?.(session.id) ?? session.pendingReviews };
       const delivery: CardDelivery = { card, results: [{ outcome: "held" }], ready: true, routingDetail: "" };
       this.outbox.set(turn.id, { delivery, index: 0 });

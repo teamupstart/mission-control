@@ -121,28 +121,31 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   function outcome(part: VoiceCard["parts"][number]) {
     const target = part.target;
     const state = part.outcome ?? card.state;
-    const name = target?.name ?? "agent";
+    const name = target?.name ?? part.restoredSession?.name ?? "agent";
+    const recipient = target ? named(target) : name;
     if (part.immediateStop && !part.outcome) return <b>Stopping {named(target)}…</b>;
     switch (state) {
       case "sent":
       case "queued":
         return <div className="vc-success"><VoiceIcon name={state === "sent" ? "check" : "clock"} />
-          {state === "sent" ? <>{part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to "}{named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
+          {state === "sent" ? <>{part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to "}{recipient}</> : <>Queued behind {recipient}’s current turn</>}</div>;
       case "held": {
         // The live outbox also identifies a session that resumed from hibernation.
-        const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId)) ?? sessionOf(target);
+        const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId))
+          ?? actions.sessions.find(s => s.id === (target?.sessionId ?? part.restoredSession?.id));
+        const address = actions.roster.find(row => row.sessionId === session?.id);
         // A filed plan still gates the task, but its call no longer blocks spoken delivery.
         const question = actions.reviews.find(r => r.sessionId === session?.id && r.status === "pending" && r.waitMode !== "message");
         const turn = session?.pendingTurns.find(t => t.id === part.turnId);
         const wordsId = part.turnId && `voice-recall-words-${part.turnId}`;
-        return <><div className="vc-row"><VoiceIcon name="clock" /><b className="vc-grow">Held for {named(target)}</b>
+        return <><div className="vc-row"><VoiceIcon name="clock" /><b className="vc-grow">Held for {recipient}</b>
           {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
             () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
             "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn, wordsId)}</div>
           <q id={wordsId} className="vc-transcript">{turn?.spokenWords ?? part.text}</q>
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
-          <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>
+          {address && <SpokenHint name={address.name} action="answer">Say <q>{address.name}, answer: ...</q> to answer it.</SpokenHint>}
           <div className="vc-right">{button("Open question", "Open the question holding this message", () => session && actions.openQuestion(session.id), "", !question)}</div></>;
       }
       case "not-running": {
@@ -161,7 +164,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
             : button("Start a follow-up task", "Open a new task on the same repository", () => void run(async () => actions.followUp(target.taskId!)), "", !target?.taskId)}</div></>;
       }
       case "cancelled": return <b>{split ? <>{named(target)} · </> : null}Cancelled</b>;
-      case "failed": return <><b>Failed to send to {named(target)}</b><span className="vc-meta">{part.detail ?? card.detail}</span></>;
+      case "failed": return <><b>Failed to send to {recipient}</b><span className="vc-meta">{part.detail ?? card.detail}</span></>;
     }
   }
 

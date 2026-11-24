@@ -31,6 +31,8 @@ export interface VoiceCard {
   state: "pending" | "resolving" | "unsure" | "cancelled" | VoiceDeliveryOutcome;
   parts: {
     target: SpokenName | null;
+    /** The outbox owner when a restored turn no longer has a spoken roster entry. */
+    restoredSession?: { id: string; name: string };
     text: string;
     outcome?: VoiceDeliveryOutcome | "cancelled";
     /** The addressed command executed for this receipt. */

@@ -170,7 +170,7 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
       <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>
         setSelection({ id: event.target.value, openWindows: new Map(pending.map(card => [card.id, card.deadline])) })}>
         {choices.map(card => <option key={card.id} value={card.id}>
-          {card.parts.map(part => [part.target?.name, card.questionTitle, part.text].filter(Boolean).join(": ")).join(" · ")}
+          {card.parts.map(part => [part.target?.name ?? part.restoredSession?.name, card.questionTitle, part.text].filter(Boolean).join(": ")).join(" · ")}
         </option>)}
       </select></Tooltip>
     </label>}

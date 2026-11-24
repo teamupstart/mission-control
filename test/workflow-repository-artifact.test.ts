@@ -1713,6 +1713,45 @@ test("core.fileMode follows the indexed executable bit for tracked files and pre
   await f.service.discard(fresh);
 });
 
+test("core.symlinks preserves the indexed link type and literal bytes of a regular placeholder", async (t) => {
+  const f = fixture(t);
+  symlinkSync("original-target", join(f.checkout, "link"));
+  f.git("add", "link");
+  f.git("commit", "-qm", "tracked link");
+  f.git("config", "core.symlinks", "false");
+  rmSync(join(f.checkout, "link"));
+  f.git("checkout-index", "--", "link");
+  assert.ok(lstatSync(join(f.checkout, "link")).isFile());
+  assert.equal(f.git("status", "--porcelain"), "");
+  const clean = await f.prepare();
+  const view = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", clean.id, "artifact", "manifest.json"), "utf8"))).view;
+  assert.equal(view.worktreeTree, f.git("write-tree"));
+  assert.deepEqual(view.worktree[0]?.classifications, ["committed"]);
+  f.git("config", "core.symlinks", "true");
+  assert.match(f.git("diff", "--summary"), /mode change 120000 => 100644 link/);
+  assert.equal(await f.service.stillCurrent(clean, signal), false);
+  await f.service.discard(clean);
+  f.git("config", "core.symlinks", "false");
+  f.git("config", "core.fileMode", "false");
+  f.write("link", "new-target");
+  f.write("new-target", "target contents");
+  assert.match(f.git("diff", "--raw"), /:120000 120000 .* M\s+link/);
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
+    gitBinary: "git", workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {} });
+  const link = lease.descriptor.worktree.find(e => e.path === "link");
+  assert.equal(link?.kind, "symlink");
+  assert.deepEqual(link.classifications, ["committed", "unstaged"]);
+  assert.equal((await reader.query("read", { path: "link" })).items[0]?.text, "new-target");
+  assert.equal(lease.descriptor.worktree.find(e => e.path === "new-target")?.kind, "file");
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
+});
+
 test("intent-to-add, executable mode and index-only changes agree with Git's own staged tree", async (t) => {
   const f = fixture(t);
   f.write("intent", "intended");
@@ -2171,6 +2210,33 @@ test("deletions beyond the live worktree limit remain visible through status-onl
     ["new-a", ["untracked"]], ["new-b", ["untracked"]],
     ...["old-a", "old-b", "old-c"].map(path => [path, ["committed", "staged", "deleted"]]),
   ]);
+});
+
+test("a directory replacement reports disjoint HEAD and index deletions above one layer's limit", async (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.checkout, "dir"));
+  const old = ["dir/a", "dir/b", "dir/c"], added = ["dir/d", "dir/e", "dir/f"];
+  for (const path of old) f.write(path, path);
+  f.git("add", "dir");
+  f.git("commit", "-qm", "original directory");
+  f.git("rm", "-qr", "dir");
+  mkdirSync(join(f.checkout, "dir"));
+  for (const path of added) f.write(path, path);
+  f.git("add", "dir");
+  rmSync(join(f.checkout, "dir"), { recursive: true });
+  f.write("dir", "replacement file");
+  mkdirSync(f.root);
+  const snapshot = await seal({ checkout: f.checkout, sourceBase: null }, f.root, signal, { entries: 5 });
+  const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "artifact", "manifest.json"), "utf8")));
+  const view = descriptor(manifest, snapshot.digest, "verified");
+  assert.deepEqual(view.worktree.map(e => e.path), ["dir"]);
+  assert.deepEqual(view.statusDeletions?.map(e => [e.path, e.classifications]), [
+    ...old.map(path => [path, ["committed", "staged", "deleted"]]),
+    ...added.map(path => [path, ["staged", "unstaged", "deleted"]]),
+  ]);
+  const reader = createRepositoryReader({ view, objectDirectory: f.root, gitBinary: "git", workloadId: "work",
+    attemptId: "attempt", signal, budgets: {}, audit: async () => {} });
+  assert.deepEqual((await reader.query("git_status", {})).items.map(e => e.path), ["dir", ...old, ...added]);
 });
 
 test("base-only deletions stay in the base-to-HEAD diff and never appear as checkout status", async (t) => {

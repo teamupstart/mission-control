@@ -61,8 +61,11 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   }
   const index: Layer = new Map();
   const skipWorktree = new Set<string>();
-  const modeSetting = await git(["config", "--includes", "--type=bool", "--get", "core.fileMode"], true);
-  const fileMode = !modeSetting.length || line(modeSetting) === "true";
+  const readBoolean = async (name: string) => {
+    const setting = await git(["config", "--includes", "--type=bool", "--get", name], true);
+    return !setting.length || line(setting) === "true";
+  };
+  const [fileMode, symlinks] = await Promise.all([readBoolean("core.fileMode"), readBoolean("core.symlinks")]);
   const excludes = await git(["config", "--includes", "--path", "-z", "--get", "core.excludesFile"], true);
   if (!Buffer.from(excludes.toString()).equals(excludes)) unavailable();
   const override = excludes.length ? ["-c", "core.excludesFile=" + excludes.subarray(0, -1).toString()] : [];
@@ -133,7 +136,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     const key = collectPath(directory ? raw.subarray(0, -1) : raw);
     if (directory) embedded.push(key);
   });
-  return { root, common, format, emptyBlob, head, shallow, fileMode, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
+  return { root, common, format, emptyBlob, head, shallow, fileMode, symlinks, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);
@@ -270,7 +273,8 @@ export async function workingFile(
     if (!st.isFile()) unavailable();
     const file = await readWorkingFile(path, st, signal);
     const indexedMode = indexed?.mode ?? state.intentModes[key];
-    if (!state.fileMode && indexedMode) file.mode = indexedMode === "100755" ? "100755" : "100644";
+    if (!state.symlinks && indexedMode === "120000") file.mode = "120000";
+    else if (!state.fileMode && indexedMode) file.mode = indexedMode === "100755" ? "100755" : "100644";
     return file;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

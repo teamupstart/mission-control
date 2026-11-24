@@ -29,7 +29,7 @@ const flags = [
   "core.hooksPath=/dev/null",
 ];
 function checkoutEnvironment(configRead: boolean) {
-  // Query the effective excludes file through Git's config reader only. All commands that
+  // Query effective checkout settings through Git's config reader only. All commands that
   // inspect the index and object database run with system and global configuration disabled.
   return {
     ...env,

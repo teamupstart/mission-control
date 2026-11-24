@@ -71,7 +71,9 @@ An absent skip-worktree path takes its indexed mode and object ID in the worktre
 Files present on disk supply their actual contents, including edits outside a sparse cone.
 With `core.fileMode=false`, tracked regular files retain their indexed executable bit,
 including intent-to-add entries. Untracked regular files retain their on-disk mode.
-Changing this Git setting invalidates a pending stable capture.
+With `core.symlinks=false`, a regular file representing an indexed symlink supplies
+its literal target bytes and retains symlink mode. Changing either setting invalidates
+a pending stable capture.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
 Status compares HEAD, the index and the worktree. A deletion already committed between
@@ -81,7 +83,8 @@ read the recreated bytes. When a directory replaces a file
 or a file replaces a directory, the reader gets the missing deletion records from the
 verified path manifest. They appear in `git_status` alongside the replacement files and
 grant no content access. The same status-only records carry deletions when the live
-worktree array is full. Directory replacements are also recovered for previously sealed
+worktree array is full. Their allowance covers the union of deleted HEAD and index
+paths, up to twice the per-layer entry limit. Directory replacements are also recovered for previously sealed
 v1 artifacts.
 Comparing the layers avoids running repository
 filters or textconv to produce status. An unmerged index has no single tree and fails capture.

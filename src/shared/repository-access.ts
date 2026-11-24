@@ -200,11 +200,12 @@ export const RepositoryViewFieldsSchema = z
     index: z.array(entry).max(MAX_REPOSITORY_VIEW_ENTRIES),
   });
 export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.extend({
-  // A deletion may be an ancestor or descendant of a live leaf. It only describes status.
+  // A replacement can hide disjoint sets of deleted HEAD and index leaves.
+  // Each layer has its own entry bound. These records only describe status.
   statusDeletions: z.array(z.strictObject({
     path: RepositoryPathSchema,
     classifications: entry.shape.classifications.refine(values => values.includes("deleted")),
-  })).max(MAX_REPOSITORY_VIEW_ENTRIES).optional(),
+  })).max(2 * MAX_REPOSITORY_VIEW_ENTRIES).optional(),
 }).superRefine((v, ctx) => {
     const ids = new Set(v.retainedRevisions.map((r) => r.id));
     if (

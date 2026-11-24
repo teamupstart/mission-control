@@ -151,6 +151,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/workflows/repository-artifact/git.ts": [
     { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git reads checkout metadata with closed arguments" },
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git streams bounded index and untracked path records" },
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "the same Git reads literal object ids through a private batch wrapper" },
   ],
   "src/server/workflows/persona-workload/git.ts": [

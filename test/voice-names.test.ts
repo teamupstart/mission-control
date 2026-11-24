@@ -101,6 +101,14 @@ test("control-word: a name that is, or sounds like, a word voice listens for on 
   assert.match(spokenNameWarningText({ kind: "control-word", word: "stop" }, "Stop"), /“stop” is a word voice listens for/);
 });
 
+test("a mixed-script name checks the actual first word and never skips an unkeyed word", () => {
+  assert.deepEqual(kinds("サクラ Stop", [{ name: "Stop" }]), []);
+  assert.equal(phoneticKey("サクラ Stop"), "");
+  assert.deepEqual(kinds("Stop サクラ"), ["control-word"]);
+  assert.ok(namesSoundAlike("Steve サクラ", "Stevie"));
+  assert.deepEqual(kinds("サクラ", [{ name: "サクラ" }]), ["sounds-like"]);
+});
+
 test("a name with no letters a to z is still warned when another agent answers to the same name", () => {
   assert.deepEqual(validateSpokenName("サクラ", [{ name: "サクラ" }, { name: "Steve" }]), [{ kind: "sounds-like", names: ["サクラ"] }]);
   for (const name of ["!!!", "✨"]) assert.deepEqual(validateSpokenName(name), [{ kind: "symbols-only" }]);

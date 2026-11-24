@@ -122,7 +122,7 @@ function spokenWords(name: string): string[] {
     .toLowerCase()
     .replace(/[‘’`]/g, "'")
     .split(/[\s\-_/.,]+/)
-    .map((word) => word.replace(/'s$|s'$|'$/, "").replace(/[^a-z]/g, ""))
+    .map((word) => word.replace(/'s$|s'$|'$/, "").replace(/[^\p{L}\p{M}\p{N}]/gu, ""))
     .filter(Boolean);
 }
 
@@ -136,8 +136,8 @@ const isVowel = (letter: string | undefined): boolean => letter !== undefined &&
  * which keeps Bo (`P`) apart from Bobby (`PP`).
  */
 function metaphone(input: string): string {
+  if (!/^[a-z]+$/.test(input)) return "";
   let word = input.toUpperCase();
-  if (!word) return "";
   if (/^(AE|GN|KN|PN|WR)/.test(word)) word = word.slice(1);
   if (word.startsWith("X")) word = `S${word.slice(1)}`;
   if (word.startsWith("WH")) word = `W${word.slice(2)}`;
@@ -222,7 +222,8 @@ function metaphone(input: string): string {
  * punctuation, accents and a possessive do not change it, so "steve's" keys as Steve.
  */
 export function phoneticKey(name: string): string {
-  return spokenWords(name).map(metaphone).filter(Boolean).join(" ");
+  const keys = spokenWords(name).map(metaphone);
+  return keys.every(Boolean) ? keys.join(" ") : "";
 }
 
 /** The edit distance between two short strings. */
@@ -262,9 +263,10 @@ export function namesSoundAlike(a: string, b: string): boolean {
   const keyA = phoneticKey(a);
   const keyB = phoneticKey(b);
   if (keysSoundAlike(keyA, keyB)) return true;
-  const firstA = keyA.split(" ")[0] ?? "";
-  const firstB = keyB.split(" ")[0] ?? "";
-  return (keyA.includes(" ") || keyB.includes(" ")) && keysSoundAlike(firstA, firstB);
+  const wordsA = spokenWords(a);
+  const wordsB = spokenWords(b);
+  return (wordsA.length > 1 || wordsB.length > 1)
+    && keysSoundAlike(metaphone(wordsA[0] ?? ""), metaphone(wordsB[0] ?? ""));
 }
 
 /** Syllables in one word, by vowel groups less a silent final e. Never fewer than one. */
@@ -321,7 +323,7 @@ export function validateSpokenName(name: string, roster: readonly Pick<SpokenNam
   }
   if (alike.length > 0) warnings.push({ kind: "sounds-like", names: alike });
   if (first && words.length === 1 && VOICE_COMMON_WORDS.has(first)) warnings.push({ kind: "common-word" });
-  if (first && words.length === 1 && first.length <= 4 && syllables(first) === 1) warnings.push({ kind: "short" });
+  if (first && /^[a-z]{1,4}$/.test(first) && words.length === 1 && syllables(first) === 1) warnings.push({ kind: "short" });
   return warnings;
 }
 

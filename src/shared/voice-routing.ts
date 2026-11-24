@@ -80,7 +80,7 @@ function splitHead(text: string): string {
     const clause = before.split(/[.!?;:]/u).at(-1) ?? "";
     if (clause.match(/\b(?:between|and)\b/giu)?.at(-1)?.toLowerCase() === "between") return raw;
   }
-  if (literalVerb || /\b(?:word|term|literal|keyword|token|conjunction)$/iu.test(before)) return raw;
+  if (literalVerb || /\b(?:word|term|literal|keyword|token|conjunction|titled|entitled|called|named|labelled|labeled)$/iu.test(before)) return raw;
   if (/\b(?:or|use)$/iu.test(before)) return raw;
   // A replacement can introduce its literal operand with "with the text" or "to the string".
   if (/\b(?:with|to|from|as)\s+(?:the\s+)?(?:text|string|value)$/iu.test(before)) return raw;

@@ -1440,6 +1440,21 @@ test("a comma-delimited joiner after a completed instruction about a keyword is 
   }
 });
 
+test("a confirmed split keeps the title that ends the first command", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const [spoken, expected] of [
+    ["read the section titled Then", "read the section titled Then"],
+    ["read the section called then", "read the section called then"],
+    ["read the section titled Setup, then", "read the section titled Setup"],
+  ] as const) {
+    const id = String(delivered.length);
+    await say(`Steve, ${spoken}, Alice, review the PR`, id);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+  }
+});
+
 test("a confirmed split keeps the last word of an incomplete first instruction", async (t) => {
   for (const choice of ["split", null]) {
     const { router, say, delivered } = routerRig(() => answered(choice));

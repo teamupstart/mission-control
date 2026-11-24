@@ -612,6 +612,21 @@ test("concurrent and sealed candidates retain their storage reservations until c
   }
 });
 
+test("first capture reports a startup reconciliation failure and retries before sealing", async (t) => {
+  const f = fixture(t);
+  const warnings = t.mock.method(console, "warn", () => {});
+  const startup = t.mock.method(f.service, "reconcile", async () => {
+    throw Object.assign(new Error("private storage details"), { code: "EIO" });
+  });
+  await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  assert.equal(f.service.status().failuresByCode.artifact_unavailable, 1);
+  assert.deepEqual(warnings.mock.calls.map(call => call.arguments[0]), ["[workflow] event=repository_seal error=EIO"]);
+  assert.equal(existsSync(join(f.root, "pending")), false);
+  startup.mock.restore();
+  await f.service.discard(await f.prepare());
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+});
+
 test("displaced digest bytes reserve temporary storage until pending cleanup succeeds", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(150_000, 218_000));
   f.write("file", Buffer.alloc(64_000, 0x61));

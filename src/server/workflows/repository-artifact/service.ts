@@ -259,8 +259,8 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     input: RepositoryCaptureInput,
     signal: AbortSignal,
   ): Promise<WorkflowRepositoryArtifactCandidate> {
-    await this.start();
     return this.measured("repository_seal", async () => {
+      await this.start();
       signal.throwIfAborted();
       const { marker, path } = this.allocate("pending");
       try {

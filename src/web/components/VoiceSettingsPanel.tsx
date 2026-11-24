@@ -1,16 +1,43 @@
+import { useState } from "react";
+import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
+import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
   VOICE_CANCEL_WINDOW_SECONDS,
   VOICE_INPUT_DEVICE_BUILT_IN,
   VOICE_INPUT_DEVICE_SYSTEM_DEFAULT,
   VOICE_MODE_LABEL,
   VOICE_REASON_TEXT,
+  type VoiceDecisionProvider,
   type VoiceMode,
   type VoiceState,
   type VoiceInputDevice,
   type VoiceWhenUnsure,
 } from "@shared/voice.ts";
+import {
+  VOICE_KEY_ENV,
+  VOICE_KEY_PROVIDER_LABEL,
+  VOICE_KEY_PROVIDERS,
+  voiceRoutingWithoutProvider,
+  type VoiceKeyProvider,
+  type VoiceKeySource,
+} from "@shared/voice-decide.ts";
+import {
+  spokenNameWarningLabel,
+  spokenNameWarningText,
+  validateSpokenName,
+  type SpokenName,
+} from "@shared/voice-names.ts";
+import type { ResidentProfile } from "@shared/residents.ts";
+import type { Session } from "@shared/types.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
-import { useVoiceDevices, type VoiceConfigState } from "../useVoiceConfig.ts";
+import {
+  rosterAgentName,
+  rosterWithout,
+  sessionsWithoutSpokenName,
+  SPOKEN_NAME_STATE_LABEL,
+} from "../lib/voice-roster.ts";
+import { residentAccentStyle } from "../residents/marker.ts";
+import { useVoiceDecisionKey, useVoiceDevices, type VoiceConfigState, type VoiceDecisionKeyState } from "../useVoiceConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** The lengths the cancel window offers. A stored length outside the list is offered as well. */
@@ -97,18 +124,250 @@ function ModeLine({ voice, onOpenSetup }: { voice: VoiceState | null; onOpenSetu
   );
 }
 
+/** One roster row's Check cell: "Distinct", or each warning in a few words. */
+function RosterCheck({ entry, roster }: { entry: SpokenName; roster: readonly SpokenName[] }): React.JSX.Element {
+  const warnings = validateSpokenName(entry.name, rosterWithout(roster, entry.key));
+  if (warnings.length === 0) return <span className="voice-roster-ok">Distinct</span>;
+  return (
+    <Tooltip label={warnings.map((warning) => spokenNameWarningText(warning, entry.name)).join(" ")}>
+      <span className="voice-roster-warn">
+        <span aria-hidden>⚠</span> {warnings.map(spokenNameWarningLabel).join(" · ")}
+      </span>
+    </Tooltip>
+  );
+}
+
+/** "1 session has", "3 sessions have". */
+function sessionsHave(count: number): string {
+  return count === 1 ? "1 session has" : `${count} sessions have`;
+}
+
 /**
- * Settings > Voice, behind the `voice` flag. The mode line, the input device, then the behavior
- * rows. The roster, placement, indicators and hotkey rows arrive with the phases that make them do
- * something.
+ * Who can be addressed (the adopted roster-first design): every resident and every session with
+ * a call sign, what to say, whether it is running, and any name warning. Names are reviewed here
+ * and set elsewhere, so the table is read-only and says where.
+ */
+function RosterSection({
+  roster,
+  sessions,
+  residentProfiles,
+}: {
+  roster: readonly SpokenName[];
+  sessions: readonly Session[];
+  residentProfiles: readonly ResidentProfile[];
+}): React.JSX.Element {
+  const unaddressed = sessionsWithoutSpokenName(sessions, roster);
+  return (
+    <div className="settings-group voice-roster" data-anchor="voice/roster">
+      <p className="settings-group-label">Who you can address</p>
+      {roster.length === 0 ? (
+        <p className="settings-hint">No agent answers to a name yet.</p>
+      ) : (
+        <table className="voice-roster-table" aria-label="Agents that answer to a spoken name">
+          <thead>
+            <tr>
+              <th scope="col">Agent</th>
+              <th scope="col">Kind</th>
+              <th scope="col">Say</th>
+              <th scope="col">State</th>
+              <th scope="col">Check</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roster.map((entry) => (
+              <tr key={entry.key}>
+                <td>
+                  <span
+                    className={`voice-roster-agent${entry.colorId ? " agent-name-resident" : ""}`}
+                    style={entry.colorId ? residentAccentStyle(entry.colorId) : undefined}
+                  >
+                    {rosterAgentName(entry, residentProfiles)}
+                  </span>
+                </td>
+                <td className="voice-roster-kind">{entry.kind === "resident" ? "Resident" : "Session"}</td>
+                <td className="voice-roster-say">{entry.name}</td>
+                <td className={`voice-roster-state voice-roster-state-${entry.state}`}>{SPOKEN_NAME_STATE_LABEL[entry.state]}</td>
+                <td><RosterCheck entry={entry} roster={roster} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="settings-hint">
+        {unaddressed === 0
+          ? "Every running session can be addressed by name."
+          : `${sessionsHave(unaddressed)} no call sign. Answer one through its open card by starting with “reply”.`}
+        {" "}A resident's reference name is set on its profile, and a session's call sign in Dispatch under Advanced.
+      </p>
+    </div>
+  );
+}
+
+/** The provider menu's choices: Automatic is the stored null, Off stores `off`. */
+const DECISION_PROVIDER_CHOICES: readonly { value: string; stored: VoiceDecisionProvider | null; label: string }[] = [
+  { value: "auto", stored: null, label: "Automatic" },
+  { value: "off", stored: "off", label: "Off" },
+  { value: "openai", stored: "openai", label: VOICE_KEY_PROVIDER_LABEL.openai },
+  { value: "jev", stored: "jev", label: VOICE_KEY_PROVIDER_LABEL.jev },
+];
+
+/** What a key row says about where its provider's key comes from. */
+export const VOICE_KEY_SOURCE_TEXT: Record<Exclude<VoiceKeySource, null> | "none", string> = {
+  environment: "From the environment",
+  settings: "Saved on this Mac",
+  none: "Not set",
+};
+
+/** The group's line when no decision model is in use. */
+export const VOICE_ROUTING_WITHOUT_PROVIDER = `Not set: ${voiceRoutingWithoutProvider()}`;
+
+/** The group's line: the provider in use and what it is sent, or that none is. */
+export function fasterRoutingLine(provider: VoiceKeyProvider | null, savedKeysUnavailable = false): string {
+  if (!provider) return savedKeysUnavailable ? `Saved key status unavailable: ${voiceRoutingWithoutProvider()}` : VOICE_ROUTING_WITHOUT_PROVIDER;
+  const name = VOICE_KEY_PROVIDER_LABEL[provider];
+  return `Using ${name}. Sends the sentence with candidate names or the card question, options and option details.`;
+}
+
+function DecisionKeyRow({ provider, keys }: {
+  provider: VoiceKeyProvider;
+  keys: VoiceDecisionKeyState;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState("");
+  const { busy } = keys;
+  const canWrite = !busy && !!keys.report?.keyRevisions?.[provider];
+  const label = VOICE_KEY_PROVIDER_LABEL[provider];
+  const source = keys.report?.keys[provider].source;
+  const savedKeysUnavailable = keys.report?.savedKeysUnavailable;
+  const from = source == null && (keys.report === null || savedKeysUnavailable) ? "Status unavailable"
+    : source === undefined ? "Reading…"
+    : VOICE_KEY_SOURCE_TEXT[source ?? "none"];
+  const save = async (): Promise<void> => {
+    const key = draft.trim();
+    if (!key) return;
+    // Keep the draft for correction only when the daemon explicitly rejects the key.
+    if (await keys.save(provider, key) !== "refused") setDraft("");
+  };
+  return (
+    <div className="kb-row voice-key-row" data-anchor={`voice/key-${provider}`} role="group" aria-label={label}>
+      <div className="kb-row-text">
+        <span className="kb-row-label">{label} key</span>
+        <span className="kb-row-desc">
+          <span className="voice-key-source">{from}</span>
+          {source === "environment" && <> · <code>{VOICE_KEY_ENV[provider]}</code>. {savedKeysUnavailable ? "Saved key status unavailable" : "A key saved here overrides it on this Mac"}</>}
+          {source === null && !savedKeysUnavailable && <> · or set <code>{VOICE_KEY_ENV[provider]}</code> where the daemon runs</>}
+        </span>
+      </div>
+      <form
+        className="kb-row-controls"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <input
+          className="field-input mono voice-key-input"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={source === "settings" ? "Type to replace it" : "Paste a key"}
+          value={draft}
+          disabled={busy}
+          aria-label={`${label} key`}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <Tooltip label={`Save this key on this Mac. It is never shown again.`}>
+          <button className="btn" type="submit" disabled={!canWrite || !draft.trim()}>Save</button>
+        </Tooltip>
+        {source === "settings" && (
+          <Tooltip label={`Remove the ${label} key saved on this Mac`}>
+            <button className="btn btn-ghost" type="button" disabled={!canWrite}
+              onClick={() => void keys.remove(provider)}>
+              Remove
+            </button>
+          </Tooltip>
+        )}
+      </form>
+    </div>
+  );
+}
+
+/**
+ * Voice settings' "Faster routing" group (contract E): which decision model settles an ambiguous
+ * sentence, and each provider's key. The line at the top names the provider in use and says what
+ * is sent to it, so a key picked up from the environment is visible and one choice from Off.
+ */
+function FasterRoutingGroup({ state, keys }: {
+  state: VoiceConfigState;
+  keys: VoiceDecisionKeyState;
+}): React.JSX.Element {
+  const { config, update, confirmedDecisionProvider } = state;
+  // A key report observes the selection and effective provider together, even if the
+  // independent config poll is stalled. Keep an optimistic selection until its write settles.
+  const stored = state.pendingDecisionProvider !== undefined ? state.pendingDecisionProvider
+    : keys.report ? keys.report.selection : confirmedDecisionProvider;
+  const chosen = DECISION_PROVIDER_CHOICES.find((choice) => choice.stored === stored)?.value ?? "unknown";
+  const provider = keys.report?.provider ?? null;
+  const status = keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable)
+    : keys.report === null ? "Key status unavailable"
+    : confirmedDecisionProvider === "off" ? VOICE_ROUTING_WITHOUT_PROVIDER : "Reading…";
+  return (
+    <div className="settings-group voice-faster-routing" data-anchor="voice/faster-routing">
+      <p className="settings-group-label">Faster routing</p>
+      <p className={`voice-routing-line${provider ? " is-on" : ""}`} role="status" aria-label="Decision model in use">
+        {status}
+      </p>
+      {keys.error && <p className="settings-error">{keys.error}</p>}
+
+      <div className="kb-row" data-anchor="voice/decision-provider">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Decision model</span>
+          <span className="kb-row-desc">
+            Settles a sentence the names alone could not. Automatic uses the first key it finds: one
+            saved here, then <code>{VOICE_KEY_ENV.openai}</code> or <code>{VOICE_KEY_ENV.jev}</code> in
+            the environment. Off never sends anything to either.
+          </span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label="Which decision model settles an ambiguous sentence">
+            <select
+              className="settings-select"
+              value={chosen}
+              disabled={!config && !keys.report}
+              aria-label="Decision model provider"
+              onChange={(event) => {
+                const next = DECISION_PROVIDER_CHOICES.find((choice) => choice.value === event.target.value);
+                if (next) void update({ decisionProvider: next.stored }, keys.report?.providerRevision);
+              }}
+            >
+              {chosen === "unknown" && <option value="unknown" disabled>Checking selection…</option>}
+              {DECISION_PROVIDER_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+            </select>
+          </Tooltip>
+        </div>
+      </div>
+
+      {VOICE_KEY_PROVIDERS.map((id) => (
+        <DecisionKeyRow key={id} provider={id} keys={keys} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Settings > Voice, behind the `voice` flag. The mode line, then who can be addressed, the input
+ * device, then the behavior rows. The indicator previews and recently heard table follow the behavior rows.
  */
 export function VoiceSettingsPanel({
   state,
   voice,
+  sessions = [],
+  residentProfiles = [],
   onNavigate,
 }: {
   state: VoiceConfigState;
   voice: VoiceState | null;
+  sessions?: readonly Session[];
+  residentProfiles?: readonly ResidentProfile[];
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
   const { config, update, error } = state;
@@ -120,10 +379,13 @@ export function VoiceSettingsPanel({
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
   const inputs = voiceInputChoices(devices.devices, inputDevice);
+  const keys = useVoiceDecisionKey(true, state);
   return (
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />
       {error && <p className="settings-error">{error}</p>}
+
+      <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />
 
       <div className="settings-group">
         <p className="settings-group-label">Input</p>
@@ -267,6 +529,10 @@ export function VoiceSettingsPanel({
           </div>
         </div>
       </div>
+
+      <FasterRoutingGroup state={state} keys={keys} />
+      <VoiceIndicatorSettings />
+      <RecentlyHeard roster={voice?.roster ?? []} />
     </section>
   );
 }

@@ -220,3 +220,91 @@ backup is pending and is cleared on success or failure. This preserves the onlin
 and its WAL semantics; it neither changes the scheduling clock nor times out a still-active
 SQLite operation. `test/database-backup-idle.test.ts` exercises an otherwise quiet child
 process with a parent watchdog and verifies that the helper leaves no timer behind.
+
+## Spoken delivery
+
+Schema 55 records the original words, composition time, and receiving work-cycle generation on
+spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
+and generation on the outbox row, alongside the time the transport reached its write guard.
+Confirming delivery and retiring the row atomically carry this time into `session_work_cycles.spoken_hold_since`
+and set `spoken_hold` if that generation is still current. A delayed Stop timestamped before the guard leaves the receiving turn active. Completing
+the work cycle clears the hold in the same write that advances its generation.
+Once the SDK acceptance guard or terminal pre-paste guard stamps the claimed revision, the
+daemon mints a handoff UUID on the outbox row. That UUID identifies the reservation in
+`session_spoken_turns` and travels with the runtime receipt. The outbox stamp and transcript
+reservation commit in one transaction before the transport writes. Recovery clears a legacy
+stamp whose reservation is missing. Its uncertain outbox row still awaits the operator, and
+marking it sent cannot establish a receiving turn or hold Foreman. If a discarded capture is
+replayed with the same outbox ID and revision, it receives a new UUID. A late receipt from the
+first handoff cannot retire the new row or confirm its reservation.
+A claim from the guarded delivery protocol records `spoken_requires_guard`. If the daemon restarts
+before any handoff stamp or reservation exists, it returns the composed message to the queue.
+A partial stamp or a legacy claim without this marker remains uncertain. After the guard, the ledger can
+bind the spoken words even after the pending row retires. For databases from earlier builds
+of this phase, an SDK client UUID can identify its native turn directly. A terminal binding
+needs its saved file and prefix proof to display the disclosure, even if the native ID and
+words still match. Older terminal bindings without that proof display the transcript text.
+A legacy reservation with only a text match lacks proof that its attempt reached handoff.
+
+The Claude and Codex SDKs receive the reservation UUID as a user-message identifier on
+every spoken handoff. For a transport without client identifiers, binding by text requires
+a runtime delivery receipt for that specific outbox revision. The daemon records the receipt in the
+same transaction that retires the delivered outbox row. A retry, discard, or operator marking
+an uncertain attempt sent cannot supply that receipt. A confirmation without a recorded receiving
+generation also leaves the current work cycle alone. After restart, a guarded uncertain terminal
+attempt still contests a later delegated or review delivery of identical words until settlement.
+
+A runtime receipt for text-only delivery also records its confirmation order in the ledger.
+The transcript stream compares its last confirmed reservation ID with the reader's receipt.
+When confirmation changes the attribution of bytes already read, the open dashboard refreshes
+its window and previously loaded pages. Reconnecting after that receipt uses the same check.
+
+For SDK messages, `message_ts` records that the daemon saw the client UUID and matching payload
+in the native transcript. A reserved UUID alone leaves this field null. Abandoning an unconfirmed
+attempt sets `abandoned_at` once. Startup gives existing orphans the same reconciliation window.
+At handoff each reservation records the harness, working directory and available transcript path.
+After 24 hours the hourly sweep can reopen a terminal or SDK transcript even after eviction or
+restart. If the file appeared after handoff, the harness can locate it by the native conversation
+ID and working directory. Live bindings and persisted SDK sessions also cover older reservations.
+Cleanup checks the distinct transcript locations from every saved handoff in that conversation,
+including newer handoffs still inside their receipt window. Before expiring an unobserved SDK
+payload it yields between pages, then rechecks the saved locations, file revisions and eligible rows.
+An unchanged SDK-only file can reuse a complete scan for the same receipt IDs. A missing,
+unreadable or changing file is retried later.
+Hourly terminal cleanup prepares prefix proofs in the worker and rechecks the revision before binding.
+Archived scans bind only spoken receipts and respect native turns already claimed by other senders.
+Delegated and review deliveries bind against the live transcript.
+Pending uncertain attempts remain available for the operator to resolve.
+
+For a confirmed transport without client identifiers, a file created after reservation
+supplies the starting boundary only if its creation millisecond is strictly later than the reservation.
+The first binding saves that file's identity at offset zero in the same transaction as the
+native message ID. For an existing file, the handoff hashes through its captured offset.
+Before reserving the next spoken handoff, the daemon reconciles earlier receipts one transcript
+page at a time and yields between pages. The guard checks the outbox claim, transcript revision
+and competing senders before it records the reservation. A worker failure and a changed file
+revision at the write guard count toward the same
+three-attempt limit. The outbox records the count across restart. Between attempts the
+message is queued and can be recalled. After the third failure, the daemon releases the pending
+hold and tells the operator they can repeat the message.
+If the writer appends during the read, a second matching hash through that same offset
+confirms the prefix when the file revision stays stable throughout that second read. A change
+during confirmation requires a fresh capture. A replaced file or changed prefix invalidates a text-derived disclosure.
+The live dashboard and backward history pages verify visible text-bound receipts in a worker.
+Each page requests its distinct handoff offsets and its fixed end. If the file grows during
+verification, matching proofs on either side of a reread validate the original page while the
+writer continues appending. A changed prefix or replaced file invalidates the disclosure.
+A visible match can require a search from handoff through older pages. The daemon yields between
+those pages and rechecks the file revision before binding. An unrelated append needs no disclosure proof.
+Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
+The same transaction records the conversation and fingerprint in `session_spoken_releases`.
+The first native binding moves pending releases and reservations in one transaction, combining
+duplicate fingerprints at the destination. The next ledger read rechecks competing deliveries and acknowledges that release atomically,
+including after restart. Marking an uncertain terminal turn sent atomically drops its payload
+and transfers the fingerprint, original handoff time, offset and prefix proof to
+`session_other_sends`. The sender claim follows the conversation's first native binding and
+expires with the normal 24-hour send window. A later identical delivery remains contested
+unless the daemon can verify distinct earlier occurrences within its 512 KiB synchronous read
+budget. Neither manual settlement nor this arbitration establishes a Spoken disclosure.
+Startup also removes orphan payloads left by earlier builds. An older file of unknown
+size cannot establish which turn was spoken.

@@ -1,10 +1,11 @@
-import { mkdirSync } from "node:fs";
-import type { Page } from "@playwright/test";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import type { Page, Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
-import { beListener, type Listener } from "../fixtures/voice.ts";
+import { beListener, enableVoice, say, type Listener } from "../fixtures/voice.ts";
 
 // Voice addressing's first phase, end to end against the shipped registry: the flag row toggles,
 // the Voice category appears with it in every open window, a cancel window change persists across
@@ -36,6 +37,123 @@ const rail = (window: Page) => window.getByRole("tablist", { name: "Settings cat
 const voiceTab = (window: Page) => rail(window).getByRole("tab", { name: "Voice" });
 const modeLine = (window: Page) => window.getByRole("status", { name: "Voice mode" });
 const flagToggle = (window: Page) => window.getByRole("button", { name: /^Voice addressing:/ });
+
+test("reopening Voice settings preserves pending Clear and indicator saves, their errors, and retry", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  expect((await say(daemon, "Retained test utterance")).ok).toBe(true);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const history = page.getByRole("region", { name: "Recently heard" });
+  const clear = history.getByRole("button", { name: "Clear" });
+  const indicators = page.getByRole("group", { name: "In the window" });
+  const edge = indicators.getByRole("checkbox", { name: "Edge light" });
+  const heldClear = Promise.withResolvers<Route>();
+  const heldSave = Promise.withResolvers<Route>();
+  let deletes = 0;
+  let saves = 0;
+  await page.route("**/api/voice/heard", route => {
+    if (route.request().method() === "DELETE" && ++deletes === 1) return heldClear.resolve(route);
+    return route.continue();
+  });
+  await page.route("**/api/voice/indicators", route => {
+    if (route.request().method() === "PUT" && ++saves === 1) return heldSave.resolve(route);
+    return route.continue();
+  });
+  await clear.click();
+  await edge.check();
+  const [deletion, save] = await Promise.all([heldClear.promise, heldSave.promise]);
+  async function reopen() {
+    await page.getByRole("button", { name: "← Fleet" }).click();
+    await expect(rail(page)).toHaveCount(0);
+    await page.getByRole("button", { name: /^Settings\b/ }).click();
+    await voiceTab(page).click();
+  }
+  await reopen();
+  await expect.soft(clear).toBeDisabled({ timeout: 1000 });
+  await expect.soft(indicators.getByRole("checkbox", { disabled: true })).toHaveCount(5, { timeout: 1000 });
+  await expect(edge).toBeChecked({ timeout: 1000 });
+  await clear.evaluate(button => (button as HTMLButtonElement).click());
+  await edge.evaluate(box => (box as HTMLInputElement).click());
+  expect([deletes, saves]).toEqual([1, 1]);
+  await deletion.fulfill({ status: 503, json: { error: "History could not be cleared." } });
+  await save.fulfill({ status: 503, json: { error: "save_failed" } });
+  async function expectRefusals() {
+    await expect(history.getByRole("alert")).toHaveText("History could not be cleared.");
+    await expect(history.getByRole("cell", { name: "Retained test utterance" })).toBeVisible();
+    await expect(indicators.getByRole("alert")).toHaveText("Could not save the indicator selection.");
+    await expect(edge).not.toBeChecked();
+  }
+  await expectRefusals();
+  await reopen();
+  await expectRefusals();
+  if (EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    const captureDir = mkdtempSync(join(EVIDENCE, "reopened-"));
+    await page.mouse.move(0, 0);
+    await voiceTab(page).blur();
+    await expect(page.locator(".tooltip")).toHaveCount(0);
+    await indicators.screenshot({ path: join(captureDir, "indicator-refusal.png") });
+    await history.screenshot({ path: join(captureDir, "clear-refusal.png") });
+  }
+  await clear.click();
+  await edge.check();
+  await expect(history.getByRole("alert")).toHaveCount(0);
+  await expect(history).toContainText("Nothing heard yet.");
+  await expect(indicators.getByRole("alert")).toHaveCount(0);
+  await expect(edge).toBeEnabled();
+  await expect(edge).toBeChecked();
+  expect([deletes, saves]).toEqual([2, 2]);
+});
+
+test("only Settings > Voice polls for voice config, and a pending save survives leaving Settings", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const endpoint = daemon.baseURL + "/api/voice/config";
+  let reads = 0;
+  page.on("request", request => {
+    if (request.url() === endpoint && request.method() === "GET") reads++;
+  });
+  await page.clock.install();
+  await page.reload();
+  const settings = page.getByRole("button", { name: /^Settings\b/ });
+  await expect(settings).toBeVisible();
+  await page.clock.fastForward(6000);
+  expect(reads, "the fleet does not read voice config").toBe(0);
+  await settings.click();
+  await expect(voiceTab(page)).toBeVisible();
+  await page.clock.fastForward(6000);
+  expect(reads, "the Display category does not read voice config").toBe(0);
+
+  await voiceTab(page).click();
+  const length = page.getByRole("combobox", { name: "Cancel window length" });
+  await expect(length).toHaveValue("4");
+  expect((await page.request.put(endpoint, { data: { cancelWindow: { seconds: 6 } } })).ok()).toBe(true);
+  await page.clock.fastForward(6000);
+  await expect(length, "the open Voice panel picks up an external change").toHaveValue("6");
+
+  const held = Promise.withResolvers<void>();
+  await page.route(endpoint, async route => {
+    if (route.request().method() === "PUT") {
+      await held.promise;
+      return route.fulfill({ status: 503, json: { error: "save_failed" } });
+    }
+    return route.continue();
+  });
+  const saving = page.waitForRequest(req => req.url() === endpoint && req.method() === "PUT");
+  await length.selectOption("8");
+  await saving;
+  await page.getByRole("button", { name: "← Fleet" }).click();
+  await expect(rail(page)).toHaveCount(0);
+  const closedAt = reads;
+  const refused = page.waitForResponse(response => response.url() === endpoint && response.status() === 503);
+  held.resolve();
+  await refused;
+  await page.clock.fastForward(12_000);
+  expect(reads, "the poll stops when the Voice panel closes").toBe(closedAt);
+  await settings.click();
+  await voiceTab(page).click();
+  await expect(page.getByText("That change didn't stick: save_failed")).toBeVisible();
+  await expect(length).toHaveValue("6");
+  await expect.poll(() => reads).toBeGreaterThan(closedAt);
+});
 
 test("the voice flag brings Settings > Voice and the Setup family, and the mode line follows the voice state", async ({ dashboard: page, context, daemon }) => {
   test.setTimeout(120_000);

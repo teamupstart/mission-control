@@ -1,3 +1,4 @@
+import { useReportAuthorName } from "../lib/sessionReports.ts";
 import { useEffect, useRef, useState } from "react";
 import type { ReportItem } from "@shared/reports.ts";
 import { api } from "../lib/api.ts";
@@ -26,6 +27,7 @@ export function ReportDocumentReader({
   report: ReportItem;
   onClose: () => void;
 }): React.JSX.Element {
+  const authorName = useReportAuthorName(report.author);
   const document = report.document;
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   const frame = useRef<HTMLIFrameElement>(null);
@@ -74,7 +76,7 @@ export function ReportDocumentReader({
       <header className="modal-head">
         <div className="report-document-title">
           <strong>{report.title}</strong>
-          <span className="dim"> · {report.author.name} · {name}</span>
+          <span className="dim"> · {authorName} · {name}</span>
         </div>
         <Tooltip label="Close the document. The report stays where it is">
           <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>

@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -188,6 +188,54 @@ test("status reports partial retention failures without hiding committed work", 
     assert.equal(status.lastRetentionDeleted, 1);
   } finally {
     console.error = originalError;
+    await manager.stop();
+  }
+});
+
+test("artifact reconciliation leaves unused storage absent and reports failures separately from retention", async (t) => {
+  clearWorkflowTables(db);
+  const registry = new Registry();
+  const manager = new WorkflowManager(registry, new WorkflowStore(db), {
+    runRetention: () => ({ compactedRunIds: ["compacted"], deletedRunIds: ["deleted"], failedRunCount: 0 }),
+  });
+  const root = join(home, "workflow-repositories");
+  await manager.repositoryArtifacts.reconcile();
+  assert.equal(existsSync(root), false);
+  writeFileSync(root, "reserved name occupied");
+  const errors = t.mock.method(console, "error", () => {});
+  registry.applyDiscovery([]);
+  try {
+    manager.start();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const status = manager.status();
+    assert.equal(status.lastRetentionError, null);
+    assert.equal(status.lastRetentionCompacted, 1);
+    assert.equal(status.lastRetentionDeleted, 1);
+    assert.ok(errors.mock.calls.some(call =>
+      call.arguments[0] === "[workflow] event=repository_reconcile_failed error=artifact_unavailable"));
+  } finally {
+    await manager.stop();
+    rmSync(root);
+  }
+});
+
+test("artifact reconciliation logs the SQLite error code without its message or retention failure", async (t) => {
+  clearWorkflowTables(db);
+  const registry = new Registry();
+  const manager = new WorkflowManager(registry, new WorkflowStore(db));
+  t.mock.method(manager.repositoryArtifacts, "reconcile", async () => {
+    db.prepare("SELECT * FROM private_missing_table").get();
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  registry.applyDiscovery([]);
+  try {
+    manager.start();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const messages = errors.mock.calls.map(call => String(call.arguments[0]));
+    assert.ok(messages.includes("[workflow] event=repository_reconcile_failed error=ERR_SQLITE_ERROR"));
+    assert.doesNotMatch(messages.join("\n"), /private_missing_table/);
+    assert.equal(manager.status().lastRetentionError, null);
+  } finally {
     await manager.stop();
   }
 });

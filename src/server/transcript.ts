@@ -1,4 +1,3 @@
-import { statSync } from "node:fs";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type {
   TranscriptForwardPage,
@@ -9,6 +8,9 @@ import type {
   TranscriptStreamRead,
   TranscriptWindow,
 } from "./harness/types.ts";
+import { prepareHandoffBoundaries, transcriptBoundary, transcriptSnapshot } from "./transcript-boundary.ts";
+import { statSync } from "node:fs";
+import { setImmediate as yieldToDaemon } from "node:timers/promises";
 import { completeLines, readRange, readTailLines } from "./util/file-tail.ts";
 
 // Reading a line-per-record (JSONL) transcript, with NO knowledge of what a record
@@ -88,20 +90,30 @@ function previousRecordStart(path: string, end: number): number | null {
  * Null means "no complete record here", not "unreadable". Both answers end a forward walk,
  * and a trailing line a writer has not finished is the ordinary cause of the first.
  */
-function nextRecordEnd(path: string, from: number, size: number): number | null {
+function* scanRecordEnd(path: string, from: number, size: number, requireReadable = false): Generator<void, number | null> {
   try {
     let cursor = Math.max(0, from);
     while (cursor < size) {
       const end = Math.min(size, cursor + BOUNDARY_SCAN_BYTES);
       const buf = readRange(path, cursor, end);
+      if (requireReadable && buf.length !== end - cursor) throw new Error("Short transcript boundary read");
       const nl = buf.indexOf(NL);
       if (nl >= 0) return cursor + nl + 1;
       cursor = end;
+      if (cursor < size) yield;
     }
     return null;
-  } catch {
+  } catch (error) {
+    if (requireReadable) throw error;
     return null;
   }
+}
+
+function nextRecordEnd(path: string, from: number, size: number, requireReadable = false): number | null {
+  const scan = scanRecordEnd(path, from, size, requireReadable);
+  let step = scan.next();
+  while (!step.done) step = scan.next();
+  return step.value;
 }
 
 /**
@@ -292,7 +304,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     let scanned = 0;
     let earlier = messages;
     while (finish < size && scanned < MAX_SCAN_BYTES) {
-      const next = nextRecordEnd(path, finish, size);
+      const next = nextRecordEnd(path, finish, Math.min(size, finish + MAX_SCAN_BYTES - scanned));
       if (next === null || next <= finish) break;
       const bytes = next - finish;
       if (scanned + bytes > MAX_SCAN_BYTES) break;
@@ -445,8 +457,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
    * than an exact turn count - and in the shape that overshoots most, a small file read
    * whole, the overshoot IS the rest of the conversation.
    */
-  const initial = (path: string): TranscriptInitialRead => {
-    const size = statSync(path).size;
+  const initial = (path: string, size = statSync(path).size): TranscriptInitialRead => {
     let pos = size;
     let begin = 0;
     const read = (bytes: number): TranscriptMessage[] => {
@@ -553,21 +564,27 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
    * is the same choice `before` makes and the opposite of `initial`/`appended`, which a
    * live stream needs to hear about.
    */
-  const after = (path: string, offset: number, wantTurns = PAGE_LIMIT): TranscriptForwardPage => {
+  const after = (path: string, offset: number, wantTurns = PAGE_LIMIT, requireReadable: boolean | "cooperative" = false): TranscriptForwardPage => {
     let size: number;
     try {
       size = statSync(path).size;
-    } catch {
+    } catch (error) {
+      if (requireReadable) throw error;
       const at = Math.max(0, offset);
       return { messages: [], start: at, end: at, atEnd: true };
     }
     const start = Math.max(0, Math.min(offset, size));
-    if (start >= size) return { messages: [], start, end: start, atEnd: true };
+    if (start >= size) {
+      // stat can succeed on an unreadable file. A real read at EOF must return zero bytes.
+      if (requireReadable && readRange(path, start, start + 1).length !== 0) throw new Error("Transcript grew during EOF check");
+      return { messages: [], start, end: start, atEnd: true };
+    }
     let finish = start;
     let reachedEof = false;
     const read = (bytes: number): TranscriptMessage[] => {
       const far = Math.min(size, start + bytes);
       const buf = readRange(path, start, far);
+      if (requireReadable && buf.length !== far - start) throw new Error("Short transcript page read");
       reachedEof = far >= size;
       // Parse only up to the last newline. The far edge is the MOVING one here, so a
       // trailing partial line is either the next page's or a record still being written;
@@ -582,7 +599,8 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     let messages: TranscriptMessage[];
     try {
       ({ messages } = grow(size - start, wantTurns, PAGE_TAIL_BYTES, read));
-    } catch {
+    } catch (error) {
+      if (requireReadable) throw error;
       return { messages: [], start, end: start, atEnd: true };
     }
     if (finish <= start) {
@@ -591,10 +609,22 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       // so step over it in fixed-size reads and return an empty page that still advances.
       // An empty page is not an empty conversation - a long stretch of tool output fills
       // one routinely - so only EOF or an unreadable file may end the walk.
-      if (reachedEof) return { messages: [], start, end: start, atEnd: true };
-      const boundary = nextRecordEnd(path, start, size);
-      if (boundary === null) return { messages: [], start, end: start, atEnd: true };
-      return { messages: [], start, end: boundary, atEnd: false };
+      const pageAt = (boundary: number | null): TranscriptForwardPage => boundary === null
+        ? { messages: [], start, end: start, atEnd: true, ...(requireReadable && { partialTailEnd: size }) }
+        : { messages: [], start, end: boundary, atEnd: false, ...(requireReadable && { skippedRecord: true }) };
+      if (reachedEof) return pageAt(null);
+      // grow has already checked every byte through the parse ceiling for a newline.
+      const from = start + MAX_SCAN_BYTES;
+      if (requireReadable !== "cooperative") return pageAt(nextRecordEnd(path, from, size, requireReadable));
+      return { messages: [], start, end: start, atEnd: false, async finishOversizedRecord(signal) {
+        const scan = scanRecordEnd(path, from, size, true);
+        for (;;) {
+          await yieldToDaemon();
+          signal?.throwIfAborted();
+          const step = scan.next();
+          if (step.done) return pageAt(step.value);
+        }
+      } };
     }
     const repaired = repairTrailingBatch(path, size, finish, messages);
     return {
@@ -602,12 +632,12 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       start,
       end: repaired.end,
       atEnd: reachedEof || repaired.end >= size,
+      ...(requireReadable && reachedEof && repaired.end < size ? { partialTailEnd: size } : {}),
     };
   };
 
   /** Read whatever complete lines were appended since `pos`. */
-  const appended = (path: string, pos: number): TranscriptStreamRead => {
-    const size = statSync(path).size;
+  const appended = (path: string, pos: number, size = statSync(path).size): TranscriptStreamRead => {
     if (size <= pos) return { messages: [], pos };
     const buf = readRange(path, pos, size);
     const lastNl = buf.lastIndexOf(NL);
@@ -616,5 +646,6 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     return { messages: parseMany(text.split("\n")), pos: pos + lastNl + 1 };
   };
 
-  return { window, since, size: transcriptSize, initial, before, after, appended, narration };
+  return { window, since, size: transcriptSize, snapshot: transcriptSnapshot, boundary: transcriptBoundary,
+    prepareHandoffBoundaries, initial, before, after, appended, narration };
 }

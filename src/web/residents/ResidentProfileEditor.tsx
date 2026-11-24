@@ -1,6 +1,7 @@
 import { ResidentState } from "./ResidentState.tsx";
 import { useContext, useEffect, useState } from "react";
 import { resolveFeatureFlag, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import { residentModelSpendAvailable } from "@shared/resident-spend.ts";
 import { resolveLaunchModel } from "@shared/kind-defaults.ts";
@@ -168,8 +169,15 @@ export function ResidentProfileEditor({
       ? `Spend cap unavailable for ${spendModel ?? "the harness default model"}. Choose a priced Model, or clear Spend per 24 hours (USD) under Loop and guardrails.`
       : null;
   const spendProblem = draft.loop.spendCapUsd !== null ? spendUnavailable : null;
-  const problem = residentDraftProblem(draft) ?? spendProblem;
-  const problemSections = residentDraftProblemSections(draft);
+  // When a live flag change hides the field, validate and save the name from the revision
+  // being edited (or overwritten), including a duplicated profile's starting settings.
+  const storedSettings = (conflict ?? base)?.settings ?? seed;
+  const saveDraft = resolveFeatureFlag(VOICE_FLAG, featureFlags) ? draft : {
+    ...draft,
+    identity: { ...draft.identity, referenceName: storedSettings?.identity.referenceName },
+  };
+  const problem = residentDraftProblem(saveDraft) ?? spendProblem;
+  const problemSections = residentDraftProblemSections(saveDraft);
 
   /** Save the draft, on top of `expectedRevision` - the base, or a newer one the operator chose to overwrite. */
   async function save(expectedRevision = base?.revision ?? null): Promise<void> {
@@ -178,8 +186,8 @@ export function ResidentProfileEditor({
     setError(null);
     try {
       const saved = base && expectedRevision !== null
-        ? await updateResidentProfile(base.id, expectedRevision, draft)
-        : await createResidentProfile(draft);
+        ? await updateResidentProfile(base.id, expectedRevision, saveDraft)
+        : await createResidentProfile(saveDraft);
       setBase(saved);
       setDraft(saved.settings);
       setDirty(false);
@@ -369,8 +377,12 @@ export function ResidentProfileEditor({
         {RESIDENT_EDITOR_SECTIONS.filter((section) => residentEditorSectionVisible(section, featureFlags, problemSections)).map(({ id, title: heading, blurb, Body }) => (
           <section key={id} className={`resident-section resident-editor-card resident-editor-card-${id}`} aria-labelledby={`resident-section-${id}`}>
             <h4 id={`resident-section-${id}`}>{heading}</h4>
-            <p className="resident-section-blurb">{blurb}</p>
-            <Body draft={draft} update={update} changeHarness={changeHarness} useMcpDefault={!base && !seed && !mcpEdited} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} />
+            <p className="resident-section-blurb">
+              {id === "identity" && resolveFeatureFlag(VOICE_FLAG, featureFlags)
+                ? "Residents are addressed by their profile name unless a reference name is set."
+                : blurb}
+            </p>
+            <Body draft={draft} update={update} changeHarness={changeHarness} useMcpDefault={!base && !seed && !mcpEdited} personas={personas} disabled={busy || readOnly} onCreatePersona={onCreatePersona} spendUnavailable={spendUnavailable} profileId={profile?.id ?? null} />
           </section>
         ))}
         {profile && <ResidentState key={profile.id} profileId={profile.id} />}

@@ -2,6 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
+import type { VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
@@ -47,6 +48,7 @@ import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 import { forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
+import { applyVoiceIndicatorSelection } from "./lib/uiConfig.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -207,10 +209,12 @@ export interface MissionState {
   subscribeShaping: (listener: (config: ShapingConfigView | null) => void) => () => void;
   /**
    * The daemon's voice state (contract B of the voice plan). Null before the first snapshot and
-   * while the `voice` flag is off at connect time; a `voice_state` frame replaces it whole, and
-   * the one sent when the flag turns off carries the mode `off`.
+   * while the `voice` flag is off at connect time. Mute replies and stream frames share a mode
+   * revision. The stream supplies the remaining fields, including roster-only updates (contract C).
    */
   voice: VoiceState | null;
+  acknowledgeVoiceMode: (ack: VoiceState) => void;
+  voiceCards: Map<string, VoiceCard>;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -280,6 +284,13 @@ export interface MissionState {
   hasSnapshot: boolean;
 }
 
+// A mute reply confirms the mode. The stream owns the roster, shortcut and capabilities.
+function withNewerVoiceMode(base: VoiceState | null, candidate: VoiceState | null): VoiceState | null {
+  if (!base?.modeVersion || !candidate?.modeVersion || base.modeVersion.source !== candidate.modeVersion.source
+    || base.modeVersion.revision >= candidate.modeVersion.revision) return base;
+  return { ...base, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
+}
+
 /**
  * Subscribe to the daemon's SSE stream and maintain a live view of sessions and
  * reviews. The browser's EventSource auto-reconnects on drop; we surface that
@@ -333,7 +344,9 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
   const [voice, setVoice] = useState<VoiceState | null>(null);
+  const acknowledgeVoiceMode = useCallback((ack: VoiceState) => setVoice(current => withNewerVoiceMode(current, ack)), []);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
   const subscribeShaping = useCallback((listener: (config: ShapingConfigView | null) => void) => {
     shapingListeners.current.add(listener);
@@ -390,8 +403,9 @@ export function useEventStream(): MissionState {
       setSettingsStatus(null);
       // And the keep-awake status, under the same contract with a sharper edge: `on` is a
       // claim about a live OS power assertion, and the daemon restarting - the one event
-      // most likely to have severed this stream - is exactly what resets that assertion
-      // to off. Unknown disables the toggle; the reconnect snapshot restores the truth.
+      // most likely to have severed this stream - releases that assertion until the new
+      // daemon has reacquired it. Unknown disables the toggle; the reconnect snapshot
+      // restores the truth.
       setKeepAwakeStatus(null);
     };
 
@@ -482,7 +496,9 @@ export function useEventStream(): MissionState {
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           // Absent while the flag is off, which reads as off.
-          setVoice(msg.voice ?? null);
+          setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
+          setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
+          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -740,9 +756,28 @@ export function useEventStream(): MissionState {
           setShaping(msg.config);
           for (const listener of shapingListeners.current) listener(msg.config);
           break;
-        // Replaced whole: one state for every window, which is how a mute in one reaches another.
         case "voice_state":
-          setVoice(msg.state);
+          setVoice(current => withNewerVoiceMode(msg.state, current));
+          if (msg.state.mode === "off") setVoiceCards(new Map());
+          break;
+        case "voice_indicators":
+          applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion);
+          break;
+        case "voice_card":
+          setVoiceCards((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.card.id);
+            next.set(msg.card.id, msg.card);
+            const completed = [...next.values()].filter((c) => !["pending", "unsure", "resolving"].includes(c.state));
+            if (completed.length > 50) next.delete(completed[0]!.id);
+            return next;
+          });
+          break;
+        // Who can be addressed moved: replace the roster inside the state. A frame that lands
+        // while no state is held (voice was off at connect) has nothing to update; the frame
+        // that switches voice on carries the roster itself.
+        case "voice_roster":
+          setVoice((prev) => (prev ? { ...prev, roster: msg.roster } : prev));
           break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
@@ -910,6 +945,8 @@ export function useEventStream(): MissionState {
     shaping,
     subscribeShaping,
     voice,
+    acknowledgeVoiceMode,
+    voiceCards,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

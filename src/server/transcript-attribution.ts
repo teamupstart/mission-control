@@ -1,3 +1,5 @@
+import { featureEnabled } from "./feature-flags/index.ts";
+import { SpokenTranscriptChanged, SpokenTranscriptUnavailable, spokenLedger, withSpokenReadProofs, type SpokenPageAnchor } from "./delivery-ledgers.ts";
 import { residentWakePresentation } from "./residents/loop-store.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import { delegatedTurnSources, type DelegatedConversation } from "./delegated-turns.ts";
@@ -30,6 +32,7 @@ export function attributeTranscript(
   launch: LaunchTurnMarker | null = null,
   onLaunchTurnIdentified?: (messageId: string) => void,
   conversation?: DelegatedConversation | null,
+  includeSpoken = featureEnabled("voice"),
 ): TranscriptMessage[] {
   if (!sessionId) return messages;
   // Delegated turns are answered from the durable per-delivery record, bound against the
@@ -40,6 +43,7 @@ export function attributeTranscript(
   // Review messages (`async-input`) are answered the same way, from the daemon's own recorded
   // deliveries. A turn is Mission Control's, and drawn as answer cards, only when a delivery is
   // bound to it; a pasted marker, or a copy of a delivered message, stays the operator's.
+  const spoken = includeSpoken ? spokenLedger.bound(conversation, messages).rows : undefined;
   const reviews = reviewMessageTurns(conversation, messages);
   /**
    * The launch turn's native id, once this page has established it.
@@ -53,6 +57,8 @@ export function attributeTranscript(
   let anchor = launch?.messageId ?? null;
   return messages.map((message) => {
     if (message.role !== "user" || !message.text) return message;
+    const voice = spoken?.get(message.id);
+    if (voice) return { ...message, presentation: { kind: "spoken", displayText: voice.spokenWords, received: voice.received } };
     const residentText = residentWakePresentation(message, conversation);
     if (residentText !== null) return { ...message, origin: "resident", presentation: { kind: "resident", displayText: residentText } };
     const review = reviews.bound.get(message.id);
@@ -96,4 +102,21 @@ export function attributeTranscript(
       ...(presentation ? { presentation } : {}),
     };
   });
+}
+
+/** Both dashboard views and their backward pages verify visible spoken receipts off the daemon thread. */
+export async function attributeTranscriptPage(sessionId: string | undefined, messages: TranscriptMessage[], launch: LaunchTurnMarker | null,
+  onLaunchTurnIdentified: (id: string) => void, conversation: DelegatedConversation | null, anchor: SpokenPageAnchor
+): Promise<{ messages: TranscriptMessage[]; spokenDeferred?: true }> {
+  const project = (source: DelegatedConversation | null) => attributeTranscript(sessionId, messages, launch, onLaunchTurnIdentified, source);
+  if (!featureEnabled("voice")) return { messages: project(conversation) };
+  try {
+    return { messages: await withSpokenReadProofs(conversation, messages, project, anchor) };
+  } catch (error) {
+    if (!(error instanceof SpokenTranscriptChanged || error instanceof SpokenTranscriptUnavailable)) throw error;
+    // The parser already supplied this frame. Keep its native turns and other proven senders
+    // available while the dashboard retries the optional spoken disclosure.
+    const source = conversation && { ...conversation, preparedSpokenFallbacks: new Set<string>() };
+    return { messages: attributeTranscript(sessionId, messages, launch, onLaunchTurnIdentified, source, false), spokenDeferred: true };
+  }
 }

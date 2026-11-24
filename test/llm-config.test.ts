@@ -40,7 +40,7 @@ const {
 // From `./status.ts`, not `./config.ts`: the status assembles the provider LIST, which is the
 // one thing that needs every adapter loaded, and the resolvers deliberately do not.
 const { llmStatus } = await import("../src/server/llm/status.ts");
-const { LLM_JOB_IDS, LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
+const { liveLlmJobIds, LLM_JOB_IDS, LLM_JOB_SPECS } = await import("../src/shared/llm-jobs.ts");
 const {
   CLAUDE_TRANSPORT_ENV_VAR,
   CLAUDE_TRANSPORTS,
@@ -218,7 +218,7 @@ test("the PATCH refuses what the config tolerates, so a typo is answerable", () 
 
 test("the status route carries every job, the runner, and the providers this build has", () => {
   const status = llmStatus();
-  assert.deepEqual(Object.keys(status.models).sort(), [...LLM_JOB_IDS].sort());
+  assert.deepEqual(Object.keys(status.models).sort(), liveLlmJobIds(() => false).sort());
   assert.deepEqual(
     status.runners.map((r) => r.id),
     [...LLM_RUNNER_IDS],
@@ -405,10 +405,10 @@ test("no reachable pair reaches a runner that cannot honour it", () => {
 test("the status route carries each job's provider beside its model, and Foreman's three fields still parse", () => {
   setLlmConfig({ runners: { goal: "codex" } });
   const status = llmStatus();
-  assert.deepEqual(Object.keys(status.jobRunners).sort(), [...LLM_JOB_IDS].sort());
-  assert.equal(status.jobRunners.goal.id, "codex");
-  assert.equal(status.jobRunners["task-title"].id, DEFAULT_LLM_RUNNER_ID);
-  assert.equal(status.models.goal.id, "gpt-6-luna", "the per-job model must use the per-job provider");
+  assert.deepEqual(Object.keys(status.jobRunners).sort(), liveLlmJobIds(() => false).sort());
+  assert.equal(status.jobRunners.goal?.id, "codex");
+  assert.equal(status.jobRunners["task-title"]?.id, DEFAULT_LLM_RUNNER_ID);
+  assert.equal(status.models.goal?.id, "gpt-6-luna", "the per-job model must use the per-job provider");
   // Foreman reads exactly these three off this payload from another process; widening the
   // shape must not move them.
   assert.equal(status.runner.id, DEFAULT_LLM_RUNNER_ID, "the app-wide runner must stay app-wide");

@@ -155,7 +155,21 @@ const entry = z.strictObject({
     )
     .max(6),
 });
-export const RepositoryViewDescriptorSchema = z
+export const MAX_REPOSITORY_VIEW_ENTRIES = 200_000;
+export const MAX_REPOSITORY_REVISION_PARENTS = 100;
+
+/** Append only the first distinct revisions that can still enter the breadth-first prefix. */
+export function enqueueHistoryParents(queue: string[], scheduled: Set<string>, parents: readonly string[], limit: number) {
+  for (const parent of parents) {
+    if (queue.length >= limit) break;
+    if (!scheduled.has(parent)) {
+      scheduled.add(parent);
+      queue.push(parent);
+    }
+  }
+}
+
+export const RepositoryViewFieldsSchema = z
   .strictObject({
     version: z.literal(1),
     snapshotDigest: sha,
@@ -166,26 +180,34 @@ export const RepositoryViewDescriptorSchema = z
     base: oid.nullable(),
     indexTree: oid,
     worktreeTree: oid,
+    worktreeDiffTree: oid.optional(),
     historyPolicy: RepositoryHistoryPolicyV1Schema,
     retainedRevisions: z
       .array(
-        z.strictObject({ id: oid, parents: z.array(oid).max(100), tree: oid }),
+        z.strictObject({ id: oid, parents: z.array(oid).max(MAX_REPOSITORY_REVISION_PARENTS), tree: oid }),
       )
       .max(2048),
     frontier: z
       .array(
         z.strictObject({
           revision: oid,
-          omittedParents: z.array(oid).max(100),
+          omittedParents: z.array(oid).max(MAX_REPOSITORY_REVISION_PARENTS),
         }),
       )
       .max(2048),
     retainedCommitCount: count.max(2048),
     retainedBlobBytes: count.max(536870912),
-    worktree: z.array(entry).max(200000),
-    index: z.array(entry).max(200000),
-  })
-  .superRefine((v, ctx) => {
+    worktree: z.array(entry).max(MAX_REPOSITORY_VIEW_ENTRIES),
+    index: z.array(entry).max(MAX_REPOSITORY_VIEW_ENTRIES),
+  });
+export const RepositoryViewDescriptorSchema = RepositoryViewFieldsSchema.extend({
+  // A replacement can hide disjoint sets of deleted HEAD and index leaves.
+  // Each layer has its own entry bound. These records only describe status.
+  statusDeletions: z.array(z.strictObject({
+    path: RepositoryPathSchema,
+    classifications: entry.shape.classifications.refine(values => values.includes("deleted")),
+  })).max(2 * MAX_REPOSITORY_VIEW_ENTRIES).optional(),
+}).superRefine((v, ctx) => {
     const ids = new Set(v.retainedRevisions.map((r) => r.id));
     if (
       ids.size !== v.retainedRevisions.length ||
@@ -202,12 +224,10 @@ export const RepositoryViewDescriptorSchema = z
         message: "Unborn view cannot retain history",
       });
     const queue = v.head ? [v.head] : [];
-    const visited = new Set<string>();
+    const scheduled = new Set(queue);
     let ordinal = 0;
-    while (queue.length && ordinal < v.retainedRevisions.length) {
-      const next = queue.shift()!;
-      if (visited.has(next)) continue;
-      visited.add(next);
+    while (ordinal < queue.length && ordinal < v.retainedRevisions.length) {
+      const next = queue[ordinal];
       const record = v.retainedRevisions[ordinal++];
       if (!record || record.id !== next) {
         ctx.addIssue({
@@ -216,7 +236,7 @@ export const RepositoryViewDescriptorSchema = z
         });
         break;
       }
-      queue.push(...record.parents);
+      enqueueHistoryParents(queue, scheduled, record.parents, v.retainedRevisions.length);
     }
     if (ordinal !== v.retainedRevisions.length)
       ctx.addIssue({
@@ -246,6 +266,14 @@ export const RepositoryViewDescriptorSchema = z
     for (const layer of [v.worktree, v.index])
       if (new Set(layer.map((e) => e.path)).size !== layer.length)
         ctx.addIssue({ code: "custom", message: "Duplicate manifest path" });
+    if (v.statusDeletions) {
+      const paths = new Set(v.worktree.map(entry => entry.path));
+      for (const deletion of v.statusDeletions) {
+        if (paths.has(deletion.path))
+          ctx.addIssue({ code: "custom", message: "Duplicate status path" });
+        paths.add(deletion.path);
+      }
+    }
   });
 export type RepositoryViewDescriptor = z.infer<
   typeof RepositoryViewDescriptorSchema

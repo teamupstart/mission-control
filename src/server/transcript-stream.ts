@@ -1,11 +1,13 @@
 import { statSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { createHash, type Hash } from "node:crypto";
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { TranscriptStreamMsg } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { noteKeyFor, type Registry } from "./registry.ts";
 import { sessionMessages, transcriptFor } from "./harness/index.ts";
-import { attributeTranscript } from "./transcript-attribution.ts";
+import { attributeTranscriptPage } from "./transcript-attribution.ts";
 import type { DelegatedConversation } from "./delegated-turns.ts";
 import {
   bindLaunchTurnMessage,
@@ -15,6 +17,10 @@ import {
 import { sleep } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
+import { spokenTranscriptState } from "./db.ts";
+import { SpokenTranscriptChanged, SpokenTranscriptUnavailable, spokenLedger, withSpokenReadProofs } from "./delivery-ledgers.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
+import type { TranscriptStreamRead } from "./harness/types.ts";
 
 // The live transcript feed behind the session detail: send the recent history, then poll
 // the file and push turns as the agent appends them.
@@ -36,6 +42,43 @@ const HEARTBEAT_MS = 15000;
  * to start from a fresh window rather than handed one enormous catch-up frame.
  */
 const RESUME_MAX_BYTES = 2 * 1024 * 1024;
+
+const HASH_CHUNK_BYTES = 256 * 1024;
+interface CursorProof {
+  fileId: string;
+  pos: number;
+  hash: Hash;
+}
+
+function digest(proof: CursorProof): string {
+  return proof.hash.copy().digest("hex");
+}
+
+/** Branch from an already hashed prefix on this file. Only the digest leaves the connection. */
+async function cursorProofs(path: string, end: number, prefix?: CursorProof, split = end) {
+  const file = await open(path, "r");
+  try {
+    const stat = await file.stat({ bigint: true });
+    const fileId = [stat.dev, stat.ino, stat.birthtimeNs].join(":");
+    if (prefix && (prefix.fileId !== fileId || prefix.pos > split)) prefix = undefined;
+    let pos = prefix?.pos ?? 0;
+    const hash = prefix?.hash.copy() ?? createHash("sha256").update(fileId + "\n");
+    const buffer = Buffer.allocUnsafe(Math.min(end - pos, HASH_CHUNK_BYTES));
+    const through = async (offset: number): Promise<CursorProof> => {
+      while (pos < offset) {
+        const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, offset - pos), pos);
+        if (!bytesRead) throw new Error("Transcript changed during cursor verification");
+        hash.update(buffer.subarray(0, bytesRead));
+        pos += bytesRead;
+      }
+      return { fileId, pos, hash: hash.copy() };
+    };
+    const atSplit = await through(split);
+    return { atSplit, atEnd: split === end ? atSplit : await through(end) };
+  } finally {
+    await file.close();
+  }
+}
 
 /**
  * SSE handler for `GET /api/sessions/:id/transcript/stream`.
@@ -114,26 +157,116 @@ export function transcriptStreamHandler(registry: Registry) {
         return from;
       };
 
+      const voice = featureEnabled("voice");
+      const spokenState = () => {
+        const current = voice && id ? registry.getSession(id) : undefined;
+        return current ? spokenTranscriptState(noteKeyFor(current)) : null;
+      };
+      type SpokenState = ReturnType<typeof spokenState>;
+      let spoken = spokenState();
+      let cursor: CursorProof | undefined;
+      let revision: { version: string; size: number } | undefined;
+      let verifiedVersion: string | undefined;
+      let checking: { target: CursorProof; version: string; progress?: CursorProof } | undefined;
+      // A same-inode edit followed by growth between polls looks like an append to stat().
+      // Sweep one fixed prefix across polls to catch it, including after the writer goes quiet.
+      // A busy writer cannot restart the sweep or make one append read the entire history.
+      const prefixStillMatches = async (target: CursorProof, version: string, budget: number) => {
+        if (version === verifiedVersion && !checking) return true;
+        checking ??= { target, version };
+        const end = Math.min(checking.target.pos, (checking.progress?.pos ?? 0) + budget);
+        const { atEnd: progress } = await cursorProofs(path, end, checking.progress);
+        if (progress.fileId !== checking.target.fileId) return false;
+        checking.progress = progress;
+        if (end < checking.target.pos) return true;
+        if (digest(progress) !== digest(checking.target)) return false;
+        verifiedVersion = checking.version;
+        checking = undefined;
+        return true;
+      };
+      // Anchor parsing and both hashes to the same EOF. If the writer is active, validate
+      // only those bytes a second time. Bytes appended beyond the anchor belong to the next frame.
+      const capture = async <T extends TranscriptStreamRead>(state: SpokenState, from: number | null,
+        readFrame: (end?: number) => T, prefix?: CursorProof, snapshot = state ? read.snapshot?.(path) : null) => {
+        if (!state) return { frame: readFrame(), before: undefined, cursor: undefined, revision: undefined };
+        if (!snapshot || (from !== null && from > snapshot.size)) throw new Error("Transcript cursor is unavailable");
+        const { size, version } = snapshot;
+        const { atSplit, atEnd: whole } = await cursorProofs(path, size, prefix, from ?? size);
+        const frame = readFrame(size);
+        let completeLines = whole;
+        const after = read.snapshot?.(path);
+        if (frame.pos !== size || after?.version !== version) {
+          // Same-size or shorter revisions can have changed any byte. Verify those from zero.
+          const base = after && (after.version === version || after.size > size) ? prefix : undefined;
+          const verified = await cursorProofs(path, size, base, frame.pos);
+          if (digest(verified.atEnd) !== digest(whole)) throw new Error("Transcript prefix changed during cursor verification");
+          completeLines = verified.atSplit;
+        }
+        return { frame, before: from === null ? undefined : digest(atSplit), cursor: completeLines, revision: snapshot };
+      };
+      const projectFrame = async (messages: TranscriptStreamRead["messages"], version: string | undefined, end: number,
+        reread: () => TranscriptStreamRead["messages"]) => {
+        const page = await attributeTranscriptPage(id, messages, launch(), anchor, conversation(), { end, version, reread });
+        return { ...page, messages: titled.transcript(page.messages) };
+      };
+      const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
+        const captureWindow = (current: SpokenState) => capture(current, null, end => read.initial(path, end));
+        let captured = await captureWindow(state);
+        while (!stream.aborted) {
+          const init = captured.frame;
+          const page = await projectFrame(init.messages, captured.revision?.version, init.pos, () => read.initial(path, init.pos).messages);
+          const latest = spokenState();
+          if (latest?.receipt !== state?.receipt) {
+            // The first or last spoken row changes whether this frame needs a verified cursor.
+            // A new text receipt on the same history only needs a fresh projection.
+            if (Boolean(latest) !== Boolean(state)) captured = await captureWindow(latest);
+            state = latest;
+            refreshSpoken = true;
+            continue;
+          }
+          await send({
+            type: "init", ...page, start: init.start, atStart: init.atStart, pos: init.pos,
+            ...(voice && { spokenReceipt: state?.receipt ?? null }), ...(captured.cursor && { spokenCursor: digest(captured.cursor) }),
+            ...(refreshSpoken && { refreshSpoken: true }),
+          });
+          pos = init.pos;
+          cursor = captured.cursor;
+          revision = captured.revision;
+          verifiedVersion = revision?.version;
+          checking = undefined;
+          spoken = state;
+          return;
+        }
+      };
       try {
         const from = resumeFrom();
-        if (from !== null) {
-          const resumed = read.appended(path, from);
-          pos = resumed.pos;
-          await send({
-            type: "resume",
-            messages: titled.transcript(attributeTranscript(id, resumed.messages, launch(), anchor, conversation())),
-            pos,
-          });
+        const heldCursor = c.req.query("spokenCursor");
+        const stale = voice && c.req.query("from") !== undefined && (
+          (c.req.query("spokenReceipt") || null) !== (spoken?.receipt ?? null)
+          || (heldCursor !== undefined && !spoken)
+          || (spoken !== null && from === null)
+        );
+        if (from !== null && !stale) {
+          const captured = await capture(spoken, from, end => read.appended(path, from, end));
+          const resumed = captured.frame;
+          if (spoken && captured.before !== heldCursor) {
+            await sendWindow(spoken, true);
+          } else {
+            const page = await projectFrame(resumed.messages, captured.revision?.version, resumed.pos,
+              () => read.appended(path, from, resumed.pos).messages);
+            const latest = spokenState();
+            if (latest?.receipt !== spoken?.receipt) {
+              await sendWindow(latest, true);
+            } else {
+              pos = resumed.pos;
+              cursor = captured.cursor;
+              revision = captured.revision;
+              verifiedVersion = revision?.version;
+              await send({ type: "resume", ...page, pos, ...(cursor && { spokenCursor: digest(cursor) }) });
+            }
+          }
         } else {
-          const init = read.initial(path);
-          pos = init.pos;
-          await send({
-            type: "init",
-            messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
-            start: init.start,
-            atStart: init.atStart,
-            pos,
-          });
+          await sendWindow(spoken, stale);
         }
       } catch {
         await send({ type: "unavailable", reason: "Could not read the transcript file." });
@@ -144,23 +277,71 @@ export function transcriptStreamHandler(registry: Registry) {
       while (!stream.aborted) {
         await sleep(POLL_MS);
         if (stream.aborted) break;
-        try {
-          const size = statSync(path).size;
-          if (size < pos) pos = 0; // truncated / rotated - re-read from the top
-          const { messages, pos: next } = read.appended(path, pos);
-          pos = next;
-          if (messages.length > 0) {
-            await send({ type: "append", messages: titled.transcript(attributeTranscript(id, messages, launch(), anchor, conversation())), pos });
-            sinceHeartbeat = 0;
-            continue;
-          }
-        } catch {
-          // file briefly unavailable (rotation) - try again next tick
-        }
         sinceHeartbeat += POLL_MS;
         if (sinceHeartbeat >= HEARTBEAT_MS) {
           await stream.writeSSE({ data: "", event: "ping" });
           sinceHeartbeat = 0;
+        }
+        try {
+          const target = spoken && conversation();
+          if (target) {
+            try {
+              await withSpokenReadProofs(target, undefined, prepared => {
+                if (prepared) spokenLedger.retryDeferredBindings(prepared);
+              });
+            } catch (error) {
+              if (!(error instanceof SpokenTranscriptChanged || error instanceof SpokenTranscriptUnavailable)) throw error;
+            }
+          }
+          const current = spokenState();
+          if (current?.receipt !== spoken?.receipt) {
+            await sendWindow(current, true);
+            sinceHeartbeat = 0;
+            continue;
+          }
+          const observed = current ? read.snapshot?.(path) : null;
+          const size = observed?.size ?? statSync(path).size;
+          if (current && observed && revision && cursor) {
+            const growth = size - revision.size;
+            const changed = observed.version !== revision.version;
+            // Small appends spend at most one page or the growth itself on checking old bytes.
+            // Idle polls can finish a pending check a chunk at a time.
+            const budget = changed ? Math.min(HASH_CHUNK_BYTES, Math.max(4096, growth)) : HASH_CHUNK_BYTES;
+            if ((changed && growth <= 0) || !await prefixStillMatches(cursor, observed.version, budget)) {
+              await sendWindow(current, true);
+              continue;
+            }
+            if (!changed) continue;
+          }
+          if (size < pos) pos = 0; // truncated / rotated - re-read from the top
+          const captured = await capture(current, pos, end => read.appended(path, pos, end), cursor, observed);
+          const { messages, pos: next } = captured.frame;
+          if (current && cursor && captured.before !== digest(cursor)) {
+            await sendWindow(current, true);
+            continue;
+          }
+          const advanced = next > pos;
+          if (messages.length > 0 || (current && advanced)) {
+            const from = pos;
+            const page = await projectFrame(messages, captured.revision?.version, next, () => read.appended(path, from, next).messages);
+            const latest = spokenState();
+            if (latest?.receipt !== current?.receipt) {
+              await sendWindow(latest, true);
+              sinceHeartbeat = 0;
+              continue;
+            }
+            await send({ type: "append", ...page, pos: next,
+              ...(captured.cursor && { spokenCursor: digest(captured.cursor) }) });
+            sinceHeartbeat = 0;
+          }
+          // Advance after publishing the native frame, including when disclosure verification is deferred.
+          pos = next;
+          if (current) {
+            cursor = captured.cursor;
+            revision = captured.revision;
+          }
+        } catch {
+          // file briefly unavailable (rotation) - try again next tick
         }
       }
     }));

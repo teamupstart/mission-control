@@ -1,6 +1,7 @@
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
 import type { KindWorkflowDefaults } from "./task.ts";
-import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
+import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, resolveLlmEffort } from "./llm.ts";
+import type { LlmRunnerId, ResolvedLlmEffort, ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
 import type { PlanPublicationContext } from "./plan-publication.ts";
@@ -1032,18 +1033,7 @@ export interface PersonaExecutionView {
   effort?: ResolvedPersonaEffort;
 }
 
-/**
- * The effort one Persona call runs at.
- *
- * `level` is what is actually passed to the provider; null means no effort flag at all, so the
- * provider's own default applies. `unsupported` is a stored level the resolved provider and
- * model do not offer - reported rather than dropped, so the surface showing the model can say
- * that the configured effort did not apply. It is only ever non-null when `level` is null.
- */
-export interface ResolvedPersonaEffort {
-  level: ThinkingLevel | null;
-  unsupported: ThinkingLevel | null;
-}
+export type ResolvedPersonaEffort = ResolvedLlmEffort;
 
 /**
  * The effort levels a Persona call may name, for one provider/model choice.
@@ -1064,24 +1054,7 @@ export function personaEffortLevels(
     rest.every((id) => launchEffortLevels(id, model).includes(level)));
 }
 
-/**
- * Resolve a stored effort against the provider and model a call will actually use.
- *
- * Capability-checked at run time as well as at write time: a Persona that inherits its
- * provider was validated against every runner, but an app-wide model environment override can
- * still narrow the levels after the fact. An effort the call cannot honour is surfaced as
- * `unsupported` rather than passed to a CLI that would reject it.
- */
-export function resolvePersonaEffort(
-  runner: LlmRunnerId,
-  model: string | null,
-  effort: ThinkingLevel | null | undefined,
-): ResolvedPersonaEffort {
-  if (!effort) return { level: null, unsupported: null };
-  return launchEffortLevels(runner, model).includes(effort)
-    ? { level: effort, unsupported: null }
-    : { level: null, unsupported: effort };
-}
+export const resolvePersonaEffort = resolveLlmEffort;
 
 /**
  * The effort half of a routing line, or null when the provider default applies by choice.

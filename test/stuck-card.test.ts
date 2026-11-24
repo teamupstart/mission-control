@@ -18,7 +18,7 @@ function stall(facts: StallFacts, reason = "idle 21m with work unfinished"): Sta
   return { sessionId: "s1", kind: facts.kind, forMs: 21 * 60_000, reason, facts, fingerprint: "f" };
 }
 
-function draw(st: Stall, session: Session = mkSession({ id: "s1", state: "idle" })): string {
+function draw(st: Stall, session: Session = mkSession({ id: "s1", state: "idle" }), complete = true): string {
   return renderToStaticMarkup(createElement(StuckCard, {
     session,
     stall: st,
@@ -26,6 +26,7 @@ function draw(st: Stall, session: Session = mkSession({ id: "s1", state: "idle" 
     subject: { name: "Fix the parser", colorId: null },
     onOpenSession: () => undefined,
     onOpenRun: () => undefined,
+    ...(complete ? { onComplete: () => undefined } : {}),
     onDismiss: () => undefined,
   }));
 }
@@ -43,6 +44,11 @@ test("a stall with an open task draws Continue and Mark done", () => {
   assert.match(html, /idle 21m with work unfinished/);
   assert.match(html, /Idle with work open/);
   assert.match(html, /Open: the task &quot;Fix the parser&quot;\./);
+});
+
+test("Mark done is the session's Complete dialog, so a card that cannot open it draws none", () => {
+  const html = draw(stall({ kind: "unfinished-work", task, queueOpen: 0 }), undefined, false);
+  assert.deepEqual(actions(html), ["open-session", "dismiss", "continue", "message"]);
 });
 
 test("a queue-only stall draws Continue and Open session and no Mark done", () => {

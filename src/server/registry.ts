@@ -1,8 +1,12 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
+import type { VoiceRouter } from "./voice/router.ts";
+import type { VoiceCard } from "@shared/voice-routing.ts";
+import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
+import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
+import { storedVoiceIndicators, voiceIndicatorVersion } from "./ui-config.ts";
 import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
@@ -156,9 +160,10 @@ import type {
 // The one projection of a driver request into the dialog shape every surface already
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
+import { listSdkSessions } from "./sdk/store.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
-import { hooksFor, sessionMessages } from "./harness/index.ts";
+import { hooksFor, sessionMessages, transcriptFor } from "./harness/index.ts";
 import {
   emptyHookSubagents,
   hookSubagentSummary,
@@ -300,6 +305,8 @@ import {
   workEpisodeRepoPr,
   workEpisodeRepoPrsForTask,
   workCycleFor as dbWorkCycleFor,
+  hasDeliveredSpokenHold,
+  workCycleForBoundSession,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -375,6 +382,7 @@ import type { InspectorPr as StackRow } from "@shared/types.ts";
 import { parsePrUrl } from "./inspector/github.ts";
 import { retroSummary } from "./retro-worthiness.ts";
 import { pruneDelegatedTurns } from "./delegated-turns.ts";
+import { pruneExpiredSpokenTurns, spokenLedger } from "./delivery-ledgers.ts";
 import { emittedWorkUnitId, isWorkUnitId } from "@shared/work-unit.ts";
 import { takeTerminalLaunchWorkUnit, type TerminalLaunchWorkUnit } from "./terminal-launch-work-units.ts";
 import { claimReviewDeliveryEcho, expireReviewDeliveryEchoes, pruneReviewDeliveries } from "./review-deliveries.ts";
@@ -396,23 +404,19 @@ export interface PrOpened {
   repoRoot: string | null;
 }
 
-/**
- * One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`.
- *
- * It carries the turn's `id` rather than its text, because the only question a subscriber
- * asks of it is "was this the turn I am waiting on" - and the id is the correlation every
- * caller of `submit()` already holds. `pending_turns` gains no column for this.
- */
 /** A driver-run session's conversation was compacted. See `Registry.onCompacted`. */
 export interface SessionCompacted {
   sessionId: string;
 }
 
+/** One pending turn's bytes positively reached the agent. See `Registry.onTurnDelivered`. */
 export interface TurnDelivered {
   sessionId: string;
   /** The `pending_turns` row id returned by `submit()`. */
   turnId: string;
   deliveredAt: number;
+  /** For a spoken message, the work-cycle generation observed at handoff. */
+  spoken?: { generation: number };
 }
 
 /** Daemon-minted authority for the interval before a managed Pipeline host is registered. */
@@ -681,7 +685,8 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  */
 // feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 // shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
-// voice_state is not one: whether voice is listening is no stage figure.
+// voice_state is not one: whether voice is listening is no stage figure. Nor is voice_roster:
+// who answers to a name is folded from the task and session frames above, never on its own.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1316,6 +1321,11 @@ export class Registry extends EventEmitter {
    * with the `voice` flag off sends nothing, and switching it off sends exactly one frame.
    */
   private lastVoice: string = canonicalVoiceState(voiceStateOff());
+  /**
+   * The last `voice_roster` frame, canonical, or null before the first. Reset when voice is
+   * switched off, so the roster is sent again with the first frame after it is switched back on.
+   */
+  private lastVoiceRoster: string | null = null;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1332,8 +1342,10 @@ export class Registry extends EventEmitter {
    * default is a truthful placeholder for a registry no manager has seeded yet (the
    * ~20 hand-built route-test registries): unsupported and off, which a browser renders
    * as unavailable rather than as a claim about host power state. `src/server/index.ts`
-   * seeds the real status before the server accepts traffic. Deliberately TRANSIENT -
-   * a new daemon always snapshots `off`, which is the approved restart-reset behavior.
+   * seeds the real status before the server accepts traffic. An OBSERVATION, never
+   * persisted here: the operator's saved choice lives in `app_config.keepAwake`, and the
+   * manager applies it once the daemon is serving, so a new daemon snapshots `off` until
+   * that acquisition is confirmed.
    */
   private keepAwake: KeepAwakeStatus = {
     supported: false,
@@ -1459,12 +1471,16 @@ export class Registry extends EventEmitter {
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
     voice?: VoiceState;
+    voiceIndicators?: string[];
+    voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
+    voiceCards?: VoiceCard[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
     storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
+    const indicators = featureEnabled(VOICE_FLAG) ? storedVoiceIndicators() : undefined;
     return {
       sessionTransfers: sessionTransferPage(),
       sessions: [...this.sessions.values()].map(sessionShapingForReads),
@@ -1509,7 +1525,10 @@ export class Registry extends EventEmitter {
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(featureEnabled(VOICE_FLAG) ? { voice: this.voiceStateForSnapshot() } : {}),
+      ...(indicators ? {
+        voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
+        voiceIndicators: indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators),
+      } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
       settingsStatus: settingsStatus(),
@@ -1609,8 +1628,10 @@ export class Registry extends EventEmitter {
   emitFeatureFlags(config: FeatureFlagsConfig): void {
     if (this.lastFeatureFlags && sameFeatureFlagsConfig(this.lastFeatureFlags, config)) return;
     const shapingWasOn = this.lastFeatureFlags ? resolveFeatureFlag("task-shaping", this.lastFeatureFlags) : null;
+    const voiceWasOn = this.lastFeatureFlags && resolveFeatureFlag(VOICE_FLAG, this.lastFeatureFlags);
     this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
     this.emitEvent({ type: "feature_flags", config });
+    if (!voiceWasOn && resolveFeatureFlag(VOICE_FLAG, config)) this.emitVoiceIndicators(storedVoiceIndicators());
     if (shapingWasOn === false && resolveFeatureFlag("task-shaping", config)) this.republishShaping();
   }
 
@@ -1641,6 +1662,25 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "shaping_config", config });
   }
 
+  voiceRouter?: VoiceRouter;
+
+  voiceHold(sessionId: string): boolean {
+    if (!featureEnabled(VOICE_FLAG)) return false;
+    const session = this.getSession(sessionId);
+    if (!session) return false;
+    if (this.voiceRouter?.holdsSession(sessionId, session.task?.id) ||
+        session.pendingTurns.some(turn => turn.spokenWords !== undefined)) return true;
+    return hasDeliveredSpokenHold(noteKeyFor(session));
+  }
+
+  emitVoiceIndicators(indicators: string[]): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+  }
+
+  emitVoiceCard(card: VoiceCard): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_card", card });
+  }
+
   /**
    * Publish the voice state, suppressing a frame that restates the last one. The store
    * recomputes on every flag change, config write, hello, report and lapse, so without this an
@@ -1648,9 +1688,12 @@ export class Registry extends EventEmitter {
    * `wireVoiceStateEvents` is the caller.
    */
   emitVoiceState(state: VoiceState): void {
+    if (state.mode === "off") this.voiceRouter?.clearActionsAndHistory();
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;
+    // A sent frame carries the roster as it stands, so that is what every window holds now.
+    this.lastVoiceRoster = state.mode === "off" ? null : canonicalVoiceRoster(state.roster);
     this.emitEvent({ type: "voice_state", state });
   }
 
@@ -1665,6 +1708,19 @@ export class Registry extends EventEmitter {
     const state = voiceStateStore.state();
     this.emitVoiceState(state);
     return state;
+  }
+
+  /**
+   * Publish who can be addressed, suppressing a frame that restates the last one. Only while the
+   * `voice` flag is on: with it off no window holds a voice state to put a roster in, and the
+   * frame that switches voice on carries the roster. `wireVoiceNameEvents` is the caller.
+   */
+  emitVoiceRoster(roster: readonly SpokenName[]): void {
+    if (!featureEnabled(VOICE_FLAG)) return;
+    const key = canonicalVoiceRoster(roster);
+    if (key === this.lastVoiceRoster) return;
+    this.lastVoiceRoster = key;
+    this.emitEvent({ type: "voice_roster", roster: [...roster] });
   }
 
   /**
@@ -2231,6 +2287,7 @@ export class Registry extends EventEmitter {
 
   /** Announce a confirmed delivery. `PendingTurnManager.journalDelivered` is the only caller. */
   turnDelivered(e: TurnDelivered): void {
+    if (e.spoken) this.voiceRouter?.settleSpoken(e.turnId, "sent");
     this.emit("turn_delivered", e);
   }
 
@@ -3224,7 +3281,7 @@ export class Registry extends EventEmitter {
     base.workCycle =
       prev && noteKeyFor(prev) === noteKeyFor(base)
         ? prev.workCycle
-        : (dbWorkCycleFor(noteKeyFor(base)) ?? undefined);
+        : (workCycleForBoundSession(base.id, noteKeyFor(base)) ?? undefined);
     // The overlay may have just supplied a binding nothing has persisted yet, and
     // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
     // been discovered yet has no live session to apply to, so it only ever reaches
@@ -3459,7 +3516,7 @@ export class Registry extends EventEmitter {
     s.pendingTurns = this.pendingTurnsFor(s);
     s.steeredTurns = this.steeredTurnsFor(s);
     s.steerReceipts = this.steerReceiptsFor(s);
-    s.workCycle = dbWorkCycleFor(noteKeyFor(s)) ?? undefined;
+    s.workCycle = workCycleForBoundSession(s.id, noteKeyFor(s)) ?? undefined;
     // The SDK door's half of the same first-introduction seeding `mergeDiscovered` does, and
     // the one that matters most: a driver session's questions are answered natively, so its
     // steering evidence exists ONLY as a review row.
@@ -3726,7 +3783,7 @@ export class Registry extends EventEmitter {
       next.meta = { ...next.meta, thinkingLevel: null };
     }
     if (noteKeyFor(next) !== noteKeyFor(s)) {
-      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
     }
     // Binding changes the note key, so everything keyed on it is re-resolved NOW rather
     // than on some later event, exactly as `applyHook` does and for the same reason: until
@@ -4062,7 +4119,7 @@ export class Registry extends EventEmitter {
         gitBranch,
       };
       if (noteKeyFor(next) !== noteKeyFor(target)) {
-        next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+        next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
       }
       if (workCycleSignal) {
         next = this.withWorkCycleSignal(next, workCycleSignal, ts, now);
@@ -4291,7 +4348,7 @@ export class Registry extends EventEmitter {
       ...s,
       agentSessionId,
       transcriptPath: null,
-      workCycle: dbWorkCycleFor(agentSessionId) ?? undefined,
+      workCycle: workCycleForBoundSession(s.id, agentSessionId) ?? undefined,
     };
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
@@ -6749,7 +6806,7 @@ export class Registry extends EventEmitter {
       next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.awaiting = this.awaitingFor(next);
-      next.workCycle = dbWorkCycleFor(noteKeyFor(next)) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, noteKeyFor(next)) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
@@ -6855,7 +6912,7 @@ export class Registry extends EventEmitter {
       next.launchWorkUnitId = this.launchWorkUnitForKey(noteKeyFor(next));
       next.blocker = this.blockerFor(next);
       next.awaiting = this.awaitingFor(next);
-      next.workCycle = dbWorkCycleFor(key) ?? undefined;
+      next.workCycle = workCycleForBoundSession(next.id, key) ?? undefined;
     }
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
@@ -7463,6 +7520,23 @@ export class Registry extends EventEmitter {
     if (current) this.emit("session_exit", current);
   }
 
+  /** A voice resume can arrive while the hibernated SDK card still owns its id. */
+  async waitForPendingEviction(id: string): Promise<void> {
+    if (!this.exitTimers.has(id)) return;
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        unsubscribe();
+        clearTimeout(timer);
+        resolve();
+      };
+      const unsubscribe = this.subscribe(event => {
+        if (event.type === "session_remove" && event.id === id) finish();
+      });
+      // A rediscovered session may cancel eviction. Resume rechecks ownership in either case.
+      const timer = setTimeout(finish, EXIT_LINGER_MS + 1000);
+    });
+  }
+
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.prObservations.delete(id);
@@ -7509,7 +7583,10 @@ export class Registry extends EventEmitter {
     if (leaving) {
       const key = noteKeyFor(leaving);
       const held = [...this.sessions.values()].some((other) => other.state !== "exited" && noteKeyFor(other) === key);
-      if (!held) this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
+      if (!held) {
+        spokenLedger.forgetConversation(key);
+        this.tryClearAwaitingKey(key, id, "exit", undefined, Date.now());
+      }
     }
   }
 
@@ -8349,10 +8426,13 @@ export class Registry extends EventEmitter {
   removeTask(id: string): void {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
-    dbDeleteTask(id);
+    const stored = dbDeleteTask(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
-    if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
+    // Published for a stored task too, not only a cached one: a task already evicted from
+    // memory can still be held by a subscriber, such as the voice roster keeping its name.
+    const cached = this.tasks.delete(id);
+    if (cached || stored) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
     this.cleanupDependencyProvenance();
@@ -8648,6 +8728,8 @@ export class Registry extends EventEmitter {
           ...(workUnitId ? { workUnitId } : {}),
           // The binding rides with the record, so the card's readers check one against the other.
           ...(shaping ? { shaping, ...(t.shapingDelivery ? { shapingDelivery: t.shapingDelivery } : {}) } : {}),
+          // Present only while the task has one, so every other card's payload is unchanged.
+          ...(t.callSign ? { callSign: t.callSign } : {}),
         }
       : null;
   }
@@ -9521,6 +9603,40 @@ export class Registry extends EventEmitter {
    */
   pruneDelegatedTurns(olderThan: number): number {
     return pruneDelegatedTurns(this.sweptSessions ? [...this.sessions.values()].map((s) => noteKeyFor(s)) : null, olderThan);
+  }
+
+  async pruneExpiredSpokenTurns(now: number, unavailableBefore?: number, signal?: AbortSignal): Promise<number> {
+    if (!this.sweptSessions) return 0;
+    return pruneExpiredSpokenTurns(now, (key, locators) => {
+      // A runtime can move the native file and leave a readable copy behind. Look in every
+      // known location for this exact conversation before absence can retire an unseen UUID.
+      const sources = new Map<string | null, ReturnType<typeof sessionMessages>>();
+      const add = (source: ReturnType<typeof sessionMessages>) => sources.set(source?.path ?? null, source);
+      const addSessionPaths = (session: Parameters<typeof sessionMessages>[0]) => {
+        if (session.transcriptPath) {
+          const read = transcriptFor(session)?.messages;
+          // A concrete location is owed a read even while it is missing or unsupported.
+          add(read ? { path: session.transcriptPath, read } : null);
+        }
+        // Default-path discovery is an additional source when it succeeds. A miss does
+        // not invalidate a complete scan of the conversation's known concrete locations.
+        const located = sessionMessages({ ...session, transcriptPath: null });
+        if (located) add(located);
+      };
+      for (const session of this.sessions.values()) {
+        if (session.agentSessionId === key) addSessionPaths(session);
+      }
+      for (const row of listSdkSessions(key)) {
+        if (row.agent) addSessionPaths({ id: row.id, agent: row.agent, cwd: row.cwd,
+          agentSessionId: key, startedAt: row.createdAt, transcriptPath: null });
+      }
+      for (const locator of locators) {
+        if (locator.transcriptAgent) addSessionPaths({ id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
+          agentSessionId: key, startedAt: null, transcriptPath: locator.transcriptPath });
+        else if (locator.transcriptPath) add(null);
+      }
+      return [...sources.values()];
+    }, unavailableBefore, signal);
   }
 
   /**
@@ -10658,7 +10774,7 @@ export class Registry extends EventEmitter {
       // The echo is spent FIRST, whatever the capture then does: it has arrived, and an entry
       // still open to it would absorb the next identical send's echo instead.
       markHumanEchoSeen(claim.ticket, now);
-      if (this.captureAcceptedPrompt(s.id, prompt, noteKey, now)) {
+      if (this.captureAcceptedPrompt(s.id, claim.spokenWords ?? prompt, noteKey, now)) {
         markHumanEchoCaptured(claim.ticket, { echoed: true, now });
       }
       return;
@@ -11335,9 +11451,11 @@ export class Registry extends EventEmitter {
   clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
     // A steer the discarded conversation accepted will never be read by the new one.
     this.forgetSteers(key);
-    const changed = clearPendingTurnsDb(key, preserveIds) > 0;
-    if (changed) this.syncSessionsForPendingTurns(key);
-    return changed;
+    const removed = clearPendingTurnsDb(key, preserveIds);
+    if (removed.count === 0) return false;
+    for (const id of removed.spokenIds) this.voiceRouter?.settleSpoken(id, "cancelled");
+    this.syncSessionsForPendingTurns(key);
+    return true;
   }
 
   /**

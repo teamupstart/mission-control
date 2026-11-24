@@ -3,8 +3,9 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, join } from "node:path";
-import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
+import { agentDisplayName, sessionDisplayNameInput, withCurrentReferenceNames } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { launchFailureOutcome } from "@shared/launch-failure.ts";
 import type { PostReportBody } from "@shared/protocol.ts";
 import {
@@ -12,6 +13,7 @@ import {
   REPORT_LIMITS,
   replyRefusal,
   replyTarget,
+  reportAuthorName,
   reportDocumentKind,
   reportId,
   reportReplyText,
@@ -125,6 +127,7 @@ interface Row {
   repository: string | null;
   author_key: string;
   author_name: string;
+  author_spoken_name: string | null;
   author_resident_profile_id: string | null;
   title: string;
   body: string;
@@ -152,12 +155,17 @@ const PUBLISHED_REPORT_PAGE = 200;
 const nullableNumber = (value: number | null): number | null => (value === null ? null : Number(value));
 
 function fromRow(row: Row): ReportItem {
+  const author: ReportAuthor = { key: row.author_key, name: row.author_name, residentProfileId: row.author_resident_profile_id };
+  if (row.author_spoken_name) {
+    author.labels = { fallback: row.author_name, spoken: row.author_spoken_name };
+    author.name = reportAuthorName(author, featureEnabled(VOICE_FLAG));
+  }
   return {
     id: row.id,
     sessionId: row.session_id,
     taskId: row.task_id,
     repository: row.repository,
-    author: { key: row.author_key, name: row.author_name, residentProfileId: row.author_resident_profile_id },
+    author,
     title: row.title,
     body: row.body,
     url: row.url,
@@ -326,13 +334,21 @@ export class ReportManager {
     // event then. Turning the flag on resends what is waiting, so an open window fills its
     // Reports section and its to read figure without a reload.
     let wasOn = featureEnabled(INBOX_FLAG);
+    let voiceWasOn = featureEnabled(VOICE_FLAG);
     this.stopFlags = onFeatureFlagsChanged(() => {
       const on = featureEnabled(INBOX_FLAG);
-      if (on && !wasOn) {
-        // Mutes first, so a window never lists a muted author's reports in between.
-        this.registry.setReportMutes(this.registry.listReportMutes());
-        for (const report of this.registry.reportsToRead()) this.registry.upsertReport(report);
+      const voiceOn = featureEnabled(VOICE_FLAG);
+      const resend = on && !wasOn;
+      if (resend || voiceWasOn !== voiceOn) {
+        this.registry.setReportMutes(this.listMutes());
+        for (const report of this.registry.reportsToRead()) {
+          const name = reportAuthorName(report.author, voiceOn);
+          if (name !== report.author.name) {
+            this.registry.upsertReport({ ...report, author: { ...report.author, name } });
+          } else if (resend) this.registry.upsertReport(report);
+        }
       }
+      voiceWasOn = voiceOn;
       wasOn = on;
     });
     // A follow-up's report follows its task: cleared once the task has started, however it was
@@ -567,7 +583,7 @@ export class ReportManager {
   }
 
   /** One author's reports that are still waiting to be read, which are the ones it may replace. */
-  private openReportsBy(authorKey: string): ReportItem[] {
+  openReportsBy(authorKey: string): ReportItem[] {
     return (openDb()
       .prepare("SELECT * FROM reports WHERE author_key = ? AND read_at IS NULL AND superseded_by IS NULL ORDER BY seq")
       .all(authorKey) as unknown as Row[]).map((row) => this.item(row));
@@ -577,9 +593,14 @@ export class ReportManager {
   authorFor(session: Session): ReportAuthor {
     const runs = this.registry.listResidentRuns();
     const run = session.task ? runs.find((candidate) => candidate.taskId === session.task!.id) : undefined;
+    const names = withCurrentReferenceNames(runs, this.registry.listResidentProfiles());
+    const fallback = agentDisplayName(sessionDisplayNameInput(session, names)).name;
+    const spoken = agentDisplayName(sessionDisplayNameInput(session, names, true)).name;
     return {
+      ...(spoken === fallback ? {} : { labels: { spoken, fallback } }),
       key: run ? residentAuthorKey(run.profileId) : sessionAuthorKey(session.id),
-      name: agentDisplayName(sessionDisplayNameInput(session, runs)).name,
+      // A call sign or reference name names the author only while voice is on.
+      name: featureEnabled(VOICE_FLAG) ? spoken : fallback,
       residentProfileId: run?.profileId ?? null,
     };
   }
@@ -610,13 +631,13 @@ export class ReportManager {
         const d = openDb();
         const placeholder = `pending:${randomUUID()}`;
         const inserted = d.prepare(
-          `INSERT INTO reports (id, session_id, task_id, repository, author_key, author_name,
+          `INSERT INTO reports (id, session_id, task_id, repository, author_key, author_name, author_spoken_name,
              author_resident_profile_id, title, body, url, document_name, document_kind, root_id,
              version, created_at, root_created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
-          placeholder, session.id, session.task?.id ?? null, session.repoRoot ?? null, author.key, author.name,
-          author.residentProfileId, input.title, input.body, input.url ?? null, document?.name ?? null,
+          placeholder, session.id, session.task?.id ?? null, session.repoRoot ?? null, author.key, author.labels?.fallback ?? author.name,
+          author.labels?.spoken ?? null, author.residentProfileId, input.title, input.body, input.url ?? null, document?.name ?? null,
           document?.kind ?? null, replaced?.rootId ?? placeholder, replaced ? replaced.version + 1 : 1, now,
           replaced?.rootCreatedAt ?? now,
         );
@@ -764,9 +785,9 @@ export class ReportManager {
   /** Muted report authors, oldest mute first. */
   listMutes(): ReportMute[] {
     return (openDb()
-      .prepare("SELECT author_key, author_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
-      .all() as Array<{ author_key: string; author_name: string; muted_at: number }>)
-      .map((row) => ({ authorKey: row.author_key, authorName: row.author_name, mutedAt: Number(row.muted_at) }));
+      .prepare("SELECT author_key, author_name, author_spoken_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
+      .all() as Array<{ author_key: string; author_name: string; author_spoken_name: string | null; muted_at: number }>)
+      .map((row) => ({ authorKey: row.author_key, authorName: featureEnabled(VOICE_FLAG) ? row.author_spoken_name ?? row.author_name : row.author_name, mutedAt: Number(row.muted_at) }));
   }
 
   /**
@@ -777,12 +798,12 @@ export class ReportManager {
    */
   mute(authorKey: string): ReportMute | null {
     const latest = openDb()
-      .prepare("SELECT author_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
-      .get(authorKey) as { author_name: string } | undefined;
+      .prepare("SELECT author_name, author_spoken_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
+      .get(authorKey) as { author_name: string; author_spoken_name: string | null } | undefined;
     if (!latest) return null;
     openDb()
-      .prepare("INSERT INTO report_mutes (author_key, author_name, muted_at) VALUES (?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
-      .run(authorKey, latest.author_name, this.now());
+      .prepare("INSERT INTO report_mutes (author_key, author_name, author_spoken_name, muted_at) VALUES (?, ?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
+      .run(authorKey, latest.author_name, latest.author_spoken_name, this.now());
     const mutes = this.listMutes();
     this.registry.setReportMutes(mutes);
     return mutes.find((mute) => mute.authorKey === authorKey) ?? null;

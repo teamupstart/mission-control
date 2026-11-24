@@ -6,6 +6,7 @@ import {
   type ResidentNameSource,
 } from "@shared/display-name.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import type { ResidentMarkerColorId } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
@@ -23,31 +24,34 @@ export interface AgentNameView {
 }
 
 export type NamedSession = Pick<Session, "name"> & {
-  task?: Pick<NonNullable<Session["task"]>, "id" | "title"> | null;
+  task?: Pick<NonNullable<Session["task"]>, "id" | "title" | "kind" | "callSign"> | null;
 };
 
 /**
  * The name one surface prints for a session. `legacy` is exactly what that surface printed
  * before the `inbox` flag, and it is what the flag off still prints; the flag on prints
- * `agentDisplayName`, in a resident's board colour when a resident name won.
+ * `agentDisplayName`, in a resident's board colour when a resident name won. `spokenNames` is
+ * the `voice` flag: off, a call sign or reference name does not name the agent.
  */
 export function agentNameView(
   session: NamedSession,
   legacy: string,
   enabled: boolean,
   runs: readonly ResidentNameSource[],
+  spokenNames = false,
 ): AgentNameView {
   if (!enabled) return { name: legacy, colorId: null };
-  const input = sessionDisplayNameInput(session, runs);
+  const input = sessionDisplayNameInput(session, runs, spokenNames);
   const display = agentDisplayName(input);
   return { name: display.name, colorId: agentNameColor(input, display) };
 }
 
-/** `agentNameView` for a component, from the `inbox` flag and `ResidentNamesContext`. */
+/** `agentNameView` for a component, from the `inbox` and `voice` flags and `ResidentNamesContext`. */
 export function useAgentName(session: NamedSession, legacy: string): AgentNameView {
   const enabled = useFeatureFlag(INBOX_FLAG);
+  const spokenNames = useFeatureFlag(VOICE_FLAG);
   const runs = useContext(ResidentNamesContext);
-  return agentNameView(session, legacy, enabled, runs);
+  return agentNameView(session, legacy, enabled, runs, spokenNames);
 }
 
 /** Whether the `inbox` naming rule is on, for a surface that only adds a name while it is. */

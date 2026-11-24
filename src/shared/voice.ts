@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
+import type { SpokenName } from "./voice-names.ts";
 import { boundedRecord } from "./zod-shapes.ts";
 
 /** The preview flag for voice addressing. */
@@ -117,6 +118,21 @@ export const VoiceConfigPatchSchema = z.object({
 }).partial().strict().refine((patch) => Object.keys(patch).length > 0, { message: "empty voice config update" });
 export type VoiceConfigPatch = z.infer<typeof VoiceConfigPatchSchema>;
 
+// Allow the existing one-minute delayed reservation to complete within a single edit.
+export const VOICE_PROVIDER_EDIT_TIMEOUT_MS = 75_000;
+export const VoiceProviderGestureSchema = z.object({ group: z.uuid(), order: z.int().positive() }).strict();
+export const VoiceProviderIntentSchema = z.object({
+  writer: z.uuid(),
+  observedRevision: z.string().min(1).max(80),
+  expiresAt: z.int().positive().optional(),
+  optOut: z.boolean().optional(),
+  edit: z.int().positive().optional(),
+  gesture: VoiceProviderGestureSchema.optional(),
+  observedIntent: z.string().min(1).max(128).optional(),
+  unchangedSince: z.string().min(1).max(80).optional(),
+}).strict();
+export type VoiceProviderIntent = z.infer<typeof VoiceProviderIntentSchema>;
+
 /** Apply a patch over a config: fields replace, and `cancelWindow` merges per key. */
 export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPatch): VoiceConfig {
   return VoiceConfigSchema.parse({
@@ -136,6 +152,13 @@ export type VoiceConfirmationPlacement = (typeof VOICE_CONFIRMATION_PLACEMENTS)[
 /** The in-window indicators Phase 7 draws, each mounted while its id is listed. */
 export const VOICE_INDICATOR_IDS = ["status-line", "topbar", "floating", "edge", "composer"] as const;
 export type VoiceIndicatorId = (typeof VOICE_INDICATOR_IDS)[number];
+/** Revisions are comparable within one daemon. A reconnect snapshot identifies a restart. */
+export const VoiceRevisionSchema = z.object({ source: z.string(), revision: z.number().int().nonnegative() });
+export type VoiceRevision = z.infer<typeof VoiceRevisionSchema>;
+export const VoiceIndicatorSelectionSchema = z.object({
+  id: z.enum(VOICE_INDICATOR_IDS),
+  enabled: z.boolean(),
+}).strict();
 
 /** The bound on `ui.voice.indicators`, far above the five ids that exist. */
 export const VOICE_INDICATORS_MAX = 32;
@@ -169,6 +192,18 @@ export const VoiceUiConfigPatchSchema = z.object({
 
 export const VOICE_MODES = ["off", "unavailable", "listening", "muted", "auto-muted", "push-to-talk"] as const;
 export type VoiceMode = (typeof VOICE_MODES)[number];
+
+export function voiceCaptures(mode: VoiceMode): boolean {
+  return mode === "listening" || mode === "push-to-talk";
+}
+
+export interface VoiceListenerDirective {
+  capture: boolean;
+  roster: string[];
+  inputDevice: string;
+  pauseMs?: number | null;
+  revision: string;
+}
 
 /**
  * Why voice is unavailable, in the order they are reported.
@@ -258,18 +293,26 @@ export interface VoiceHotkeyError {
  */
 export interface VoiceState {
   mode: VoiceMode;
+  /** Orders mode transitions within one daemon across HTTP replies and the event stream.
+   * Absent on the off state and on snapshots from older daemons. */
+  modeVersion?: VoiceRevision;
   /** Every reason that holds, in `VOICE_UNAVAILABLE_REASONS` order. Empty unless `unavailable`. */
   reasons: VoiceUnavailableReason[];
   /** From the latest shell report, plus the daemon's own reading of `listener`. */
   capabilities: VoiceCapabilities;
+  /** The persisted shortcut, observed in the same snapshot as the shell's registration. */
+  configuredHotkey: string | null;
+  /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
+  registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
   hotkeyError: VoiceHotkeyError | null;
   model: VoiceModelState;
   /**
-   * Who can be addressed. Empty in this phase: Phase 2 (contract C) fills it with spoken names
-   * and widens the element type.
+   * Who can be addressed (contract C): every live resident profile and every task with a call
+   * sign, running or not. The daemon's `VoiceNameRegistry` fills it. A change to it alone is
+   * published as `voice_roster`, not as a `voice_state` frame; see `canonicalVoiceState`.
    */
-  roster: readonly never[];
+  roster: readonly SpokenName[];
 }
 
 /** Whether the state says a capability is reported and available. */
@@ -351,6 +394,10 @@ export const VOICE_MODE_LABEL: Record<VoiceMode, string> = {
 /**
  * The state as one string with its keys in a fixed order, so two states that say the same thing
  * compare equal. The registry uses it to drop a frame that restates the last one.
+ *
+ * The roster is left out: it travels on its own event, `voice_roster`, so an agent starting or
+ * stopping does not wake the shell, which follows the mode and has no use for names. A
+ * `voice_state` frame still carries the roster as it stands when it is sent.
  */
 export function canonicalVoiceState(state: VoiceState): string {
   const capabilities: Record<string, VoiceCapability> = {};
@@ -360,11 +407,14 @@ export function canonicalVoiceState(state: VoiceState): string {
   }
   return JSON.stringify([
     state.mode,
+    state.modeVersion?.source,
+    state.modeVersion?.revision,
     state.reasons,
     capabilities,
+    state.configuredHotkey,
+    state.registeredHotkey,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
     canonicalVoiceModel(state.model),
-    state.roster,
   ]);
 }
 
@@ -381,16 +431,36 @@ function canonicalVoiceModel(model: VoiceModelState): unknown[] {
   ];
 }
 
+/**
+ * The roster as one string, entries and fields in a fixed order, so the registry can drop a
+ * `voice_roster` frame that restates the last one.
+ */
+export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
+  return JSON.stringify(roster.map((entry) => [
+    entry.key, entry.name, entry.kind, entry.taskId, entry.sessionId, entry.role, entry.colorId, entry.agent, entry.state,
+  ]));
+}
+
 /** The state with the flag off: what every follower is told when voice is switched off. */
 export function voiceStateOff(): VoiceState {
-  return { mode: "off", reasons: [], capabilities: {}, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
+  return { mode: "off", reasons: [], capabilities: {}, configuredHotkey: null, registeredHotkey: null, hotkeyError: null, model: { ...VOICE_MODEL_STATE_NONE }, roster: [] };
 }
 
 // ---- the listener's hello and the shell's report ----
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
-export const VOICE_LISTENER_PROTOCOL_MAJOR = 1;
+export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
+/** Response headers on the capture-off directive for an explicit push-to-talk key release. */
+export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
+export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
+export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
+export const VOICE_CAPTURE_START_HEADER = "x-voice-capture-start-host-us";
+export const VOICE_SPEECH_START_HEADER = "x-voice-speech-start-host-us";
+export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
+export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
+export const VoiceListenerIdSchema = z.uuid();
 
 /** The values macOS reports for a media permission, which a Linux listener can also name. */
 export const VOICE_MICROPHONE_PERMISSIONS = ["granted", "denied", "not-determined", "restricted", "unknown"] as const;
@@ -400,6 +470,7 @@ const VoiceInputDeviceSchema = z.object({
   id: z.string().min(1).max(VOICE_LIMITS.deviceIdChars),
   name: z.string().min(1).max(VOICE_LIMITS.deviceNameChars),
   builtIn: z.boolean().optional(),
+  bluetooth: z.boolean().optional(),
 });
 export type VoiceInputDevice = z.infer<typeof VoiceInputDeviceSchema>;
 
@@ -412,6 +483,7 @@ export const VoiceListenerHelloSchema = z.object({
   version: z.string().regex(/^\d+(\.\d+){0,2}$/).max(VOICE_LIMITS.versionChars),
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),
   modelLoaded: z.boolean(),
+  primingAvailable: z.boolean().optional(),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS),
 });
 export type VoiceListenerHello = z.infer<typeof VoiceListenerHelloSchema>;
@@ -435,6 +507,15 @@ export const VoiceShellReportSchema = z.object({
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS).nullable().default(null),
   callActive: z.boolean().default(false),
   pushToTalk: z.boolean().default(false),
+  /** Legacy Unix fields are accepted for compatibility. They cannot authorize release. */
+  pushToTalkPressedAt: z.number().int().nonnegative().optional().catch(undefined),
+  pushToTalkReleasedAt: z.number().int().nonnegative().optional().catch(undefined),
+  /** Monotonic host time when the shell sampled this snapshot, strictly increasing across reports. */
+  reportedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  /** Physical key event on the same monotonic microsecond clock as the snapshot. */
+  pushToTalkPressedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  pushToTalkReleasedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  registeredHotkey: ChordSchema.nullable().optional(),
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),

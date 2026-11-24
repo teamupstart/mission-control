@@ -550,6 +550,8 @@ export type EnsembleEvaluatorGuidance =
       runner: LlmRunnerId | null;
       /** The Persona's model override at the pinned revision, or null for the ladder. */
       model: string | null;
+      /** Older compiled plans inherit the background job's effort. */
+      effort?: ThinkingLevel;
     };
 
 /**
@@ -568,6 +570,7 @@ export interface EnsembleReviewPersona {
   guidanceMarkdown: string;
   runner: LlmRunnerId | null;
   model: string | null;
+  effort?: ThinkingLevel;
 }
 
 /**

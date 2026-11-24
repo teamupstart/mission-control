@@ -3,6 +3,7 @@ import type { ReviewItem, Session } from "@shared/types.ts";
 import { questionOutcome, questionStatusLine, useQuestionAgent } from "../lib/async-questions.ts";
 import { inputBody } from "../lib/reviews.ts";
 import { ConversationTimestamp } from "./ConversationTimestamp.tsx";
+import { QuestionBody } from "./QuestionBody.tsx";
 import { RevisionTag } from "./ReviewRevision.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -101,9 +102,10 @@ export function ClosedQuestionCard({ review }: { review: ReviewItem }): React.JS
  * the title and the whole question and its context as the body, so the heading alone would drop
  * text from a long or multi-line question, and nothing else in the conversation shows it once the
  * question has ended. The card's own rule decides what to add (`inputBody`): a question that fit
- * in the heading shows only its context, and nothing at all when there is none.
+ * in the heading shows only its context, and nothing at all when there is none. It renders the way
+ * the question card does (`QuestionBody`), so a bulleted context reads as a list in both places.
  */
 function QuestionText({ review }: { review: ReviewItem }): React.JSX.Element | null {
   const text = review.kind === "input" ? inputBody(review) : "";
-  return text ? <p className="review-asked-question">{text}</p> : null;
+  return text ? <QuestionBody className="review-asked-question" text={text} /> : null;
 }

@@ -4,7 +4,7 @@ import {
   batchSeverity,
   detectAlerts,
   heldForAway,
-  heldReportStillDue,
+  reportAlert,
   reportStillOwed,
   shouldDeliver,
   summarizeAlerts,
@@ -179,15 +179,18 @@ export function useNotifier(
     if (!awayOff || heldRef.current.length === 0) return;
     const held = heldRef.current;
     heldRef.current = [];
-    void Promise.all(held.map(async (a): Promise<"deliver" | "drop" | "hold"> => {
-      const answer = a.reportId ? await fetchReport(a.reportId) : null;
-      if (answer) return reportStillOwed(answer.report) ? "deliver" : "drop";
-      if (!readyRef.current) return "hold";
-      return heldReportStillDue(a, scopeRef.current.reports) ? "deliver" : "drop";
-    })).then((verdicts) => {
+    void Promise.all(held.map(async (alert) => {
+      const answer = alert.reportId ? await fetchReport(alert.reportId) : null;
+      if (!answer && !readyRef.current) return { hold: alert };
+      const report = answer?.report ?? scopeRef.current.reports?.find((r) => r.id === alert.reportId);
+      return report && reportStillOwed(report) ? { report } : {};
+    })).then((results) => {
       const { notify: switches, away, onOpenReport, muted } = deliveryRef.current;
-      const owed = held.filter((_, i) => verdicts[i] === "deliver");
-      heldRef.current.push(...held.filter((_, i) => verdicts[i] === "hold"));
+      const owed: Alert[] = [];
+      for (const result of results) {
+        if (result.hold) heldRef.current.push(result.hold);
+        if (result.report) owed.push(reportAlert(result.report, scopeRef.current.spokenNames));
+      }
       // Away again by the time the reads land: hold them once more.
       if (away !== false) {
         heldRef.current.push(...owed);

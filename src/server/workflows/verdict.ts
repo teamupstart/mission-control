@@ -1,9 +1,9 @@
 import { workflowFindingReason } from "@shared/workflow-reasons.ts";
 import { z } from "zod";
-import { PersonaVerdictSchema } from "@shared/protocol.ts";
+import { PersonaVerdictSchema, RepositoryEvidenceReferenceSchema } from "@shared/protocol.ts";
 import { LLM_REPLY_COLLECTION_MAX } from "@shared/llm.ts";
 import {
-  EVIDENCE_REF_KINDS,
+  CONTEXT_EVIDENCE_REF_KINDS,
   PERSONA_FINDING_BASES,
   WORKFLOW_EXECUTION_LIMITS,
   type EvidenceRef,
@@ -22,11 +22,12 @@ import { ModelReplyMiss, describeReplyIssues, parseModelReply } from "../llm/str
 // valid reviews. The normalized verdict is unchanged, since null and omission both leave the
 // key out.
 const EvidenceInputSchema = z.object({
-  kind: z.enum(EVIDENCE_REF_KINDS),
+  kind: z.enum(CONTEXT_EVIDENCE_REF_KINDS),
   quote: z.string(),
   path: nullAsAbsent(z.string().optional()),
   line: nullAsAbsent(z.number().finite().optional()),
 });
+const repositoryEvidence = z.union([EvidenceInputSchema, RepositoryEvidenceReferenceSchema]);
 const RequestedChangeInputSchema = z.object({
   category: z.unknown().optional(),
   basis: nullAsAbsent(z.enum(PERSONA_FINDING_BASES).optional()),
@@ -54,6 +55,19 @@ const PersonaVerdictInputSchema = z.discriminatedUnion("verdict", [
   }),
 ]);
 
+const RepositoryVerdictInputSchema = z.discriminatedUnion("verdict", [
+  PersonaVerdictInputSchema.options[0].extend({
+    approvalDetails: PersonaVerdictInputSchema.options[0].shape.approvalDetails.extend({
+      evidence: z.array(repositoryEvidence).max(LLM_REPLY_COLLECTION_MAX),
+    }),
+  }),
+  PersonaVerdictInputSchema.options[1].extend({
+    requestedChanges: z.array(RequestedChangeInputSchema.extend({
+      evidence: z.array(repositoryEvidence).min(1).max(LLM_REPLY_COLLECTION_MAX),
+    })).min(1).max(LLM_REPLY_COLLECTION_MAX),
+  }),
+]);
+
 function clipped(value: string, max: number): string {
   const trimmed = value.trim();
   if (trimmed.length <= max) return trimmed;
@@ -65,7 +79,8 @@ function line(value: number | undefined): number | undefined {
   return Math.max(1, Math.min(WORKFLOW_EXECUTION_LIMITS.verdictLine, Math.trunc(value)));
 }
 
-function evidenceRef(value: z.infer<typeof EvidenceInputSchema>): EvidenceRef {
+function evidenceRef(value: z.infer<typeof repositoryEvidence>): EvidenceRef {
+  if (value.kind === "repository") return value;
   return {
     kind: value.kind,
     quote: clipped(value.quote, WORKFLOW_EXECUTION_LIMITS.verdictReason),
@@ -76,7 +91,7 @@ function evidenceRef(value: z.infer<typeof EvidenceInputSchema>): EvidenceRef {
   };
 }
 
-function requestedChange(value: z.infer<typeof RequestedChangeInputSchema>): RequestedChange {
+function requestedChange(value: z.infer<typeof RepositoryVerdictInputSchema.options[1]>["requestedChanges"][number]): RequestedChange {
   return {
     ...(value.basis ? { basis: value.basis } : {}),
     ...(value.category === undefined ? {} : { category: workflowFindingReason(value.category) }),
@@ -114,8 +129,9 @@ function normalizeVerdictReply(
   currentImageIds: ReadonlySet<string>,
   currentArtifactIds: ReadonlySet<string>,
   currentCheckAttemptIds: ReadonlySet<string>,
+  repository = false,
 ): PersonaVerdict | ModelReplyMiss {
-  const parsed = PersonaVerdictInputSchema.safeParse(value);
+  const parsed = (repository ? RepositoryVerdictInputSchema : PersonaVerdictInputSchema).safeParse(value);
   if (!parsed.success) return new ModelReplyMiss("schema", describeReplyIssues(parsed.error.issues));
   const confidence = Math.max(0, Math.min(1, parsed.data.confidence));
   const normalized: PersonaVerdict = parsed.data.verdict === "pass"
@@ -173,11 +189,12 @@ export function parsePersonaVerdictReply(
   currentImageIds: ReadonlySet<string> = new Set(),
   currentArtifactIds: ReadonlySet<string> = new Set(),
   currentCheckAttemptIds: ReadonlySet<string> = new Set(),
+  repository = false,
 ): PersonaVerdict | ModelReplyMiss {
-  const input = parseModelReply(raw, PersonaVerdictInputSchema);
+  const input = parseModelReply(raw, repository ? RepositoryVerdictInputSchema : PersonaVerdictInputSchema);
   return input instanceof ModelReplyMiss
     ? input
-    : normalizeVerdictReply(input, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+    : normalizeVerdictReply(input, currentImageIds, currentArtifactIds, currentCheckAttemptIds, repository);
 }
 
 export function verdictRequestedChanges(verdict: PersonaVerdict): RequestedChange[] {

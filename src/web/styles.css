@@ -43593,3 +43593,14 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   outline: 2px solid var(--select);
   outline-offset: -2px;
 }
+
+.persona-repository-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem 1rem;
+  padding-block: .8rem;
+}
+.persona-repository-access label { display: grid; gap: .35rem; }
+.persona-repository-access details { flex-basis: 100%; max-width: 68ch; }
+.persona-repository-access summary { cursor: pointer; }

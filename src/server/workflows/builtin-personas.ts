@@ -60,6 +60,8 @@ function builtinPersona(source: { slug: string; guidanceMarkdown: string }): Per
     // honest answer for a compiled-in document is none - so no drift check ever reads it.
     provenance: null,
     builtin: true,
+    repositoryAccess: "none",
+    repositoryAccessRevision: 0,
   };
 }
 

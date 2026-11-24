@@ -3372,6 +3372,29 @@ test("a shared capture rejection releases the reserved child for retry on the sa
   }
 });
 
+test("a failed continuation activation rolls back the parent action and its receipts", async () => {
+  const { openDb } = await import("../src/server/db.ts");
+  const h = await harness("atomic-continuation", {});
+  const db = openDb();
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no action delivery");
+    const parent = waitingAttempt(h, runId)!;
+    db.exec(`CREATE TEMP TRIGGER reject_continuation_activation BEFORE UPDATE ON workflow_runs
+      WHEN NEW.current_phase='activating' BEGIN SELECT RAISE(ABORT, 'interrupted activation'); END`);
+    h.runActionTurn();
+    await h.manager.sweepSessionActions(SETTLED());
+    const child = h.store.latestSubmission(runId)!;
+    assert.equal(child.continuationNodeAttemptId, parent.id);
+    assert.equal(h.store.getAttempt(parent.id)?.state, "waiting");
+    assert.deepEqual(h.store.listReceipts(child.id), []);
+    assert.ok(!h.store.listEvents(runId).some(e => e.kind === "session_action_completed"));
+  } finally {
+    db.exec("DROP TRIGGER IF EXISTS reject_continuation_activation");
+    await h.stop();
+  }
+});
+
 test("cancelling a session action during continuation capture reports the conflict", async (t) => {
   const options: HarnessOptions = {};
   const h = await harness("cancel-continuation-capture", options);

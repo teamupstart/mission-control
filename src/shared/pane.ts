@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "./terminal.ts";
 import type {
   EmulatorHandle,
   MuxHandle,
@@ -115,14 +116,12 @@ export function paneToken(s: PaneHandles): string | null {
  * would have been discovered, named, drawn on a card, and then quietly refused a Send by
  * twenty independent booleans.
  *
- * Presence of a HANDLE decides, not truthiness of an id - a wezterm pane may legitimately
- * be pane 0. Whether that pane's backend can be typed into AT ALL is a capability question
- * (`BoundPane.write`, which an emulator with no scripting CLI declares null) and it is
- * answered server-side at the moment of writing; a handle only ever exists for a backend
- * that enumerated the pane, and every shipped one can also write to it.
+ * Use the innermost handle even if its ID is zero. Terminal.app exposes tabs for focus only.
+ * The server also checks the bound adapter's write capability before sending input.
  */
 export function canWriteTo(s: PaneHandles): boolean {
-  return innermostPane(s) !== null;
+  const pane = innermostPane(s);
+  return pane !== null && pane.backend !== MACOS_TERMINAL_ID;
 }
 
 /**
@@ -136,7 +135,7 @@ export function canWriteTo(s: PaneHandles): boolean {
  *  - `canMessage` is about a CONVERSATION: may the Send box be enabled, may the work queue
  *    hand this session an item, will a reset be able to clear its context, may Foreman
  *    reply. None of those care how the bytes land.
- *  - `canWriteTo` is about a PANE: focus and raise it, take the write lock on it, press
+ *  - `canWriteTo` is about pane input: take the write lock on it, press
  *    Shift+Tab in it, tolerate a capture miss on it. Every one of those is meaningless
  *    without a pane, and an SDK session must NOT be admitted to any of them - so the
  *    literal predicate keeps its literal meaning rather than being widened underneath its

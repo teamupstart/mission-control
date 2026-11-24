@@ -23,7 +23,7 @@ test("pre-artifact submissions reopen twice with the fresh artifact tables, inde
     DROP TRIGGER repository_capture_failed;
     DROP TABLE workflow_repository_snapshot_claims;
     DROP TABLE workflow_repository_artifacts;
-    PRAGMA user_version=50;`);
+    PRAGMA user_version=53;`);
   for (let i = 0; i < 2; i++) {
     closeDb();
     assert.deepEqual(schema(), fresh);
@@ -40,14 +40,14 @@ test("pre-artifact submissions reopen twice with the fresh artifact tables, inde
   }
 });
 
-test("upgrading a completed or interrupted v51 migration replaces the running-status trigger", () => {
+test("upgrading an earlier artifact preview replaces the running-status trigger", () => {
   const db = openDb();
   const trigger = "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='repository_activation_required'";
   const current = db.prepare(trigger).get()?.sql;
   assert.equal(typeof current, "string");
   const previous = String(current).replace("OLD.status='capturing' AND NEW.status='running'", "NEW.status='running'");
   assert.notEqual(previous, current);
-  for (const version of [51, 50]) {
+  for (const version of [50, 51, 52]) {
     openDb().exec(`DROP TRIGGER repository_activation_required; ${previous}; PRAGMA user_version=${version};`);
     closeDb();
     assert.equal(openDb().prepare(trigger).get()?.sql, current);

@@ -703,3 +703,22 @@ test("while away a report does not interrupt, and the return digest counts the r
   await expect.poll(() => toastTitles(page)).toContain(`${name}'s back: Back at the desk`);
   expect((await toasts(page)).some((t) => t.tag === `report:${after.id}`)).toBe(true);
 });
+
+test("returning from Away uses the current Voice label for a buffered idle event", async ({ dashboard: page, daemon }) => {
+  const title = "Check the parser";
+  const session = await setup(page, daemon, title);
+  await api(daemon, `/api/tasks/${session.task!.id}/update`, { callSign: "Alice" });
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: true }, "PUT");
+  await startWorking(daemon, session);
+  await page.getByRole("button", { name: /^Alerts & away mode/ }).click();
+  const away = page.getByRole("switch", { name: "Away mode" });
+  await away.click();
+  const buffered = () => api<{ since: number | null; lines: string[] }>(daemon, "/api/away/buffer");
+  await expect.poll(async () => (await buffered()).since, { timeout: 30_000 }).not.toBeNull();
+  await hook(daemon, session, "Stop");
+  await expect.poll(async () => (await buffered()).lines.join(" "), { timeout: 30_000 }).toContain("Alice went idle");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled: false }, "PUT");
+  await away.click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".away-digest")).toContainText(`${title} went idle`, { timeout: 60_000 });
+});

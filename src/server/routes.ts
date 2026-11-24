@@ -319,7 +319,9 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
-import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import {
+  HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID, IDLE_STALLED_FLAG_ID,
+} from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -5486,6 +5488,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agent: prepared.agent,
         model: data.model ?? undefined,
         effort: data.effort ?? undefined,
+        callSign: data.callSign ?? undefined,
         workflowId,
         enabled: data.enabled,
         priority: data.priority,
@@ -6486,12 +6489,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The request
-  // names a kind; the outbox picks the words and records them as daemon-written, so the agent's
-  // prompt hook never takes them for the operator's Goal. A free-form reply from the same row
-  // goes through /send like any other message.
+  // A Stuck row's fixed message (`inbox` flag), or a Stalled card's in Idle (`idle-stalled`):
+  // Nudge, Continue or Tell it to push. Either preview opens it, because both draw the same fixes.
+  // The request names a kind; the outbox picks the words and records them as daemon-written, so
+  // the agent's prompt hook never takes them for the operator's Goal. A free-form reply from the
+  // same row goes through /send like any other message.
   app.post("/api/sessions/:id/inbox-message", async (c) => {
-    if (!featureEnabled(INBOX_FLAG)) return c.json({ ok: false, error: "the inbox preview flag is off" }, 403);
+    if (!featureEnabled(INBOX_FLAG) && !featureEnabled(IDLE_STALLED_FLAG_ID)) {
+      return c.json({ ok: false, error: "the inbox and Stalled section preview flags are off" }, 403);
+    }
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ ok: false, error: "no such session" }, 404);
     const parsed = await parseBody(c, InboxMessageSchema);
@@ -9752,6 +9758,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
+      // The same agent tried again answers to the same name.
+      callSign: task.callSign ?? undefined,
       workflowId: task.workflowId,
       grillFirst: task.grillFirst ?? false,
       priority: task.priority,

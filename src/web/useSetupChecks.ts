@@ -56,7 +56,7 @@ export function setupFlagsRefresh(
  * key (`setupFlagsRefresh`), so a family that follows a flag appears with its rows and a row about
  * flags reads the switch just made - including a switch between the mount read and the snapshot.
  */
-export function useSetupChecks(enabled: boolean, flagsKey: string | null = null): SetupChecksState {
+export function useSetupChecks(enabled: boolean, flagsKey: string | null = null, macosTerminalPreview = false): SetupChecksState {
   const [view, setView] = useState<SetupChecksSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +91,7 @@ export function useSetupChecks(enabled: boolean, flagsKey: string | null = null)
     }
     return null;
   }, []);
-  useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
+  useEffect(() => { if (enabled) void refresh(); }, [enabled, macosTerminalPreview, refresh]);
   const settledFlags = useRef<string | null>(null);
   useEffect(() => {
     if (!enabled || flagsKey === null || view === null || loading) return;

@@ -1,3 +1,4 @@
+import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -106,6 +107,13 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
   ghostty: spec("ghostty", "Ghostty", "ghostty", "GHOSTTY_BIN", {
     legacyEnv: ["GHOSTTY_BIN"],
     candidates: appCandidates("Ghostty.app", "Contents/MacOS/ghostty"),
+    searchPath: false,
+  }),
+  [MACOS_TERMINAL_ID]: spec(MACOS_TERMINAL_ID, "macOS Terminal", "Terminal", "MACOS_TERMINAL_BIN", {
+    candidates: ({ platform }) => platform === "darwin" ? [
+      "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+      "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+    ] : [],
     searchPath: false,
   }),
   iterm: spec("iterm", "iTerm2", "iTerm2", "ITERM_BIN", {

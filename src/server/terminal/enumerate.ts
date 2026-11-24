@@ -76,6 +76,7 @@ export type TerminalEnumeration =
  */
 export async function enumerateTerminals(
   procs: readonly HostProc[] = [],
+  emulators = EMULATORS,
 ): Promise<TerminalEnumeration[]> {
   const work: Promise<TerminalEnumeration>[] = [];
 
@@ -92,7 +93,7 @@ export async function enumerateTerminals(
   }
 
   for (const id of EMULATOR_IDS) {
-    const backend = EMULATORS[id];
+    const backend = emulators[id];
     const list = backend.list;
     if (!list || !binPresent(backend.bin)) continue;
     const hostProcess = backend.hostProcess;

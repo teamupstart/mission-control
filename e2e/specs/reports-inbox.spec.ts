@@ -304,3 +304,28 @@ test("while the inbox dismissals cannot be read, reports are still counted and l
   await capture(page, "08-dismissals-unreadable-reports-shown", page);
   await page.unroute(dismissals);
 });
+
+test("an open report follows Voice using its author labels captured at posting", async ({ dashboard: page, daemon }) => {
+  const title = "Check the parser";
+  for (const id of ["async-input", "inbox", "filed-plan-decisions", "voice"]) {
+    await api(daemon, "/api/feature-flags", { kind: "flag", id, enabled: true }, "PUT");
+  }
+  const task = await api<Task>(daemon, "/api/tasks", {
+    repoRoot: daemon.repo, title, callSign: "Alice", intent: title, kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  });
+  let session!: Session;
+  await expect.poll(async () => {
+    session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
+    return session?.agentSessionId ? session.state : null;
+  }, { timeout: 60_000 }).toBe("idle");
+  const posted = await report(daemon, session.cwd!, { title: "Parser checked", body: "Done." });
+  expect(posted.author.name).toBe("Alice");
+  const inbox = await openInboxFromToRead(page);
+  await expect(inbox.getByRole("region", { name: "Reports from Alice" })).toBeVisible();
+  for (const [enabled, label] of [[false, title], [true, "Alice"]] as const) {
+    await api(daemon, "/api/feature-flags", { kind: "flag", id: "voice", enabled }, "PUT");
+    const row = inbox.getByRole("region", { name: `Reports from ${label}` });
+    await expect(row.getByRole("article", { name: "Report: Parser checked" })).toContainText(label);
+    await capture(row, enabled ? "report-voice-on" : "report-voice-off", page);
+  }
+});

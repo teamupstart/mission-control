@@ -59,7 +59,7 @@ const tmux = fakeMultiplexer({
 const focusTerminals = {
   ...configuredTerminalDeps,
   multiplexers: { tmux, herdr: fakeMultiplexer({ id: "herdr" }), cmux: fakeMultiplexer({ id: "cmux" }) },
-  emulators: { wezterm: fakeIterm, ghostty: fakeIterm, iterm: fakeIterm },
+  emulators: { ...configuredTerminalDeps.emulators, wezterm: fakeIterm, ghostty: fakeIterm, iterm: fakeIterm },
   installed: () => true,
 };
 const app = buildApp({

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
 import { supervisorIssuer } from "./supervisor-auth.ts";
@@ -184,6 +184,7 @@ export class SpeechHolds {
         if (!this.write(join(this.directory, "supervised-exits", name + ".json"), { instance, proof })) return "unavailable";
         try { unlinkSync(path); }
         catch (error) { if (!missing(error, path)) return "unavailable"; }
+        if (mayExist(dirname(path))) this.syncParents(dirname(path));
       }
       let inventory: Launch[] | undefined;
       try { inventory = this.readInventory() ?? this.lastInventory; }
@@ -227,12 +228,26 @@ export class SpeechHolds {
     const temp = path + "." + randomUUID();
     try {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      writeFileSync(temp, JSON.stringify(value), { flag: "wx", mode: 0o600 });
+      const fd = openSync(temp, "wx", 0o600);
+      try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); }
+      finally { closeSync(fd); }
       renameSync(temp, path);
+      this.syncParents(dirname(path));
       return true;
     } catch {
       try { unlinkSync(temp); } catch { /* No staged file. */ }
       return false;
+    }
+  }
+
+  private syncParents(directory: string) {
+    // A new receipt directory and its entry in the daemon's state home must
+    // survive the same crash as the file. Repeat these syncs on a failed write's retry.
+    const home = resolve(this.directory, "..");
+    for (let parent = resolve(directory); ; parent = dirname(parent)) {
+      const fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY);
+      try { fsyncSync(fd); } finally { closeSync(fd); }
+      if (parent === home) break;
     }
   }
 }

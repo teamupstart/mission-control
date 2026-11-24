@@ -225,7 +225,8 @@ instance it announced to report the child's exit. If the OS refuses to spawn
 the child, pre-spawn validation fails after announcement, or the start
 acknowledgement is lost, the launch helper
 retains the instance and retries its signed exit with backoff. It returns the
-original spawn error once the exit is acknowledged. A capture-only listener
+original error when the exit is acknowledged or definitively refused. A
+retryable delivery or persistence failure keeps the signed exit pending. A capture-only listener
 can keep its existing launch path.
 
 #### Voice launch receipts
@@ -233,5 +234,10 @@ can keep its existing launch path.
 Under `voice/supervised/`, the daemon writes one owner-only `announced-<digest>.json` per accepted start, by atomic rename. Its content is the private instance ID and its filename uses the SHA-256 digest of that ID. An authenticated exit removes only that instance’s file. These launch records survive the daemon and let it find possible players even before a launcher reconnects. The supervisor owns its separate process record in the same directory.
 
 The daemon maintains an owner-only `voice/supervised-instances.json` by atomic replacement. It lists outstanding private instance IDs and can retain an unresolved record name during recovery. Keeping the inventory outside `voice/supervised/` lets the daemon ask every possible holder to stop if the directory disappears while the speech ledger is unreadable. A signed exit can clear its exact ledger hold even when the inventory is missing or unreadable. The exit marker also applies if the inventory is restored. Any separate hold for unknown launches still requires a complete inventory.
+
+Before acknowledging a handoff or lifecycle write, the daemon syncs the staged
+file, renames it and syncs the directory entries up to the state home. Receipt
+removal also syncs its parent directories. A failed sync leaves the operation
+unacknowledged.
 
 Each accepted exit stores the instance and its supervisor's Ed25519 exit signature under `voice/supervised-exits/`, keyed by the launch receipt's digest. Recovery checks both the digest and the original issuer's signature before applying an exit. An older unsigned boolean marker requires a fresh signed exit. Records stay for the lifetime of the state home because signed start retries have no expiry and each launch instance is single-use.

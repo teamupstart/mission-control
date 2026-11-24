@@ -7,7 +7,8 @@ import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import { text } from "node:stream/consumers";
 import test, { afterEach } from "node:test";
-import { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { Hono } from "hono";
@@ -245,6 +246,49 @@ test("a start that cannot be recorded grants no speech authority", async () => {
   assert.equal((await p.poll()).speak.id, id);
   assert.equal((await p.report("exited")).status, 200);
   assert.deepEqual(readdirSync(supervised), []);
+});
+
+test("handoff waits for staged files and their directories to sync, including on retry", async t => {
+  const p = player();
+  await p.announce(); await p.hello();
+  const homeInode = statSync(home).ino, voiceInode = statSync(join(home, "voice")).ino;
+  const stages: string[] = [];
+  const synced = new Set<number>();
+  let failure: "staged file" | "voice directory" | undefined;
+  const sync = fs.fsyncSync, rename = fs.renameSync;
+  const syncHook = t.mock.method(fs, "fsyncSync", (fd: number) => {
+    const info = fs.fstatSync(fd);
+    const stage = info.isFile() ? "staged file" : info.ino === voiceInode ? "voice directory" :
+      info.ino === homeInode ? "state home" : "other directory";
+    stages.push(stage);
+    if (failure === stage) throw new Error("Injected sync failure");
+    sync(fd);
+    if (info.isFile()) synced.add(info.ino);
+  });
+  const renameHook = t.mock.method(fs, "renameSync", (src: fs.PathLike, dst: fs.PathLike) => {
+    if (dst === ledger || dst === used) {
+      assert.ok(synced.delete(statSync(src).ino), "staged contents synced before rename");
+      stages.push(dst === ledger ? "publish hold" : "publish marker");
+    }
+    rename(src, dst);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (failure of ["staged file", "voice directory"] as const) {
+      stages.length = 0;
+      assert.equal((await post("/api/voice/speech/audition")).status, 503);
+      assert.equal(stages.at(-1), failure);
+      assert.equal((await p.poll()).speak, null);
+    }
+    failure = undefined;
+    stages.length = 0;
+    const id = await audition();
+    assert.deepEqual(stages, ["staged file", "publish marker", "state home", "staged file", "publish hold", "voice directory", "state home"]);
+    assert.equal((await p.poll()).speak.id, id);
+    assert.equal((await p.event(id, "ended")).status, 200);
+  } finally {
+    syncHook.mock.restore(); renameHook.mock.restore(); syncBuiltinESMExports();
+  }
 });
 
 test("a signed exit returns 503 and holds capture until a retry removes the launch record", async () => {
@@ -801,6 +845,22 @@ test("a lost start acknowledgement retires the same launch while a definitive re
     return false;
   }), /start was refused/);
   assert.deepEqual(reports, ["started"]);
+});
+
+test("a definitive exit refusal after an unknown start outcome returns the original error", { timeout: 3000 }, async t => {
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  Object.assign(process.env, signer.daemonEnv);
+  t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
+  const peer = player();
+  const reports: string[] = [];
+  const original = new Error("Connection failed before the start reached the daemon");
+  await assert.rejects(signer.launch(home, process.execPath, ["--version"], {}, async (subject, state, proof) => {
+    reports.push(state);
+    if (state === "started") { toggle(false); throw original; }
+    assert.equal((await peer.report(state, subject, proof)).status, 404);
+    return false;
+  }), error => error === original);
+  assert.deepEqual(reports, ["started", "exited"]);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

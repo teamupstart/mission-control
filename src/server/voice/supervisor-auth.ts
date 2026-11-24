@@ -70,7 +70,7 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
         const proof = signature(instance, "exited");
         let retryMs = 250;
         for (;;) {
-          try { if (await report(instance, "exited", proof) !== false) break; }
+          try { await report(instance, "exited", proof); break; }
           catch { /* The daemon may already have committed this exit. */ }
           await delay(retryMs);
           retryMs = Math.min(5000, retryMs * 2);

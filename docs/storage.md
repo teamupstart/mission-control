@@ -223,11 +223,17 @@ run. The launcher rejects a symlinked voice or model directory before announcing
 the child and rechecks the directories before spawn. The supervisor uses the
 instance it announced to report the child's exit. If the OS refuses to spawn
 the child, pre-spawn validation fails after announcement, or the start
-acknowledgement is lost, the launch helper
-retains the instance and retries its signed exit with backoff. It returns the
-original error when the exit is acknowledged or definitively refused. A
-retryable delivery or persistence failure keeps the signed exit pending. A capture-only listener
-can keep its existing launch path.
+acknowledgement is lost, the launch helper returns the original error while
+the supervisor delivers the signed exit independently. It first stages the
+instance and its exit signature under `voice-retirements/` in the state home,
+in an owner-only file hidden from the listener. If storage is unavailable it
+retains the exit in memory and retries the write. Each outstanding exit is
+retried with backoff until the daemon acknowledges or definitively refuses it.
+On service startup and daemon reconnect, call `retryPendingExits(stateHome, report)`
+even when there is no child to launch. On disconnect or shutdown,
+`pauseExitRetries()` cancels pending requests and timers. Forward the report
+callback's optional fourth argument, an AbortSignal, to the HTTP request.
+A capture-only listener can keep its existing launch path.
 
 #### Voice launch receipts
 

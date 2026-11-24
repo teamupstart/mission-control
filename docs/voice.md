@@ -1064,7 +1064,11 @@ child. The listener receives the instance and ordinary listener credentials.
 On daemon reconnect, the launcher calls the surviving child's `reannounce()`
 to replay its original signed start. A hello alone renews only the capture
 lease. Reannouncement restores speech eligibility and leaves any recovered
-Stop in force until silence is confirmed. An accepted exit supersedes replay.
+Stop in force until silence is confirmed. Sending a signal still allows a live
+child to reannounce until the OS reports its exit. An accepted exit supersedes
+replay. If a launch fails before a child exists, the caller gets its launch
+error immediately. The supervisor persists the signed exit and retries it in
+the background, including after a reconnect or supervisor restart.
 
 The body is `{ instance, state }`. Alongside the harness token, the supervisor
 sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of

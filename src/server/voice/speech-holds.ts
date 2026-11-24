@@ -1,9 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
 import { supervisorIssuer } from "./supervisor-auth.ts";
+import { announcementName, removeVoiceRecord, writeVoiceRecord } from "./recovery-files.ts";
+export { announcementName } from "./recovery-files.ts";
 
 // A period represents the supervised directory itself if even its listing is unreadable.
 export const SUPERVISOR_DIRECTORY = ".";
@@ -23,10 +25,6 @@ function missing(error: unknown, path: string) {
 function mayExist(path: string) {
   try { lstatSync(path); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
-}
-
-export function announcementName(instance: string) {
-  return "announced-" + createHash("sha256").update(instance).digest("hex");
 }
 
 /** Only the daemon writes the ledger. An unreadable supervisor file represents a possible player. */
@@ -184,9 +182,7 @@ export class SpeechHolds {
         if (exited !== false) return exited ? "already_exited" : "unavailable";
       } else {
         if (!this.write(join(this.directory, "supervised-exits", name + ".json"), { instance, proof })) return "unavailable";
-        try { unlinkSync(path); }
-        catch (error) { if (!missing(error, path)) return "unavailable"; }
-        if (mayExist(dirname(path))) this.syncParents(dirname(path));
+        removeVoiceRecord(dirname(this.directory), path);
       }
       let inventory: Launch[] | undefined;
       try { inventory = this.readInventory() ?? this.lastInventory; }
@@ -227,29 +223,6 @@ export class SpeechHolds {
   }
 
   private write(path: string, value: Hold[] | Launch[] | { instance: string; proof?: string } | true): boolean {
-    const temp = path + "." + randomUUID();
-    try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      const fd = openSync(temp, "wx", 0o600);
-      try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); }
-      finally { closeSync(fd); }
-      renameSync(temp, path);
-      this.syncParents(dirname(path));
-      return true;
-    } catch {
-      try { unlinkSync(temp); } catch { /* No staged file. */ }
-      return false;
-    }
-  }
-
-  private syncParents(directory: string) {
-    // A new receipt directory and its entry in the daemon's state home must
-    // survive the same crash as the file. Repeat these syncs on a failed write's retry.
-    const home = resolve(this.directory, "..");
-    for (let parent = resolve(directory); ; parent = dirname(parent)) {
-      const fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY);
-      try { fsyncSync(fd); } finally { closeSync(fd); }
-      if (parent === home) break;
-    }
+    return writeVoiceRecord(dirname(this.directory), path, value);
   }
 }

@@ -1,6 +1,7 @@
 import { fixtureSupervisorEnv, fixtureVoiceSupervisor, newFixtureSupervisor } from "./helpers/voice-supervisor.ts";
 import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { announcementName } from "../src/server/voice/speech-holds.ts";
+import { retirementDirectory } from "../src/server/voice/recovery-files.ts";
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -26,6 +27,7 @@ const inventory = join(home, "voice/supervised-instances.json");
 const used = join(home, "voice-speech-used");
 // The HTTP harness shares a disposable home. Each scenario starts with its own launches.
 afterEach(() => {
+  rmSync(retirementDirectory(home), { recursive: true, force: true });
   rmSync(ledger, { recursive: true, force: true });
   rmSync(join(home, "voice/supervised-exits"), { recursive: true, force: true });
   rmSync(supervised, { recursive: true, force: true });
@@ -751,10 +753,15 @@ test("a supervised same-account child cannot read or change the daemon's recover
   Object.assign(process.env, signer.daemonEnv);
   t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
   const peer = player();
+  const retirement = join(retirementDirectory(home), "private.json");
+  mkdirSync(retirementDirectory(home), { recursive: true });
+  writeFileSync(retirement, "private");
   const check = `
     const fs = require("node:fs");
+    process.on("SIGTERM", () => process.stderr.write("handled\\n"));
+    process.stderr.write("ready\\n");
     process.stdin.once("data", () => {
-      const [ledger, exit, model] = process.argv.slice(1);
+      const [ledger, exit, model, retirement] = process.argv.slice(1);
       fs.writeFileSync(require("node:path").join(process.env.TMPDIR, "buffer"), "scratch");
       const descendant = process.platform === "darwin" ? require("node:child_process").spawnSync("/usr/bin/true") : undefined;
       const denied = fn => {
@@ -763,6 +770,7 @@ test("a supervised same-account child cannot read or change the daemon's recover
       };
       console.log(JSON.stringify({
         read: denied(() => fs.readFileSync(ledger)), write: denied(() => fs.writeFileSync(ledger, "[]")),
+        retirement: denied(() => fs.readFileSync(retirement)),
         exit: denied(() => fs.writeFileSync(exit, "true")), model: fs.readFileSync(model, "utf8"),
         descendantError: descendant?.error?.code,
       }));
@@ -773,23 +781,31 @@ test("a supervised same-account child cannot read or change the daemon's recover
   t.after(() => rmSync(model, { force: true }));
   const exit = join(home, "voice/supervised-exits", "fixture.json");
   mkdirSync(join(home, "voice/supervised-exits"), { recursive: true });
-  const launched = await signer.launch(home, process.execPath, ["-e", check, ledger, exit, model], {},
+  t.after(() => signer.pauseExitRetries());
+  const launched = await signer.launch(home, process.execPath, ["-e", check, ledger, exit, model, retirement], {},
     async (subject, state, proof) => { assert.equal((await peer.report(state, subject, proof)).status, 200); })
     .catch(error => {
       if (process.platform === "linux" && error.code === "ENOENT") return null;
       throw error;
     });
   if (!launched) {
-    assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
+    await t.waitFor(() => assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []));
     t.diagnostic("Bubblewrap is unavailable. The launcher retired the failed start without running the listener.");
     return;
   }
   const { instance, child } = launched;
-  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
   const completed = once(child, "close");
+  const ready = process.platform === "darwin" ? once(child.stderr, "data") : null;
   const output = text(child.stdout), errors = text(child.stderr);
   await peer.hello(instance);
   if (process.platform === "darwin") {
+    assert.match(String((await ready)![0]), /ready/);
+    const handled = once(child.stderr, "data");
+    assert.equal(child.kill("SIGTERM"), true);
+    assert.match(String((await handled)[0]), /handled/);
+    assert.equal(child.killed, true);
+    assert.equal(child.exitCode, null);
     const finished = await audition();
     assert.equal((await peer.request("/voice/speech/jobs/" + finished + "/events", { type: "ended", outcome: "finished" }, instance)).status, 200);
     store.reset(); await peer.hello(instance);
@@ -808,7 +824,7 @@ test("a supervised same-account child cannot read or change the daemon's recover
     t.diagnostic("Host refused a confined process. Verified the launcher never falls back to an unrestricted child.");
   } else {
     assert.equal(code, 0, stderr);
-    assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, model: "sample",
+    assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, retirement: true, model: "sample",
       ...(process.platform === "darwin" && { descendantError: "EPERM" }) });
   }
   assert.deepEqual(entries(), [{ jobId: id, instance, purpose: "audition" }]);
@@ -850,6 +866,7 @@ test("a symlinked voice directory cannot receive a signed start or replace the s
 
 test("a confirmed spawn failure retries its signed exit until recovery retires the announced launch", { timeout: 10_000 }, async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => signer.pauseExitRetries());
   Object.assign(process.env, signer.daemonEnv);
   t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
   const peer = player();
@@ -874,7 +891,7 @@ test("a confirmed spawn failure retries its signed exit until recovery retires t
     }
     statuses.push((await peer.report(state, instance, proof)).status);
   }), { code: "ERR_INVALID_ARG_VALUE" });
-  assert.deepEqual(statuses, [200, 503, 200]);
+  await t.waitFor(() => assert.deepEqual(statuses, [200, 503, 200]));
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
   rmSync(ledger);
   store.reset(); await peer.hello();
@@ -883,6 +900,7 @@ test("a confirmed spawn failure retries its signed exit until recovery retires t
 
 test("a lost start acknowledgement retires the same launch while a definitive refusal spawns nothing", async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => signer.pauseExitRetries());
   Object.assign(process.env, signer.daemonEnv);
   t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
   const peer = player();
@@ -892,6 +910,7 @@ test("a lost start acknowledgement retires the same launch while a definitive re
     assert.equal((await peer.report(state, subject, proof)).status, 200);
     if (state === "started") throw new Error("Start acknowledgement lost");
   }), /acknowledgement lost/);
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
   assert.deepEqual(reports, ["started", "exited"]);
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
   reports.length = 0;
@@ -904,6 +923,7 @@ test("a lost start acknowledgement retires the same launch while a definitive re
 
 test("a definitive exit refusal after an unknown start outcome returns the original error", { timeout: 3000 }, async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => signer.pauseExitRetries());
   Object.assign(process.env, signer.daemonEnv);
   t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
   const peer = player();
@@ -915,7 +935,55 @@ test("a definitive exit refusal after an unknown start outcome returns the origi
     assert.equal((await peer.report(state, subject, proof)).status, 404);
     return false;
   }), error => error === original);
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(home)), []));
   assert.deepEqual(reports, ["started", "exited"]);
+});
+
+test("failed launches return their errors during an outage and a restarted supervisor replays their signed exits", { timeout: 5000 }, async t => {
+  const key = generateKeyPairSync("ed25519").privateKey;
+  const signer = createVoiceSupervisor("shell", key);
+  t.after(() => { signer.pauseExitRetries(); Object.assign(process.env, fixtureSupervisorEnv); });
+  Object.assign(process.env, signer.daemonEnv);
+  const peer = player();
+  const instances: string[] = [];
+  const outstanding: AbortSignal[] = [];
+  for (let i = 0; i < 2; i++) {
+    await assert.rejects(signer.launch(home, process.execPath, ["\0"], {}, async (instance, state, proof, signal) => {
+      if (state === "started") {
+        assert.equal((await peer.report(state, instance, proof)).status, 200);
+        instances.push(instance);
+        return;
+      }
+      assert.ok(signal);
+      outstanding.push(signal);
+      await once(signal, "abort");
+      throw new Error("Disconnected");
+    }), { code: "ERR_INVALID_ARG_VALUE" });
+  }
+  await t.waitFor(() => assert.equal(outstanding.length, 1));
+  const inFlight = outstanding[0]!;
+  assert.equal(inFlight.aborted, false);
+  const directory = retirementDirectory(home);
+  for (const instance of instances) {
+    const file = join(directory, "shell-" + announcementName(instance) + ".json");
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { instance, proof: signer.exitProof(instance) });
+  }
+  signer.pauseExitRetries();
+  assert.equal(inFlight.aborted, true);
+  store.reset(); await peer.hello();
+  assert.equal((await peer.poll()).capture, false);
+  const replacement = createVoiceSupervisor("shell", key);
+  t.after(() => replacement.pauseExitRetries());
+  const captures: boolean[] = [];
+  replacement.retryPendingExits(home, async (instance, state, proof) => {
+    assert.equal(state, "exited");
+    assert.equal((await peer.report(state, instance, proof)).status, 200);
+    captures.push((await peer.poll()).capture);
+  });
+  await t.waitFor(() => assert.deepEqual(readdirSync(directory), []));
+  assert.deepEqual(captures, [false, true]);
+  assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

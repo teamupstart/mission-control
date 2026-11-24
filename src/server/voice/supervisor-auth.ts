@@ -1,11 +1,13 @@
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
 import { once } from "node:events";
 import { closeSync, fstatSync, readSync } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
+import { resolve } from "node:path";
 import { confinedVoiceListener } from "./supervised-listener.ts";
+import { SupervisorRetirements } from "./supervisor-retirements.ts";
 
 export const VOICE_SUPERVISOR_PROOF_HEADER = "x-mission-voice-supervisor-proof";
 export type SupervisorReportState = "started" | "exited";
+export type SupervisorReporter = (instance: string, state: SupervisorReportState, proof: string, signal?: AbortSignal) => Promise<void | false>;
 const verifierEnv = { shell: "MISSION_VOICE_SHELL_PUBLIC_KEY", dev: "MISSION_VOICE_DEV_PUBLIC_KEY" } as const;
 
 function payload(instance: string, state: SupervisorReportState) {
@@ -48,12 +50,26 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
   const prefix = name + "_" + der.toString("hex") + "_";
   const signature = (instance: string, state: SupervisorReportState) =>
     sign(null, payload(instance, state), privateKey).toString("hex");
+  const queues = new Map<string, SupervisorRetirements>();
+  const retirements = (home: string) => {
+    const path = resolve(home);
+    let queue = queues.get(path);
+    if (!queue) {
+      queue = new SupervisorRetirements(path, name, exit => supervisorIssuer(exit.instance, "exited", exit.proof)?.name === name);
+      queues.set(path, queue);
+    }
+    return queue;
+  };
   return {
     daemonEnv: { [verifierEnv[name]]: der.toString("base64") },
+    retryPendingExits: (home: string, report: SupervisorReporter) => retirements(home).resume(report),
+    pauseExitRetries: () => { for (const queue of queues.values()) queue.pause(); },
     async launch(stateHome: string, executable: string, args: string[], env: NodeJS.ProcessEnv,
-      report: (instance: string, state: SupervisorReportState, proof: string) => Promise<void | false>) {
+      report: SupervisorReporter) {
       const instance = prefix + randomBytes(32).toString("hex");
       const start = confinedVoiceListener(stateHome, instance);
+      const queue = retirements(stateHome);
+      queue.start(report);
       const startProof = signature(instance, "started");
       const announce = () => report(instance, "started", startProof);
       let refused = false;
@@ -65,21 +81,14 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
         // the live child's handle and must observe its exit before retiring it.
         await once(child, "spawn");
         return { instance, child, reannounce: async () => {
-          if (child.exitCode !== null || child.signalCode !== null || child.killed) return false;
+          if (child.exitCode !== null || child.signalCode !== null) return false;
           return announce();
         } };
       } catch (error) {
         if (refused) throw error;
-        // An accepted start, including one whose acknowledgement was lost, can
-        // leave a receipt without an OS child. Retire the exact nonce before returning.
-        const proof = signature(instance, "exited");
-        let retryMs = 250;
-        for (;;) {
-          try { await report(instance, "exited", proof); break; }
-          catch { /* The daemon may already have committed this exit. */ }
-          await delay(retryMs);
-          retryMs = Math.min(5000, retryMs * 2);
-        }
+        // No OS child started. Keep its signed retirement available across launch
+        // service restarts while returning the actual launch error to the caller.
+        queue.enqueue({ instance, proof: signature(instance, "exited") }, report);
         throw error;
       }
     },

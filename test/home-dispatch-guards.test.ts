@@ -78,10 +78,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // PUT /api/voice/confirmation and GET /api/voice/tasks/:id/follow-up both return 404 with Voice off.
   // The five speech routes for supervision, audio, playback events, Stop and audition also return 404 with Voice off.
   // Persona repository access adds the grant update and per-run repository query audit routes.
+  // The synthesis model adds gated POST and DELETE /api/voice/speech/model/download.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 481);
+  assert.equal(others.length, 483);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "12c6e592139da0216e40c2c9b794a994a26a33b182f255448f791b77924edd8a");
+    "70581e0ae5718b202224ffe33d7a36736b9ad501ba6eb34a635cce94f7016805");
 });
 
 function sourceFiles(dir: string): string[] {

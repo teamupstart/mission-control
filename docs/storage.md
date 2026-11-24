@@ -46,6 +46,12 @@ which deletes an old revision once a new one verifies; see
 [Voice addressing](voice.md#where-it-is-kept). Like everything outside SQLite, it is not in a
 database or settings backup.
 
+Supertonic 3 speech synthesis weights live under
+`<state home>/voice/models/speech/<revision>/`. All ten voices share the seven
+files (145.3 MB). The daemon verifies their SHA-256 digests and retires older
+speech revisions after their replacement verifies. Settings backups exclude
+these files. Synthesized speech stays in memory.
+
 Measuring walks every file, which on a machine with large pools is millions of files and can
 take minutes. A state directory reached through a symlink is resolved first, so the walk measures
 what the link points at; symlinks inside it are never followed. When a walk finishes, the backup

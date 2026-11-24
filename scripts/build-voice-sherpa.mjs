@@ -60,9 +60,11 @@ if (["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(
     for (const name of files) await publishNativeAddon(join(source, name), join(libs, name));
     probeRuntime(libs);
     const runtime = await publishRuntime(libs, native, version, files);
-    const bundle = join(stage, "sherpa.mjs");
+    const speaker = join(dist, "voice-speaker", "synth.mjs");
+    await mkdir(dirname(speaker), { recursive: true });
     await build({
-      entryPoints: ["src/voice-listener/sherpa.ts"], outfile: bundle,
+      entryPoints: ["src/voice-listener/sherpa.ts", "src/voice-speaker/synth.ts"],
+      outdir: stage, outbase: "src", outExtension: { ".js": ".mjs" },
       bundle: true, platform: "node", format: "esm", target: "node24",
       banner: { js: 'const require = process.getBuiltinModule("node:module").createRequire(import.meta.url);' },
       plugins: [{ name: "published-addon", setup(build) {
@@ -75,7 +77,8 @@ if (["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(
     catch { await buildStateLockNative(); }
     const publishedClock = resolve(dist, "native", "state-lock.node");
     if (publishedClock !== clockAddon) await publishNativeAddon(clockAddon, publishedClock);
-    await rename(bundle, entry);
+    await rename(join(stage, "voice-listener", "sherpa.mjs"), entry);
+    await rename(join(stage, "voice-speaker", "synth.mjs"), speaker);
   } finally {
     await rm(stage, { recursive: true, force: true });
   }

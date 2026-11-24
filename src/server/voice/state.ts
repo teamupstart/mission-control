@@ -5,7 +5,7 @@ import { VoiceSpeechManager, type VoiceSynthesizer } from "./speech.ts";
 import { SpeechHolds } from "./speech-holds.ts";
 import { randomUUID } from "node:crypto";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
-import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
+import { VOICE_SPEECH_NEURAL_VOICES, type VoiceMicrophoneReading } from "@shared/voice-models.ts";
 import {
   knownVoiceCapabilities,
   VOICE_FLAG,
@@ -35,7 +35,8 @@ import type { SpokenName } from "@shared/voice-names.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import { getVoiceConfig, onVoiceConfigChanged } from "./config.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
-import { voiceModelManager, type VoiceModelManager } from "./models.ts";
+import { NeuralSynthesizer } from "./synthesizer.ts";
+import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
 
 /** What the store reads. The defaults are the daemon's; a test hands in its own. */
 export interface VoiceStateDeps {
@@ -101,6 +102,13 @@ export class VoiceStateStore {
     const manager = this.speech;
     manager.setEnabled(false);
     return manager;
+  }
+
+  warmForAsk(): void {
+    const state = this.state();
+    if (state.speech.voice?.engine === "neural" && askAloudPossible(this.deps.config(), state)) {
+      this.deps.speechBackend?.synthesizer.warm();
+    }
   }
 
   get speech(): VoiceSpeechManager {
@@ -507,6 +515,11 @@ export const voiceStateStore = new VoiceStateStore({
   enabled: featureEnabled,
   config: getVoiceConfig,
   model: () => voiceModelManager.state(),
+  speechBackend: {
+    model: () => speechModelManager.state(),
+    neural: () => VOICE_SPEECH_NEURAL_VOICES.map(({ id, name, detail }) => ({ id, name, detail })),
+    synthesizer: new NeuralSynthesizer(() => speechModelManager.state().directory),
+  },
 });
 
 /**
@@ -521,19 +534,24 @@ export function wireVoiceStateEvents(
   emit: (state: VoiceState) => void,
   store: VoiceStateStore = voiceStateStore,
   models: VoiceModelManager = voiceModelManager,
+  speechModels: VoiceModelManager = speechModelManager,
 ): () => void {
   const stopStore = store.onChange(emit);
   const stopModels = models.onChange(() => { store.publish(); });
-  const stopFlags = onFeatureFlagsChanged(() => { models.sync(); store.publish(); });
+  const stopSpeechModels = speechModels.onChange(() => { store.publish(); });
+  const stopFlags = onFeatureFlagsChanged(() => { models.sync(); speechModels.sync(); store.publish(); });
   const stopConfig = onVoiceConfigChanged(() => { models.sync(); store.publish(); });
   models.sync();
+  speechModels.sync();
   store.publish();
   return () => {
     stopStore();
     stopModels();
+    stopSpeechModels();
     stopFlags();
     stopConfig();
     store.reset();
     void models.stop();
+    void speechModels.stop();
   };
 }

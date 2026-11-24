@@ -158,7 +158,7 @@ interface Harness {
 }
 
 function harness(options: {
-  root?: string; manifest?: VoiceModelManifest | null; stallMs?: number; backend?: VoiceBackend; progressEveryMs?: number;
+  namespace?: "speech"; root?: string; manifest?: VoiceModelManifest | null; stallMs?: number; backend?: VoiceBackend; progressEveryMs?: number;
   removeDir?: (path: string) => Promise<void>;
 } = {}): Harness {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "mission-voice-models-"));
@@ -167,6 +167,7 @@ function harness(options: {
   const backend = options.backend ?? "fluidaudio";
   const manager = new VoiceModelManager({
     root: () => root,
+    namespace: options.namespace,
     active: () => active.on,
     backend: () => backend,
     manifests: () => ({ fluidaudio: backend === "fluidaudio" ? current : null, "sherpa-onnx": backend === "sherpa-onnx" ? current : null }),
@@ -180,7 +181,7 @@ function harness(options: {
   return {
     manager,
     root,
-    dir: (revision = current?.revision ?? "r1") => join(root, backend, revision),
+    dir: (revision = current?.revision ?? "r1") => join(root, options.namespace ?? backend, revision),
     published,
     setManifest: (next) => { current = next; },
     active,
@@ -689,3 +690,44 @@ test("the download routes start, refuse and cancel, and answer 404 with the flag
   setFlag("voice", false);
 });
 
+
+test("speech downloads only by POST, cancels independently, and verifies downloads and existing files", async t => {
+  const recognition = harness();
+  const options = { root: recognition.root, namespace: "speech", backend: "sherpa-onnx" } as const;
+  const speech = harness(options);
+  t.after(() => rmSync(recognition.root, { recursive: true, force: true }));
+  const app = new Hono();
+  const store = new VoiceStateStore({ now: Date.now, enabled: flags.featureEnabled, config: () => VOICE_CONFIG_DEFAULTS });
+  registerVoiceRoutes(app, store, recognition.manager, speech.manager);
+  const path = "/api/voice/speech/model/download";
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  for (const method of ["POST", "DELETE"]) assert.equal((await app.request(path, { method })).status, 404);
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  speech.manager.sync();
+  assert.equal(server.requests.length, 0);
+  const download = () => app.request(path, { method: "POST" });
+  server.behavior.set("vocab.json", "hold");
+  assert.equal((await download()).status, 202);
+  await until(speech.manager, state => state.doneBytes > FILES[0]!.body.length);
+  assert.equal((await app.request(path, { method: "DELETE" })).status, 200);
+  assert.equal(existsSync(speech.dir()), false);
+  server.behavior.set("vocab.json", "corrupt");
+  await download();
+  await speech.manager.idle();
+  assert.equal(speech.manager.state().status, "failed");
+  server.behavior.clear();
+  await download();
+  await speech.manager.idle();
+  assert.equal(speech.manager.state().directory, join(recognition.root, "speech", "r1"));
+  assert.equal(recognition.manager.state().status, "missing");
+  const restart = harness(options);
+  restart.manager.sync();
+  assert.equal(restart.manager.state().status, "verifying");
+  await restart.manager.idle();
+  assert.equal(restart.manager.state().status, "ready");
+  writeFileSync(join(speech.dir(), FILES[0]!.path), Buffer.alloc(FILES[0]!.body.length));
+  await restart.manager.stop();
+  restart.manager.sync();
+  await restart.manager.idle();
+  assert.equal(restart.manager.state().status, "failed");
+});

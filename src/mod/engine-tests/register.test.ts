@@ -47,6 +47,8 @@ function world(on, { flag, minModApi = 1 }) {
   on('state.set', async (_, e) => { (seen.setKeys ??= []).push(e.key); if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
   on('ui.open', async (_, e) => { if (seen.failOpen) throw new Error('the engine refused the open'); seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold }; if (seen.holdOpens?.length) await seen.holdOpens.shift(); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
+  // When the plugin yields a surface, the test host supplies its empty underlying view.
+  on('ui.render', ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_, e) => { seen.statuses.push(e.text); return { value: undefined } })
   on('session.start', (_, e) => ({ cwd: e.cwd }))

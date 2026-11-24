@@ -11,6 +11,7 @@ import {
   voiceModelBytes,
   voiceModelFileUrl,
   VOICE_MODELS,
+  VOICE_SPEECH_MODELS,
   VoiceModelManifestsSchema,
   type VoiceModelFile,
   type VoiceModelManifest,
@@ -43,6 +44,8 @@ const RATE_WINDOW_MS = 3_000;
 export interface VoiceModelManagerDeps {
   /** `<state home>/voice/models`. Read on each use, so a test's home applies. */
   root(): string;
+  /** Recognition uses a backend directory. All synthesis revisions live under speech/. */
+  namespace?: "speech";
   /** Whether the `voice` flag is on. While it is off the manager reads nothing and holds nothing. */
   active(): boolean;
   /** The backend the configured choice resolves to on this machine. */
@@ -264,7 +267,7 @@ export class VoiceModelManager {
   }
 
   private revisionDir(backend: VoiceBackend, revision: string): string {
-    return join(this.deps.root(), backend, revision);
+    return join(this.deps.root(), this.deps.namespace ?? backend, revision);
   }
 
   private base(backend: VoiceBackend, manifest: VoiceModelManifest | null): VoiceModelState {
@@ -347,7 +350,7 @@ export class VoiceModelManager {
   }
 
   private async removeOtherRevisions(backend: VoiceBackend, keep: string): Promise<void> {
-    const parent = join(this.deps.root(), backend);
+    const parent = join(this.deps.root(), this.deps.namespace ?? backend);
     let entries: string[];
     try { entries = await readdir(parent); }
     catch { return; }
@@ -667,10 +670,21 @@ export function voiceModelBaseUrlFromEnv(value: string | undefined = envVar("VOI
 let manifests: VoiceModelManifests | null = null;
 let baseUrl: string | null | undefined;
 
-export const voiceModelManager = new VoiceModelManager({
+const productionDeps = {
   root: () => join(stateDir(), "voice", "models"),
   active: () => featureEnabled(VOICE_FLAG),
+  baseUrl: () => (baseUrl === undefined ? (baseUrl = voiceModelBaseUrlFromEnv()) : baseUrl),
+};
+
+export const voiceModelManager = new VoiceModelManager({
+  ...productionDeps,
   backend: () => resolveVoiceBackend(getVoiceConfig().backend, process.platform, process.arch, release()),
   manifests: () => (manifests ??= voiceModelManifestsFromEnv()),
-  baseUrl: () => (baseUrl === undefined ? (baseUrl = voiceModelBaseUrlFromEnv()) : baseUrl),
+});
+
+export const speechModelManager = new VoiceModelManager({
+  ...productionDeps,
+  namespace: "speech",
+  backend: () => "sherpa-onnx",
+  manifests: () => ({ fluidaudio: null, "sherpa-onnx": VOICE_SPEECH_MODELS["supertonic-3"] }),
 });

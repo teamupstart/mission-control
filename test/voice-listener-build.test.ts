@@ -64,7 +64,7 @@ test("a failed rebuild preserves the published sherpa entry and complete version
   const { version } = createRequire(import.meta.url)(`sherpa-onnx-${platform}/package.json`);
   const runtime = join(dist, "native", "sherpa-onnx", `${platform}-${version}`);
   const entry = join(dist, "voice-listener", "sherpa.mjs");
-  const files = [entry, ...readdirSync(runtime).map(name => join(runtime, name))];
+  const files = [entry, join(dist, "voice-speaker", "synth.mjs"), ...readdirSync(runtime).map(name => join(runtime, name))];
   assert.ok(files.includes(join(runtime, "sherpa-onnx.node")));
   const inodes = files.map(file => statSync(file).ino);
   // This checkout has no JS entry source. Bundling fails after the native libraries are staged.
@@ -72,7 +72,7 @@ test("a failed rebuild preserves the published sherpa entry and complete version
   assert.notEqual(failed.status, 0);
   assert.match(failed.stderr, /Could not resolve/);
   assert.deepEqual(files.map(file => statSync(file).ino), inodes);
-  assert.deepEqual(readdirSync(dist).sort(), ["native", "voice-listener"]);
+  assert.deepEqual(readdirSync(dist).sort(), ["native", "voice-listener", "voice-speaker"]);
 });
 
 test("rebuilds publish and reuse a complete replacement when a sherpa shared library is missing", {

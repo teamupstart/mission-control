@@ -184,7 +184,7 @@ test("CI uses ephemeral GitHub-hosted runners at their bounded capacities", asyn
         "npm ci --prefer-offline --no-audit --no-fund",
       ],
       voiceRecognizerRequired: "'1'",
-      voiceRecognizerTest: "node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts",
+      voiceRecognizerTest: "node --test --test-concurrency=1 --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts test/voice-speech-synth.test.ts",
       consumerNeeds: [
         "dependencies-node-24",
         "dependencies-node-24",

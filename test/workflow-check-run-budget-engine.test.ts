@@ -702,7 +702,10 @@ test("installing a missing executable lets an action-required Command retry unde
 });
 
 
-for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with an allowance of ${maxRuns}`, { timeout: 300_000 }, async (t) => {
+for (const maxRuns of [10, 2, 3]) test(
+  maxRuns === 3 ? "CodeRabbit cannot reuse an older pass after a newer incomplete review"
+    : `CodeRabbit reuses a clean comparison with an allowance of ${maxRuns}`,
+  { timeout: 300_000 }, async (t) => {
   const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
@@ -745,7 +748,7 @@ for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with a
       do {
         const current = store.getRun(`run-${id}`);
         if (current?.status === status) return;
-        assert.notEqual(current?.status, "blocked", JSON.stringify(current));
+        assert.notEqual(current?.status, status === "blocked" ? "waiting_for_session" : "blocked", JSON.stringify(current));
       } while (!(await changes.next()).done);
     } finally {
       await changes.return?.();
@@ -760,8 +763,9 @@ for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with a
       execute: async (request) => {
         executions++; comparisons.push(request.coderabbit!);
         const clean = executions === 2;
-        return { kind: "exited", exitCode: executions === 1 ? 1 : clean ? 0 : 2, output: "", truncatedBytes: 0,
-          review: { comparison: request.coderabbit!, status: executions === 1 ? "incomplete" : "complete", counts: { critical: 0, major: clean ? 0 : 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: clean ? [] : ["Verify claim"], diagnostic: executions === 1 ? "Incomplete coverage" : "Complete findings" } };
+        const incomplete = executions === 1 || (maxRuns === 3 && executions === 3);
+        return { kind: "exited", exitCode: incomplete ? 1 : clean ? 0 : 2, output: "", truncatedBytes: 0,
+          review: { comparison: request.coderabbit!, status: incomplete ? "incomplete" : "complete", counts: { critical: 0, major: clean ? 0 : 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: clean ? [] : ["Verify claim"], diagnostic: incomplete ? "Incomplete coverage" : "Complete findings" } };
       },
     }),
   } });
@@ -823,6 +827,38 @@ for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with a
       return;
     }
     git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    if (maxRuns === 3) {
+      const changedBase = repairRound(store, id, 4);
+      capture(changedBase);
+      manager.engine.activateSubmission(changedBase);
+      await waitForState("blocked");
+      assert.equal(comparisons[2]!.head, comparisons[1]!.head);
+      assert.notEqual(comparisons[2]!.baseTip, comparisons[1]!.baseTip);
+      const incomplete = store.listAttempts(changedBase).find(a => a.nodeId === "gate")!;
+      assert.match(incomplete.error ?? "", /Incomplete coverage/);
+      assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), maxRuns);
+
+      // Restore comparison A. The intervening incomplete review must take precedence over
+      // both the original clean review and the passes that reused it.
+      git("update-ref", "refs/remotes/origin/main", base);
+      const restored = repairRound(store, id, 5);
+      capture(restored);
+      assert.equal(git("rev-parse", "HEAD"), comparisons[1]!.head);
+      assert.equal(git("rev-parse", "refs/remotes/origin/main"), comparisons[1]!.baseTip);
+      manager.engine.activateSubmission(restored);
+      await waitForState("blocked");
+      const attempts = store.listAttempts(restored);
+      const gate = attempts.find(a => a.nodeId === "gate")!;
+      assert.equal(gate.state, "error");
+      assert.equal(gate.verdict, null);
+      assert.match(gate.error ?? "", /review remains incomplete and its execution allowance is exhausted/);
+      assert.equal(store.getRun(`run-${id}`)?.currentPhase, "command_action_required");
+      assert.ok(!attempts.some(a => a.nodeId === "p1"), "the Persona cannot advance on the older pass");
+      assert.equal(executions, 3);
+      assert.equal(probes, 3);
+      t.diagnostic(`Restored comparison A after incomplete comparison B: ${gate.error} No Persona started. ${executions}/${maxRuns} executions spent.`);
+      return;
+    }
     for (let round = 4; round <= 12; round++) {
       if (round >= 6) {
         writeFileSync(join(root, "file"), `repair ${round}`);

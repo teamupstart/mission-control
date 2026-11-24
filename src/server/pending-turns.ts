@@ -35,6 +35,7 @@ import {
   recoverSendingPendingTurns,
   rekeyPendingTurns,
   releasePendingTurn,
+  releaseUnreservedSpokenClaim,
   resolveUncertainPendingTurn,
   retryPendingTurn,
 } from "./db.ts";
@@ -1092,7 +1093,7 @@ export class PendingTurnManager {
               session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds === true, this.deps.now());
           } catch (error) {
             if (error instanceof SpokenTranscriptUnavailable || error instanceof SpokenTranscriptChanged) this.spokenPreparationFailed(turn);
-            else releasePendingTurn(turn.id, turn.revision, errorMessage(error), this.deps.now());
+            else this.releaseRefused(turn, null, errorMessage(error));
             this.registry.refreshPendingTurns(key);
             return;
           }
@@ -1249,7 +1250,7 @@ export class PendingTurnManager {
       return { personSend: notePersonDelivery(session.id, turn.text) };
     } catch (error) {
       if (!(error instanceof AutomatedAttributionError) && !(error instanceof PersonAttributionError)) throw error;
-      releasePendingTurn(turn.id, turn.revision, error.message, this.deps.now());
+      this.releaseRefused(turn, null, error.message);
       this.registry.refreshPendingTurns(turn.noteKey);
       return null;
     }
@@ -1823,16 +1824,19 @@ export class PendingTurnManager {
     }, delay)));
   }
 
-  /** Retry only the bookkeeping for a known refusal. The reservation fences any replacement claim. */
-  private releaseRefused(turn: PendingTurn, send: OutboxSend, detail: string, failures = 0): void {
-    const reservationId = send.kind === "spoken" ? send.reservationId : null;
+  /** Retry only the bookkeeping for a known refusal. The handoff UUID or original unreserved claim fences a replay. */
+  private releaseRefused(turn: PendingTurn, send: OutboxSend | null, detail: string, failures = 0): void {
+    const reservationId = send?.kind === "spoken" ? send.reservationId : null;
     let released: PendingTurn | null;
     try {
-      released = releasePendingTurn(turn.id, turn.revision, detail, this.deps.now(), reservationId ?? undefined);
+      released = turn.spokenWords !== undefined && reservationId === null
+        ? releaseUnreservedSpokenClaim(turn, detail, this.deps.now())
+        : releasePendingTurn(turn.id, turn.revision, detail, this.deps.now(), reservationId ?? undefined);
     } catch (error) {
-      if (!reservationId) throw error;
+      if (turn.spokenWords === undefined) throw error;
       console.warn(`[pending-turns] could not record spoken refusal for ${turn.id}:`, errorMessage(error));
-      if (!this.stopped) this.retrySettlement(reservationId, failures, () => this.releaseRefused(turn, send, detail, failures + 1));
+      const key = reservationId ?? `refusal:${turn.id}:${turn.createdAt}:${turn.claimedAt}:${turn.revision}`;
+      if (!this.stopped) this.retrySettlement(key, failures, () => this.releaseRefused(turn, send, detail, failures + 1));
       return;
     }
     if (released && failures) {

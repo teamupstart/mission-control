@@ -1,4 +1,4 @@
-import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, turnOneOutcomePath } from "./terminal/launch-process.ts";
+import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, readTerminalWrapperProcess, turnOneOutcomePath, type LaunchProcess } from "./terminal/launch-process.ts";
 import {
   closeSync,
   existsSync,
@@ -56,7 +56,7 @@ let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Hold the inode through removal of the home. An unmarked, unlinked file is not proof of exit. */
-export function observeTerminalWrapperExit(stateHome: string) {
+export function observeTerminalWrapperExit(stateHome: string, readOwner = readTerminalWrapperProcess) {
   const fd = openSync(join(stateHome, WRAPPER_EXIT_FILE), "wx", 0o600);
   const outcome = () => {
     const file = fstatSync(fd);
@@ -65,26 +65,19 @@ export function observeTerminalWrapperExit(stateHome: string) {
   return {
     confirmed: () => outcome() === true,
     async waitForExit(stillOwned: () => boolean): Promise<boolean> {
-      let pid: number | undefined;
+      let owner: LaunchProcess | null = null;
       let retriedClaim = false;
       while (stillOwned()) {
         const exited = outcome();
         if (exited !== null) return exited;
-        if (pid === undefined) {
-          try {
-            const claimed = Number(readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8"));
-            if (Number.isSafeInteger(claimed) && claimed > 0) pid = claimed;
-          } catch { /* The wrapper may be removing the home. Recheck the receipt below. */ }
-          // The PID file can exist briefly before printf writes it. Give the owner
-          // another observation, then retain an ambiguous checkout without polling it.
-          if (pid === undefined && retriedClaim) return outcome() === true;
-          retriedClaim = true;
-        }
-        if (pid !== undefined) {
-          try { process.kill(pid, 0); } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ESRCH") return outcome() === true;
-          }
-        }
+        const current = await readOwner(stateHome);
+        if (owner && (!current || current.pid !== owner.pid || current.startMs !== owner.startMs)) return outcome() === true;
+        if (!current && retriedClaim) return outcome() === true;
+        owner = current;
+        retriedClaim = true;
+        // The wrapper may have exited while the process table was being read.
+        const observed = outcome();
+        if (observed !== null) return observed;
         await new Promise<void>((resolve) => setTimeout(resolve, 5_000).unref());
       }
       return false;

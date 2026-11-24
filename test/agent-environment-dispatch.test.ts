@@ -13,6 +13,7 @@ import { build } from "esbuild";
 import { originAndCloneAt } from "./helpers/git-fixture.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { fakeEmulator, fakeMultiplexer, fakeTerminals, OK } from "./helpers/terminal-fakes.ts";
+import { launchFailureOutcome } from "../src/shared/launch-failure.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "mission-dispatch-environment-"));
@@ -179,6 +180,8 @@ process.stdin.resume();
       const expired = registry.getTask(task.id)!;
       assert.equal(expired.status, "failed");
       if (scenario === "never-started-dirty") {
+        assert.equal(expired.launchFailure?.sessionKept, false);
+        assert.equal(launchFailureOutcome(expired), "worktree-kept");
         assert.equal(expired.worktreeLeaseId, launched.worktreeLeaseId);
         assert.equal(expired.worktreePath, launched.worktreePath);
         assert.ok(existsSync(edit));
@@ -209,6 +212,8 @@ process.stdin.resume();
         const failed = registry.getTask(task.id)!;
         assert.equal(failed.status, "failed");
         if (scenario === "exited-dirty") {
+          assert.equal(failed.launchFailure?.sessionKept, false);
+          assert.equal(launchFailureOutcome(failed), "worktree-kept");
           assert.equal(failed.worktreeLeaseId, launched.worktreeLeaseId);
           assert.ok(existsSync(work));
         } else {
@@ -238,7 +243,7 @@ process.stdin.resume();
       // to publish the outcome of the late wrapper's checkout safety check.
       const reconciled = () => {
         const latest = registry.getTask(task.id)!;
-        return scenario === "late-dirty" ? latest.error?.includes("resource cleanup failed") : latest.launchFailure?.sessionKept === false;
+        return scenario === "late-dirty" ? latest.error?.includes("resource cleanup failed") : latest.launchFailure?.sessionKept === false && !latest.worktreePath;
       };
       if (!reconciled()) await new Promise<void>((resolve) => {
         const unsubscribe = registry.subscribe(() => {
@@ -249,6 +254,8 @@ process.stdin.resume();
       const latest = registry.getTask(task.id)!;
       if (scenario === "late-dirty") {
         assert.ok(existsSync(work));
+        assert.equal(latest.launchFailure?.sessionKept, false);
+        assert.equal(launchFailureOutcome(latest), "worktree-kept");
         assert.equal(latest.worktreeLeaseId, launched.worktreeLeaseId);
       } else {
         assert.equal(latest.worktreeLeaseId, null);

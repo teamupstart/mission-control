@@ -195,6 +195,22 @@ export function hasMissionLaunchAncestor(
   return false;
 }
 
+/** One observation of the PID, start time and command belonging to this exact shell wrapper. */
+export async function readTerminalWrapperProcess(stateHome: string): Promise<LaunchProcess | null> {
+  try {
+    const value = readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8").trim();
+    const pid = /^\d+$/.test(value) ? Number(value) : 0;
+    if (!pid) return null;
+    const { listProcesses } = await import("../discovery/processes.ts");
+    const process = (await listProcesses()).find((p) => p.pid === pid);
+    // Ghostty uses `exec -l`, which prefixes the shell's argv0 with a dash.
+    if (process?.startMs && process.command.replace(/^-/, "") === `/bin/sh ${join(stateHome, LAUNCH_SCRIPT_FILE)}`) {
+      return { pid, startMs: process.startMs };
+    }
+  } catch { /* The wrapper may not have reached its first instruction yet. */ }
+  return null;
+}
+
 /** The private wrapper records its own PID before starting the requested command. */
 export async function readLaunchProcess(stateHome: string): Promise<LaunchProcess | null> {
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -205,16 +221,8 @@ export async function readLaunchProcess(stateHome: string): Promise<LaunchProces
       const owner = (await listProcesses()).find((p) => p.pid === marker.pid && p.startMs === marker.startMs);
       if (owner) return marker;
     } catch { /* Legacy launch wrappers have only the PID file below. */ }
-    try {
-      const value = readFileSync(join(stateHome, LAUNCH_PID_FILE), "utf8").trim();
-      const pid = /^\d+$/.test(value) ? Number(value) : 0;
-      const { listProcesses } = await import("../discovery/processes.ts");
-      const process = (await listProcesses()).find((p) => p.pid === pid);
-      // Ghostty uses `exec -l`, which prefixes the shell's argv0 with a dash.
-      if (process?.startMs && process.command.replace(/^-/, "") === `/bin/sh ${join(stateHome, LAUNCH_SCRIPT_FILE)}`) {
-        return { pid, startMs: process.startMs };
-      }
-    } catch { /* The wrapper may not have reached its first instruction yet. */ }
+    const wrapper = await readTerminalWrapperProcess(stateHome);
+    if (wrapper) return wrapper;
     await delay(50);
   }
   return null;

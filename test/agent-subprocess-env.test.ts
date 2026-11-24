@@ -446,3 +446,17 @@ test("an incomplete PID claim retires its exit observer without confirming check
   assert.equal(result, false);
   assert.ok(existsSync(home));
 });
+
+test("a recycled wrapper PID stops observation without claiming an exit", async (t) => {
+  const home = mkdtempSync(join(root, "recycled-owner-"));
+  let startMs = 10;
+  const observation = observeTerminalWrapperExit(home, async () => ({ pid: 42, startMs }));
+  t.after(observation.close);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exited = observation.waitForExit(() => true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  startMs++;
+  t.mock.timers.tick(5_000);
+  assert.equal(await exited, false);
+  assert.ok(existsSync(home));
+});

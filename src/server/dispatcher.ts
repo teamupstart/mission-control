@@ -1465,11 +1465,12 @@ export class Dispatcher {
             const latest = this.registry.getTask(taskId);
             return currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
               && latest.worktreePath === cur.worktreePath && latest.launchFailure?.at === launchFailure.at
-              && latest.launchFailure.sessionKept;
+              && (latest.launchFailure.sessionKept || latest.launchFailure.terminalInactive === true);
           };
           const reclaim = async () => {
             if (!ownsFailure()) return;
-            this.patch(taskId, { error: message });
+            const failure = this.registry.getTask(taskId)!.launchFailure!;
+            this.patch(taskId, { error: message, launchFailure: { ...failure, sessionKept: false, terminalInactive: true } });
             const checkCheckout = async (path: string) => {
               // Native leases check occupancy again immediately before reset. A fallback Git
               // checkout has no lease manager to protect a process left behind by the wrapper.
@@ -1479,12 +1480,7 @@ export class Dispatcher {
               }
               return worktreeReturnBlocker(path, { fetch: true });
             };
-            if (!await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout)) return;
-            const latest = this.registry.getTask(taskId);
-            if (currentAttempt() && latest?.status === "failed" && !latest.homeName && !latest.sessionId
-              && !latest.worktreePath && latest.launchFailure?.at === launchFailure.at) {
-              this.patch(taskId, { launchFailure: { ...latest.launchFailure, sessionKept: false } });
-            }
+            await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout);
           };
           if (await err.unstarted || err.exitRecord.confirmed()) {
             await reclaim();

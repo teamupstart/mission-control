@@ -666,6 +666,7 @@ test("a supervised same-account child cannot read or change the daemon's recover
     process.stdin.once("data", () => {
       const [ledger, exit, model] = process.argv.slice(1);
       fs.writeFileSync(require("node:path").join(process.env.TMPDIR, "buffer"), "scratch");
+      const descendant = process.platform === "darwin" ? require("node:child_process").spawnSync("/usr/bin/true") : undefined;
       const denied = fn => {
         try { fn(); return false; }
         catch (err) { return ["EPERM", "EACCES", "EROFS", "ENOENT"].includes(err.code); }
@@ -673,6 +674,7 @@ test("a supervised same-account child cannot read or change the daemon's recover
       console.log(JSON.stringify({
         read: denied(() => fs.readFileSync(ledger)), write: denied(() => fs.writeFileSync(ledger, "[]")),
         exit: denied(() => fs.writeFileSync(exit, "true")), model: fs.readFileSync(model, "utf8"),
+        descendantError: descendant?.error?.code,
       }));
     });`;
   const model = join(home, "voice/models/fixture-readonly");
@@ -700,7 +702,8 @@ test("a supervised same-account child cannot read or change the daemon's recover
     t.diagnostic("Host refused a confined process. Verified the launcher never falls back to an unrestricted child.");
   } else {
     assert.equal(code, 0, stderr);
-    assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, model: "sample" });
+    assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, model: "sample",
+      ...(process.platform === "darwin" && { descendantError: "EPERM" }) });
   }
   assert.deepEqual(entries(), [{ jobId: id, instance, purpose: "audition" }]);
   assert.throws(() => readFileSync(exit), { code: "ENOENT" });
@@ -780,6 +783,27 @@ test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep cap
   const released = await holder.poll();
   assert.equal(released.capture, true);
   assert.equal(released.speak, null);
+});
+
+test("a start report checks the elapsed deadline even before the timer callback has run", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  for (const elapsed of [1999, 2000, 2001]) {
+    const id = await audition();
+    t.mock.timers.setTime(Date.now() + elapsed);
+    assert.equal(store.speech.live?.state, "ready"); // setTime leaves the timer callback pending.
+    assert.equal((await holder.event(id, "started")).status, 200);
+    const directive = await holder.poll();
+    assert.equal(directive.capture, false);
+    if (elapsed < 2000) assert.equal(store.speech.live?.state, "speaking");
+    else {
+      assert.equal(store.speech.live?.state, "stopping");
+      assert.deepEqual(directive.speak, { id, stop: true });
+    }
+    await holder.event(id, "ended");
+    assert.equal((await holder.poll()).capture, true);
+  }
 });
 
 test("a late start or a stop before pickup waits for the holder; muting permits only an audition", async t => {

@@ -45,7 +45,9 @@ function macPolicy(voice: string, models: string, scratch: string) {
     '(allow file-write* (subpath (param "SCRATCH")))',
     '(deny file-read* (subpath (param "VOICE")))',
     '(allow file-read* (subpath (param "MODELS")))',
-    "(deny mach-priv-task-port)", "(deny signal (target others))",
+    // Both macOS playback engines run in the listener. Its confirmed exit must
+    // establish that no descendant can still own playback.
+    "(deny process-fork)", "(deny mach-priv-task-port)", "(deny signal (target others))",
   ].join("\n");
   return ["-D", "VOICE=" + voice, "-D", "MODELS=" + models, "-D", "SCRATCH=" + scratch, "-p", profile];
 }

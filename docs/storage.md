@@ -213,7 +213,9 @@ announcement callback. After that callback succeeds it starts the executable
 under the OS filesystem sandbox. The child can read the voice models and write
 to its own temporary directory. It cannot read the other voice records or
 write the daemon's ledger, launch inventory, receipts or exit evidence.
-The macOS launcher uses `/usr/bin/sandbox-exec`. The Linux launcher requires
+The macOS launcher uses `/usr/bin/sandbox-exec` and forbids spawning descendants.
+Both macOS playback engines run inside the listener, so a child player cannot
+outlive the process whose exit the supervisor reports. The Linux launcher requires
 `/usr/bin/bwrap` and user namespaces. If confinement fails the player cannot
 run. The launcher rejects a symlinked voice or model directory before announcing
 the child and rechecks the directories before spawn. The supervisor uses the

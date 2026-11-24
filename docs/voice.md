@@ -25,6 +25,8 @@ A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+With the window off the daemon acknowledges the capture as soon as it claims delivery.
+The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
@@ -32,6 +34,7 @@ The listener posts captures in spoken order, waiting for each response before po
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
 has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
+The cancel window closes at that deadline even if the delivery timer runs late.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

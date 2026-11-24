@@ -134,7 +134,9 @@ function messageAfterAddress(text: string, start: number, end: number): { body: 
   const prefix = address.match(/^[\p{P}\s]+/u)?.[0] ?? "";
   const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
   const wrappers = prefix.match(/[\p{Ps}\p{Pi}"']/gu) ?? [];
-  for (const mark of trailing.matchAll(/[\p{Pe}\p{Pf}"']/gu)) {
+  // Only a wrapper that closes around the name belongs to the address. Any other
+  // bracket or quote after the name starts the literal message at that mark.
+  for (const mark of trailing.matchAll(/[\p{Ps}\p{Pe}\p{Pi}\p{Pf}"']/gu)) {
     if (!WRAPPER_PAIRS.has((wrappers.pop() ?? "") + mark[0])) {
       return { body: text.slice(end - trailing.length + mark.index).trimEnd(), wrappersClosed: false };
     }
@@ -142,8 +144,12 @@ function messageAfterAddress(text: string, start: number, end: number): { body: 
   while (wrappers.length) {
     const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
     if (!closing || !WRAPPER_PAIRS.has(wrappers.at(-1)! + closing[1])) break;
+    const afterMark = bodyStart + closing[0].length;
+    // A straight quote can open the next word instead of closing the address.
+    if ((closing[1] === '"' || closing[1] === "'") &&
+        /^[^\s,\p{Sentence_Terminal}…\p{Pe}\p{Pf}"']/u.test(rest.slice(afterMark))) break;
     wrappers.pop();
-    bodyStart += closing[0].length;
+    bodyStart = afterMark;
   }
   if (bodyStart > separatorLength) {
     // Terminal punctuation attached to a standalone closer also belongs to the quoted name.

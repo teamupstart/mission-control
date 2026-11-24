@@ -2250,7 +2250,9 @@ Every arm restores a status something watches, because nothing polls a blocked r
   made while the budget was exhausted. Otherwise it waits for a positive new read. A null
   wakeup can trigger this lookup. The saved head alone cannot spend the grant. If the ledger
   records a read with unknown PR state, a queued notification must be strictly newer than
-  that read to supply the head.
+  that read to supply the head. After resolving the selected commit, the evaluator reads
+  the ledger again. A failed read at or after the accepted observation keeps the submission
+  waiting until a positive read confirms its head.
 
 **And the grant says what it bought.** It was the one primary on the page with no visible
 result, so a click that worked was indistinguishable from a click that failed. The header now
@@ -2836,9 +2838,10 @@ the GitHub timeline event ID after matching its source ref, before and after com
 and GitHub timestamp bucket to the verified activity. Only that event is accepted
 in the final timeline. An additional rewrite blocks even in the same second. A return to the
 same SHA or a closure during the final read can therefore block the replacement
-even while the local ledger still shows the old open tip. A confirmed mismatch
-blocks immediately. A closed or merged PR also blocks if its source fork has been
-deleted. If the GitHub CLI returns partial GraphQL data with a field error, a matching
+even while the local ledger still shows the old open tip. A confirmed live mismatch
+blocks immediately, including when the local ledger records a failed read. A closed
+or merged PR also blocks if its source fork has been deleted.
+If the GitHub CLI returns partial GraphQL data with a field error, a matching
 PR's closed or merged state still blocks when the errors affect only source or timeline
 fields. An open PR requires a successful read with complete source and timeline evidence.
 An unavailable read leaves the round available for the next

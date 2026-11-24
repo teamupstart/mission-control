@@ -3459,6 +3459,39 @@ test("later clean recheck rereads the durable head after resolving the immutable
   } finally { await manager.stop(); }
 });
 
+for (const timing of ["tied", "newer"] as const) {
+  test(`clean Inspector submission waits after a ${timing} failed read during commit resolution`, async () => {
+    let failRead = true;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === "clean" && failRead) {
+        failRead = false;
+        const at = seeded.now + (timing === "tied" ? 9 : 11);
+        updateInspectorPr(seeded.key, { observedState: null, observedHeadSha: null, observedAt: at }, at);
+      }
+      return head;
+    } });
+    const { store, manager, ids, key, now, registry } = seeded;
+    try {
+      updateInspectorPr(key, { headSha: "clean", cleanReviewHeadSha: "clean", reviewPosture: "live",
+        observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 9 }, now + 9);
+      assert.ok(seeded.grant().ok);
+      await manager.settleBackgroundWork();
+      assert.equal(failRead, false);
+      const child = store.latestSubmission(ids.run)!;
+      assert.equal(child.prHeadSha, "clean");
+      assert.equal(store.getRun(ids.run)?.status, "waiting_for_inspector");
+      assert.equal(eventCount(seeded, "inspector_gate_clean"), 0);
+
+      updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "clean", observedAt: now + 12 }, now + 12);
+      registry.inspectionUpdated(key, "clean", "OPEN", now + 12);
+      await manager.settleBackgroundWork();
+      assert.equal(store.getRun(ids.run)?.status, "completed");
+      assert.equal(store.latestSubmission(ids.run)?.id, child.id);
+      assert.equal(eventCount(seeded, "inspector_gate_clean"), 1);
+    } finally { await manager.stop(); }
+  });
+}
+
 test("a later push after a current-head grant remains an ordinary nonrecoverable mismatch", async () => {
   const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
   try {
@@ -3783,6 +3816,49 @@ for (const race of ["return to the verified SHA", "conversation transfer hold"] 
       db.prepare("DELETE FROM session_runtime_transfers WHERE source_session_id = ?").run(ids.session);
       await manager.stop();
     }
+  });
+}
+
+for (const liveResult of ["closed PR", "changed ref", "matching tip"] as const) {
+  test(`legacy recovery with a failed ledger read respects the live result: ${liveResult}`, async () => {
+    let selecting = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === "historical" && selecting) {
+        selecting = false;
+        const at = seeded.now + 1013;
+        updateInspectorPr(seeded.key, { observedState: null, observedHeadSha: null, observedAt: at }, at);
+        if (liveResult === "closed PR") {
+          const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+          writeFileSync(recoveryPr, JSON.stringify({ ...pull, state: "closed" }));
+        } else if (liveResult === "changed ref") {
+          const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...tip, id: tip.id + 1 }, ...history]));
+        }
+      }
+      return head;
+    } });
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, "current");
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      selecting = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(selecting, false);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+      const run = store.getRun(ids.run)!;
+      const gate = run.gateState as unknown as WorkflowInspectorGateState;
+      if (liveResult === "matching tip") {
+        assert.equal(run.status, "waiting_for_new_head");
+        assert.equal(gate.grantObservation?.verifiedHeadSha, "current");
+      } else {
+        assert.equal(run.currentPhase, "inspector_head_mismatch");
+        assert.equal(gate.targetHeadSha, "historical");
+        assert.equal(gate.grantObservation, undefined);
+      }
+    } finally { await manager.stop(); }
   });
 }
 

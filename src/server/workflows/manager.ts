@@ -4742,6 +4742,15 @@ export class WorkflowManager {
       .map((head) => root ? resolve(root, head).catch(() => head) : head)));
   }
 
+  private blockRecoveredInspectorGrant(
+    run: WorkflowRun, state: WorkflowInspectorGateState, stranded: WorkflowSubmission,
+  ): void {
+    // The stranded submission still owns the gate until the replacement is created.
+    const blocked = { ...state, targetHeadSha: stranded.prHeadSha, waitReason: "head_mismatch" as const };
+    delete blocked.grantObservation;
+    this.transitionInspectorGate(run, state, blocked, "blocked", "inspector_head_mismatch", null, null, Date.now());
+  }
+
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
@@ -4826,6 +4835,11 @@ export class WorkflowManager {
       if (!adopted || !stranded) return;
       const receipt = this.store.recoveredInspectorBranchActivity(run.id, stranded.id, recoveryHead);
       recoveryTipMatches = await recheckInspectorRecoveryTip(adopted.url, recoveryHead, receipt);
+      if (transferForNote(binding.noteKey)) return;
+      if (recoveryTipMatches === false) {
+        this.blockRecoveredInspectorGrant(run, state, stranded);
+        return;
+      }
     }
     if (state.grantObservation) {
       // A local observation can also arrive during the final live read. Read the
@@ -5035,12 +5049,8 @@ export class WorkflowManager {
     const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
-      if (recoveryHead && (recoveryHead !== newHead || recoveryTipMatches === false)) {
-        // The recovery receipt authorizes only its verified replacement. The stale
-        // submission still owns the gate until that replacement is actually created.
-        const blocked = { ...state, targetHeadSha: submission.prHeadSha, waitReason: "head_mismatch" as const };
-        delete blocked.grantObservation;
-        this.transitionInspectorGate(run, state, blocked, "blocked", "inspector_head_mismatch", null, null, now);
+      if (recoveryHead && recoveryHead !== newHead) {
+        this.blockRecoveredInspectorGrant(run, state, submission);
         return;
       }
       if (recoveryHead && recoveryTipMatches === null) return;
@@ -5145,14 +5155,15 @@ export class WorkflowManager {
       // its normal mismatch/closed guard must see that observation before any clean verdict.
       const current = loadInspectorInspection(state.prKey);
       if (!current) return;
-      if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)
-          && current.observedState !== null
-          && (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState))) {
-        this.scheduleGateEvaluation(run.id, {
-          prKey: current.key, observedHeadSha: current.observedHeadSha,
-          observedAt: current.observedAt, observedState: current.observedState, ledger: current,
-        });
-        return;
+      if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)) {
+        if (current.observedState === null) return;
+        if (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState)) {
+          this.scheduleGateEvaluation(run.id, {
+            prKey: current.key, observedHeadSha: current.observedHeadSha,
+            observedAt: current.observedAt, observedState: current.observedState, ledger: current,
+          });
+          return;
+        }
       }
       ledger = current;
       if (ledger.state === "closed") return;

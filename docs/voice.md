@@ -58,8 +58,11 @@ The desktop shell supplies an HTTPS origin and its pinned DER certificate in
 `MISSION_VOICE_DAEMON_CERT` (base64). The managed listener requires both for its requests.
 
 The development launcher reads the effective backend, model manifest and verified directory from
-the running daemon. Use `--backend` for an explicit selection. The launcher checks a previously
-installed alternate model without changing the saved selection. When macOS reports `not-determined` at startup, the helper
+the running daemon. With the daemon set to `auto`, `--backend` can use either installed model.
+If the daemon selects a specific backend, the launcher reports a conflicting override before
+starting a helper. Change the daemon selection through `PUT /api/voice/config` or its
+`MISSION_VOICE_BACKEND` environment, then verify the model in Voice Setup.
+When macOS reports `not-determined` at startup, the helper
 prints a terminal diagnostic, includes the reading in its hello and keeps the microphone
 closed. Run the development command from a terminal app that already has microphone access.
 An explicit denial is sent in the hello and exits with status 2. The first-time consent

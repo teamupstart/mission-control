@@ -118,8 +118,11 @@ export function registerVoiceRoutes(
   app.get("/api/voice/model", gate, async (c) => {
     const backend = z.enum(VOICE_BACKENDS).optional().safeParse(c.req.query("backend"));
     if (!backend.success) return c.json({ error: "Unknown voice backend" }, 400);
-    const model = await models.listenerModel(backend.data, c.req.raw.signal);
     c.header("Cache-Control", "no-store");
+    if (backend.data && !store.backendSelected(backend.data)) return c.json({ error: "backend_not_selected" }, 409);
+    const model = await models.listenerModel(backend.data, c.req.raw.signal);
+    // An alternate install may have been hashing while the selected backend changed.
+    if (model && !store.backendSelected(model.backend)) return c.json({ error: "backend_not_selected" }, 409);
     return model ? c.json(model) : c.json({ error: "Select the backend and verify its model in Voice Setup before launching." }, 409);
   });
   app.post("/api/voice/model/download", gate, (c) => {

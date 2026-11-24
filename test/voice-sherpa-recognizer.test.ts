@@ -50,6 +50,8 @@ test("the published sherpa addon transcribes a recording through the listener an
   const app = new Hono();
   const captures: VoiceUtterance[] = [];
   let posts = 0;
+  let hellos = 0;
+  app.use("/voice/listener/hello", async (_c, next) => { hellos++; await next(); });
   app.use("/voice/utterances", async (c, next) => {
     posts++;
     const payload = await c.req.raw.clone().json();
@@ -72,9 +74,8 @@ test("the published sherpa addon transcribes a recording through the listener an
   const env: NodeJS.ProcessEnv = { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + addr.port, MISSION_VOICE_TOKEN_FILE: tokenPath() };
   delete env.MISSION_VOICE_MODEL_MANIFEST;
   delete env.MISSION_VOICE_BACKEND;
-  const play = (file: string) => run(process.execPath, [resolve("scripts/run-voice-listener.ts"), "--input-file", file], {
-    cwd, env, timeout: 60_000,
-  });
+  const play = (file: string, ...args: string[]) => run(process.execPath,
+    [resolve("scripts/run-voice-listener.ts"), ...args, "--input-file", file], { cwd, env, timeout: 60_000 });
   await play(fixture);
   assert.equal(captures.length, 1);
   const capture = captures[0]!;
@@ -109,5 +110,19 @@ test("the published sherpa addon transcribes a recording through the listener an
     await writeFile(path, wav);
     await play(path);
     assert.equal(posts, 1);
+  });
+  await t.test("a conflicting explicit backend is refused before hello, while auto admits the same helper", async () => {
+    voiceStateStore.reset();
+    setVoiceConfig({ backend: "fluidaudio" });
+    const before = hellos;
+    await assert.rejects(play(fixture, "--backend", "sherpa-onnx"), /Select sherpa-onnx with PUT \/api\/voice\/config.*Voice Setup/);
+    assert.equal(hellos, before, "the incompatible helper must never start its protocol");
+    assert.equal(posts, 1);
+
+    setVoiceConfig({ backend: "auto" });
+    await play(fixture, "--backend", "sherpa-onnx");
+    assert.ok(hellos > before);
+    assert.equal(captures.length, 2);
+    assert.equal(normalize(captures[1]!.text), "steve check the build");
   });
 });

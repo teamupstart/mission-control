@@ -24,7 +24,12 @@ process.env.MISSION_VOICE_DAEMON_URL ??= BASE_URL;
 const url = new URL("/api/voice/model", loopbackDaemonUrl(process.env.MISSION_VOICE_DAEMON_URL));
 if (override) url.searchParams.set("backend", override);
 const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
-if (!response.ok) throw new Error("Voice model lookup failed (HTTP " + response.status + "). Check Voice Setup and the selected backend.");
+if (!response.ok) {
+  if (response.status === 409 && (await response.json()).error === "backend_not_selected") {
+    throw new Error(`The daemon selected a different voice backend. Select ${override ?? "the desired backend"} with PUT /api/voice/config or MISSION_VOICE_BACKEND on the daemon, then verify its model in Voice Setup.`);
+  }
+  throw new Error("Voice model lookup failed (HTTP " + response.status + "). Check Voice Setup and the selected backend.");
+}
 const model = z.object({ backend: z.enum(VOICE_BACKENDS), directory: z.string().refine(isAbsolute), manifest: VoiceModelManifestSchema })
   .parse(await response.json());
 if (override && model.backend !== override) throw new Error("Unexpected backend in daemon model response");

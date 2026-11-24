@@ -139,6 +139,7 @@
   "GET /api/voice/config": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "GET /api/voice/devices": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "GET /api/voice/heard": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
+  "GET /api/voice/model": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "GET /api/workflow-bindings": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflow-bindings/:id/evidence": "503 {\"error\":\"Workflow manager unavailable\"}",
   "GET /api/workflow-commands": "503 {\"error\":\"Command catalog unavailable\"}",

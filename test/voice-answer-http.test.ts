@@ -85,3 +85,23 @@ test("a reload after a backward clock adjustment restores focus and rejects olde
   assert.equal(windows.dashboard, "reloaded");
   closeOlder();
 });
+
+test("withdrawing a dashboard rejects late reports and a newer dashboard report supersedes a late withdrawal", async t => {
+  const q = question();
+  const windowId = "role-change";
+  const windows = registry.voiceRouter!.openCards;
+  t.after(windows.connect(windowId));
+  const report = (revision: number, withdraw = false) => put("/api/voice/open-cards" + (withdraw ? "?withdraw=1" : ""),
+    { windowId, focused: !withdraw, cards: withdraw ? [] : [{ kind: "question", id: q.id, focused: true }] },
+    { "x-voice-focus-at-us": "100", "x-voice-report-revision": String(revision) });
+  await report(1);
+  assert.equal(windows.target([q])?.id, q.id);
+  await report(3, true);
+  await report(2);
+  assert.equal(windows.dashboard, undefined);
+  assert.equal(windows.target([q]), undefined);
+  await report(5);
+  await report(4, true);
+  assert.equal(windows.dashboard, windowId);
+  assert.equal(windows.target([q])?.id, q.id);
+});

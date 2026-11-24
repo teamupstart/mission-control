@@ -312,7 +312,7 @@ export function registerVoiceUtteranceRoutes(
     if (version !== undefined && (!/^\d+$/.test(version) || !Number.isSafeInteger(revision))) {
       return c.json({ error: "Invalid report revision." }, 400);
     }
-    const ok = router.openCards.report(parsed.data, focusAtUs, revision);
+    const ok = router.openCards.report(parsed.data, focusAtUs, revision, c.req.query("withdraw") === "1");
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/voice/utterances", gate, limitBody, async (c) => {

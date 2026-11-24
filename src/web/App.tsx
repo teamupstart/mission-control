@@ -542,7 +542,7 @@ export function App(): React.JSX.Element {
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
   const voiceHints = spokenNames && !!voice && voice.mode !== "off";
-  useVoiceOpenCards(voiceHints && connected && route.page !== "voice-card" ? voiceWindowId : undefined);
+  useVoiceOpenCards(voiceHints && connected ? voiceWindowId : undefined, route.page !== "voice-card");
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   // The entry point can ask for initial focus on a conversation's question. The inbox still
   // renders the live attention fold.

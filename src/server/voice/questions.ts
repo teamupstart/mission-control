@@ -18,7 +18,7 @@ export class VoiceOpenCards {
   private clockSkewMs = 0;
   private changedAt = 0;
   private latestFocusUs = 0;
-  private readonly reports = new Map<string, { report: OpenCardsReport; focusAtUs: number; revision: number; clockOffsetUs: number }>();
+  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -48,7 +48,7 @@ export class VoiceOpenCards {
     };
   }
 
-  report(report: OpenCardsReport, observedAtUs?: number, revision = 0): boolean {
+  report(report: OpenCardsReport, observedAtUs?: number, revision = 0, withdraw = false): boolean {
     const stream = this.streams.get(report.windowId);
     if (!stream) return false;
     // A new stream cannot have observed focus before it existed. Keep later reports
@@ -62,8 +62,10 @@ export class VoiceOpenCards {
     const last = this.reports.get(report.windowId);
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
     const previous = this.current;
-    this.reports.set(report.windowId, { report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs });
-    if (report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
+    // A standalone surface keeps its stream but ceases to be a dashboard. Retain
+    // the order of its withdrawal so an in-flight report cannot resurrect its footer.
+    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs });
+    if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
     if (this.current !== previous) this.changedAt = Date.now();
     this.changed();
     return true;
@@ -72,7 +74,7 @@ export class VoiceOpenCards {
   private get current(): OpenCardsReport | undefined {
     let current: OpenCardsReport | undefined;
     for (const { report, focusAtUs } of this.reports.values()) {
-      if (!report.focused || focusAtUs !== this.latestFocusUs || !this.streams.has(report.windowId)) continue;
+      if (!report?.focused || focusAtUs !== this.latestFocusUs || !this.streams.has(report.windowId)) continue;
       if (current) return undefined; // Indistinguishable focus transitions cannot target a reply.
       current = report;
     }
@@ -84,7 +86,7 @@ export class VoiceOpenCards {
     if (focused) return focused.windowId;
     // A click in the standalone companion can blur the dashboard before the pick arrives.
     // A sole live dashboard can still open a review. Only foreground cards receive replies.
-    const live = [...this.reports.keys()].filter(id => this.streams.has(id));
+    const live = [...this.reports.values()].flatMap(({ report }) => report && this.streams.has(report.windowId) ? [report.windowId] : []);
     return live.length === 1 ? live[0] : undefined;
   }
 

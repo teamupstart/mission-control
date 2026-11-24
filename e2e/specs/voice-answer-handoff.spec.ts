@@ -118,3 +118,31 @@ test("a companion identifies its destination and hands its calibrated countdown 
     release.resolve();
   }
 });
+
+test("switching the same stream to the standalone surface withdraws the footer and restores the companion", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "Which benchmark should run first?";
+  const id = await file(page, daemon, steve.cwd, title);
+  const report = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().cards.some((card: { id: string }) => card.id === id));
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const dashboardId = (await report).request().postDataJSON().windowId;
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  await say(daemon, "reply, tomorrow", { id: "surface-answer" });
+  await expect(inbox.getByRole("button", { name: "Submit now" })).toBeEnabled();
+  await page.evaluate(() => { location.hash = "/voice/popover"; });
+  const companion = page.getByRole("status").filter({ hasText: title });
+  await expect(companion.getByRole("button", { name: "Submit now" })).toBeEnabled({ timeout: 5000 });
+  await expect(companion).toContainText("tomorrow");
+  expect((await page.request.post(daemon.baseURL + "/api/voice/cards/surface-answer/send-now?windowId=" + dashboardId)).status()).toBe(409);
+  await captureCard(companion, "dashboard-to-standalone-round13");
+  await companion.getByRole("button", { name: "Cancel" }).click();
+  expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
+
+  await say(daemon, "Steve, answer");
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  await picker.getByRole("button", { name: title, exact: false }).click();
+  await expect(picker).toContainText("Focus a dashboard");
+});

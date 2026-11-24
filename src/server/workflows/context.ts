@@ -1,4 +1,5 @@
 import { RepositoryCaptureChanged } from "./repository-artifact/format.ts";
+import { workflowErrorCode, workflowLog } from "./log.ts";
 import { captureCodeRabbitConfig, CODERABBIT_YAML } from "./coderabbit-config.ts";
 import { taskHasRepository } from "@shared/task.ts";
 import { createHash } from "node:crypto";
@@ -939,7 +940,14 @@ export async function captureStableWorkflowContext<T, C extends { readonly bound
           && await seam.stillCurrent(candidate);
         if (accepted) return { captured, candidate };
       } finally {
-        if (!accepted) await seam.discard(candidate);
+        if (!accepted) {
+          try { await seam.discard(candidate); }
+          catch (error) {
+            // Discard relinquishes the candidate before filesystem cleanup. Its
+            // marker lets reconciliation finish without overriding this guard.
+            workflowLog("warn", { event: "repository_pending_cleanup", error: workflowErrorCode(error) });
+          }
+        }
       }
     } catch (error) {
       if (!(error instanceof RepositoryCaptureChanged)) throw error;

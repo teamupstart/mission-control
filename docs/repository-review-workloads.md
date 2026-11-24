@@ -39,7 +39,9 @@ Each stable-capture attempt samples the exact checkout before reading prompt evi
 The prepared candidate must match that initial fingerprint and a final live sample.
 An index-only edit between the prompt read and preparation therefore discards the
 candidate and retries the entire read, even when HEAD, worktree bytes and porcelain
-status all stay the same. The default caller leaves the callback absent.
+status all stay the same. A cleanup failure on a rejected candidate is logged.
+Reconciliation retries removal, and the boundary check keeps its original outcome.
+The default caller leaves the callback absent.
 
 The version 1 directory contains a canonical JSON manifest and flat files named by Git
 object id. Each object file holds its Git type and size header followed by its original
@@ -87,7 +89,8 @@ recreating the path reports both the deletion and the new working file. The read
 read the recreated bytes. When a directory replaces a file
 or a file replaces a directory, the reader gets the missing deletion records from the
 verified path manifest. They appear in `git_status` alongside the replacement files and
-grant no content access. The same status-only records carry deletions when the live
+grant no content access. An intent-to-add path removed before capture appears as an
+unstaged deletion even though neither tree contains a file. The same status-only records carry deletions when the live
 worktree array is full. Their allowance covers the union of deleted HEAD and index
 paths, up to twice the per-layer entry limit. Directory replacements are also recovered for previously sealed
 v1 artifacts.

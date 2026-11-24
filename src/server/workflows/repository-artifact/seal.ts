@@ -287,6 +287,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const worktree = await scanWorking(git.path, state, signal, (id, bytes) => { sizes.set(id, bytes.length); });
     collect(index);
     collect(worktree);
+    for (const key of Object.keys(state.intentModes)) capturedPaths.add(key);
     const indexTree = await saveTree(index),
       worktreeTree = await saveTree(worktree);
     const requiredBlobs = new Set(needed);
@@ -359,12 +360,14 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
         staged = index.get(key),
         working = worktree.get(key);
       const classes: Classifications = [];
+      const intent = Boolean(state.intentModes[key]);
+      const missingIntent = intent && !working;
       const equal = (a: typeof working, b: typeof working) => a?.id === b?.id && a?.mode === b?.mode;
-      if (committed || (!staged && !working)) classes.push("committed");
+      if (committed || (!staged && !working && !intent)) classes.push("committed");
       if (!equal(staged, committed)) classes.push("staged");
-      if (staged && !equal(staged, working)) classes.push("unstaged");
-      if (working && !staged) classes.push(state.intentModes[key] ? "unstaged" : "untracked");
-      if ((committed && !staged) || (staged && !working)) classes.push("deleted");
+      if ((staged && !equal(staged, working)) || missingIntent) classes.push("unstaged");
+      if (working && !staged) classes.push(intent ? "unstaged" : "untracked");
+      if ((committed && !staged) || (staged && !working) || missingIntent) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");
       const path = decodedPath(key);
       if (path && RepositoryPathSchema.safeParse(path).success) {
@@ -395,7 +398,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const worktreeLimit = expansionBudget(limits).entries;
     for (const p of paths) {
       if (workView.length >= worktreeLimit) break;
-      if (!p.classifications.includes("deleted")) continue;
+      if (!p.classifications.includes("deleted") || (state.intentModes[p.bytes] && !worktree.has(p.bytes))) continue;
       const path = decodedPath(p.bytes);
       if (
         !path ||

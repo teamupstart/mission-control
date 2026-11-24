@@ -1250,6 +1250,56 @@ test("capture discards stale candidates on retry and on boundary exceptions", as
   assert.deepEqual(discarded, [1, 3]);
 });
 
+test("a discard filesystem failure preserves retry, exhaustion and the original guard error", async (t) => {
+  const f = fixture(t);
+  f.write("submitted", "stable bytes");
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const warnings = t.mock.method(console, "warn", () => {});
+  const original = fs.rmSync;
+  for (const outcome of ["retry", "exhausted", "guard-error"]) {
+    const stale = new Set<string>();
+    let reads = 0;
+    const guardError = new Error("guard rejected the submission");
+    const blocked = t.mock.method(fs, "rmSync", (...args: Parameters<typeof original>) => {
+      if (stale.has(dirname(String(args[0])))) throw Object.assign(new Error("private path"), { code: "EBUSY" });
+      return original(...args);
+    });
+    syncBuiltinESMExports();
+    let accepted: Awaited<ReturnType<typeof f.prepare>> | undefined;
+    try {
+      const capture = captureStableWorkflowContext(async () => ++reads, async () => {
+        if (outcome === "guard-error") throw guardError;
+        return outcome === "exhausted" || reads === 1;
+      }, {
+        sampleBoundary: () => f.service.sampleBoundary(f.checkout, signal),
+        prepare: () => f.prepare(),
+        stillCurrent: c => f.service.stillCurrent(c, signal),
+        discard: async c => {
+          stale.add(realpathSync(join(f.root, "pending", c.id)));
+          await f.service.discard(c);
+        },
+      });
+      if (outcome === "guard-error") await assert.rejects(capture, error => error === guardError);
+      else {
+        const result = await capture;
+        if (outcome === "retry") {
+          assert.equal(result?.captured, 2);
+          accepted = result!.candidate;
+        } else assert.equal(result, null);
+      }
+      assert.equal(reads, outcome === "guard-error" ? 1 : 2);
+    } finally {
+      blocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(await f.service.reconcile(), { deleted: stale.size, orphans: 0 });
+    assert.deepEqual(readdirSync(join(f.root, "pending")), accepted ? [accepted.id] : []);
+    if (accepted) await f.service.discard(accepted);
+  }
+  assert.deepEqual(warnings.mock.calls.map(c => c.arguments[0]), Array(4).fill("[workflow] event=repository_pending_cleanup error=EBUSY"));
+});
+
 test("ambiguous allowed and sensitive object aliases, missing selected objects, and cancellation produce no claim", async (t) => {
   const f = fixture(t);
   f.write(".env", "same");
@@ -1981,6 +2031,33 @@ test("intent-to-add, executable mode and index-only changes agree with Git's own
   assert.deepEqual(readFileSync(join(f.checkout, ".git/index")), original);
   await lease.release();
   await f.service.release(s.submissionId);
+  await f.service.reconcile();
+});
+
+test("removed intent-to-add files appear only as unstaged status deletions after materialization", async (t) => {
+  const f = fixture(t);
+  for (const path of ["intent", ".env"]) f.write(path, "temporary");
+  f.git("add", "-N", "--", "intent", ".env");
+  for (const path of ["intent", ".env"]) rmSync(join(f.checkout, path));
+  assert.deepEqual(f.git("diff", "--name-status").split("\n"), ["D\t.env", "D\tintent"]);
+  assert.equal(f.git("diff", "--cached", "--name-status"), "");
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  rmSync(f.checkout, { recursive: true });
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  assert.deepEqual(lease.descriptor.index, []);
+  assert.deepEqual(lease.descriptor.worktree, []);
+  assert.deepEqual(lease.descriptor.statusDeletions, [{ path: "intent", classifications: ["unstaged", "deleted"] }]);
+  const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
+    gitBinary: "git", workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {} });
+  const status = await reader.query("git_status", {});
+  assert.deepEqual(status.items.map(e => [e.path, e.metadata?.classifications]), [["intent", ["unstaged", "deleted"]]]);
+  assert.equal(status.items[0]?.evidenceHandleId, undefined);
+  assert.equal((await reader.query("read", { path: "intent" })).code, "unavailable");
+  assert.equal((await reader.query("glob", { glob: "intent" })).items.length, 0);
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
   await f.service.reconcile();
 });
 

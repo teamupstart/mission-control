@@ -71,11 +71,14 @@ function syncDirectory(path: string) {
 function publishedFiles(path: string) {
   if (!lstatSync(path).isDirectory() || realpathSync(path) !== path) return null;
   const files = readdirSync(path);
+  let bytes = 0;
   for (const file of files) {
-    if ((file !== "manifest.json" && !oid.safeParse(file).success) || !lstatSync(join(path, file)).isFile())
-      return null;
+    if (file !== "manifest.json" && !oid.safeParse(file).success) return null;
+    const stat = lstatSync(join(path, file));
+    if (!stat.isFile()) return null;
+    bytes += stat.size;
   }
-  return files;
+  return { files, bytes };
 }
 
 const cleanupTicket = /^([a-f0-9-]{36})\.(\d+)\.(\d+)\.cleanup$/;
@@ -291,7 +294,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     const existing = lstatSync(dest, { throwIfNoEntry: false });
     const signal = AbortSignal.timeout(600_000);
     let manifest: Manifest;
-    let replace = false;
+    let displacedBytes: number | undefined;
     try {
       manifest = await verifyDirectory(existing ? dest : src, digest, signal, { syncFiles: true });
     } catch (error) {
@@ -299,11 +302,12 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         throw error;
       this.ownership.unavailable(digest);
       // Refuse an unknown layout before the caller records a replacement intent.
-      if (!publishedFiles(dest)) unavailable();
+      if (lstatSync(join(pending, "previous"), { throwIfNoEntry: false })) unavailable();
+      displacedBytes = (publishedFiles(dest) ?? unavailable()).bytes;
       manifest = await verifyDirectory(src, digest, signal, { syncFiles: true });
-      replace = true;
     }
-    syncDirectory(existing && !replace ? dest : src);
+    syncDirectory(existing && displacedBytes === undefined ? dest : src);
+    if (displacedBytes !== undefined) this.storage.trackDisplaced(pending, displacedBytes);
     const syncRename = () => {
       syncDirectory(pending);
       syncDirectory(dirname(dest));
@@ -312,15 +316,21 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
       // Persist both sides of the recovery path before the first rename. This
       // also covers a digest namespace recreated while replaying an older intent.
       this.syncAllocationPath(pending);
-      if (replace) {
+      if (displacedBytes !== undefined) {
         const previous = join(pending, "previous");
-        if (!publishedFiles(dest)) unavailable();
-        renameSync(dest, previous);
+        this.storage.trackDisplaced(pending, (publishedFiles(dest) ?? unavailable()).bytes);
+        try {
+          renameSync(dest, previous);
+        } catch (error) {
+          this.storage.trackDisplaced(pending, 0);
+          throw error;
+        }
         syncRename();
         try {
           renameSync(src, dest);
         } catch (error) {
           renameSync(previous, dest);
+          this.storage.trackDisplaced(pending, 0);
           syncRename();
           throw error;
         }
@@ -332,6 +342,9 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     return { manifest, publish };
   }
   private async recoverPromotion(pending: string) {
+    const previous = join(pending, "previous");
+    if (lstatSync(previous, { throwIfNoEntry: false }))
+      this.storage.trackDisplaced(pending, (publishedFiles(previous) ?? unavailable()).bytes, true);
     const intent = join(pending, "promotion");
     if (!existsSync(intent)) return;
     if (!lstatSync(intent).isFile()) unavailable();
@@ -527,7 +540,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             this.ownership.cleanup(row.digest, () => {
               if (root && present.has(row.digest)) {
                 const path = join(root, row.digest);
-                for (const file of publishedFiles(path) ?? unavailable()) unlinkSync(join(path, file));
+                for (const file of (publishedFiles(path) ?? unavailable()).files) unlinkSync(join(path, file));
                 rmdirSync(path);
               }
               // A prior removal may have succeeded while its sync failed. Persist

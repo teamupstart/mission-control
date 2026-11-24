@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 
 /** Shared by all pending candidates and reader leases in this state root. */
 export class RepositoryArtifactStorage {
-  private readonly accounts = new Map<string, { required: number; total: number }>();
+  private readonly accounts = new Map<string, { required: number; total: number; displaced: number }>();
   private temporaryBytes = 0;
   private writingBytes = 0;
 
@@ -15,12 +15,27 @@ export class RepositoryArtifactStorage {
       throw Object.assign(new Error("Required repository objects exceed storage limit"), { code: "required_storage_limit" });
   }
 
+  private checkTemporary(extra: number) {
+    if (this.temporaryBytes + extra > this.temporaryLimit)
+      throw Object.assign(new Error("Temporary repository artifacts exceed storage limit"), { code: "artifact_storage_limit" });
+  }
+
+  /** A replay can rediscover bytes that already occupy the directory, even above today's limit. */
+  trackDisplaced(pending: string, bytes: number, alreadyOnDisk = false) {
+    const account = this.accounts.get(pending) ?? { required: 0, total: 0, displaced: 0 };
+    const delta = bytes - account.displaced;
+    if (!alreadyOnDisk && delta > 0) this.checkTemporary(delta);
+    this.temporaryBytes += delta;
+    account.total += delta;
+    account.displaced = bytes;
+    this.accounts.set(pending, account);
+  }
+
   async write(allocation: string, path: string, data: Buffer | string, scope: "required" | "additional" | "lease", signal: AbortSignal) {
     signal.throwIfAborted();
     const bytes = Buffer.byteLength(data);
     if (scope === "required") this.checkRequired(allocation, bytes);
-    if (this.temporaryBytes + bytes > this.temporaryLimit)
-      throw Object.assign(new Error("Temporary repository artifacts exceed storage limit"), { code: "artifact_storage_limit" });
+    this.checkTemporary(bytes);
     const { bsize, bavail } = statfsSync(allocation);
     const parent = dirname(path);
     const createDirectory = scope === "lease" && !existsSync(parent);
@@ -30,7 +45,7 @@ export class RepositoryArtifactStorage {
       throw Object.assign(new Error("Insufficient space for repository capture"), { code: "artifact_storage_space" });
     // Reserve before yielding. Other writers see the charge even before the filesystem
     // reports the new allocation. Partial writes stay charged until directory cleanup.
-    const account = this.accounts.get(allocation) ?? { required: 0, total: 0 };
+    const account = this.accounts.get(allocation) ?? { required: 0, total: 0, displaced: 0 };
     account.total += bytes;
     if (scope === "required") account.required += bytes;
     this.accounts.set(allocation, account);

@@ -103,10 +103,10 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
   const { index, head, format, common } = state;
   // Workflow displays an abbreviated id. Expand that exact selection while the checkout
   // is still sampled, refusing ambiguous prefixes and never resolving a moving branch.
-  let base = input.sourceBase ?? head;
-  if (base !== null) {
+  const selected = input.sourceBase ?? head;
+  if (selected !== null) {
     const width = format === "sha1" ? 40 : 64;
-    if (!/^[0-9a-f]{4,64}$/.test(base) || base.length > width) unavailable();
+    if (!/^[0-9a-f]{4,64}$/.test(selected) || selected.length > width) unavailable();
   }
   const pathPolicy = new Map<string, boolean>();
   const allowed = (key: string) => {
@@ -121,6 +121,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
     commonFd,
     format === "sha256",
     signal,
+    selected,
   );
   const table = new Map<string, ObjectRecord>();
   const binary = new Set<string>();
@@ -282,7 +283,7 @@ async function sealSample(input: RepositoryCaptureInput, pending: string, signal
   }
 
   try {
-    if (base && base.length < state.emptyBlob.length) base = await reader.resolvePrefix(base);
+    const base = reader.base;
     let headLayer: Layer = new Map();
     for (const anchor of new Set([head, base])) {
       if (!anchor) continue;

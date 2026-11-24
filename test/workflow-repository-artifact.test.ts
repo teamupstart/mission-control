@@ -612,6 +612,84 @@ test("concurrent and sealed candidates retain their storage reservations until c
   }
 });
 
+test("displaced digest bytes reserve temporary storage until pending cleanup succeeds", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(150_000, 218_000));
+  f.write("file", Buffer.alloc(64_000, 0x61));
+  const holder = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(holder);
+  const candidate = await f.prepare();
+  const pending = join(realpathSync(f.root), "pending", candidate.id);
+  const blob = f.git("hash-object", "file");
+  const source = join(f.root, "digests", holder.digest, blob);
+  chmodSync(source, 0o600);
+  truncateSync(source, 240_000);
+  const incoming = f.submission();
+  await assert.rejects(f.service.promote(candidate, incoming), { code: "artifact_unavailable" });
+  assert.equal(lstatSync(source).size, 240_000);
+  assert.equal(existsSync(join(pending, "promotion")), false);
+  truncateSync(source, 128_000);
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const remove = fs.rmSync, previous = join(pending, "previous");
+  const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof remove>) => {
+    if (args[0] === previous) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    return remove(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    f.store.commitRepositoryCaptureActivation(await f.service.promote(candidate, incoming));
+    assert.equal(lstatSync(join(previous, blob)).size, 128_000);
+    for (let i = 0; i < 2; i++) assert.equal((await f.service.reconcile()).orphans, 1);
+    f.write("file", Buffer.alloc(5_000));
+    await f.service.discard(await f.prepare());
+    f.write("file", Buffer.alloc(110_000));
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+  } finally {
+    fault.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal((await f.service.reconcile()).orphans, 0);
+  assert.equal(existsSync(previous), false);
+  await f.service.discard(await f.prepare());
+  await f.service.release(holder.submissionId);
+  await f.service.release(incoming);
+  await f.service.reconcile();
+});
+
+test("recovery charges a previous writer's displaced bytes if cleanup still fails", async (t) => {
+  const f = fixture(t, "sha1", new RepositoryArtifactStorage(120_000, 160_000));
+  f.write("file", Buffer.alloc(80_000));
+  const holder = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(holder);
+  const candidate = interruptedCapture(f);
+  const pending = join(realpathSync(f.root), "pending", candidate.id);
+  const previous = join(pending, "previous"), dest = join(f.root, "digests", holder.digest);
+  writeFileSync(join(pending, "promotion"), holder.digest);
+  renameSync(dest, previous);
+  renameSync(join(pending, "artifact"), dest);
+
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const remove = fs.rmSync;
+  const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof remove>) => {
+    if (args[0] === previous) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+    return remove(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal((await f.service.reconcile()).orphans, 1);
+    await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+    assert.ok(f.service.activeSnapshot(holder.submissionId));
+  } finally {
+    fault.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal((await f.service.reconcile()).orphans, 0);
+  await f.service.discard(await f.prepare());
+  await f.service.release(holder.submissionId);
+  await f.service.reconcile();
+});
+
 test("reader leases share storage with pending candidates until their directories are removed", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));
   f.write("file", randomBytes(96_000));
@@ -1569,6 +1647,40 @@ test("object reads refuse linked loose files, fanout directories, pack files, in
   await lease.release();
   await f.service.release(snapshot.submissionId);
   await f.service.reconcile();
+});
+
+test("abbreviated bases require one distinct object across loose and packed storage", async (t) => {
+  const f = fixture(t);
+  const tree = f.git("write-tree");
+  const header = "tree " + tree + "\nauthor Fixture <a@example.test> 1 +0000\ncommitter Fixture <a@example.test> 1 +0000\n\n";
+  // These three messages give different commit IDs beginning with 18c7.
+  const bodies = [1177, 2196, 3265].map(n => header + n + "\n");
+  const input = f.checkout + "-commit";
+  const writeCommit = (body: string) => {
+    writeFileSync(input, body);
+    return f.git("hash-object", "-w", "-t", "commit", input);
+  };
+  const packed = bodies.slice(0, 2).map(writeCommit);
+  packed.forEach((id, i) => f.git("update-ref", "refs/heads/packed-" + i, id));
+  const first = packed[0]!;
+  const loosePath = join(f.checkout, ".git", "objects", first.slice(0, 2), first.slice(2));
+  const copy = readFileSync(loosePath);
+  f.git("repack", "-ad");
+  assert.equal(existsSync(loosePath), false);
+  const loose = writeCommit(bodies[2]!);
+  const prefix = loose.slice(0, 4);
+  assert.deepEqual(f.git("rev-parse", "--disambiguate=" + prefix).split("\n").sort(), [...packed, loose].sort());
+  await assert.rejects(f.prepare(prefix), { code: "artifact_unavailable" });
+  assert.deepEqual(readdirSync(join(f.root, "pending")), []);
+  // Two storage locations for one ID still give one unambiguous base.
+  mkdirSync(dirname(loosePath), { recursive: true });
+  writeFileSync(loosePath, copy);
+  for (const id of [first, packed[1]!, loose]) {
+    const candidate = await f.prepare(id.slice(0, 12));
+    const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", candidate.id, "artifact", "manifest.json"), "utf8")));
+    assert.equal(manifest.view.base, id);
+    await f.service.discard(candidate);
+  }
 });
 
 test("a depth-two clone seals its declared frontier, rejects a missing undeclared parent and reads after deletion", async (t) => {

@@ -1,4 +1,4 @@
-import { spawn, execFile } from "node:child_process";
+import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { closeSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -69,16 +69,20 @@ export async function checkoutGit(
   });
 }
 
+function gitExit(child: ChildProcess) {
+  return new Promise<Error | number | null>(done => {
+    child.once("error", done);
+    child.once("close", done);
+  });
+}
+
 /** Consume NUL-delimited Git output with backpressure and stop Git on the first refused path. */
 export async function checkoutRecords(executable: string, directories: CheckoutDirectories, args: string[], signal: AbortSignal,
   maxRecordBytes: number, accept: (record: Buffer) => void) {
   const child = spawn(executable, [...flags, ...args], {
     cwd: directories.root, signal, env: checkoutEnvironment(false, directories), timeout: 30_000, stdio: ["ignore", "pipe", "ignore"],
   });
-  const finished = new Promise<Error | number | null>(done => {
-    child.once("error", done);
-    child.once("close", done);
-  });
+  const finished = gitExit(child);
   let parts: Buffer[] = [], size = 0;
   try {
     for await (const chunk of child.stdout) {
@@ -104,6 +108,29 @@ export async function checkoutRecords(executable: string, directories: CheckoutD
   }
 }
 
+// rev-parse emits one full ID per distinct match. More than one line is
+// already ambiguous, so retain at most one ID even for a short prefix.
+async function packedMatch(child: ChildProcess, prefix: string, width: number) {
+  const finished = gitExit(child);
+  let output = "";
+  try {
+    for await (const chunk of child.stdout!) {
+      if (output.length + chunk.length > width + 1) unavailable();
+      output += chunk.toString("ascii");
+    }
+    const status = await finished;
+    if (status instanceof Error) throw status;
+    if (status !== 0) unavailable();
+    if (!output) return null;
+    const id = oid.parse(output.trimEnd());
+    if (id.length !== width || !id.startsWith(prefix)) unavailable();
+    return id;
+  } finally {
+    child.kill();
+    await finished;
+  }
+}
+
 /** One persistent batch process reads only literal object ids. No source config or refs
  * are accessible to the process, so a partial clone cannot invoke its remote helper. */
 export async function openObjectReader(
@@ -112,6 +139,7 @@ export async function openObjectReader(
   commonDirectory: number,
   sha256: boolean,
   captureSignal: AbortSignal,
+  base: string | null,
 ) {
   const signal = AbortSignal.any([captureSignal, AbortSignal.timeout(10 * 60_000)]);
   await mkdir(join(wrapper, "refs"), { recursive: true });
@@ -125,10 +153,25 @@ export async function openObjectReader(
   const root = openObjectRoot(commonDirectory);
   const start = async () => {
     const packs = await pinPacks(root, wrapper, signal);
+    const git = (args: string[]) => spawn(executable, [...flags, "--git-dir", wrapper, ...args], {
+      cwd: wrapper, env, signal, stdio: ["pipe", "pipe", "ignore", ...packs],
+    });
     try {
-      return spawn(executable, [...flags, "--git-dir", wrapper, "cat-file", "--batch-command"], {
-        cwd: wrapper, env, signal, stdio: ["pipe", "pipe", "ignore", ...packs],
-      });
+      const width = sha256 ? 64 : 40;
+      if (base && base.length < width) {
+        const matches = new Set(await looseMatches(root, base, width));
+        if (matches.size > 1) unavailable();
+        if (packs.length) {
+          // cat-file can report an ambiguous abbreviation as missing. Enumerate
+          // packed IDs explicitly, without exposing the source refs or loose files.
+          const lookup = git(["rev-parse", "--disambiguate=" + base]);
+          const id = await packedMatch(lookup, base, width);
+          if (id) matches.add(id);
+        }
+        if (matches.size !== 1) unavailable();
+        base = [...matches][0]!;
+      }
+      return git(["cat-file", "--batch-command"]);
     } finally { for (const fd of packs) closeSync(fd); }
   };
   const child = await start().catch(error => { closeSync(root); throw error; });
@@ -167,17 +210,7 @@ export async function openObjectReader(
     return size;
   }
   return {
-    async resolvePrefix(prefix: string) {
-      const matches = new Set(await looseMatches(root, prefix, sha256 ? 64 : 40));
-      const header = await query("info", prefix);
-      if (header !== prefix + " missing") {
-        const id = oid.parse(header.split(" ")[0]);
-        if (!id.startsWith(prefix)) unavailable();
-        matches.add(id);
-      }
-      if (matches.size !== 1) return unavailable();
-      return [...matches][0]!;
-    },
+    base,
     async get(id: string, type: string, info = false) {
       oid.parse(id);
       const loose = await readLoose(root, id, type, info, signal);

@@ -67,11 +67,14 @@ and inflated from that file. The private Git process reads packs and indexes thr
 inherited file descriptors. It has no source object directory or alternates to follow.
 Capture can pin up to 256 pack/index pairs. This bounds the file descriptors held for
 a single capture, including when the checkout and artifact are on different volumes.
+An abbreviated base must identify one distinct object across loose files and pinned packs.
 All unique Git objects required by the base, HEAD, index and worktree share a 512 MiB
 storage allowance, including their Git headers. Capture checks the combined blob sizes
 before copying any blob. Pending candidates and private reader leases share a 2 GiB
 allowance for object files, manifests and lease data. Each write reserves its bytes
 before it starts. A candidate or lease holds its share until its directory is removed.
+A repair also reserves the actual size of the old digest before moving it into the
+pending directory. Failed cleanup retains this charge for the next maintenance pass.
 Writes also leave 64 MiB free on the state volume and account for in-flight filesystem
 allocations.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.

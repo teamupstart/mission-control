@@ -144,6 +144,11 @@ is unavailable or the record changes during verification, the dashboard shows th
 and continues streaming new turns. It retries the disclosure in the background, including for pages
 the operator scrolled back to. SDKs that accept client message IDs use that receipt.
 
+Sending a typed, delegated, or review message leaves spoken transcript scans to the prepared
+handoff, conversation reader, or cleanup. When a parser generates a different ID on a later
+read, the daemon can identify the spoken turn by matching text and time only if the match is
+unique in the file and occurs at or after the saved handoff offset.
+
 A confirmed terminal delivery has a 24-hour window to match its transcript turn. Cleanup makes
 one final binding pass and deletes the payload if it still has no match. If the transcript stays
 unavailable, cleanup keeps the unbound payload for the daemon's orphan retention period (seven

@@ -173,11 +173,16 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     await late.screenshot({ path: test.info().outputPath("reused-native-id.png") });
 
     const oversizedWords = "check the archived build";
+    // The typed record already exists at handoff, even though its timestamp and payload
+    // will be identical to the native delivery. Its author clock runs one minute ahead.
+    const timestamp = Date.now() + 60_000;
+    const expectedPayload = latePayload.replace(lateWords, oversizedWords);
+    appendFileSync(path, line("archived-before-handoff", expectedPayload, timestamp));
     expect(await (await say(daemon, "Steve, " + oversizedWords)).json()).toEqual({ accepted: true });
     await expect.poll(() => pane.turns().find(text => text.startsWith(oversizedWords)), { timeout: 30_000 }).toContain("post a report");
     const oversizedPayload = pane.turns().find(text => text.startsWith(oversizedWords))!;
+    expect(oversizedPayload).toBe(expectedPayload);
     const prefix = readFileSync(path, "utf8");
-    const timestamp = Date.now();
     const original = line("archived-original", oversizedPayload, timestamp);
     const copy = line("archived-typed-copy", oversizedPayload, timestamp + 1);
     appendFileSync(path, JSON.stringify({ ...JSON.parse(original), padding: "x".repeat(17 * 1024 * 1024) }) + "\n" + copy);
@@ -185,10 +190,14 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     await expect(archived.last()).toContainText(oversizedPayload);
     await expect(archived.getByText("Spoken", { exact: true })).toHaveCount(0);
     writeFileSync(path, prefix + original + copy);
-    await expect(archived).toHaveCount(2);
-    await expect(archived.first().getByText("Spoken", { exact: true })).toBeVisible();
+    await expect(archived).toHaveCount(3);
+    await expect(archived.nth(1).getByText("Spoken", { exact: true })).toBeVisible();
     await expect(archived.last()).toContainText(oversizedPayload);
     await expect(archived.last().getByText("Spoken", { exact: true })).toHaveCount(0);
+    writeFileSync(path, prefix);
+    await expect(archived).toHaveCount(1);
+    await expect(archived).toContainText(oversizedPayload);
+    await expect(archived.getByText("Spoken", { exact: true })).toHaveCount(0);
   } finally {
     pane.cleanup();
   }

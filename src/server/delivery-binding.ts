@@ -323,8 +323,8 @@ export async function reconcileHandoffRows(key: string, transcript: SessionMessa
   }
 }
 
-/** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
-function bindAll(conversation: DeliveryConversation, now: number, candidate?: SpokenCandidate): void {
+/** Ordinary synchronous sends reconcile the other ledgers, leaving spoken walks to prepared reads. */
+function bindAll(conversation: DeliveryConversation, now: number, candidate: SpokenCandidate = () => false): void {
   if (!conversation.transcript || conversation.preparedHandoff) return;
   for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, { candidate });
 }
@@ -430,7 +430,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Per bound row, how many user turns in the whole transcript share its words and timestamp,
    * counted so far. Final once the walk passes a later timestamp; resumed from `from` until then.
    */
-  private readonly twins = new Map<string, { from: number; count: number; final: boolean } | "skipped">();
+  private readonly twins = new Map<string, { from: number; count: number; final: boolean; checkSuffix: boolean } | "ineligible">();
 
   constructor(
     private readonly store: DeliveryStore<Row>,
@@ -837,27 +837,43 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * millisecond would otherwise see one candidate and credit the repeat to the delivery.
    */
   private uniqueAtTimestamp(row: Row, transcript: SessionMessages, singlePage = false): boolean | undefined {
-    const state = this.twins.get(row.id) ?? { from: 0, count: 0, final: false };
-    if (state === "skipped") return false;
+    const state = this.twins.get(row.id) ?? { from: 0, count: 0, final: false, checkSuffix: false };
+    if (state === "ineligible") return false;
     this.twins.set(row.id, state);
+    const handoff = this.store.textBoundary ? row.transcriptOffset ?? 0 : 0;
     try {
       while (!state.final) {
         const page = transcript.read.after(transcript.path, state.from, BIND_PAGE_TURNS, !!this.store.textBoundary);
         if (this.store.textBoundary && page.skippedRecord) {
-          this.twins.set(row.id, "skipped");
+          this.twins.set(row.id, "ineligible");
           return false;
         }
         for (const m of page.messages) {
-          // Turns are written in time order, so nothing later can share this timestamp.
-          if (m.ts > row.messageTs!) {
+          // Terminal records can be flushed out of timestamp order.
+          if (!this.store.textBoundary && m.ts > row.messageTs!) {
             state.final = true;
             break;
           }
           if (m.role === "user" && m.ts === row.messageTs && m.text && injectionFingerprint(m.text) === row.fingerprint) {
             state.count += 1;
+            if (this.store.textBoundary && (state.count > 1 || page.end <= handoff)) {
+              this.twins.set(row.id, "ineligible");
+              return false;
+            }
+            if (page.start < handoff) state.checkSuffix = true;
           }
         }
         if (state.final || page.atEnd || page.end <= state.from) {
+          if (state.checkSuffix) {
+            // The only match was on a page spanning the handoff. Its timestamp alone
+            // cannot say which side it came from. Read from the exact byte boundary.
+            state.from = handoff;
+            state.count = 0;
+            state.checkSuffix = false;
+            if (singlePage) return undefined;
+            continue;
+          }
+          if (this.store.textBoundary) state.final = true; // A new revision clears this scan.
           if (!state.final) state.from = Math.max(state.from, page.end);
           break;
         }
@@ -904,7 +920,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // Projection only needs spoken receipts that could own a turn on this page. A
     // candidate still searches forward from handoff, so a later visible copy cannot
     // steal an earlier native turn off screen. Reservations and pruning reconcile all rows.
-    bindAll(conversation, now, conversation.preparedSpokenFallbacks ? () => false : visibleSpokenCandidate(conversation.key, messages));
+    bindAll(conversation, now, this.store.textBoundary && !conversation.preparedSpokenFallbacks
+      ? visibleSpokenCandidate(conversation.key, messages) : undefined);
     const fingerprints = new Set(rows.map((row) => row.fingerprint));
     // Deliveries that cannot be bound - contested, or sent without a known boundary. A turn with
     // their words written inside one's window could be that delivery, so no sender may be named

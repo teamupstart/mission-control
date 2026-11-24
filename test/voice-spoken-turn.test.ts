@@ -363,6 +363,43 @@ test("terminal proof preparation leaves the daemon responsive and rechecks the f
   }
 });
 
+test("typed, delegated and review sends leave unprepared spoken transcript work to the worker-backed projection", async t => {
+  const { reserveSpokenTurn, spokenLedger, noteOtherSend, withdrawOtherSend, withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
+  const { reserveDelegatedTurn } = await import("../src/server/delegated-turns.ts");
+  const { reserveReviewDelivery } = await import("../src/server/review-deliveries.ts");
+  const { wrapReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-unprepared-send-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const native = claudeTranscript.messages!;
+  const now = Date.now();
+  const words = "inspect the previous delivery";
+  const line = (uuid: string, content: string) => JSON.stringify({ type: "user", uuid,
+    timestamp: new Date(now).toISOString(), message: { role: "user", content } }) + "\n";
+  for (const kind of ["typed", "delegated", "review"]) {
+    const key = "unprepared-send-" + kind;
+    const path = join(dir, key + ".jsonl");
+    writeFileSync(path, line("history", "x".repeat(1024 * 1024)));
+    const claim = claimSpoken(key, words, words);
+    const row = reserveSpokenTurn({ key, transcript: { path, read: native } }, words, words, false, claim, now);
+    assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+    appendFileSync(path, line("actual", words));
+    const messages = native.after(path, row.transcriptOffset!).messages;
+    const boundary = t.mock.fn(native.boundary!);
+    const after = t.mock.fn(native.after);
+    const convo = { key, transcript: { path, read: { ...native, boundary, after } } };
+    if (kind === "typed") withdrawOtherSend(noteOtherSend(convo, words, now));
+    else if (kind === "delegated") reserveDelegatedTurn(convo, "different delegated instruction", { id: "controller", name: "Controller" }, now);
+    else assert.ok(reserveReviewDelivery(convo, wrapReviewEnvelope("answer", ["b99fa7da-f9dd-4bab-9e44-691bac441a4c"], "a different answer"), undefined, now));
+    assert.equal(after.mock.callCount(), 0, kind + " send walked the transcript");
+    assert.equal(boundary.mock.callCount(), 0, kind + " send hashed the prefix");
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
+    const bound = await withSpokenReadProofs(convo, messages, prepared => spokenLedger.bound(prepared, messages));
+    assert.equal(bound.rows.get("actual")?.id, row.id);
+    assert.equal(boundary.mock.callCount(), 0, "prepared projection used the worker proof");
+  }
+});
+
 test("a new spoken handoff reconciles an older receipt across a long suffix outside the guard and rechecks senders, file and claim", async t => {
   const { prepareSpokenTranscript, reserveSpokenHandoff, reserveSpokenTurn, noteOtherSend, withdrawOtherSend,
     SpokenTranscriptChanged } = await import("../src/server/delivery-ledgers.ts");
@@ -1231,6 +1268,39 @@ test("a rewritten transcript suffix is searched again from the confirmed spoken 
   const reopened = read.after(path, 0).messages;
   assert.deepEqual([...spokenLedger.bound(conversation, reopened).rows.keys()], ["record"]);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "record");
+  // Removing the delivered record leaves only a typed twin from before the handoff.
+  writeFileSync(path, prefix);
+  const typed = read.after(path, 0).messages;
+  const { withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
+  assert.equal((await withSpokenReadProofs(conversation, typed, prepared => spokenLedger.bound(prepared, typed))).rows.size, 0);
+  assert.equal(spokenLedger.bound(conversation, typed).rows.size, 0);
+});
+
+test("a unique post-handoff timestamp can still identify a regenerated terminal ID", async t => {
+  const { reserveSpokenTurn, spokenLedger, withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-fallback-position-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "transcript.jsonl");
+  const key = "terminal-regenerated-id";
+  const ts = Date.now();
+  const words = "inspect this build";
+  const line = (uuid: string, content: string, when: number) => JSON.stringify({ type: "user", uuid,
+    timestamp: new Date(when).toISOString(), message: { role: "user", content } }) + "\n";
+  writeFileSync(path, line("future-clock", "before the handoff", ts + 1));
+  const transcript = { path, read: claudeTranscript.messages! };
+  const convo = { key, transcript };
+  const claim = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(convo, words, words, false, claim, ts);
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, ts, row.id));
+  appendFileSync(path, line("native-id", words, ts));
+  const native = transcript.read.after(path, row.transcriptOffset!).messages;
+  const project = (page: typeof native) => withSpokenReadProofs(convo, page, prepared => spokenLedger.bound(prepared, page));
+  assert.equal((await project(native)).rows.get("native-id")?.id, row.id);
+  const regenerated = [{ ...native[0]!, id: "regenerated" }];
+  assert.equal((await project(regenerated)).rows.get("regenerated")?.id, row.id);
+  appendFileSync(path, line("late-twin", words, ts));
+  assert.equal((await project(regenerated)).rows.size, 0);
 });
 
 test("confirmed text-only payloads in unavailable transcripts expire at the orphan cutoff without erasing SDK receipts", async () => {

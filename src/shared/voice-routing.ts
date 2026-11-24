@@ -60,16 +60,13 @@ function splitHead(text: string): string {
   // A comma may separate independent commands, or introduce one joining phrase.
   // Everything before that boundary belongs to the first message, including punctuation.
   const raw = text.trim().replace(/,$/u, "").trimEnd();
-  const punctuated = raw.replace(
-    /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and\s+then|and|then|also|plus)$/iu, "",
-  );
-  if (punctuated !== raw) return punctuated.trimEnd();
-  const conjunction = /\s+(?:and\s+then|and|then)$/iu.exec(raw);
+  const conjunction = /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and\s+then|and|then|also|plus)$/iu.exec(raw)
+    ?? /\s+(?:and\s+then|and|then)$/iu.exec(raw);
   if (!conjunction) return raw;
-  const preceding = raw.slice(0, conjunction.index);
+  const preceding = raw.slice(0, conjunction.index).trimEnd();
   // A request to spell or quote the joining word keeps it in the first message.
   const namesLiteral = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu;
-  return namesLiteral.test(preceding) ? raw : preceding;
+  return namesLiteral.test(preceding.replace(/[\p{P}\s]+$/u, "")) ? raw : preceding;
 }
 
 export type VoiceAddressedCommand = "stop";

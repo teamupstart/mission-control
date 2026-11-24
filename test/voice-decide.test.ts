@@ -1066,6 +1066,8 @@ test("a confirmed split removes one conjunction before the address and preserves
     ["check the build and", "check the build"], ["check the build and then", "check the build"],
     ["check the build then", "check the build"], ["spell then", "spell then"],
     ["spell and", "spell and"], ["explain the word and", "explain the word and"],
+    ["spell the word: and", "spell the word: and"], ["say, then", "say, then"],
+    ["define the term: plus", "define the term: plus"],
   ]) {
     for (const separator of [" ", ", ", ",", " , "]) {
       const id = String(delivered.length);

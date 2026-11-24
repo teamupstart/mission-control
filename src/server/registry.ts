@@ -1,7 +1,8 @@
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
-import { canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
+import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
+import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
 import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
@@ -683,7 +684,8 @@ const LINE_IDLE_INTERVAL_MS = 30 * 1000;
  */
 // feature_flags is not a Line input: flags gate surfaces, and supply no stage data.
 // shaping_config is not one either: shapers are authoring state, read at dispatch, never folded.
-// voice_state is not one: whether voice is listening is no stage figure.
+// voice_state is not one: whether voice is listening is no stage figure. Nor is voice_roster:
+// who answers to a name is folded from the task and session frames above, never on its own.
 const LINE_INPUT_EVENTS = new Set<ServerEvent["type"]>([
   "session_upsert",
   "session_remove",
@@ -1318,6 +1320,11 @@ export class Registry extends EventEmitter {
    * with the `voice` flag off sends nothing, and switching it off sends exactly one frame.
    */
   private lastVoice: string = canonicalVoiceState(voiceStateOff());
+  /**
+   * The last `voice_roster` frame, canonical, or null before the first. Reset when voice is
+   * switched off, so the roster is sent again with the first frame after it is switched back on.
+   */
+  private lastVoiceRoster: string | null = null;
   /** Last settings tuple emitted, so an unchanged config write wakes no browser either. */
   private lastSettingsStatus: SettingsStatus | null = null;
   /**
@@ -1653,6 +1660,8 @@ export class Registry extends EventEmitter {
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;
+    // A sent frame carries the roster as it stands, so that is what every window holds now.
+    this.lastVoiceRoster = state.mode === "off" ? null : canonicalVoiceRoster(state.roster);
     this.emitEvent({ type: "voice_state", state });
   }
 
@@ -1667,6 +1676,19 @@ export class Registry extends EventEmitter {
     const state = voiceStateStore.state();
     this.emitVoiceState(state);
     return state;
+  }
+
+  /**
+   * Publish who can be addressed, suppressing a frame that restates the last one. Only while the
+   * `voice` flag is on: with it off no window holds a voice state to put a roster in, and the
+   * frame that switches voice on carries the roster. `wireVoiceNameEvents` is the caller.
+   */
+  emitVoiceRoster(roster: readonly SpokenName[]): void {
+    if (!featureEnabled(VOICE_FLAG)) return;
+    const key = canonicalVoiceRoster(roster);
+    if (key === this.lastVoiceRoster) return;
+    this.lastVoiceRoster = key;
+    this.emitEvent({ type: "voice_roster", roster: [...roster] });
   }
 
   /**
@@ -8356,10 +8378,13 @@ export class Registry extends EventEmitter {
   removeTask(id: string): void {
     const t = this.tasks.get(id);
     const commission = this.pipelineCommissionForTask(id);
-    dbDeleteTask(id);
+    const stored = dbDeleteTask(id);
     if (commission) this.removePipelineCommission(commission.id);
     this.dropTaskDependencyProvenance(id, Date.now());
-    if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
+    // Published for a stored task too, not only a cached one: a task already evicted from
+    // memory can still be held by a subscriber, such as the voice roster keeping its name.
+    const cached = this.tasks.delete(id);
+    if (cached || stored) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);
     if (t?.sessionId) this.resyncSessionTask(t.sessionId);
     this.cleanupDependencyProvenance();
@@ -8655,6 +8680,8 @@ export class Registry extends EventEmitter {
           ...(workUnitId ? { workUnitId } : {}),
           // The binding rides with the record, so the card's readers check one against the other.
           ...(shaping ? { shaping, ...(t.shapingDelivery ? { shapingDelivery: t.shapingDelivery } : {}) } : {}),
+          // Present only while the task has one, so every other card's payload is unchanged.
+          ...(t.callSign ? { callSign: t.callSign } : {}),
         }
       : null;
   }

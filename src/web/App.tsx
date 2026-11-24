@@ -10,10 +10,13 @@ import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
+import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
+import { withCurrentReferenceNames } from "@shared/display-name.ts";
 
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -437,6 +440,14 @@ export function App(): React.JSX.Element {
   // resident runs; the daemon's Away watcher passes them on the same flag.
   const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);
   const inboxNames = resolveFeatureFlag(INBOX_FLAG, featureFlags);
+  // The runs as the naming rule reads them: each with its profile's current reference name, the
+  // name the operator says to it (`withCurrentReferenceNames`).
+  const residentNames = useMemo(
+    () => withCurrentReferenceNames(residentRuns, residentProfiles),
+    [residentRuns, residentProfiles],
+  );
+  // Call signs and reference names are voice's names: they name an agent only while it is on.
+  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
   // Muted report authors: left out of the fold and its to read figure, and never notified.
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
   const alertScope = useMemo(
@@ -444,13 +455,15 @@ export function App(): React.JSX.Element {
       sessions, tasks, reviews, stalls: reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
       // Reports too: a report's announce stamp raises its notification, whether or not reports
       // are listed in the inbox.
-      ...(inboxNames ? { names: residentRuns, reports } : {}),
+      ...(inboxNames ? { names: residentNames, spokenNames, reports } : {}),
       // When this scope was built, so a report posted and stamped inside one batch of events is
       // still news (see `AlertScope.takenAt`).
       takenAt: Date.now(),
     }),
-    [sessions, tasks, reviews, reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns, reports],
+    [sessions, tasks, reviews, reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentNames, spokenNames, reports],
   );
+  // Who can be addressed by voice, for the fields that check a new name against it.
+  const voiceRoster = voice?.roster ?? NO_SPOKEN_NAMES;
   // What a click on a report notification does. Assigned further down, once the inbox's fold
   // exists; the notifier reads it when the click lands, so the toast never holds a stale one.
   const openReportFromNotification = useRef<(reportId: string) => void>(() => undefined);
@@ -4976,7 +4989,8 @@ export function App(): React.JSX.Element {
       <FleetPauseContext.Provider value={fleetPause}>
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
-      <ResidentNamesContext.Provider value={residentRuns}>
+      <ResidentNamesContext.Provider value={residentNames}>
+      <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
       <ResidentRestartPromptContext.Provider value={promptRestartCompletion}>
@@ -5287,6 +5301,8 @@ export function App(): React.JSX.Element {
               shapingSettings={shapingSettings}
               reportMutes={reportMutes}
               voice={voice}
+              sessions={sessions}
+              residentProfiles={residentProfiles}
               category={route.page === "settings" ? route.category : DEFAULT_SETTINGS_CATEGORY}
               onNavigate={(cat) => navigate({ page: "settings", category: cat })}
               // The return leg of the Workflows page's own "Workflow settings →" button:
@@ -5875,6 +5891,7 @@ export function App(): React.JSX.Element {
       </ResidentRestartPromptContext.Provider>
       </LaunchFailureProvider>
       </InboxReplyBoxesContext.Provider>
+      </VoiceRosterContext.Provider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>
       </HeldSessionsContext.Provider>

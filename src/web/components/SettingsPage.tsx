@@ -7,6 +7,10 @@ import type { ReportMute } from "@shared/reports.ts";
 import { VoiceSettingsPanel } from "./VoiceSettingsPanel.tsx";
 import { useVoiceConfig } from "../useVoiceConfig.ts";
 import type { VoiceState } from "@shared/voice.ts";
+import type { ResidentProfile } from "@shared/residents.ts";
+
+const NO_SESSIONS: readonly Session[] = [];
+const NO_RESIDENT_PROFILES: readonly ResidentProfile[] = [];
 import type { ShapingSettings } from "../useShapingSettings.ts";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { PauseControlsPanel } from "./PauseControlsPanel.tsx";
@@ -56,7 +60,7 @@ import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
 import type { LlmState } from "../useLlm.ts";
-import type { SettingsStatus } from "@shared/types.ts";
+import type { Session, SettingsStatus } from "@shared/types.ts";
 import type { StorageHealth } from "@shared/storage-health.ts";
 import type { WorkflowSummary } from "@shared/workflow.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
@@ -235,6 +239,8 @@ export function SettingsPage({
   shapingSettings,
   reportMutes = [],
   voice = null,
+  sessions = NO_SESSIONS,
+  residentProfiles = NO_RESIDENT_PROFILES,
   jump = null,
 }: {
   /** Settings > Reports' muted agents, App's because the event stream holds them (`report_mutes`). */
@@ -242,8 +248,12 @@ export function SettingsPage({
   featureFlagsSettings?: FeatureFlagsSettings;
   /** Settings > Task shaping's state, App's because its confirmed config is the event stream's. */
   shapingSettings?: ShapingSettings;
-  /** `MissionState.voice`, which Settings > Voice's mode line draws. */
+  /** `MissionState.voice`, which Settings > Voice's mode line and roster draw. */
   voice?: VoiceState | null;
+  /** The live sessions, which Settings > Voice counts when no spoken name reaches them. */
+  sessions?: readonly Session[];
+  /** The live resident profiles, which name Settings > Voice's roster rows. */
+  residentProfiles?: readonly ResidentProfile[];
   /** Which category is showing, from the route. The page holds no copy of it. */
   category: SettingsCategoryId;
   /** Move to another category - a hash navigation, so back/forward walk the categories. */
@@ -673,7 +683,15 @@ export function SettingsPage({
       case "standing-instructions":
         return <StandingInstructionsPanel state={standingInstructions} />;
       case "voice":
-        return <VoiceSettingsPanel state={voiceConfig} voice={voice} onNavigate={navigateWithAnchor} />;
+        return (
+          <VoiceSettingsPanel
+            state={voiceConfig}
+            voice={voice}
+            sessions={sessions}
+            residentProfiles={residentProfiles}
+            onNavigate={navigateWithAnchor}
+          />
+        );
       case "conductor":
         return <ConductorPanel state={conductor} onOpenPipelines={onOpenPipelines} />;
       case "models":

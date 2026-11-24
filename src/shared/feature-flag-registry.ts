@@ -26,6 +26,8 @@ export const AGENT_ENVIRONMENT_FLAG = "agent-environment" as const;
 
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
+export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: AGENT_ENVIRONMENT_FLAG,
@@ -170,9 +172,10 @@ export const FEATURE_FLAGS = [
     description:
       "Talk to agents by name, with speech recognized on this machine. Needs Ask without stopping, " +
       "Reports and inbox upgrades and File plan decisions: the Voice family in Settings > Setup turns " +
-      "them on. Settings > Voice shows whether voice is listening and why not.",
+      "them on. Settings > Voice shows whether voice is listening and why not, and who can be addressed: " +
+      "residents by name or reference name, and sessions given a call sign under Dispatch > Advanced.",
     stage: "preview",
-    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "mute"],
+    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "reference name", "mute"],
   },
   {
     id: MACOS_TERMINAL_FLAG_ID,
@@ -180,6 +183,13 @@ export const FEATURE_FLAGS = [
     description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
     stage: "preview",
     keywords: ["terminal", "apple", "macos", "dispatch"],
+  },
+  {
+    id: BACKGROUND_REASONING_EFFORT_FLAG_ID,
+    label: "Background reasoning effort",
+    description: "Choose the reasoning effort for each background model call in Settings > Models.",
+    stage: "preview",
+    keywords: ["background jobs", "models", "thinking", "reasoning", "foreman", "inspector"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

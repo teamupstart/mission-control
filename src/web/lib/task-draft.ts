@@ -76,6 +76,12 @@ export type DispatchDraft = {
    */
   personaId: string;
   /**
+   * The call sign as typed, or "" for none: a short name the operator says to address the
+   * session by voice. Raw text, so a half-typed name with its trailing space survives a
+   * close/reopen; `draftCallSign` is what is sent.
+   */
+  callSign: string;
+  /**
    * After-work Workflow choice. Undefined follows the task kind's dispatch default on a fresh
    * task, null explicitly opts out, and an id selects that published Workflow.
    */
@@ -115,6 +121,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   effort: "",
   advisorModel: "",
   personaId: "",
+  callSign: "",
   workflowId: undefined,
   grillFirst: undefined,
   enabled: true,
@@ -153,6 +160,11 @@ export function draftPersonaId(draft: Pick<DispatchDraft, "kind" | "personaId">)
   return draft.personaId && !taskKindPersonaRefusal(draft.kind) ? draft.personaId : null;
 }
 
+/** The call sign this draft would save, or null for none: trimmed, whitespace collapsed. */
+export function draftCallSign(draft: Pick<DispatchDraft, "callSign">): string | null {
+  return draft.callSign.trim().replace(/\s+/g, " ") || null;
+}
+
 export function draftFromTask(t: Task): DispatchDraft {
   return {
     repoRoot: t.repoRoot,
@@ -175,6 +187,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     effort: t.effort ?? "",
     advisorModel: t.advisorModel ?? "",
     personaId: t.personaId ?? "",
+    callSign: t.callSign ?? "",
     workflowId: t.workflowId,
     planStorage: t.kind === "plan" ? t.planPolicy?.storage ?? "repository" : undefined,
     // A pin reads back as a choice; a kind without Grill me first has none, so switching the
@@ -216,6 +229,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.effort === b.effort &&
     a.advisorModel === b.advisorModel &&
     a.personaId === b.personaId &&
+    a.callSign === b.callSign &&
     a.workflowId === b.workflowId &&
     a.planStorage === b.planStorage &&
     a.grillFirst === b.grillFirst &&
@@ -267,8 +281,12 @@ export function draftStackStartEdge(
  *
  * `intent` is passed in rather than read off the draft: what gets stored is the typed
  * text with any attachment paths appended, which only the modal can compose.
+ *
+ * `spokenNames` is the `voice` flag. The call sign is voice's field and is drawn only while voice
+ * is on, so with it off the draft's call sign is not the operator's answer: the stored one is
+ * kept, even when an edit was typed before voice was turned off. Off unless the caller says.
  */
-export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string): UpdateTask | null {
+export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string, spokenNames = false): UpdateTask | null {
   const patch: UpdateTask = {};
   const repoRoot = draft.repoRoot.trim();
   if (repoRoot !== task.repoRoot) patch.repoRoot = repoRoot;
@@ -312,6 +330,9 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   // sends: the field is disabled there, so the draft's value is not the operator's answer.
   const personaId = draftPersonaId(draft);
   if (personaId !== task.personaId) patch.personaId = personaId;
+  // Null takes a call sign off. Compared trimmed, so a stray space is not an edit.
+  const callSign = draftCallSign(draft);
+  if (spokenNames && callSign !== (task.callSign ?? null)) patch.callSign = callSign;
   const becomesPlan = draft.kind === "plan" && task.kind !== "plan";
   if (draft.workflowId !== undefined && (becomesPlan || draft.workflowId !== task.workflowId)) {
     patch.workflowId = draft.workflowId;

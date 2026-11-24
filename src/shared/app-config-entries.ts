@@ -217,6 +217,7 @@ const foremanFields = {
   maxSessions: "setting",
   backlogModel: "setting",
   backlogRunner: "setting",
+  efforts: "setting",
 } satisfies Record<keyof ForemanConfig, AppConfigValueClass>;
 
 const workflowFields = {
@@ -238,6 +239,7 @@ const llmFields = {
   codexTransport: "setting",
   models: "setting",
   runners: "setting",
+  efforts: "setting",
 } satisfies Record<keyof LlmConfig, AppConfigValueClass>;
 
 const awayFields = {
@@ -260,6 +262,7 @@ const inspectorFields = {
   mode: "setting",
   repoAllowlist: "setting",
   model: "setting",
+  effort: "setting",
   maxCommentsPerRound: "setting",
 } satisfies Record<keyof InspectorConfig, AppConfigValueClass>;
 

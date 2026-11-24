@@ -24,7 +24,9 @@ outcome because daemon cancellation may still finish; use `get_task` before retr
 The MCP `delete_task` tool posts a validated task id to the token-guarded `/mcp/tasks/delete`
 route and delegates to `TaskManager.remove`, the same owner used by dashboard deletion. Active
 tasks are refused, and archive preservation and resource cleanup precede durable removal and
-the existing `task_remove` event.
+the existing `task_remove` event. The event is published for a stored task the Registry has
+already evicted from memory too, so a subscriber still holding it, such as the voice roster,
+lets it go at once.
 
 The read-only MCP `list_tasks` and `get_task` tools use
 `POST /mcp/tasks/list` and `POST /mcp/tasks/get` routes. POST carries validated query bodies;

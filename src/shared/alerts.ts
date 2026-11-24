@@ -16,7 +16,7 @@
 import { agentKeepsWorking, confirmedWorking, openQuestionCount } from "./async-input.ts";
 import { agentDisplayName, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
 import type { ReviewItem, Session, Task } from "./types.ts";
-import { reportToRead, type ReportItem } from "./reports.ts";
+import { reportAuthorName, reportToRead, type ReportItem } from "./reports.ts";
 import { goalLine } from "./goal.ts";
 import {
   activePaneDialog,
@@ -87,6 +87,8 @@ const SWITCH_FOR: Record<AlertNotifyClass, keyof NotifySwitches> = {
 };
 
 export interface Alert {
+  /** Session transition titles retained by Away until the digest is displayed. */
+  sessionTitles?: { spoken: string; fallback: string; withoutInbox: string };
   /** Stable per (kind, subject) so a repeat replaces its toast via the Notification tag. */
   id: string;
   kind: AlertKind;
@@ -154,6 +156,12 @@ export interface AlertScope {
    * line name one agent alike.
    */
   names?: readonly ResidentNameSource[];
+  /**
+   * The `voice` flag: whether a call sign or reference name may name an agent in `names`'s rule.
+   * Absent reads as off, so a title names an agent as it did before voice. Both callers pass it
+   * from the same flag, for the reason `names` gives.
+   */
+  spokenNames?: boolean;
   /**
    * Agent reports waiting to be read, present only while the `inbox` flag is on. Absent means
    * not read, exactly as for `stalls`: a scope without it raises no report alert, and the first
@@ -269,8 +277,8 @@ export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | un
  * The alert a report's announce stamp raises, worded by the stamp and named by the name the
  * report stored when it was posted, so it reads the same after its session is gone.
  */
-export function reportAlert(report: ReportItem): Alert {
-  const name = report.author.name;
+export function reportAlert(report: ReportItem, spokenNames?: boolean): Alert {
+  const name = spokenNames === undefined ? report.author.name : reportAuthorName(report.author, spokenNames);
   return {
     id: `report:${report.id}`,
     kind: "report",
@@ -287,9 +295,17 @@ export function reportAlert(report: ReportItem): Alert {
   };
 }
 
-function sessionLabel(s: Session, names: readonly ResidentNameSource[] | undefined): string {
-  if (names) return agentDisplayName(sessionDisplayNameInput(s, names)).name;
-  return s.task?.title || s.name || "a session";
+function sessionAlertTitle(
+  session: Session | undefined, names: readonly ResidentNameSource[] | undefined, voice: boolean | undefined, suffix: string,
+): Pick<Alert, "title" | "sessionTitles"> {
+  const withoutInbox = (session?.task?.title || session?.name || "a session") + suffix;
+  if (!session || !names) return { title: withoutInbox };
+  const fallback = agentDisplayName(sessionDisplayNameInput(session, names)).name + suffix;
+  const spoken = agentDisplayName(sessionDisplayNameInput(session, names, true)).name + suffix;
+  return {
+    title: voice ? spoken : fallback,
+    ...(spoken !== fallback || withoutInbox !== fallback ? { sessionTitles: { spoken, fallback, withoutInbox } } : {}),
+  };
 }
 
 /**
@@ -323,12 +339,17 @@ function stallKeys(scope: AlertScope): Set<string> {
  * threshold tripped. Deriving both from here means the refreshed line and the alert
  * that announced it can never diverge.
  */
-export function stuckAlert(st: Stall, sessions: Session[], names?: readonly ResidentNameSource[]): Alert {
+export function stuckAlert(
+  st: Stall,
+  sessions: Session[],
+  names?: readonly ResidentNameSource[],
+  spokenNames = false,
+): Alert {
   const s = sessions.find((x) => x.id === st.sessionId);
   return {
     id: `stuck:${st.sessionId}:${st.kind}`,
     kind: "stuck",
-    title: `${s ? sessionLabel(s, names) : "a session"} looks stuck`,
+    ...sessionAlertTitle(s, names, spokenNames, " looks stuck"),
     body: st.reason,
     sessionId: st.sessionId,
     // Spread, so only the one stall kind that HAS a run carries the key. The toast turns
@@ -378,7 +399,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
   for (const s of next.sessions) {
     const before = prevSessions.get(s.id);
-    const label = sessionLabel(s, next.names);
+    const titled = (suffix: string) => sessionAlertTitle(s, next.names, next.spokenNames, suffix);
 
     // needs-input: the agent is blocked on you (awaiting input or a review decision).
     const blocked = (st: Session["state"]) => st === "awaiting_input" || st === "awaiting_review";
@@ -392,7 +413,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
-        title: `${label} needs you`,
+        ...titled(" needs you"),
         body: s.state === "awaiting_review" ? "needs review" : "needs input",
         sessionId: s.id,
         ...(forBlockingQuestion ? { notify: "blocking-question" as const } : {}),
@@ -421,7 +442,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
-        title: `${label} needs you`,
+        ...titled(" needs you"),
         body: paneDialogReason(dialog),
         sessionId: s.id,
         severity: "attention",
@@ -436,7 +457,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `review:${s.id}`,
         kind: "review",
-        title: `${label} ${review?.kind === "input" ? "needs your answer" : "needs review"}`,
+        ...titled(` ${review?.kind === "input" ? "needs your answer" : "needs review"}`),
         body: goalLine(description ?? "", 240)
           || (s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review"),
         sessionId: s.id,
@@ -452,7 +473,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `review:${s.id}`,
         kind: "review",
-        title: `${label} ${confirmedWorking(s) ? "has a question, still working" : "needs your answer"}`,
+        ...titled(` ${confirmedWorking(s) ? "has a question, still working" : "needs your answer"}`),
         body: goalLine(question?.body ?? "", 240) || "a question is open",
         sessionId: s.id,
         notify: "filed-question",
@@ -467,7 +488,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `foreman:${s.id}`,
         kind: "foreman",
-        title: `${label} - Foreman needs your call`,
+        ...titled(" - Foreman needs your call"),
         body: s.note.lastAction ?? "a decision was escalated to you",
         sessionId: s.id,
         severity: "attention",
@@ -483,7 +504,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `queue:${s.id}`,
         kind: "foreman",
-        title: `${label} - Foreman is stuck on a queued item`,
+        ...titled(" - Foreman is stuck on a queued item"),
         body: "an item couldn't be finished and needs you",
         sessionId: s.id,
         severity: "attention",
@@ -502,7 +523,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `wrapup:${s.id}`,
         kind: "foreman",
-        title: `${label} - ${wrapupAskCopy((s.queue?.totalCount ?? 0) > 0).alert}`,
+        ...titled(` - ${wrapupAskCopy((s.queue?.totalCount ?? 0) > 0).alert}`),
         body: "ship it? Foreman is waiting on you",
         sessionId: s.id,
         severity: "attention",
@@ -520,7 +541,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       alerts.push({
         id: `idle:${s.id}`,
         kind: "idle",
-        title: `${label} went idle`,
+        ...titled(" went idle"),
         // `activity` is the last hook one-liner, which on a Stop is literally
         // "idle" - so using it unconditionally yields "X went idle - idle", which
         // adds nothing and reads as noise in the digest (and, fed to the digest
@@ -539,7 +560,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
-    alerts.push(stuckAlert(st, next.sessions, next.names));
+    alerts.push(stuckAlert(st, next.sessions, next.names, next.spokenNames));
   }
 
   // report: a report's announce stamp landed. Edge-triggered on `announcedAs` leaving null, so a
@@ -555,7 +576,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       if (report.announcedAs === null || !reportToRead(report) || report.countedInDigestAt !== null) continue;
       const before = reportsBefore.get(report.id);
       if (before ? before.announcedAs !== null : !unheldReportIsNews(report, prev)) continue;
-      alerts.push(reportAlert(report));
+      alerts.push(reportAlert(report, next.spokenNames));
     }
   }
 

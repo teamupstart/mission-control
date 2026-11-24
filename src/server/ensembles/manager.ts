@@ -25,7 +25,6 @@ import {
   type EnsembleWorkflowHandoff,
   type TaskEnsembleLink,
 } from "@shared/ensemble.ts";
-import type { LlmRunnerId } from "@shared/llm.ts";
 import {
   EnsembleCreateInputSchema,
   type EnsembleSubmissionClaims,
@@ -148,13 +147,7 @@ export type EnsembleSubmitResult =
  * longer matches is a refusal). Untruncated: the manager caps the guidance to the plan's
  * byte budget when it snapshots it.
  */
-export interface ResolvedReviewPersona {
-  id: string;
-  revision: number;
-  name: string;
-  guidanceMarkdown: string;
-  runner: LlmRunnerId | null;
-  model: string | null;
+export interface ResolvedReviewPersona extends EnsembleReviewPersona {
   archived: boolean;
 }
 
@@ -1457,6 +1450,7 @@ export class EnsembleManager {
           guidanceMarkdown: truncateUtf8(resolved.guidanceMarkdown, guidanceBytesPerReference),
           runner: resolved.runner,
           model: resolved.model,
+          ...(resolved.effort && { effort: resolved.effort }),
         });
       }
       // A stored Persona revision that no longer matches is a refusal too: the operator built the

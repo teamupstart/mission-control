@@ -19,7 +19,7 @@ Open **Residents** from the ⌘K palette, with **Shift+A**, from **Manage reside
 
 | Section | What it decides | Default |
 |---|---|---|
-| Identity | The name (unique among live profiles) and an optional description | required |
+| Identity | The name (unique among live profiles), an optional description, and, with the **Voice addressing** preview on, an optional [reference name](voice.md#reference-names) | required |
 | Persona | The Library Persona whose guidance becomes the resident's standing role | none |
 | Board presence | The marker color, its label, and **Pin to top of column** | first color, label from the name, pinned |
 | Instructions | Markdown added after the Persona's guidance; without a Persona, the whole role | empty |
@@ -51,6 +51,14 @@ the list and from Dispatch and frees its name; nothing is deleted.
 **Edits apply at the next launch.** A launch pins the profile's current revision, and a running
 resident reads its settings only from that pinned revision. Editing the profile, or the Persona
 it names, never changes a resident that is already running.
+
+The one exception is the **reference name**: what you say to address the resident by
+[voice](voice.md#reference-names), in place of its profile name. It is a spoken name rather than a
+launch setting, so it applies as soon as it is saved, also to a running resident: Settings > Voice
+lists it at once, and with the inbox naming rule on, cards name the resident by it. With the
+preview off, a saved reference name is kept but names nothing. Its field
+checks the name as you type, with the same warnings and meter as a session's call sign, and never
+blocks a save. Cleared, it is saved blank, which means none.
 
 Pi is not offered: the first release supports Claude Code and Codex, and a profile can only be
 saved for a harness with an Agent SDK driver.

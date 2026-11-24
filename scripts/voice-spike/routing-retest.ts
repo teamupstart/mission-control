@@ -51,6 +51,8 @@ interface Row {
   runner: string;
   /** Digest of the input corpus file. Historical rows have no recorded identity. */
   corpusSha256?: string;
+  /** Digest of the system prompt and every corpus case's rendered user prompt and response schema. */
+  promptSchemaSha256?: string;
   /** Occurrence identified in the split prompt. Historical runs omitted it. */
   nameOffset?: number;
   /** Absent on results written before transport was recorded. */
@@ -94,9 +96,12 @@ function readRows(path: string): Row[] {
   return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Row);
 }
 
-function checkRun(rows: Pick<Row, "id" | "runner" | "transport" | "corpusSha256">[]): void {
+function checkRun(rows: Pick<Row, "id" | "runner" | "transport" | "corpusSha256" | "promptSchemaSha256">[]): void {
   if (new Set(rows.map(row => row.corpusSha256)).size > 1) {
     throw new Error("Mixed corpora: choose a separate label for each corpus.");
+  }
+  if (new Set(rows.map(row => row.promptSchemaSha256)).size > 1) {
+    throw new Error("Mixed prompt and schema revisions: choose a fresh run label.");
   }
   if (new Set(rows.map((r) => r.id)).size !== rows.length) {
     throw new Error("Repeated case IDs: choose a fresh run label or summarize a single pass.");
@@ -137,6 +142,7 @@ function summarize(label: string): void {
     runner: [...new Set(rows.map((r) => r.runner))],
     transport: rows[0]?.transport ?? "unrecorded",
     corpusSha256: rows[0]?.corpusSha256 ?? "unrecorded",
+    promptSchemaSha256: rows[0]?.promptSchemaSha256 ?? "unrecorded",
     errors: rows.filter((r) => r.error !== null).length,
     overDeadline: rows.filter((r) => r.ms >= DEADLINE_MS).length,
     p50Ms: quantile(latencies, 0.5),
@@ -164,6 +170,7 @@ async function run(): Promise<void> {
 
 async function runCorpus(): Promise<void> {
   const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
+  const { buildVoiceRoutingPrompt, VOICE_ROUTING_SYSTEM_PROMPT, voiceRoutingSchema } = await import("../../src/server/voice/decide-prompt.ts");
   const { DEFAULT_CLAUDE_TRANSPORT, DEFAULT_CODEX_TRANSPORT } = await import("../../src/shared/llm.ts");
   const runner = flag("--runner") ?? "claude";
   if (runner !== "claude" && runner !== "codex") throw new Error("Use --runner claude or codex.");
@@ -188,11 +195,16 @@ async function runCorpus(): Promise<void> {
   const limit = Number(flag("--limit") ?? corpus.cases.length);
   mkdirSync(OUT, { recursive: true });
   const dest = join(OUT, `retest-${label}.jsonl`);
-  const selectedCases = corpus.cases.slice(start, start + limit);
-  checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selectedCases.map(({ id }) => ({ id, runner, transport, corpusSha256 }))]);
-  const questions = selectedCases.map(row => toQuestion(corpus, row));
-  for (const [index, question] of questions.entries()) {
-    const row = selectedCases[index]!;
+  const cases = corpus.cases.map(row => ({ row, question: toQuestion(corpus, row) }));
+  // Include every case so two slices of the same run have the same revision.
+  const digest = createHash("sha256").update(JSON.stringify(VOICE_ROUTING_SYSTEM_PROMPT));
+  for (const { question } of cases) {
+    digest.update(JSON.stringify([buildVoiceRoutingPrompt([question]), voiceRoutingSchema([question])]));
+  }
+  const runIdentity = { runner, transport, corpusSha256, promptSchemaSha256: digest.digest("hex") };
+  const selected = cases.slice(start, start + limit);
+  checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selected.map(({ row }) => ({ id: row.id, ...runIdentity }))]);
+  for (const { row, question } of selected) {
     const began = performance.now();
     let choice: string | null = null;
     let confidence = 0;
@@ -208,7 +220,7 @@ async function runCorpus(): Promise<void> {
     }
     const member = choice !== null && voiceQuestionChoices(question).includes(choice);
     const result: Row = { id: row.id, category: row.category, expected: row.expected, choice, confidence, member,
-      ms: Math.round(performance.now() - began), error, runner, transport, corpusSha256,
+      ms: Math.round(performance.now() - began), error, ...runIdentity,
       ...(question.kind === "split" && { nameOffset: question.nameOffset }) };
     appendFileSync(dest, `${JSON.stringify(result)}\n`);
     console.log(JSON.stringify(result));

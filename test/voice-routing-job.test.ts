@@ -5,6 +5,7 @@
 // stand in for the providers; nothing here reaches a model.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -110,6 +111,10 @@ test("the retest sends the specified occurrence of a repeated name through the j
   assert.ok(prompt.includes(JSON.stringify(text.slice(nameOffset))));
   const row = JSON.parse(readFileSync(join(home, ".tmp/voice-spike/retest-occurrence.jsonl"), "utf8"));
   assert.equal(row.nameOffset, nameOffset);
+  const args = readFileSync(record("claude-argv"), "utf8").split("\n");
+  const schema = JSON.parse(args[args.indexOf("--json-schema") + 1]!);
+  assert.equal(row.promptSchemaSha256, createHash("sha256").update(JSON.stringify(VOICE_ROUTING_SYSTEM_PROMPT))
+    .update(JSON.stringify([prompt, schema])).digest("hex"));
   corpus.cases.push({ ...corpus.cases[0]!, id: "bad-offset", question: { ...corpus.cases[0]!.question, nameOffset: 1 } });
   writeFileSync(cases, JSON.stringify(corpus));
   const invalid = run("invalid");
@@ -142,6 +147,26 @@ test("a retest label cannot append or summarize results from different corpora",
   delete legacy.corpusSha256;
   writeFileSync(log("pooled"), prior + JSON.stringify(legacy) + "\n");
   assert.match(retest("--summarize", "pooled").stderr, /mixed corpora/i);
+});
+
+test("resuming or summarizing a retest refuses a different prompt and schema revision", () => {
+  const label = "prompt-revision";
+  const run = (start: string) => retest("--yes", "--transport", "print", "--label", label,
+    "--cases", join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json"), "--start", start, "--limit", "1");
+  assert.equal(run("0").status, 0);
+  const file = join(home, ".tmp/voice-spike", `retest-${label}.jsonl`);
+  const original = readFileSync(file, "utf8");
+  const row = JSON.parse(original);
+  const revised = { ...row, promptSchemaSha256: "a".repeat(64) };
+  writeFileSync(file, JSON.stringify(revised) + "\n");
+  const resumed = run("1");
+  assert.equal(resumed.status, 1);
+  assert.match(resumed.stderr, /mixed prompt and schema revisions/i);
+  assert.equal(readFileSync(file, "utf8"), JSON.stringify(revised) + "\n");
+  assert.match(row.promptSchemaSha256, /^[a-f0-9]{64}$/);
+  assert.notEqual(revised.promptSchemaSha256, row.promptSchemaSha256);
+  writeFileSync(file, original + JSON.stringify({ ...revised, id: "later" }) + "\n");
+  assert.match(retest("--summarize", label).stderr, /mixed prompt and schema revisions/i);
 });
 
 test("on Codex: reasoning effort none, the system prompt ahead of the questions, the strict schema and Luna", async () => {

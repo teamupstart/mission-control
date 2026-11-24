@@ -158,8 +158,8 @@ node --import tsx scripts/voice-spike/routing-retest.ts --summarize holdout-clau
 
 `--runner codex` runs Luna instead, `--transport print` measures `claude -p`, and `--start` and
 `--limit` select cases. Results append to `.tmp/voice-spike/retest-<label>.jsonl`.
-Each row records the SHA-256 digest of the corpus file. A label can resume on the same
-file contents. Use a fresh label when the corpus changes or the old rows lack a digest.
+Each row records the SHA-256 digests of the corpus file and the prompts and response schemas
+generated for that corpus. Use a fresh label when either digest changes or the old rows lack it.
 `routing-tuning.json` is the spike's corpus recast as Phase 4's questions and is the tuning set;
 `routing-holdout.json` was written before tuning and is the only pass evidence. The results are
 in `docs/voice-spike-findings.md`, "S7 addendum: Haiku retest".

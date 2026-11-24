@@ -1210,6 +1210,17 @@ test("a confirmed split removes one conjunction before the address and preserves
   }
 });
 
+test("a comma before the connector lets a split end the first instruction with a preposition", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    await say("Steve, find out who this is for, and Alice, review the PR", "for");
+    if (choice === null) assert.ok(await router.pick("for", "task:Alice"));
+    assert.ok(await router.sendNow("for"));
+    assert.deepEqual(delivered, [["Steve", "find out who this is for", "for"], ["Alice", "review the PR", "for#2"]]);
+  }
+});
+
 test("the resolving event and reconnect snapshot agree while the second model call is pending", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let chooseFirst!: (result: VoiceDecisionResult) => void;

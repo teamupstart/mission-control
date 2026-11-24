@@ -8028,7 +8028,7 @@ export class WorkflowStore {
           || receipt.from !== prior.round - 1 || receipt.to !== run.maxRepairRounds
           || selection.submissionId !== latest.id || selection.failedHeadSha !== gate.failedHeadSha
           || selection.newHeadSha !== latest.prHeadSha) return null;
-      const ledger = getInspectorPr(gate.prKey);
+      const ledger = getInspectorPr(gate.prKey, this.db);
       if (ledger?.state !== "open" || ledger.observedState !== "OPEN"
           || ledger.observedHeadSha !== input.currentHeadSha || ledger.observedAt === null
           || ledger.observedAt <= latest.createdAt || ledger.observedAt < (gate.lastObservedAt ?? 0)
@@ -8062,8 +8062,8 @@ export class WorkflowStore {
         runId, expectedState: gate, status: "waiting_for_new_head", phase: "inspector_findings",
         state: {
           ...gate, targetHeadSha: gate.failedHeadSha, waitReason: "findings",
-          lastObservedAt: ledger.observedAt, observedHeadSha: null,
-          grantObservation: { minimumObservedAt: ledger.observedAt, requestedAt: now },
+          lastObservedAt: ledger.observedAt, observedHeadSha: input.currentHeadSha,
+          grantObservation: { minimumObservedAt: ledger.observedAt, requestedAt: now, verifiedHeadSha: input.currentHeadSha },
         },
         now,
       });

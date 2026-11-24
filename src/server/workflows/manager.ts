@@ -3306,7 +3306,7 @@ export class WorkflowManager {
           status: "waiting_for_new_head" as const,
           phase: "inspector_findings" as const,
           gateState: {
-            ...gate, lastObservedAt: null, observedHeadSha: null,
+            ...gate, lastObservedAt: null,
             grantObservation: {
               minimumObservedAt: gate.lastObservedAt === null ? now : gate.lastObservedAt + 1,
               requestedAt: now,
@@ -4496,7 +4496,7 @@ export class WorkflowManager {
       const next: WorkflowInspectorGateState = {
         ...state,
         lastObservedAt: null,
-        observedHeadSha: null,
+        observedHeadSha: state.grantObservation ? state.observedHeadSha : null,
         waitReason,
         ...(state.grantObservation && state.lastObservedAt !== null ? {
           grantObservation: { ...state.grantObservation,
@@ -5023,6 +5023,14 @@ export class WorkflowManager {
     const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
+      if (state.grantObservation?.verifiedHeadSha && state.grantObservation.verifiedHeadSha !== newHead) {
+        // The recovery receipt authorizes only its verified replacement. The stale
+        // submission still owns the gate until that replacement is actually created.
+        const blocked = { ...state, targetHeadSha: submission.prHeadSha, waitReason: "head_mismatch" as const };
+        delete blocked.grantObservation;
+        this.transitionInspectorGate(run, state, blocked, "blocked", "inspector_head_mismatch", null, null, now);
+        return;
+      }
       const priorHeads = grantPriorHeads ?? await this.priorInspectorHeads(run.id, repositoryRoot);
       if (!state.failedHeadSha) {
         this.transitionInspectorGate(
@@ -5119,15 +5127,14 @@ export class WorkflowManager {
     const submittedHead = capturedHead && repositoryRoot
       ? await (this.options.resolveCommit ?? resolveCapturedCommit)(repositoryRoot, capturedHead).catch(() => null)
       : null;
-    if (grantPriorHeads && observation) {
+    if (submission.mode === "inspector_only" && state.prKey) {
       // A new round is already immutable here. If the PR moved during rev-parse,
       // its normal mismatch/closed guard must see that observation before any clean verdict.
-      const current = loadInspectorInspection(observation.prKey);
+      const current = loadInspectorInspection(state.prKey);
       if (!current) return;
-      if (current.observedAt !== null && current.observedAt >= observation.observedAt
+      if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)
           && current.observedState !== null
-          && (current.observedHeadSha !== observation.observedHeadSha
-            || current.observedState !== observation.observedState)) {
+          && (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState))) {
         this.scheduleGateEvaluation(run.id, {
           prKey: current.key, observedHeadSha: current.observedHeadSha,
           observedAt: current.observedAt, observedState: current.observedState, ledger: current,

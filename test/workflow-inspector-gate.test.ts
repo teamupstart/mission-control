@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type {
@@ -3248,6 +3249,30 @@ test("grant chooses a newer pre-grant durable head on a null evaluation and wait
   } finally { await manager.stop(); }
 });
 
+test("a grant retains the superseding head across restart without sending failed-head feedback or spending a round", async () => {
+  const { manager, store, ids, injected, now, grant } = await spentInspectorGrant({ deliveryMode: "live" });
+  try {
+    const { delivery } = store.prepareDelivery({
+      id: "old-feedback", runId: ids.run, submissionId: "failed-sub", kind: "inspector_feedback",
+      sessionId: ids.session, noteKey: `agent-${serial}`, payload: "repair failed head",
+      payloadSha256: "old-feedback-digest",
+    }, now + 2);
+    assert.ok(grant().ok);
+    await manager.settleBackgroundWork();
+    const gate = () => store.getRun(ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+    assert.equal(gate().observedHeadSha, "historical");
+    assert.equal(gate().lastObservedAt, null);
+    await manager.stop();
+    manager.start();
+    await manager.settleBackgroundWork();
+    assert.equal(gate().observedHeadSha, "historical");
+    assert.equal(gate().lastObservedAt, null);
+    assert.equal(store.latestSubmission(ids.run)?.round, 2);
+    assert.equal(store.getDelivery(delivery.id)?.state, "prepared");
+    assert.deepEqual(injected, []);
+  } finally { await manager.stop(); }
+});
+
 test("grant waits through absent, failed, foreign and old observations and a closed PR before accepting a new head", async () => {
   const { manager, store, ids, key, now, grant, registry } = await spentInspectorGrant();
   try {
@@ -3317,6 +3342,34 @@ test("a clean granted head superseded during verification cannot approve the run
     assert.equal(seeded.store.getRun(seeded.ids.run)?.currentPhase, "inspector_head_mismatch");
     assert.equal(seeded.store.listEvents(seeded.ids.run).some(e => e.kind === "inspector_gate_clean"), false);
   } finally { await seeded.manager.stop(); }
+});
+
+test("later clean recheck rereads the durable head after resolving the immutable Inspector submission", async () => {
+  let pushDuringRecheck = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === "repair" && pushDuringRecheck) {
+      updateInspectorPr(seeded.key, { observedState: "OPEN", observedHeadSha: "pushed",
+        observedAt: seeded.now + 14 }, seeded.now + 14);
+    }
+    return head;
+  } });
+  const { store, manager, ids, key, now } = seeded;
+  try {
+    updateInspectorPr(key, { headSha: "repair", cleanReviewHeadSha: null, reviewPosture: "live",
+      observedState: "OPEN", observedHeadSha: "repair", observedAt: now + 9 }, now + 9);
+    assert.ok(seeded.grant().ok);
+    await manager.settleBackgroundWork();
+    const child = store.latestSubmission(ids.run);
+    assert.equal(child?.prHeadSha, "repair");
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_clean_review");
+    updateInspectorPr(key, { cleanReviewHeadSha: "repair" }, now + 12);
+    pushDuringRecheck = true;
+    assert.ok(manager.recheckInspector(ids.run, "recheck-clean").ok);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.latestSubmission(ids.run), child);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_gate_clean"), false);
+  } finally { await manager.stop(); }
 });
 
 test("a later push after a current-head grant remains an ordinary nonrecoverable mismatch", async () => {
@@ -3419,6 +3472,53 @@ test("legacy recovery rechecks the durable head after a concurrent change during
     rmSync(activityPending, { force: true });
     await manager.stop();
   }
+});
+
+test("a push after the legacy recovery receipt cannot spend the replacement on an unverified head", async () => {
+  let advanceBranch = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === "historical" && advanceBranch) {
+      advanceBranch = false;
+      updateInspectorPr(seeded.key, { observedState: "OPEN", observedHeadSha: "later",
+        observedAt: seeded.now + 1013 }, seeded.now + 1013);
+    }
+    return head;
+  } });
+  const { store, manager, ids } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    advanceBranch = true;
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    const receipts = store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered");
+    assert.deepEqual(receipts.map(e => (e.payload as { currentHeadSha: string }).currentHeadSha), ["current"]);
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    const gate = store.getRun(ids.run)?.gateState as unknown as WorkflowInspectorGateState;
+    assert.equal(gate.targetHeadSha, "historical");
+    assert.equal(gate.observedHeadSha, "later");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+  } finally { await manager.stop(); }
+});
+
+test("legacy recovery reads eligibility from the workflow store's own database", async () => {
+  const seeded = await spentInspectorGrant();
+  const { manager, store, ids, key, now, url } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const path = join(home, "isolated-workflow-store.db");
+    db.prepare("VACUUM INTO ?").run(path);
+    const isolated = new DatabaseSync(path);
+    try {
+      const input = { grantRequestId: "legacy", submissionId: "stranded",
+        staleHeadSha: "historical", currentHeadSha: "current" };
+      updateInspectorPr(key, { observedHeadSha: "different", observedAt: now + 1013 }, now + 1013);
+      assert.equal(store.recoverStaleInspectorGrant(ids.run, "recover", input, now + 1014), null);
+      assert.deepEqual(new WorkflowStore(isolated).recoverStaleInspectorGrant(ids.run, "recover", input, now + 1014),
+        { verifyPrUrl: url });
+    } finally { isolated.close(); }
+  } finally { await manager.stop(); }
 });
 
 test("legacy recovery refuses a replacement beyond the granted cap", async () => {

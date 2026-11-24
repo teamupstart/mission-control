@@ -7847,6 +7847,7 @@ export const WorkflowInspectorGateStateSchema = z.object({
   grantObservation: z.object({
     minimumObservedAt: z.number().int().nonnegative(),
     requestedAt: z.number().int().nonnegative(),
+    verifiedHeadSha: z.string().min(1).max(100).optional(),
   }).optional(),
 });
 

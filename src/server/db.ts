@@ -17751,8 +17751,8 @@ export function noteInspectorPrStack(key: string, note: string | null, now: numb
     .run(note, now, key);
 }
 
-export function getInspectorPr(key: string): InspectorPr | null {
-  const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
+export function getInspectorPr(key: string, db = openDb()): InspectorPr | null {
+  const r = db.prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
     | InspectorPrRow
     | undefined;
   return r ? rowToInspectorPr(r) : null;

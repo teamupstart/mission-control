@@ -2817,7 +2817,9 @@ observation or branch history is unavailable. The recovery audit includes the so
 activity ID, resulting head and time alongside the stored observation and round-limit event.
 [GitHub repository activity API](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
 Ordinary polling and recheck leave the mismatch blocked. A successful recovery records `inspector_stale_grant_recovered` and
-re-enters the existing repair wait. The stale submission keeps its head and round. Its
+re-enters the repair wait pinned to the verified replacement head. If the PR advances before
+the replacement submission is created, the mismatch blocks again and the round remains available.
+The stale submission keeps its head and round. Its
 replacement round must fit within the granted cap and requires the usual exact-head review
 and resolution of open findings. A stranded submission already at the cap stays blocked. Retrying the same request returns the run idempotently.
 

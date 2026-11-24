@@ -128,6 +128,31 @@ test("a named answer captured before its question settles cannot target the rema
   assert.equal(answers()[0]?.reviewId, remaining.id);
 });
 
+test("a reminder that wakes during transcription requires a fresh answer", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const title = "Which deployment?";
+  const q = reviews.create("sdk:Steve", "input", title, title, [{ id: "deploy", question: title,
+    options: [{ id: "old", label: "Existing" }, { id: "new", label: "New" }] }], { snoozable: true });
+  reviews.snooze(q.id, 60_000);
+  t.mock.timers.tick(10);
+  const capturedAt = Date.now();
+  t.mock.timers.tick(10);
+  assert.equal(reviews.wake(q.id)?.status, "pending");
+  const router = registry.voiceRouter!;
+  for (const time of [capturedAt, Date.now()]) {
+    await router.accept({ id: "snoozed-" + time, capturedAt: time, text: "Steve, option B", backend: "fluidaudio", words: [] });
+    assert.deepEqual(answers(), []);
+    assert.equal(cards.at(-1)?.reason, "question-notice");
+    assert.equal(cards.at(-1)?.deadline, null);
+  }
+  t.mock.timers.tick(2000);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.deepEqual(queued("Steve"), []);
+  await say("Steve, option B", "awake");
+  assert.equal(answers()[0]?.reviewId, q.id);
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["new"]);
+});
+
 test("speech captured before the card opened and ordinary instructions about answering stay messages", async t => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });

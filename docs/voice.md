@@ -1085,7 +1085,8 @@ none of a closed question’s options, the dashboard shows “No matching option
 stays pending and the agent receives no message. With several pending questions
 and no target card, choose a question by clicking its row or saying its ordinal. If a question
 closes while speech is being transcribed, the picker offers the remaining questions unless
-the dashboard can confirm the intended question was already in focus. “Steve, answer”
+the dashboard can confirm the intended question was already in focus. When a snoozed
+question returns, speak again to start its countdown. “Steve, answer”
 opens the question picker without supplying an answer. If the standalone picker asks you to
 focus a dashboard, choose the question again there. To dictate into Other, open the card before speaking.
 Choosing an older spoken answer from the picker preserves any newer answer already staged for that question. Ordinary addressed speech, such as

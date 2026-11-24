@@ -499,6 +499,12 @@ export class VoiceRouter {
   }
 
   private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
+    const woke = review.snooze?.remindedAt;
+    if (woke != null && item.time.openedAt <= woke) {
+      if (this.open.get(item.card.id) === item) this.take(item);
+      this.questionNotice(item, "This question reopened after you spoke. Say your answer again.");
+      return;
+    }
     const allowText = !choiceCommand && (review.id === open?.id || !review.decisions?.length);
     return this.prepareAnswer(item, review, words, allowText);
   }
@@ -537,8 +543,8 @@ export class VoiceRouter {
     this.reserveAnswer(item);
     const windowId = await this.openCards.confirmReplyWindow(windows, this.questions!.confirmFocus, this.confirmationSignal(item.modelStep!.signal));
     if (this.open.get(item.card.id) !== item) return;
-    const pendingIds = new Set(this.questions!.pending().map(q => q.id));
-    const pending = candidates.filter(q => pendingIds.has(q.id));
+    const current = new Map(this.questions!.pending().map(q => [q.id, q]));
+    const pending = candidates.filter(q => current.has(q.id));
     // Include the originally eligible cards when reading focus. Settling one while
     // we await the report must not turn its unfocused neighbor into the sole target.
     const focused = this.openCards.target(candidates, !!target);
@@ -548,8 +554,9 @@ export class VoiceRouter {
     const changedDuringCalibration = windowId === previousWindow && calibratingTarget && calibratingTarget !== focused?.id;
     const open = windowId && focused && timing === "eligible" && this.openCards.footerOwner(focused.id) === windowId &&
       !changedDuringCalibration ? focused : undefined;
-    const review = fixed ?? open;
-    if (review && pendingIds.has(review.id)) {
+    const destination = fixed ?? open;
+    const review = destination && current.get(destination.id);
+    if (review) {
       await this.prepareQuestionReply(item, review, words, choiceCommand, open);
       return;
     }

@@ -6,9 +6,9 @@ import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.t
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
 
-async function file(page: Page, daemon: DaemonHandle, cwd: string, title: string) {
+async function file(page: Page, daemon: DaemonHandle, cwd: string, title: string, snoozable = false) {
   const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
-    headers: { "x-harness-token": voiceToken(daemon) }, data: { kind: "input", env: {}, cwd, title, body: title },
+    headers: { "x-harness-token": voiceToken(daemon) }, data: { kind: "input", env: {}, cwd, title, body: title, snoozable },
   });
   expect(filed.ok(), await filed.text()).toBe(true);
   return (await filed.json()).id as string;
@@ -150,6 +150,26 @@ test("a delayed named reply asks which question survived before showing its coun
   await expect(countdown).toContainText("tomorrow");
   await countdown.getByRole("button", { name: "Submit now" }).click();
   await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).response).toBe("tomorrow");
+});
+
+test("a question that wakes during dictation asks for fresh speech before counting down", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "When should the reminder run?";
+  const id = await file(page, daemon, steve.cwd, title, true);
+  const review = daemon.baseURL + "/api/reviews/" + id;
+  expect((await page.request.post(review + "/snooze", { data: { delay: "15m" } })).ok()).toBe(true);
+  const capturedAt = Date.now();
+  expect((await page.request.post(review + "/wake")).ok()).toBe(true);
+  await say(daemon, "Steve, answer: today", { capturedAt });
+  await expect(page.getByRole("status").filter({ hasText: "This question reopened after you spoke" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+  expect((await (await page.request.get(review)).json()).status).toBe("pending");
+  await say(daemon, "Steve, answer: tomorrow");
+  const countdown = page.getByRole("status").filter({ hasText: title });
+  await expect(countdown).toContainText("tomorrow");
+  await countdown.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(review)).json()).response).toBe("tomorrow");
 });
 
 for (const slowAgain of [false, true]) {

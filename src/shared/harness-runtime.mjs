@@ -68,13 +68,22 @@ export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
  * have several processes racing to invent a state dir.
  */
 export function stateDir() {
-  const override = envVar("HOME");
+  return resolveStateDir(process.env, homedir());
+}
+
+/**
+ * The rule behind `stateDir`, over an explicit environment and home directory, so a caller that
+ * is handed its environment (`mctl`, whose tests run against a temporary home) resolves the same
+ * directory the daemon does instead of keeping a second copy of the rule.
+ */
+export function resolveStateDir(env, home) {
+  const override = env.MISSION_HOME ?? env.FLEET_HOME ?? env.HARNESS_HOME;
   if (override) return override;
   for (const name of STATE_DIRS) {
-    const p = join(homedir(), name);
+    const p = join(home, name);
     if (existsSync(p)) return p;
   }
-  return join(homedir(), STATE_DIRS[0]);
+  return join(home, STATE_DIRS[0]);
 }
 
 /**

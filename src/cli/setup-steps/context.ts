@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveStateDir } from "@shared/harness-runtime.mjs";
 import { realExec, type Exec } from "../claude-cli.ts";
 
 /**
@@ -19,19 +20,6 @@ export interface SetupDeps {
   modSource: string;
   /** The user's home directory, for `claude` detection. */
   home: string;
-}
-
-const STATE_DIR_NAMES = [".mission-control", ".fleet-control", ".ai-harness"] as const;
-
-/** The same resolution as `stateDir()` in `src/shared/harness-runtime.mjs`, over an injected environment. */
-export function resolveStateDir(env: Readonly<Record<string, string | undefined>>, home: string): string {
-  const override = env.MISSION_HOME ?? env.FLEET_HOME ?? env.HARNESS_HOME;
-  if (override) return override;
-  for (const name of STATE_DIR_NAMES) {
-    const path = join(home, name);
-    if (existsSync(path)) return path;
-  }
-  return join(home, STATE_DIR_NAMES[0]);
 }
 
 /** Where the built mod is: beside the bundle (`dist/cli` next to `dist/mod`), or in a source checkout. */

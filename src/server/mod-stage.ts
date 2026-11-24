@@ -27,7 +27,12 @@ export interface StagedMod {
 /** The version in a mod build's `plugin.json`, or throws when the folder is not a mod build. */
 export async function readModVersion(root: string): Promise<string> {
   const raw = await readFile(join(root, PLUGIN_NAME, ".claude-plugin", "plugin.json"), "utf8");
-  const parsed = JSON.parse(raw) as { version?: unknown };
+  let parsed: { version?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { version?: unknown };
+  } catch {
+    throw new Error(root + " has a plugin.json that is not valid JSON");
+  }
   if (typeof parsed.version !== "string" || parsed.version === "") throw new Error(root + " has a plugin.json with no version");
   return parsed.version;
 }
@@ -51,6 +56,9 @@ export async function stageMod(options: {
   const { source, dest } = options;
   const move = options.rename ?? rename;
   await assertBuild(source);
+  // Read the version from the source now: a plugin.json with no usable version must be refused
+  // before anything is copied or renamed, or the working mod would be replaced by a broken one.
+  const version = await readModVersion(source);
   const suffix = process.pid + "-" + randomBytes(4).toString("hex");
   const staging = dest + ".staging-" + suffix;
   const previous = dest + ".old-" + suffix;
@@ -76,5 +84,5 @@ export async function stageMod(options: {
     throw error;
   }
   if (movedAside) await rm(previous, { recursive: true, force: true });
-  return { dest, pluginDir: join(dest, PLUGIN_NAME), version: await readModVersion(dest) };
+  return { dest, pluginDir: join(dest, PLUGIN_NAME), version };
 }

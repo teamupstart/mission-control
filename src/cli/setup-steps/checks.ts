@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthCompatibility } from "@shared/daemon-protocol.ts";
@@ -54,7 +55,12 @@ export async function readInstalledMod(claude: ClaudeCli, deps: SetupDeps): Prom
     if (typeof row !== "object" || row === null) continue;
     const entry = row as { id?: unknown; name?: unknown; version?: unknown; scope?: unknown; enabled?: unknown };
     if ((entry.id ?? entry.name) !== MOD_PLUGIN_ID) continue;
-    return { mod: { version: String(entry.version ?? ""), scope: String(entry.scope ?? "user"), enabled: entry.enabled !== false } };
+    // Readiness is never inferred from a missing field: an entry without its scope or enabled state
+    // says nothing about either, so it is reported rather than treated as installed.
+    if (typeof entry.version !== "string" || typeof entry.scope !== "string" || typeof entry.enabled !== "boolean") {
+      return { error: "`claude plugin list --json` lists " + MOD_PLUGIN_ID + " without its version, scope or enabled state" };
+    }
+    return { mod: { version: entry.version, scope: entry.scope, enabled: entry.enabled } };
   }
   return { mod: null };
 }
@@ -144,6 +150,20 @@ export async function checkModCalls(claude: ClaudeCli | null, deps: SetupDeps): 
     bundle = await readFile(join(pluginDir, "hooks", "register.js"), "utf8");
   } catch {
     return { name: "mod-calls", status: "fail", message: `no staged mod bundle at ${pluginDir}`, fix: "Run `mctl setup`." };
+  }
+  // The literal scan below cannot see a route built at run time, so the build's source-aware check
+  // is the proof: the bundle must be exactly the one it passed. Without that record the calls
+  // cannot be established, and the check fails rather than pass.
+  let record: { checked?: unknown; bundleSha256?: unknown } = {};
+  try {
+    record = JSON.parse(await readFile(join(pluginDir, "hooks", "mod-calls.json"), "utf8")) as typeof record;
+  } catch {
+    // handled below: no readable record
+  }
+  const actual = createHash("sha256").update(bundle).digest("hex");
+  if (record.checked !== true || record.bundleSha256 !== actual) {
+    const why = record.checked === true ? "the staged bundle is not the one the build checked" : "the staged mod has no build-time mod-calls record";
+    return { name: "mod-calls", status: "fail", message: why + ", so its daemon calls cannot be established", fix: "Rebuild with `npm run build`, then run `mctl setup`." };
   }
   const refused = calledPaths(bundle).filter((path) => !isAllowedModCall(path, allowedCalls));
   if (refused.length > 0) {

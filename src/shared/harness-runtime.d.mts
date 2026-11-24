@@ -9,6 +9,7 @@ export const BASE_URL: string;
 
 export const STATE_DIRS: readonly string[];
 export function stateDir(): string;
+export function resolveStateDir(env: Readonly<Record<string, string | undefined>>, home: string): string;
 export function migrateStateDir(): { from: string; to: string } | null;
 export function tokenPath(): string;
 export const MISSION_API_TOKEN_ENV: string;

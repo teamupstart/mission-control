@@ -1,6 +1,7 @@
 // Headless mode phase 14: `mctl setup` and `mctl doctor` against a fake `claude`, a fake daemon and
 // a temporary state directory. No model tokens, no real Claude Code, no real state home.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,13 +19,18 @@ import { createFakeClaude, createFakeDaemon, type FakeClaude, type FakeDaemon } 
 const MOD_ID = "mission-control@mission-control";
 
 /** A mod build with the layout `npm run build:mod` writes, at a chosen version. */
-function writeModBuild(root: string, version: string, bundle = 'fetch("/api/health"); fetch("/dispatch/inbox");'): void {
+function writeModBuild(root: string, version: string, bundle = 'fetch("/api/health"); fetch("/dispatch/inbox");', record = true): void {
   mkdirSync(join(root, ".claude-plugin"), { recursive: true });
   mkdirSync(join(root, "mission-control", ".claude-plugin"), { recursive: true });
   mkdirSync(join(root, "mission-control", "hooks"), { recursive: true });
   writeFileSync(join(root, ".claude-plugin", "marketplace.json"), "{}");
   writeFileSync(join(root, "mission-control", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "mission-control", version }));
   writeFileSync(join(root, "mission-control", "hooks", "register.js"), bundle);
+  // What `build:mod` records once its source-aware mod-calls check has passed this bundle.
+  if (!record) rmSync(join(root, "mission-control", "hooks", "mod-calls.json"), { force: true });
+  else {
+    writeFileSync(join(root, "mission-control", "hooks", "mod-calls.json"), JSON.stringify({ checked: true, bundleSha256: createHash("sha256").update(bundle).digest("hex") }));
+  }
 }
 
 interface Rig {
@@ -475,6 +481,77 @@ test("a plugin listing that is not JSON is reported by setup and by doctor", asy
     assert.equal(check.status, "fail");
     assert.match(check.message, /not JSON/);
     assert.equal(check.fix, "Run `mctl setup`.");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a build whose plugin.json has no usable version is refused before anything is replaced", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-version-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    const pluginJson = join(source, "mission-control", ".claude-plugin", "plugin.json");
+    for (const [contents, reason] of [
+      [JSON.stringify({ name: "mission-control" }), /no version/],
+      [JSON.stringify({ name: "mission-control", version: "" }), /no version/],
+      ["{ not json", /not valid JSON/],
+    ] as const) {
+      writeFileSync(pluginJson, contents);
+      await assert.rejects(stageMod({ source, dest }), reason);
+      assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0", "the working mod is still published");
+      assert.deepEqual(readdirSync(join(dir, "state")), ["mod"], "no staging or old sibling is left behind");
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a plugin listing entry without its scope or enabled state is a failure, never readiness", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    for (const drop of ["scope", "enabled"]) {
+      const trimmed = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+        const real = await realExec(file, args, options);
+        if (args[1] !== "list") return real;
+        const rows = JSON.parse(real.stdout) as Record<string, unknown>[];
+        return { ...real, stdout: JSON.stringify(rows.map((row) => Object.fromEntries(Object.entries(row).filter(([k]) => k !== drop)))) };
+      };
+      const deps = { env: r.env, exec: trimmed };
+      const setup = await runModStep({ live: false, deps });
+      assert.equal(setup.status, "failed", "setup does not skip the install on an incomplete listing (" + drop + ")");
+      assert.match(setup.message, /without its version, scope or enabled state/);
+      const doctor = await runDoctorStep({ live: false, deps });
+      const check = doctor.checks!.find((c) => c.name === "mod-enabled")!;
+      assert.equal(check.status, "fail");
+      assert.match(check.message, /without its version, scope or enabled state/);
+    }
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("mod-calls fails closed when the staged bundle is not the one the build checked, or has no record", async () => {
+  // A route built at run time leaves no literal for the scan to see; only the build's record can vouch for the bundle.
+  const constructed = 'const p = ["/", "api", "/", "sessions"].join(""); fetch(p); fetch("/api/health");';
+  const r = await rig();
+  try {
+    // No record at all (an older build, or one made without the check).
+    writeModBuild(r.source, "2.2.0", constructed, false);
+    assert.equal((await r.run("setup")).code, 1);
+    assert.match((await r.run("doctor")).out, /FAIL {2}mod-calls: the staged mod has no build-time mod-calls record, so its daemon calls cannot be established/);
+
+    // A record for a different bundle (the bundle was edited after the check).
+    writeModBuild(r.source, "2.2.0", 'fetch("/api/health");');
+    writeFileSync(join(r.source, "mission-control", "hooks", "register.js"), constructed);
+    assert.equal((await r.run("setup")).code, 1);
+    const doctor = await r.run("doctor");
+    assert.equal(doctor.code, 1);
+    assert.match(doctor.out, /FAIL {2}mod-calls: the staged bundle is not the one the build checked, so its daemon calls cannot be established/);
+    assert.match(doctor.out, /fix: Rebuild with `npm run build`, then run `mctl setup`\./);
   } finally {
     await r.cleanup();
   }

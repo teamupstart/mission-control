@@ -309,6 +309,25 @@ test("a picked card's new cancel window follows the time of the pick", async (t)
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
 });
 
+test("an API pick and a spoken cancel use the same listener clock", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postAt = (id: string, text: string, capturedAt: number) =>
+    post(utterancePath(), { ...capture(text, id), capturedAt }, token);
+  const listenerStart = now - 500;
+  await postAt("choice", "Steven ask Will about the clock", listenerStart);
+  t.mock.timers.tick(900);
+  assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
+  assert.equal(cards.at(-1)?.deadline, Date.now() + 1000);
+  await postAt("before-click", "cancel", listenerStart + 850);
+  assert.equal((await readHeard()).find((entry) => entry.id === "before-click")?.rule, "nothing-pending");
+  t.mock.timers.tick(200);
+  await postAt("after-click", "cancel", listenerStart + 1100);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
+  t.mock.timers.tick(1000);
+  assert.ok(!queued("Will").includes("ask Will about the clock"));
+});
+
 test("Cancel targets its own card, Send now queues once, and clearing history leaves no entry", async () => {
   await say("Steve cancel by id", "a");
   await say("Will send now", "b");

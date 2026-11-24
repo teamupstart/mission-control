@@ -194,13 +194,14 @@ export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
   return state;
 }
 
+type KeyWriteOutcome = "confirmed" | "refused" | "unconfirmed";
+
 export interface VoiceDecisionKeyState {
   busy: boolean;
   /** Undefined until the first read, null when the latest read failed. */
   report: Awaited<ReturnType<typeof fetchVoiceDecisionKey>> | undefined;
-  /** Save a key. Resolves to whether the daemon kept it; the key is never read back. */
-  save(provider: VoiceKeyProvider, key: string): Promise<boolean>;
-  remove(provider: VoiceKeyProvider): Promise<boolean>;
+  save(provider: VoiceKeyProvider, key: string): Promise<KeyWriteOutcome>;
+  remove(provider: VoiceKeyProvider): Promise<KeyWriteOutcome>;
   /** Why the last save or removal failed, or null. */
   error: string | null;
 }
@@ -245,32 +246,33 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string):
     };
   }, [enabled, providerRevision]);
 
-  const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>, failed: string): Promise<boolean> => {
-    if (writing.current) return false;
+  const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
+    if (writing.current) return "refused";
     writing.current = true;
     setBusy(true);
     try {
       const res = await request();
-      writes.current++;
       if (res.ok && res.keys && res.provider !== undefined) {
-        // Another window may have changed the keys since this mutation was applied.
-        setStatus(undefined);
-        void refresh.current?.();
         setError(null);
-        return true;
+        return "confirmed";
       }
-      setError(res.reason ?? failed);
-      return false;
+      setError(res.reason ?? "The key change could not be confirmed.");
+      return res.reason ? "refused" : "unconfirmed";
     } finally {
+      // Even a lost response can follow a committed change. Read the current sources and
+      // discard responses from polls which started before this mutation settled.
+      writes.current++;
+      setStatus(undefined);
+      void refresh.current?.();
       writing.current = false;
       setBusy(false);
     }
   }, []);
 
   const save = useCallback(async (provider: VoiceKeyProvider, key: string) =>
-    mutate(() => api.saveVoiceDecisionKey(provider, key), "The key could not be saved."), [mutate]);
+    mutate(() => api.saveVoiceDecisionKey(provider, key)), [mutate]);
   const remove = useCallback(async (provider: VoiceKeyProvider) =>
-    mutate(() => api.removeVoiceDecisionKey(provider), "The key could not be removed."), [mutate]);
+    mutate(() => api.removeVoiceDecisionKey(provider)), [mutate]);
 
   const report = status?.revision === providerRevision ? status.report : undefined;
   return { report, save, remove, error, busy };

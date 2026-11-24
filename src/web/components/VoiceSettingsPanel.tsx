@@ -241,8 +241,8 @@ function DecisionKeyRow({ provider, keys }: {
   const save = async (): Promise<void> => {
     const key = draft.trim();
     if (!key) return;
-    // The field empties once the key is kept: nothing on the page holds it after that.
-    if (await keys.save(provider, key)) setDraft("");
+    // Keep the draft for correction only when the daemon explicitly rejects the key.
+    if (await keys.save(provider, key) !== "refused") setDraft("");
   };
   return (
     <div className="kb-row voice-key-row" data-anchor={`voice/key-${provider}`} role="group" aria-label={label}>

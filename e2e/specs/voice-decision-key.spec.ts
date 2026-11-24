@@ -698,6 +698,40 @@ test("a delayed local save cannot restore a key removed by another window", asyn
 });
 
 for (const mutation of ["save", "remove"] as const) {
+  test(`a lost key ${mutation} response refreshes the provider disclosure immediately`, async ({ dashboard: page, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(NOT_SET);
+    if (mutation === "remove") await saveKey(page, "OpenAI Decisions", SAVED_OPENAI);
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/decision-key*", async route => {
+      if (route.request().method() === "GET") {
+        await release.promise;
+        return route.continue();
+      }
+      expect((await route.fetch()).ok()).toBe(true);
+      await route.abort("connectionreset");
+    });
+    try {
+      if (mutation === "save") await keyField(page, "OpenAI Decisions").fill(SAVED_OPENAI);
+      await row(page, "OpenAI Decisions").getByRole("button", { name: mutation === "save" ? "Save" : "Remove" }).click();
+      await expect(line(page)).toHaveText("Reading…", { timeout: 1_500 });
+      await expect(row(page, "OpenAI Decisions")).toContainText("Reading…");
+      await expect(panel(page)).toContainText("The key change could not be confirmed.");
+      if (mutation === "save") await expect(keyField(page, "OpenAI Decisions")).toHaveValue("");
+    } finally {
+      release.resolve();
+    }
+    const saved = mutation === "save";
+    await expect(line(page)).toHaveText(saved ? using("OpenAI Decisions") : NOT_SET, { timeout: 1_500 });
+    await expect(row(page, "OpenAI Decisions")).toContainText(saved ? "Saved on this Mac" : "Not set");
+    const { entry } = await sayAndSettle(daemon, SPLIT);
+    expect(entry.detail).toBe(saved ? "OpenAI Decisions answered: split" : "job on codex answered: split");
+    expect(decisions.requests).toHaveLength(saved ? 1 : 0);
+    if (saved) await capture(line(page), "25-lost-save-response");
+  });
+
   test(`a successful ${mutation} followed by a failed status read clears the stale key report`, async ({ dashboard: page, daemon }) => {
     await turnVoiceOn(daemon);
     await page.clock.install();

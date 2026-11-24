@@ -96,8 +96,8 @@ export function currentStalls(
  * consumer cannot tell a stall that is news from one that was there all along (see
  * withKnownStalls).
  */
-export function useStalls(sessions: readonly Session[], runs: readonly WorkflowRunSummary[] | undefined): Stall[] | undefined {
-  const [stalls, setStalls] = useState<ObservedStall[] | undefined>(undefined);
+export function useStalls(sessions: readonly Session[], runs: readonly WorkflowRunSummary[] | undefined) {
+  const [poll, setPoll] = useState<{ reported: Stall[]; observed: ObservedStall[] }>();
   const currentSessions = useRef(sessions);
   currentSessions.current = sessions;
   const seen = useRef<string | null>(null);
@@ -119,7 +119,7 @@ export function useStalls(sessions: readonly Session[], runs: readonly WorkflowR
       const sig = next.map((s) => `${s.sessionId}:${s.kind}:${s.reason}:${s.fingerprint}:${s.since}`).join("|");
       if (sig === seen.current) return;
       seen.current = sig;
-      setStalls(next.length > 0 ? next : NONE);
+      setPoll({ reported: response.length ? response : NONE, observed: next.length ? next : NONE });
     };
     void read();
     const id = setInterval(() => void read(), POLL_MS);
@@ -129,5 +129,6 @@ export function useStalls(sessions: readonly Session[], runs: readonly WorkflowR
     };
   }, []);
 
-  return useMemo(() => currentStalls(stalls, sessions, runs), [stalls, sessions, runs]);
+  const current = useMemo(() => currentStalls(poll?.observed, sessions, runs), [poll, sessions, runs]);
+  return { reported: poll?.reported, current };
 }

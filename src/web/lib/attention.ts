@@ -413,6 +413,13 @@ export function isStallDismissed(stall: ObservedStall, dismissed: ReadonlyMap<st
   );
 }
 
+/** Only an exact pre-upgrade match can be rewritten to this episode's stable key. */
+export function legacyStallDismissalUpgrade(stall: ObservedStall, stored: ReadonlyMap<string, string>): AttentionDismissalKey | null {
+  if (!stall.legacy) return null;
+  const key = stallDismissalKey(stall.sessionId, stall);
+  return stored.get(key.itemId) !== key.occurrence && isStallDismissed(stall, stored) ? key : null;
+}
+
 /** A question's own dismissal key, separate from its session's row so each is dismissed alone. */
 function reviewDismissalId(reviewId: string): string {
   return `review:${reviewId}`;

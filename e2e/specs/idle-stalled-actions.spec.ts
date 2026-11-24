@@ -113,6 +113,15 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   });
   await expect(card()).toHaveCount(0);
 
+  await expect.poll(async () => {
+    const { dismissals } = await api<{ dismissals: { itemId: string; occurrence: string }[] }>(daemon, "/api/attention/dismissals");
+    return dismissals.find(row => row.itemId === `stuck:${id}`)?.occurrence;
+  }).toMatch(/^(?!f782ee25$)[0-9a-f]+$/);
+  served = [{ ...served[0]!, reason: "Previous review for 2m", forMs: 120_000 }];
+  await Promise.all([page.waitForResponse("**/api/away/stalls"), page.reload()]);
+  await expect(page.getByRole("button", { name: `Open ${session.name}`, exact: true })).toBeAttached();
+  await expect(card()).toHaveCount(0);
+
   // Mixed-version daemon: keep the reported reason and run link without assuming a parked step.
   served = [{ sessionId: id, kind: "workflow-parked", forMs: 60_000,
     reason: "Waiting on the review", workflowRunId: "legacy-run" }];

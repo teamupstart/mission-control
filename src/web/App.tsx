@@ -432,7 +432,7 @@ export function App(): React.JSX.Element {
   // Stalls come from the daemon (only it has the clock), but only the browser can
   // raise a notification - so they are polled back in here to give the `stuck` alert
   // a delivery path instead of leaving it to the return digest.
-  const stalls = useStalls(sessions, hasSnapshot ? workflowRuns : undefined);
+  const { reported: reportedStalls, current: stalls } = useStalls(sessions, hasSnapshot ? workflowRuns : undefined);
   // With the `inbox` flag on, alert titles name an agent by the one naming rule, which reads the
   // resident runs; the daemon's Away watcher passes them on the same flag.
   const sessionControlRequestsEnabled = resolveFeatureFlag("session-control-requests", featureFlags);
@@ -441,7 +441,7 @@ export function App(): React.JSX.Element {
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
   const alertScope = useMemo(
     () => ({
-      sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
+      sessions, tasks, reviews, stalls: reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns,
       // Reports too: a report's announce stamp raises its notification, whether or not reports
       // are listed in the inbox.
       ...(inboxNames ? { names: residentRuns, reports } : {}),
@@ -449,7 +449,7 @@ export function App(): React.JSX.Element {
       // still news (see `AlertScope.takenAt`).
       takenAt: Date.now(),
     }),
-    [sessions, tasks, reviews, stalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns, reports],
+    [sessions, tasks, reviews, reportedStalls, workflowRuns, ensembleSummaries, pipelineCommissions, pipelineRuns, inboxNames, residentRuns, reports],
   );
   // What a click on a report notification does. Assigned further down, once the inbox's fold
   // exists; the notifier reads it when the click lands, so the toast never holds a stale one.
@@ -2900,7 +2900,7 @@ export function App(): React.JSX.Element {
   // The inbox and Idle share dismissals. Until the first read, the inbox holds back dismissible
   // rows and their counts. Idle shows stalled cards so a delayed or failed read still leaves
   // their fixes reachable. A previously dismissed card can appear briefly after a reload.
-  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision);
+  const attentionDismissals = useAttentionDismissals(attentionDismissalsRevision, stalls);
   // Idle's Stalled section (`idle-stalled`): the idle stalls, by session, that the Board and the
   // Console rail draw under the Stalled rule and the inbox no longer folds. One map, handed to the
   // fleet ordering below and to both views, so the arrow keys walk the order the columns draw.

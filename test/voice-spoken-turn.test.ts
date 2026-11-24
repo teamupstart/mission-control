@@ -152,7 +152,8 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
   const native = transcript.append("first-native", text, Math.ceil(created) + 5);
   const repeat = transcript.append("typed-repeat", text, native.ts + 1);
   for (const [key, reservedAt, expected] of [
-    ["before-file", Math.floor(created) - 1, [native.id]], ["after-file", Math.ceil(created) + 1, []],
+    ["before-file", Math.floor(created) - 1, [native.id]], ["same-time", Math.floor(created), []],
+    ["after-file", Math.ceil(created) + 1, []],
   ] as const) {
     const attempt = claimSpoken(key, text, text);
     spokenLedger.reserve({ key, transcript: null }, text, base => ({
@@ -238,7 +239,7 @@ test("settled text-only attempts cannot claim later typed messages across retrie
     const transcript = fakeTranscript();
     const conversation = transcript.conversation(key);
     const attempt = claimSpoken(key, words, words);
-    reserveSpokenTurn(conversation, words, words, false, attempt);
+    const reservation = reserveSpokenTurn(conversation, words, words, false, attempt);
     if (action === "confirmed") {
       assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, Date.now(), attempt.reservationId));
     } else {
@@ -254,11 +255,44 @@ test("settled text-only attempts cannot claim later typed messages across retrie
       }
     }
     const message = transcript.append(action, words, Date.now());
+    const stored = db.openDb().prepare("SELECT received FROM session_spoken_turns WHERE id = ?").get(reservation.id);
+    assert.equal(stored?.received, action === "confirmed" ? words : undefined, action + " payload retention");
     for (const reload of [false, true]) {
       if (reload) { db.closeDb(); spokenLedger.forgetCaches(); }
       assert.equal(spokenLedger.bound(conversation, [message]).rows.has(message.id), action === "confirmed", action);
     }
   }
+});
+
+test("abandoning an uncertain native-ID attempt preserves its exact-match disclosure", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const key = "retain-native-attempt";
+  const words = "check the build";
+  const attempt = claimSpoken(key, words, words);
+  const transcript = fakeTranscript();
+  const conversation = transcript.conversation(key);
+  const reservation = reserveSpokenTurn(conversation, words, words, true, attempt);
+  db.recoverSendingPendingTurns(Date.now());
+  assert.equal(db.clearPendingTurns(key), 1);
+  db.closeDb();
+  spokenLedger.forgetCaches();
+  const actual = transcript.append(reservation.id, words, Date.now());
+  assert.equal(spokenLedger.bound(conversation, [actual]).rows.get(actual.id)?.received, words);
+});
+
+test("startup removes an older orphan payload while retaining the still-uncertain handoff", async () => {
+  const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const words = "inspect";
+  for (const key of ["orphan-at-boot", "live-at-boot"]) {
+    const attempt = claimSpoken(key, words, words);
+    reserveSpokenTurn({ key, transcript: null }, words, words, false, attempt);
+    if (key === "orphan-at-boot") db.openDb().prepare("DELETE FROM pending_turns WHERE id = ?").run(attempt.id);
+  }
+  db.closeDb();
+  db.recoverSendingPendingTurns(Date.now());
+  const stored = db.openDb().prepare("SELECT received FROM session_spoken_turns WHERE note_key = ?");
+  assert.equal(stored.get("orphan-at-boot"), undefined);
+  assert.equal(stored.get("live-at-boot")?.received, words);
 });
 
 test("upgrade preserves anchored legacy disclosures and leaves unproven legacy reservations unbound", async () => {

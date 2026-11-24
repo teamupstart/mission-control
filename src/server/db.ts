@@ -13332,6 +13332,12 @@ export function deleteSpokenTurn(id: string): void {
   openDb().prepare("DELETE FROM session_spoken_turns WHERE id = ?").run(id);
 }
 
+/** Settling an outbox attempt can release its private payload only if it has no native ID or runtime receipt. */
+function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: string | null): void {
+  if (reservationId) d.prepare(`DELETE FROM session_spoken_turns
+    WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL`).run(reservationId);
+}
+
 export function contestSpokenTurn(id: string, contested: boolean): void {
   openDb().prepare("UPDATE session_spoken_turns SET contested = ? WHERE id = ? AND message_id IS NULL")
     .run(Number(contested), id);
@@ -15182,6 +15188,7 @@ export function pruneUsageSources(cutoff: number): number {
 
 interface PendingTurnRow {
   spoken_words: string | null;
+  spoken_reservation_id: string | null;
   composed_at: number | null;
   id: string;
   note_key: string;
@@ -15423,20 +15430,18 @@ function transitionPendingTurn(
   lastError: string | null,
 ): PendingTurn | null {
   const d = openDb();
-  const changed = d
-    .prepare(
-      `UPDATE pending_turns
+  const transition = () => {
+    const row = d.prepare(`UPDATE pending_turns
           SET state = ?, revision = revision + 1, updated_at = ?,
               claimed_at = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_at END,
               last_error = ?
-        WHERE id = ? AND state = ? AND revision = ?`,
-    )
-    .run(to, now, to, lastError, id, from, revision).changes;
-  if (changed !== 1) return null;
-  const row = d.prepare(`SELECT * FROM pending_turns WHERE id = ?`).get(id) as
-    | unknown as PendingTurnRow
-    | undefined;
-  return row ? rowToPendingTurn(row) : null;
+        WHERE id = ? AND state = ? AND revision = ? RETURNING *`)
+      .get(to, now, to, lastError, id, from, revision) as PendingTurnRow | undefined;
+    if (!row) return null;
+    if (to === "queued") discardUnconfirmedSpokenReservation(d, row.spoken_reservation_id);
+    return rowToPendingTurn(row);
+  };
+  return to === "queued" && !d.isTransaction ? inTransaction(transition) : transition();
 }
 
 export function releasePendingTurn(
@@ -15507,8 +15512,12 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
     const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = ? AND revision = ?
       AND (state = 'uncertain' OR spoken_reservation_id IS ?)
       RETURNING COALESCE(spoken_handoff_key, note_key) AS receivingKey,
-                spoken_words IS NOT NULL AS spoken, spoken_handoff_generation AS generation`)
-      .get(id, state, revision, reservationId) as { receivingKey: string; spoken: number; generation: number | null } | undefined;
+                spoken_words IS NOT NULL AS spoken, spoken_handoff_generation AS generation,
+                spoken_reservation_id AS reservationId`)
+      .get(id, state, revision, reservationId) as {
+        receivingKey: string; spoken: number; generation: number | null; reservationId: string | null;
+      } | undefined;
+    if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId);
     if (retired?.spoken && retired.generation !== null) {
       if (reservationId !== null) {
         d.prepare("UPDATE session_spoken_turns SET runtime_confirmed_at = ? WHERE id = ?").run(deliveredAt, reservationId);
@@ -15560,15 +15569,14 @@ export function dropQueuedPendingTurns(noteKey: string): number {
 
 export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
   const d = openDb();
-  if (preserveIds.length === 0) {
-    return Number(d.prepare(`DELETE FROM pending_turns WHERE note_key = ?`).run(noteKey).changes);
-  }
-  const placeholders = preserveIds.map(() => "?").join(", ");
-  return Number(
-    d.prepare(
-      `DELETE FROM pending_turns WHERE note_key = ? AND id NOT IN (${placeholders})`,
-    ).run(noteKey, ...preserveIds).changes,
-  );
+  const clear = () => {
+    const preserve = preserveIds.length ? `AND id NOT IN (${preserveIds.map(() => "?").join(", ")})` : "";
+    const rows = d.prepare(`DELETE FROM pending_turns WHERE note_key = ? ${preserve}
+      RETURNING spoken_reservation_id AS reservationId`).all(noteKey, ...preserveIds) as { reservationId: string | null }[];
+    for (const row of rows) discardUnconfirmedSpokenReservation(d, row.reservationId);
+    return rows.length;
+  };
+  return d.isTransaction ? clear() : inTransaction(clear);
 }
 
 /** Carry pre-binding outbox rows from a synthetic session id onto the real conversation. */
@@ -15614,16 +15622,21 @@ export function rekeyPendingTurns(fromKey: string, toKey: string, now: number): 
 
 /** A daemon crash can leave delivery possible but unacknowledged, so never auto-resend it. */
 export function recoverSendingPendingTurns(now: number): number {
-  return Number(
-    openDb()
-      .prepare(
-        `UPDATE pending_turns
+  const d = openDb();
+  const recover = () => {
+    const updated = d.prepare(`UPDATE pending_turns
             SET state = 'uncertain', revision = revision + 1, updated_at = ?,
                 last_error = 'Mission Control restarted during delivery; confirm before retrying.'
-          WHERE state = 'sending'`,
-      )
-      .run(now).changes,
-  );
+          WHERE state = 'sending'`).run(now);
+    // Earlier builds could leave unbindable rows behind after their outbox attempts were removed.
+    d.exec(`DELETE FROM session_spoken_turns
+      WHERE message_id IS NULL AND runtime_confirmed_at IS NULL AND NOT EXISTS (
+        SELECT 1 FROM pending_turns p WHERE p.id = session_spoken_turns.outbox_turn_id
+          AND p.spoken_reservation_id = session_spoken_turns.id AND p.state IN ('sending', 'uncertain')
+      )`);
+    return Number(updated.changes);
+  };
+  return d.isTransaction ? recover() : inTransaction(recover);
 }
 
 // ---- Foreman session work queues ----

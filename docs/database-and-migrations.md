@@ -245,5 +245,7 @@ an uncertain attempt sent cannot supply that receipt. A confirmation without a r
 generation also leaves the current work cycle alone.
 
 For a confirmed transport without client identifiers, a file created after reservation
-supplies the starting boundary. An older file of unknown
+supplies the starting boundary only if its creation millisecond is strictly later than the reservation.
+Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
+Startup also removes orphan payloads left by earlier builds. An older file of unknown
 size cannot establish which turn was spoken.

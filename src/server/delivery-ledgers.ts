@@ -87,7 +87,7 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   newTranscriptAfter(transcript, deliveredAt) {
     try {
       const created = statSync(transcript.path).birthtimeMs;
-      return created > 0 && created >= deliveredAt;
+      return created > 0 && Math.floor(created) > deliveredAt;
     } catch {
       return false;
     }

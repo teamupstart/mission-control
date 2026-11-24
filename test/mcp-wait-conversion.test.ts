@@ -20,12 +20,21 @@ test("the MCP child recovers its dropped receipt after a brief daemon outage, a 
   let legacyResponse: Response | undefined;
   let legacyPollStatus: number | undefined;
   let restart: NodeJS.Timeout | undefined;
+  let unavailableAt = 0;
+  let recoveredAt = 0;
   let polls = 0;
   const receipts: string[] = [];
   const listener = getRequestListener(app.fetch);
   const daemon = createServer(async (req, res) => {
     if (!req.url?.startsWith(`/mcp/reviews/${row.id}/wait`)) return listener(req, res);
     polls++;
+    // The restarted listener can accept a connection before the wait service is ready.
+    if (polls === 2) {
+      unavailableAt = performance.now();
+      res.writeHead(503);
+      return res.end("starting");
+    }
+    if (polls === 3) recoveredAt = performance.now();
     const waiting = app.request(req.url, { headers: { "x-harness-token": token } });
     if (polls === 1) reviews.convertToFiled(row.id);
     const result = await (await waiting).json();
@@ -65,7 +74,8 @@ test("the MCP child recovers its dropped receipt after a brief daemon outage, a 
   assert.match((await legacyResponse.json()).error, /already filed by voice/);
   assert.deepEqual(result.content, [{ type: "text", text: receipt }]);
   assert.deepEqual(receipts, [receipt, receipt]);
-  assert.equal(polls, 2);
+  assert.equal(polls, 3);
+  assert.ok(recoveredAt - unavailableAt >= 200, "an unavailable wait service is retried with backoff");
   const messages = registry.getSession(sessionId)!.pendingTurns;
   assert.equal(messages.length, 1);
   assert.match(messages[0]!.text, /Use the nightly build\./);

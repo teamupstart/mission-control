@@ -231,6 +231,9 @@ function heartbeat(call?: BlockingCall): () => void {
   };
 }
 
+/** A listening daemon can still be temporarily unavailable while it starts. */
+class WaitServiceUnavailable extends Error {}
+
 /**
  * Long-poll the daemon until the human resolves the review.
  *
@@ -251,13 +254,18 @@ async function waitForResolution(id: string, call?: BlockingCall, convertible = 
       try {
         const query = convertible ? "?convertible=1" : "";
         const res = await http(`/mcp/reviews/${id}/wait${query}`, "GET", undefined, false, call?.signal);
-        if (!res.ok) throw new Error(`harness wait ${res.status}`);
+        if (!res.ok) {
+          await res.body?.cancel();
+          if (res.status === 503) throw new WaitServiceUnavailable("harness wait 503");
+          throw new Error(`harness wait ${res.status}`);
+        }
         review = await res.json() as ReviewWaitResponse;
         failures = 0;
       } catch (err) {
         // The receipt can commit just before daemon shutdown. Allow time to bind the port again.
         const backoff = retryDelays[failures];
-        if (!convertible || backoff === undefined || call?.signal.aborted || !(err instanceof TypeError)) throw err;
+        const temporarilyUnavailable = err instanceof TypeError || err instanceof WaitServiceUnavailable;
+        if (!temporarilyUnavailable || !convertible || backoff === undefined || call?.signal.aborted) throw err;
         failures++;
         beat();
         await delay(backoff, undefined, { signal: call?.signal });

@@ -1,0 +1,318 @@
+// Headless mode phase 14: `mctl setup` and `mctl doctor` against a fake `claude`, a fake daemon and
+// a temporary state directory. No model tokens, no real Claude Code, no real state home.
+import assert from "node:assert/strict";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { findClaude, realExec } from "../src/cli/claude-cli.ts";
+import { runCli } from "../src/cli/index.ts";
+import type { CliIo } from "../src/cli/commands/index.ts";
+import { calledPaths } from "../src/cli/setup-steps/checks.ts";
+import { stageMod } from "../src/server/mod-stage.ts";
+import { createFakeClaude, createFakeDaemon, type FakeClaude, type FakeDaemon } from "./helpers/home-dispatch-fakes.ts";
+
+const MOD_ID = "mission-control@mission-control";
+
+/** A mod build with the layout `npm run build:mod` writes, at a chosen version. */
+function writeModBuild(root: string, version: string, bundle = 'fetch("/api/health"); fetch("/dispatch/inbox");'): void {
+  mkdirSync(join(root, ".claude-plugin"), { recursive: true });
+  mkdirSync(join(root, "mission-control", ".claude-plugin"), { recursive: true });
+  mkdirSync(join(root, "mission-control", "hooks"), { recursive: true });
+  writeFileSync(join(root, ".claude-plugin", "marketplace.json"), "{}");
+  writeFileSync(join(root, "mission-control", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "mission-control", version }));
+  writeFileSync(join(root, "mission-control", "hooks", "register.js"), bundle);
+}
+
+interface Rig {
+  home: string;
+  state: string;
+  source: string;
+  claude: FakeClaude;
+  daemon: FakeDaemon;
+  env: Record<string, string>;
+  run: (...argv: string[]) => Promise<{ code: number; out: string; err: string }>;
+  cleanup: () => Promise<void>;
+}
+
+async function rig(options: { version?: string; flag?: boolean } = {}): Promise<Rig> {
+  const home = mkdtempSync(join(tmpdir(), "mission-setup-"));
+  const state = join(home, "state");
+  const source = join(home, "built-mod");
+  mkdirSync(state, { recursive: true });
+  const version = options.version ?? "2.2.0";
+  writeModBuild(source, version);
+  const claude = createFakeClaude({ stagedVersion: version });
+  const daemon = createFakeDaemon({ flag: options.flag ?? true });
+  const { port } = await daemon.listen();
+  const env: Record<string, string> = {
+    HOME: home,
+    PATH: "",
+    MISSION_HOME: state,
+    MISSION_PORT: String(port),
+    MISSION_CLAUDE_BIN: claude.path,
+    MISSION_MOD_SOURCE: source,
+  };
+  return {
+    home, state, source, claude, daemon, env,
+    run: async (...argv) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const io: CliIo = { stdout: (t) => out.push(t), stderr: (t) => err.push(t), env, cwd: home, stdinIsTty: false };
+      const code = await runCli(argv, io);
+      return { code, out: out.join(""), err: err.join("") };
+    },
+    cleanup: async () => {
+      await daemon.close();
+      claude.cleanup();
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+/** The `claude plugin ...` subcommands the fake saw, as `install`, `marketplace add` and so on. */
+function pluginCalls(claude: FakeClaude): string[] {
+  return claude.invocations().filter((i) => i.argv[0] === "plugin").map((i) => (i.argv[1] === "marketplace" ? "marketplace add" : i.argv[1]!));
+}
+
+test("claude detection tries MISSION_CLAUDE_BIN, then PATH, then known places, and accepts only a claude with marketplaces", async () => {
+  const viaEnv = createFakeClaude({ version: "2.1.400" });
+  const viaPath = createFakeClaude({ version: "2.1.329" });
+  const old = createFakeClaude({ marketplaceSupported: false });
+  const home = mkdtempSync(join(tmpdir(), "mission-detect-"));
+  try {
+    const exec = realExec;
+    // The explicit override wins over PATH.
+    const first = await findClaude({ env: { MISSION_CLAUDE_BIN: viaEnv.path, PATH: viaPath.dir }, exec });
+    assert.equal(first.claude?.path, viaEnv.path);
+    assert.equal(first.claude?.source, "MISSION_CLAUDE_BIN");
+    assert.equal(first.claude?.version, "2.1.400");
+
+    // Without the override, PATH is searched.
+    const second = await findClaude({ env: { PATH: viaPath.dir, HOME: home }, exec });
+    assert.equal(second.claude?.path, viaPath.path);
+    assert.equal(second.claude?.source, "PATH");
+
+    // A bad override is reported, never silently replaced by what is on PATH.
+    const bad = await findClaude({ env: { MISSION_CLAUDE_BIN: join(home, "missing"), PATH: viaPath.dir }, exec });
+    assert.equal(bad.claude, null);
+    assert.match(bad.rejected.join(" "), /missing/);
+
+    // A claude without `plugin marketplace` is refused with the reason, and the search goes on.
+    const skipOld = await findClaude({ env: { PATH: [old.dir, viaPath.dir].join(":"), HOME: home }, exec });
+    assert.equal(skipOld.claude?.path, viaPath.path);
+    assert.match(skipOld.rejected.join(" "), /no `plugin marketplace`/);
+
+    // A known place under HOME is the last resort.
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    const known = join(home, ".local", "bin", "claude");
+    writeFileSync(known, readFileSync(viaEnv.path));
+    chmodSync(known, 0o755);
+    // The copy reads its state beside itself, so give it its own.
+    writeFileSync(join(home, ".local", "bin", "state.json"), readFileSync(join(viaEnv.dir, "state.json")));
+    writeFileSync(join(home, ".local", "bin", "invocations.jsonl"), "");
+    const third = await findClaude({ env: { PATH: "", HOME: home }, exec });
+    assert.equal(third.claude?.path, known);
+    assert.equal(third.claude?.source, "known place");
+
+    const none = await findClaude({ env: { PATH: old.dir, HOME: mkdtempSync(join(tmpdir(), "mission-empty-")) }, exec });
+    assert.equal(none.claude, null);
+  } finally {
+    for (const fake of [viaEnv, viaPath, old]) fake.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("staging publishes by rename: a new inode, no sibling left, and a bad build leaves the old one in place", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    const first = await stageMod({ source, dest });
+    assert.equal(first.version, "1.0.0");
+    const inodeBefore = statSync(dest).ino;
+    const fileBefore = statSync(join(dest, "mission-control", "hooks", "register.js")).ino;
+
+    writeModBuild(source, "1.1.0", 'fetch("/api/health");');
+    const second = await stageMod({ source, dest });
+    assert.equal(second.version, "1.1.0");
+    assert.notEqual(statSync(dest).ino, inodeBefore, "the published folder is a new inode, never rewritten in place");
+    assert.notEqual(statSync(join(dest, "mission-control", "hooks", "register.js")).ino, fileBefore);
+    assert.deepEqual(readdirSync(join(dir, "state")), ["mod"], "no staging or old sibling is left behind");
+
+    rmSync(join(source, "mission-control", "hooks", "register.js"));
+    await assert.rejects(stageMod({ source, dest }), /not a mod build/);
+    assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.1.0");
+    assert.deepEqual(readdirSync(join(dir, "state")), ["mod"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("setup on a clean machine stages and installs the mod, runs the other steps, and skips the stubs", async () => {
+  const r = await rig();
+  try {
+    const result = await r.run("setup");
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.deepEqual(pluginCalls(r.claude).filter((c) => c !== "list" && c !== "validate" && c !== "--help"), ["marketplace add", "install"]);
+    assert.deepEqual(r.claude.state().marketplaces, [join(r.state, "mod")]);
+    assert.deepEqual(r.claude.state().plugins.map((p) => [p.id, p.scope, p.enabled, p.version]), [[MOD_ID, "user", true, "2.2.0"]]);
+    assert.ok(existsSync(join(r.state, "mod", "mission-control", ".claude-plugin", "plugin.json")));
+    assert.match(result.out, /ok {4}mod: installed the mod 2\.2\.0 at user scope/);
+    assert.match(result.out, /- agents: step not available in this build/);
+    assert.match(result.out, /- codex: step not available in this build/);
+    assert.match(result.out, /ok {4}doctor: all 6 checks passed/);
+    assert.deepEqual(readdirSync(r.state), ["mod"]);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a second setup is idempotent: nothing is installed again", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const before = pluginCalls(r.claude).length;
+    const again = await r.run("setup");
+    assert.equal(again.code, 0, again.out + again.err);
+    assert.match(again.out, /the mod 2\.2\.0 is already installed/);
+    const added = pluginCalls(r.claude).slice(before);
+    assert.ok(!added.includes("install") && !added.includes("uninstall") && !added.includes("marketplace add"), added.join(","));
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a stale installed build is reinstalled by uninstall and install, never `plugin update`", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    const result = await r.run("setup");
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.match(result.out, /replaced 2\.1\.0 with the mod 2\.3\.0/);
+    const calls = pluginCalls(r.claude);
+    assert.ok(calls.indexOf("uninstall") < calls.indexOf("install"));
+    assert.ok(!calls.includes("update"));
+    assert.equal(r.claude.state().plugins[0]?.version, "2.3.0");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a reinstall that fails twice prints the cause and both recovery commands, still runs the other steps, and exits 1", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    r.claude.update({ failures: { install: { exitCode: 1, stderr: "marketplace unreachable", times: 5 } } });
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod: `claude plugin install` failed: marketplace unreachable/);
+    assert.ok(result.out.includes("claude plugin marketplace add " + join(r.state, "mod")));
+    assert.ok(result.out.includes("claude plugin install " + MOD_ID + " --scope user"));
+    // The steps after the failed one still ran.
+    assert.match(result.out, /- codex: step not available in this build/);
+    assert.match(result.out, /FAIL {2}doctor: /);
+    assert.match(result.err, /1 step failed|2 steps failed/);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("setup with no claude installs nothing, finishes the other steps and exits 1", async () => {
+  const r = await rig();
+  try {
+    r.env.MISSION_CLAUDE_BIN = join(r.home, "no-such-claude");
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod: the claude CLI was not found/);
+    assert.match(result.out, /ok {4}daemon: /);
+    assert.equal(existsSync(join(r.state, "mod")), false, "nothing is staged without a claude to install it");
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("doctor passes on an installed machine and changes nothing", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const calls = r.claude.invocations().length;
+    const files = readdirSync(r.state);
+    const result = await r.run("doctor");
+    assert.equal(result.code, 0, result.out + result.err);
+    for (const name of ["claude", "daemon", "flag", "mod-enabled", "mod-current", "mod-calls"]) assert.match(result.out, new RegExp("ok {4}" + name + ": "));
+    const added = r.claude.invocations().slice(calls).filter((i) => i.argv[0] === "plugin").map((i) => i.argv[1]);
+    assert.ok(added.every((c) => c === "list" || c === "validate" || c === "--help"), added.join(","));
+    assert.deepEqual(readdirSync(r.state), files);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("doctor names each failing check with its fix and exits 1", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    // Nothing installed yet: mod-enabled and mod-current cannot pass; the daemon is reachable.
+    const fresh = await r.run("doctor");
+    assert.equal(fresh.code, 1);
+    assert.match(fresh.out, /FAIL {2}mod-enabled: mission-control@mission-control is not installed\n {8}fix: Run `mctl setup`/);
+    assert.match(fresh.out, /FAIL {2}mod-calls: no staged mod bundle/);
+
+    assert.equal((await r.run("setup")).code, 0);
+
+    // Stale: the staged build moved on.
+    r.claude.setInstalledVersion("2.1.0");
+    const stale = await r.run("doctor");
+    assert.equal(stale.code, 1);
+    assert.match(stale.out, /FAIL {2}mod-current: the installed mod is 2\.1\.0 but the staged build is 2\.3\.0/);
+    assert.match(stale.out, /fix: Run `mctl setup`, or by hand: claude plugin marketplace add /);
+
+    // Disabled.
+    r.claude.update({ plugins: [{ id: MOD_ID, version: "2.3.0", scope: "user", enabled: false }] });
+    assert.match((await r.run("doctor")).out, /FAIL {2}mod-enabled: .* disabled at user scope/);
+
+    // Flag off: the daemon is up but does not advertise the routes.
+    r.claude.setInstalledVersion("2.3.0");
+    r.daemon.setFlag(false);
+    const off = await r.run("doctor");
+    assert.equal(off.code, 1);
+    assert.match(off.out, /ok {4}daemon: /);
+    assert.match(off.out, /FAIL {2}flag: the headless-mode preview flag is off/);
+
+    // Daemon down.
+    r.daemon.setDown(true);
+    const down = await r.run("doctor");
+    assert.match(down.out, /FAIL {2}daemon: no Mission Control daemon answered/);
+    assert.match(down.out, /FAIL {2}flag: the flag cannot be read/);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("mod-calls fails on a staged bundle that reaches a daemon path outside the allowlist", async () => {
+  const r = await rig();
+  try {
+    writeModBuild(r.source, "2.2.0", 'fetch("/api/health"); fetch("/api/sessions");');
+    // Setup's closing doctor step catches it too.
+    assert.equal((await r.run("setup")).code, 1);
+    const result = await r.run("doctor");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}mod-calls: the staged mod calls daemon paths that are not allowed: \/api\/sessions/);
+    assert.deepEqual(calledPaths('a("/api/health?x=1") + `/dispatch/inbox` + "/other"'), ["/api/health?x=1", "/dispatch/inbox"]);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("setup and doctor take no unknown arguments", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup", "--off")).code, 2);
+    assert.equal((await r.run("doctor", "--frobnicate")).code, 2);
+    // `--live` is accepted; nothing is installed in this rig, so the run itself reports failures.
+    assert.equal((await r.run("doctor", "--live")).code, 1);
+  } finally {
+    await r.cleanup();
+  }
+});

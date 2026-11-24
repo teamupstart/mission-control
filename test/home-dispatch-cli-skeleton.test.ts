@@ -35,7 +35,9 @@ test("the registry lists every spec 7.13 command once, each with its owner", () 
   assert.equal(new Set(COMMANDS.map((c) => c.name)).size, COMMANDS.length);
 });
 
-for (const command of COMMANDS) {
+// P14 replaced `setup` and `doctor`; their behavior is pinned in home-dispatch-setup-doctor.test.ts.
+const REPLACED = new Set(["setup", "doctor"]);
+for (const command of COMMANDS.filter((c) => !REPLACED.has(c.name))) {
   test(`mctl ${command.name} is a stub that says not implemented and exits 1`, async () => {
     const { io, out, err } = capture();
     assert.equal(command.implemented, false);
@@ -64,12 +66,13 @@ test("help lists every command, and an unknown or missing command is a usage err
 // P2's handoff: P14 owns the step bodies except `agents` (P15) and `codex` (P7).
 const STEP_OWNERS = { daemon: "P14", flag: "P14", mod: "P14", agents: "P15", codex: "P7", doctor: "P14" };
 
-test("the setup steps are the spec 7.14 list in order, each a stub taking { live }", async () => {
+test("the setup steps are the spec 7.14 list in order; only agents and codex are still stubs", async () => {
   assert.deepEqual(SETUP_STEPS.map((s) => s.id), [...SETUP_STEP_IDS]);
   assert.deepEqual(Object.fromEntries(SETUP_STEPS.map((s) => [s.id, s.owner])), STEP_OWNERS);
   assert.deepEqual([...SETUP_STEP_IDS], ["daemon", "flag", "mod", "agents", "codex", "doctor"]);
   for (const step of SETUP_STEPS) {
-    assert.equal(step.implemented, false, `${step.id} stub exports implemented: false`);
+    assert.equal(step.implemented, step.owner === "P14", `${step.id} implemented only when P14 owns it`);
+    if (step.implemented) continue;
     for (const live of [false, true]) {
       const result = await step.run({ live });
       assert.equal(result.id, step.id);
@@ -77,7 +80,8 @@ test("the setup steps are the spec 7.14 list in order, each a stub taking { live
     }
   }
   // Spec 7.14: until P15 and P7 merge, these two steps report that they are not built yet.
-  const messages = Object.fromEntries(await Promise.all(SETUP_STEPS.map(async (s) => [s.id, (await s.run({ live: false })).message])));
+  const stubs = SETUP_STEPS.filter((s) => !s.implemented);
+  const messages = Object.fromEntries(await Promise.all(stubs.map(async (s) => [s.id, (await s.run({ live: false })).message])));
   assert.equal(messages.agents, "agents: not built yet");
   assert.equal(messages.codex, "codex: not built yet");
 });

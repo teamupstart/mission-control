@@ -918,6 +918,23 @@ test("confirming a comma-only split preserves literal C plus plus", async (t) =>
   assert.deepEqual(delivered, [["Steve", "explain C plus plus", "literal"], ["Alice", "review the PR", "literal#2"]]);
 });
 
+test("a spoken name cannot confirm a different action in the millisecond the rows change", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, say, delivered } = routerRig(() => answered(null), ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await say("Steven, check the build, and Alice, review the PR", "stage");
+  t.mock.timers.setTime(200);
+  assert.ok(await router.pick("stage", "task:Steve"));
+  t.mock.timers.setTime(201);
+  await router.accept(VoiceUtteranceSchema.parse({ id: "tie", text: "Steve", backend: "fluidaudio", capturedAt: 200 }));
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  assert.equal(router.heard.list().find(e => e.id === "tie")?.rule, "ambiguous-pick");
+  assert.equal(await router.sendNow("stage"), false);
+  await say("Steve", "fresh");
+  assert.ok(await router.sendNow("stage"));
+  assert.deepEqual(delivered, [["Steve", "check the build, and Alice, review the PR", "stage"]]);
+});
+
 test("a spoken boundary choice waits for the model's follow-up rows", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 100 });
   let showRows!: (result: VoiceDecisionResult) => void;

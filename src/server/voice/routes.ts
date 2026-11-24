@@ -5,6 +5,14 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
+  VOICE_CAPTURE_END_HEADER,
+  VOICE_CAPTURE_START_HEADER,
+  VOICE_DRAINING_REVISIONS_HEADER,
+  VOICE_HELD_REVISION_HEADER,
+  VOICE_LISTENER_ID_HEADER,
+  VOICE_RELEASE_REVISION_HEADER,
+  VOICE_RELEASE_TIME_HEADER,
+  VOICE_SPEECH_START_HEADER,
   VoiceConfigPatchSchema,
   VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
@@ -12,7 +20,7 @@ import {
   VoiceShellReportSchema,
 } from "@shared/voice.ts";
 import { checkToken } from "../auth.ts";
-import { requireFeature } from "../feature-flags/index.ts";
+import { disabledFeatureResponse, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, setVoiceConfig } from "./config.ts";
@@ -31,8 +39,25 @@ const limitBody = bodyLimit({
   onError: (c) => c.json({ error: "request_too_large", reason: "The request body is too large." }, 413),
 });
 
+function waitForDirective(store: VoiceStateStore, revision: string, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      unsubscribe();
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const unsubscribe = store.onChange((state) => {
+      if (store.directive(state).revision !== revision) finish();
+    });
+    const timeout = setTimeout(finish, 25_000);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
+
 /**
- * Voice's routes (contracts A, B and D), every one behind the `voice` flag: with it off each answers
+ * Voice's routes (contracts A, B, D and I), every one behind the `voice` flag: with it off each answers
  * 404 before its handler runs.
  *
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
@@ -49,6 +74,7 @@ const limitBody = bodyLimit({
  *
  * Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does: a
  * cooperating local process posts to them, and the token is what separates it from any other.
+ * - `GET /voice/listener/directive` returns capture settings and holds a matching revision up to 25 seconds.
  * - `POST /voice/listener/hello` takes a listener's hello. One naming a protocol major this
  *   daemon does not speak is refused with 409, and the state's `listener` capability says why.
  * - `POST /voice/shell-report` takes the shell's capabilities, microphone permission, call and
@@ -93,13 +119,37 @@ export function registerVoiceRoutes(
   });
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
+  app.get("/voice/listener/directive", gate, async (c, next) => {
+    if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    c.header("Cache-Control", "no-store");
+    const id = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
+    const current = store.directive();
+    const signal = c.req.raw.signal;
+    if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal);
+    await next();
+  }, gate, (c) => {
+    if (!store.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) return c.json({ error: "not_listener_owner" }, 409);
+    const state = store.state();
+    const next = store.directive(state);
+    if (next.capture && state.mode === "push-to-talk") c.header(VOICE_HELD_REVISION_HEADER, next.revision);
+    const draining = store.drainingRevisions();
+    if (draining.length) c.header(VOICE_DRAINING_REVISIONS_HEADER, draining.join(","));
+    // The poll may have missed capture-off between key-up and the following press.
+    const release = store.releasedCapture(c.req.query("revision")) ?? store.releasedCapture();
+    if (release) {
+      c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
+      c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
+    }
+    return c.json(next);
+  });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const result = store.acceptHello(parsed.data);
+    const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data);
     if (!result.ok) {
-      return c.json({ error: "unsupported_protocol", reason: result.reason, protocol: result.protocol }, 409);
+      return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : 409);
     }
     return c.json({ accepted: true, protocol: result.protocol });
   });
@@ -118,12 +168,52 @@ export function registerVoiceUtteranceRoutes(
   publish: (card: VoiceCard) => void,
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
-  const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish);
+  const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish,
+    () => voiceStateStore.hostNowUs());
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    return c.json({ accepted: await router.accept(parsed.data) });
+    // Capture may have stopped and resumed while the request was in flight or its body was being read.
+    const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+    const state = voiceStateStore.state();
+    let directive = voiceStateStore.directive(state);
+    const revision = c.req.query("revision");
+    if (state.mode === "push-to-talk" && directive.capture && revision === directive.revision) {
+      // The physical key may already be up. Sending to the router here would make
+      // delivery irreversible before the shell has confirmed the audio boundary.
+      await waitForDirective(voiceStateStore, revision, c.req.raw.signal);
+      const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+      if (disabled) return disabled;
+      if (c.req.raw.signal.aborted || !voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+      directive = voiceStateStore.directive();
+      if (directive.revision === revision) {
+        c.header(VOICE_HELD_REVISION_HEADER, revision);
+        return c.json({ accepted: false });
+      }
+    }
+    const release = revision ? voiceStateStore.releasedCapture(revision) : undefined;
+    const heldBeforeRelease = release !== undefined && revision === release.revision;
+    const startHeader = c.req.header(VOICE_CAPTURE_START_HEADER);
+    const startUs = startHeader ? Number(startHeader) : undefined;
+    if (startUs !== undefined && (!Number.isSafeInteger(startUs) || startUs < 0)) return c.json({ accepted: false });
+    const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
+    const end = endHeader ? Number(endHeader) : NaN;
+    const onsetHeader = c.req.header(VOICE_SPEECH_START_HEADER);
+    const onsetUs = onsetHeader === undefined ? undefined : Number(onsetHeader);
+    if (onsetUs !== undefined && (!onsetHeader?.trim() || !Number.isSafeInteger(onsetUs) || startUs === undefined ||
+        onsetUs < startUs || !Number.isSafeInteger(end) || onsetUs >= end * 1000)) return c.json({ accepted: false });
+    if (heldBeforeRelease) {
+      if (startUs === undefined || startUs < release.pressedAtUs ||
+          !Number.isSafeInteger(end) || end > release.at || startUs >= end * 1000) {
+        c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
+        c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
+        return c.json({ accepted: false });
+      }
+    }
+    if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
+    return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs }) });
   });
   app.get("/api/voice/heard", gate, (c) => {
     c.header("Cache-Control", "no-store");

@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 import {
   VOICE_LISTENER_PROTOCOL_VERSION,
+  VOICE_LISTENER_ID_HEADER,
+  type VoiceListenerDirective,
   type VoiceListenerHello,
 } from "../../src/shared/voice.ts";
 import type { VoiceModelManifest } from "../../src/shared/voice-models.ts";
@@ -27,6 +29,7 @@ interface VoiceDaemon {
 
 /** How often the stand-in sends a hello: well inside the daemon's 30 second lapse. */
 const HELLO_EVERY_MS = 3000;
+const listenerId = crypto.randomUUID();
 
 /** The hello the stand-in sends: a loaded model and a granted microphone. */
 export const LISTENER_HELLO: VoiceListenerHello = {
@@ -45,7 +48,7 @@ export function voiceToken(daemon: VoiceDaemon): string {
 export async function sendHello(daemon: VoiceDaemon, hello: Partial<VoiceListenerHello> = {}): Promise<number> {
   const response = await fetch(`${daemon.baseURL}/voice/listener/hello`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+    headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId },
     body: JSON.stringify({ ...LISTENER_HELLO, ...hello }),
   });
   await response.body?.cancel();
@@ -82,9 +85,13 @@ export async function beListener(daemon: VoiceDaemon, hello: Partial<VoiceListen
 async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Promise<Response> {
   const listener = await beListener(daemon, { backend: utterance.backend });
   try {
-    return await fetch(`${daemon.baseURL}/voice/utterances`, {
+    const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+    const directive = await fetch(`${daemon.baseURL}/voice/listener/directive`, { headers });
+    if (!directive.ok) return directive;
+    const { revision } = await directive.json() as VoiceListenerDirective;
+    return await fetch(`${daemon.baseURL}/voice/utterances?revision=${encodeURIComponent(revision)}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+      headers,
       body: JSON.stringify(utterance),
     });
   } finally {

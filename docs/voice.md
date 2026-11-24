@@ -5,8 +5,8 @@ When it is finished, the operator will talk to an agent by name, with speech rec
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
-holds a message for the configured cancel window and queues it to the addressed agent. Audio
-capture and the on-screen confirmation card belong to later phases.
+holds a message for the configured cancel window and queues it to the addressed agent. On Apple silicon, the standalone listener captures and recognizes speech locally.
+The on-screen confirmation card belongs to a later phase.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
@@ -14,20 +14,185 @@ snapshot has no `voice` field, and neither the Settings category, the Setup fami
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
 
+## Running the listener on a development Mac
+
+Build the helper with `npm run build:voice-listener`. Start the daemon, enable the four previews, download
+the model in Setup and unmute Voice. From a terminal with microphone access, run
+`npm run voice:listener`. Speak a running resident's reference name followed by “check the
+build”. After the cancel window, look for “check the build” in the resident's conversation
+and the routing outcome at `GET /api/voice/heard`. Muting stops the audio engine and
+releases its microphone. If this was the only capture, the macOS orange dot goes out.
+
+Any launcher can run `dist/native/voice-listener` directly with these three variables.
+
+| Variable | Value |
+| --- | --- |
+| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin |
+| `MISSION_VOICE_TOKEN_FILE` | Path to its token, sent as `x-harness-token` |
+| `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
+
+The development launcher fills missing values from the local daemon configuration and the
+FluidAudio model manifest. When macOS reports `not-determined` at startup, the helper
+prints a terminal diagnostic, includes the reading in its hello and keeps the microphone
+closed. Run the development command from a terminal app that already has microphone access.
+An explicit denial is sent in the hello and exits with status 2. The first-time consent
+prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
+
+On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
+Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
+Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
+directive poll and utterance POST, alongside the daemon token. The first compatible hello
+claims the listener lease. While its microphone permission is granted, a second process
+receives HTTP 409 `listener_in_use` and exits before
+opening the microphone. A new process can claim capture 30 seconds after the owner's last
+hello. It receives a fresh revision even when settings are identical. The daemon checks
+ownership again when a held poll completes and before routing each utterance.
+A helper with undetermined, restricted or unknown permission can report its status to Setup
+and poll with capture off. A granted listener can replace it immediately. The replacement
+receives a fresh revision and the previous listener's next poll or heartbeat receives HTTP 409.
+A helper reporting an explicit microphone denial releases capture immediately and exits
+with status 2. Setup retains the permission reading, and a newly authorized helper can
+start immediately.
+Selecting a different backend releases the previous owner's lease and wakes its held poll.
+Only the selected backend can acquire or renew the lease. A hello from another backend
+receives HTTP 409 `backend_not_selected`. In `auto`, either backend can acquire a free lease.
+
+Every utterance POST also requires the capture directive's revision. Older protocol majors
+receive HTTP 409 `unsupported_protocol` at hello. The helper sends one hello
+at a time, so a loading heartbeat completes before it announces CoreML readiness.
+The hello lists inputs by stable UID and reports built-in and Bluetooth transport. It
+omits empty or oversized UIDs and limits display names to 256 UTF-16 code units.
+The built-in selection falls back
+to the system input when no built-in input exists. An unavailable explicit UID stops the
+listener. The optional `primingAvailable` boolean reports whether the local CTC model loaded.
+With only the TDT repository present, transcription continues with priming off.
+
+Fetch `GET /voice/listener/directive` with both `x-harness-token` and `x-voice-listener-id`
+on every poll. Use the same listener UUID that the daemon accepted at hello. The first poll returns
+`{ capture, roster, inputDevice, pauseMs, revision }`. The roster is an array of spoken names.
+After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
+directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
+`pauseMs` is optional and unused. This daemon sends null.
+
+A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
+response header. The native helper retains completed phrases in capture order and decodes
+them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
+The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
+If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
+When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
+`x-voice-release-revision` (the held capture revision) and `x-voice-release-host-ms` (monotonic
+host milliseconds). A helper applying that exact held revision uses key-up as the boundary for
+the unfinished phrase. If its input tap still owes samples through that time, the helper
+collects the pre-release portion of the last callback before closing. A stalled input
+closes after 250 ms and delivers only phrases completed before the stall. Manual mute stops the input immediately. The helper can finish decoding and posting
+the held audio with the original revision. If another press arrives before the tap closes,
+the helper keeps polling for privacy changes and rechecks the directive after closure.
+A second key press can record while the helper
+finishes decoding previous holds in spoken order. The daemon lists up to eight authorized
+released revisions in `x-voice-draining-revisions`. A poll that missed an intervening key-up
+also receives the release time for its queried revision. An ordinary capture stop discards unfinished work.
+The native helper dates the samples from the input tap's audio timestamp on the shared host
+clock, so a delayed callback still includes speech recorded before key-up. A gap in
+the input timeline discards the interrupted utterance through the next silence boundary.
+During push-to-talk the helper retains the interrupted prefix for up to two seconds.
+If delayed key-up falls on or before the last contiguous sample boundary, the helper
+can finish the phrase using only samples through release. A key-up in the gap discards it.
+If the gap falls between utterances, the helper clears the lead-in and accepts the next phrase immediately.
+
+The shell timestamps every snapshot, including idle heartbeats, at observation time with
+`reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
+monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
+across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
+older, duplicate, future-dated and expired snapshots before applying state. A dated
+snapshot's 15-second lifetime starts when observed, including time spent in transit.
+Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.
+A fresh snapshot still renews that lifetime and updates call state, permissions and capabilities
+when it repeats a key event older than the daemon’s last key transition.
+
+On macOS use the Core Audio host clock (`mach_absolute_time` converted with its timebase).
+Key events use the same microsecond clock. The daemon orders them at that precision and
+rounds down to whole milliseconds only for the release boundary sent to the listener. During a hold send
+`pushToTalk: true` and the original `pushToTalkPressedAtHostUs` when available. Otherwise
+the first ordered down snapshot dates the press. A later press starts a fresh revision.
+On release send `pushToTalk: false` and `pushToTalkReleasedAtHostUs`, retaining the last
+release stamp on subsequent idle snapshots so a reordered heartbeat can confirm it.
+If key-up predates an inferred press and cannot be identified as a replay of an older
+physical event, the daemon closes capture and discards the hold.
+A missing, invalid or future release stamp closes capture and discards the tail. Reports
+without ordering metadata still carry shell capabilities and call state but cannot authorize
+a hold. Legacy Unix key timestamps are accepted as input and have no delivery authority.
+
+The default-input audio engine runs with voice processing off. It converts input to mono
+16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
+steady background noise can continue between utterances. Parakeet transcribes each segment
+after 800 ms of frames classified as non-speech. If the 30-second buffer fills
+before that boundary, the listener discards the whole utterance, including any further
+speech before the next silence boundary. During a key hold, the prefix remains recoverable
+for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
+When CTC is available, the helper uses the directive's roster to rescore those same samples.
+Only a correction aligned to the leading address can change the transcript and its timing
+labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.
+Word timings come from the decoder. When a CTC correction changes the word count, the listener
+divides the measured span evenly among the corrected words. Interior boundaries are estimates.
+While listening, two completed phrases can wait in capture order behind a busy recognizer
+or a pending POST. If that queue fills, the listener drops the incoming phrase and reports
+the backlog on stderr. Only text, relative word timings and capture metadata reach the daemon. Samples and pending
+utterances stay in memory. Except for a matching push-to-talk release, a changed directive
+discards buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
+If a hardware change stops the engine, the helper refreshes its directive and opens a new
+input if capture is still enabled. Losing an explicitly selected UID produces an input error.
+A failed directive poll closes the microphone and exits. The helper writes no recordings or
+transcripts and logs no recognized words.
+
 ## Routing a text utterance
 
-A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
-`x-harness-token`. Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix
-milliseconds on the host clock shared by the listener and daemon. A listener using a recognizer
-with its own clock converts its timestamps to host time at capture.
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...`
+with both `x-harness-token` and `x-voice-listener-id`. Set the latter to the UUID from that
+listener's accepted hello. Send the directive revision under which the segment was captured. The daemon
+returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
+Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
+Reassigning a spoken name or changing its target task or session issues a fresh revision,
+even when the list of names sent to the recognizer stays the same.
+Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix milliseconds
+on the host clock shared by the listener and daemon. The helper dates the first sample
+when it detects speech and carries that timestamp through clipping and transcription.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
-The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
+transcript, and the listener continues with later speech. While listening, the daemon can route a capture immediately.
+A POST made while push-to-talk is held waits for the shell's key-up timestamp before
+anything reaches Recently heard, a card or the queue. If the same key is still held after
+25 seconds, the daemon returns `accepted: false` and its revision in `x-voice-held-revision`.
+The listener retries the same POST and utterance ID after at least 250 ms. It drops that
+segment after three attempts or 55 seconds, including time spent waiting for a response,
+and continues with later speech. During auto-mute following key-up,
+the daemon accepts the same owner's held revision for segments contained within the key interval.
+The listener rounds the first sample down to host microseconds in `x-voice-capture-start-host-us`.
+It also sends the first voiced sample in `x-voice-speech-start-host-us`. This optional
+timestamp lies inside the posted audio interval. It orders speech against dashboard actions
+even when the recorded lead-in began before a click. Clients that omit it use capture start.
+It clips on 16 kHz sample boundaries and rounds the exclusive end up to host milliseconds
+for `x-voice-capture-end-host-ms`. At key-up the detector tests a partial 20 ms frame
+with silence padding. The recognizer receives only recorded samples through release.
+A clipped prefix containing only quiet lead-in is discarded.
+The daemon timestamps dashboard picks on the listener's host clock. On macOS it reads
+`CLOCK_UPTIME_RAW`, the Core Audio clock in nanoseconds, and converts it to microseconds.
+On Linux the host clock is `CLOCK_MONOTONIC`. The router uses these timestamps to order
+commands, picks and cancels. Comparisons involving Unix-only captures use wall time.
+Recently heard displays the original Unix `capturedAt`. If a POST races key-up
+and extends past it, the daemon returns `accepted: false` and the release headers. The
+helper transcribes the clipped PCM again before retrying. Successive key presses during the
+same call preserve the release exception. Manual mute, a change of recipient, listener or input,
+or leaving the call revokes it. When the shell lease lapses, a new call cannot
+restore an earlier call's released revisions.
 With the window off the daemon acknowledges the capture as soon as it claims delivery.
 The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit
-backend selection. The daemon drops captures dated more than one second ahead of its clock.
+backend selection. During ordinary listening the daemon drops captures dated more than
+one second ahead of its host clock, or its wall clock for Unix-only clients.
+For released holds it checks the monotonic key interval,
+so a backward wall-clock adjustment still lets pre-release speech reach the queue.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
 The listener posts captures in spoken order, waiting for each response before posting the next
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
@@ -452,12 +617,13 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
 Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does:
 
 - `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
-  listener every 10 seconds. `version` is the listener protocol version; a hello whose major
-  version is not this daemon's (`1`) is refused with 409 `unsupported_protocol`, and the state's
-  `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, registeredHotkey, hotkeyError }`
-  receives the desktop shell's capability report. A report lapses after 15 seconds.
-  The daemon drops unrecognized capability IDs.
+  listener every 10 seconds. `version` is the listener protocol version. A hello with a different
+  major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
+  If there is no other active owner, the state's `listener` capability says why.
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
+  sent by the desktop shell. A dated report lapses 15 seconds after observation. An
+  accepted undated report lapses 15 seconds after arrival. Capability ids this build
+  does not know are dropped rather than refused.
 
 [Phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md) introduces the shell report producer.
 [Phase 11](plans/voice-addressing-for-agents/phase-11-hotkey-and-calls.md) connects it to the native hotkey registrar.

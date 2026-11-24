@@ -1,4 +1,4 @@
-import { setImmediate as yieldToDaemon, setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldToDaemon } from "node:timers/promises";
 import { statSync } from "node:fs";
 import type { PendingTurn } from "@shared/types.ts";
 import {
@@ -164,7 +164,7 @@ export class SpokenTranscriptChanged extends Error {
 
 export class SpokenTranscriptUnavailable extends Error {
   constructor(cause: unknown) {
-    super("Transcript verification failed after three attempts. Nothing was sent. Repeat the spoken message to try again.", { cause });
+    super("The transcript worker could not prepare the spoken message.", { cause });
   }
 }
 
@@ -177,14 +177,10 @@ export async function prepareSpokenTranscript(key: string, transcript: NonNullab
   if (!prepare) return { path: transcript.path, capture: {
     version: transcript.read.snapshot?.(transcript.path)?.version ?? null, eof: null, proofs: new Map(),
   } };
-  // No transport has started. Retry a failed worker here, even if the idle session emits no events.
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return { path: transcript.path, capture: await prepare(transcript.path, offsets) };
-    } catch (error) {
-      if (attempt === 3) throw new SpokenTranscriptUnavailable(error);
-      await delay(100 * attempt);
-    }
+  try {
+    return { path: transcript.path, capture: await prepare(transcript.path, offsets) };
+  } catch (error) {
+    throw new SpokenTranscriptUnavailable(error);
   }
 }
 

@@ -3858,6 +3858,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "spoken_handoff_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
+  addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "transcript_boundary", "TEXT");
@@ -15605,6 +15606,22 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
       .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'sending' AND revision = ?`)
       .run(id, revision).changes === 1
   );
+}
+
+/** Verification failed before the runtime guard. Share one retry budget across worker and revision failures. */
+export function failSpokenPreparation(id: string, revision: number, now: number, retryDetail: string):
+  { noteKey: string; exhausted: boolean } | null {
+  return inTransaction(() => {
+    const row = openDb().prepare(`UPDATE pending_turns SET spoken_proof_failures = spoken_proof_failures + 1
+      WHERE id = ? AND state = 'sending' AND revision = ? AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL
+      RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision) as
+      { noteKey: string; failures: number } | undefined;
+    if (!row) return null;
+    const exhausted = row.failures >= 3;
+    const settled = exhausted ? deleteClaimedPendingTurn(id, revision) : releasePendingTurn(id, revision, retryDetail, now);
+    if (!settled) throw new Error("Could not settle the failed spoken preparation");
+    return { noteKey: row.noteKey, exhausted };
+  });
 }
 
 /** Stamp the receiving cycle and mint one reservation for this write, even if a capture ID is reused. */

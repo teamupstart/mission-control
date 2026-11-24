@@ -47,6 +47,7 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_generation;
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_at;
     ALTER TABLE pending_turns DROP COLUMN spoken_reservation_id;
+    ALTER TABLE pending_turns DROP COLUMN spoken_proof_failures;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold_since;
     PRAGMA user_version = 51;
@@ -1111,6 +1112,44 @@ test("after eviction cleanup searches later handoffs in the same conversation be
   assert.equal(rows.find(row => row.id === duringSweep.id)?.messageTs, now, "the next sweep observes the concurrent append");
   assert.equal(rows.some(row => row.id === absent.id), false, "a UUID in another conversation cannot preserve this row");
   assert.ok(rows.some(row => row.id === recent.id), "the later handoff itself is still inside its receipt window");
+});
+
+test("archived cleanup binds only spoken receipts and preserves native turns claimed by other senders", async () => {
+  const { delegatedLedger, reviewLedger, spokenLedger, pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { reserveReviewDelivery } = await import("../src/server/review-deliveries.ts");
+  const { wrapReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const key = "archived-path-claims";
+  const live = fakeTranscript();
+  const archived = fakeTranscript();
+  const current = live.conversation(key);
+  const old = { key, transcript: { ...archived.conversation(key).transcript!, path: "archived" } };
+  const now = Date.now();
+  const delegate = (words: string) => delegatedLedger.reserve(current, words, base => ({
+    ...base, controllerId: "controller", controllerName: "Steve",
+  }), now);
+  delegate("already delivered");
+  const claimed = live.append("previous-claim", "already delivered", now);
+  assert.ok(delegatedLedger.bound(current, [claimed]).rows.has(claimed.id));
+  const delegated = delegate("a delegated turn");
+  const review = wrapReviewEnvelope("answer", ["b99fa7da-f9dd-4bab-9e44-691bac441a4c"], "a review answer");
+  const reviewId = reserveReviewDelivery(current, review, undefined, now)!;
+  const words = "a spoken instruction";
+  const attempt = claimSpoken(key, words, words);
+  const spoken = reserveSpokenTurn(old, words, words, false, attempt, now);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, spoken.id));
+  archived.append(claimed.id, words, now);
+  archived.append("old-delegated", "a delegated turn", now);
+  archived.append("old-review", review, now);
+  archived.append("actual-spoken", words, now);
+  await pruneExpiredSpokenTurns(now + 2 * DELIVERY_LAG_MS, k => k === key ? [old.transcript] : []);
+  assert.equal(spokenLedger.rows(key)[0]?.messageId, "actual-spoken");
+  assert.equal(delegatedLedger.rows(key).find(r => r.id === delegated.id)?.messageId, null);
+  assert.equal(reviewLedger.rows(key).find(r => r.id === reviewId)?.messageId, null);
+  const liveDelegated = live.append("live-delegated", "a delegated turn", now);
+  const liveReview = live.append("live-review", review, now);
+  assert.equal(delegatedLedger.bound(current, [liveDelegated]).rows.get(liveDelegated.id)?.id, delegated.id);
+  assert.equal(reviewLedger.bound(current, [liveReview]).rows.get(liveReview.id)?.id, reviewId);
 });
 
 test("hourly SDK cleanup yields between pages and reuses only complete scans of the same revision and receipt IDs", async t => {

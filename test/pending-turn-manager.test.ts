@@ -781,9 +781,9 @@ test("a spoken paste retries a changed transcript boundary and sends once agains
   assert.equal(row?.transcriptBoundary, claudeTranscript.messages!.boundary!(path)?.proof);
 });
 
-test("a quiet spoken delivery retries a failed transcript worker and releases Foreman after repeated failure", async t => {
+test("a quiet spoken delivery bounds worker failures and changed transcript revisions across restart, then releases Foreman", async t => {
   const { VoiceRouter } = await import("../src/server/voice/router.ts");
-  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  const { closeDb, loadSpokenTurns } = await import("../src/server/db.ts");
   const path = join(home, "spoken-worker-recovery.jsonl");
   writeFileSync(path, "{}\n");
   t.mock.method(claudeTranscript, "locate", () => path);
@@ -791,16 +791,19 @@ test("a quiet spoken delivery retries a failed transcript worker and releases Fo
   t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
   const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
   const prepare = read.prepareHandoffBoundaries.bind(read);
-  let failures = 0;
+  let workerFailures = 0;
   let attempts = 0;
   t.mock.method(read, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
     attempts++;
-    if (attempts <= failures) throw new Error("Transcript worker exited before returning proof");
+    if (attempts <= workerFailures) throw new Error("Transcript worker exited before returning proof");
     return prepare(...args);
   });
-  for (failures of [1, 3]) {
+  for (const [errors, changes] of [[1, 0], [3, 0], [0, 3], [1, 2]] as const) {
+    workerFailures = errors;
     attempts = 0;
-    const f = terminalFixture("spoken-worker-" + failures, async () => ({ ok: true, pasted: true, submitVerified: true }));
+    const fixture = () => terminalFixture(`spoken-proof-${errors}-${changes}`, async () => ({ ok: true, pasted: true, submitVerified: true }),
+      15, async () => { if (attempts <= errors + changes) appendFileSync(path, "{}\n"); });
+    let f = fixture();
     t.after(() => f.manager.stop());
     const target = { key: "task:steve", name: "Steve", kind: "session", sessionId: f.id, taskId: null,
       role: "", colorId: null, agent: "claude", state: "running" } as const;
@@ -813,8 +816,15 @@ test("a quiet spoken delivery retries a failed transcript worker and releases Fo
     f.registry.voiceRouter = router;
     await router.accept({ id: f.key, text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
     assert.equal(f.registry.voiceHold(f.id), true);
+    if (changes === 2) {
+      await until(() => listPendingTurns(f.key)[0]?.lastError?.includes("Retrying the spoken message") === true, "first proof retry");
+      f.manager.stop();
+      closeDb();
+      f = fixture();
+      f.registry.voiceRouter = router;
+    }
     await until(() => listPendingTurns(f.key).length === 0, "worker-result settlement", 10_000);
-    const failed = failures === 3;
+    const failed = errors + changes === 3;
     assert.equal(attempts, failed ? 3 : 2);
     assert.equal(f.injected.length, failed ? 0 : 1);
     assert.equal(loadSpokenTurns(f.key).length, failed ? 0 : 1);

@@ -494,16 +494,15 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   /** Recheck persisted rows before deletion, even if an earlier best-effort read found nothing. */
   async reconcileBeforePrune(noteKey: string, transcript: SessionMessages, now: number, version: string, signal?: AbortSignal): Promise<void> {
     this.forgetConversation(noteKey);
-    for (const ledger of ledgers) {
-      for (const row of ledger.rows(noteKey).filter(row => !row.contested && row.messageId === null)) {
-        // Re-enter the normal binding policy with fresh row ownership and claimed IDs after each yield.
-        do {
-          await yieldToDaemon();
-          if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== version) {
-            throw new Error("Spoken cleanup interrupted or transcript changed");
-          }
-        } while (!ledger.bindLanded(noteKey, transcript, now, { pruneRow: row.id }));
-      }
+    // Archived paths only establish claims for this ledger. The other ledgers' offsets
+    // belong to the live transcript. bindPending still respects their existing native IDs.
+    for (const row of this.rows(noteKey).filter(row => !row.contested && row.messageId === null)) {
+      do {
+        await yieldToDaemon();
+        if (signal?.aborted || transcript.read.snapshot?.(transcript.path)?.version !== version) {
+          throw new Error("Spoken cleanup interrupted or transcript changed");
+        }
+      } while (!this.bindLanded(noteKey, transcript, now, { pruneRow: row.id }));
     }
   }
 

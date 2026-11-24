@@ -268,14 +268,18 @@ including newer handoffs still inside their receipt window. Before expiring an u
 payload it yields between pages, then rechecks the saved locations, file revisions and eligible rows.
 An unchanged SDK-only file can reuse a complete scan for the same receipt IDs. A missing,
 unreadable or changing file is retried later.
+Archived scans bind only spoken receipts and respect native turns already claimed by other senders.
+Delegated and review deliveries bind against the live transcript.
 Pending uncertain attempts remain available for the operator to resolve.
 
 For a confirmed transport without client identifiers, a file created after reservation
 supplies the starting boundary only if its creation millisecond is strictly later than the reservation.
 The first binding saves that file's identity at offset zero in the same transaction as the
 native message ID. For an existing file, the handoff hashes through its captured offset.
-If the proof worker fails, the daemon tries twice more before reporting the message as failed.
-The operator can repeat it. Exhausting these attempts releases the pending hold before any paste.
+A worker failure and a changed file revision at the write guard count toward the same
+three-attempt limit. The outbox records the count across restart. Between attempts the
+message is queued and can be recalled. After the third failure, the daemon releases the pending
+hold and tells the operator they can repeat the message.
 If the writer appends during the read, a second matching hash through that same offset
 confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.

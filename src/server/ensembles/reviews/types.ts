@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@shared/types.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type {
   EnsembleArtifactKind,
@@ -51,6 +52,7 @@ export interface ReviewMaterial {
 export interface ReviewExecution {
   runnerId: LlmRunnerId;
   modelId: string;
+  effort?: ThinkingLevel;
   /** A configured runner id this build could not honour, else null - reported, never swallowed. */
   unknownRunner: string | null;
 }
@@ -81,7 +83,7 @@ export interface ReviewRuntime {
   runModel(
     runnerId: LlmRunnerId,
     prompt: string,
-    opts: { modelId: string; timeoutMs: number; schema?: Record<string, unknown> },
+    opts: { modelId: string; effort?: ThinkingLevel; timeoutMs: number; schema?: Record<string, unknown> },
   ): Promise<string>;
   /** Whether this runner enforces the supplied JSON Schema at the provider boundary. */
   guaranteesSchema(runnerId: LlmRunnerId): boolean;

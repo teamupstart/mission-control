@@ -108,7 +108,6 @@ async function runVoiceRoutingJobNow(
       schema: voiceRoutingSchema(questions),
       shapeGuaranteed: true,
       maxAttempts: 1,
-      thinking: "off",
       systemPrompt: VOICE_ROUTING_SYSTEM_PROMPT,
     },
   );

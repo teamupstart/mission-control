@@ -23,6 +23,7 @@
 import type { LlmSpendModelUsage, LlmSpendPrice, LlmSpendRole } from "./llm-spend.ts";
 import type { ModelSource } from "./model-choice.ts";
 import type { ThinkingLevel } from "./types.ts";
+import { launchEffortLevels } from "./harness-capabilities.ts";
 import { RASTER_IMAGE_MIME_TYPES, type RasterImageMimeType } from "./images.ts";
 
 /**
@@ -273,6 +274,24 @@ export function llmRunInputBytes(
     (total, image) => total + image.bytes,
     new TextEncoder().encode(prompt).byteLength,
   );
+}
+
+export interface ResolvedLlmEffort {
+  /** Null leaves the provider's own default in effect. */
+  level: ThinkingLevel | null;
+  /** A saved override that the selected provider and model do not offer. */
+  unsupported: ThinkingLevel | null;
+}
+
+export function resolveLlmEffort(
+  runner: LlmRunnerId,
+  model: string | null,
+  effort: ThinkingLevel | null | undefined,
+): ResolvedLlmEffort {
+  if (!effort) return { level: null, unsupported: null };
+  return launchEffortLevels(runner, model).includes(effort)
+    ? { level: effort, unsupported: null }
+    : { level: null, unsupported: effort };
 }
 
 export interface LlmRunOptions {

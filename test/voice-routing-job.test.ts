@@ -79,6 +79,19 @@ test("on Codex: reasoning effort none, the system prompt ahead of the questions,
   assert.deepEqual(schema.properties.answers.required, ["q1"]);
 });
 
+test("the background effort preview cannot override Luna's measured thinking setting", async (t) => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "background-reasoning-effort", enabled: true });
+  t.after(() => {
+    setLlmConfig({ efforts: { "voice-routing": null } });
+    applyFeatureFlagIntent({ kind: "flag", id: "background-reasoning-effort", enabled: false });
+  });
+  setLlmConfig({ efforts: { "voice-routing": "high" } });
+  await runVoiceRoutingJob([QUESTION], { runner: "codex", timeoutMs: 10_000 });
+  const settings = readFileSync(record("codex-argv"), "utf8").split("\n");
+  assert.deepEqual(settings.filter(arg => arg.startsWith("model_reasoning_effort=")), ['model_reasoning_effort="none"']);
+});
+
 test("on Claude through the Agent SDK: thinking disabled, the system prompt replacing Claude Code's, tools off and Haiku", async () => {
   let options!: ClaudeSdkOneShotQueryOptions;
   const deps: ClaudeSdkOneShotDeps = {

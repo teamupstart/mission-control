@@ -265,8 +265,15 @@ test("the voice preview gates the routing controls and background job live", asy
     method: "PUT", headers: { "content-type": "application/json" },
     body: JSON.stringify({ runners: { "voice-routing": "codex" } }),
   })).status).toBe(404);
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "background-reasoning-effort", enabled: true }, "PUT");
+  await expect(page.getByRole("combobox", { name: "Goal effort", exact: true })).toBeVisible();
+  const changeVoiceEffort = () => page.request.put(`${daemon.baseURL}/api/llm/config`, {
+    data: { efforts: { "voice-routing": "high" } },
+  });
+  expect((await changeVoiceEffort()).status()).toBe(404);
   await turnVoiceOn(daemon);
   await expect(voice).toBeVisible();
+  expect((await changeVoiceEffort()).status()).toBe(400);
   await voice.selectOption("codex");
   const routingRow = page.locator('[data-anchor="models/job-voice-routing"]');
   await expect(routingRow).toContainText("gpt-6-luna");

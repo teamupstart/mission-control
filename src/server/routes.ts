@@ -322,6 +322,7 @@ import {
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
 import {
   HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID, IDLE_STALLED_FLAG_ID,
+  BACKGROUND_REASONING_EFFORT_FLAG_ID,
 } from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
@@ -597,8 +598,7 @@ import {
 } from "@shared/organizations.ts";
 import {
   getInspectorConfig,
-  inspectorModel,
-  inspectorRunner,
+  inspectorExecution,
   setInspectorConfig,
 } from "./inspector/config.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
@@ -7915,6 +7915,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/foreman/config", async (c) => {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
     const config = setForemanConfig(parsed.data);
     // Stacked pull requests: every cached stack standing says whether Foreman will send its
     // prompt, so a change to Foreman's switches has to reach them now rather than at the next
@@ -8178,6 +8181,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/inspector/config", async (c) => {
     const parsed = await parseBody(c, InspectorConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.effort !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
     const next = setInspectorConfig(parsed.data);
     // The per-session chip bakes `mode` in when the summary is resolved, and the tick
     // that would otherwise re-resolve it only runs while the feature is ENABLED. Without
@@ -8348,9 +8354,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // for the reason `ForemanStatus.models` documents: the env layer is invisible to the
   // browser, so a panel showing `config || default` would confidently print a model a
   // `MISSION_INSPECTOR_MODEL` in the daemon's environment is overriding.
-  app.get("/api/inspector/status", (c) =>
-    c.json({ model: inspectorModel(), runner: inspectorRunner() } satisfies InspectorStatus),
-  );
+  app.get("/api/inspector/status", (c) => {
+    const { model, runner } = inspectorExecution();
+    return c.json({ model, runner } satisfies InspectorStatus);
+  });
 
   // --- LLM: which provider does the app's own offline work, and on which model ---
   //
@@ -8365,25 +8372,33 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const visibleLlmConfig = (config: ReturnType<typeof getLlmConfig>) => {
     const models = { ...config.models };
     const runners = { ...config.runners };
+    const efforts = { ...config.efforts };
     for (const job of hiddenLlmJobs()) {
       delete models[job];
       delete runners[job];
+      delete efforts[job];
     }
-    return { ...config, models, runners };
+    return { ...config, models, runners, ...(config.efforts && { efforts }) };
   };
   app.get("/api/llm/config", (c) => c.json(visibleLlmConfig(getLlmConfig())));
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     for (const job of hiddenLlmJobs()) {
-      if (parsed.data.runners?.[job] !== undefined || parsed.data.models?.[job] !== undefined) {
+      if (parsed.data.runners?.[job] !== undefined || parsed.data.models?.[job] !== undefined || parsed.data.efforts?.[job] !== undefined) {
         return c.json({ error: "This feature is disabled.", feature: LLM_JOB_SPECS[job].previewFlag }, 404);
       }
     }
     for (const job of LLM_JOB_IDS) {
+      if (LLM_JOB_SPECS[job].fixedThinking && parsed.data.efforts?.[job]) {
+        return c.json({ error: "Thinking is fixed for this job." }, 400);
+      }
       if (LLM_JOB_SPECS[job].fixedModels && parsed.data.models?.[job]) {
         return c.json({ error: "This job uses a fixed model for each provider." }, 400);
       }
+    }
+    if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
     }
     const config = visibleLlmConfig(setLlmConfig(parsed.data));
     // Personas without a provider override follow this setting. Refresh their top-level SSE

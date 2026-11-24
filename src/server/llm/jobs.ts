@@ -1,8 +1,9 @@
 import type { ZodTypeAny, TypeOf } from "zod";
-import type { LlmJobId } from "@shared/llm-jobs.ts";
+import { LLM_JOB_SPECS, type LlmJobId } from "@shared/llm-jobs.ts";
 import type { LlmConfig } from "@shared/protocol.ts";
-import type { LlmRunnerId } from "@shared/llm.ts";
-import { getLlmConfig, llmJobModel, llmJobRunner } from "./config.ts";
+import { resolveLlmEffort, type LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
+import { backgroundReasoningEffortEnabled, getLlmConfig, llmJobModel, llmJobRunner } from "./config.ts";
 import { llmRunner } from "./index.ts";
 import { runStructured, type ModelReplyMiss } from "./structured.ts";
 import type { StructuredAttemptObserver, StructuredResult } from "./structured.ts";
@@ -27,7 +28,7 @@ import type { StructuredAttemptObserver, StructuredResult } from "./structured.t
 // `runJobStructured` never throws.
 
 /**
- * The pair a call ACTUALLY ran on, post-guard.
+ * The provider, model and optional effort used for a call, after capability checks.
  *
  * Handed back rather than left inside, because a caller that has to record what ran - the
  * `llm_calls` ledger, a persisted compaction stamp - otherwise has no way to obtain it and
@@ -43,6 +44,7 @@ import type { StructuredAttemptObserver, StructuredResult } from "./structured.t
 export interface JobExecution {
   runner: LlmRunnerId;
   model: string;
+  effort?: ThinkingLevel;
 }
 
 /** What `runJob` hands back: the text, and what produced it. */
@@ -78,8 +80,6 @@ export interface StructuredJobRunOptions extends JobRunOptions {
    * override keeps working and a model of the other provider is never handed across.
    */
   runner?: LlmRunnerId;
-  /** Passed to the runner: see `LlmRunOptions.thinking`. */
-  thinking?: "off";
   /** Passed to the runner: see `LlmRunOptions.systemPrompt`. */
   systemPrompt?: string;
   /**
@@ -110,30 +110,34 @@ export async function runJob(
   const execution = jobExecution(job, cfg);
   const text = await llmRunner(execution.runner).run(prompt, {
     model: execution.model,
+    effort: execution.effort,
+    thinking: LLM_JOB_SPECS[job].fixedThinking,
     timeoutMs: opts.timeoutMs,
   });
   return { text, execution };
 }
 
 /**
- * The provider and the model for one call, resolved together off ONE config read.
+ * The provider, model and reasoning effort for one call, resolved from one config read.
  *
  * Together, because they are one decision: the model ladder's fallback and
  * `guardProviderModel`'s verdict both depend on which provider won, so resolving them from
  * two reads is how a Claude id ends up handed to Codex. Once, because the config is editable
- * at runtime and a structured retry must land on the same pair as its first attempt.
+ * at runtime and a structured retry must keep the execution settings of its first attempt.
  */
 function jobExecution(job: LlmJobId, cfg: LlmConfig, runnerOverride?: LlmRunnerId): JobExecution {
   const runner = runnerOverride ?? llmJobRunner(job, cfg).id;
-  return { runner, model: llmJobModel(job, cfg, runner).id };
+  const model = llmJobModel(job, cfg, runner).id;
+  const effort = !LLM_JOB_SPECS[job].fixedThinking && backgroundReasoningEffortEnabled()
+    ? resolveLlmEffort(runner, model, cfg.efforts?.[job]).level
+    : null;
+  return effort ? { runner, model, effort } : { runner, model };
 }
 
 /**
  * Run one background job and parse its reply, retrying once on a parse miss. Never throws.
  *
- * The config is read ONCE and both answers taken from it, so the retry cannot land on a
- * different runner or a different model than the first attempt - which would make a
- * two-attempt failure impossible to read in the log.
+ * Keep the current provider, model and effort within this call, including retries.
  */
 export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = TypeOf<S>>(
   job: LlmJobId,
@@ -150,10 +154,11 @@ export async function runJobStructured<S extends ZodTypeAny = ZodTypeAny, T = Ty
     (p) =>
       runner.run(p, {
         model: execution.model,
+        effort: execution.effort,
         timeoutMs: opts.timeoutMs,
         schema: opts.schema,
         ...(opts.signal && { signal: opts.signal }),
-        ...(opts.thinking ? { thinking: opts.thinking } : {}),
+        thinking: LLM_JOB_SPECS[job].fixedThinking,
         ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
       }),
     prompt,

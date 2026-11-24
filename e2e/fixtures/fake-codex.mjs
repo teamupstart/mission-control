@@ -287,6 +287,9 @@ function voiceRoutingAnswer(prompt) {
 
 function codexWorkflowAnswer(prompt) {
   if (prompt.includes("You settle doubts in voice commands")) return voiceRoutingAnswer(prompt);
+  if (process.env.MC_E2E_BACKGROUND_EFFORT === "1" && prompt.startsWith("You name coding tasks")) {
+    return JSON.stringify({ title: "Verify background reasoning" });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",

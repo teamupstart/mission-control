@@ -63,6 +63,8 @@ export interface LlmJobSpec extends ModelChoiceSpec {
   previewFlag?: FeatureFlagId;
   /** Models with measured routing accuracy and latency, pinned per runner. */
   fixedModels?: Record<LlmRunnerId, string>;
+  /** A measured job can require thinking to stay off regardless of saved effort. */
+  fixedThinking?: "off";
 }
 
 /**
@@ -130,6 +132,7 @@ export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
   // The roster chooses the runner for a homogeneous set of agents. A mixed roster follows the configured runner.
   "voice-routing": {
     previewFlag: "voice",
+    fixedThinking: "off",
     fixedModels: { claude: "claude-haiku-4-5", codex: "gpt-6-luna" },
     envKey: "VOICE_ROUTING_MODEL",
     envVar: "MISSION_VOICE_ROUTING_MODEL",

@@ -152,6 +152,8 @@ test("punctuation around the address stays separate from the quoted message", ()
     ['"Will,""ship it"', '"ship it"'],
     ["“Will,”  “ship   it!”", "“ship   it!”"],
     ["“Will,  ” “ship   it!”", "“ship   it!”"],
+    ["“ Will ”, “ship   it!”", "“ship   it!”"],
+    ["“ Will ”,,,", ",,"],
     ['「“Will,  ”  」 "ship it"', '"ship it"'],
     ["“Will,  “ship it”", "“ship it”"],
     ["“Will,”, ???", "???"],
@@ -184,7 +186,9 @@ test("a bare multiword call sign can pick a card but sends no message to its pre
       kind: "control", command: "pick", cardId: "choice", candidateId: "captain",
     });
   }
-  assert.deepEqual(route("“RELEASE   Captain?”", roster, [], [unsure]), { kind: "ignored", reason: "no-message" });
+  for (const text of ["“RELEASE   Captain?”", "“ Release Captain? ”", "“ Release Captain ”!"]) {
+    assert.deepEqual(route(text, roster, [], [unsure]), { kind: "ignored", reason: "no-message" });
+  }
   assert.deepEqual(route("Release, Captain", roster), {
     kind: "addressed", target: agent("Release"), match: "exact", text: "Captain", pauseMs: null,
   });

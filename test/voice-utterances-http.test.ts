@@ -161,9 +161,9 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
-test("quoted cancel leaves the pending card open until a bare cancel dismisses it", async () => {
+test("quoted or comma-prefixed cancel leaves the pending card open until a bare cancel dismisses it", async () => {
   await say("Will check the build", "waiting");
-  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel»."]) {
+  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel».", ",cancel"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.outcome, "ignored");
     assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["waiting", "pending"]]);
@@ -257,6 +257,22 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
     assert.equal((await act(id, "send-now")).status, 200);
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
+});
+
+test("extra message punctuation is queued verbatim and cannot turn stop into an interrupt", async () => {
+  const before = interrupts.length;
+  for (const [captureText, message] of [
+    ["Will,,,stop", ",,stop"], ["“Will,”,,,stop", ",,stop"], ["Will, #stop!", "#stop!"], ["Will, stop,", "stop,"],
+  ] as const) {
+    const id = randomUUID();
+    await say(captureText, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
+  }
+  assert.equal(interrupts.length, before);
+  await say("Will, STOP。", "punctuated-command");
+  await act("punctuated-command", "send-now");
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
 });
 
 test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {

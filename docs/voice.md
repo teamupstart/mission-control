@@ -53,10 +53,11 @@ the window off, the daemon submits the remaining text verbatim to the running ta
 queue. The card and Recently heard show `queued` when the queue accepts the message.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`. Only one comma separates the address from the message,
-so `Will,,,` queues `,,`.
+so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
-“Steve, stop” uses the session interrupt path. Quoting the word in `Steve, "stop"` queues
+“Steve, stop” uses the session interrupt path. A bare command may end with sentence punctuation
+such as `!` or `?`. Quoting the word in `Steve, "stop"` queues
 the message `"stop"`. A bare “cancel” stops the newest action that
 is still pending and was opened by the time the cancel was spoken. Quoting the word
 in a standalone `“cancel”` leaves pending actions open. The daemon uses capture

@@ -60,6 +60,10 @@ function hasBoundaryQuote(text: string): boolean {
   return text.trim().match(BOUNDARY_PUNCTUATION)?.some((boundary) => QUOTATION_MARK.test(boundary)) ?? false;
 }
 
+function bareCommand(text: string): string | undefined {
+  return /^(stop|cancel)\s*[\p{Sentence_Terminal}…]*$/u.exec(text.trim().toLowerCase())?.[1];
+}
+
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
   const first = normalized(token[0]);
   if (!next || text.slice(token.index, next.index).includes(",")) return [first];
@@ -119,10 +123,10 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
   const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, firstToken.index, token.index + token[0].length);
   const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
-  const controlPhrase = phrase !== null && !hasBoundaryQuote(text) ? phrase : null;
-  if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
+  if (bareCommand(text) === "cancel") return { kind: "control", command: "cancel" };
+  const pickName = phrase !== null && !hasBoundaryQuote(text) ? phrase : null;
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
-    .filter((candidate) => normalized(candidate.title) === controlPhrase)
+    .filter((candidate) => normalized(candidate.title) === pickName)
     .map((candidate) => ({ cardId: card.id, candidateId: candidate.id })));
   if (picks.length === 1) return { kind: "control", command: "pick", ...picks[0]! };
   if (picks.length > 1) return { kind: "ignored", reason: "ambiguous-pick" };
@@ -168,8 +172,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const body = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const stop = normalized(body) === "stop" && !hasBoundaryQuote(body);
-  const command = stop ? { command: "stop" as const } : {};
+  const command = bareCommand(body) === "stop" ? { command: "stop" as const } : {};
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", candidates, text: body, pauseMs, ...command };
   const target = candidates[0]!;
   if (match !== "exact" || count !== 1) {

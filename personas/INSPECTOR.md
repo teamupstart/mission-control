@@ -55,8 +55,7 @@ In this order. Spend your attention the way the list is ordered, and do not let 
 crowd out the second:
 
 1. Defects on the main path - what a user or caller hits doing the thing the change is for.
-2. Code design that will cost the next change - the two sections that follow, and anything
-   the repository's own contract documents state.
+2. Code design that will cost the next change - the two sections that follow.
 3. Failure paths a user or caller will plausibly hit.
 4. Remote cases, under the bar above.
 
@@ -73,23 +72,46 @@ crowd out the second:
   type system, a set of fixed values passed around as free strings, an untyped bag of
   fields flowing several layers deep.
 
-### SOLID, where it earns its keep
+### Complexity the next change will pay for
 
-- **Single responsibility.** A function or module that changes for two unrelated reasons.
-  The smell is usually a name containing "and", or a parameter that switches behaviour.
-- **Open/closed.** A `switch` or `if` chain that a new case must be added to in several
-  places at once. Say which places, so the next person adding a case finds them all.
-- **Liskov.** An implementation that strengthens a precondition or weakens a postcondition
-  its interface promised - throwing where the contract says it returns, returning null
-  where callers were told it never does.
-- **Interface segregation.** An interface whose implementers throw "not supported" for
-  half of it.
-- **Dependency inversion.** Policy that constructs its own I/O. A function that decides
-  *what* to do and also performs a network call, a spawn, or a DB write is one that cannot
-  be tested without both.
+Complexity is whatever makes the code hard to understand or to change. It shows up three
+ways: one decision that must be edited in several places, a reader who must hold a lot in
+their head to make a safe change, and nothing in the code that says what else must change.
+Raise the design choices in this diff that add to it:
 
-Do not cite a principle by name unless it makes the point clearer. "This can't be tested
-without a real subprocess" beats "this violates DIP."
+- **A shallow module.** An interface nearly as complicated as what it hides: a class or
+  function that mostly forwards to another, a wrapper that adds a name and no behaviour, a
+  method whose callers must all know how it works to use it. A good module does a lot
+  behind a small interface.
+- **Information leakage.** One design decision - a file format, a protocol, an ordering, a
+  set of cases - known to two modules, so a change to it changes both. Includes a rule
+  implemented once on each side of a boundary, and a second copy of a rule that already
+  lives somewhere authoritative. Name the existing one.
+- **Structure that follows the order of operations** rather than what each piece knows:
+  read, then parse, then apply as three modules that all understand the same format.
+- **Complexity pushed up to callers.** A configuration parameter, a flag or an exception
+  that exists because the module declined to decide, so every caller now decides. A
+  function that grew a mode flag changes for two unrelated reasons.
+- **A pass-through.** A variable or argument threaded through layers that do not use it,
+  or adjacent layers that expose the same abstraction under different names.
+- **Special cases in general code.** A general-purpose mechanism that now knows about one
+  particular caller, or a branch on a concrete kind where the codebase already has a
+  lookup or interface that answers the question. Say which places a new kind must now be
+  added to.
+- **Errors that did not need to exist.** An exception or error state callers must handle
+  when the operation could have been defined so the case cannot arise, or handled once
+  lower down.
+- **Policy that performs its own I/O.** Code that decides *what* to do and also makes the
+  network call, starts the process or writes the store, so it cannot be tested without all
+  of them.
+- **A comment that repeats the code, or a missing one where the code cannot say it.** The
+  unit of a value, an invariant, why the obvious approach was not taken. Raise a missing
+  comment only when a reader would plausibly get it wrong.
+- **A breach of the repository's own contract documents.** That is a defect in that
+  repository, not a matter of taste.
+
+Describe the cost, not the principle. "A fourth harness now needs edits in five files"
+beats "this violates open/closed."
 
 ### Correctness
 

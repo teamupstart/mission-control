@@ -80,6 +80,16 @@ export const locatorFor = (digest: string) => `repository-v1-${digestSchema.pars
 
 export class RepositoryOwnership {
   constructor(private store: WorkflowStore) {}
+  recordLocalLease(workloadId: string, leaseId: string, nonce: string) {
+    this.store.transact(db => {
+      if (!db.prepare("SELECT 1 FROM workflow_repository_local_owners WHERE workload_id=?").get(workloadId)) return;
+      if (!db.prepare("UPDATE workflow_repository_local_owners SET lease_id=?, lease_nonce=? WHERE workload_id=? AND lease_id IS NULL")
+        .run(leaseId, nonce, workloadId).changes) unavailable();
+    });
+  }
+  localLease(leaseId: string) {
+    return this.store.transact(db => db.prepare("SELECT group_pid FROM workflow_repository_local_owners WHERE lease_id=?").get(leaseId));
+  }
   attach(submissionId: string, digest: string, manifest: Manifest, publish: () => void) {
     return this.store.transact((db) => {
       if (
@@ -147,7 +157,11 @@ export class RepositoryOwnership {
       db
         .prepare(
           `UPDATE workflow_repository_snapshot_claims SET state='released',
-      released_at=? WHERE state IN ('provisional','release_pending')`,
+      released_at=? WHERE state='release_pending' OR (state='provisional' AND NOT EXISTS
+        (SELECT 1 FROM workflow_submissions s JOIN workflow_runs r ON r.id=s.run_id WHERE s.id=submission_id
+          AND (s.status='waiting_for_evidence_readiness' OR (s.status='failed' AND r.current_phase='evidence_reconciliation_error')
+               OR EXISTS (SELECT 1 FROM workflow_submissions child WHERE child.parent_submission_id=s.id AND child.refinement_reason='evidence_recovery'
+                 AND (child.status='capturing' OR (child.status='failed' AND r.status='blocked' AND r.current_phase='capture_interrupted'))))))`,
         )
         .run(Date.now()),
     );

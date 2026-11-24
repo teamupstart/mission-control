@@ -1,3 +1,4 @@
+import { PERSONA_REPOSITORY_ACCESS_MODES } from "@shared/workflow.ts";
 import { z } from "zod";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import {
@@ -43,6 +44,8 @@ const catalog = <Schema extends z.ZodTypeAny>(schema: Schema) =>
   z.array(schema).max(SETTINGS_BACKUP_LIMITS.entriesPerCatalog);
 
 export const SettingsBackupPersonaSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).optional(),
+  repositoryAccessRevision: z.number().int().nonnegative().optional(),
   id,
   name,
   normalizedName,

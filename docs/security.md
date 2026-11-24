@@ -772,3 +772,13 @@ can hold at most two of Node's shared file-I/O threads and never keeps another r
 The gatherer also holds at most one open file at a time, daemon-wide, released only once its
 close finishes, so a stalled close cannot make descriptors pile up.
 [The guide](task-shaping.md#the-built-in-gatherer) states every rule.
+
+## Workflow reviewer repository access
+
+A read-enabled Persona queries a sealed private view over local stdio. Its dedicated Claude or
+Codex adapter verifies the tool inventory before review. Known secret-bearing files are denied.
+The worker can inspect eligible committed, staged, unstaged and nonignored untracked content.
+The deterministic retained history covers at most 2,048 commits and 512 MiB of additional
+historical blobs. The daemon retains the query outcome, sizes and approved citation ranges.
+File bodies and provider-selected excerpts are excluded from the audit.
+[Repository review workloads](repository-review-workloads.md)

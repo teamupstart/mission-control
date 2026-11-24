@@ -313,3 +313,93 @@ test("Publish rejects missing or archived live Personas with structured diagnost
   assert.equal(result.reason, "validation");
   assert.ok(result.diagnostics?.some((item) => item.code === "archived_persona"));
 });
+
+test("only a read-enabled pinned graph selects repository capture, including after an access-only republish", async () => {
+  const { workflowRequiresRepositoryCapture, personaSnapshotIsOutdated } = await import("../src/shared/workflow.ts");
+  seed();
+  const original = store.publishWorkflow("w1", 1, "before-access");
+  assert.ok(original.ok);
+  assert.equal(workflowRequiresRepositoryCapture(original.version.graph), false);
+  const updated = store.setPersonaRepositoryAccess("p1", 1, "read", 5);
+  assert.ok(updated.ok);
+  assert.equal(updated.persona.repositoryAccessRevision, 2);
+  assert.equal(store.setPersonaRepositoryAccess("p1", 1, "none", 6).ok, false);
+  const firstJudge = original.version.graph.nodes.find(node => node.kind === "persona")!;
+  assert.equal(personaSnapshotIsOutdated(firstJudge.persona, updated.persona), true);
+  const republished = store.publishWorkflow("w1", 1, "with-access", 7, "publish-changed-grant");
+  assert.ok(republished.ok);
+  assert.equal(republished.idempotent, false);
+  assert.equal(workflowRequiresRepositoryCapture(republished.version.graph), true);
+  const repeat = store.publishWorkflow("w1", 1, "unused", 8, "publish-identical-snapshot");
+  assert.ok(repeat.ok && repeat.idempotent);
+  assert.equal(workflowRequiresRepositoryCapture(store.getWorkflowVersion("w1", 1)!.graph), false);
+  assert.equal(store.setPersonaRepositoryAccess("p1", 2, "none", 7).ok, true);
+  assert.equal(workflowRequiresRepositoryCapture(store.getWorkflowVersion("w1", 2)!.graph), true);
+});
+
+test("built-in repository access has its own CAS revision and leaves shipped graphs frozen", async () => {
+  const { workflowRequiresRepositoryCapture } = await import("../src/shared/workflow.ts");
+  const builtin = store.personaCatalog().find(p => p.builtin)!;
+  assert.equal(builtin.repositoryAccess, "none");
+  assert.equal(builtin.repositoryAccessRevision, 0);
+  const previous = store.listWorkflows().filter(w => w.builtin).flatMap(w => store.listWorkflowVersions(w.id));
+  assert.ok(store.setPersonaRepositoryAccess(builtin.id, 0, "read", 5).ok);
+  assert.equal(store.setPersonaRepositoryAccess(builtin.id, 0, "none", 6).ok, false);
+  const resolved = store.personaCatalog().find(p => p.id === builtin.id)!;
+  assert.equal(resolved.repositoryAccess, "read");
+  assert.equal(resolved.revision, builtin.revision);
+  for (const version of previous) {
+    const pinned = store.getWorkflowVersion(version.workflowId, version.version)!;
+    assert.deepEqual(pinned.graph, version.graph);
+    assert.equal(workflowRequiresRepositoryCapture(pinned.graph), false);
+  }
+});
+
+for (const priorVersion of [54, 55, 59, 60, 61])
+test(`the v${priorVersion} upgrade fingerprints historical graph bytes and gives existing Personas no access`, async () => {
+  const { upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+  seed();
+  assert.ok(store.publishWorkflow("w1", 1, "legacy").ok);
+  const raw = db.prepare("SELECT graph_json FROM workflow_versions WHERE id='legacy'").get()!.graph_json;
+  assert.doesNotMatch(String(raw), /repositoryAccess/);
+  db.exec(`DROP INDEX idx_workflow_versions_snapshot;
+    ALTER TABLE workflow_versions DROP COLUMN source_snapshot_fingerprint;
+    CREATE UNIQUE INDEX idx_workflow_versions_draft ON workflow_versions(workflow_id,source_draft_revision);
+    ALTER TABLE personas DROP COLUMN repository_access;
+    DROP TABLE workflow_repository_handles;
+    DROP TABLE workflow_repository_queries;
+    DROP TABLE workflow_repository_events;
+    DROP TABLE workflow_repository_local_owners;
+    DROP TABLE workflow_repository_workloads;
+    DROP TABLE persona_builtin_overrides;
+    DROP TRIGGER repository_capture_failed;
+    CREATE TRIGGER repository_capture_failed AFTER UPDATE OF status ON workflow_submissions
+      WHEN OLD.status='capturing' AND NEW.status='failed' BEGIN SELECT 1; END;
+    PRAGMA user_version=${priorVersion};`);
+  for (let i = 0; i < 2; i++) {
+    upgradeDatabaseToCurrentSchema(db);
+    assert.match(String(db.prepare("SELECT sql FROM sqlite_schema WHERE name='repository_capture_failed'").get()?.sql),
+      /waiting_for_evidence_readiness/);
+    const migrated = db.prepare("SELECT graph_json, source_snapshot_fingerprint FROM workflow_versions WHERE id='legacy'").get()!;
+    assert.equal(migrated.graph_json, raw);
+    assert.match(String(migrated.source_snapshot_fingerprint), /^[a-f0-9]{64}$/);
+    assert.equal(store.getPersona("p1")!.repositoryAccess, "none");
+    const published = store.publishWorkflow("w1", 1, "unused", 10 + i, `publish-after-migration-${i}`);
+    assert.ok(published.ok && published.idempotent);
+    assert.equal(published.version.id, "legacy");
+  }
+});
+
+test("a newer database schema is refused before any application table is written", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { CURRENT_DATABASE_SCHEMA_VERSION, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
+  const newer = new DatabaseSync(":memory:");
+  try {
+    newer.exec(`PRAGMA user_version=${CURRENT_DATABASE_SCHEMA_VERSION + 1}`);
+    assert.throws(() => upgradeDatabaseToCurrentSchema(newer), /requires a newer/);
+    assert.equal(newer.prepare("SELECT count(*) AS n FROM sqlite_schema").get()!.n, 0);
+    assert.equal(newer.prepare("PRAGMA user_version").get()!.user_version, CURRENT_DATABASE_SCHEMA_VERSION + 1);
+  } finally {
+    newer.close();
+  }
+});

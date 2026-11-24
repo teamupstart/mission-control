@@ -426,7 +426,7 @@
       <header class="hero">
         <p class="eyebrow">Mission Control / operator reference / 2026-08-16</p>
         <h1>A field guide to <code>harness.db</code></h1>
-        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 137 cataloged application tables owns.</p>
+        <p class="lede">The durable memory behind tasks, reviews, automation, workflows, schedules, usage, and ensembles. This guide explains where it lives, how to inspect it safely, and what each of the 144 cataloged application tables owns.</p>
         <div class="launch" aria-label="Database shell command">
           <code>make db</code>
           <span>read-only shell</span>
@@ -434,7 +434,7 @@
       </header>
 
       <div class="metrics" aria-label="Database summary">
-        <div class="metric"><strong>137</strong><span>application tables cataloged from the core schema</span></div>
+        <div class="metric"><strong>144</strong><span>application tables cataloged from the core schema</span></div>
         <div class="metric"><strong>WAL</strong><span>journal mode selected when the daemon opens the file</span></div>
         <div class="metric"><strong>1 writer</strong><span>the daemon owns every application write</span></div>
       </div>
@@ -607,7 +607,7 @@ LIMIT 20;
             </details>
 
             <details class="family" open>
-              <summary><strong>Workflow definitions and execution</strong><span>31 tables</span></summary>
+              <summary><strong>Workflow definitions and execution</strong><span>38 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>workflow_commands</code><p>The Global Command catalog: one row per built-in workflow slot holding its optional repository-neutral default argv, run budget, timeout, skip-or-block policies, revision, and timestamps. Seeded on first open, so all five rows exist before anything is configured.</p></div>
                 <div class="table-row"><code>workflow_command_overrides</code><p>One repository or subdirectory exception to a slot's default command, keyed uniquely by slot and repository root. The longest matching root wins at resolution time, which is how a monorepo package overrides its repository.</p></div>
@@ -616,6 +616,7 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_builtin_round_limits</code><p>The operator's maximum repair rounds for one built-in workflow, keyed by its stable id, the one setting a built-in takes without Duplicate. A NULL count is a reset to the shipped value; the row stays so its time still dates the definition.</p></div>
                 <div class="table-row"><code>workflow_definitions</code><p>Mutable workflow identity, draft graph, policies, draft revision, archive state, and pointer to the current published version.</p></div>
                 <div class="table-row"><code>workflow_versions</code><p>Immutable published graph and policy snapshots, numbered within a workflow.</p></div>
+                <div class="table-row"><code>workflow_publish_requests</code><p>Maps each publish request to the immutable version it returned, so a retry can retrieve that version after edits to the draft or Persona.</p></div>
                 <div class="table-row"><code>workflow_bindings</code><p>A published version attached to a stable session note key, with frozen compatibility facts, trigger and delivery modes, and repair budget.</p></div>
                 <div class="table-row"><code>workflow_runs</code><p>One execution of a binding: status, phase, trigger identity, Inspector gate state, timestamps, and retention markers.</p></div>
                 <div class="table-row"><code>workflow_submissions</code><p>Immutable evidence snapshots scoped by run, repair round, and continuation segment.</p></div>
@@ -627,6 +628,12 @@ LIMIT 20;
                 <div class="table-row"><code>workflow_evidence_reservations</code><p>The ordered, durable mapping from staged evidence to each immutable submission that reserved it, written in the submission transaction so capture can resume after interruption.</p></div>
                 <div class="table-row"><code>workflow_submission_images</code><p>Immutable submission-owned image metadata and retained body locators, including digest, order, availability, and pruning state.</p></div>
                 <div class="table-row"><code>workflow_submission_evidence_coverage</code><p>Immutable submission-owned acceptance-criterion claims and evidence-role links, frozen atomically with the evidence they reference.</p></div>
+                <div class="table-row"><code>persona_builtin_overrides</code><p>Locally selected repository access and its revision for a shipped Persona.</p></div>
+                <div class="table-row"><code>workflow_repository_workloads</code><p>Attempt, call, checkout digest and cancellation state of each isolated reviewer execution.</p></div>
+                <div class="table-row"><code>workflow_repository_local_owners</code><p>Records the provider process group, checkout lease and private home that a restarted daemon must verify before retrying a local reviewer.</p></div>
+                <div class="table-row"><code>workflow_repository_events</code><p>Ordered event identities and hashes used to reject conflicting replays.</p></div>
+                <div class="table-row"><code>workflow_repository_queries</code><p>Body-free query outcomes and exact returned path and range handles.</p></div>
+                <div class="table-row"><code>workflow_repository_handles</code><p>Unique returned handle identities and their offsets into the authenticated query record.</p></div>
                 <div class="table-row"><code>workflow_repository_artifacts</code><p>One row per sealed checkout digest tracks its layer and history identities, verification, and retryable cleanup. Object bytes live in the daemon's artifact directory.</p></div>
                 <div class="table-row"><code>workflow_repository_snapshot_claims</code><p>Each submission holds its own provisional or active claim on a digest. Activation commits with the submission's transition to running.</p></div>
                 <div class="table-row"><code>workflow_submission_text_artifacts</code><p>Immutable submission-owned UTF-8 text and log evidence, including exact content, digest, order, repository scope, availability, and pruning state.</p></div>

@@ -161,6 +161,13 @@ test("successful reset uses resetSession to clear session workflow rows and pres
     completionKind: "drain",
   }, 3);
   const session = registry.getSession("session")!;
+  openDb().exec(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES('call','attempt','digest','cancellation_pending',1)`);
+  const refused = await resetSession(registry, session, false, async () => assert.fail("checkout reset started before reviewer cleanup"));
+  assert.equal(refused.ok, false);
+  assert.match(refused.error!, /reviewer cleanup/);
+  assert.ok(workflows.store.getRun("run"));
+  workflows.store.confirmRepositoryCancellation("call", 0);
   await resetSession(registry, session, false, async () => ({
     ok: true,
     error: null,

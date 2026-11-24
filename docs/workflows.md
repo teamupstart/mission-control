@@ -3219,3 +3219,29 @@ warnings as well as inline review findings; YAML enablement alone does not enabl
 On the Workflow runs page, press **Esc** to return to the selected run’s bound session.
 An open overlay closes first. When a text field has focus, the first press leaves the field.
 Runs whose bound session is no longer available stay on the Runs page.
+
+## Give a Persona read access to the submitted checkout
+
+Enable **Persona repository access** in Settings under Feature Flags. In Library, open the
+Persona, choose **Read-only repository access**, and save the setting. Publish your workflow
+and bind the new version to use it. New and duplicated Personas default to **No repository
+access**, including copies saved during an edit conflict. Grant read access to the copy if
+it needs the checkout. A built-in
+Persona stores its local access override separately from its shipped guidance. Version History
+shows the permission frozen at publication and identifies older snapshots as outdated.
+After a lost publish response, **Retry publish** shows the original draft revision and sends
+the same request ID. The dashboard saves both before sending the request, so the retry is
+available after reloading or reopening the dashboard in the same browser profile.
+The daemon returns the version it originally selected, even if another
+editor has since changed the draft or published a different grant. After the retry succeeds,
+choose **Publish** to publish a changed draft or grant with a new request ID. Clients that omit
+the ID can publish a draft revision once or retrieve its sole published version. If multiple
+versions already exist for that revision, the API returns HTTP 409. Publishing a changed
+grant at the same draft revision requires a fresh request ID.
+
+Submitting starts an asynchronous capture. Once the submission is captured, later changes to
+the worktree cannot affect its review. Runs labels each repository query with the snapshot it
+read. Expand a query to see the full digest alongside its returned paths and ranges, including
+queries from earlier rounds. The panel also shows denials and truncation. Ranges use an exclusive upper bound.
+A blocked review can be retried against its original captured checkout.
+[Repository review workloads](repository-review-workloads.md)

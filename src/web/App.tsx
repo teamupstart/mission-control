@@ -728,7 +728,12 @@ export function App(): React.JSX.Element {
   // edit made anywhere else - or the task being dispatched out from under the modal - is seen
   // here rather than shadowed by a copy taken at open time.
   const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
-  const latestVoiceFollowUp = useRef<string | null>(null);
+  const pendingVoiceFollowUp = useRef<string | null>(null);
+  useEffect(() => () => { pendingVoiceFollowUp.current = null; }, [spokenNames]);
+  const requestDispatch = useCallback((request: Parameters<typeof setDispatchRequest>[0]) => {
+    pendingVoiceFollowUp.current = null;
+    setDispatchRequest(request);
+  }, []);
   const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
@@ -1236,7 +1241,7 @@ export function App(): React.JSX.Element {
     [layout, selectedId],
   );
 
-  const closeDispatch = useCallback(() => setDispatchRequest(null), []);
+  const closeDispatch = useCallback(() => requestDispatch(null), [requestDispatch]);
   const followUpRequest = dispatchRequest?.kind === "new" && dispatchRequest.followUp ? dispatchRequest : null;
   const closeDispatchOpening = useCallback(() => {
     setDispatchRequest(current => {
@@ -1267,15 +1272,15 @@ export function App(): React.JSX.Element {
    * all the way out rather than dropping back onto a new-dispatch form nobody asked for.
    */
   const openTaskEditor = useCallback((taskId: string) => {
-    setDispatchRequest({ kind: "edit", taskId });
-  }, []);
+    requestDispatch({ kind: "edit", taskId });
+  }, [requestDispatch]);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
-  const openDispatch = useCallback(() => setDispatchRequest(current => current?.kind === "repair-follow-up"
-    ? { kind: "new", followUp: current.followUp } : { kind: "new" }), []);
+  const openDispatch = useCallback(() => requestDispatch(current => current?.kind === "repair-follow-up"
+    ? { kind: "new", followUp: current.followUp } : { kind: "new" }), [requestDispatch]);
   /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
   const openResidentLaunch = useCallback(
-    (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
-    [],
+    (profileId: string) => requestDispatch({ kind: "resident", profileId }),
+    [requestDispatch],
   );
   /**
    * The third way in: a Library strategy launcher, which opens the same modal already in
@@ -1286,8 +1291,8 @@ export function App(): React.JSX.Element {
    * than an Ensemble the operator did not ask for.
    */
   const launchEnsemble = useCallback((strategyId: EnsembleStrategyId) => {
-    setDispatchRequest({ kind: "ensemble", strategyId });
-  }, []);
+    requestDispatch({ kind: "ensemble", strategyId });
+  }, [requestDispatch]);
   const closeMissions = useCallback(() => {
     setMissionsOpen(false);
     setMissionsTarget(null);
@@ -5097,15 +5102,15 @@ export function App(): React.JSX.Element {
       openQuestion: id => { navigate({ page: "fleet" }, allowed => { if (allowed) setReviewSessionId(id); }); },
       followUp: async taskId => {
         const id = newRequestId();
-        latestVoiceFollowUp.current = id;
-        const superseded = { ok: false, error: "A newer follow-up was requested." };
+        pendingVoiceFollowUp.current = id;
+        const superseded = { ok: false, error: "Another Dispatch opening took precedence." };
         const task = await api.voiceFollowUpRepository(taskId);
-        if (latestVoiceFollowUp.current !== id) return superseded;
+        if (pendingVoiceFollowUp.current !== id) return superseded;
         if (!task.ok || !task.repoRoot) return { ok: false, error: task.error ?? "The task repository is unavailable." };
         const repoRoot = task.repoRoot;
         return new Promise(resolve => navigate({ page: "fleet" }, allowed => {
-          if (latestVoiceFollowUp.current !== id) return resolve(superseded);
-          if (allowed) setDispatchRequest({ kind: "new", followUp: { id, repoRoot } });
+          if (pendingVoiceFollowUp.current !== id) return resolve(superseded);
+          if (allowed) requestDispatch({ kind: "new", followUp: { id, repoRoot } });
           resolve(allowed ? { ok: true } : { ok: false, error: "Follow-up stayed closed. Your draft is still open." });
         }));
       },
@@ -5886,11 +5891,11 @@ export function App(): React.JSX.Element {
                 onClose={closeDispatchOpening}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={fix => {
-                  if (followUpRequest?.followUp) setDispatchRequest({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+                  if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
                   openLaunchFix(fix);
                 }}
                 onOpenEnvironmentFix={check => {
-                  if (followUpRequest?.followUp) setDispatchRequest({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+                  if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
                   openEnvironmentFix(check);
                 }}
                 onEnsembleLaunched={openEnsembleRun}

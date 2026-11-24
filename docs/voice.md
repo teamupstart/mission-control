@@ -136,6 +136,8 @@ to Unix milliseconds for `x-voice-capture-ended-at`. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. A new directive, including manual
 mute, revokes that exception.
+With the window off the daemon acknowledges the capture as soon as it claims delivery.
+The card reports the final outcome when the queue or interrupt handler finishes.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
@@ -143,6 +145,7 @@ The listener posts captures in spoken order, waiting for each response before po
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
 has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
+The cancel window closes at that deadline even if the delivery timer runs late.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

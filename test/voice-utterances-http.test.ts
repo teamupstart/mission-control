@@ -387,6 +387,25 @@ test("successive cancels stop exactly one action across kinds; a duplicate captu
   assert.equal((await readHeard())[0]?.rule, "nothing-pending");
 });
 
+test("API and spoken cancels respect the deadline even when the timer callback is late", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  await say("Will keep the first", "api-expired");
+  t.mock.timers.setTime(now + 1000);
+  assert.equal((await act("api-expired", "cancel")).status, 409);
+
+  await say("Steven ask Will", "still-eligible");
+  await say("Will keep the second", "spoken-expired");
+  t.mock.timers.setTime(now + 2001);
+  await say("cancel", "cancel-choice");
+  assert.equal((await readHeard()).find(({ id }) => id === "cancel-choice")?.detail, "still-eligible");
+  await say("cancel", "empty");
+  assert.equal((await readHeard()).find(({ id }) => id === "empty")?.rule, "nothing-pending");
+  t.mock.timers.tick(0);
+  assert.deepEqual(queued("Will").filter((text) => text === "keep the first" || text === "keep the second"),
+    ["keep the first", "keep the second"]);
+});
+
 test("a delayed spoken cancel targets the latest preceding capture even when POSTs arrive out of order", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
@@ -716,6 +735,31 @@ test("a reconnect sees an in-flight interrupt until its final event and cannot a
   assert.equal(driver.mock.callCount(), 1);
   assert.equal(cards.at(-1)?.state, "sent");
   assert.deepEqual(registry.snapshot().voiceCards, []);
+});
+
+test("acknowledging an immediate interrupt lets the listener send another message and cancel while delivery runs", async (t) => {
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  let finish!: () => void;
+  const delayed = new Promise<void>((resolve) => { finish = resolve; });
+  t.mock.method(sdk, "interrupt", async () => { await delayed; return "idle"; });
+  await say("Steven ask Will", "choice");
+  const captures = (async () => {
+    for (const [text, id] of [["Will, stop", "slow-stop"], ["Bill keep going", "other"], ["cancel", "dismiss"]] as const) {
+      assert.deepEqual(await (await say(text, id)).json(), { accepted: true });
+    }
+  })();
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(queued("Bill").includes("keep going"));
+    assert.equal(cards.findLast((card) => card.id === "choice")?.state, "cancelled");
+    assert.deepEqual(registry.snapshot().voiceCards?.map(({ id, reason }) => [id, reason]), [["slow-stop", "delivering"]]);
+  } finally {
+    finish();
+    await captures;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(cards.findLast((card) => card.id === "slow-stop")?.state, "sent");
 });
 
 test("a selected session missing from the registry is reported as unavailable", async (t) => {

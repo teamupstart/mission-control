@@ -59,13 +59,18 @@ export class VoiceRouter {
     return [...Array.from(this.open.values(), ({ card }) => card), ...this.delivering.values()];
   }
 
-  private latestActionAt(capturedAt: number): PendingVoiceAction | undefined {
-    let latest: PendingVoiceAction | undefined;
-    for (const action of this.pendingVoiceActions) {
-      // Captures can arrive out of order. For equal timestamps, the last action opened wins.
-      if (action.openedAt <= capturedAt && (!latest || action.openedAt >= latest.openedAt)) latest = action;
+  private cancelLatestAt(capturedAt: number): string | undefined {
+    // Captures can arrive out of order. For equal timestamps, the last action opened wins.
+    const eligible = this.pendingVoiceActions.filter((action) => action.openedAt <= capturedAt)
+      .reverse().sort((a, b) => b.openedAt - a.openedAt);
+    for (const action of eligible) {
+      if (action.kind === "card" && this.open.has(action.id)) {
+        if (!this.cancel(action.id)) continue;
+      } else {
+        action.cancel();
+      }
+      return action.id;
     }
-    return latest;
   }
 
   async accept(utterance: VoiceUtterance, heldBeforeRelease = false): Promise<boolean> {
@@ -95,8 +100,8 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const action = this.latestActionAt(capturedAt);
-        if (action) { entry.detail = action.id; action.cancel(); }
+        const cancelled = this.cancelLatestAt(capturedAt);
+        if (cancelled) entry.detail = cancelled;
         else entry.rule = "nothing-pending";
       } else if (!await this.pick(decision.cardId, decision.candidateId, capturedAt)) {
         entry.outcome = "ignored";
@@ -113,11 +118,11 @@ export class VoiceRouter {
       parts: [{ target: addressed ? { ...decision.target } : null, text: addressed ? decision.text : utterance.text }],
       candidates: addressed ? [] : decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role })),
     };
-    await this.openCard({ card, entry, message: decision.text, command: decision.command }, capturedAt);
+    this.openCard({ card, entry, message: decision.text, command: decision.command }, capturedAt);
     return true;
   }
 
-  private async openCard(item: OpenCard, openedAt: number): Promise<void> {
+  private openCard(item: OpenCard, openedAt: number): void {
     const { card, entry } = item;
     this.open.set(card.id, item);
     this.pendingVoiceActions.push({ id: card.id, kind: "card", openedAt, cancel: () => this.cancel(card.id) });
@@ -132,7 +137,7 @@ export class VoiceRouter {
     }
     if (card.state === "pending") {
       const window = this.window();
-      if (!window.enabled) { await this.sendNow(card.id); return; }
+      if (!window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
       card.deadline = Date.now() + ms;
       item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
@@ -152,6 +157,7 @@ export class VoiceRouter {
   cancel(id: string, detail?: string): boolean {
     const item = this.open.get(id);
     if (!item) return false;
+    if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
     this.take(item);
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;
@@ -167,7 +173,7 @@ export class VoiceRouter {
     this.take(item);
     item.entry.matchedName = target.name;
     item.entry.detail = "picked";
-    await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: "picked",
+    this.openCard({ ...item, card: { ...item.card, state: "pending", reason: "picked",
       candidates: [], parts: [{ target: { ...target }, text: item.message }] } }, pickedAt);
     return true;
   }

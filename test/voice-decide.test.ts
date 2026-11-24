@@ -915,6 +915,25 @@ test("a bare later call sign cannot supply the payload for its shorter roster na
   assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", "explicit"], ["Release", "Captain", "explicit#2"]]);
 });
 
+test("the second word of a call sign cannot create a missing first message", async (t) => {
+  const roster = ["Steve", "Release Captain", "Captain", "Alice"].map(n => name(n));
+  const { router, say, asked, cards, delivered } = routerRig(() => answered("split"), roster);
+  t.after(() => router.reset());
+  for (const [index, prefix] of ["", "and ", "??? and "].entries()) {
+    const body = `${prefix}Release Captain, review the PR`;
+    const id = `overlap-head-${index}`;
+    await say(`Steve, ${body}`, id);
+    assert.equal(asked.length, 0);
+    assert.equal(cards.at(-1)?.candidates.length, 0);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.at(-1), ["Steve", body, id]);
+  }
+  await say("Steve, Release Captain is busy, and Alice, review the PR", "later");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice"]);
+  assert.ok(await router.sendNow("later"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", "Release Captain is busy", "later"], ["Alice", "review the PR", "later#2"]]);
+});
+
 test("manual split choices preserve overlapping one- and two-word names", async (t) => {
   for (const [second, firstText, secondText] of [
     ["Captain", "check the release", "review the PR"],

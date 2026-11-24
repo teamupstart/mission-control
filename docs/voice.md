@@ -101,6 +101,7 @@ The shell timestamps every snapshot, including idle heartbeats, at observation t
 monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
 across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
 older and duplicate snapshots before applying state or renewing its 15-second lifetime.
+Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.
 A fresh snapshot still renews that lifetime and updates call state, permissions and capabilities
 when it repeats a key event older than the daemon’s last key transition.
 
@@ -588,7 +589,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 
 - `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
-  major version from this daemon's (`3`) is refused with 409 `unsupported_protocol`.
+  major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build

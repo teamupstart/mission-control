@@ -248,10 +248,8 @@ export class VoiceStateStore {
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
     const order = report.reportedAtHostUs;
-    if (order !== undefined) {
-      if (order <= this.lastReportHostUs) return;
-      this.lastReportHostUs = order;
-    }
+    if (this.lastReportHostUs >= 0 && (order === undefined || order <= this.lastReportHostUs)) return;
+    if (order !== undefined) this.lastReportHostUs = order;
     const pushToTalk = report.pushToTalk && order !== undefined;
     const lastChange = this.report?.keyChangedHostUs ?? null;
     const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;

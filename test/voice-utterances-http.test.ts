@@ -294,6 +294,21 @@ test("a newer dated press supersedes a hold before the delayed key-up arrives", 
   assert.equal(voiceStateStore.directive().capture, false, "replaying the completed press cannot reopen the microphone");
 });
 
+test("an unordered shell report cannot reopen capture or release a key after an ordered call snapshot", async () => {
+  const report = async (body: object) => (await (await post("/voice/shell-report", body, token)).json()).state;
+  assert.equal((await report({ reportedAtHostUs: 100, callActive: true })).mode, "auto-muted");
+  for (const reportedAtHostUs of [undefined, "invalid", -1]) {
+    await report({ reportedAtHostUs, callActive: false });
+    assert.equal(voiceStateStore.directive().capture, false);
+  }
+  await report({ reportedAtHostUs: 200, callActive: true, pushToTalk: true });
+  const held = voiceStateStore.directive();
+  assert.equal(held.capture, true);
+  await report({ pushToTalk: false });
+  assert.deepEqual(voiceStateStore.directive(), held);
+  assert.equal((await report({ reportedAtHostUs: 300, callActive: false })).mode, "listening");
+});
+
 test("ordered shell reports ignore a delayed idle heartbeat and release on host time across a wall-clock step", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date"], now });

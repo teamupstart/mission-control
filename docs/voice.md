@@ -38,6 +38,8 @@ over a longer call sign. A later mention alone (“Please ask Will”) is ignore
 descriptive only. Recently heard measures from the last address word to the first message word,
 skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
 Only whitespace can separate the two tokens of a call sign, both in an address and in a later mention.
+For example, `Release. Captain, stop` does not address Release Captain. Punctuation spelled
+inside a roster name such as `Dr. Ada` participates in exact matching.
 “Release Captain, run tests”
 can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
 “Steve’s” can address Steve. If both Steve and Steve Captain sound like the start of the capture,

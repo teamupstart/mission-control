@@ -12,7 +12,7 @@ import {
   followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff,
   SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, SpokenTranscriptUnavailable, type PreparedSpokenTranscript,
 } from "./delivery-ledgers.ts";
-import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText, voiceHeldByReview } from "@shared/voice-delivery.ts";
+import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
 import {
@@ -493,7 +493,7 @@ export class PendingTurnManager {
     }
     const pendingTurn = createPendingTurn({
       id: `${idPrefix}${utteranceId ?? this.deps.id()}`,
-      ...(utteranceId !== undefined && { spokenWords: text }),
+      ...(utteranceId !== undefined && { spokenWords: text, spokenSessionId: session.id }),
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
@@ -730,7 +730,15 @@ export class PendingTurnManager {
     if (event.type === "voice_roster") {
       for (const target of event.roster) {
         const session = target.sessionId && this.registry.getSession(target.sessionId);
-        if (session) this.registry.voiceRouter?.syncQueuedTurns(session);
+        if (session) this.syncSpokenReceipts(session);
+      }
+    }
+    if (event.type === "review_upsert" && event.review.status === "pending" && event.review.filedByVoiceAt != null) {
+      // Filing a plan releases the call without changing the session’s pending review count.
+      const session = this.registry.getSession(event.review.sessionId);
+      if (session) {
+        this.syncSpokenReceipts(session);
+        this.scheduleDrain(noteKeyFor(session));
       }
     }
     if (event.type === "feature_flags") {
@@ -740,8 +748,14 @@ export class PendingTurnManager {
     }
   }
 
+  private syncSpokenReceipts(session: Session): void {
+    if (session.pendingTurns.some(turn => turn.state === "queued" && turn.spokenWords !== undefined)) {
+      this.registry.voiceRouter?.syncQueuedTurns(session, this.registry.hasPendingReviewCall(session.id));
+    }
+  }
+
   private observeSession(session: Session): void {
-    this.registry.voiceRouter?.syncQueuedTurns(session);
+    this.syncSpokenReceipts(session);
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
@@ -945,7 +959,7 @@ export class PendingTurnManager {
   }
 
   private spokenBlocked(session: Session, turn: PendingTurn): boolean {
-    return turn.spokenWords !== undefined && (!featureEnabled("voice") || voiceHeldByReview(session));
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || this.registry.hasPendingReviewCall(session.id));
   }
 
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {

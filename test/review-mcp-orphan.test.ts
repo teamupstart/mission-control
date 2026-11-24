@@ -76,7 +76,7 @@ async function captureRequestInput(identityEnv: IdentityEnv): Promise<Record<str
         response.end(JSON.stringify({ id: "review-identity" }));
         return;
       }
-      if (request.method === "GET" && request.url === "/mcp/reviews/review-identity/wait") {
+      if (request.method === "GET" && request.url === "/mcp/reviews/review-identity/wait?convertible=1") {
         response.end(
           JSON.stringify({
             id: "review-identity",
@@ -308,7 +308,7 @@ for (const [name, nextName] of [
     const body = toolSource(name, nextName);
     assert.match(
       body,
-      /waitForResolution\((?:id|reviewId|created\.id|\(id: string\) => waitForResolution\(id), extra\)/,
+      /waitForResolution\((?:id|reviewId|created\.id|\(id: string\) => waitForResolution\(id), extra(?:, true)?\)/,
       "the wait cannot report progress for a call it was not told about",
     );
   });

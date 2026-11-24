@@ -864,6 +864,54 @@ test("failed owner marker writes and renames clean up only their new pending and
   await f.service.reconcile();
 });
 
+test("allocation sync failures stop pending and lease writers before their first payload", async (t) => {
+  const storage = new RepositoryArtifactStorage();
+  const f = fixture(t, "sha1", storage);
+  f.write("file", "submitted");
+  const holder = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(holder);
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const rename = fs.renameSync, fsync = fs.fsyncSync;
+  const writes = t.mock.method(storage, "write");
+  for (const kind of ["pending", "leases"]) {
+    for (let fault = 0; fault < 4; fault++) {
+      let allocation = "", observed = 0;
+      const install = t.mock.method(fs, "renameSync", (...args: Parameters<typeof rename>) => {
+        rename(...args);
+        if (String(args[1]).endsWith("/owner.json")) allocation = dirname(String(args[1]));
+      });
+      const sync = t.mock.method(fs, "fsyncSync", (fd: number) => {
+        if (allocation && fs.fstatSync(fd).isDirectory()) {
+          const root = dirname(dirname(allocation));
+          const expected = [allocation, dirname(allocation), root, dirname(root)][observed]!;
+          assert.equal(fs.fstatSync(fd).ino, lstatSync(expected).ino);
+          assert.deepEqual(readdirSync(allocation), ["owner.json"]);
+          if (observed++ === fault) throw Object.assign(new Error("directory sync failed"), { code: "EIO" });
+        }
+        fsync(fd);
+      });
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(kind === "pending" ? f.prepare() : f.service.materialize(f.request(holder), signal),
+          { code: "artifact_unavailable" });
+        assert.equal(observed, fault + 1);
+        assert.equal(writes.mock.callCount(), 0);
+        assert.deepEqual(readdirSync(join(f.root, kind)), []);
+      } finally {
+        sync.mock.restore();
+        install.mock.restore();
+        syncBuiltinESMExports();
+      }
+    }
+  }
+  await f.service.discard(await f.prepare());
+  const retry = await f.service.materialize(f.request(holder), signal);
+  await retry.release();
+  await f.service.release(holder.submissionId);
+  await f.service.reconcile();
+});
+
 test("materializing a damaged source object fails the shared digest for every holder", async (t) => {
   const f = fixture(t);
   f.write("file", "shared bytes");

@@ -187,6 +187,12 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     }
     return path;
   }
+  private syncAllocationPath(path: string) {
+    syncDirectory(path);
+    syncDirectory(dirname(path));
+    syncDirectory(this.root);
+    syncDirectory(dirname(this.root));
+  }
   private allocate(kind: Marker["kind"]) {
     const marker: Marker = { kind, id: randomUUID(), nonce: randomUUID(), createdAt: Date.now() };
     const path = join(this.namespace(kind), marker.id);
@@ -194,6 +200,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     try {
       writeFileSync(join(path, "owner.tmp"), JSON.stringify(marker), { flag: "wx", mode: 0o600, flush: true });
       renameSync(join(path, "owner.tmp"), join(path, "owner.json"));
+      this.syncAllocationPath(path);
     } catch (error) {
       // This call created the directory exclusively and has not handed it to anyone.
       try {
@@ -292,10 +299,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     const publish = () => {
       // Persist both sides of the recovery path before the first rename. This
       // also covers a digest namespace recreated while replaying an older intent.
-      syncDirectory(pending);
-      syncDirectory(dirname(pending));
-      syncDirectory(this.root);
-      syncDirectory(dirname(this.root));
+      this.syncAllocationPath(pending);
       if (replace) {
         const previous = join(pending, "previous");
         publishedFiles(dest);

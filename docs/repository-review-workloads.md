@@ -155,7 +155,9 @@ claims and reclaims marked pending and lease directories. A submission still cap
 after restart can replace its released claim in a new promotion transaction, even when
 another active submission holds the original digest. A publication intent beside the
 candidate identifies a rename interrupted before database commit. If installing an owner
-marker fails, the allocator removes the temporary directory it just created. Failed seal and
+marker fails, the allocator removes the temporary directory it just created. Before
+sealing or writing a lease, it flushes the marker and syncs the allocation directory
+and its parents through the directory containing the artifact root. Failed seal and
 materialization attempts relinquish their temporary directories even if removal fails.
 Once the payload is gone, a durable link to the owner marker survives outside the
 directory until removal completes. Recovery checks the directory device and inode

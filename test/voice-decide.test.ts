@@ -450,6 +450,27 @@ test("a split is one pending card with two parts, delivered to each in order, an
 
 const REPEATED_NAME = "Steve, ask Alice to check the build, and Alice, review the PR";
 
+test("a single eligible split identifies the later occurrence in the model question", async (t) => {
+  const { router, asked, delivered, say } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const address of ["Alice", "“Alice”"]) {
+    const text = `Steve, Alice is busy. ${address}, review the PR`;
+    const id = `single-${asked.length}`;
+    await say(text, id);
+    const questions = asked.at(-1)!;
+    assert.equal(questions.length, 1);
+    const [question] = questions;
+    assert.ok(question?.kind === "split");
+    const offset = text.lastIndexOf("Alice");
+    assert.equal(question.nameOffset, offset);
+    const instructions = voiceQuestionInstructions(question, false);
+    assert.ok(instructions.includes(`offset ${offset}.`));
+    assert.ok(instructions.includes(JSON.stringify(text.slice(offset))));
+    assert.equal(await router.sendNow(id), true);
+    assert.deepEqual(delivered.slice(-2), [["Steve", "Alice is busy.", id], ["Alice", "review the PR", `${id}#2`]]);
+  }
+});
+
 test("each repeated name gets its own split question and only the later command reaches Alice", async (t) => {
   const { router, asked, delivered, say } = routerRig(() => answered("mention", "split"));
   t.after(() => router.reset());
@@ -475,6 +496,23 @@ test("picking a repeated name requires choosing its split point", async (t) => {
   assert.equal(await router.pick("pick-repeat", options[1]!.id), true);
   await router.sendNow("pick-repeat");
   assert.deepEqual(delivered, [["Steve", "ask Alice to check the build", "pick-repeat"], ["Alice", "review the PR", "pick-repeat#2"]]);
+});
+
+test("manual split choices distinguish repeated names with identical 120-character previews", async (t) => {
+  const { router, cards, delivered, say } = routerRig(() => answered(null, null));
+  t.after(() => router.reset());
+  const common = "review the deployment notes ".repeat(6);
+  const first = `prepare notes, and Alice, ${common}first`;
+  const second = `${common}second`;
+  await say(`Steve, ${first}, and Alice, ${second}`, "preview");
+  const rows = cards.at(-1)!.candidates.filter(row => row.title === "Alice");
+  assert.equal(rows.length, 2);
+  assert.notEqual(rows[0]!.detail, rows[1]!.detail);
+  assert.match(rows[0]!.detail, /Split option 1:/);
+  assert.match(rows[1]!.detail, /Split option 2:/);
+  assert.equal(await router.pick("preview", rows[1]!.id), true);
+  assert.equal(await router.sendNow("preview"), true);
+  assert.deepEqual(delivered, [["Steve", first, "preview"], ["Alice", second, "preview#2"]]);
 });
 
 test("a repeated first addressee has distinct picks for the whole message and the split", async (t) => {

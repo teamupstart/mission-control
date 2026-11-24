@@ -88,7 +88,8 @@ function setSplitPicks(item: OpenCard, card: VoiceCard, first: SpokenName, split
   item.splitPicks = splitPickOptions(first.key, splits, prefix);
   card.candidates = [{ ...agentRow(first), id: prefix + first.key, detail: `${first.role} · Keep the whole message` }];
   for (const [id, { target, tail }] of item.splitPicks) {
-    card.candidates.push({ ...agentRow(target), id, detail: `${target.role} · Split here: ${tail.slice(0, 120)}` });
+    const label = item.splitPicks.size === 1 ? "Split here" : `Split option ${card.candidates.length}`;
+    card.candidates.push({ ...agentRow(target), id, detail: `${target.role} · ${label}: ${tail.slice(0, 120)}` });
   }
 }
 
@@ -114,7 +115,7 @@ export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtteranc
   if (decidable.length > MAX_SPLIT_QUESTIONS) return [];
   return decidable.map((split) => ({
     kind: "split", text: utterance.text, first: choiceOf(decision.target), second: choiceOf(split.target),
-    ...(decision.splits.length > 1 ? { nameOffset: split.at } : {}),
+    nameOffset: split.at,
   }));
 }
 

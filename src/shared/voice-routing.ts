@@ -313,8 +313,9 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const tail = second.body.trim();
       if (/[\p{L}\p{N}]/u.test(head) && /[\p{L}\p{N}]/u.test(tail)) {
         const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
+        const nameOffset = at.index + (at.raw.match(/^\p{P}+/u)?.[0].length ?? 0);
         for (const other of matches) {
-          splits.push({ target: other.target, at: at.index, head, tail,
+          splits.push({ target: other.target, at: nameOffset, head, tail,
             ...(commands.some(Boolean) && { commands }), ...(matches.length > 1 && { ambiguousTarget: true }) });
           splitCandidates.add(other.target);
         }

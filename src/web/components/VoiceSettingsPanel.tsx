@@ -220,8 +220,8 @@ export const VOICE_KEY_SOURCE_TEXT: Record<Exclude<VoiceKeySource, null> | "none
 export const VOICE_ROUTING_WITHOUT_PROVIDER = `Not set: ${voiceRoutingWithoutProvider()}`;
 
 /** The group's line: the provider in use and what it is sent, or that none is. */
-export function fasterRoutingLine(provider: VoiceKeyProvider | null): string {
-  if (!provider) return VOICE_ROUTING_WITHOUT_PROVIDER;
+export function fasterRoutingLine(provider: VoiceKeyProvider | null, savedKeysUnavailable = false): string {
+  if (!provider) return savedKeysUnavailable ? `Saved key status unavailable: ${voiceRoutingWithoutProvider()}` : VOICE_ROUTING_WITHOUT_PROVIDER;
   const name = VOICE_KEY_PROVIDER_LABEL[provider];
   return `Using ${name}. Ambiguous sentences and the roster's names and roles are sent to ${name}.`;
 }
@@ -234,8 +234,9 @@ function DecisionKeyRow({ provider, keys }: {
   const { busy } = keys;
   const label = VOICE_KEY_PROVIDER_LABEL[provider];
   const source = keys.report?.keys[provider].source;
-  const from = source === undefined
-    ? (keys.report === null ? "Status unavailable" : "Reading…")
+  const savedKeysUnavailable = keys.report?.savedKeysUnavailable;
+  const from = source == null && (keys.report === null || savedKeysUnavailable) ? "Status unavailable"
+    : source === undefined ? "Reading…"
     : VOICE_KEY_SOURCE_TEXT[source ?? "none"];
   const save = async (): Promise<void> => {
     const key = draft.trim();
@@ -249,8 +250,8 @@ function DecisionKeyRow({ provider, keys }: {
         <span className="kb-row-label">{label} key</span>
         <span className="kb-row-desc">
           <span className="voice-key-source">{from}</span>
-          {source === "environment" && <> · <code>{VOICE_KEY_ENV[provider]}</code>. A key saved here overrides it on this Mac</>}
-          {source === null && <> · or set <code>{VOICE_KEY_ENV[provider]}</code> where the daemon runs</>}
+          {source === "environment" && <> · <code>{VOICE_KEY_ENV[provider]}</code>. {savedKeysUnavailable ? "Saved key status unavailable" : "A key saved here overrides it on this Mac"}</>}
+          {source === null && !savedKeysUnavailable && <> · or set <code>{VOICE_KEY_ENV[provider]}</code> where the daemon runs</>}
         </span>
       </div>
       <form
@@ -304,7 +305,7 @@ function FasterRoutingGroup({ config, update, keys }: {
     <div className="settings-group voice-faster-routing" data-anchor="voice/faster-routing">
       <p className="settings-group-label">Faster routing</p>
       <p className={`voice-routing-line${provider ? " is-on" : ""}`} role="status" aria-label="Decision model in use">
-        {keys.report ? fasterRoutingLine(provider) : keys.report === null ? "Key status unavailable" : "Reading…"}
+        {keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable) : keys.report === null ? "Key status unavailable" : "Reading…"}
       </p>
       {keys.error && <p className="settings-error">{keys.error}</p>}
 

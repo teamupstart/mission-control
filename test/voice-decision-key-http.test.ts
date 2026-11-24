@@ -206,8 +206,16 @@ test("an unreadable key file makes the settings report unavailable without discl
   fs.mkdirSync(join(home, "voice"), { recursive: true, mode: 0o700 });
   writeFileSync(decisionKeyPath(), "not json " + OPENAI_KEY, { mode: 0o600 });
   const read = await report();
-  assert.equal(read.status, 503);
-  assert.equal(read.body.error, "key_status_unavailable");
+  assert.equal(read.status, 200);
+  assert.equal(read.body.savedKeysUnavailable, true);
+  assert.equal(read.body.provider, null);
+  process.env.TYPESAFE_API_KEY = JEV_KEY;
+  const env = await report();
+  assert.equal(env.body.provider, "jev");
+  assert.equal(env.body.keys.jev.source, "environment");
+  assert.equal(env.body.savedKeysUnavailable, true);
+  await setProvider("off");
+  assert.equal((await report()).body.provider, null);
   assert.ok(!read.text.includes(OPENAI_KEY));
   assert.ok(!logged.some((line) => line.includes(OPENAI_KEY)));
 });
@@ -224,7 +232,7 @@ for (const operation of ["save", "remove"] as const) {
     });
     syncBuiltinESMExports();
     try {
-      assert.equal((await report()).status, 503);
+      assert.equal((await report()).body.savedKeysUnavailable, true);
       const response = operation === "save" ? await report("/api/voice/decision-key", "PUT", { provider: "jev", key: JEV_KEY })
         : await report("/api/voice/decision-key?provider=openai", "DELETE");
       assert.equal(response.status, 500);
@@ -288,7 +296,7 @@ for (const component of ["directory", "file"] as const) {
     }
     const link = component === "directory" ? dir : decisionKeyPath();
     t.after(() => fs.unlinkSync(link));
-    assert.equal((await report()).status, 503);
+    assert.equal((await report()).body.savedKeysUnavailable, true);
     assert.equal((await report("/api/voice/decision-key", "PUT", { provider: "jev", key: JEV_KEY })).status, 500);
     assert.equal((await report("/api/voice/decision-key?provider=openai", "DELETE")).status, 500);
     assert.equal(readFileSync(target, "utf8"), contents);

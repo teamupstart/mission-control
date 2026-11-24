@@ -77,6 +77,8 @@ export interface VoiceDecisionKeyReport {
   /** The provider the model step asks first, or null when routing goes straight to the job. */
   provider: VoiceKeyProvider | null;
   keys: Record<VoiceKeyProvider, { source: VoiceKeySource }>;
+  /** Sources describe keys usable for routing even when saved credentials cannot be inspected. */
+  savedKeysUnavailable?: true;
 }
 
 export function voiceDecisionKeyReport(

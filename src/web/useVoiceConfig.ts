@@ -205,7 +205,8 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
       writes.current++;
       if (res.ok && res.keys && res.provider !== undefined) {
         // Another window may have changed the keys since this mutation was applied.
-        await refresh.current?.();
+        setReport(undefined);
+        void refresh.current?.();
         setError(null);
         return true;
       }

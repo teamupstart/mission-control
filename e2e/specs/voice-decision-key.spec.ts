@@ -75,6 +75,7 @@ async function codexAgents(daemon: DaemonHandle): Promise<void> {
       workflowId: null, agent: "codex", callSign,
     });
   }
+  await expect.poll(async () => (await snapshot(daemon)).voice?.roster.map((r) => r.name).sort()).toEqual(expect.arrayContaining(["Alice", "Steve"]));
 }
 
 /** The daemon's snapshot, as the dashboard's event stream receives it first. */
@@ -208,7 +209,6 @@ test("with keys on both rows Automatic names OpenAI Decisions, choosing Jev name
   await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "02-jev-chosen");
   await capture(panel(page), "06-roster-first");
 
-  await expect.poll(async () => (await snapshot(daemon)).voice?.roster.map((r) => r.name).sort()).toEqual(expect.arrayContaining(["Alice", "Steve"]));
   const { entry, card } = await sayAndSettle(daemon, SPLIT);
   expect(entry.detail).toBe("Jev answered: split");
   expect(card?.parts.map((p) => [p.target?.name, p.text])).toEqual([["Steve", "check the build"], ["Alice", "review the PR"]]);
@@ -217,6 +217,23 @@ test("with keys on both rows Automatic names OpenAI Decisions, choosing Jev name
 
 test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
   test.use({ environmentKey: ENVIRONMENT_KEY });
+
+  test("a broken key file still identifies the environment provider that receives speech", async ({ dashboard: page, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    const dir = join(daemon.home, "voice");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "decision-key.json"), "malformed fixture", { mode: 0o600 });
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    await expect(row(page, "OpenAI Decisions")).toContainText("From the environment");
+    await expect(row(page, "OpenAI Decisions")).toContainText("Saved key status unavailable");
+    await expect(row(page, "Jev")).toContainText("Status unavailable");
+    const { entry } = await sayAndSettle(daemon, SPLIT);
+    expect(entry.detail).toBe("OpenAI Decisions answered: split");
+    expect(decisions.requests.map(r => r.key)).toEqual([ENVIRONMENT_KEY]);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "15-unreadable-environment");
+  });
 
   test("confirming Off refreshes the provider banner before the next poll and discards an older read", async ({ dashboard: page, daemon }) => {
     await turnVoiceOn(daemon);
@@ -269,7 +286,6 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     expect(await page.content()).not.toContain(ENVIRONMENT_KEY);
     await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "03-environment-key");
 
-    await expect.poll(async () => (await snapshot(daemon)).voice?.roster.map((r) => r.name).sort()).toEqual(expect.arrayContaining(["Alice", "Steve"]));
     const viaProvider = await sayAndSettle(daemon, SPLIT);
     expect(viaProvider.entry.detail).toBe("OpenAI Decisions answered: split");
     expect(viaProvider.card?.parts.map((p) => p.target?.name)).toEqual(["Steve", "Alice"]);
@@ -443,7 +459,7 @@ test("an unreadable key store shows unavailable while ambiguous speech still rea
   const saved = readFileSync(path);
   writeFileSync(path, "broken fixture credential file");
   await page.clock.fastForward(5_000);
-  await expect(line(page)).toHaveText("Key status unavailable");
+  await expect(line(page)).toHaveText(`Saved key status unavailable: ${voiceRoutingWithoutProvider()}`);
   await expect(row(page, "OpenAI Decisions")).toContainText("Status unavailable");
   await expect(row(page, "Jev")).toContainText("Status unavailable");
   const { entry, card } = await sayAndSettle(daemon, SPLIT);
@@ -456,3 +472,36 @@ test("an unreadable key store shows unavailable while ambiguous speech still rea
   await expect(line(page)).toHaveText(using("OpenAI Decisions"));
   await expect(row(page, "OpenAI Decisions")).toContainText("Saved on this Mac");
 });
+
+for (const mutation of ["save", "remove"] as const) {
+  test(`Off remains available during a stalled status refresh after a confirmed ${mutation}`, async ({ dashboard: page, daemon }) => {
+    await turnVoiceOn(daemon);
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(NOT_SET);
+    if (mutation === "remove") await saveKey(page, "Jev", SAVED_JEV);
+    const refreshing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/decision-key", async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      const status = await route.fetch();
+      refreshing.resolve();
+      await release.promise;
+      await route.fulfill({ response: status });
+    });
+    try {
+      if (mutation === "save") await keyField(page, "Jev").fill(SAVED_JEV);
+      await row(page, "Jev").getByRole("button", { name: mutation === "save" ? "Save" : "Remove" }).click();
+      await refreshing.promise;
+      await expect(providerMenu(page)).toBeEnabled({ timeout: 1_500 });
+      await expect(keyField(page, "Jev")).toHaveValue("");
+      const saved = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
+      await providerMenu(page).selectOption({ label: "Off" });
+      expect((await saved).ok()).toBe(true);
+      if (mutation === "save") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "16-off-during-refresh");
+    } finally {
+      release.resolve();
+    }
+    await expect(line(page)).toHaveText(NOT_SET);
+    await expect(providerMenu(page)).toHaveValue("off");
+  });
+}

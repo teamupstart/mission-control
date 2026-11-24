@@ -60,7 +60,7 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
 
 export function VoiceCardView({ card, actions, operation, hidden = false, fading = false }: {
   card: DashboardVoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
-  operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string): Promise<void> };
+  operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string): Promise<void> };
 }) {
   const [now, setNow] = useState(() => performance.now());
   const launchIds = useRef(new Map<string, string>());
@@ -99,7 +99,8 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       setNow(time);
       return;
     }
-    void run(() => api.voiceCardAction(card.id, action));
+    const label = action === "cancel" ? "Cancel" : "Send now";
+    void run(() => api.voiceCardAction(card.id, action, { deadline }), "", label + " was not confirmed. ");
   };
   const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost");
   const remaining = Math.max(0, (deadline ?? 0) - now);
@@ -166,7 +167,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         {card.candidates.map(c => {
           const target = actions.roster.find(t => t.key === (c.target?.key ?? c.id)) ?? c.target;
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
-            pick={() => void run(() => api.voiceCardAction(card.id, "pick", c.id))} disabled={busy} />;
+            pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidateId: c.id }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
         })}
         <div className="vc-row"><span className="vc-grow vc-hint">{waitingForSilence ? "Pick a row now, or speak once playback ends." : <>Say the name again, or click a row. <q>Cancel</q> drops it.</>}</span>{cancel}</div></>;
       break;

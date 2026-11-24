@@ -304,12 +304,11 @@ test("a rule written in Settings reaches the very next dispatch", async ({
 
   // And the browser says so: the chip is the operator-facing half of this proof, and it is
   // the only place the text is legible at all, since on Claude it never enters the
-  // conversation.
-  await dashboard
-    .getByRole("navigation", { name: "Sessions" })
-    .locator("button.rail-row")
-    .first()
-    .click();
+  // conversation. The first turn changes the session header layout when it settles.
+  // Wait for the idle row before putting the pointer on the 14px chip.
+  const sessionRow = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  await expect(sessionRow.locator(".rail-state")).toHaveText("idle");
+  await sessionRow.click();
   const chip = dashboard.getByRole("button", { name: "See standing instructions" });
   await expect(chip).toBeVisible();
   await expect(chip).toHaveText("✎");

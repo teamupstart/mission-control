@@ -1,5 +1,4 @@
 import {
-  addressedCommand,
   routeUtterance,
   type HeardEntry,
   type VoiceAddressedCommand,
@@ -50,6 +49,7 @@ interface OpenCard {
   pickTargets?: readonly SpokenName[];
   splitPicks?: Map<string, VoiceSplitPoint>;
   modelStep?: AbortController;
+  commands?: VoiceSplitPoint["commands"];
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -112,7 +112,7 @@ export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtteranc
 export function resolveVoiceDecision(
   decision: NeedsModel,
   result: VoiceDecisionResult,
-): { state: "pending"; reason: "model" | "split" | "mention"; parts: VoiceCard["parts"] } | { state: "unsure" } {
+): { state: "pending"; reason: "model" | "split" | "mention"; commands?: VoiceSplitPoint["commands"]; parts: VoiceCard["parts"] } | { state: "unsure" } {
   if (decision.reason === "ambiguous-name") {
     const target = decision.candidates.find((candidate) => candidate.key === result.answers[0]?.choice);
     return target ? { state: "pending", reason: "model", parts: [{ target, text: decision.text }] } : { state: "unsure" };
@@ -123,7 +123,7 @@ export function resolveVoiceDecision(
     const choice = result.answers[index]?.choice ?? null;
     if (choice === "mention") continue;
     if (choice !== "split") return { state: "unsure" };
-    return { state: "pending", reason: "split", parts: [{ target: decision.target, text: split.head }, { target: split.target, text: split.tail }] };
+    return { state: "pending", reason: "split", commands: split.commands, parts: [{ target: decision.target, text: split.head }, { target: split.target, text: split.tail }] };
   }
   return { state: "pending", reason: "mention", parts: [{ target: decision.target, text: decision.text }] };
 }
@@ -212,7 +212,7 @@ export class VoiceRouter {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
-    await this.openCard({ card, entry, message: decision.text }, capturedAt);
+    await this.openCard({ card, entry, message: decision.text, commands: [decision.command] }, capturedAt);
     return true;
   }
 
@@ -235,6 +235,7 @@ export class VoiceRouter {
       entry,
       message: decision.text,
       modelStep,
+      commands: decision.reason === "ambiguous-name" ? [decision.command] : undefined,
       card: { id, state: "resolving", deadline: null, openQuestions: 0, reason: decision.reason, candidates,
         parts: [{ target: decision.reason === "second-name" ? decision.target : null, text: utterance.text }] },
     };
@@ -272,7 +273,7 @@ export class VoiceRouter {
         return;
       }
       if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
-      await this.openCard({ ...item, timer: undefined,
+      await this.openCard({ ...item, timer: undefined, commands: resolved.commands ?? item.commands,
         card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } }, entry.time);
     };
     const done = settle().finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
@@ -342,7 +343,7 @@ export class VoiceRouter {
     this.take(item);
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
-    await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
+    await this.openCard({ ...item, commands: split ? split.commands : item.commands, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
       candidates: [], parts } }, pickedAt);
     return true;
   }
@@ -365,7 +366,7 @@ export class VoiceRouter {
       try {
         if (target) {
           const partId = index === 0 ? id : `${id}#${index + 1}`;
-          result = await this.deliverer.deliver(target, part.text, partId, addressedCommand(part.text));
+          result = await this.deliverer.deliver(target, part.text, partId, item.commands?.[index]);
         }
       } catch (error) {
         result = { outcome: "failed", detail: error instanceof Error ? error.message : String(error) };

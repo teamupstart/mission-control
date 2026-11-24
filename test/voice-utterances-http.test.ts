@@ -374,6 +374,18 @@ test("mismatched address wrappers stay in the queued message and cannot trigger 
   assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
 });
 
+test("a stop after an unclosed address wrapper queues as text at the deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const before = interrupts.length;
+  const messages = queued("Will");
+  for (const text of ["[Will, stop", "“Will, STOP!", "「[Will, ] stop", ", [Will, stop"]) await say(text);
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.equal(interrupts.length, before);
+  assert.deepEqual(queued("Will").slice(messages.length), ["stop", "STOP!", "stop", "stop"]);
+  assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["queued", "queued", "queued", "queued"]);
+});
+
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
   decide = (questions) => {
@@ -416,6 +428,20 @@ test("split delivery interrupts on each bare stop and queues quoted stop verbati
     assert.equal((await act(id, "send-now")).status, 200);
     assert.deepEqual(interrupts.slice(before), ["sdk:" + interrupted]);
     assert.equal(queued(messaged).at(-1), '"stop"');
+  }
+});
+
+test("an unclosed address wrapper keeps stop as text for model and picked splits", async () => {
+  for (const manual of [false, true]) {
+    decide = () => ({ rung: "job", answers: [{ choice: manual ? null : "split", confidence: manual ? 0 : 1 }], detail: "scripted" });
+    const before = interrupts.length;
+    const id = randomUUID();
+    await say("[Steve, stop, and [ Will, stop", id);
+    await resolved(id);
+    if (manual) assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(interrupts.length, before);
+    assert.deepEqual([queued("Steve").at(-1), queued("Will").at(-1)], ["stop", "stop"]);
   }
 });
 

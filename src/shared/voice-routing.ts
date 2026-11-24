@@ -50,6 +50,7 @@ export interface VoiceSplitPoint {
   at: number;
   /** More than one captured target has the spoken name at this offset. */
   ambiguousTarget?: true;
+  commands?: readonly (VoiceAddressedCommand | undefined)[];
   head: string;
   tail: string;
 }
@@ -89,8 +90,8 @@ function barePhrase(text: string): string {
   return normalizeSpokenName(text).replace(/[\p{Sentence_Terminal}…]+$/u, "").trimEnd();
 }
 
-export function addressedCommand(text: string): VoiceAddressedCommand | undefined {
-  return barePhrase(text) === "stop" ? "stop" : undefined;
+function addressedCommand(text: string, wrappersClosed: boolean): VoiceAddressedCommand | undefined {
+  return wrappersClosed && barePhrase(text) === "stop" ? "stop" : undefined;
 }
 
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
@@ -125,22 +126,23 @@ const WRAPPER_PAIRS = new Set(`
 `.trim().split(/\s+/u));
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
-function messageAfterAddress(text: string, start: number, end: number): string {
+function messageAfterAddress(text: string, start: number, end: number): { body: string; wrappersClosed: boolean } {
   const rest = text.slice(end).trimStart();
   const separatorLength = rest.startsWith(",") ? 1 : 0;
   let bodyStart = separatorLength;
   const address = text.slice(start, end).trimStart();
-  const opening = address.match(/^[\p{Ps}\p{Pi}"'\s]+/u)?.[0].replace(/\s/gu, "") ?? "";
+  const prefix = address.match(/^[\p{P}\s]+/u)?.[0] ?? "";
   const trailing = address.match(/\p{P}+$/u)?.[0] ?? "";
-  const wrappers = [...opening];
+  const wrappers = prefix.match(/[\p{Ps}\p{Pi}"']/gu) ?? [];
   for (const mark of trailing.matchAll(/[\p{Pe}\p{Pf}"']/gu)) {
     if (!WRAPPER_PAIRS.has((wrappers.pop() ?? "") + mark[0])) {
-      return text.slice(end - trailing.length + mark.index).trimEnd();
+      return { body: text.slice(end - trailing.length + mark.index).trimEnd(), wrappersClosed: false };
     }
   }
-  for (const opener of wrappers.reverse()) {
+  while (wrappers.length) {
     const closing = rest.slice(bodyStart).match(/^\s*([\p{Pe}\p{Pf}"'])/u);
-    if (!closing || !WRAPPER_PAIRS.has(opener + closing[1])) break;
+    if (!closing || !WRAPPER_PAIRS.has(wrappers.at(-1)! + closing[1])) break;
+    wrappers.pop();
     bodyStart += closing[0].length;
   }
   if (bodyStart > separatorLength) {
@@ -148,7 +150,7 @@ function messageAfterAddress(text: string, start: number, end: number): string {
     if (!separatorLength) bodyStart += rest.slice(bodyStart).match(/^[\p{Sentence_Terminal}…]+/u)?.[0].length ?? 0;
     bodyStart += rest.slice(bodyStart).match(/^\s*,/u)?.[0].length ?? 0;
   }
-  return rest.slice(bodyStart).trimStart();
+  return { body: rest.slice(bodyStart).trimStart(), wrappersClosed: wrappers.length === 0 };
 }
 
 export function routeUtterance(utterance: VoiceUtterance, context: {
@@ -162,7 +164,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const [firstToken, secondToken] = tokens;
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
   const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, 0, token.index + token[0].length);
-  const phrase = bodyAfter(tokens.at(-1)!) ? null : normalized(text);
+  const phrase = bodyAfter(tokens.at(-1)!).body ? null : normalized(text);
   const controlPhrase = barePhrase(text);
   if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
   const pickName = phrase !== null ? controlPhrase : null;
@@ -213,10 +215,10 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
     return { kind: "ignored", reason: "near-miss" };
   }
-  const body = bodyAfter(tokens[count - 1]!);
+  const { body, wrappersClosed } = bodyAfter(tokens[count - 1]!);
   if (!body) return { kind: "ignored", reason: "no-message" };
   const pauseMs = observedPause(words, tokens, count);
-  const command = addressedCommand(body);
+  const command = addressedCommand(body, wrappersClosed);
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, candidates, text: body, pauseMs, ...(command && { command }) };
   const target = candidates[0]!;
   // A later roster name may start a message of its own or only be talked about. The first
@@ -231,11 +233,17 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const heard = laterNames[length - 1];
       const matches = names.filter(({ name }) => name === heard);
       if (!matches.length) continue;
-      const head = splitHead(text.slice(text.length - body.length, at.index));
-      const tail = messageAfterAddress(text, at.index, end.index + end[0].length).replace(/^[\s;:–—-]+/u, "").trim();
+      const preceding = text.slice(text.length - body.length, at.index);
+      const wrappers = preceding.match(/(?:^|\s)([\p{Ps}\p{Pi}"'\s]+)$/u)?.[1] ?? "";
+      const addressStart = at.index - wrappers.length;
+      const head = splitHead(text.slice(text.length - body.length, addressStart));
+      const second = messageAfterAddress(text, addressStart, end.index + end[0].length);
+      const tail = second.body.replace(/^[\s;:–—-]+/u, "").trim();
       if (head && tail) {
+        const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
         for (const other of matches) {
-          splits.push({ target: other.target, at: at.index, head, tail, ...(matches.length > 1 && { ambiguousTarget: true }) });
+          splits.push({ target: other.target, at: at.index, head, tail,
+            ...(commands.some(Boolean) && { commands }), ...(matches.length > 1 && { ambiguousTarget: true }) });
           splitCandidates.add(other.target);
         }
       }

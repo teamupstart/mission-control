@@ -115,6 +115,20 @@ test("a provider ticket cannot enable routing after the edit expired", async t =
   assert.equal((await (await json("/api/voice/config")).json()).config.decisionProvider, "off");
 });
 
+test("the config route rejects an expired dashboard patch without changing either field", async t => {
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: start });
+  const expiry = { "x-voice-config-expires-at": String(start + 15_000) };
+  const change = (seconds: number, muted: boolean) => json("/api/voice/config", "PUT", { cancelWindow: { seconds }, muted }, expiry);
+  assert.equal((await change(6, true)).status, 200);
+  t.mock.timers.tick(15_000);
+  const late = await change(8, false);
+  assert.equal(late.status, 409);
+  const { config } = await (await json("/api/voice/config")).json();
+  assert.equal(config.cancelWindow.seconds, 6);
+  assert.equal(config.muted, true);
+});
+
 test("a delayed provider reservation uses only the time remaining on the original edit", async t => {
   const clicked = Date.now();
   let elapsed = 74_900;

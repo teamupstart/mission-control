@@ -500,6 +500,7 @@ export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>
 export interface VoiceDashboardSnapshot {
   providerRevision: string;
   snapshotOrder: number;
+  serverTime: number;
   intentReceipt?: string;
 }
 
@@ -2515,9 +2516,10 @@ export const api = {
   reserveVoiceProviderWrite: (intent: VoiceProviderIntent, signal: AbortSignal) =>
     post<ActionResult & { ticket?: string; intentReceipt?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; receipt: string; quietForMs: number; pendingSelection: boolean } }>(
       "/api/voice/config/provider-intent", intent, { signal }),
-  setVoiceConfig: (patch: VoiceConfigPatch, ticket: string | undefined, signal: AbortSignal) =>
+  setVoiceConfig: (patch: VoiceConfigPatch, ticket: string | undefined, signal: AbortSignal, settingsExpiry?: number) =>
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
-      { signal, headers: ticket ? { "x-voice-provider-ticket": ticket } : undefined }),
+      { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
+        ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
   /** A 409 carries `reason` when there is no model to download. */

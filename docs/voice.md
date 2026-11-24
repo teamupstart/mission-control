@@ -547,6 +547,9 @@ absent otherwise; a shell report's `listener` entry is dropped.
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
+  Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
+  The dashboard calculates expiry from the time in the daemon's latest snapshot. The daemon
+  rejects an expired patch before changing any setting.
 - The dashboard reserves a provider selection with `POST /api/voice/config/provider-intent`
   and sends the returned ticket in the config write's `x-voice-provider-ticket` header. A newer
   selection can commit immediately. An older write arriving afterwards receives 409.

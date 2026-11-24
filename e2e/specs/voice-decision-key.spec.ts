@@ -1060,6 +1060,32 @@ test("the voice preview gates the routing controls and background job live", asy
   await expect(voice).toHaveCount(0);
 });
 
+test("an expired config write cannot restore an older cancel window", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
+  await openVoiceSettings(page, daemon);
+  const length = panel(page).getByRole("combobox", { name: "Cancel window length" });
+  await expect(length).toHaveValue("4");
+  const stalled = Promise.withResolvers<Route>();
+  await page.route("**/api/voice/config", route => {
+    if (route.request().method() === "PUT" && route.request().postDataJSON().cancelWindow?.seconds === 8) stalled.resolve(route);
+    else return route.continue();
+  });
+  await length.selectOption("8");
+  const earlier = await stalled.promise;
+  try {
+    const committed = page.waitForResponse(r => r.request().method() === "PUT" && r.url().endsWith("/api/voice/config"));
+    await length.selectOption("6");
+    expect((await (await committed).json()).config.cancelWindow.seconds).toBe(6);
+    expect((await page.request.fetch(earlier.request())).status()).toBe(409);
+    await page.reload();
+    await expect(length).toHaveValue("6");
+    await capture(panel(page).locator('[data-anchor="voice/cancel-window"]'), "45-expired-config-write");
+  } finally {
+    await earlier.abort().catch(() => undefined);
+  }
+});
+
 test("a delayed config poll shows the newer cancel window when it reaches the daemon last", async ({ dashboard: page, context, daemon }) => {
   await turnVoiceOn(daemon);
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");

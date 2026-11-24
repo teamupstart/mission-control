@@ -77,7 +77,7 @@ export function registerVoiceRoutes(
 
   let snapshotOrder = 0;
   const dashboardSnapshot = () => ({
-    providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(), snapshotOrder: ++snapshotOrder,
+    providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(), snapshotOrder: ++snapshotOrder, serverTime: Date.now(),
   });
 
   const providerConflict = () => ({
@@ -98,6 +98,10 @@ export function registerVoiceRoutes(
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    const expiry = c.req.header("x-voice-config-expires-at");
+    if (expiry !== undefined && (!Number.isSafeInteger(Number(expiry)) || Number(expiry) <= Date.now())) {
+      return c.json({ error: "The settings change expired.", config: getVoiceConfig() }, 409);
+    }
     const ticket = c.req.header("x-voice-provider-ticket");
     const config = setVoiceConfig(parsed.data, ticket);
     return config ? c.json({ config, ...(ticket && { providerRevision: providerRevision() }) }) : c.json(providerConflict(), 409);

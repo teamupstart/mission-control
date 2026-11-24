@@ -68,7 +68,7 @@ export interface VoiceConfigState {
   /** The provider the daemon currently acknowledges, independent of edits still queued. */
   confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   keyReportVersion: string;
-  observeProvider: (revision: string, selection: VoiceConfig["decisionProvider"]) => boolean;
+  observeProvider: (revision: string, selection: VoiceConfig["decisionProvider"], snapshot?: VoiceDashboardSnapshot) => boolean;
   pendingDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
    * Show an edit immediately and resolve to whether the daemon kept it.
@@ -106,6 +106,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const [provider, setProvider] = useState<{ revision: string; selection: VoiceConfig["decisionProvider"] }>();
   const latestProvider = useRef(provider);
   const previousDaemons = useRef(new Set<string>());
+  const serverClock = useRef<{ daemon: string; order: number; offset: number } | undefined>(undefined);
   const [unconfirmedProviderEdit, setUnconfirmedProviderEdit] = useState<number | null>(null);
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
@@ -123,10 +124,10 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
 
   // Config reads, key reports and write acknowledgments all carry the daemon's
   // selection revision. Their HTTP responses may arrive in any order.
-  const observeProvider = useCallback((revision: string, selection: VoiceConfig["decisionProvider"]): boolean => {
+  const observeProvider = useCallback((revision: string, selection: VoiceConfig["decisionProvider"], snapshot?: VoiceDashboardSnapshot): boolean => {
     const prior = latestProvider.current;
+    const [daemon = "", order] = revision.split(":");
     if (prior?.revision !== revision) {
-      const [daemon = "", order] = revision.split(":");
       if (previousDaemons.current.has(daemon)) return false;
       if (prior) {
         const [previous = "", lastOrder] = prior.revision.split(":");
@@ -135,6 +136,10 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       latestProvider.current = { revision, selection };
       setProvider(latestProvider.current);
+    }
+    if (snapshot && Number.isFinite(snapshot.serverTime) &&
+        (serverClock.current?.daemon !== daemon || snapshot.snapshotOrder > serverClock.current.order)) {
+      serverClock.current = { daemon, order: snapshot.snapshotOrder, offset: snapshot.serverTime - performance.now() };
     }
     setUnconfirmedProviderEdit(null);
     return true;
@@ -150,7 +155,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       const at = nextEdit.current;
       const read = await readSetting(fetchVoiceConfig, reads.signal);
       if (!reads.signal.aborted && read && !isOlderSnapshot(read, snapshot) && nextEdit.current === at && pendingRef.current.length === 0) {
-        if (!observeProvider(read.providerRevision, read.config.decisionProvider)) return;
+        if (!observeProvider(read.providerRevision, read.config.decisionProvider, read)) return;
         snapshot = read;
         rememberIntentReceipt(read.intentReceipt);
         setConfirmed(read.config);
@@ -173,9 +178,11 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
     const selectedAt = performance.now();
+    // The daemon validates expiry. Advance its snapshot time using the browser's monotonic clock.
+    const serverNow = () => serverClock.current ? Math.floor(performance.now() + serverClock.current.offset) : Date.now();
     const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
     const optOut = decisionProvider === "off";
-    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id, expiresAt: Date.now() + VOICE_PROVIDER_EDIT_TIMEOUT_MS,
+    const intent: VoiceProviderIntent = { writer, observedRevision: observed, optOut, edit: edit.id, expiresAt: serverNow() + VOICE_PROVIDER_EDIT_TIMEOUT_MS,
       observedIntent: changesProvider ? observedIntentReceipt() : undefined };
     const providerRequest = changesProvider ? new AbortController() : undefined;
     const timer = providerRequest && setTimeout(() => providerRequest.abort(), VOICE_PROVIDER_EDIT_TIMEOUT_MS);
@@ -193,8 +200,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         return false;
       }
       const signal = sendProvider && providerRequest ? providerRequest.signal : AbortSignal.timeout(SETTINGS_REQUEST_TIMEOUT_MS);
+      const settingsExpiry = sendProvider ? undefined : serverNow() + SETTINGS_REQUEST_TIMEOUT_MS;
       let res = sendProvider && order && !order.ticket ? order
-        : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined, signal);
+        : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined, signal, settingsExpiry);
       // A receipt captured at click time establishes order independently of
       // latency. Without one, the daemon's idle interval must cover the whole trip.
       const window = order?.intentWindow;
@@ -332,7 +340,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       if (read) {
         // Requests may reach the daemon out of order even when they share a provider revision.
         if (id < failedRead || isOlderSnapshot(read, snapshot)) return;
-        if (!observeProvider(read.providerRevision, read.selection)) return;
+        if (!observeProvider(read.providerRevision, read.selection, read)) return;
         snapshot = read;
         rememberIntentReceipt(read.intentReceipt);
       } else {

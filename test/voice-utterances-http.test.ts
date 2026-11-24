@@ -139,6 +139,27 @@ test("only the selected live recognizer can open or cancel a card after switchin
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["pending", "pending"], ["pending", "cancelled"]]);
 });
 
+test("a delayed capture cannot follow a spoken name to a different recipient", async (t) => {
+  let recipient = name("Steve");
+  voiceStateStore.useRoster(() => [recipient]);
+  t.after(() => { voiceStateStore.useRoster(() => roster); });
+  const original = voiceStateStore.directive();
+  const delayed = capture("Steve review the build", "before-reassignment");
+  recipient = { ...name("Will"), name: "Steve" };
+  voiceStateStore.publish();
+
+  assert.deepEqual(await (await post(utterancePath(original.revision), delayed, token)).json(), { accepted: false });
+  assert.deepEqual(await readHeard(), []);
+  assert.equal(cards.length, 0);
+  const next = voiceStateStore.directive();
+  assert.deepEqual(next.roster, original.roster);
+  assert.notEqual(next.revision, original.revision);
+  assert.deepEqual(await (await say("Steve review the build", "after-reassignment")).json(), { accepted: true });
+  assert.equal(cards.at(-1)?.parts[0]?.target?.key, "task:Will");
+  assert.equal((await act("after-reassignment", "send-now")).status, 200);
+  assert.equal(queued("Will").at(-1), "review the build");
+});
+
 test("future captures beyond clock tolerance are dropped and a cancel on the same listener clock can act immediately", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });

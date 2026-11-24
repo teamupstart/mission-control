@@ -67,7 +67,7 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: VoiceListenerDirective;
+  private lastDirective?: { directive: VoiceListenerDirective; recipients: string };
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
@@ -90,16 +90,16 @@ export class VoiceStateStore {
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
     const capture = voiceCaptures(state.mode) && this.liveHello()?.hello.microphone === "granted";
-    const roster = state.roster.map((entry) => entry.name);
+    // Only names travel to the recognizer. Also bind the revision to the destinations
+    // those names address, including a new session or run for the same resident.
+    const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
     const inputDevice = this.deps.config().inputDevice;
     const last = this.lastDirective;
-    if (!last || last.capture !== capture || last.inputDevice !== inputDevice ||
-      last.roster.length !== roster.length || roster.some((name, i) => name !== last.roster[i])) {
-      const next = { capture, inputDevice, roster, pauseMs: null, revision: randomUUID() };
-      this.lastDirective = next;
-      return next;
-    }
-    return last;
+    if (last && last.directive.capture === capture && last.directive.inputDevice === inputDevice &&
+      last.recipients === recipients) return last.directive;
+    const directive = { capture, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
+    this.lastDirective = { directive, recipients };
+    return directive;
   }
 
   /**

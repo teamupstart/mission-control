@@ -97,6 +97,8 @@ with both `x-harness-token` and `x-voice-listener-id`. Set the latter to the UUI
 listener's accepted hello. Send the directive revision under which the segment was captured. The daemon
 returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
 Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
+Reassigning a spoken name or changing its target task or session issues a fresh revision,
+even when the list of names sent to the recognizer stays the same.
 Use a fresh ID per capture and epoch milliseconds for `capturedAt`.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.

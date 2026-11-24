@@ -76,10 +76,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   // The listener's verified model lookup, GET /api/voice/model, answers 404 with the voice preview off.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
+  // Persona repository access adds the grant update and per-run repository query audit routes.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 474);
+  assert.equal(others.length, 476);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "00b1b1e0cb19f3ceadfcf33cfcbbd21909da9f2abfa9814697194d44d6b31452");
+    "9ef56a7b0fd8f3e1e29eec63425c1d125e6d088705d68b55d060582ba63dedbe");
 });
 
 function sourceFiles(dir: string): string[] {

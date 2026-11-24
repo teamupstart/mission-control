@@ -26,7 +26,8 @@ test("a schema 62 task survives upgrade without acquiring a terminal submission 
   const db = new DatabaseSync(":memory:");
   try {
     upgradeDatabaseToCurrentSchema(db);
-    db.exec(`ALTER TABLE tasks DROP COLUMN pending_terminal_submission;
+    db.exec(`DROP TABLE terminal_launch_warnings;
+      ALTER TABLE tasks DROP COLUMN pending_terminal_submission;
       PRAGMA user_version = 62;
       INSERT INTO tasks (id, title, intent, kind, agent, repo_root, status, created_at, updated_at)
       VALUES ('old-task', 'Restore me', '', 'ship', 'pi', '/repo', 'dispatching', 1, 1)`);

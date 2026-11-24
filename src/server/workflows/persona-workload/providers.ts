@@ -1,3 +1,5 @@
+import { claudeProviderFailure } from "../../llm/provider-failure.ts";
+import { runWithProviderEvents } from "../../llm/codex-sdk.ts";
 import { execFile } from "node:child_process";
 import { z } from "zod";
 import { Codex } from "@openai/codex-sdk";
@@ -180,7 +182,7 @@ export async function runCodexRepositoryWorkload(
     webSearchMode: "disabled",
     networkAccessEnabled: false,
   });
-  const result = await thread.run(
+  const result = await runWithProviderEvents(thread,
     [
       ...launch.request.images.map((i) => ({
         type: "local_image" as const,
@@ -189,10 +191,11 @@ export async function runCodexRepositoryWorkload(
       { type: "text", text: launch.request.prompt },
     ],
     { signal: launch.signal, outputSchema: schema },
+    "await_terminal",
   );
   return {
     verdict: providerVerdict(JSON.parse(result.finalResponse)),
-    usage: result.usage ? { ...result.usage } : {},
+    usage: z.record(z.string(), z.number()).parse(result.usage ?? {}),
   };
 }
 export const runClaudeRepositoryWorkload: RepositoryProvider = async (
@@ -273,6 +276,8 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
         ready = true;
       }
       if (frame.type === "result") {
+        const refusal = claudeProviderFailure(frame);
+        if (refusal) throw refusal;
         if (!ready) throw new RepositoryCapabilityError("tool_inventory");
         if (
           frame.subtype !== "success" ||

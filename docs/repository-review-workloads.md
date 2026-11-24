@@ -1,14 +1,15 @@
-# Repository review workload foundation
+# Repository review workloads
 
-Mission Control provides an internal executor, repository MCP and portable checkout artifact
-service. Workflow submissions continue to use the existing prompt evidence by default.
+Workflow versions can grant a Persona read access to the submitted checkout. The default
+access mode is `none`. One or more read-enabled Personas in a published graph select a single
+repository capture for the submission.
 Commands and the Inspector gate still pin their existing review commit and publication tree.
 
 ## Ownership and data flow
 
 ```mermaid
 flowchart LR
-  Harness[Internal harness] --> Executor[LocalPersonaWorkloadExecutor]
+  Harness[Workflow engine and repository review supervisor] --> Executor[LocalPersonaWorkloadExecutor]
   Executor --> Materializer[Injected artifact materializer]
   Materializer --> Lease[Verified sparse view lease]
   Executor --> Provider[One Claude or Codex SDK session]
@@ -24,13 +25,28 @@ flowchart LR
 kind is append-only: `persona_verdict` is the sole current member. Later work can append
 `inspector_verdict` without replacing the transport. Resolved provider, model and effort live
 in `request.execution`; the frozen Persona remains separate. Prompt, daemon-owned images,
-call-ledger identity and returned usage survive this boundary. This phase writes no ledger.
+call-ledger identity and returned usage survive this boundary. The daemon records the model call, terminal usage and ordered query metadata.
 
 `WorkflowRepositoryArtifactService.forRoot` gives the manager and supervisor the same
 daemon-owned materializer for a canonical artifact directory. The supervisor can install
 or revoke its current workload lookup using `setActiveRequestLookup`. The service checks submission, workload, attempt,
 locator and digest, and requires the active SQLite claim and ready artifact before opening
-the artifact directory. The executor checks the returned identities again.
+the artifact directory. For Persona reviews, the lookup also checks the live preview flag
+before opening the checkout and again before returning the lease. The executor checks the
+returned identities again.
+If the supervisor rejects an event or the stream ends without a terminal result, it requests
+cancellation from the executor and waits for cleanup before the review attempt can retry.
+If cancellation fails, the supervisor records the pending cancellation and blocks the run.
+A daemon restart also puts running external workloads into pending cancellation.
+A retry asks the executor about that workload ID and reissues the same cancellation
+generation if it is still running. For a local reviewer, the daemon records the checkout
+lease ID and nonce, the temporary provider home's filesystem identity, and the provider
+supervisor's PID and start identity. The supervisor opens its launch gate only after the
+daemon persists that process identity. On startup, the daemon verifies the group is empty
+and removes the matching lease and home before another reviewer can start. An unidentified
+group or a mismatched lease stays pending. Older pending rows without a local ownership
+record still require confirmation from their executor. Once cleanup finishes, accepting
+a verdict requires the preview to be enabled and the attempt to still own the workload.
 
 ## Sealing and retention
 
@@ -41,7 +57,7 @@ An index-only edit between the prompt read and preparation therefore discards th
 candidate and retries the entire read, even when HEAD, worktree bytes and porcelain
 status all stay the same. A cleanup failure on a rejected candidate is logged.
 Reconciliation retries removal, and the boundary check keeps its original outcome.
-The default caller leaves the callback absent.
+Submissions whose pinned graph only uses prompt evidence leave the callback absent.
 
 The version 1 directory contains a canonical JSON manifest and flat files named by Git
 object id. Each object file holds its Git type and size header followed by its original
@@ -200,7 +216,9 @@ their final row states atomically, so neither operation needs a separately commi
 intermediate state. Startup releases provisional
 claims and reclaims marked pending and lease directories. A submission still capturing
 after restart can replace its released claim in a new promotion transaction, even when
-another active submission holds the original digest. A publication intent beside the
+another active submission holds the original digest. An evidence-recovery child reuses its
+parent's frozen digest. Replaying inheritance keeps an existing provisional claim or
+restores a released claim for that same digest before activation. A publication intent beside the
 candidate identifies a rename interrupted before database commit. If installing an owner
 marker fails, the allocator removes the temporary directory it just created. Before
 sealing or writing a lease, it flushes the marker and syncs the allocation directory
@@ -290,6 +308,10 @@ schemas. The repository's provider-schema registry tests both rendering and pars
 The dedicated adapters use the installed Claude Agent SDK and Codex SDK. They start one session
 in an empty temporary home and working directory, use native image inputs and structured output,
 and close the provider/MCP before releasing the view. They do not widen `LlmRunner`.
+
+The isolated provider environment accepts `OPENAI_API_KEY` for Codex or
+`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` for Claude. The repository MCP receives
+a separate environment with its descriptor and the configured Node executable.
 
 Claude has no built-in tools or settings sources, uses strict launch-only MCP configuration,
 and permits only the eight repository names. Its initialization inventory is checked.

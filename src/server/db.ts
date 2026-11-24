@@ -1,3 +1,4 @@
+import { workflowGraphFingerprint } from "./workflows/graph-fingerprint.ts";
 import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
 import type { SdkUsage, TranscriptBoundary, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
@@ -335,9 +336,10 @@ let db: DatabaseSync | undefined;
 // 59: seek unresolved workflow receipts by delivery state and age on cold reads.
 // 60: durable receipt replay for a blocking question filed by voice.
 // 61: remember accepted spoken outbox IDs after retirement.
-// 62: missing variable names for one terminal launch, bound to its discovered process.
-// 63: pin a terminal dispatch's recovery receipt on its task before backend submission.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 63;
+// 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
+// 63: missing variable names for one terminal launch, bound to its discovered process.
+// 64: pin a terminal dispatch's recovery receipt on its task before backend submission.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -451,6 +453,10 @@ function createAppConfig(d: DatabaseSync): void {
  * verification. Callers must provide a database they own and may mutate.
  */
 export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
+  const version = databaseSchemaVersion(d);
+  if (version > CURRENT_DATABASE_SCHEMA_VERSION) {
+    throw new Error(`Database schema ${version} requires a newer Mission Control build`);
+  }
   d.exec("PRAGMA journal_mode = WAL;");
   // No `busy_timeout` beside it, and that is a decision rather than an omission.
   //
@@ -495,6 +501,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     // Earlier artifact previews installed a broader running-status guard. Replace it atomically
     // with the current definition below, preserving existing claims and submissions.
     if (databaseSchemaVersion(d) < 54) d.exec("DROP TRIGGER IF EXISTS repository_activation_required");
+    if (databaseSchemaVersion(d) < 62) d.exec("DROP TRIGGER IF EXISTS repository_capture_failed");
     createSchemaObjects(d);
     d.exec("COMMIT;");
   } catch (error) {
@@ -1415,8 +1422,12 @@ function createSchemaObjects(d: DatabaseSync): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_number
       ON workflow_versions(workflow_id, version);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_draft
-      ON workflow_versions(workflow_id, source_draft_revision);
+    CREATE TABLE IF NOT EXISTS workflow_publish_requests (
+      workflow_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      version_id TEXT NOT NULL REFERENCES workflow_versions(id),
+      PRIMARY KEY(workflow_id, request_id)
+    );
 
     -- repo_root is WHICH CHECKOUT this binding reviews, and the second column of the
     -- active-binding key. Empty string means "the session's own checkout" - every row ever
@@ -1532,6 +1543,36 @@ function createSchemaObjects(d: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
       ON workflow_submissions(trigger_key);
 
+    CREATE TABLE IF NOT EXISTS workflow_repository_workloads (
+      id TEXT PRIMARY KEY REFERENCES workflow_llm_calls(id) ON DELETE CASCADE,
+      attempt_id TEXT NOT NULL REFERENCES workflow_node_attempts(id) ON DELETE CASCADE,
+      digest TEXT NOT NULL, state TEXT NOT NULL, deadline INTEGER NOT NULL,
+      cancellation_generation INTEGER NOT NULL DEFAULT 0, error_code TEXT, usage_json TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_current_workload ON workflow_repository_workloads(attempt_id) WHERE state='running';
+    CREATE TABLE IF NOT EXISTS workflow_repository_local_owners (
+      workload_id TEXT PRIMARY KEY REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      group_pid INTEGER, group_identity TEXT, lease_id TEXT UNIQUE, lease_nonce TEXT,
+      home_path TEXT, home_dev TEXT, home_ino TEXT,
+      CHECK ((group_pid IS NULL) = (group_identity IS NULL)),
+      CHECK (group_pid > 1 AND length(group_identity) > 0),
+      CHECK ((lease_id IS NULL) = (lease_nonce IS NULL)),
+      CHECK ((home_path IS NULL) = (home_dev IS NULL) AND (home_path IS NULL) = (home_ino IS NULL))
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_events (
+      workload_id TEXT NOT NULL REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE, hash TEXT NOT NULL,
+      kind TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(workload_id,sequence)
+    );
+    CREATE TABLE IF NOT EXISTS workflow_repository_queries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, workload_id TEXT NOT NULL REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      operation_id TEXT NOT NULL UNIQUE, audit_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_repository_queries_workload ON workflow_repository_queries(workload_id,id);
+    CREATE TABLE IF NOT EXISTS workflow_repository_handles (
+      id TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES workflow_repository_queries(operation_id) ON DELETE CASCADE,
+      audit_index INTEGER NOT NULL CHECK(audit_index >= 0), UNIQUE(operation_id, audit_index)
+    );
     CREATE TABLE IF NOT EXISTS workflow_repository_artifacts (
       digest TEXT PRIMARY KEY, locator TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL,
       state TEXT NOT NULL CHECK(state IN ('creating','ready','failed','cleanup_pending')),
@@ -1561,7 +1602,8 @@ function createSchemaObjects(d: DatabaseSync): void {
         cleanup_requested_at=NEW.released_at WHERE digest=NEW.digest;
     END;
     CREATE TRIGGER IF NOT EXISTS repository_capture_failed AFTER UPDATE OF status ON workflow_submissions
-    WHEN OLD.status='capturing' AND NEW.status IN ('cancelled','failed')
+    WHEN OLD.status IN ('capturing','waiting_for_evidence_readiness') AND NEW.status IN ('cancelled','failed')
+      AND NOT EXISTS (SELECT 1 FROM workflow_runs WHERE id=NEW.run_id AND current_phase='evidence_reconciliation_error' AND NEW.status='failed')
     BEGIN
       UPDATE workflow_repository_snapshot_claims SET state='released', released_at=NEW.updated_at
         WHERE submission_id=NEW.id AND state='provisional';
@@ -3862,6 +3904,38 @@ function outstandingFileCommentIndexSql(): string {
  * idempotent - this block runs on every start, not just on an upgrade.
  */
 function migrate(d: DatabaseSync): void {
+  addColumn(d, "workflow_versions", "source_snapshot_fingerprint", "TEXT");
+  const pending = d.prepare(`SELECT id, graph_json FROM workflow_versions
+    WHERE source_snapshot_fingerprint IS NULL AND id > ? ORDER BY id LIMIT 32`);
+  const setFingerprint = d.prepare("UPDATE workflow_versions SET source_snapshot_fingerprint=? WHERE id=?");
+  let after = "";
+  for (;;) {
+    const rows = pending.all(after);
+    if (!rows.length) break;
+    for (const row of rows) {
+      const raw = String(row.graph_json);
+      let fingerprint: string;
+      try {
+        fingerprint = workflowGraphFingerprint(JSON.parse(raw));
+      } catch {
+        // Preserve unreadable historical rows for diagnosis without blocking database startup.
+        fingerprint = "unreadable:" + createHash("sha256").update(raw).digest("hex");
+      }
+      after = String(row.id);
+      setFingerprint.run(fingerprint, after);
+    }
+  }
+  d.exec(`DROP INDEX IF EXISTS idx_workflow_versions_draft;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_snapshot
+      ON workflow_versions(workflow_id, source_draft_revision, source_snapshot_fingerprint)`);
+  addColumn(d, "personas", "repository_access", "TEXT NOT NULL DEFAULT 'none' CHECK(repository_access IN ('none','read'))");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS persona_builtin_overrides (
+    persona_id TEXT PRIMARY KEY,
+    repository_access TEXT NOT NULL CHECK(repository_access IN ('none','read')),
+    revision INTEGER NOT NULL
+  )`);
+
   migrateHomeDispatch(d);
   migrateTaskWorkUnit(d);
   migrateLaunchWorkUnits(d);

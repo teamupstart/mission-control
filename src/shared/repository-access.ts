@@ -12,13 +12,15 @@ import { boundedRecord } from "./zod-shapes.ts";
 import { WORKFLOW_FINDING_REASONS } from "./workflow-reasons.ts";
 import { WORKFLOW_EXECUTION_LIMITS } from "./workflow.ts";
 import {
+  RepositoryEvidenceReferenceSchema,
   PersonaSnapshotSchema,
   PersonaVerdictSchema,
-  WorkflowEvidenceRefSchema,
+  WorkflowContextEvidenceRefSchema,
   WorkflowRequestedChangeSchema,
 } from "./protocol.ts";
 
-export const PERSONA_REPOSITORY_ACCESS_MODES = ["none", "read"] as const;
+import { PERSONA_REPOSITORY_ACCESS_MODES } from "./workflow.ts";
+export { PERSONA_REPOSITORY_ACCESS_MODES };
 export const PersonaRepositoryAccessSchema = z
   .enum(PERSONA_REPOSITORY_ACCESS_MODES)
   .default("none");
@@ -351,6 +353,7 @@ export const RepositoryQueryAuditMetadataSchema = z
     items: count.max(1000),
     durationMs: count,
     truncated: z.boolean(),
+    hasNextPage: z.boolean().optional(),
     handles: z.array(RepositoryEvidenceHandleSchema).max(1000),
   })
   .superRefine((audit, ctx) => {
@@ -470,11 +473,7 @@ export const PersonaWorkloadRequestSchema = z.strictObject({
 export type PersonaWorkloadRequest = z.infer<
   typeof PersonaWorkloadRequestSchema
 >;
-export const RepositoryEvidenceReferenceSchema = z.strictObject({
-  kind: z.literal("repository"),
-  operationId: z.string().uuid(),
-  evidenceHandleId: RepositoryEvidenceHandleIdSchema,
-});
+export { RepositoryEvidenceReferenceSchema } from "./protocol.ts";
 // Strict providers express an omitted optional as null. Keep the output contract unchanged.
 const wireOptional = <S extends z.ZodType>(schema: S) =>
   schema
@@ -483,11 +482,11 @@ const wireOptional = <S extends z.ZodType>(schema: S) =>
     .optional();
 const workloadContextEvidence = z
   .object({
-    ...WorkflowEvidenceRefSchema.shape,
-    path: wireOptional(WorkflowEvidenceRefSchema.shape.path),
-    line: wireOptional(WorkflowEvidenceRefSchema.shape.line),
+    ...WorkflowContextEvidenceRefSchema.shape,
+    path: wireOptional(WorkflowContextEvidenceRefSchema.shape.path),
+    line: wireOptional(WorkflowContextEvidenceRefSchema.shape.line),
   })
-  .pipe(WorkflowEvidenceRefSchema);
+  .pipe(WorkflowContextEvidenceRefSchema);
 const workloadEvidence = z
   .array(z.union([workloadContextEvidence, RepositoryEvidenceReferenceSchema]))
   .max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence);
@@ -542,6 +541,7 @@ export const PersonaWorkloadResultSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("failed"),
     capabilityReason: capabilityReason.optional(),
+    providerFailure: z.enum(["retryable", "token_exhausted"]).optional(),
     usage: boundedRecord(
       z.string().max(100),
       z.number().nonnegative().finite(),
@@ -583,6 +583,7 @@ export const PersonaWorkloadEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...eventBase,
+    capability: z.literal(REPOSITORY_EVIDENCE_CAPABILITY),
     type: z.literal("terminal"),
     result: PersonaWorkloadResultSchema,
   }),
@@ -596,3 +597,10 @@ export const PersonaWorkloadReconciliationSchema = z.strictObject({
 export type PersonaWorkloadReconciliation = z.infer<
   typeof PersonaWorkloadReconciliationSchema
 >;
+
+export function repositoryCitationLabel(handle: RepositoryEvidenceHandle): string {
+  const range = handle.range;
+  if (range.kind === "line") return `${handle.path} · lines [${range.startLine}, ${range.endLineExclusive})`;
+  if (range.kind === "byte") return `${handle.path} · bytes [${range.startByte}, ${range.endByteExclusive})`;
+  return `${handle.path} · old [${range.oldStartLine}, ${range.oldEndLineExclusive}), new [${range.newStartLine}, ${range.newEndLineExclusive})`;
+}

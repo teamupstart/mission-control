@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { tokenPath } from "../shared/harness-runtime.mjs";
 import { logMain } from "./main-log.ts";
@@ -68,6 +69,8 @@ export class VoiceListener {
 }
 
 export function nativeVoiceListener(executable: string, endpoint: () => { origin: string; certificate: string }): VoiceListener {
+  // The supervisor waits for close before replacing its child, so only one helper uses this lease at a time.
+  const owner = randomUUID();
   return new VoiceListener(directory => {
     const { origin, certificate } = endpoint();
     return spawn(executable, [], {
@@ -76,6 +79,7 @@ export function nativeVoiceListener(executable: string, endpoint: () => { origin
         ...process.env,
         MISSION_VOICE_DAEMON_URL: origin,
         MISSION_VOICE_DAEMON_CERT: certificate,
+        MISSION_VOICE_SUPERVISOR_ID: owner,
         MISSION_VOICE_TOKEN_FILE: tokenPath(),
         MISSION_VOICE_MODEL_DIR: directory,
       },

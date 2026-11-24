@@ -1,3 +1,5 @@
+import { publicationCheckoutRevision, PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -25,6 +27,7 @@ import type {
   CreateWorkflow,
   CreateWorkflowBinding,
   GrantWorkflowRepairRounds,
+  RecoverStaleInspectorGrant,
   ResolveWorkflowDelivery,
   ResubmitWorkflow,
   RetryWorkflowDelivery,
@@ -131,14 +134,15 @@ import {
 import type { InspectionUpdated, InspectorComment, InspectorPr } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
-import { injectPrompt, type InjectResult } from "../actions.ts";
+import { injectPrompt, type InjectResult, type PromptWriteGuard } from "../actions.ts";
 import {
   confirmReservedInjection,
   recordInjection,
   releaseInjection,
   reserveInjection,
-  AutomatedAttributionError,
 } from "../injections.ts";
+import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
+import { onSend } from "../delivery-binding.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -166,6 +170,9 @@ import {
   reconcileWorkflowCoverage,
   type WorkflowCompactionDeps,
   probeMatchesEvidence,
+  probeMatchesRepositoryContent,
+  confirmedTerminalWorkflowTurn,
+  terminalSubmissionBoundary,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
@@ -203,6 +210,7 @@ import {
 } from "./external-binding.ts";
 import {
   WorkflowStore,
+  type ForemanCompletionStoreInput,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
   type WorkflowStoreWrite,
@@ -233,7 +241,7 @@ import {
   taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
-import { parsePrUrl } from "../inspector/github.ts";
+import { parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
@@ -380,6 +388,7 @@ export interface WorkflowManagerOptions {
    * checkout, and a workflow test must be able to drive the observer without one.
    */
   readEvidenceProbe?: typeof readWorkflowEvidenceProbe;
+  publicationCheckoutRevision?: typeof publicationCheckoutRevision;
   /**
    * The three reads a completion adapter's proof is built from, injectable for the reason
    * every seam above is: two of them shell out to git in the session's checkout and the third
@@ -540,6 +549,37 @@ function inspectorStateSaysClosed(observedState: InspectionUpdated["observedStat
   return observedState === "CLOSED" || observedState === "MERGED";
 }
 
+/** A grant authorizes another round. Only a positive read can supply its head. */
+function grantedHeadObservation(
+  state: WorkflowInspectorGateState,
+  signal: InspectionUpdated | null,
+): InspectionUpdated | null {
+  const boundary = state.grantObservation;
+  if (!boundary || !state.prKey) return null;
+  const ledger = loadInspectorInspection(state.prKey);
+  if (!ledger) return null;
+  const incoming = signal?.prKey === state.prKey && signal.ledger.key === state.prKey
+    && signal.observedState !== null && signal.observedAt >= boundary.requestedAt ? signal : null;
+  // Use the latest durable review and publication facts even for a queued notification.
+  const { observedAt, observedState, observedHeadSha } = ledger;
+  // Compare timestamps first. A failed durable read supersedes older or tied notifications.
+  const useDurable = observedAt !== null && (!incoming || observedAt >= incoming.observedAt);
+  const current = useDurable
+    ? { prKey: ledger.key, observedAt, observedState, observedHeadSha, ledger }
+    : incoming && { ...incoming, ledger };
+  if (!current || current.observedState == null
+      // Only legacy recovery separately verifies the receipt's head on GitHub.
+      // A poll started in the grant's millisecond may have preceded the grant.
+      || (!boundary.verifiedHeadSha && current.observedAt <= boundary.requestedAt)
+      || current.observedAt < boundary.minimumObservedAt || current.observedAt < state.enteredAt
+      || current.observedAt < (state.lastObservedAt ?? 0)
+      || (current.observedState === "OPEN" && !current.observedHeadSha)) return null;
+  if (!useDurable && current.observedAt === state.lastObservedAt
+      && (current.observedHeadSha !== state.observedHeadSha
+        || inspectorStateSaysClosed(current.observedState) !== (state.waitReason === "pr_closed"))) return null;
+  return current;
+}
+
 /**
  * Whether the pull request is positively seen open: a signal that read GitHub decides, and a
  * signal that read nothing falls back to the ledger's last recorded read.
@@ -616,6 +656,11 @@ function expectationMismatch(
   };
 }
 
+interface PendingInspectorRecoveryCheck {
+  requestId: string;
+  observation: InspectionUpdated | null;
+}
+
 /** Definition/runtime policy plus compact catalog and run-summary SSE publication. */
 export class WorkflowManager {
   readonly engine: WorkflowEngine;
@@ -625,6 +670,8 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  private readonly inspectorRecoveryReads = new Map<string, ReturnType<typeof readInspectorBranchActivity>>();
+  private readonly pendingInspectorRecoveryChecks = new Map<string, PendingInspectorRecoveryCheck>();
   private readonly inspectorFeedbackRefreshes = new Map<string, {
     pending: boolean;
     observationAfter: number;
@@ -1462,7 +1509,7 @@ export class WorkflowManager {
    * session that completes with no review anywhere is the failure this phase exists to
    * prevent.
    */
-  private repoRunTargets(session: Session, anchor: WorkflowBinding): WorkflowBinding[] {
+  private repoRunTargets(session: Session, anchor: WorkflowBinding, verifySiblingWorktrees = false): WorkflowBinding[] {
     // A sibling binding submitted directly reviews its own repository and nothing else. Only
     // the conversation's own binding fans out, so a manual resubmission of repo B's run can
     // never quietly start repo A's. Falsy reads as the session's own, the same rule
@@ -1485,6 +1532,12 @@ export class WorkflowManager {
     for (const { ref } of reviewable) {
       const binding = ref.role === "primary" ? anchor : this.ensureRepoBinding(anchor, ref);
       if (binding) {
+        // A sibling binding owns one checkout. Moving the task's worktree cannot transfer
+        // an active repair or a completed publication to that new checkout.
+        if (verifySiblingWorktrees && ref.role === "secondary" && (!ref.worktreePath || !binding.sessionCwd
+          || canonicalWorktreePath(binding.sessionCwd) !== canonicalWorktreePath(ref.worktreePath))) {
+          throw new Error(`Foreman completion repository ownership changed for ${ref.repoRoot}: rebind the workflow to the current worktree`);
+        }
         targets.push(binding);
         continue;
       }
@@ -3215,8 +3268,8 @@ export class WorkflowManager {
    * Shipping veto from `workflow-gate-spent` to `workflow-gate-pending` - trading a true
    * "this gave up" for a false "this is still working", which is worse than the dead end
    * this method exists to open. Restoring `waiting_for_new_head` puts it back where its own
-   * gate re-enters it, and the head that was refused has not been recorded as a prior
-   * submission head, so the next observation picks that very head up.
+   * gate re-enters it. The saved head may have moved while blocked, so selection starts
+   * with a read of the pinned PR after the grant.
    *
    * `workflowRunGaveUp` reads the same inequality, so the veto downgrades to `pending` -
    * now truthfully - without this method knowing Shipping exists.
@@ -3277,7 +3330,13 @@ export class WorkflowManager {
       ? {
           status: "waiting_for_new_head" as const,
           phase: "inspector_findings" as const,
-          gateState: gate as unknown as WorkflowJson,
+          gateState: {
+            ...gate, lastObservedAt: null,
+            grantObservation: {
+              minimumObservedAt: gate.lastObservedAt === null ? now : gate.lastObservedAt + 1,
+              requestedAt: now,
+            },
+          } as unknown as WorkflowJson,
         }
       : this.parkedRestoreForGrant(run);
     const updated = this.store.grantRunRepairRounds(run.id, granted, restore, latest.round + 1, {
@@ -3288,12 +3347,17 @@ export class WorkflowManager {
         to: granted,
         round: latest.round,
         resumed: restore?.status ?? null,
+        ...(restore?.status === "waiting_for_new_head" ? { currentObservationRequired: true } : {}),
       },
     }, now);
     if (!updated) {
       return { ok: false, reason: "conflict", message: "The run finished before the grant landed" };
     }
     this.publishRun(run.id);
+    if (restore?.status === "waiting_for_new_head") {
+      if (gate?.prKey) void this.reobserveGatePullRequest(run.id, gate.prKey, now);
+      this.scheduleGateEvaluation(run.id, null);
+    }
     return { ok: true, value: updated };
   }
 
@@ -3449,6 +3513,35 @@ export class WorkflowManager {
     return { ok: true, value: this.store.getDelivery(prepared.delivery.id) ?? prepared.delivery, idempotent: prepared.idempotent };
   }
 
+  async recoverStaleInspectorGrant(
+    runId: string,
+    requestId: string,
+    input: RecoverStaleInspectorGrant,
+    now = Date.now(),
+  ): Promise<WorkflowRuntimeMutation<WorkflowRun>> {
+    let recovered = this.store.recoverStaleInspectorGrant(runId, requestId, input, now);
+    if (recovered && "verifyPrUrl" in recovered) {
+      const key = JSON.stringify([runId, requestId, input.grantRequestId, input.submissionId,
+        input.staleHeadSha, input.currentHeadSha, recovered.verifyPrUrl]);
+      let read = this.inspectorRecoveryReads.get(key);
+      if (!read) {
+        read = readInspectorBranchActivity(recovered.verifyPrUrl, input.currentHeadSha)
+          .finally(() => this.inspectorRecoveryReads.delete(key));
+        this.inspectorRecoveryReads.set(key, read);
+      }
+      // Only the provider read is shared. Every caller checks the current run and receipt.
+      const activity = await read;
+      recovered = this.store.recoverStaleInspectorGrant(runId, requestId, input, now, activity ?? undefined);
+    }
+    if (!recovered || "verifyPrUrl" in recovered) return { ok: false, reason: "conflict",
+      message: "Recovery requires matching legacy grant evidence and a current branch tip continuously held since before the grant" };
+    if (!recovered.idempotent) this.publishRun(runId);
+    if (this.gateState(recovered.run)?.grantObservation?.verifiedHeadSha === input.currentHeadSha) {
+      this.scheduleGateEvaluation(runId, null, { recoveryRequestId: requestId });
+    }
+    return { ok: true, value: recovered.run, idempotent: recovered.idempotent };
+  }
+
   recheckInspector(
     runId: string,
     requestId: string,
@@ -3485,10 +3578,12 @@ export class WorkflowManager {
       };
     }
     this.store.appendEvent(run.id, "inspector_recheck_requested", { requestId }, now);
-    this.scheduleGateEvaluation(run.id, null, refreshPreparedFeedback);
-    const prKey = this.gateState(run)?.prKey ?? null;
-    if (run.status === "blocked" && run.currentPhase === "inspector_pr_closed" && prKey) {
-      void this.reobserveGatePullRequest(run.id, prKey);
+    this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback });
+    const gate = this.gateState(run);
+    const grant = gate?.grantObservation;
+    if (gate?.prKey && ((run.status === "blocked" && run.currentPhase === "inspector_pr_closed")
+        || (run.status === "waiting_for_new_head" && grant && !grant.verifiedHeadSha))) {
+      void this.reobserveGatePullRequest(run.id, gate.prKey, grant?.requestedAt);
     }
     return { ok: true, value: run };
   }
@@ -3502,10 +3597,12 @@ export class WorkflowManager {
    * gate evaluation that signal starts lifts the block if it said open. A read that failed is
    * recorded on the run, so a block that stayed put says why.
    */
-  private reobserveGatePullRequest(runId: string, prKey: string): Promise<boolean> {
+  private reobserveGatePullRequest(runId: string, prKey: string, afterGrant?: number): Promise<boolean> {
     const reobserve = this.options.reobservePullRequest;
     if (!reobserve) return Promise.resolve(false);
-    const task = Promise.resolve().then(() => reobserve(prKey))
+    // A read started in the same millisecond as a grant cannot prove ordering after restart.
+    const start = afterGrant === Date.now() ? new Promise<void>(resolve => setTimeout(resolve, 1)) : Promise.resolve();
+    const task = start.then(() => reobserve(prKey))
       .catch((error: unknown) => ({
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
@@ -3863,11 +3960,7 @@ export class WorkflowManager {
       node.kind === "session_action" && node.action.requiredSkillId ? [node.action.requiredSkillId] : []) ?? []);
   }
 
-  async claimCompletion(
-    sessionId: string,
-    claim: WorkflowCompletionClaim,
-    now = Date.now(),
-  ): Promise<WorkflowCompletionClaimResult> {
+  private currentCompletionSession(sessionId: string, claim: WorkflowCompletionClaim): Session {
     const session = this.registry.getSession(sessionId);
     if (!session || session.state === "exited") {
       throw new Error("The completion target session is not live");
@@ -3899,6 +3992,15 @@ export class WorkflowManager {
     if (claim.expectedPlanPublication && !samePlanPublicationContext(
       claim.expectedPlanPublication, this.planPublicationContext(sessionId),
     )) throw new Error("Foreman plan publication ownership is no longer current");
+    return session;
+  }
+
+  async claimCompletion(
+    sessionId: string,
+    claim: WorkflowCompletionClaim,
+    now = Date.now(),
+  ): Promise<WorkflowCompletionClaimResult> {
+    let session = this.currentCompletionSession(sessionId, claim);
     // Resolve a matching historical prompted guard before entering the claim
     // transaction. A rejected legacy replay must persist its compatibility consume;
     // doing this inside the transaction would roll that migration back with the claim.
@@ -3919,37 +4021,73 @@ export class WorkflowManager {
     // One settled turn, one run per repository it changed. `repoRunTargets` returns
     // `[anchor]` for every single-repo conversation, so everything below is one claim against
     // one binding exactly as it always was.
-    const targets = this.repoRunTargets(session, anchor);
-    let answer: WorkflowCompletionClaimResult | null = null;
-    let lead: { result: WorkflowCompletionClaimResult; activate: PreparedWorkflowRun } | null = null;
-    const siblings: PreparedWorkflowRun[] = [];
-    // Every claim is made HERE, synchronously and in order, before any evidence is read. The
-    // durable half of a completion - the guard, the runs, the submissions - is what the reply
-    // speaks for, and it must not depend on how long a git read takes.
-    for (const [index, target] of targets.entries()) {
-      // The FIRST target spends the completion boundary; the rest ride the same proof. One
-      // settled turn is one boundary however many repositories it touched, and consuming the
-      // guard again would throw on a guard that is no longer armed. It is deliberately the
-      // first rather than the primary: a task whose primary is untouched has no primary run,
-      // and the boundary must still be spent by the review that does exist.
-      const claimed = this.claimCompletionForRepo(target, claim, index === 0, session, now);
-      if (index === 0) {
-        answer = claimed.result;
-        // A refused lead is the whole answer - nothing was claimed, the guard is still armed,
-        // and starting sibling runs off an unclaimed proof would review a turn Foreman has
-        // not accepted.
-        if (!claimed.result.claimed) return claimed.result;
-        this.queues.refresh(target.noteKey);
+    const targets = this.repoRunTargets(session, anchor, true);
+    // Only a completed publication needs a git read before the claim. Probe each checkout
+    // independently, then revalidate ownership before spending the shared generation.
+    const primaryCheckout = workflowCheckoutPath(anchor, session);
+    const latestRuns = claim.completionKind === "prompted" ? targets.map(target => this.store.latestRunForBinding(target.id)) : [];
+    const deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS;
+    const probes = targets.flatMap((target, i) => this.publicationComparison(target, latestRuns[i] ?? null, session, claim, deadline) ?? []);
+    // Only synchronous work consumes the daemon's blocking budget. The asynchronous
+    // evidence capture can legitimately take seconds on an unchanged repository.
+    const remainingVerificationMs = Math.max(0, deadline - performance.now());
+    const comparisons = probes.length ? await Promise.all(probes) : [];
+    if (probes.length) {
+      session = this.currentCompletionSession(sessionId, claim);
+      if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
+        throw new Error("Foreman completion session is no longer idle for handoff");
       }
-      if (!claimed.activate) continue;
-      const prepared: PreparedWorkflowRun = {
-        ...claimed.activate,
-        previousFingerprint: claimed.previousFingerprint,
-      };
-      if (index === 0) lead = { result: claimed.result, activate: prepared };
+      const current = this.store.activeBindingForNote(noteKeyFor(session));
+      const currentTargets = current && current.id === anchor.id && current.triggerMode === "foreman_complete"
+        ? this.repoRunTargets(session, current, true) : [];
+      if (primaryCheckout !== workflowCheckoutPath(anchor, session) || targets.length !== currentTargets.length || targets.some((target, i) =>
+        target.id !== currentTargets[i]?.id || target.workflowVersionId !== currentTargets[i]?.workflowVersionId
+        || target.sessionId !== currentTargets[i]?.sessionId || target.sessionCwd !== currentTargets[i]?.sessionCwd)) {
+        throw new Error("Foreman completion repository ownership changed during publication comparison");
+      }
+    }
+    // One conversation supplies the frozen ask and one generation to all its repositories.
+    const intent = this.freezeRunIntent(anchor, now);
+    if (!intent) return { claimed: false, reason: "no_binding" };
+    const inputs: ForemanCompletionStoreInput[] = targets.map((binding, index) => ({
+      binding,
+      ...(probes.length ? { expectedLatestRunId: latestRuns[index]?.id ?? null } : {}),
+      publicationComparison: comparisons.find(comparison => comparison.bindingId === binding.id),
+      completionKind: claim.completionKind,
+      marker: claim.marker,
+      expectedWorkCycle: claim.expectedWorkCycle,
+      summary: claim.summary,
+      evidenceFingerprint: claim.evidenceFingerprint,
+      evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
+      expectedIntent: claim.expectedIntent,
+      expectedPlanPublication: claim.expectedPlanPublication,
+      runId: randomUUID(),
+      submissionId: randomUUID(),
+      retireGuard: index === 0,
+      guardCwd: session.cwd,
+      intent,
+      now,
+    }));
+    const reservations = this.store.claimForemanCompletions(inputs, remainingVerificationMs);
+    const answer = reservations[0]?.result;
+    if (!answer) throw new Error("Claimed Foreman completion produced no run");
+    if (!answer.claimed) return answer;
+    this.queues.refresh(anchor.noteKey);
+    let lead: PreparedWorkflowRun | null = null;
+    const siblings: PreparedWorkflowRun[] = [];
+    for (const [index, stored] of reservations.entries()) {
+      if (!stored.run) continue;
+      this.publishRun(stored.run.id);
+      if (!stored.submission) continue;
+      const prepared = this.resumeReservedCapture(stored.binding, stored.run, stored.submission, now)
+        ?? (stored.created ? {
+          binding: stored.binding, run: stored.run, submission: stored.submission,
+          previousFingerprint: stored.previousFingerprint,
+        } : null);
+      if (!prepared) continue;
+      if (index === 0) lead = prepared;
       else siblings.push(prepared);
     }
-    if (!answer) throw new Error("Claimed Foreman completion produced no run");
     if (!lead) {
       // Nothing for the lead to capture - an already-claimed replay, or a run that was
       // blocked rather than resubmitted. The siblings still get theirs.
@@ -3971,111 +4109,74 @@ export class WorkflowManager {
     // The same reasoning `activateSiblingRuns` already carries for the manual paths, applied
     // here rather than restated: the caller learns nothing from a sibling's git read.
     const leadCapture = this.captureAndActivate(
-      lead.activate.binding,
-      lead.activate.run,
-      lead.activate.submission,
-      lead.activate.previousFingerprint,
+      lead.binding,
+      lead.run,
+      lead.submission,
+      lead.previousFingerprint,
       false,
     ).catch((error) => {
       console.error(
         `[workflow] could not capture the review of ${
-          lead?.activate.binding.repoRoot || session.repoRoot
+          lead?.binding.repoRoot || session.repoRoot
         }: ${error instanceof Error ? error.message : String(error)}`,
       );
       return { ok: false as const, reason: "capture_failed" as const, message: "" };
     });
     this.activateSiblingRuns(siblings);
     const activated = await leadCapture;
-    if (!activated.ok && lead.result.claimed) {
+    if (!activated.ok) {
       return {
         claimed: true,
-        runId: lead.result.runId,
-        submissionId: lead.result.submissionId,
+        runId: answer.runId,
+        submissionId: answer.submissionId,
         state: "blocked",
       };
     }
     return answer;
   }
 
-  /**
-   * Offer one settled turn's proof to one repository's binding.
-   *
-   * Split out of `claimCompletion` so the fan-out reads as "the same claim, once per
-   * repository" rather than as two code paths. Every branch the store's transaction can take
-   * - a fresh run, another repair round on a waiting one, an already-claimed replay, a run
-   * that has run out of budget - applies per repository, which is what independent repair
-   * budgets mean in practice.
-   *
-   * A sibling's failure is contained rather than fatal. The lead has already spent the
-   * boundary by the time one can happen, so throwing would leave the conversation with no
-   * review at all and a guard nobody can re-arm; a repository whose run failed to start is
-   * visible as a repository with no run, and the operator can start one.
-   */
-  private claimCompletionForRepo(
+  /** A completed publication owns a later idle handoff only while its accepted work still matches. */
+  private publicationComparison(
     binding: WorkflowBinding,
-    claim: WorkflowCompletionClaim,
-    retireGuard: boolean,
+    run: WorkflowRun | null,
     session: Session,
-    now: number,
-  ): {
-    result: WorkflowCompletionClaimResult;
-    activate: PreparedWorkflowRun | null;
-    previousFingerprint: string | undefined;
-  } {
-    const nothing = {
-      result: { claimed: false, reason: "no_binding" } as WorkflowCompletionClaimResult,
-      activate: null,
-      previousFingerprint: undefined,
-    };
-    // Frozen before the claim transaction, because the transaction may create a run and a run
-    // may not exist without an ask. A binding whose conversation cannot be read has nothing
-    // to review, which is what `nothing` already says for every other reason that is true.
-    const intent = this.freezeRunIntent(binding, now);
-    if (!intent) return nothing;
-    let stored;
-    try {
-      stored = this.store.claimForemanCompletion({
-        binding,
-        completionKind: claim.completionKind,
-        marker: claim.marker,
-        expectedWorkCycle: claim.expectedWorkCycle,
-        summary: claim.summary,
-        evidenceFingerprint: claim.evidenceFingerprint,
-        evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
-        expectedIntent: claim.expectedIntent,
-        expectedPlanPublication: claim.expectedPlanPublication,
-        runId: randomUUID(),
-        submissionId: randomUUID(),
-        retireGuard,
-        // The CONVERSATION's checkout, never this repository's: a Foreman queue belongs to
-        // the session, and the lead binding here can be an attached repository's when the
-        // primary is the one that went untouched.
-        guardCwd: session.cwd,
-        intent,
-        now,
-      });
-    } catch (error) {
-      if (retireGuard) throw error;
-      console.error(
-        `[workflow] could not claim the review of ${binding.repoRoot}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return nothing;
-    }
-    if (!stored.result.claimed) return { ...nothing, result: stored.result };
-    if (!stored.run) throw new Error("Claimed Foreman completion has no workflow run");
-    this.publishRun(stored.run.id);
-    const resumed = stored.submission
-      ? this.resumeReservedCapture(stored.binding, stored.run, stored.submission, now)
-      : null;
-    return {
-      result: stored.result,
-      activate: resumed ?? (stored.created && stored.submission
-        ? { binding: stored.binding, run: stored.run, submission: stored.submission }
-        : null),
-      previousFingerprint: resumed?.previousFingerprint ?? stored.previousFingerprint,
-    };
+    claim: WorkflowCompletionClaim,
+    deadline: number,
+  ): Promise<{ bindingId: string; runId: string; stillMatches: (deadline: number) => boolean }> | null {
+    if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
+    const source = run?.intent?.intentSource;
+    if (!run || run.status !== "completed" || run.workflowVersionId !== binding.workflowVersionId
+      || source?.objectiveVersion !== claim.expectedIntent.objectiveVersion
+      || source.promptRevision !== claim.expectedIntent.promptRevision
+      || source.resolvedPromptRevision !== source.promptRevision) return null;
+
+    const acceptedTree = this.store.publicationHandoffTree(run.id, claim.expectedWorkCycle.generation);
+    if (!acceptedTree) return null;
+    const submission = this.store.latestSubmission(run.id);
+    if (submission?.status !== "completed") return null;
+    const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!context.success || context.data.session.cwd !== workflowCheckoutPath(binding, session)) return null;
+    const evidence = context.data.evidence;
+    if (!evidence.headSha || !evidence.contentTreeOid || workflowPublicationTree(evidence) !== acceptedTree) return null;
+    const publication = evidence.publication;
+    const unpublished = publication
+      ? publication.unpublishedPaths.length > 0 || publication.pathsTruncated || Boolean(publication.artifactProblems?.length)
+      : evidence.workingTreeDirty;
+    if (unpublished) return null;
+    // Missing repository proof cannot retire a new review opportunity.
+    const checkout = context.data.session.cwd;
+    if (!checkout) return null;
+    const retained = publication?.localArtifacts ?? [];
+    const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
+    const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
+    const owner = { bindingId: binding.id, runId: run.id };
+    return this.probeRepository(binding, submission).then(
+      probe => {
+        const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
+        return { ...owner, stillMatches: (until: number) => matches && revision(checkout, retained, until) === before };
+      },
+      () => ({ ...owner, stillMatches: () => false }),
+    );
   }
 
   /**
@@ -4440,8 +4541,12 @@ export class WorkflowManager {
       const next: WorkflowInspectorGateState = {
         ...state,
         lastObservedAt: null,
-        observedHeadSha: null,
+        observedHeadSha: state.grantObservation ? state.observedHeadSha : null,
         waitReason,
+        ...(state.grantObservation && state.lastObservedAt !== null ? {
+          grantObservation: { ...state.grantObservation,
+            minimumObservedAt: Math.max(state.grantObservation.minimumObservedAt, state.lastObservedAt + 1) },
+        } : {}),
       };
       const updated = this.store.updateInspectorGate({
         runId: run.id,
@@ -4486,7 +4591,7 @@ export class WorkflowManager {
         const delivery = this.store.recoverableInspectorFeedback(run);
         const canResume = delivery !== null && !this.deliveryBlock(delivery)
           && !this.registry.getSession(delivery.sessionId)?.pause;
-        this.scheduleGateEvaluation(run.id, null, canResume);
+        this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback: canResume });
       }
     }
   }
@@ -4494,12 +4599,33 @@ export class WorkflowManager {
   private scheduleGateEvaluation(
     runId: string,
     event: InspectionUpdated | null,
-    refreshPreparedFeedback = false,
+    { refreshPreparedFeedback = false, recoveryRequestId }: {
+      refreshPreparedFeedback?: boolean; recoveryRequestId?: string;
+    } = {},
   ): void {
+    const run = this.store.getRun(runId);
+    const state = run && this.gateState(run);
+    const head = state?.grantObservation?.verifiedHeadSha;
+    const stranded = head && this.store.latestSubmission(runId);
+    const receipt = head && stranded ? this.store.inspectorRecoveryReceipt(runId, stranded.id, head) : null;
+    if (recoveryRequestId !== undefined && receipt?.requestId !== recoveryRequestId) return;
+    let recoveryCheck: PendingInspectorRecoveryCheck | undefined;
+    if (receipt && !refreshPreparedFeedback) {
+      const signal = event && event.prKey === state?.prKey && event.ledger.key === event.prKey
+        && event.observedState !== null ? event : null;
+      const pending = this.pendingInspectorRecoveryChecks.get(runId);
+      if (pending?.requestId === receipt.requestId) {
+        if (signal && (!pending.observation || signal.observedAt >= pending.observation.observedAt)) {
+          pending.observation = signal;
+        }
+        return;
+      }
+      recoveryCheck = { requestId: receipt.requestId, observation: signal };
+      this.pendingInspectorRecoveryChecks.set(runId, recoveryCheck);
+    }
     if (refreshPreparedFeedback) {
       if (this.inspectorFeedbackRefreshes.get(runId)?.pending) return;
-      const run = this.store.getRun(runId);
-      const prKey = run ? this.gateState(run)?.prKey : null;
+      const prKey = state?.prKey;
       this.inspectorFeedbackRefreshes.set(runId, {
         pending: true,
         observationAfter: Math.max(Date.now(), prKey ? getInspectorPr(prKey)?.observedAt ?? 0 : 0),
@@ -4519,8 +4645,11 @@ export class WorkflowManager {
           } else keepRefreshHold = false;
           return;
         }
-        await this.evaluateInspectorGate(runId, event);
+        await this.evaluateInspectorGate(runId, event, recoveryCheck);
       } finally {
+        if (recoveryCheck && this.pendingInspectorRecoveryChecks.get(runId) === recoveryCheck) {
+          this.pendingInspectorRecoveryChecks.delete(runId);
+        }
         if (refreshPreparedFeedback) {
           const refresh = this.inspectorFeedbackRefreshes.get(runId);
           // Failure releases the read slot, not the packet. A later successful read or
@@ -4674,15 +4803,33 @@ export class WorkflowManager {
     return false;
   }
 
+  private async priorInspectorHeads(runId: string, root: string | null | undefined): Promise<Set<string>> {
+    const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+    return new Set(await Promise.all(this.store.listSubmissions(runId)
+      .flatMap((item) => item.prHeadSha ? [item.prHeadSha] : [])
+      .map((head) => root ? resolve(root, head).catch(() => head) : head)));
+  }
+
+  private blockRecoveredInspectorGrant(
+    run: WorkflowRun, state: WorkflowInspectorGateState, stranded: WorkflowSubmission,
+  ): void {
+    // The stranded submission still owns the gate until the replacement is created.
+    const blocked = { ...state, targetHeadSha: stranded.prHeadSha, waitReason: "head_mismatch" as const };
+    delete blocked.grantObservation;
+    this.transitionInspectorGate(run, state, blocked, "blocked", "inspector_head_mismatch", null, null, Date.now());
+  }
+
   private async evaluateInspectorGate(
     runId: string,
     observation: InspectionUpdated | null,
+    recoveryCheck?: PendingInspectorRecoveryCheck,
   ): Promise<void> {
     let run = this.store.getRun(runId);
     let state = run ? this.gateState(run) : null;
+    if (recoveryCheck && !state?.grantObservation?.verifiedHeadSha) return;
     const tiedObservation = observation && state?.lastObservedAt != null
       && observation.prKey === state.prKey && observation.observedAt === state.lastObservedAt;
-    if (state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
+    if (!state?.grantObservation && state?.prKey && ((run?.status === "blocked" && run.currentPhase === "delivery_blocked")
         || tiedObservation)) {
       const prKey = state.prKey;
       const ledger = loadInspectorInspection(prKey);
@@ -4708,7 +4855,7 @@ export class WorkflowManager {
     }
     // Once a gate has observed a newer remote state, a queued older snapshot must not
     // change its head, reopen/close the PR, or supply review facts for an obsolete head.
-    if (observation && state?.lastObservedAt != null
+    if (observation && !state?.grantObservation && state?.lastObservedAt != null
         && observation.prKey === state.prKey
         && observation.observedAt < state.lastObservedAt) return;
     if (run && state) {
@@ -4745,6 +4892,38 @@ export class WorkflowManager {
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     if (!binding || transferForNote(binding.noteKey) || version?.completionPolicy.kind !== "inspector") return;
+    // Resolve prior submission identities before reading the current grant candidate. A
+    // newer observation may commit while git is running, even under the per-run gate lock.
+    const grantPriorHeads = state.grantObservation && state.prKey
+      ? await this.priorInspectorHeads(run.id, binding.sessionRepoRoot || getInspectorPr(state.prKey)?.repoRoot)
+      : null;
+    let recoveryTipMatches: boolean | null = null;
+    const recoveryHead = state.grantObservation?.verifiedHeadSha;
+    if (recoveryHead && state.prKey) {
+      const adopted = getInspectorPr(state.prKey);
+      const stranded = this.store.latestSubmission(run.id);
+      if (!adopted || !stranded) return;
+      const receipt = this.store.inspectorRecoveryReceipt(run.id, stranded.id, recoveryHead);
+      if (recoveryCheck && receipt?.requestId !== recoveryCheck.requestId) return;
+      if (receipt && !recoveryCheck) {
+        // This wakeup was queued before the receipt existed. Join the receipt's check.
+        this.scheduleGateEvaluation(runId, observation);
+        return;
+      }
+      recoveryTipMatches = await recheckInspectorRecoveryTip(adopted.url, recoveryHead, receipt?.branchActivity ?? null);
+      if (transferForNote(binding.noteKey)) return;
+      if (receipt && this.store.inspectorRecoveryReceipt(run.id, stranded.id, recoveryHead)?.requestId !== receipt.requestId) return;
+      if (recoveryTipMatches === false) {
+        this.blockRecoveredInspectorGrant(run, state, stranded);
+        return;
+      }
+    }
+    if (state.grantObservation) {
+      // A local observation can also arrive during the final live read. Read the
+      // ledger last and synchronously compare the gate when inserting the round.
+      observation = grantedHeadObservation(state, recoveryCheck?.observation ?? observation);
+      if (!observation) return;
+    }
     const now = Date.now();
     // A closed-PR block moves on one thing only: the pull request seen open again. Until then
     // nothing else may rewrite it, so this runs before every other branch below.
@@ -4844,7 +5023,16 @@ export class WorkflowManager {
       return;
     }
 
-    const ledger = observation?.prKey === state.prKey
+    if (state.grantObservation && run.status === "blocked" && run.currentPhase === "inspector_disabled") {
+      const resumed = { ...state, waitReason: "findings" as const };
+      const updated = this.transitionInspectorGate(run, state, resumed, "waiting_for_new_head",
+        "inspector_findings", null, null, now);
+      if (!updated) return;
+      run = updated;
+      state = resumed;
+    }
+
+    let ledger = observation?.prKey === state.prKey
       ? observation.ledger
       : getInspectorPr(state.prKey!);
     if (!ledger) {
@@ -4938,13 +5126,12 @@ export class WorkflowManager {
     const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
-      const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
-      const priorHeads = new Set(await Promise.all(
-        this.store.listSubmissions(run.id).flatMap((item) => item.prHeadSha ? [item.prHeadSha] : [])
-          .map((head) => repositoryRoot
-            ? resolve(repositoryRoot, head).catch(() => head)
-            : head),
-      ));
+      if (recoveryHead && recoveryHead !== newHead) {
+        this.blockRecoveredInspectorGrant(run, state, submission);
+        return;
+      }
+      if (recoveryHead && recoveryTipMatches === null) return;
+      const priorHeads = grantPriorHeads ?? await this.priorInspectorHeads(run.id, repositoryRoot);
       if (!state.failedHeadSha) {
         this.transitionInspectorGate(
           run,
@@ -4985,6 +5172,7 @@ export class WorkflowManager {
           reviewPosture: ledger.reviewPosture,
           waitReason: "review_pending",
         };
+        delete nextState.grantObservation;
         const created = this.store.createInspectorOnlySubmission({
           id: randomUUID(),
           runId: run.id,
@@ -5039,6 +5227,24 @@ export class WorkflowManager {
     const submittedHead = capturedHead && repositoryRoot
       ? await (this.options.resolveCommit ?? resolveCapturedCommit)(repositoryRoot, capturedHead).catch(() => null)
       : null;
+    if (submission.mode === "inspector_only" && state.prKey) {
+      // A new round is already immutable here. If the PR moved during rev-parse,
+      // its normal mismatch/closed guard must see that observation before any clean verdict.
+      const current = loadInspectorInspection(state.prKey);
+      if (!current) return;
+      if (current.observedAt !== null && current.observedAt >= (state.lastObservedAt ?? state.enteredAt)) {
+        if (current.observedState === null) return;
+        if (current.observedHeadSha !== state.observedHeadSha || inspectorStateSaysClosed(current.observedState)) {
+          this.scheduleGateEvaluation(run.id, {
+            prKey: current.key, observedHeadSha: current.observedHeadSha,
+            observedAt: current.observedAt, observedState: current.observedState, ledger: current,
+          });
+          return;
+        }
+      }
+      ledger = current;
+      if (ledger.state === "closed") return;
+    }
     if (!submittedHead) {
       this.transitionInspectorGate(
         run,
@@ -5703,7 +5909,7 @@ export class WorkflowManager {
         || latestSubmission?.id !== delivery.submissionId
       ) continue;
       if (delivery.kind === "inspector_feedback" && run.currentPhase === "delivery_blocked") {
-        this.scheduleGateEvaluation(run.id, null, this.store.recoverableInspectorFeedback(run) !== null);
+        this.scheduleGateEvaluation(run.id, null, { refreshPreparedFeedback: this.store.recoverableInspectorFeedback(run) !== null });
         continue;
       }
       if (delivery.kind === "evidence_capture_repair") {
@@ -7019,49 +7225,74 @@ export class WorkflowManager {
       return;
     }
     const expectedPane = paneToken(session);
+    const conversation = { key: sending.noteKey, transcript: null as ReturnType<typeof sessionMessages> };
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
-    // Claimed BEFORE the first byte. The agent's prompt hook can report this packet back while
-    // the write is still unresolved, and an echo that arrives with no authorship on file is
-    // captured as the human's Goal - which for a repair packet means the next round reviews
-    // the work against Mission Control's own previous complaint.
-    // A reservation refused because its attribution could not be stored typed nothing: refused
-    // below as a delivery that never reached the pane, without calling the transport.
     let attributionRefused: string | null = null;
-    try {
-      reserveInjection(session.id, sending.payload, "workflow", () => {
-        // The Registry consumes this receipt after recording the prompt's work episode.
-        // A later human retype has no receipt, even when its text equals this packet.
-        if (sending.kind !== "session_action") return;
-        const episode = this.registry.recordedWorkEpisodeForSession(session.id);
-        if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
-        try {
-          this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
-            deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
-            promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+    let receipt: ReturnType<typeof workflowDeliveryLedger.reserve> | undefined;
+    let clientMessageId: string | undefined;
+    let terminalSubmit: ReturnType<typeof terminalSubmissionBoundary> = null;
+    let competingSend = false;
+    let stopObservingSends: (() => void) | undefined;
+    const reserveAtWrite: PromptWriteGuard = (phase, receiptTarget) => {
+      const block = this.deliveryBlock(sending, expectedPane)
+        ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
+          ? "inspector_feedback_superseded" : null);
+      if (block || phase === "preflight") return block;
+      if (phase === "submit") {
+        terminalSubmit = receipt ? terminalSubmissionBoundary(sessionMessages(this.registry.getSession(session.id)!)) : null;
+        return null;
+      }
+      if (receipt) return null;
+      // Sample after the pane mode check or SDK send queue, immediately before writing.
+      // A human copy already in the transcript must stay on the earlier side of the offset.
+      try {
+        conversation.transcript = sessionMessages(this.registry.getSession(session.id)!);
+        receipt = workflowDeliveryLedger.reserve(conversation, sending.payload, row => ({
+          ...row, deliveryId: sending.id, transcriptPath: conversation.transcript?.path ?? null,
+          messageId: receiptTarget ? row.id : null,
+        }));
+        if (receiptTarget) {
+          clientMessageId = receipt.id;
+          receiptTarget.clientMessageId = clientMessageId;
+        } else {
+          const fingerprint = receipt.fingerprint;
+          stopObservingSends = onSend((other, words) => {
+            if (other.key === sending.noteKey && words === fingerprint) competingSend = true;
           });
-        } catch (error) {
-          workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
-            error: error instanceof Error ? error.name : "unknown" });
         }
-      });
-    } catch (error) {
-      if (!(error instanceof AutomatedAttributionError)) throw error;
-      attributionRefused = error.message;
-    }
+        reserveInjection(session.id, sending.payload, "workflow", hook => {
+          if (hook?.transcriptPath && hook.transcriptPath === terminalSubmit?.transcript.path) {
+            terminalSubmit.hookAt = hook.ts ?? null;
+          }
+          // The Registry consumes this receipt after recording the prompt's work episode.
+          // A later human retype has no receipt, even when its text equals this packet.
+          if (sending.kind !== "session_action") return;
+          const episode = this.registry.recordedWorkEpisodeForSession(session.id);
+          if (!episode || episode.agentSessionId !== sending.noteKey || episode.promptedAt === null) return;
+          try {
+            this.store.appendEvent(sending.runId, "session_action_prompt_observed", {
+              deliveryId: sending.id, episodeId: episode.episodeId, promptedAt: episode.promptedAt,
+              promptRevision: this.registry.getGoal(session.id)?.promptRevision ?? null,
+            });
+          } catch (error) {
+            workflowLog("error", { event: "session_action_prompt_record_failed", call: sending.id,
+              error: error instanceof Error ? error.name : "unknown" });
+          }
+        });
+        return null;
+      } catch (error) {
+        attributionRefused = error instanceof Error ? error.message : "Could not reserve workflow packet attribution";
+        return attributionRefused;
+      }
+    };
     let result: InjectResult;
-    if (attributionRefused !== null) result = { ok: false, error: attributionRefused, pasted: false, submitVerified: false };
-    else try {
-      result = await this.inject(
-        session,
-        sending.payload,
-        undefined,
-        () => this.deliveryBlock(sending, expectedPane)
-          ?? (sending.kind === "inspector_feedback" && !this.inspectorFeedbackIsCurrent(sending)
-            ? "inspector_feedback_superseded" : null),
-      );
+    try {
+      result = await this.inject(session, sending.payload, undefined, reserveAtWrite);
     } catch (error) {
       this.markDeliveryUncertain(sending, error instanceof Error ? error.message : String(error));
       return;
+    } finally {
+      stopObservingSends?.();
     }
     if (!result.ok) {
       if (result.pasted === false) {
@@ -7071,30 +7302,20 @@ export class WorkflowManager {
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         // Only a reservation this send made: a refused one recorded nothing, and releasing would
         // give back an earlier reservation of the same text.
-        if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
-        if (result.error === "inspector_feedback_superseded") {
-          if (this.store.getDelivery(sending.id)?.state === "sending") {
-            this.store.setDeliveryState(sending.id, "prepared", null);
-          }
-          this.publishRun(sending.runId);
-          return;
-        }
-        // The operator paused the session while this packet was on its way: the guard refused
-        // for the pause, not for anything wrong with the packet. Held exactly as the check at
-        // the top holds one - back to `prepared`, the run left as it is, offered again when the
-        // pause lifts - never refused with the run blocked.
-        if (result.error === PAUSED_SESSION_REASON) {
-          if (this.store.getDelivery(sending.id)?.state === "sending") {
-            this.store.setDeliveryState(sending.id, "prepared", null);
+        const requeue = result.error === "inspector_feedback_superseded" || result.error === PAUSED_SESSION_REASON;
+        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
+        const refused = this.store.finishDeliverySend(sending.id, requeue ? "prepared" : "refused",
+          requeue ? null : reason, Date.now(), receipt?.id);
+        if (receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
+        if (result.pasted === false && receipt && attributionRefused === null) releaseInjection(session.id, sending.payload);
+        if (requeue) {
+          if (refused && result.error === PAUSED_SESSION_REASON) {
             this.pausedDeliveries.add(sending.id);
-            // Lifted while the write was in flight: the resume that would offer it has passed.
             if (!this.registry.getSession(sending.sessionId)?.pause) this.offerResumedDeliveries(sending.sessionId);
           }
           this.publishRun(sending.runId);
           return;
         }
-        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
-        const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;
         this.store.setRunState(
           sending.runId,
@@ -7117,14 +7338,26 @@ export class WorkflowManager {
       this.markDeliveryUncertain(sending, result.error ?? "delivery_outcome_unknown");
       return;
     }
-    const transcript = sessionMessages(session);
+    const live = this.registry.getSession(sending.sessionId);
+    const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
+    // The SDK's client id can identify a delayed echo. A pane's acknowledgment alone cannot.
+    const usableReceipt = clientMessageId && result.submitVerified ? receipt : undefined;
+    const terminalTurn = !usableReceipt && result.submitVerified && receipt && !receipt.contested && !competingSend
+      ? confirmedTerminalWorkflowTurn(terminalSubmit, receipt.fingerprint) : null;
+    terminalSubmit = null;
     const confirmed = this.store.confirmDeliverySend(
       sending.id,
       transcriptAnchor,
       result.submitVerified,
+      Date.now(),
+      usableReceipt?.transcriptOffset ?? null,
+      usableReceipt ? { clientMessageId: usableReceipt.id, transcriptPath: usableReceipt.transcriptPath ?? transcript?.path }
+        : { unusableReceiptId: receipt?.id, terminalTurn },
     );
+    if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;
+    if (usableReceipt) workflowDeliveryLedger.forgetConversation(sending.noteKey);
     // Settles the reservation above rather than adding to it: recording afresh would owe a
     // second echo for one delivery, and the surplus would be spent silencing a later human turn.
     this.confirmInjection(session.id, sending.payload, "workflow");

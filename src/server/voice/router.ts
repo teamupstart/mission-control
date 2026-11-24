@@ -12,7 +12,7 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
-import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
+import { VOICE_TURN_PREFIX, voiceHeldByReview } from "@shared/voice-delivery.ts";
 import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
 import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
@@ -117,6 +117,8 @@ interface CardDelivery {
 interface OutboxReceipt {
   delivery: CardDelivery;
   index: number;
+  /** A session update can observe the row before deliver() returns it. */
+  queueState?: "held" | "queued";
 }
 
 type NeedsModel = Extract<VoiceRouteDecision, { kind: "needs-model" }>;
@@ -849,7 +851,7 @@ export class VoiceRouter {
     const { id, parts } = delivery.card;
     const part = parts[index]!;
     const target = this.checkedTarget(this.state().roster, part.target);
-    const receipt = { delivery, index };
+    const receipt: OutboxReceipt = { delivery, index };
     let registeredId: string | undefined;
     let result: DeliveryResult = "not-running";
     try {
@@ -879,8 +881,12 @@ export class VoiceRouter {
     delivery.card.parts[index] = { ...part, target: latest, ...(typeof result !== "string" && "turnId" in result && { turnId: result.turnId }) };
     // A replay can settle synchronously inside submitSpoken, before deliver returns its row.
     if (!delivery.results[index]) {
-      delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };
-      if (typeof result !== "string" && "turnId" in result) this.outbox.set(result.turnId, receipt);
+      if (typeof result !== "string" && "turnId" in result) {
+        delivery.results[index] = { outcome: receipt.queueState ?? result.outcome };
+        this.outbox.set(result.turnId, receipt);
+      } else {
+        delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };
+      }
     }
   }
 
@@ -918,16 +924,35 @@ export class VoiceRouter {
     return true;
   }
 
-  /** Discovery restores sessions and their durable outboxes independently of recent capture history. */
-  restoreHeldTurns(session: Session): void {
-    if (!session.pendingReviews && session.state !== "awaiting_review") return;
-    const missing = session.pendingTurns.filter(turn => turn.state === "queued" && turn.spokenWords !== undefined
-      && turn.id.startsWith(VOICE_TURN_PREFIX) && !this.outbox.has(turn.id));
+  /** Keep live receipts in sync with blocking reviews and restore held rows after discovery. */
+  syncQueuedTurns(session: Session): void {
+    if (!session.pendingTurns.length) return;
+    const outcome = voiceHeldByReview(session) ? "held" : "queued";
+    const changed = new Set<CardDelivery>();
+    const missing: Session["pendingTurns"] = [];
+    for (const turn of session.pendingTurns) {
+      if (turn.state !== "queued" || turn.spokenWords === undefined || !turn.id.startsWith(VOICE_TURN_PREFIX)) continue;
+      const receipt = this.outbox.get(turn.id);
+      if (!receipt) {
+        if (outcome === "held") missing.push(turn);
+        continue;
+      }
+      const { delivery, index } = receipt;
+      receipt.queueState = outcome;
+      const result = delivery.results[index];
+      if (result && result.outcome !== outcome) {
+        delivery.results[index] = { outcome };
+        if (delivery.ready) changed.add(delivery);
+      }
+    }
+    for (const delivery of changed) {
+      delivery.card.openQuestions = this.openQuestionCount(delivery.card);
+      this.publishDelivery(delivery);
+    }
     if (!missing.length) return;
     const { mode, roster } = this.state();
-    if (mode === "off") return;
     const target = roster.find(row => row.sessionId === session.id);
-    if (!target) return;
+    if (mode === "off" || !target) return;
     for (const turn of missing) {
       const id = turn.id.slice(VOICE_TURN_PREFIX.length);
       // Split parts append # and their index to the URL-unreserved capture ID. The

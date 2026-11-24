@@ -9,6 +9,7 @@ import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import type { VoiceDecider } from "./voice/decide.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
+import { voiceHeldByReview } from "@shared/voice-delivery.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -293,6 +294,7 @@ import {
   ArchiveWorkflowBindingSchema,
   CancelWorkflowRunSchema,
   GrantWorkflowRepairRoundsSchema,
+  RecheckWorkflowInspectorSchema,
   CreateWorkflowBindingSchema,
   ReattachWorkflowBindingSchema,
   RestartFullWorkflowSchema,
@@ -3583,9 +3585,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/workflow-runs/:id/recheck-inspector", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const parsed = await parseBody(c, WorkflowRunActionSchema);
+    const parsed = await parseBody(c, RecheckWorkflowInspectorSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
+    const result = parsed.data.recoverStaleGrant
+      ? await manager.recoverStaleInspectorGrant(c.req.param("id"), parsed.data.requestId, parsed.data.recoverStaleGrant)
+      : manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
     return result.ok
       ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
@@ -9417,8 +9421,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
       const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
       if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      const held = session.pendingReviews > 0 || session.state === "awaiting_review";
-      return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
+      return { outcome: voiceHeldByReview(session) ? "held" : "queued", turnId: result.pendingTurn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider, {
     pending: () => registry.pendingReviews().filter(q => q.kind === "input" && (q.decisions?.length ?? 0) <= 1),

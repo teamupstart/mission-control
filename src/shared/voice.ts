@@ -197,13 +197,14 @@ export function voiceCaptures(mode: VoiceMode): boolean {
   return mode === "listening" || mode === "push-to-talk";
 }
 
-export interface VoiceListenerDirective {
-  capture: boolean;
-  roster: string[];
-  inputDevice: string;
-  pauseMs?: number | null;
-  revision: string;
-}
+export const VoiceListenerDirectiveSchema = z.object({
+  capture: z.boolean(),
+  roster: z.array(z.string()),
+  inputDevice: z.string(),
+  pauseMs: z.number().nullable().optional(),
+  revision: z.string().min(1),
+});
+export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
 
 /**
  * Why voice is unavailable, in the order they are reported.

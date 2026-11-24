@@ -1,4 +1,6 @@
 import { statSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { TranscriptStreamMsg } from "@shared/types.ts";
@@ -15,7 +17,7 @@ import {
 import { sleep } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
-import { latestSpokenTextReceipt } from "./db.ts";
+import { spokenTranscriptState } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 
 // The live transcript feed behind the session detail: send the recent history, then poll
@@ -38,6 +40,31 @@ const HEARTBEAT_MS = 15000;
  * to start from a fresh window rather than handed one enormous catch-up frame.
  */
 const RESUME_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Hash the displayed prefix and its extension in one bounded-memory, asynchronous pass.
+ * Offsets are in ascending order. A different inode is a different transcript even if its bytes match. */
+async function cursorProofs(path: string, offsets: number[]): Promise<string[]> {
+  const file = await open(path, "r");
+  try {
+    const stat = await file.stat({ bigint: true });
+    const hash = createHash("sha256").update([stat.dev, stat.ino, stat.birthtimeNs].join(":") + "\n");
+    const buffer = Buffer.allocUnsafe(Math.min(offsets.at(-1) ?? 0, 256 * 1024));
+    const proofs: string[] = [];
+    let pos = 0;
+    for (const end of offsets) {
+      while (pos < end) {
+        const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, end - pos), pos);
+        if (!bytesRead) throw new Error("Transcript changed during cursor verification");
+        hash.update(buffer.subarray(0, bytesRead));
+        pos += bytesRead;
+      }
+      proofs.push(hash.copy().digest("hex"));
+    }
+    return proofs;
+  } finally {
+    await file.close();
+  }
+}
 
 /**
  * SSE handler for `GET /api/sessions/:id/transcript/stream`.
@@ -117,35 +144,59 @@ export function transcriptStreamHandler(registry: Registry) {
       };
 
       const voice = featureEnabled("voice");
-      const receipt = () => {
+      const spokenState = () => {
         const current = voice && id ? registry.getSession(id) : undefined;
-        return current ? latestSpokenTextReceipt(noteKeyFor(current)) : null;
+        return current ? spokenTranscriptState(noteKeyFor(current)) : null;
       };
-      let spokenReceipt = receipt();
-      const sendWindow = async (confirmed: string | null, refreshSpoken: boolean) => {
+      type SpokenState = ReturnType<typeof spokenState>;
+      let spoken = spokenState();
+      let cursor: string | undefined;
+      let revision: string | undefined;
+      const version = () => read.snapshot?.(path)?.version;
+      const verify = async (offsets: number[], observed: string | undefined) => {
+        const proofs = await cursorProofs(path, offsets);
+        if (!observed || observed !== version()) throw new Error("Transcript changed during cursor verification");
+        return proofs;
+      };
+      const sendWindow = async (state: SpokenState, refreshSpoken: boolean) => {
+        const observed = state ? version() : undefined;
         const init = read.initial(path);
+        const [proof] = state ? await verify([init.pos], observed) : [];
         await send({
           type: "init",
           messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
           start: init.start, atStart: init.atStart, pos: init.pos,
-          ...(voice && { spokenReceipt: confirmed }), ...(refreshSpoken && { refreshSpoken: true }),
+          ...(voice && { spokenReceipt: state?.receipt ?? null }), ...(proof && { spokenCursor: proof }),
+          ...(refreshSpoken && { refreshSpoken: true }),
         });
         pos = init.pos;
-        spokenReceipt = confirmed;
+        cursor = proof;
+        revision = observed;
+        spoken = state;
       };
       try {
         const from = resumeFrom();
-        const stale = voice && c.req.query("from") !== undefined && (c.req.query("spokenReceipt") || null) !== spokenReceipt;
+        const heldCursor = c.req.query("spokenCursor");
+        const stale = voice && c.req.query("from") !== undefined && (
+          (c.req.query("spokenReceipt") || null) !== (spoken?.receipt ?? null)
+          || (heldCursor !== undefined && !spoken)
+          || (spoken !== null && from === null)
+        );
         if (from !== null && !stale) {
+          const observed = spoken ? version() : undefined;
           const resumed = read.appended(path, from);
-          pos = resumed.pos;
-          await send({
-            type: "resume",
-            messages: titled.transcript(attributeTranscript(id, resumed.messages, launch(), anchor, conversation())),
-            pos,
-          });
+          const [before, after] = spoken ? await verify([from, resumed.pos], observed) : [];
+          if (spoken && before !== heldCursor) {
+            await sendWindow(spoken, true);
+          } else {
+            pos = resumed.pos;
+            cursor = after;
+            revision = observed;
+            await send({ type: "resume", messages: titled.transcript(attributeTranscript(id, resumed.messages, launch(), anchor, conversation())),
+              pos, ...(cursor && { spokenCursor: cursor }) });
+          }
         } else {
-          await sendWindow(spokenReceipt, stale);
+          await sendWindow(spoken, stale);
         }
       } catch {
         await send({ type: "unavailable", reason: "Could not read the transcript file." });
@@ -156,29 +207,46 @@ export function transcriptStreamHandler(registry: Registry) {
       while (!stream.aborted) {
         await sleep(POLL_MS);
         if (stream.aborted) break;
+        sinceHeartbeat += POLL_MS;
+        if (sinceHeartbeat >= HEARTBEAT_MS) {
+          await stream.writeSSE({ data: "", event: "ping" });
+          sinceHeartbeat = 0;
+        }
         try {
-          const confirmed = receipt();
-          if (confirmed !== spokenReceipt) {
-            await sendWindow(confirmed, true);
+          const current = spokenState();
+          if (current?.receipt !== spoken?.receipt) {
+            await sendWindow(current, true);
             sinceHeartbeat = 0;
             continue;
           }
           const size = statSync(path).size;
+          const observed = current ? version() : undefined;
+          if (current && observed && observed === revision) continue;
+          if (current && size <= pos) {
+            await sendWindow(current, true);
+            continue;
+          }
           if (size < pos) pos = 0; // truncated / rotated - re-read from the top
           const { messages, pos: next } = read.appended(path, pos);
+          if (current) {
+            const [before, after] = await verify([pos, next], observed);
+            if (before !== cursor) {
+              await sendWindow(current, true);
+              continue;
+            }
+            cursor = after;
+            revision = observed;
+          }
+          const advanced = next > pos;
           pos = next;
-          if (messages.length > 0) {
-            await send({ type: "append", messages: titled.transcript(attributeTranscript(id, messages, launch(), anchor, conversation())), pos });
+          if (messages.length > 0 || (current && advanced)) {
+            await send({ type: "append", messages: titled.transcript(attributeTranscript(id, messages, launch(), anchor, conversation())), pos,
+              ...(cursor && { spokenCursor: cursor }) });
             sinceHeartbeat = 0;
             continue;
           }
         } catch {
           // file briefly unavailable (rotation) - try again next tick
-        }
-        sinceHeartbeat += POLL_MS;
-        if (sinceHeartbeat >= HEARTBEAT_MS) {
-          await stream.writeSSE({ data: "", event: "ping" });
-          sinceHeartbeat = 0;
         }
       }
     }));

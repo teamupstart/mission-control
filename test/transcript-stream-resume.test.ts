@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Registry } from "../src/server/registry.ts";
@@ -216,7 +216,22 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   assert.ok(refreshed.type === "init" && refreshed.refreshSpoken);
   assert.deepEqual(refreshed.messages.at(-1)?.presentation, { kind: "spoken", displayText: words, received: payload });
   assert.equal(refreshed.spokenReceipt, reservation.id);
-  const current = await firstFrame("?from=" + early.pos + "&spokenReceipt=" + reservation.id);
+  const cursorQuery = "?from=" + early.pos + "&spokenReceipt=" + reservation.id + "&spokenCursor=" + refreshed.spokenCursor;
+  const current = await firstFrame(cursorQuery);
   assert.ok(current.type === "resume");
   assert.deepEqual(current.messages, []);
+  appendFileSync(path, turn("tail", "APPENDED"));
+  const appended = await firstFrame(cursorQuery);
+  assert.ok(appended.type === "resume");
+  assert.deepEqual(appended.messages.map(m => m.text), ["APPENDED"]);
+  // A rewrite accompanied by an append still has a larger size. Its earlier bytes
+  // must prove they match the resume cursor before the new bytes can be appended.
+  writeFileSync(path, readFileSync(path, "utf8").replace("FIRST", "OTHER") + turn("tail-2", "APPENDED AGAIN"));
+  const rewritten = await firstFrame(cursorQuery);
+  assert.ok(rewritten.type === "init" && rewritten.refreshSpoken);
+  assert.equal(rewritten.messages[0]?.text, "OTHER");
+  writeFileSync(path, turn("replacement", "SHORTER"));
+  const truncated = await firstFrame(cursorQuery);
+  assert.ok(truncated.type === "init" && truncated.refreshSpoken);
+  assert.deepEqual(truncated.messages.map(m => m.text), ["SHORTER"]);
 });

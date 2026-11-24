@@ -13387,10 +13387,12 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
 }
 
 /** A stream cursor covers file bytes. This receipt identifies changes to attribution behind that cursor. */
-export function latestSpokenTextReceipt(noteKey: string): string | null {
-  const row = openDb().prepare(`SELECT id FROM session_spoken_turns
-    WHERE note_key = ? AND text_receipt_order IS NOT NULL ORDER BY text_receipt_order DESC, rowid DESC LIMIT 1`).get(noteKey);
-  return row ? String(row.id) : null;
+export function spokenTranscriptState(noteKey: string): { receipt: string | null } | null {
+  // A reserved SDK UUID can already be displayed before a text-only handoff ever occurs.
+  const row = openDb().prepare(`SELECT (SELECT id FROM session_spoken_turns WHERE note_key = ?
+    AND text_receipt_order IS NOT NULL ORDER BY text_receipt_order DESC, rowid DESC LIMIT 1) AS receipt
+    FROM session_spoken_turns WHERE note_key = ? LIMIT 1`).get(noteKey, noteKey);
+  return row ? { receipt: row.receipt as string | null } : null;
 }
 
 export function expiredSpokenReservations(cutoff: number) {

@@ -71,8 +71,6 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     appendFileSync(path, line("second-native", secondPayload.replace(second, provisional)) + filler);
     await expect(dashboard.locator("article.turn-user").filter({ hasText: provisional })).toBeVisible();
     writeFileSync(path, readFileSync(path, "utf8").replace(provisional, second));
-    await dashboard.reload();
-    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session.name }).first().click();
     const green = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: second });
     await expect(green.getByText("Spoken", { exact: true })).toBeVisible();
     if (process.env.MC_E2E_EVIDENCE === "1") {
@@ -86,10 +84,8 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       await green.screenshot({ path: join(dir, "rescanned.png") });
     }
     // Rewrite the first native record in place, preserving its UUID and changing its words
-    // to another recorded payload. Reopen the transcript to inspect those actual bytes.
+    // to another recorded payload. The open stream must replace that stale disclosure too.
     writeFileSync(path, readFileSync(path, "utf8").replace(words, second));
-    await dashboard.reload();
-    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session.name }).first().click();
     await expect(green).toHaveCount(2);
     await expect(green.first()).toContainText("When you have finished this, post a report.");
     await expect(green.first().getByText("Spoken", { exact: true })).toHaveCount(0);

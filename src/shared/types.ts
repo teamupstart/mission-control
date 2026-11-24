@@ -4523,6 +4523,8 @@ export type TranscriptStreamMsg =
       messages: TranscriptMessage[];
       /** The latest confirmed text-only spoken handoff included in this reading. */
       spokenReceipt?: string | null;
+      /** Identifies the native file and its bytes through pos for a spoken conversation. */
+      spokenCursor?: string;
       /** Previously read bytes may have acquired a spoken disclosure. Refresh held pages too. */
       refreshSpoken?: true;
       /** Byte offset of the first turn in `messages` - the back-paging anchor. */
@@ -4543,8 +4545,9 @@ export type TranscriptStreamMsg =
       type: "resume";
       messages: TranscriptMessage[];
       pos: number;
+      spokenCursor?: string;
     }
-  | { type: "append"; messages: TranscriptMessage[]; pos: number }
+  | { type: "append"; messages: TranscriptMessage[]; pos: number; spokenCursor?: string }
   | { type: "unavailable"; reason: string };
 
 // ---- session diff (changes vs the source branch) ----

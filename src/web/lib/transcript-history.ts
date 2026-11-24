@@ -47,6 +47,7 @@ export interface HistoryPage {
 export interface SessionHistory {
   /** Receipt that was current when the server attributed these held bytes. */
   spokenReceipt?: string | null;
+  spokenCursor?: string;
   /** Oldest held byte to refresh when Voice is enabled after reads with spoken attribution disabled. */
   voiceRefreshFrom?: number;
   /** Pages older than `tailStart`, ascending and contiguous; `older[i].end === older[i+1].start`. */

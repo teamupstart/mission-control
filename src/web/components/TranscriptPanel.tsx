@@ -943,8 +943,9 @@ export function TranscriptPanel({
       const params = new URLSearchParams();
       if (from !== null) {
         params.set("from", String(from));
-        const receipt = readHistory(sessionId)?.spokenReceipt;
-        if (voiceEnabled && receipt) params.set("spokenReceipt", receipt);
+        const history = readHistory(sessionId);
+        if (voiceEnabled && history?.spokenReceipt) params.set("spokenReceipt", history.spokenReceipt);
+        if (voiceEnabled && history?.spokenCursor) params.set("spokenCursor", history.spokenCursor);
       }
       es = new EventSource(from === null ? base : `${base}?${params}`);
       es.onopen = () => {
@@ -972,6 +973,7 @@ export function TranscriptPanel({
           if (refreshFrom !== undefined) dropHistory(sessionId);
           const next = seedTail(sessionId, msg);
           next.spokenReceipt = msg.spokenReceipt;
+          next.spokenCursor = msg.spokenCursor;
           if (!voiceEnabled) markVoiceRefresh(next);
           if (refreshFrom !== undefined) {
             next.voiceRefreshFrom = refreshFrom;
@@ -987,6 +989,7 @@ export function TranscriptPanel({
           // reset, an eviction) leaves nothing to continue, so fall back to seeding.
           const next = resumeTail(sessionId, msg);
           if (next) {
+            next.spokenCursor = msg.spokenCursor;
             setMessages(flattenHistory(next));
             setCanLoadOlder(backAnchor(next) !== null);
           } else {
@@ -995,8 +998,10 @@ export function TranscriptPanel({
           setStatus("live");
         } else if (msg.type === "append") {
           const next = appendLive(sessionId, msg.messages, msg.pos);
-          if (next) setMessages(flattenHistory(next));
-          else setMessages((prev) => mergeById(prev, msg.messages));
+          if (next) {
+            next.spokenCursor = msg.spokenCursor;
+            setMessages(flattenHistory(next));
+          } else setMessages((prev) => mergeById(prev, msg.messages));
         } else if (msg.type === "unavailable") {
           setStatus("unavailable");
           setNote(msg.reason);

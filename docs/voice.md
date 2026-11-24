@@ -18,14 +18,17 @@ names no agent until the flag is on again.
 
 Enable Voice addressing and its required previews in Settings. In Setup, download the speech
 model and choose **Ask macOS** to grant the microphone. The app also asks automatically when
-the verified model and listener are available. After a denial, **Open System Settings** opens
+the verified model and listener are available. If the request fails while permission is still
+undetermined, the app retries with backoff. After a denial, **Open System Settings** opens
 the microphone privacy pane. Allow Mission Control, then choose **Check again**.
 
 You can minimize the window while speaking. The menu-bar microphone means listening, and a
 struck microphone means muted or unavailable. Right-click for the status and existing app
-commands. Left-click to mute or unmute. The handset and microphone with waves represent the
+commands. Left-click to mute or unmute. If the daemon refuses the change or the request times
+out, the menu opens with the last reported status and the action to retry. The handset and microphone with waves represent the
 call and push-to-talk modes when the daemon reports them. The need-you count stays beside the
-icon in every mode.
+icon in every mode. If the listener fails to start or exits unexpectedly, the desktop app
+records the launch error code, exit status or signal in `daemon.log`.
 
 ## Running the listener on a development Mac
 

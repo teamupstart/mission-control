@@ -231,8 +231,9 @@ function pushUpdateSnapshot(snapshot: UpdateSnapshot): void {
 function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:voice-microphone", (event) => {
     if (event.sender === getMainWindow()?.webContents && event.senderFrame === event.sender.mainFrame) {
-      return voice?.fixMicrophone();
+      return voice?.fixMicrophone() ?? "unavailable";
     }
+    return "unavailable";
   });
   ipcMain.handle("mission:version", () => app.getVersion());
   ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
@@ -465,7 +466,7 @@ app.whenReady().then(async () => {
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
   createTray(paths.trayIcon, join(appRoot, "dist", "main"), {
-    setMuted: muted => void voice?.mute(muted),
+    setMuted: async muted => voice?.mute(muted) ?? false,
     onOpen: () => showWindow(paths.preload),
     onCheckForUpdates,
     onInstallIntegrations: () => {

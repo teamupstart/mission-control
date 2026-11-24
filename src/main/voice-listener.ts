@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { BASE_URL, tokenPath } from "../shared/harness-runtime.mjs";
+import { logMain } from "./main-log.ts";
 import type { VoiceState } from "../shared/voice.ts";
 
 /** An exited helper is replaced only while the same verified model is still wanted. */
@@ -12,7 +13,7 @@ export class VoiceListener {
   private exited: Promise<void> = Promise.resolve();
   private closed = false;
 
-  constructor(private readonly launch: (directory: string) => ChildProcess) {}
+  constructor(private readonly launch: (directory: string) => ChildProcess, private readonly log = logMain) {}
 
   update(state: VoiceState, permitted: boolean): void {
     const directory = state.mode !== "off" && state.model.status === "ready" &&
@@ -31,8 +32,13 @@ export class VoiceListener {
     const child = this.launch(directory);
     this.child = child;
     // close follows both a normal exit and a spawn error (including a missing binary).
-    child.once("error", () => {});
-    this.exited = new Promise(resolve => child.once("close", () => {
+    let spawnError: string | undefined;
+    child.once("error", (error: NodeJS.ErrnoException) => { spawnError = error.code ?? error.name; });
+    this.exited = new Promise(resolve => child.once("close", (code, signal) => {
+      if (!this.stopping && !this.closed) {
+        const reason = spawnError ? `failed to launch (${spawnError})` : `exited (${signal ?? code})`;
+        this.log(`Voice listener ${reason}`);
+      }
       clearTimeout(this.stopping);
       this.stopping = undefined;
       this.child = null;

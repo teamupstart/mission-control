@@ -265,3 +265,27 @@ test("desktop Setup asks for microphone access, reflects a shell grant and offer
   await page.goto(daemon.baseURL + "/#/settings/voice");
   await expect(page.getByRole("status", { name: "Voice mode" })).toContainText("microphone access is denied");
 });
+
+test("desktop Setup explains an unavailable microphone controller and hides actions on an unsupported desktop", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.addInitScript(() => {
+    const supported = sessionStorage.getItem("unsupportedDesktop") !== "1";
+    Object.defineProperty(window, "missionDesktop", {value: {
+      ...window.missionDesktop, isDesktop: true, onOpenSettings: () => () => {},
+      fixVoiceMicrophone: supported ? async () => "unavailable" : undefined,
+    }, configurable: true});
+  });
+  await page.reload();
+  await openVoiceSetup(page, daemon);
+  const row = setupRow(page, MICROPHONE_ROW);
+  const ask = row.getByRole("button", {name: "Ask macOS"});
+  await ask.click();
+  await expect(row.getByRole("alert")).toContainText("Desktop microphone controls are unavailable");
+  await capture(page, "controller-unavailable");
+  await page.evaluate(() => sessionStorage.setItem("unsupportedDesktop", "1"));
+  await page.reload();
+  await openSetupFamily(page, "voice");
+  await expect(row).toContainText("Microphone controls are unavailable in this desktop app.");
+  await expect(ask).toHaveCount(0);
+  await expect(row.getByRole("button", {name: "Check again"})).toBeVisible();
+});

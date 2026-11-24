@@ -718,20 +718,24 @@ function VoiceModelRemedy({ label, note }: { label: string; note: string }): Rea
 function MicrophoneRemedy({ label, note, action, onRepaired }: {
   label: string; note: string; action?: "settings" | "ask"; onRepaired(): void;
 }): React.JSX.Element {
-  const fix = typeof window !== "undefined" && window.missionDesktop?.fixVoiceMicrophone;
+  const desktop = typeof window !== "undefined" ? window.missionDesktop : undefined;
+  const fix = desktop?.fixVoiceMicrophone;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function apply() {
     if (!fix) return;
     setBusy(true);
     setError("");
-    try { await fix(); onRepaired(); }
-    catch { setError("Could not open microphone settings."); }
+    try {
+      if (await fix() === "unavailable") setError("Desktop microphone controls are unavailable. Check that Voice is enabled.");
+      else onRepaired();
+    }
+    catch { setError("Could not access the macOS microphone controls."); }
     finally { setBusy(false); }
   }
   return (
     <div className="setup-remedy-actions">
-      {!fix && <p className="setup-remedy-note">{note}</p>}
+      {!fix && <p className="setup-remedy-note">{desktop?.isDesktop ? "Microphone controls are unavailable in this desktop app." : note}</p>}
       <div className="setup-run-controls">
         {fix && action && (
           <Tooltip label={action === "settings" ? "Open the macOS Microphone privacy pane" : "Ask macOS to allow Mission Control to use the microphone"}>

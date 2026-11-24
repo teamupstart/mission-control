@@ -13,24 +13,33 @@ export function startShellVoice(binary: string, onState: (state: VoiceState) => 
     fetch: (url, options) => fetch(url, { ...options, redirect: "error" }),
   });
   let state = voiceStateOff();
-  let asked = false;
+  let nextPromptAt = 0;
+  let retryDelay = 5000;
   let prompt: Promise<boolean> | undefined;
   const ask = () => {
-    asked = true;
-    return prompt ??= systemPreferences.askForMediaAccess("microphone").finally(() => { prompt = undefined; });
+    return prompt ??= systemPreferences.askForMediaAccess("microphone").then(granted => {
+      nextPromptAt = Infinity;
+      retryDelay = 5000;
+      return granted;
+    }, error => {
+      nextPromptAt = Date.now() + retryDelay;
+      retryDelay = Math.min(retryDelay * 2, 60_000);
+      throw error;
+    }).finally(() => { prompt = undefined; });
   };
   const lifetime = new AbortController();
 
   async function sync() {
     if (state.mode === "off") {
       listener.update(state, false);
-      asked = false;
+      nextPromptAt = 0;
+      retryDelay = 5000;
       return;
     }
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
     const installed = existsSync(binary);
     listener.update(state, installed && microphone === "granted");
-    if (installed && state.model.status === "ready" && microphone === "not-determined" && !asked) {
+    if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
       void ask().then(sync).catch(() => {});
     }
     const report: VoiceShellReport = {
@@ -60,19 +69,21 @@ export function startShellVoice(binary: string, onState: (state: VoiceState) => 
   const heartbeat = setInterval(() => void sync(), 5000);
   return {
     get state() { return state; },
-    async fixMicrophone() {
-      if (state.mode === "off") return;
+    async fixMicrophone(): Promise<"unavailable" | "checked"> {
+      if (state.mode === "off") return "unavailable";
       const permission = systemPreferences.getMediaAccessStatus("microphone");
       if (permission === "denied" || permission === "restricted") {
         await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
       } else if (permission === "not-determined") await ask();
       await sync();
+      return "checked";
     },
     async mute(muted: boolean) {
-      if (state.mode !== "off") await fetch(BASE_URL + "/api/voice/mute", {
+      if (state.mode === "off") return false;
+      return fetch(BASE_URL + "/api/voice/mute", {
         method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
         body: JSON.stringify({ muted }), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-      }).catch(() => {});
+      }).then(response => response.ok, () => false);
     },
     stop() {
       stream.close();

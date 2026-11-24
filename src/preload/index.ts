@@ -37,7 +37,9 @@ window.addEventListener("keydown", (event) => {
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
-  fixVoiceMicrophone: (): Promise<void> => ipcRenderer.invoke("mission:voice-microphone"),
+  ...(process.platform === "darwin" && {
+    fixVoiceMicrophone: (): Promise<"checked" | "unavailable"> => ipcRenderer.invoke("mission:voice-microphone"),
+  }),
   version: (): Promise<string> => ipcRenderer.invoke("mission:version"),
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke("mission:open-external", url),
   installIntegrations: (): Promise<{ ok: boolean; message: string }> =>

@@ -45,7 +45,6 @@ export class RecentlyHeard {
 interface OpenCard {
   card: VoiceCard;
   entry: HeardEntry;
-  receivedAt: number;
   message: string;
   pickTargets?: readonly SpokenName[];
   splitPicks?: Map<string, VoiceSplitPoint>;
@@ -168,8 +167,7 @@ export class VoiceRouter {
     const { mode, roster, backend } = this.state();
     if ((mode !== "listening" && mode !== "push-to-talk") || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
-    const receivedAt = Date.now();
-    if (capturedAt > receivedAt + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
+    if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
@@ -201,7 +199,7 @@ export class VoiceRouter {
     }
     entry.pauseMs = decision.pauseMs;
     if (decision.kind === "needs-model") {
-      this.startModelStep(decision, utterance, entry, receivedAt);
+      this.startModelStep(decision, utterance, entry);
       return true;
     }
     entry.rule = decision.match;
@@ -210,7 +208,7 @@ export class VoiceRouter {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
-    await this.openCard({ card, entry, receivedAt, message: decision.text }, capturedAt);
+    await this.openCard({ card, entry, message: decision.text }, capturedAt);
     return true;
   }
 
@@ -222,7 +220,7 @@ export class VoiceRouter {
    * answer shows no intermediate state. A card cancelled, or voice turned off, while the step
    * runs is gone from `open` when the answer comes, and that answer is dropped.
    */
-  private startModelStep(decision: NeedsModel, utterance: VoiceUtterance, entry: HeardEntry, receivedAt: number): void {
+  private startModelStep(decision: NeedsModel, utterance: VoiceUtterance, entry: HeardEntry): void {
     const { id } = utterance;
     entry.rule = decision.reason;
     entry.matchedName = decision.reason === "second-name" ? decision.target.name : null;
@@ -231,7 +229,6 @@ export class VoiceRouter {
     const modelStep = new AbortController();
     const item: OpenCard = {
       entry,
-      receivedAt,
       message: decision.text,
       modelStep,
       card: { id, state: "resolving", deadline: null, openQuestions: 0, reason: decision.reason, candidates,
@@ -324,7 +321,7 @@ export class VoiceRouter {
     return true;
   }
 
-  async pick(id: string, candidateId: string, capturedAt?: number): Promise<boolean> {
+  async pick(id: string, candidateId: string, pickedAt = Date.now()): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
     const roster = this.state().roster;
@@ -341,11 +338,8 @@ export class VoiceRouter {
     this.take(item);
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
-    // Clicks have no listener timestamp. Advance the card's capture time by the time it
-    // spent open here, so subsequent spoken controls compare timestamps on the same clock.
-    const pickedAt = capturedAt ?? item.entry.time + Math.max(0, Date.now() - item.receivedAt);
     await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
-      candidates: [], parts } }, Math.max(item.entry.time, pickedAt));
+      candidates: [], parts } }, pickedAt);
     return true;
   }
 

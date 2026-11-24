@@ -18,7 +18,9 @@ names no agent until the flag is on again.
 ## Routing a text utterance
 
 A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
-`x-harness-token`. Use a fresh ID per capture and epoch milliseconds for `capturedAt`.
+`x-harness-token`. Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix
+milliseconds on the host clock shared by the listener and daemon. A listener using a recognizer
+with its own clock converts its timestamps to host time at capture.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
@@ -73,8 +75,9 @@ timestamps when listener requests arrive out of order. For equal timestamps, the
 opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
 An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
 Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
-timestamp. For a pick through the card API, the daemon estimates the pick time on the listener
-clock by adding the time the card has been open to its capture timestamp.
+timestamp. For a pick through the card API, the daemon records the host time when it applies
+the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
+arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
 

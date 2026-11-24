@@ -5,6 +5,7 @@ import type { VoiceCard } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { AgentName, SpokenHint } from "./AgentName.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { api, type ActionResult } from "../lib/api.ts";
 
 export interface VoiceCardActions {
@@ -20,12 +21,13 @@ function RosterRow({ target, title, detail, state, pick, disabled }: {
   target?: SpokenName | null; title: string; detail: ReactNode; state?: string; pick?: () => void; disabled?: boolean;
 }) {
   const Tag = pick ? "button" : "div";
-  return <Tag className="vc-roster" style={target?.colorId ? residentAccentStyle(target.colorId) : undefined}
+  const row = <Tag className="vc-roster" style={target?.colorId ? residentAccentStyle(target.colorId) : undefined}
     {...(pick && { type: "button" as const, onClick: pick, disabled })}>
     <span className="agent-dot" /><span className="vc-grow"><span className="vc-name">{title}</span>{" "}
       {target?.kind === "resident" && <span className="resident-chip">RESIDENT</span>}
       <span className="vc-role">{detail}</span></span><span className="vc-state">{state}</span>
   </Tag>;
+  return pick ? <Tooltip label={`Choose ${title} for this message`}>{row}</Tooltip> : row;
 }
 
 const icons = {
@@ -72,9 +74,9 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
       setBusy(false);
     }
   };
-  const button = (label: string, click: () => void, style = "", disabled = false) =>
-    <button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click}>{label}</button>;
-  const cancel = button("Cancel", () => void run(() => api.voiceCardAction(card.id, "cancel")), "btn-ghost");
+  const button = (label: string, hint: string, click: () => void, style = "", disabled = false) =>
+    <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click}>{label}</button></Tooltip>;
+  const cancel = button("Cancel", "Cancel pending voice delivery", () => void run(() => api.voiceCardAction(card.id, "cancel")), "btn-ghost");
   const remaining = Math.max(0, (card.deadline ?? 0) - now);
   const first = card.parts[0];
   const split = card.parts.length > 1;
@@ -96,11 +98,11 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
         const question = actions.reviews.find(r => r.sessionId === session?.id && r.status === "pending" && !agentKeepsWorking(r));
         const turn = session?.pendingTurns.find(t => t.id === part.turnId);
         return <><div className="vc-row"><Icon name="clock" /><b className="vc-grow">Held for {named(target)}</b>
-          {button("Cancel message", () => session && turn && void run(() => api.recallPendingTurn(session.id, turn.id, turn.revision)), "btn-ghost", !turn)}</div>
+          {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(() => api.recallPendingTurn(session.id, turn.id, turn.revision)), "btn-ghost", !turn)}</div>
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked · older session" />
           <div className="vc-meta">{name}'s session started before this was possible, so the question cannot be set aside. Your message is delivered once it is answered.</div>
           <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>
-          <div className="vc-right">{button("Open question", () => session && actions.openQuestion(session.id), "", !question)}</div></>;
+          <div className="vc-right">{button("Open question", "Open the question holding this message", () => session && actions.openQuestion(session.id), "", !question)}</div></>;
       }
       case "not-running": {
         if (!target || part.detail === "The selected session is unavailable.") {
@@ -110,8 +112,8 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
         return <><div className="vc-row"><b className="vc-grow">{named(target)} {resident ? "isn't running" : "has finished"}</b><span className="vc-meta">Nothing was sent</span></div>
           <RosterRow target={target} title={name} detail={target?.role} state={resident ? "stopped" : "completed"} />
           <div className="vc-row"><span className="vc-hint vc-grow">{resident ? "Relaunch him, then say it again." : "Completed sessions are not resumed."}</span>
-          {resident ? button("Relaunch " + name, () => void run(() => actions.relaunch(target, launchId), "Relaunch requested."))
-            : button("Start a follow-up task", () => void run(async () => actions.followUp(target.taskId!)), "", !target?.taskId)}</div></>;
+          {resident ? button("Relaunch " + name, "Start a new run for this resident", () => void run(() => actions.relaunch(target, launchId), "Relaunch requested."))
+            : button("Start a follow-up task", "Open a new task on the same repository", () => void run(async () => actions.followUp(target.taskId!)), "", !target?.taskId)}</div></>;
       }
       case "cancelled": return <b>{split ? <>{named(target)} · </> : null}Cancelled</b>;
       case "failed": return <><b>Failed to send to {named(target)}</b><span className="vc-meta">{part.detail ?? card.detail}</span></>;
@@ -141,7 +143,7 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
         {card.deadline === null ? <span className="vc-meta">Sending…</span> : <>
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
-            {cancel}{!split && !mention && button("Send now", () => void run(() => api.voiceCardAction(card.id, "send-now")), "btn-send")}</div></>}</>;
+            {cancel}{!split && !mention && button("Send now", "Deliver this message before the countdown ends", () => void run(() => api.voiceCardAction(card.id, "send-now")), "btn-send")}</div></>}</>;
       break;
     }
     default:

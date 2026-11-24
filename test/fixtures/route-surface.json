@@ -478,6 +478,7 @@
   "PUT /api/terminals/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"path\\\": [],\\n    \\\"message\\\": \\\"empty config update\\\"\\n  }\\n]\"}",
   "PUT /api/ui/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"path\\\": [],\\n    \\\"message\\\": \\\"empty config update\\\"\\n  }\\n]\"}",
   "PUT /api/voice/config": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
+  "PUT /api/voice/confirmation": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "PUT /api/voice/decision-key": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "PUT /api/voice/indicators": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "PUT /api/workflow-commands/:slot": "503 {\"error\":\"Command catalog unavailable\"}",

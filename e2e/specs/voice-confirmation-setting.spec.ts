@@ -10,6 +10,7 @@ test("three placement previews persist across reload, with a toast fallback and 
   await expect(choices.getByText("Needs the desktop app")).toHaveCount(2);
   for (const placement of ["Corner toast", "Tray popover", "Floating pill"]) {
     const radio = choices.getByRole("radio", { name: new RegExp(placement) });
+    await expect(radio).toHaveAccessibleDescription(`Save ${placement} as your preferred confirmation card placement`);
     await radio.click();
     await expect(radio).toBeEnabled();
     await expect(radio).toBeChecked();

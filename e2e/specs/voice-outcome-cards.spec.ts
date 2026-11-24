@@ -11,6 +11,8 @@ test("resolve roster rows by click and speech, cancel a split and identify a men
     await say(daemon, "Steven ask Will about the deployment");
     await expect(unsure.getByRole("button", { name: /Steve/ })).toContainText("Steve on builds");
     await expect(unsure.getByRole("button", { name: /Will/ })).toBeVisible();
+    await expect(unsure.getByRole("button", { name: /Will/ })).toHaveAccessibleDescription("Choose Will for this message");
+    await expect(unsure.getByRole("button", { name: "Cancel" })).toHaveAccessibleDescription("Cancel pending voice delivery");
     await expectCardGeometry(unsure, "routing-exceptions", "#b .is-unsure");
     await captureCard(unsure, "unsure");
     if (pick === "click") await unsure.getByRole("button", { name: /Steve/ }).click();

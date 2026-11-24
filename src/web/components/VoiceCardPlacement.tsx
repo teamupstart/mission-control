@@ -2,6 +2,7 @@ import { useState } from "react";
 import { VOICE_CONFIRMATION_PLACEMENTS, voiceCapable, type VoiceState, type VoiceConfirmationPlacement } from "@shared/voice.ts";
 import { api } from "../lib/api.ts";
 import { useUiConfig } from "../lib/uiConfig.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 const choices = { pill: "Floating pill", toast: "Corner toast", popover: "Tray popover" } as const;
 export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
@@ -18,8 +19,10 @@ export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
     <legend className="settings-group-label">Confirmation card</legend>
     <div>{VOICE_CONFIRMATION_PLACEMENTS.map(id => <label key={id}>
       <span className={`vc-preview vc-preview-${id}`} aria-hidden="true"><i /></span>
-      <span><input type="radio" name="voice-placement" checked={(saving ?? voice.confirmation) === id} disabled={saving !== null}
-        onChange={() => void save(id)} /> {choices[id]}</span>
+      <span><Tooltip label={`Save ${choices[id]} as your preferred confirmation card placement`}>
+        <input type="radio" name="voice-placement" checked={(saving ?? voice.confirmation) === id} disabled={saving !== null}
+          onChange={() => void save(id)} />
+      </Tooltip> {choices[id]}</span>
       {id !== "toast" && !voiceCapable(state, "floating-windows") && <small>Needs the desktop app</small>}
     </label>)}</div>{error && <p role="alert">{error}</p>}
   </fieldset>;

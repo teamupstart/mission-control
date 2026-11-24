@@ -123,6 +123,73 @@ test("a prefilled picker choice is acknowledged and its answer appears in the co
   expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).status).toBe("pending");
 });
 
+for (const slowAgain of [false, true]) {
+  test(slowAgain ? "overlapping clock bounds visibly request a repeat before starting a countdown"
+    : "a slow outbound clock sample does not discard speech after the card opens", async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    const steve = await runningAgent(page, daemon, "Steve");
+    const id = await file(page, daemon, steve.cwd, "Which benchmark?");
+    const probe = Promise.withResolvers<number>();
+    const release = Promise.withResolvers<void>();
+    let probes = 0;
+    await page.route("**/api/voice/config", async route => {
+      if (route.request().method() === "HEAD") {
+        if (++probes === 1) {
+          probe.resolve(Date.now());
+          await release.promise;
+        } else if (slowAgain) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+      await route.continue();
+    });
+    const delivered = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+      r.request().postDataJSON().cards.some((c: { id: string }) => c.id === id));
+    try {
+      await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+      const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+      await expectContentClearsBorder(inbox);
+      const sent = await probe.promise;
+      await expect.poll(() => Date.now(), { intervals: [15] }).toBeGreaterThan(sent + 300);
+      release.resolve();
+      await delivered;
+      await say(daemon, "reply, tomorrow", { capturedAt: sent + 150 });
+      if (slowAgain) {
+        const notice = page.getByRole("status").filter({ hasText: "your answer again" });
+        await expect(notice).toBeVisible();
+        await expect(inbox.getByRole("textbox")).toBeEmpty();
+        await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+        await captureCard(notice, "voice-repeat-after-uncertain-clock-r17");
+        await say(daemon, "reply, tomorrow");
+      }
+      await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
+      expect(probes).toBeGreaterThan(1);
+    } finally {
+      release.resolve();
+    }
+  });
+}
+
+test("manually reopening a review cannot replay a completed voice pick", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  await file(page, daemon, steve.cwd, "Which compiler?");
+  await file(page, daemon, steve.cwd, "Which benchmark?");
+  const modal = page.getByRole("dialog", { name: "Review request" });
+  const picked = modal.locator(".review").filter({ hasText: "Which benchmark?" });
+  await say(daemon, "Steve, answer");
+  await page.getByRole("status").getByRole("button", { name: /Which benchmark/ }).click();
+  await expectContentClearsBorder(modal);
+  await expect(picked).toBeFocused();
+  await modal.getByRole("button", { name: /Close \(esc\)/ }).click();
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await page.locator(".console-detail").getByRole("button", { name: /to review/ }).click();
+  await expect(modal).toBeVisible();
+  await expect(picked).not.toBeFocused();
+  await say(daemon, "reply, yesterday");
+  await expect(picked.getByRole("textbox")).toBeEmpty();
+});
+
 test("a companion identifies its destination and hands its calibrated countdown to the owning footer", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 30);
   const steve = await runningAgent(page, daemon, "Steve");

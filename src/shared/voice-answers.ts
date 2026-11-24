@@ -4,6 +4,7 @@ import type { PlanDecisionAnswer } from "./types.ts";
 export const VOICE_REPORT_REVISION_HEADER = "x-voice-report-revision";
 export const VOICE_FOCUS_TIME_HEADER = "x-voice-focus-at-us";
 export const VOICE_CARDS_OBSERVED_HEADER = "x-voice-cards-observed-at-ms";
+export const VOICE_CARDS_EARLIEST_HEADER = "x-voice-cards-earliest-at-ms";
 export const VOICE_MONOTONIC_TIME_HEADER = "x-voice-monotonic-time-ms";
 
 /** A document or daemon keeps its monotonic time origin across a wall clock adjustment.
@@ -19,6 +20,7 @@ export const OpenCardsSchema = z.object({
   cards: z.array(z.object({ kind: z.literal("question"), id: z.string().min(1), focused: z.boolean() }).strict()).max(512),
 }).strict();
 export type OpenCardsReport = z.infer<typeof OpenCardsSchema>;
+export interface VoiceTimeBounds { earliest: number; latest: number }
 
 /** Reordering cards, or moving within a sole open card, preserves the spoken reply target. */
 export function voiceReplyState(report?: OpenCardsReport): string | undefined {

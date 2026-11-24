@@ -602,3 +602,28 @@ test("a prefilled question pick is acknowledged while its match is pending", asy
   assert.equal(answers()[0]?.text, "Postgres");
   assert.equal(cards.at(-1)?.reason, "voice-answer");
 });
+
+test("speech intersecting the clock uncertainty requests a repeat and never starts a countdown", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  let monotonic = 100;
+  t.mock.method(performance, "now", () => monotonic);
+  const q = question();
+  const router = registry.voiceRouter!;
+  const windowId = "clock-interval";
+  t.after(router.openCards.connect(windowId));
+  monotonic += 200;
+  t.mock.timers.tick(200);
+  const report = await put("/api/voice/open-cards", { windowId, focused: true, cards: [{ kind: "question", id: q.id, focused: true }] },
+    { "x-voice-cards-earliest-at-ms": "150", "x-voice-cards-observed-at-ms": "250" });
+  assert.equal(report.status, 200);
+  const reply = (id: string, elapsed: number) => router.accept({ id, capturedAt: now + elapsed, text: "reply, option B", backend: "fluidaudio", words: [] });
+  await reply("before-open", 25);
+  assert.equal(cards.length, 0);
+  await reply("uncertain", 100);
+  assert.match(cards.at(-1)?.detail ?? "", /your answer again/);
+  assert.deepEqual(answers(), []);
+  assert.equal(router.pendingVoiceActions.length, 0);
+  await reply("after-open", 175);
+  assert.equal(answers()[0]?.text, "Postgres");
+});

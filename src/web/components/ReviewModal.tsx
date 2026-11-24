@@ -49,7 +49,7 @@ import { AgentName } from "./AgentName.tsx";
  */
 export function ReviewModal({
   session,
-  reviews, focusQuestion,
+  reviews, focusQuestion, onQuestionFocused,
   dialog = null,
   onClose,
   onMovedToChat,
@@ -59,6 +59,7 @@ export function ReviewModal({
   session: Session;
   reviews: ReviewItem[];
   focusQuestion?: { reviewId: string } | null;
+  onQuestionFocused?: (request: { reviewId: string }) => void;
   /**
    * A menu the session is parked on (`activePaneDialog`), answered here by the Conversation's
    * own `PaneDialogPrompt`, so a resident's every requested decision opens in this one modal.
@@ -78,8 +79,11 @@ export function ReviewModal({
 }): React.JSX.Element {
   const selectedIsDrawn = reviews.some(r => r.id === focusQuestion?.reviewId);
   useEffect(() => {
-    if (selectedIsDrawn && focusQuestion) document.querySelector<HTMLElement>(`.review-modal [data-voice-question="${CSS.escape(focusQuestion.reviewId)}"]`)?.focus();
-  }, [focusQuestion, selectedIsDrawn]);
+    if (!selectedIsDrawn || !focusQuestion) return;
+    const card = document.querySelector<HTMLElement>(`.review-modal [data-voice-question="${CSS.escape(focusQuestion.reviewId)}"]`);
+    card?.focus();
+    if (card && document.activeElement === card) onQuestionFocused?.(focusQuestion);
+  }, [focusQuestion, selectedIsDrawn, onQuestionFocused]);
   const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
   const openPath = onOpenPath
     ? (path: string) => {

@@ -414,7 +414,7 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
-    voiceCards, voiceAnswers, openVoiceQuestion, voiceWindowId,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
     acknowledgeVoiceMode,
@@ -5861,6 +5861,7 @@ export function App(): React.JSX.Element {
                 <ReviewModal
                   session={modalSession}
                   focusQuestion={openVoiceQuestion}
+                  onQuestionFocused={consumeVoiceQuestion}
                   reviews={modalReviews}
                   dialog={modalDialog}
                   onClose={() => {

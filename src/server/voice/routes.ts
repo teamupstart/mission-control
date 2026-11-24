@@ -1,4 +1,4 @@
-import { OpenCardsSchema, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
+import { OpenCardsSchema, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
@@ -318,7 +318,13 @@ export function registerVoiceUtteranceRoutes(
     if (observed !== undefined && (!/^\d+$/.test(observed) || !Number.isSafeInteger(observedAt))) {
       return c.json({ error: "Invalid card observation time." }, 400);
     }
-    const ok = router.openCards.report(parsed.data, focusAtUs, revision, c.req.query("withdraw") === "1", observedAt);
+    const lower = c.req.header(VOICE_CARDS_EARLIEST_HEADER);
+    const earliest = lower === undefined ? observedAt : Number(lower);
+    if (lower !== undefined && (!/^\d+$/.test(lower) || !Number.isSafeInteger(earliest) || observedAt === undefined || earliest! > observedAt)) {
+      return c.json({ error: "Invalid card observation interval." }, 400);
+    }
+    const bounds = observedAt !== undefined && earliest !== undefined ? { earliest, latest: observedAt } : undefined;
+    const ok = router.openCards.report(parsed.data, focusAtUs, revision, c.req.query("withdraw") === "1", bounds);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/voice/utterances", gate, limitBody, async (c) => {

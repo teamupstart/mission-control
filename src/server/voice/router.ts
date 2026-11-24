@@ -422,19 +422,25 @@ export class VoiceRouter {
     const target = addressed?.target ?? null;
     const pending = this.questions!.pending().filter(q => q.createdAt <= time.openedAt && (!target || q.sessionId === target.sessionId))
       .sort((a, b) => a.createdAt - b.createdAt);
-    const open = this.questionAtCapture(pending, time);
+    const timing = this.questionCaptureTiming(time);
+    const drawn = this.openCards.target(pending);
+    const open = timing === "eligible" ? drawn : undefined;
     const body = (reply?.[1] ?? addressed!.text).trim();
     if (!body) return false;
     const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !!target && (!!answer || choiceCommand);
-    if (!explicit && !(reply && open)) return false;
+    if (!explicit && !(reply && drawn && timing !== "before")) return false;
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit && answer ? answer[1]!.trim() : body;
     const item: OpenCard = { entry, time, message: body,
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
     entry.matchedName = target?.name ?? null;
+    if (reply && timing === "uncertain") {
+      this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
+      return true;
+    }
     if (explicit && !pending.length) {
       this.questionNotice(item, target!.name + " has no open questions");
       return true;
@@ -453,9 +459,9 @@ export class VoiceRouter {
     return this.prepareQuestionReply(item, review, content, choiceCommand, open).then(() => true);
   }
 
-  private questionAtCapture(pending: ReviewItem[], time: ActionTime) {
+  private questionCaptureTiming(time: ActionTime) {
     const monotonic = time.openedAtHostUs === undefined ? undefined : performance.now() + (time.openedAtHostUs - this.hostNowUs()) / 1000;
-    return this.openCards.target(pending, time.openedAt, monotonic);
+    return this.openCards.captureTiming(time.openedAt, monotonic);
   }
 
   private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
@@ -737,7 +743,8 @@ export class VoiceRouter {
       else if (words) {
         this.questions!.removeCompanion(id);
         item.time = time ?? this.now();
-        const work = this.prepareQuestionReply(item, review, words, choiceCommand, this.questionAtCapture(pending, item.time))
+        const open = this.questionCaptureTiming(item.time) === "eligible" ? this.openCards.target(pending) : undefined;
+        const work = this.prepareQuestionReply(item, review, words, choiceCommand, open)
           .catch(() => {
             if (this.open.get(id) !== item) return;
             this.take(item);

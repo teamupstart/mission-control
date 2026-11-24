@@ -1,4 +1,4 @@
-import type { OpenCardsReport, VoiceAnswer } from "@shared/voice-answers.ts";
+import type { OpenCardsReport, VoiceAnswer, VoiceTimeBounds } from "@shared/voice-answers.ts";
 import { optionLetter, voiceFocusClockSkewMs, voiceReplyState } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
@@ -17,10 +17,10 @@ export class VoiceOpenCards {
   private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number }>();
   private clockSkewMs = 0;
   private changedAt = 0;
-  private observedAt?: number;
+  private observedAt?: VoiceTimeBounds;
   private replyState?: string;
   private latestFocusUs = 0;
-  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number; observedAt?: number }>();
+  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number; observation?: VoiceTimeBounds }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -44,7 +44,7 @@ export class VoiceOpenCards {
     };
   }
 
-  report(report: OpenCardsReport, observedAtUs?: number, revision = 0, withdraw = false, cardsObservedAt?: number): boolean {
+  report(report: OpenCardsReport, observedAtUs?: number, revision = 0, withdraw = false, observation?: VoiceTimeBounds): boolean {
     const stream = this.streams.get(report.windowId);
     if (!stream) return false;
     // A new stream cannot have observed focus before it existed. Keep later reports
@@ -59,15 +59,17 @@ export class VoiceOpenCards {
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
     // A standalone surface keeps its stream but ceases to be a dashboard. Retain
     // the order of its withdrawal so an in-flight report cannot resurrect its footer.
-    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs, observedAt: cardsObservedAt });
+    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs, observation });
     if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
-    const observedAt = this.current === report && cardsObservedAt !== undefined
-      ? Math.max(stream.connectedAt, Math.min(cardsObservedAt, performance.now())) : undefined;
-    this.reportChanged(observedAt, last?.observedAt !== undefined && cardsObservedAt !== last.observedAt);
+    const received = performance.now();
+    const clamp = (stamp: number) => Math.max(stream.connectedAt, Math.min(stamp, received));
+    const observedAt = this.current === report && observation
+      ? { earliest: clamp(observation.earliest), latest: clamp(observation.latest) } : undefined;
+    this.reportChanged(observedAt, observation?.latest !== last?.observation?.latest || observation?.earliest !== last?.observation?.earliest);
     return true;
   }
 
-  private reportChanged(observedAt?: number, observedAgain = false): void {
+  private reportChanged(observedAt?: VoiceTimeBounds, observedAgain = false): void {
     const state = voiceReplyState(this.current);
     if (state !== this.replyState || (observedAt !== undefined && observedAgain)) {
       this.replyState = state;
@@ -101,8 +103,13 @@ export class VoiceOpenCards {
     return current?.cards.some(card => card.id === reviewId) ? current.windowId : undefined;
   }
 
-  target(questions: ReviewItem[], capturedAt = Infinity, monotonicCapture = performance.now() + (capturedAt - Date.now())): ReviewItem | undefined {
-    if (this.observedAt === undefined ? capturedAt < this.changedAt : monotonicCapture < this.observedAt) return undefined;
+  captureTiming(capturedAt: number, monotonicCapture = performance.now() + (capturedAt - Date.now())): "before" | "uncertain" | "eligible" {
+    if (!this.observedAt) return capturedAt < this.changedAt ? "before" : "eligible";
+    if (monotonicCapture < this.observedAt.earliest) return "before";
+    return monotonicCapture < this.observedAt.latest ? "uncertain" : "eligible";
+  }
+
+  target(questions: ReviewItem[]): ReviewItem | undefined {
     const cards = this.current?.cards ?? [];
     const open = questions.filter(q => cards.some(c => c.id === q.id));
     const focused = open.filter(q => cards.some(c => c.id === q.id && c.focused));

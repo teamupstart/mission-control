@@ -1,8 +1,8 @@
 import { createContext, useEffect, useRef } from "react";
-import { VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport } from "@shared/voice-answers.ts";
+import { VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport } from "@shared/voice-answers.ts";
 
 import { fetchVoiceCardTime } from "./api.ts";
-import type { DashboardVoiceAnswer } from "./voice-card-clock.ts";
+import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
 
 export const VoiceAnswersContext = createContext<{ answers: ReadonlyMap<string, DashboardVoiceAnswer>; windowId?: string } | null>(null);
 
@@ -25,7 +25,18 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
     let last = "";
     let retry: ReturnType<typeof setTimeout>;
     let observed: { state: string; at: number } | undefined;
-    let calibration: Promise<number | null> | undefined;
+    const cardClock = new VoiceCardClock();
+    let calibration: Promise<void> | undefined;
+    async function sampleClock() {
+      // A slow outbound trip and a slow return trip have opposite clock errors.
+      // Intersect an independent sample before relying on a wide interval.
+      for (let i = 0; i < 2 && !controller.signal.aborted; i++) {
+        const sent = performance.now();
+        const stamp = await fetchVoiceCardTime(AbortSignal.any([controller.signal, AbortSignal.timeout(500)]), VOICE_MONOTONIC_TIME_HEADER);
+        if (stamp === null) continue;
+        if (!cardClock.observe(sent, performance.now(), stamp, stamp).uncertain) break;
+      }
+    }
     const report = async () => {
       if (controller.signal.aborted) return;
       const hasFocus = dashboard && document.hasFocus() && !document.hidden;
@@ -51,21 +62,18 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       last = "";
       try {
         const observation = observed;
-        if (observation && !calibration) {
-          // A daemon sample taken after request start gives an upper bound for the
-          // observation on the daemon's monotonic clock, independent of wall clocks.
-          const sent = performance.now();
-          calibration = fetchVoiceCardTime(AbortSignal.any([controller.signal, AbortSignal.timeout(500)]), VOICE_MONOTONIC_TIME_HEADER)
-            .then(stamp => stamp === null ? null : stamp - sent);
+        let bounds = observation && cardClock.serverTimeAt(observation.at);
+        if (observation && (!bounds || bounds.latest - bounds.earliest > 100)) {
+          calibration ??= sampleClock().finally(() => { calibration = undefined; });
+          await calibration;
+          bounds = cardClock.serverTimeAt(observation.at);
         }
-        const offset = observation ? await calibration : null;
         if (pending !== attempt || controller.signal.aborted) return;
         const response = await fetch(dashboard ? "/api/voice/open-cards" : "/api/voice/open-cards?withdraw=1", { method: "PUT",
           signal: AbortSignal.any([controller.signal, attempt.controller.signal, AbortSignal.timeout(1500)]),
           headers: { "content-type": "application/json", [VOICE_FOCUS_TIME_HEADER]: String(clock.focusAtUs),
             [VOICE_REPORT_REVISION_HEADER]: String(++clock.revision),
-            ...(observation && offset != null && { [VOICE_CARDS_OBSERVED_HEADER]: String(Math.max(0, Math.ceil(observation.at + offset))) }) }, body });
-        if (observation && offset == null) calibration = undefined;
+            ...(bounds && { [VOICE_CARDS_OBSERVED_HEADER]: String(bounds.latest), [VOICE_CARDS_EARLIEST_HEADER]: String(bounds.earliest) }) }, body });
         if (pending === attempt && response.ok) last = key;
       } catch { /* A timeout retries from the current DOM and document focus. */ }
       if (pending !== attempt || controller.signal.aborted) return;

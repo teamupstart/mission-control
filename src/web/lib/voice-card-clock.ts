@@ -1,6 +1,6 @@
 import type { VoiceCard } from "@shared/voice-routing.ts";
 
-import type { VoiceAnswer } from "@shared/voice-answers.ts";
+import type { VoiceAnswer, VoiceTimeBounds } from "@shared/voice-answers.ts";
 
 type LocalDeadline = { localDeadline?: number; provisionalDeadline?: boolean };
 export type DashboardVoiceCard = VoiceCard & LocalDeadline;
@@ -14,6 +14,12 @@ type Estimate = { offset: number; uncertain: boolean };
 export class VoiceCardClock {
   private lower = -Infinity;
   private upper = Infinity;
+
+  /** Earliest and latest daemon time consistent with both legs of every round trip. */
+  serverTimeAt(localTime: number): VoiceTimeBounds | undefined {
+    if (!Number.isFinite(this.lower)) return undefined;
+    return { earliest: Math.max(0, Math.floor(localTime - this.upper)), latest: Math.max(0, Math.ceil(localTime - this.lower)) };
+  }
 
   observe(sent: number, received: number, serverStart: number, serverEnd: number): Estimate {
     const lower = sent - serverStart - 1; // The daemon clock has millisecond resolution.

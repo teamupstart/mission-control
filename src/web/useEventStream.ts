@@ -218,6 +218,7 @@ export interface MissionState {
   voiceWindowId?: string;
   voiceAnswers: Map<string, DashboardVoiceAnswer>;
   openVoiceQuestion: { sessionId: string; reviewId: string } | null;
+  consumeVoiceQuestion: (request: { reviewId: string }) => void;
   voiceCards: Map<string, DashboardVoiceCard>;
   fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardRetention: (id: string, retention: VoiceCardRetention) => void;
@@ -353,6 +354,9 @@ export function useEventStream(): MissionState {
   const [voiceWindowId, setVoiceWindowId] = useState<string>();
   const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, DashboardVoiceAnswer>());
   const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
+  const consumeVoiceQuestion = useCallback((request: { reviewId: string }) => {
+    setOpenVoiceQuestion(current => current === request ? null : current);
+  }, []);
   const [voiceCards, setVoiceCards] = useState(new Map<string, DashboardVoiceCard>());
   const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
   const setVoiceCardFading = useCallback((id: string, fading: boolean) => {
@@ -463,6 +467,7 @@ export function useEventStream(): MissionState {
       lastProbeAt = -Infinity;
     }
     function clearVoiceTimers() {
+      setOpenVoiceQuestion(null);
       cancelClockProbe();
       voiceClock = new VoiceCardClock();
       for (const { timer, fadeTimer } of voiceExpiry.values()) {
@@ -1094,7 +1099,7 @@ export function useEventStream(): MissionState {
     subscribeShaping,
     voice,
     acknowledgeVoiceMode,
-    voiceCards, voiceAnswers, openVoiceQuestion, voiceWindowId,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
     settingsStatus,

@@ -4079,6 +4079,8 @@ export type ServerEvent =
        * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
+      /** Cards still awaiting delivery or a pick when this window connects. */
+      voiceCards?: import("./voice-routing.ts").VoiceCard[];
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -4260,6 +4262,7 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
+  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session

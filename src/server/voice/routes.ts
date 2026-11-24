@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
+import { VoiceRouter, type VoiceDeliverer } from "./router.ts";
 import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
@@ -27,7 +30,7 @@ const limitBody = bodyLimit({
 });
 
 /**
- * Voice's routes (contracts A and B), every one behind the `voice` flag: with it off each answers
+ * Voice's routes (contracts A, B and D), every one behind the `voice` flag: with it off each answers
  * 404 before its handler runs.
  *
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
@@ -97,4 +100,43 @@ export function registerVoiceRoutes(
     store.acceptShellReport(parsed.data);
     return c.json({ state: store.state() });
   });
+}
+
+export function registerVoiceUtteranceRoutes(
+  app: Hono,
+  deliverer: VoiceDeliverer,
+  publish: (card: VoiceCard) => void,
+): VoiceRouter {
+  const gate = requireFeature(VOICE_FLAG);
+  const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish);
+  app.post("/voice/utterances", gate, limitBody, async (c) => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    return c.json({ accepted: await router.accept(parsed.data) });
+  });
+  app.get("/api/voice/heard", gate, (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ entries: router.heard.list() });
+  });
+  app.delete("/api/voice/heard", gate, (c) => {
+    router.heard.clear();
+    return c.body(null, 204);
+  });
+  app.post("/api/voice/cards/:id/cancel", gate, (c) => {
+    const ok = router.cancel(c.req.param("id"));
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/api/voice/cards/:id/send-now", gate, async (c) => {
+    const ok = await router.sendNow(c.req.param("id"));
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/api/voice/cards/:id/pick", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, z.object({ id: z.string().min(1) }).strict(), { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const ok = await router.pick(c.req.param("id"), parsed.data.id);
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+
+  return router;
 }

@@ -954,10 +954,12 @@ test("a second window does not destroy a digest nobody has read yet", () => {
 test("stop() halts the loop", () => {
   const reg = fakeRegistry([mkSession()]);
   const w = startAwayWatcher(reg.src, () => 1000);
-  w.stop();
-  // No assertion on timers beyond not throwing - the unref'd timeout is cleared, so
-  // this test process can exit, which is itself the check.
-  assert.ok(true);
+  // The unref'd timeout is cleared, so this test process can exit, which is itself the
+  // check; stopping must also be safe to repeat.
+  assert.doesNotThrow(() => {
+    w.stop();
+    w.stop();
+  });
 });
 
 test("the daemon's repeat-offender channel reaches the buffer", () => {

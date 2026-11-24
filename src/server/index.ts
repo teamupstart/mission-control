@@ -1126,6 +1126,7 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  registry.voiceRouter?.reset();
   stopVoiceState();
   stopVoiceNames();
   const stoppingWorkflows = workflows.stop();

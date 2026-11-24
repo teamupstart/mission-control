@@ -5689,6 +5689,7 @@ export function App(): React.JSX.Element {
                   onOpenEnsemble={openEnsembleRun}
                   onOpenSession={focusSession}
                   onOpenPipelineCommission={openPipelineCommission}
+                  onComplete={setCompleteSessionId}
                   onReplyBox={noteInboxReplyBox}
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}

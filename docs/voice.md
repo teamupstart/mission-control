@@ -4,18 +4,100 @@ Voice addressing is being built in phases behind the **Voice addressing** previe
 When it is finished, the operator will talk to an agent by name, with speech recognized on this
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
-Nothing is heard or routed yet: there is no routing, no cards and no audio. What exists today, and
-what this page describes, is the foundation: the flag, the voice settings, the voice state that the
-dashboard and later the desktop shell follow, the Voice settings category with its input device
-choice, the Voice family in Setup, whose rows turn on the previews voice needs, report the
-microphone permission, and download and verify the speech model, and
-[spoken names](#spoken-names): the call signs and reference names an agent will be addressed by,
-and the roster of who can be addressed.
+The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
+holds a message for the configured cancel window and queues it to the addressed agent. Audio
+capture and the on-screen confirmation card belong to later phases.
+Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
 snapshot has no `voice` field, and neither the Settings category, the Setup family, nor the Call
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
+
+## Routing a text utterance
+
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
+`x-harness-token`. Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix
+milliseconds on the host clock shared by the listener and daemon. A listener using a recognizer
+with its own clock converts its timestamps to host time at capture.
+A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
+underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
+Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
+The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+With the window off the daemon acknowledges the capture as soon as it claims delivery.
+The card reports the final outcome when the queue or interrupt handler finishes.
+The capture must name the backend in the live listener’s hello and agree with any explicit
+backend selection. The daemon drops captures dated more than one second ahead of its clock.
+Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The listener posts captures in spoken order, waiting for each response before posting the next
+capture (including a cancel or pick). This lets the daemon apply a control to an action that
+has already opened. A cancel received with no pending action records `nothing-pending`.
+The daemon starts each delivery deadline when it opens the pending card.
+The cancel window closes at that deadline even if the delivery timer runs late.
+
+“Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
+first word after normalizing case and boundary punctuation. The exact first word takes priority
+over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
+descriptive only. Recently heard measures from the last address word to the first message word,
+skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
+Only whitespace can separate the two tokens of a call sign, both in an address and in a later mention.
+For example, `Release. Captain, stop` does not address Release Captain. Punctuation spelled
+inside a roster name such as `Dr. Ada` participates in exact matching.
+“Release Captain, run tests”
+can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
+“Steve’s” can address Steve. If both Steve and Steve Captain sound like the start of the capture,
+“Steven Captain, run tests” selects the longer phonetic match. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
+A unique exact first word settles the address even when the message names another agent.
+A spelling near-miss is ignored even when several names are one edit away. A bare name selects
+a candidate when exactly one option matches across open unsure cards captured by the time
+the name was spoken. A final sentence mark is optional. `Will.` selects Will, while
+`,Will`, `Will,` and `“Will”` leave the card open. An apostrophe within a name such as
+`O’Neil` is part of the name. Multiple matches
+leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
+left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
+no matching option records `no-message`. This includes “Release Captain” when both Release
+and Release Captain are on the roster.
+Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
+two-word match. No model is called.
+
+During the cancel window, the message stays in memory. At the deadline, or immediately with
+the window off, the daemon submits the remaining text verbatim to the running target’s operator
+queue. The card and Recently heard show `queued` when the queue accepts the message.
+For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
+`Will, ???` queues `???`. Only one comma separates the address from the message,
+so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
+Quotes and brackets around an address must close in matching pairs. For example,
+`“Will”ship it` queues `ship it` even without a space after the closing quote.
+`[Will, ) stop` queues `) stop` as message text. An unclosed wrapper also makes the body
+ordinary message text. `[Will, stop` queues the word `stop`.
+The pending card keeps the session ID selected when it opened. If that session ends or another
+session takes over its roster entry, the card and Recently heard show `not-running`.
+“Steve, stop” uses the session interrupt path. A bare command may end with sentence punctuation
+such as `!` or `?`. Quoting the word in `Steve, "stop"` queues
+the message `"stop"`. A bare “cancel” stops the newest action that
+is still pending and was opened by the time the cancel was spoken. Quoting the word
+in a standalone `“cancel”` leaves pending actions open. The daemon uses capture
+timestamps when listener requests arrive out of order. For equal timestamps, the last action
+opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
+An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
+The router allows up to 50 open or delivering cards in total. At capacity a capture that
+would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
+Existing cards keep their deadlines, and the operator can still pick or cancel them.
+Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
+timestamp. For a pick through the card API, the daemon records the host time when it applies
+the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
+arrives after the pick.
+The loopback card routes are `POST /api/voice/cards/:id/cancel`,
+`/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
+
+`GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
+time with the latest arrival first for ties. Entries include
+ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
+captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
+card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview
+toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
+a newly opened card. A daemon restart clears those IDs. A message
+actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
 
 ## Turning voice on
 
@@ -244,7 +326,7 @@ other names on the roster, never against the agent's own entry:
 for initial vowels and B: Steve and Stevie are both `STF`, and Steven is `STFN`. Two keys sound
 alike when they are equal, or one edit apart and starting with the same sound: an added or dropped
 sound from three codes, a swapped one from four. Two names also sound alike when their first words
-do, because speech is routed by its first word. The later router compares the same keys with the
+do, because speech is routed by its first word. The router compares the same keys with the
 same `keysSoundAlike`, so validation and routing agree. A name with no letters a to z, such as
 サクラ, has no key: it draws only `sounds-like`, against a roster name it is identical to.
 

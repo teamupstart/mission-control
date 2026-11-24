@@ -12,7 +12,7 @@ Mission Control's product reference is organized by feature below.
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
 - [Task shaping](task-shaping.md): shapers that supply context for a task, registered and dry-run through the API, behind the `task-shaping` preview.
-- [Voice addressing](voice.md): the foundation for talking to agents by name, behind the `voice` preview: its settings, the voice state, the Setup row that turns on the previews it needs, and spoken names (call signs, reference names and who can be addressed). Speaking to an agent is not available yet.
+- [Voice addressing](voice.md) covers spoken names, preview settings, routing a text capture to the operator queue, cancelling a pending message, and the in-memory Recently heard list.
 - [Work units](work-units.md): one id shared by a plan task and its phase tasks.
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)

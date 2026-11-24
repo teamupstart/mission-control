@@ -690,6 +690,61 @@ test("recovery charges a previous writer's displaced bytes if cleanup still fail
   await f.service.reconcile();
 });
 
+for (const kind of ["pending", "leases"] as const) {
+  test(`startup charges an abandoned ${kind} allocation before admitting new writes`, async (t) => {
+    const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));
+    f.write("file", randomBytes(96_000));
+    const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import { WorkflowStore } from "./src/server/workflows/store.ts";
+      import { WorkflowRepositoryArtifactService } from "./src/server/workflows/repository-artifact/service.ts";
+      const [root, checkout, submission, kind] = process.argv.slice(1);
+      const store = new WorkflowStore(), service = WorkflowRepositoryArtifactService.forRoot(store, root);
+      const signal = new AbortController().signal;
+      const prepare = () => service.prepare({ checkout, sourceBase: null }, signal);
+      const snapshot = await service.promote(await prepare(), submission);
+      store.commitRepositoryCaptureActivation(snapshot);
+      const request = { ...snapshot, workloadId: "old", attemptId: "old" };
+      service.setActiveRequestLookup(() => request);
+      if (kind === "pending") await prepare();
+      else await service.materialize(request, signal);
+      console.log(JSON.stringify(snapshot));
+    `, f.root, f.checkout, f.submission(), kind], { encoding: "utf8" });
+    const snapshot = JSON.parse(output.trimEnd().split("\n").at(-1)!);
+    const parent = join(realpathSync(f.root), kind);
+    const [id] = readdirSync(parent);
+    const payload = join(parent, id!, kind === "pending" ? "artifact" : "objects");
+    const fs = (await import("node:fs")).default;
+    const { syncBuiltinESMExports } = await import("node:module");
+    const remove = fs.rmSync;
+    const fault = t.mock.method(fs, "rmSync", (...args: Parameters<typeof remove>) => {
+      if (args[0] === payload) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      return remove(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      // materialize can be the first caller after restart, before any new capture.
+      const request = f.request(snapshot);
+      await assert.rejects(kind === "pending" ? f.prepare() : f.service.materialize(request, signal),
+        { code: "artifact_unavailable" });
+      assert.ok(existsSync(payload));
+      assert.equal((await f.service.reconcile()).orphans, 1);
+      await assert.rejects(f.prepare(), { code: "artifact_unavailable" });
+      await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
+      f.write("file", "small");
+      await f.service.discard(await f.prepare());
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.equal((await f.service.reconcile()).orphans, 0);
+    assert.equal(existsSync(payload), false);
+    const lease = await f.service.materialize(f.request(snapshot), signal);
+    await lease.release();
+    await f.service.release(snapshot.submissionId);
+    await f.service.reconcile();
+  });
+}
+
 test("reader leases share storage with pending candidates until their directories are removed", async (t) => {
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));
   f.write("file", randomBytes(96_000));
@@ -2740,6 +2795,32 @@ test("base-only deletions stay in the base-to-HEAD diff and never appear as chec
     await f.service.release(snapshot.submissionId);
     await f.service.reconcile();
   }
+});
+
+test("a looping symlink replacing a directory preserves the target and child deletions", async (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.checkout, "dir", "nested"), { recursive: true });
+  f.write("dir/nested/child", "original child");
+  f.git("add", ".");
+  f.git("commit", "-qm", "tracked directory");
+  rmSync(join(f.checkout, "dir"), { recursive: true });
+  symlinkSync("dir", join(f.checkout, "dir"));
+  const snapshot = await f.service.promote(await f.prepare(), f.submission());
+  f.store.commitRepositoryCaptureActivation(snapshot);
+  rmSync(f.checkout, { recursive: true });
+  const request = f.request(snapshot);
+  const lease = await f.service.materialize(request, signal);
+  const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
+    gitBinary: "git", workloadId: request.workloadId, attemptId: request.attemptId, signal, budgets: {}, audit: async () => {} });
+  assert.equal(lease.descriptor.worktree.find(entry => entry.path === "dir")?.kind, "symlink");
+  assert.equal((await reader.query("read", { path: "dir" })).items[0]?.text, "dir");
+  assert.equal((await reader.query("read", { path: "dir/nested/child" })).code, "unavailable");
+  assert.equal((await reader.query("read", { path: "dir/nested/child", layer: "index" })).items[0]?.text, "original child");
+  const status = await reader.query("git_status", { glob: "dir/nested/child" });
+  assert.deepEqual(status.items[0]?.metadata?.classifications, ["committed", "unstaged", "deleted"]);
+  await lease.release();
+  await f.service.release(snapshot.submissionId);
+  await f.service.reconcile();
 });
 
 test("status reports both sides of file and directory replacements without treating deletions as live files", async (t) => {

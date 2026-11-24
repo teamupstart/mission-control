@@ -75,6 +75,9 @@ allowance for object files, manifests and lease data. Each write reserves its by
 before it starts. A candidate or lease holds its share until its directory is removed.
 A repair also reserves the actual size of the old digest before moving it into the
 pending directory. Failed cleanup retains this charge for the next maintenance pass.
+After restart, capture and materialization wait for reconciliation. It measures the
+payload left in each owned candidate or lease that cleanup could not remove. If it
+cannot measure that payload, new writes wait for a successful measurement or cleanup.
 Writes also leave 64 MiB free on the state volume and account for in-flight filesystem
 allocations.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
@@ -86,6 +89,8 @@ its literal target bytes and retains symlink mode. Changing either setting inval
 a pending stable capture.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
+When a symlink replaces a tracked directory, capture records its literal target and
+the deletion of the directory's tracked children, including when the link forms a loop.
 Status compares HEAD, the index and the worktree. A deletion already committed between
 the selected base and HEAD appears in the base-to-HEAD diff. Staging a deletion and
 recreating the path reports both the deletion and the new working file. The reader can

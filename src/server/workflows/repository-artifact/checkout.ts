@@ -291,10 +291,15 @@ export async function workingFile(
   signal.throwIfAborted();
   const { root, common, index } = state;
   const indexed = index.get(key);
-  const path = Buffer.concat([Buffer.from(root + "/"), Buffer.from(key, "hex")]);
+  const prefix = Buffer.from(root + "/");
+  const path = Buffer.concat([prefix, Buffer.from(key, "hex")]);
   const parent = path.subarray(0, path.lastIndexOf(47));
   try {
-    if (!(await realpath(parent, { encoding: "buffer" })).equals(parent)) return null;
+    // A non-directory ancestor removes the tracked child from this layer. Never
+    // resolve a replacement symlink, including a dangling or self-referential one.
+    for (let end = path.indexOf(47, prefix.length); end >= 0; end = path.indexOf(47, end + 1)) {
+      if (!(await lstat(path.subarray(0, end))).isDirectory()) return null;
+    }
     const st = await lstat(path);
     if (st.isDirectory()) {
       if (indexed?.mode !== "160000" && !embedded) return null;

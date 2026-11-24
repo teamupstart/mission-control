@@ -342,9 +342,6 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     return { manifest, publish };
   }
   private async recoverPromotion(pending: string) {
-    const previous = join(pending, "previous");
-    if (lstatSync(previous, { throwIfNoEntry: false }))
-      this.storage.trackDisplaced(pending, (publishedFiles(previous) ?? unavailable()).bytes, true);
     const intent = join(pending, "promotion");
     if (!existsSync(intent)) return;
     if (!lstatSync(intent).isFile()) unavailable();
@@ -453,8 +450,13 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   }
   materialize(request: RepositoryMaterializationRequest, signal: AbortSignal): Promise<RepositoryViewLease> {
     const identity = Object.freeze({ ...request });
-    return this.exclusive(() =>
-      this.measured("repository_materialize", async () => {
+    return this.measured("repository_materialize", async () => {
+      if (!this.started) {
+        this.checkRequest(identity);
+        signal.throwIfAborted();
+        await this.start();
+      }
+      return this.exclusive(async () => {
         this.checkRequest(identity);
         signal.throwIfAborted();
         const { marker, path } = this.allocate("leases");
@@ -474,8 +476,8 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           this.abandon(marker);
           throw error;
         }
-      }),
-    );
+      });
+    });
   }
   async release(submissionId: string) {
     this.ownership.release(submissionId);
@@ -519,13 +521,23 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         }
         for (const id of names) {
           if (cleanupTicket.test(id) || this.live.has(id) || removing.has(id)) continue;
+          let owned: string | undefined;
           try {
-            const path = this.marked(kind, id);
-            if (kind === "pending") await this.recoverPromotion(path);
-            this.removeDirectory(path);
+            owned = this.marked(kind, id);
+            if (kind === "pending" && existsSync(join(owned, "promotion"))) {
+              await this.storage.restoreAbandoned(owned, kind);
+              await this.recoverPromotion(owned);
+            }
+            this.removeDirectory(owned);
             deleted++;
           } catch (error) {
             workflowLog("warn", { event: "repository_orphan_cleanup", error: workflowErrorCode(error) });
+            if (owned) {
+              try { await this.storage.restoreAbandoned(owned, kind); }
+              catch (sizeError) {
+                workflowLog("warn", { event: "repository_orphan_accounting", error: workflowErrorCode(sizeError) });
+              }
+            }
             orphans++;
           }
         }

@@ -1,6 +1,20 @@
 import { existsSync, statfsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { lstat, mkdir, opendir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+/** Measure surviving payloads, including partial writes, without reading file contents. */
+async function payloadBytes(path: string, depth: number): Promise<number> {
+  const stat = await lstat(path).catch(error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return 0;
+  if (!stat.isDirectory()) return stat.size;
+  if (depth === 0) throw Object.assign(new Error("Unexpected artifact directory"), { code: "artifact_layout" });
+  let total = 0;
+  for await (const entry of await opendir(path)) total += await payloadBytes(join(path, entry.name), depth - 1);
+  return total;
+}
 
 /** Shared by all pending candidates and reader leases in this state root. */
 export class RepositoryArtifactStorage {
@@ -20,15 +34,28 @@ export class RepositoryArtifactStorage {
       throw Object.assign(new Error("Temporary repository artifacts exceed storage limit"), { code: "artifact_storage_limit" });
   }
 
-  /** A replay can rediscover bytes that already occupy the directory, even above today's limit. */
-  trackDisplaced(pending: string, bytes: number, alreadyOnDisk = false) {
+  trackDisplaced(pending: string, bytes: number) {
     const account = this.accounts.get(pending) ?? { required: 0, total: 0, displaced: 0 };
     const delta = bytes - account.displaced;
-    if (!alreadyOnDisk && delta > 0) this.checkTemporary(delta);
+    if (delta > 0) this.checkTemporary(delta);
     this.temporaryBytes += delta;
     account.total += delta;
     account.displaced = bytes;
     this.accounts.set(pending, account);
+  }
+
+  async restoreAbandoned(path: string, kind: "pending" | "leases") {
+    // Fail closed if the surviving payload cannot be measured. The next cleanup
+    // can still remove it or replace this conservative charge with a precise one.
+    const old = this.accounts.get(path)?.total ?? 0;
+    const reserved = Math.max(old, this.temporaryLimit);
+    this.temporaryBytes += reserved - old;
+    this.accounts.set(path, { required: 0, total: reserved, displaced: 0 });
+    const displaced = kind === "pending" ? await payloadBytes(join(path, "previous"), 1) : 0;
+    const total = kind === "pending" ? displaced + await payloadBytes(join(path, "artifact"), 1)
+      : await payloadBytes(join(path, "objects"), 2) + await payloadBytes(join(path, "shallow"), 0);
+    this.temporaryBytes += total - reserved;
+    this.accounts.set(path, { required: 0, total, displaced });
   }
 
   async write(allocation: string, path: string, data: Buffer | string, scope: "required" | "additional" | "lease", signal: AbortSignal) {

@@ -569,7 +569,10 @@ export class Dispatcher {
       if (task.kind === "pipeline") {
         await this.dispatchPipeline(taskId, task, workUnitId, async (label, cwd, command, args) => {
           const home = await spawnTerminal(label, cwd, command, args);
-          if (!currentAttempt()) throw new TerminalLaunchError("Terminal dispatch was superseded", true);
+          if (!currentAttempt()) {
+            await this.retireSupersededHome(home);
+            throw new TerminalLaunchError("Terminal dispatch was superseded", true);
+          }
           recordHome(home);
         });
         // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
@@ -1208,12 +1211,7 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
-      // Closed only by the identity this spawn returned, never by its name: a name a cancel freed can
-      // already belong to the replacement. With no identity the terminal is left standing.
-      retireOwnHome = async () => {
-        if (!home.terminalResourceId) return;
-        await (this.deps.killHome ?? killHome)(home.homeName, undefined, home.homeBackend ?? null, home.terminalResourceId).catch(() => {});
-      };
+      retireOwnHome = () => this.retireSupersededHome(home);
       // From here every checkpoint also asks whether a cancel and a redispatch replaced this
       // attempt while it waited, and if so retires its worker before it can bind the task.
       const settled = async () => {
@@ -2607,6 +2605,14 @@ export class Dispatcher {
         );
       }
     }
+  }
+
+  /** A replacement can own the same display name. Only the returned resource identifies the old terminal. */
+  private async retireSupersededHome(home: SpawnedHome): Promise<void> {
+    if (!home.terminalResourceId) return;
+    await (this.deps.killHome ?? killHome)(
+      home.homeName, this.deps.homeDeps, home.homeBackend ?? null, home.terminalResourceId,
+    ).catch(() => {});
   }
 
   /**

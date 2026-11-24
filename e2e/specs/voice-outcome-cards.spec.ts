@@ -284,40 +284,47 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(repo).toHaveValue(regularRepo);
   await expect(intent).toHaveValue("Keep this unrelated dispatch");
 });
-test("a voice follow-up keeps its repository when the dispatch tour starts during lookup", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon);
-  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
-  const steve = await runningAgent(page, daemon, "Steve");
-  expect((await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
-  await page.goto(daemon.baseURL + "/#/settings/display");
-  const startTour = page.getByRole("button", { name: "Start See the work tour" });
-  await expect(startTour).toBeVisible();
-  const release = Promise.withResolvers<void>();
-  await page.route("**/api/voice/tasks/*/follow-up", async route => {
-    await release.promise;
-    await route.continue();
-  }, { times: 1 });
-  await say(daemon, "Steve, review the next change");
-  const lookup = page.waitForRequest(request => request.url().endsWith("/follow-up"));
-  await page.getByRole("button", { name: "Start a follow-up task" }).click();
-  await lookup;
-  try {
-    await startTour.click();
-    await expect(page.getByText("Step 1 of 14")).toBeVisible();
-  } finally {
-    release.resolve();
-  }
-  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
-  await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo, { timeout: 5000 });
-  await expect(dialog.getByRole("button", { name: "Add to backlog" })).toBeVisible();
-  await expectContentClearsBorder(dialog);
-  await page.getByRole("button", { name: "Exit tour" }).click();
-  const intent = dialog.getByPlaceholder("What should this agent do?");
-  await intent.fill("Review the next change", { timeout: 5000 });
-  await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo);
-  await page.mouse.move(0, 0);
-  await captureCard(dialog.locator(".modal-foot"), "tour-follow-up-actions");
-});
+for (const exitTiming of ["before", "after"] as const) {
+  test(`a voice follow-up keeps its repository when the tour exits ${exitTiming} lookup finishes`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+    const steve = await runningAgent(page, daemon, "Steve");
+    expect((await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+    await page.goto(daemon.baseURL + "/#/settings/display");
+    const startTour = page.getByRole("button", { name: "Start See the work tour" });
+    await expect(startTour).toBeVisible();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/tasks/*/follow-up", async route => {
+      await release.promise;
+      await route.continue();
+    }, { times: 1 });
+    await say(daemon, "Steve, review the next change");
+    const lookup = page.waitForRequest(request => request.url().endsWith("/follow-up"));
+    await page.getByRole("button", { name: "Start a follow-up task" }).click();
+    await lookup;
+    try {
+      await startTour.click();
+      await expect(page.getByText("Step 1 of 14")).toBeVisible();
+      if (exitTiming === "before") {
+        await page.getByRole("button", { name: "Exit tour" }).click();
+        await expect(page.getByText("Step 1 of 14")).toHaveCount(0);
+      }
+    } finally {
+      release.resolve();
+    }
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo, { timeout: 5000 });
+    await expect(dialog.getByRole("button", { name: "Add to backlog" })).toBeVisible();
+    await expectContentClearsBorder(dialog);
+    if (exitTiming === "after") await page.getByRole("button", { name: "Exit tour" }).click();
+    const intent = dialog.getByPlaceholder("What should this agent do?");
+    await intent.fill("Review the next change", { timeout: 5000 });
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo);
+    await page.mouse.move(0, 0);
+    if (exitTiming === "after") await captureCard(dialog.locator(".modal-foot"), "tour-follow-up-actions");
+    else await captureCard(intent, "follow-up-after-tour-exit");
+  });
+}
 
 for (const opening of ["follow-up", "regular Dispatch"]) {
   test(`a delayed follow-up lookup cannot replace a newer ${opening} opening`, async ({ dashboard: page, daemon }) => {

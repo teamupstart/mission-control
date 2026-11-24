@@ -2118,8 +2118,10 @@ export function App(): React.JSX.Element {
       delete document.documentElement.dataset[flag];
     }
     closeComplete();
-    // A follow-up belongs to the operator even when it opened during the demo.
-    requestDispatch(current => current?.kind === "new" && current.followUp ? current : null);
+    // Tour teardown closes its demo form. The operator's repository lookup and draft
+    // both belong to the follow-up that requested them.
+    setDispatchRequest(current =>
+      current?.kind === "repair-follow-up" || (current?.kind === "new" && current.followUp) ? current : null);
     setReviewSessionId(null);
     navigate(exit?.route ?? snapshot.route);
     setLayout(snapshot.layout);
@@ -2197,7 +2199,7 @@ export function App(): React.JSX.Element {
       else if (!settled) land(exit?.focus ?? "setup:settings-gear");
     };
     requestAnimationFrame(restore);
-  }, [cancelPending, closeComplete, requestDispatch, navigate, setLayout, tourTargets]);
+  }, [cancelPending, closeComplete, navigate, setLayout, tourTargets]);
 
   /**
    * Perform one palette row.

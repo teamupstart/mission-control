@@ -484,7 +484,8 @@ Foreman, and lets the following message proceed.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
 follow-up task. A follow-up opens a separate Dispatch draft for the finished task’s repository.
-If the See the work tour is on screen, the draft stays open when you exit the tour.
+If you exit the See the work tour during the repository lookup, the draft opens when the lookup
+finishes. An already open follow-up stays available after tour exit.
 
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation

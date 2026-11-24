@@ -22,6 +22,10 @@ import { VoiceRouter } from "../src/server/voice/router.ts";
 // spawns a model.
 
 const recorded = JSON.parse(readFileSync(new URL("./fixtures/voice-decision-providers.json", import.meta.url), "utf8"));
+for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+  delete process.env[`${prefix}_VOICE_OPENAI_DECISIONS_URL`];
+  delete process.env[`${prefix}_VOICE_JEV_URL`];
+}
 
 const steve = { id: "task:steve", label: "Steve", detail: "build engineer" };
 const alice = { id: "task:alice", label: "Alice", detail: "code reviewer" };

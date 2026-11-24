@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   applyVoiceConfigPatch,
@@ -19,6 +19,7 @@ const ENTRY = APP_CONFIG_ENTRIES.voice;
 type Listener = (config: VoiceConfig) => void;
 const listeners = new Set<Listener>();
 const instance = randomUUID();
+const ticketKey = randomBytes(32);
 let issued = 0;
 let receiptNonce = randomUUID();
 let latestIntentAt = performance.now();
@@ -54,6 +55,10 @@ function canApply(writer: string, base: number): boolean {
   return base === applied || (writer === lastWriter && base >= writerBase && base < applied);
 }
 
+function signTicket(payload: string): string {
+  return createHmac("sha256", ticketKey).update(payload).digest("base64url");
+}
+
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
 export function reserveProviderWrite(intent: VoiceProviderIntent): string | null {
   const { writer, observedRevision: revision, optOut = false, edit = 0, unchangedSince, observedIntent } = intent;
@@ -70,11 +75,15 @@ export function reserveProviderWrite(intent: VoiceProviderIntent): string | null
     if (!optOut || !unchangedSince || !observedLatest) return null;
     base = applied;
   }
+  // A receipt establishes that this gesture followed the observed reservation,
+  // even if that reservation's PUT has not updated the config yet.
+  const observedOrder = observedLatest ? issued : base;
   const order = issueProviderOrder();
   reservation = reservation?.writer === writer
     ? { ...reservation, order, edit: Math.max(reservation.edit, edit), optOut }
     : { order, writer, edit, otherWriterOrder: reservation?.order ?? 0, optOut };
-  return `${instance}:${order}:${writer}:${base}${optOut ? ":off" : ""}`;
+  const payload = `${order}:${writer}:${observedOrder}:${optOut ? "off" : "switch"}`;
+  return `${payload}:${signTicket(payload)}`;
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -100,16 +109,17 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
   let order: number | undefined;
   let writer: string | undefined;
   if (ticket !== undefined) {
-    const [epoch, number, author, revision] = ticket.split(":");
+    const end = ticket.lastIndexOf(":");
+    const payload = ticket.slice(0, end);
+    if (end < 0 || signTicket(payload) !== ticket.slice(end + 1)) return null;
+    const [number, author, observed, mode] = payload.split(":");
+    if (!author) return null;
     order = Number(number);
-    const base = Number(revision);
-    const optOut = ticket.endsWith(":off");
-    if (patch.decisionProvider === undefined || (optOut && patch.decisionProvider !== "off") || !Number.isSafeInteger(order) || order <= applied ||
-        order > issued || epoch !== instance || !author || !Number.isSafeInteger(base) || base < 0 || base > applied ||
-        ticket !== `${instance}:${order}:${author}:${base}${optOut ? ":off" : ""}`) return null;
+    const observedOrder = Number(observed);
+    if (patch.decisionProvider === undefined || (mode === "off" && patch.decisionProvider !== "off") || order <= applied) return null;
     // Tickets order explicit switches across windows. Remember an intervening Off
     // even if another opt-in has since changed the displayed provider.
-    if (patch.decisionProvider !== "off" && base < lastOptOut && !canApply(author, base)) return null;
+    if (patch.decisionProvider !== "off" && observedOrder < lastOptOut && !canApply(author, observedOrder)) return null;
     writer = author;
   }
   const next = applyVoiceConfigPatch(getVoiceConfig(), patch);

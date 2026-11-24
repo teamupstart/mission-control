@@ -611,36 +611,40 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), "28-newer-off-selection");
   });
 
-  test("a newer Jev ticket takes effect after an older OpenAI selection commits", async ({ dashboard: page, context, daemon, decisions }) => {
-    await turnVoiceOn(daemon);
-    await codexAgents(daemon);
-    await openVoiceSettings(page, daemon);
-    await saveKey(page, "Jev", SAVED_JEV);
-    const other = await context.newPage();
-    await openVoiceSettings(other, daemon);
-    await expect(providerMenu(other)).toHaveValue("auto");
-    const openai = await holdProviderPut(page);
-    const jev = await holdProviderPut(other);
-    try {
-      await providerMenu(page).selectOption("openai");
-      await openai.held;
-      await providerMenu(other).selectOption("jev");
-      await jev.held;
-      openai.release();
-      await expect(line(page)).toHaveText(using("OpenAI Decisions"));
-    } finally {
-      openai.release();
-      jev.release();
-    }
-    // The other window was already showing Jev while its PUT was pending.
-    await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(
-      daemon, "/api/voice/config")).config.decisionProvider, { timeout: 1_500 }).toBe("jev");
-    await expect(providerMenu(other)).toHaveValue("jev");
-    await expect(line(other)).toHaveText(using("Jev"));
-    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("Jev answered: split");
-    expect(decisions.requests).toHaveLength(1);
-    await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), "31-newer-provider-switch");
-  });
+  for (const earlier of ["openai", "off"] as const) {
+    test(`a newer Jev ticket takes effect after an older ${earlier} selection commits`, async ({ dashboard: page, context, daemon, decisions }) => {
+      await turnVoiceOn(daemon);
+      await codexAgents(daemon);
+      await openVoiceSettings(page, daemon);
+      await saveKey(page, "Jev", SAVED_JEV);
+      const other = await context.newPage();
+      await openVoiceSettings(other, daemon);
+      await expect(providerMenu(other)).toHaveValue("auto");
+      const firstPut = await holdProviderPut(page);
+      const jev = await holdProviderPut(other);
+      try {
+        await providerMenu(page).selectOption(earlier);
+        await firstPut.held;
+        await providerMenu(other).selectOption("jev");
+        await jev.held;
+        const committed = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
+        firstPut.release();
+        expect((await committed).status()).toBe(200);
+        await expect(line(page)).toHaveText(earlier === "off" ? NOT_SET : using("OpenAI Decisions"));
+      } finally {
+        firstPut.release();
+        jev.release();
+      }
+      // The other window was already showing Jev while its PUT was pending.
+      await expect.poll(async () => (await api<{ config: { decisionProvider: string } }>(
+        daemon, "/api/voice/config")).config.decisionProvider, { timeout: 1_500 }).toBe("jev");
+      await expect(providerMenu(other)).toHaveValue("jev");
+      await expect(line(other)).toHaveText(using("Jev"));
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("Jev answered: split");
+      expect(decisions.requests).toHaveLength(1);
+      await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), earlier === "off" ? "36-observed-off-then-jev" : "31-newer-provider-switch");
+    });
+  }
 
   for (const heldAt of ["request", "response"] as const) {
     test(`Off supersedes an earlier provider selection with a stalled ${heldAt}`, async ({ dashboard: page, daemon, decisions }) => {

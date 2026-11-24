@@ -203,6 +203,19 @@ test("a receipt proves the preceding pending intent and expires at the next sele
   assert.equal((await reserve(randomUUID(), false, off.intentReceipt)).status, 409);
 });
 
+test("a provider ticket that observed a pending Off survives its commit", async () => {
+  const observedRevision = await readProviderRevision();
+  const reserve = (writer: string, optOut: boolean, observedIntent?: string) =>
+    json("/api/voice/config/provider-intent", "POST", { writer, optOut, observedIntent, observedRevision, edit: 1 });
+  const off = await (await reserve(randomUUID(), true)).json();
+  const jev = await reserve(randomUUID(), false, off.intentReceipt);
+  assert.equal(jev.status, 200);
+  assert.equal((await choose("off", off.ticket)).status, 200);
+  const { ticket } = await jev.json();
+  assert.equal((await choose("jev", ticket + "x")).status, 409);
+  assert.equal((await choose("jev", ticket)).status, 200);
+});
+
 test("a window can supersede only its own earlier pending Off", async () => {
   const a = randomUUID(), b = randomUUID(), revision = await readProviderRevision();
   const reserve = (writer: string, edit: number, optOut: boolean, unchangedSince?: string) => json("/api/voice/config/provider-intent", "POST", {

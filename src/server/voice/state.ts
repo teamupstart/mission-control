@@ -83,7 +83,7 @@ export class VoiceStateStore {
 
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
-    const capture = voiceCaptures(state.mode);
+    const capture = voiceCaptures(state.mode) && this.liveHello()?.hello.microphone === "granted";
     const roster = state.roster.map((entry) => entry.name);
     const inputDevice = this.deps.config().inputDevice;
     const last = this.lastDirective;
@@ -177,12 +177,13 @@ export class VoiceStateStore {
   }
 
   /**
-   * The first compatible hello after a lapse claims capture. Only that process can renew it.
-   * A competing or incompatible process must not alter a live owner's readiness or heartbeat.
+   * A granted listener can replace a helper still waiting for access. Once granted, only
+   * that process can renew its lease until it reports denial or its heartbeat lapses.
    */
   acceptHello(id: string | undefined, hello: VoiceListenerHello): VoiceHelloResult {
     const at = this.deps.now();
-    const ownerId = this.liveHello()?.ownerId;
+    const live = this.liveHello();
+    const ownerId = live?.ownerId;
     const protocol = VOICE_LISTENER_PROTOCOL_VERSION;
     const major = voiceProtocolMajor(hello.version);
     if (major !== VOICE_LISTENER_PROTOCOL_MAJOR) {
@@ -197,12 +198,13 @@ export class VoiceStateStore {
     if (!id || !VoiceListenerIdSchema.safeParse(id).success) {
       return { ok: false, error: "invalid_listener_id", reason: "Send a UUID for this listener process.", protocol };
     }
-    if (ownerId && ownerId !== id) {
+    const takesOver = hello.microphone === "granted" && live?.hello.microphone !== "granted";
+    if (ownerId && ownerId !== id && !takesOver) {
       return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
     }
     // A denied helper exits immediately. Keep its permission reading but release its capture.
     const nextOwnerId = hello.microphone === "denied" ? null : id;
-    if (!ownerId || !nextOwnerId) this.lastDirective = undefined;
+    if (!ownerId || ownerId !== nextOwnerId) this.lastDirective = undefined;
     this.hello = { at, ownerId: nextOwnerId, hello };
     this.refused = null;
     this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };

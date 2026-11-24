@@ -39,10 +39,14 @@ requires granting access from the launching app before capture can begin.
 On startup and every ten seconds, the helper posts protocol 3.0 to `/voice/listener/hello`.
 Generate a UUID once per listener process. Send it in `x-voice-listener-id` on each hello,
 directive poll and utterance POST, alongside the daemon token. The first compatible hello
-claims capture. A second process receives HTTP 409 `listener_in_use` and exits before
+claims the listener lease. While its microphone permission is granted, a second process
+receives HTTP 409 `listener_in_use` and exits before
 opening the microphone. A new process can claim capture 30 seconds after the owner's last
 hello. It receives a fresh revision even when settings are identical. The daemon checks
 ownership again when a held poll completes and before routing each utterance.
+A helper with undetermined, restricted or unknown permission can report its status to Setup
+and poll with capture off. A granted listener can replace it immediately. The replacement
+receives a fresh revision and the previous listener's next poll or heartbeat receives HTTP 409.
 A helper reporting an explicit microphone denial releases capture immediately and exits
 with status 2. Setup retains the permission reading, and a newly authorized helper can
 start immediately.

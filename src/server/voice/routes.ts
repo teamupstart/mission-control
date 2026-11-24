@@ -141,8 +141,9 @@ export function registerVoiceUtteranceRoutes(
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     // Capture may have stopped and resumed while the request was in flight or its body was being read.
-    if (!voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER)) ||
-      c.req.query("revision") !== voiceStateStore.directive().revision) return c.json({ accepted: false });
+    const directive = voiceStateStore.directive();
+    if (!directive.capture || !voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER)) ||
+      c.req.query("revision") !== directive.revision) return c.json({ accepted: false });
     return c.json({ accepted: await router.accept(parsed.data) });
   });
   app.get("/api/voice/heard", gate, (c) => {

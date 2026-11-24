@@ -88,3 +88,28 @@ test("a terminal denial releases capture immediately while Setup retains the den
   assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "granted", source: "listener" });
   assert.deepEqual(await (await replacement.utterance("hello", [], current.revision)).json(), { accepted: false });
 });
+
+test("a granted listener takes over immediately from a live helper without microphone access", async () => {
+  const replacement = new FakeVoiceListener("http://localhost", tokenPath(), async (url, init) => app.request(url, init));
+  setVoiceConfig({ muted: false });
+  for (const permission of ["not-determined", "restricted", "unknown"] as const) {
+    voiceStateStore.reset();
+    assert.ok((await listener.hello({ microphone: permission })).ok);
+    assert.deepEqual(voiceStateStore.microphoneReading(), { permission, source: "listener" });
+    const waiting = await listener.poll();
+    assert.equal(waiting.capture, false);
+    assert.deepEqual(await (await listener.utterance("old", [], waiting.revision)).json(), { accepted: false });
+    assert.ok((await listener.hello({ microphone: permission })).ok, "still sending heartbeats");
+    const displaced = assert.rejects(listener.poll(waiting.revision), /409/);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.ok((await replacement.hello()).ok, "no heartbeat lapse is required");
+    await displaced;
+    const current = await replacement.poll();
+    assert.equal(current.capture, true);
+    assert.notEqual(current.revision, waiting.revision);
+    assert.deepEqual(voiceStateStore.microphoneReading(), { permission: "granted", source: "listener" });
+    assert.equal((await listener.hello({ microphone: permission })).status, 409);
+    assert.deepEqual(await (await listener.utterance("old", [], current.revision)).json(), { accepted: false });
+    assert.deepEqual(await (await replacement.utterance("fresh", [], current.revision)).json(), { accepted: true });
+  }
+});

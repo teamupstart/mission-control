@@ -147,7 +147,7 @@ function messageAfterAddress(text: string, start: number, end: number): { body: 
   }
   if (bodyStart > separatorLength) {
     // Terminal punctuation attached to a standalone closer also belongs to the quoted name.
-    if (!separatorLength) bodyStart += rest.slice(bodyStart).match(/^[\p{Sentence_Terminal}…]+/u)?.[0].length ?? 0;
+    bodyStart += rest.slice(bodyStart).match(/^[\p{Sentence_Terminal}…]+/u)?.[0].length ?? 0;
     bodyStart += rest.slice(bodyStart).match(/^\s*,/u)?.[0].length ?? 0;
   }
   return { body: rest.slice(bodyStart).trimStart(), wrappersClosed: wrappers.length === 0 };

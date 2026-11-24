@@ -739,7 +739,7 @@ function DispatchDraftOwner({
   const requested = openingProblem ? null : opening;
   const editTask = requested?.kind === "edit" ? requested.task : null;
   const tourDemo = requested?.kind === "tour" ? requested.demo : null;
-  const seedRepo = requested?.kind === "new" ? requested.repoRoot : undefined;
+  const seedRepo = requested?.kind === "new" ? requested.followUp?.repoRoot : undefined;
   const [draft, setDraft] = useState<DispatchDraft>(() => freshDispatchDraft(seedRepo));
   // Lives with the draft, which outlives the modal: a guess left by a closed form is still a guess.
   const draftProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
@@ -1225,11 +1225,11 @@ function DispatchDraftOwner({
 }
 
 export function DispatchLayer(props: React.ComponentProps<typeof DispatchDraftOwner>) {
-  const followUp = props.opening?.kind === "new" && props.opening.repoRoot ? props.opening : null;
+  const followUp = props.opening?.kind === "new" ? props.opening.followUp : undefined;
   // Keep the regular owner's drafts and guided progress mounted underneath the temporary form.
   return <>
     <DispatchDraftOwner {...props} opening={followUp ? null : props.opening} />
-    {followUp && <DispatchDraftOwner key={followUp.repoRoot} {...props} opening={followUp} />}
+    {followUp && <DispatchDraftOwner key={followUp.id} {...props} />}
   </>;
 }
 

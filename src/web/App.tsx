@@ -69,6 +69,7 @@ import type { ReportPublishState } from "./lib/sessionReports.ts";
 import { AttentionInbox, type InboxReportControls, type PinnedReport } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { resolveDispatchOpening, type DispatchRequest } from "./lib/dispatch-mode.ts";
+import { newRequestId } from "./lib/request-id.ts";
 import { ProductIssueLayer } from "./components/ProductIssueModal.tsx";
 import {
   LaunchFailureProvider,
@@ -1234,10 +1235,10 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
-  const followUpRequest = dispatchRequest?.kind === "new" && dispatchRequest.repoRoot ? dispatchRequest : null;
+  const followUpRequest = dispatchRequest?.kind === "new" && dispatchRequest.followUp ? dispatchRequest : null;
   const closeDispatchOpening = useCallback(() => {
     setDispatchRequest(current => {
-      const activeFollowUp = current?.kind === "new" && current.repoRoot ? current : null;
+      const activeFollowUp = current?.kind === "new" && current.followUp ? current : null;
       return activeFollowUp === followUpRequest ? null : current;
     });
   }, [followUpRequest]);
@@ -5095,7 +5096,7 @@ export function App(): React.JSX.Element {
         const task = tasks.find(t => t.id === taskId);
         if (!task?.repoRoot) return { ok: false, error: "The task repository is unavailable." };
         navigate({ page: "fleet" });
-        setDispatchRequest({ kind: "new", repoRoot: task.repoRoot });
+        setDispatchRequest({ kind: "new", followUp: { id: newRequestId(), repoRoot: task.repoRoot } });
         return { ok: true };
       },
       relaunch: async (target, requestId) => {

@@ -18,16 +18,23 @@ in Mission Control, notification permission is granted, and the platform support
 notifications. A split card shows an immediate stop’s result as soon as it arrives. The
 desktop notification identifies that stop separately and counts down only the waiting
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
+If a desktop action fails, the dashboard card names the unconfirmed action and shows
+the reason. Its controls remain available for a retry while the cancel window is open.
 The browser closes its notification at the cancel deadline even if its connection to the daemon drops.
+At the deadline the card removes its delivery controls. If the outcome has yet to arrive,
+it shows “Awaiting delivery confirmation”.
 
 A settled card stays visible while one of its controls has focus or its action is in
 progress. Once both end, the card gives you another eight seconds to read the result or retry.
+Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
+draft stays available when the follow-up closes.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
 for those windows. Their reserved routes are `#/voice/pill` and `#/voice/popover`. Each
-route gives an open cancel window priority over a newer outcome so its Cancel button stays reachable.
+route gives an open cancel window priority over a newer outcome. When the displayed
+countdown expires, it switches to another open window even if the event stream is disconnected.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect

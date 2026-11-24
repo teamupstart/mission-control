@@ -14,6 +14,7 @@ import {
   priorityFor,
   pushResultFrom,
   sweepResultFrom,
+  type GhTarget,
 } from "../src/server/task-sources/github-issues.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 
@@ -30,6 +31,9 @@ import { stubRun } from "../src/server/util/exec.ts";
 const cfg = (over: Partial<GithubIssuesConfig> = {}): GithubIssuesConfig =>
   GithubIssuesConfigSchema.parse(over);
 
+/** The repository every mapped run named, configured on the source. */
+const TARGET: GhTarget = { repo: "acme/widgets", source: "configured" };
+
 const ctx: SweepContext = {
   sourceId: "src-1",
   repoRoot: "/repo",
@@ -42,8 +46,19 @@ function argAfter(args: string[], flag: string): string | undefined {
   return i === -1 ? undefined : args[i + 1];
 }
 
+// A blank Repository is resolved before the argv is built, so every list names its
+// repository: left to `gh`, a fork checkout's sweep goes to the parent behind an `upstream`
+// remote, which an organization enforcing SAML SSO refuses.
+test("every issue list carries --repo, whatever the config", () => {
+  for (const c of [cfg(), cfg({ repo: "acme/configured" }), cfg({ labelsAny: ["a", "b"], unassignedOnly: true })]) {
+    const args = ghIssueListArgs(c, "acme/resolved");
+    assert.equal(args.filter((a) => a === "--repo").length, 1);
+    assert.equal(argAfter(args, "--repo"), "acme/resolved");
+  }
+});
+
 test("the base sweep asks only for open issues, and only for the fields we map", () => {
-  const args = ghIssueListArgs(cfg());
+  const args = ghIssueListArgs(cfg(), "acme/w");
   assert.ok(args.slice(0, 2).join(" ") === "issue list");
   assert.equal(argAfter(args, "--state"), "open");
   assert.equal(argAfter(args, "--limit"), "50");
@@ -57,7 +72,7 @@ test("the base sweep asks only for open issues, and only for the fields we map",
 // One label needs no search syntax, which also means no quoting rules - a label with a
 // comma in it survives here where `label:a,b` would split it in half.
 test("one label goes through --label", () => {
-  const args = ghIssueListArgs(cfg({ labelsAny: ["Type: Bug, maybe"] }));
+  const args = ghIssueListArgs(cfg({ labelsAny: ["Type: Bug, maybe"] }), "acme/w");
   assert.equal(argAfter(args, "--label"), "Type: Bug, maybe");
   assert.equal(args.includes("--search"), false);
 });
@@ -65,19 +80,19 @@ test("one label goes through --label", () => {
 // The one that matters: `--label a --label b` is AND, and the config says ANY. Passing
 // both flags would quietly select only issues carrying every label at once.
 test("several labels become an OR search, not repeated --label flags", () => {
-  const args = ghIssueListArgs(cfg({ labelsAny: ["bug", "good first issue"] }));
+  const args = ghIssueListArgs(cfg({ labelsAny: ["bug", "good first issue"] }), "acme/w");
   assert.equal(args.includes("--label"), false);
   assert.equal(argAfter(args, "--search"), 'label:bug,"good first issue"');
 });
 
 test("assignedToMe and unassignedOnly reach gh by their own routes", () => {
-  assert.equal(argAfter(ghIssueListArgs(cfg({ assignedToMe: true })), "--assignee"), "@me");
+  assert.equal(argAfter(ghIssueListArgs(cfg({ assignedToMe: true }), "acme/w"), "--assignee"), "@me");
   // `--assignee` has no "nobody" spelling, so this is a search term.
-  assert.equal(argAfter(ghIssueListArgs(cfg({ unassignedOnly: true })), "--search"), "no:assignee");
+  assert.equal(argAfter(ghIssueListArgs(cfg({ unassignedOnly: true }), "acme/w"), "--search"), "no:assignee");
 });
 
 test("a milestone is passed through", () => {
-  assert.equal(argAfter(ghIssueListArgs(cfg({ milestone: "v2" })), "--milestone"), "v2");
+  assert.equal(argAfter(ghIssueListArgs(cfg({ milestone: "v2" }), "acme/w"), "--milestone"), "v2");
 });
 
 // A filter that silently matches nothing is the worst possible failure for a background
@@ -184,21 +199,21 @@ test("an enormous body is truncated, and says so", () => {
 // alike. Every failure below has to carry a reason; none may come back as `items: []`
 // with `error: null`, which is what "there is no work" means.
 test("a non-zero gh exit is an error, never an empty success", () => {
-  const r = sweepResultFrom({ stdout: "", stderr: "gh: not authenticated", code: 1 }, cfg(), ctx);
+  const r = sweepResultFrom({ stdout: "", stderr: "gh: not authenticated", code: 1 }, cfg(), ctx, TARGET);
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /gh issue list failed: gh: not authenticated/);
 });
 
 test("a gh run refused because the checkout is gone names the checkout, not gh", () => {
-  const r = sweepResultFrom({ stdout: "", stderr: "gh could not start because its working directory /gone does not exist", code: 1, missingCwd: "/gone" }, cfg(), ctx);
+  const r = sweepResultFrom({ stdout: "", stderr: "gh could not start because its working directory /gone does not exist", code: 1, missingCwd: "/gone" }, cfg(), ctx, TARGET);
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /files tasks against \/gone, which no longer exists/);
 });
 
 test("gh output that is not JSON, or not a list, is an error too", () => {
-  assert.match(sweepResultFrom({ stdout: "<html>", stderr: "", code: 0 }, cfg(), ctx).error!, /not JSON/);
+  assert.match(sweepResultFrom({ stdout: "<html>", stderr: "", code: 0 }, cfg(), ctx, TARGET).error!, /not JSON/);
   assert.match(
-    sweepResultFrom({ stdout: '{"issues":[]}', stderr: "", code: 0 }, cfg(), ctx).error!,
+    sweepResultFrom({ stdout: '{"issues":[]}', stderr: "", code: 0 }, cfg(), ctx, TARGET).error!,
     /unexpected shape/,
   );
 });
@@ -206,7 +221,7 @@ test("gh output that is not JSON, or not a list, is an error too", () => {
 // The one shape that IS an empty success: gh ran, and the repo genuinely has nothing
 // matching. Reporting an error here would make a healthy quiet source look broken.
 test("a clean run with no matching issues is an empty SUCCESS", () => {
-  const r = sweepResultFrom({ stdout: "[]", stderr: "", code: 0 }, cfg(), ctx);
+  const r = sweepResultFrom({ stdout: "[]", stderr: "", code: 0 }, cfg(), ctx, TARGET);
   assert.deepEqual(r.items, []);
   assert.equal(r.error, null);
 });
@@ -216,6 +231,7 @@ test("a clean run maps every issue it can name", () => {
     { stdout: JSON.stringify([ISSUE, { ...ISSUE, url: undefined }]), stderr: "", code: 0 },
     cfg(),
     ctx,
+    TARGET,
   );
   assert.equal(r.error, null);
   assert.equal(r.items.length, 1, "the unlinkable row was dropped, the good one kept");
@@ -228,7 +244,7 @@ test("an abandoned sweep says so rather than filing what it had", () => {
   const r = sweepResultFrom({ stdout: JSON.stringify([ISSUE]), stderr: "", code: 0 }, cfg(), {
     ...ctx,
     signal: AbortSignal.abort(),
-  });
+  }, TARGET);
   assert.deepEqual(r.items, []);
   assert.match(r.error!, /abandoned/);
 });
@@ -245,7 +261,7 @@ test("the created issue carries the task's title and intent, the repo, and every
   const args = ghIssueCreateArgs(cfg({ repo: "acme/widgets", labelsAny: ["mission", "triage"] }), {
     title: "Widgets leak on resize",
     intent: "Steps: resize the window twice.",
-  });
+  }, "acme/widgets");
   assert.deepEqual(args, [
     "issue",
     "create",
@@ -265,16 +281,16 @@ test("the created issue carries the task's title and intent, the repo, and every
   ]);
 });
 
-test("an unconfigured repo and no labels pass no flags at all", () => {
-  const args = ghIssueCreateArgs(cfg(), { title: "t", intent: "i" });
-  assert.deepEqual(args, ["issue", "create", "--title", "t", "--body", "i"]);
+test("no labels pass only the resolved repository", () => {
+  const args = ghIssueCreateArgs(cfg(), { title: "t", intent: "i" }, "acme/resolved");
+  assert.deepEqual(args, ["issue", "create", "--title", "t", "--body", "i", "--repo", "acme/resolved"]);
 });
 
 // An argv array handed to `execFile` - no shell parses it - so text that would be a
 // command injection anywhere else is just a title.
 test("shell metacharacters in a title or body are arguments, not syntax", () => {
   const nasty = "$(rm -rf /) `whoami` && echo";
-  const args = ghIssueCreateArgs(cfg(), { title: nasty, intent: nasty });
+  const args = ghIssueCreateArgs(cfg(), { title: nasty, intent: nasty }, "acme/widgets");
   assert.equal(args[3], nasty);
   assert.equal(args[5], nasty);
 });
@@ -283,7 +299,7 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
   const r = pushResultFrom(
     stubRun({ stdout: "https://github.com/acme/widgets/issues/42\n", stderr: "", code: 0 }),
     ctx,
-    "acme/widgets",
+    TARGET,
   );
   assert.equal(r.error, null);
   assert.equal(r.outcomeUnknown, false);
@@ -300,9 +316,9 @@ test("a created issue is identified by the URL gh printed, the same id a sweep w
 test("a clean create vouches for no blocking links; a partial failure vouches for none at all", () => {
   const out = "https://github.com/acme/widgets/issues/42\n";
   // A push writes no links, so a clean exit reports "none written", which is not "unknown".
-  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, "acme/widgets");
+  const clean = pushResultFrom(stubRun({ stdout: out, stderr: "", code: 0 }), ctx, TARGET);
   assert.deepEqual(clean.blockedBy, []);
-  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not add label", code: 1 }), ctx, "acme/widgets");
+  const partial = pushResultFrom(stubRun({ stdout: out, stderr: "could not add label", code: 1 }), ctx, TARGET);
   assert.equal(partial.ref?.externalId, "acme/widgets#42");
   assert.equal(partial.blockedBy, undefined);
 });
@@ -317,7 +333,7 @@ test("progress chatter above the URL is not mistaken for it", () => {
       code: 0,
     }),
     ctx,
-    "acme/widgets",
+    TARGET,
   );
   assert.equal(r.ref!.url, "https://github.com/acme/widgets/issues/9");
 });
@@ -329,7 +345,7 @@ test("a non-zero gh exit is a refusal that names itself, and is retry-safe", () 
   const r = pushResultFrom(
     stubRun({ stdout: "", stderr: "could not add label: 'triage' not found\n", code: 1 }),
     ctx,
-    "acme/widgets",
+    TARGET,
   );
   assert.equal(r.ref, null);
   assert.match(r.error!, /gh issue create failed: could not add label: 'triage' not found/);
@@ -343,7 +359,7 @@ test("a gh that never reported back is an UNKNOWN outcome, not a refusal", () =>
   const r = pushResultFrom(
     { stdout: "", stderr: "timed out", code: null, outcomeUnknown: true, overflowed: false },
     ctx,
-    "acme/widgets",
+    TARGET,
   );
   assert.equal(r.ref, null);
   assert.equal(r.outcomeUnknown, true);
@@ -358,7 +374,7 @@ test("exit 0 with no URL is an unknown outcome - the issue exists and cannot be 
   const r = pushResultFrom(
     stubRun({ stdout: "done\n", stderr: "", code: 0 }),
     ctx,
-    "acme/widgets",
+    TARGET,
   );
   assert.equal(r.ref, null);
   assert.equal(r.outcomeUnknown, true);
@@ -379,7 +395,7 @@ test("an unknown outcome outranks whatever exit code came with it", () => {
         overflowed: false,
       },
       ctx,
-      "acme/widgets",
+      TARGET,
     );
     assert.equal(r.outcomeUnknown, true, `code ${code} was allowed to claim a known outcome`);
     assert.equal(r.ref, null);

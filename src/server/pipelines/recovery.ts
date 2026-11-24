@@ -16,7 +16,8 @@ import {
   reservePipelineCommissionRetry,
   updatePipelineCommissionRecovery,
 } from "../db.ts";
-import { configuredGitHubRepositories, fetchPr, parsePrUrl } from "../inspector/github.ts";
+import { configuredGitHubRepositories } from "../github/repository.ts";
+import { fetchPr, parsePrUrl } from "../inspector/github.ts";
 import { applyEngineerEvent, parseEngineerEvent } from "./commissions.ts";
 import type { PipelineEngineerLifecycle, PipelineEngineerRunSnapshot } from "./types.ts";
 import { resolvePipelineEvidenceCommit } from "./workspace.ts";

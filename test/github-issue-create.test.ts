@@ -125,18 +125,6 @@ test("issue-create outcome classification preserves refusal and uncertainty", ()
   assert.deepEqual(
     githubIssueCreateOutcome(
       stubRun({
-        stdout: "https://github.com/acme/from-cwd/issues/3\n",
-        stderr: "",
-        code: 0,
-      }),
-      "",
-    ),
-    { kind: "created", url: "https://github.com/acme/from-cwd/issues/3" },
-  );
-
-  assert.deepEqual(
-    githubIssueCreateOutcome(
-      stubRun({
         stdout: "https://github.com/other/repository/issues/3\n",
         stderr: "request failed",
         code: 1,
@@ -157,6 +145,25 @@ test("issue-create outcome classification preserves refusal and uncertainty", ()
     ),
     { kind: "refused", detail: "https://github.com/acme/issues/issues/3" },
   );
+});
+
+// The fork case the empty-repository wildcard used to accept: a create run in a checkout whose
+// `upstream` is the parent, where gh filed the issue on the parent. Only the repository the
+// caller resolved and named proves creation, and a blank target names none, so neither
+// reads as created and nothing is recorded against an issue on somebody else's repository.
+test("a create URL on any repository but the targeted one is not a created issue", () => {
+  const onParent = "https://github.com/teamupstart/mission-control/issues/7\n";
+  assert.deepEqual(
+    githubIssueCreateOutcome(stubRun({ stdout: onParent, stderr: "", code: 0 }), "octo-fork/mission-control"),
+    { kind: "unknown", reason: "missing-url" },
+  );
+  for (const blank of ["", "/", "acme/"]) {
+    assert.deepEqual(
+      githubIssueCreateOutcome(stubRun({ stdout: onParent, stderr: "", code: 0 }), blank),
+      { kind: "unknown", reason: "missing-url" },
+      `expected repository ${JSON.stringify(blank)} accepted a URL`,
+    );
+  }
 });
 
 // Captured from released gh 2.99.0 against disposable public issue #5 on 2026-09-03.

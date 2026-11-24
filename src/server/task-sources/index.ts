@@ -9,11 +9,13 @@ import type {
   TaskSourceInstance,
   TaskSourceKind,
   TaskSourceRef,
+  TaskSourceRepository,
   WritebackContext,
   WritebackNotice,
   WritebackResult,
 } from "@shared/task-source.ts";
 import { TASK_SOURCE_KINDS, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
+import type { CheckoutRepository } from "@shared/github-repository.mjs";
 import { githubIssues } from "./github-issues.ts";
 import { jira } from "./jira.ts";
 
@@ -60,6 +62,8 @@ interface ErasedTaskSource {
   resolve:
     | ((config: unknown, notice: WritebackNotice, ctx: WritebackContext) => Promise<WritebackResult>)
     | null;
+  /** Null when this kind has no repository field to resolve. */
+  resolveRepository: ((config: unknown, repoRoot: string) => Promise<CheckoutRepository | null>) | null;
 }
 
 /**
@@ -137,6 +141,13 @@ function erase<C>(impl: TaskSourceImpl<C>): ErasedTaskSource {
           return impl.resolve!(parsed.data, notice, ctx);
         }
       : null,
+    // A config the schema rejects has no repository to show; the sweep reports why.
+    resolveRepository: impl.resolveRepository
+      ? async (config, repoRoot) => {
+          const parsed = impl.configSchema.safeParse(config ?? {});
+          return parsed.success ? impl.resolveRepository!(parsed.data, repoRoot) : null;
+        }
+      : null,
   };
 }
 
@@ -160,6 +171,28 @@ export function taskSourceKinds(): { kind: TaskSourceKind; label: string; blurb:
     label: TASK_SOURCES[kind].label,
     blurb: TASK_SOURCES[kind].blurb,
   }));
+}
+
+/**
+ * What each source's blank repository field resolves to, for the editor's hint.
+ *
+ * A throw becomes the resolution's error rather than failing the whole read: this rides on
+ * every panel view, and one unreadable checkout must not hide every other source.
+ */
+export async function sourceRepositories(sources: TaskSourceInstance[]): Promise<TaskSourceRepository[]> {
+  const entries = await Promise.all(
+    sources.map(async (inst): Promise<TaskSourceRepository | null> => {
+      const resolve = TASK_SOURCES[inst.kind].resolveRepository;
+      if (!resolve) return null;
+      try {
+        const resolution = await resolve(inst.config, inst.repoRoot);
+        return resolution ? { sourceId: inst.id, resolution } : null;
+      } catch (err) {
+        return { sourceId: inst.id, resolution: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+      }
+    }),
+  );
+  return entries.filter((e): e is TaskSourceRepository => e !== null);
 }
 
 /**

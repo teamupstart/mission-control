@@ -2,6 +2,7 @@ import { refreshSourceTasks } from "./sync.ts";
 import type { SweepReport, TaskSourceInstance, TaskSourceStatus } from "@shared/task-source.ts";
 import { countTaskSourceSeen } from "../db.ts";
 import { envVar } from "../config.ts";
+import { ensureGhDefaultRepository } from "../github/repository.ts";
 import { unref } from "../util/timers.ts";
 import type { TaskManager } from "../tasks.ts";
 import { getTaskSourcesConfig } from "./config.ts";
@@ -141,6 +142,7 @@ export async function sweepOnce(
   const controller = new AbortController();
   const timer = unref(setTimeout(() => controller.abort(), SWEEP_TIMEOUT_MS));
   try {
+    if (entry.lastSweepAt === null) await ensureGhDefaultRepository(inst.repoRoot);
     const result = await sweepSource(inst, contextFor(inst, controller.signal));
     const report = await ingestSweep(inst, result, tasks);
     if (inst.keepUpdated) {

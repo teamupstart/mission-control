@@ -3,6 +3,7 @@ import { kindMissionMcpRequirement } from "./mission-mcp.ts";
 import { missionToolsAvailability } from "./mission-tools.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { AgentType, TaskKind } from "@shared/types.ts";
+import { ensureGhDefaultRepository } from "./github/repository.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
 import { isScanUnavailable, listRepos, resolveTaskRepoRoot, resolveTaskRepoSet } from "./repos.ts";
 
@@ -106,5 +107,7 @@ export async function prepareTaskRepositories(
     const tools = await missionToolsAvailability(agent);
     if (!tools.available) return { ok: false, status: 400, error: tools.reason! };
   }
+  // So an agent's bare `gh issue view 12` resolves to origin, not a fork's parent.
+  for (const root of [resolved.repoRoot, ...resolved.extraRepoRoots]) await ensureGhDefaultRepository(root);
   return { ...resolved, agent };
 }

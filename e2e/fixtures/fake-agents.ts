@@ -166,8 +166,8 @@ export function writeGhPullRequests(home: string, prs: readonly FakePullRequest[
 }
 
 /** The issue `FAKE_GH` says it created, and the id the daemon derives from it. */
-export const FAKE_GH_ISSUE_URL = "https://github.com/acme/demo-repo/issues/123";
-export const FAKE_GH_ISSUE_ID = "acme/demo-repo#123";
+export const FAKE_GH_ISSUE_URL = "https://github.com/mc-e2e-fixture/demo-repo/issues/123";
+export const FAKE_GH_ISSUE_ID = "mc-e2e-fixture/demo-repo#123";
 
 /**
  * How `FAKE_GH` should behave for the public product-report path.
@@ -282,6 +282,18 @@ export function ghWritebackScriptPath(home: string): string {
 
 export function writeGhWritebackScript(home: string, script: FakeGhWritebackScript): void {
   writeFileSync(ghWritebackScriptPath(home), JSON.stringify(script, null, 2));
+}
+
+/**
+ * What `FAKE_GH` prints to stderr, failing, for every `gh issue list`: how a spec shows what a
+ * refused sweep and preflight read like on the source. Absent or empty, lists answer as usual.
+ */
+export function ghIssueListRefusalPath(home: string): string {
+  return join(home, "gh-issue-list-refusal.txt");
+}
+
+export function writeGhIssueListRefusal(home: string, stderr: string): void {
+  writeFileSync(ghIssueListRefusalPath(home), stderr);
 }
 
 /**
@@ -724,8 +736,9 @@ if (argv[0] === "--version") {
   }
 } else if (command.startsWith("issue create")) {
   // What the real gh prints on success: the URL of the issue in the requested repository,
-  // and nothing else. An omitted --repo means gh derives the repository from the cwd; the
-  // fake's seeded checkout represents acme/demo-repo.
+  // and nothing else. Task sources always pass --repo (a blank Repository resolves to the
+  // fixture checkout's origin, mc-e2e-fixture/<name>); the acme/demo-repo fallback only
+  // answers a create that names none.
   const repoIndex = argv.indexOf("--repo");
   const requested = repoIndex >= 0 ? argv[repoIndex + 1] : "acme/demo-repo";
   const parts = requested.split("/");
@@ -819,6 +832,12 @@ if (argv[0] === "--version") {
   const here = scriptedPrs().filter((pr) => pr.cwd === process.cwd());
   process.stdout.write(JSON.stringify(here) + "\\n");
 } else if (command.startsWith("issue list") || command.startsWith("issue view")) {
+  let refusal = "";
+  try { refusal = require("node:fs").readFileSync(process.env.MC_E2E_GH_ISSUE_LIST_REFUSAL, "utf8"); } catch {}
+  if (refusal && command.startsWith("issue list")) {
+    process.stderr.write(refusal);
+    process.exit(1);
+  }
   let items = [];
   try { items = JSON.parse(require("node:fs").readFileSync(process.env.MC_E2E_GH_ISSUES, "utf8")); } catch {}
   if (command.startsWith("issue list")) {

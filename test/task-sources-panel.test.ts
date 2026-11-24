@@ -77,7 +77,7 @@ const viewOf = (
   sources: TaskSourceInstance[],
   status: TaskSourcesView["status"] = [],
   writeback: TaskSourcesView["writeback"] = [],
-) => ({ sources, status, writeback, kinds: KINDS });
+) => ({ sources, status, writeback, repositories: [], kinds: KINDS });
 
 // The claim the whole feature rests on, and the one an operator cannot verify from the
 // controls. If this sentence ever goes, the panel is asking for consent to something it
@@ -528,4 +528,35 @@ test("a github source's close reason is composed by the card and carries what is
   assert.match(html, /aria-label="How a resolved GitHub issue is closed"/);
   assert.match(html, /<option value="not-planned" selected="">Not planned<\/option>/);
   assert.doesNotMatch(html, /Target status/);
+});
+
+// A blank Repository is resolved by the daemon on every view, and the editor says what it
+// resolved to under the field - or why nothing could be. A configured Repository is what the
+// sweep names, so it gets no hint.
+test("a blank Repository shows what it resolves to; a filled one shows nothing extra", () => {
+  const card = (src: TaskSourceInstance, repositories: TaskSourcesView["repositories"]): string =>
+    renderToStaticMarkup(createElement(SourceCard, {
+      src,
+      kindLabel: "GitHub issues",
+      status: undefined,
+      repos: [],
+      now: Date.now(),
+      onChange: () => {},
+      onRemove: () => {},
+      state: mkState({ ...viewOf([src]), repositories }),
+    }));
+  const blank = mkSource();
+  const resolved = (resolution: TaskSourcesView["repositories"][number]["resolution"]) =>
+    card(blank, [{ sourceId: blank.id, resolution }]);
+
+  assert.match(resolved({ ok: true, repo: "acme/widgets", source: "origin" }), /Resolves to acme\/widgets \(from origin\)/);
+  assert.match(resolved({ ok: true, repo: "acme/parent", source: "gh-default" }), /Resolves to acme\/parent \(from gh default\)/);
+  const failed = resolved({ ok: false, error: "No GitHub repository for /repo/widgets: origin is git@gitlab.com:x/y.git" });
+  assert.match(failed, /class="settings-warn ts-repo-hint"[^>]*>No GitHub repository for \/repo\/widgets/);
+
+  const named = mkSource({ config: { repo: "acme/chosen" } });
+  // The daemon sends no entry for a configured Repository; even a stale one draws nothing.
+  const html = card(named, [{ sourceId: named.id, resolution: { ok: true, repo: "acme/widgets", source: "origin" } }]);
+  assert.doesNotMatch(html, /Resolves to/);
+  assert.doesNotMatch(html, /ts-repo-hint/);
 });

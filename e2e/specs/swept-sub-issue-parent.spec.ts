@@ -56,7 +56,7 @@ test("the editor shows the parent of a swept sub-issue beside its upstream link"
   const config = await dashboard.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
       sources: [
-        { id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { labelsAny: ["mission"] } },
+        { id: "gh-e2e", kind: "github-issues", label: "demo issues", repoRoot: daemon.repo, config: { repo: "acme/demo-repo", labelsAny: ["mission"] } },
       ],
     },
   });

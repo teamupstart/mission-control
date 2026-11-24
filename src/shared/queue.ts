@@ -1,3 +1,4 @@
+import { openPullRequestCommand } from "./pr-command.mjs";
 import type { SessionQueueSummary, WorkItem, WorkItemState } from "./types.ts";
 
 // The work item lifecycle's two load-bearing state sets, defined ONCE.
@@ -94,21 +95,32 @@ export function wrapupTriggerOn(
 }
 
 /**
- * The PR instruction, and it does not stop at `gh pr create`: an unattended wrap-up
+ * The PR instruction, and it does not stop at opening the PR: an unattended wrap-up
  * that opens a red or unmergeable PR has handed the human the work back, which is the
  * one thing this mode exists not to do. So it names the finish line - green CI, no
  * conflicts - rather than the act, and says to merge the default branch in
  * unconditionally rather than "if there are conflicts", because an agent that has to
  * first decide whether a conflict exists is an agent that decides wrong and stops.
  *
+ * It names the repository rather than leaving the choice to gh: the PR opens through the
+ * REST command, which reads `origin`, and CI is followed by the PR's URL. `gh pr create`
+ * and a bare `gh pr checks` resolve through gh's base-repository choice, which on a fork
+ * reaches the parent, and fail there when the parent's org enforces SAML SSO.
+ *
+ * The command carries placeholders, and the text says the AGENT fills them in. It is also
+ * the editable default of the work queue's composer, and a person who fills them in there
+ * sends text `isWrapupPayload` no longer recognises, which re-arms the prompted trigger.
+ *
  * One line because `sendText` submits on every embedded newline, so a wrapped string
  * would otherwise become several half-instructions typed in sequence.
  */
 export const WRAPUP_PR =
-  "Use git and gh directly: commit this work, push the branch, and open a PR. Then merge the" +
-  " default branch into yours and resolve" +
-  " any conflicts, and follow the PR's CI to completion - fix whatever fails and push again" +
-  " until every check passes and the PR has no merge conflicts.";
+  "Use git and gh directly: commit this work, push the branch, and open a PR against the" +
+  ` default branch with \`${openPullRequestCommand("<default-branch>")}\`, filling in its` +
+  " <placeholders> yourself. Then merge the" +
+  " default branch into yours and resolve any conflicts, and follow the PR's CI to completion" +
+  " with `gh pr checks <pr-url> --watch` - fix whatever fails and push again until every" +
+  " check passes and the PR has no merge conflicts.";
 
 /**
  * Wrap-up payloads we have sent in the past and no longer send. APPEND-ONLY.
@@ -127,6 +139,10 @@ const RETIRED_WRAPUP_PAYLOADS: readonly string[] = [
   "Please commit this work, push the branch, and open a PR. Then merge the default branch into" +
     " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
     " and push again until every check passes and the PR has no merge conflicts.",
+  "Use git and gh directly: commit this work, push the branch, and open a PR. Then merge the" +
+    " default branch into yours and resolve any conflicts, and follow the PR's CI to completion" +
+    " - fix whatever fails and push again until every check passes and the PR has no merge" +
+    " conflicts.",
 ];
 
 /**

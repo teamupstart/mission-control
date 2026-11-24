@@ -1,5 +1,6 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +47,9 @@ const { setTaskSourcesConfig } = await import("../src/server/task-sources/config
  * a machine where the code is perfectly correct.
  */
 const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-task-push-repo-")));
+// A checkout with a GitHub `origin`, which is what the sources' blank Repository resolves to.
+execFileSync("git", ["init", "-q", repo]);
+execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/acme/demo.git"]);
 const bin = mkdtempSync(join(tmpdir(), "mission-task-push-bin-"));
 const record = join(bin, "gh-argv.txt");
 
@@ -211,7 +215,7 @@ test("a created issue answers 200 with the linked task, records it seen, and fil
   assert.equal(countTaskSourceSeen("src-gh"), 1);
 
   const [cwd, ...argv] = readFileSync(record, "utf8").trimEnd().split("\n");
-  assert.equal(cwd, repo, "gh ran outside the repo, so it would resolve the wrong one");
+  assert.equal(cwd, repo, "gh ran outside the repo");
   assert.deepEqual(argv, [
     "issue",
     "create",
@@ -219,6 +223,9 @@ test("a created issue answers 200 with the linked task, records it seen, and fil
     "Fix the parser",
     "--body",
     "the parser drops trailing commas",
+    // The blank Repository, resolved from the checkout's origin rather than left to gh.
+    "--repo",
+    "acme/demo",
     // The source's own sweep filter, so the created issue matches what this source sweeps.
     "--label",
     "mission",

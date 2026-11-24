@@ -30,9 +30,80 @@
 export const PR_CREATE_RE =
   /(?:^|[\s;&|(`])gh\s+(?:-{1,2}\S+\s+)*pr\s+(?:-{1,2}\S+\s+)*create(?:\s|$)/;
 
+/**
+ * The REST form of opening a pull request, which is the one Mission Control's instructions
+ * give (`openPullRequestCommand`). `gh pr create` always reads the repository's `parent`, so
+ * on a fork of an org that enforces SAML SSO it fails for any token not authorized there,
+ * `--repo` or not. `POST repos/{owner}/{repo}/pulls` names one repository and nothing else.
+ *
+ * Strict in the same direction as `PR_CREATE_RE`, and in one more: the command must print
+ * only `.html_url`. The full JSON response carries the description, and a description that
+ * mentions another pull request's URL would hand the URL half of the provenance rule a PR
+ * nobody here opened. With `--jq .html_url` the output is exactly the one URL `gh pr create`
+ * would have printed. A command without it opens an uninspected PR, the cheap direction.
+ */
+const GH_API_RE = /(?:^|[\s;&|(`])gh\s+(?:-{1,2}\S+\s+)*api(?=\s)/g;
+const PULLS_ENDPOINT_RE = /(?:^|\s)["']?\/?repos\/[^\s"'/]+(?:\/[^\s"'/]+)?\/pulls["']?(?=[\s)]|$)/;
+const WRITE_FLAG_RE = /(?:^|\s)(?:-[fF]|--field|--raw-field|--input)(?=[\s=])|(?:^|\s)(?:-X|--method)[\s=]*["']?POST\b/i;
+const READ_METHOD_RE = /(?:^|\s)(?:-X|--method)[\s=]*["']?(?:GET|HEAD)\b/i;
+const HTML_URL_ONLY_RE = /(?:^|\s)(?:-q|--jq)[\s=]+["']?\.html_url["']?(?=[\s)]|$)/;
+
+/** The text of one shell command starting at `start`: up to an unquoted `;`, `&`, `|` or newline. */
+function simpleCommandAt(text, start) {
+  let quote = null;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\" && quote !== "'") i++;
+    else if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === ";" || c === "&" || c === "|" || c === "\n") return text.slice(start, i);
+  }
+  return text.slice(start);
+}
+
+function opensPullRequestViaApi(command) {
+  for (const match of command.matchAll(GH_API_RE)) {
+    const args = simpleCommandAt(command, match.index + match[0].length);
+    if (
+      PULLS_ENDPOINT_RE.test(args) &&
+      WRITE_FLAG_RE.test(args) &&
+      !READ_METHOD_RE.test(args) &&
+      HTML_URL_ONLY_RE.test(args)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Whether `command` opens a pull request. Non-strings are never a match. */
 export function opensPullRequest(command) {
-  return typeof command === "string" && PR_CREATE_RE.test(command);
+  return (
+    typeof command === "string" &&
+    (PR_CREATE_RE.test(command) || opensPullRequestViaApi(command))
+  );
+}
+
+/**
+ * The shell line that sets `$repo` to the checkout's `origin` as `owner/name`.
+ *
+ * Every instruction that names a repository reads it this way rather than through gh's
+ * `{owner}/{repo}` placeholders or a bare `gh` call: those resolve through gh's
+ * base-repository choice, which outside a terminal prefers a remote named `upstream` - on a
+ * fork, the parent this exists to avoid. Skills are markdown and copy this line verbatim;
+ * `test/skills-catalog.test.ts` holds each copy to it.
+ */
+export const originRepositoryShell =
+  "repo=$(git remote get-url origin | sed -E 's#^.*github\\.com[:/]##; s#\\.git$##')";
+
+/** The command every Mission Control instruction gives for opening a pull request on `base`. */
+export function openPullRequestCommand(base) {
+  return (
+    `${originRepositoryShell} && ` +
+    `gh api "repos/$repo/pulls" -f head="$(git branch --show-current)" -f base=${base} ` +
+    `-f title="<title>" -F body=@<body-file> --jq .html_url`
+  );
 }
 
 /**

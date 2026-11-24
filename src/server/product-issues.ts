@@ -44,6 +44,7 @@ import {
   type ProductIssueAuthorizationPort,
 } from "./product-issue-authorization.ts";
 import { githubIssueCreateOutcome } from "./github/issue-create.ts";
+import { classifyGitHubSsoRefusal, ssoRefusalMessage } from "@shared/github-sso.mjs";
 import {
   detectImageExt,
   resolveImageUpload,
@@ -166,6 +167,15 @@ function unknown(
   message: string,
 ): Extract<ProductIssueSubmitResult, { outcome: "unknown" }> {
   return { outcome: "unknown", message, retrySafe: false };
+}
+
+/** What a fork whose upstream enforces SAML SSO changes so reports stop going there. */
+const SSO_REMEDY = "Forks: set `MISSION_PRODUCT_ISSUES_REPO`.";
+
+/** The SSO refusal sentence for `target`, or null when `res` is not one. */
+function ssoRefusal(target: string, res: RunResult): string | null {
+  const refusal = classifyGitHubSsoRefusal(res.stderr);
+  return refusal ? ssoRefusalMessage({ target, refusal, remedy: SSO_REMEDY }) : null;
 }
 
 function readVersion(): string {
@@ -793,7 +803,8 @@ export class ProductIssueService {
         }
         this.claims.delete(request.requestId);
         return refused(
-          `GitHub CLI refused the issue${outcome.detail ? `: ${outcome.detail}` : ""}`,
+          ssoRefusal(target.repo, result) ??
+            `GitHub CLI refused the issue${outcome.detail ? `: ${outcome.detail}` : ""}`,
         );
       case "unknown":
         this.claims.set(request.requestId, {
@@ -828,6 +839,8 @@ export class ProductIssueService {
     attachments: ProductIssueAttachmentState = this.attachmentState(),
     diagnostic?: RunResult,
   ): ProductIssuePreflight {
+    const sso = diagnostic && ssoRefusal(target, diagnostic);
+    if (sso) return { ready: false, target, attachments, problems: [{ code, message: sso }] };
     // Local recovery details only. These never enter the public report body. Keep
     // multiple lines because gh auth status starts with a hostname before the error.
     const detail = diagnostic

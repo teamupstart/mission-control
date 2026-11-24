@@ -2669,7 +2669,7 @@ blocks the run for you to resolve, and any round that captures a real change res
 A GitHub Inspector completion policy adds a final stage after a successful End. End stays successful,
 but the run does not complete until GitHub Inspector has reviewed the exact PR head represented by that
 submission. A PR URL on the session is only a lookup hint. The gate can use it only when the
-durable GitHub Inspector ledger already says the hook saw `gh pr create`. A URL alone never adopts a
+durable GitHub Inspector ledger already says the hook saw the pull request created. A URL alone never adopts a
 pull request and never grants permission to comment on it.
 
 Gate entry records the local committed HEAD, then waits for a normal GitHub Inspector sweep observed

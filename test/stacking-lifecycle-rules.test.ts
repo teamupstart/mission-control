@@ -183,12 +183,18 @@ test("the prompts say merge, never force-push or rebase, and name the exact bran
     assert.match(text, /Do NOT force-push/);
   }
   assert.match(buildStackPrompt("move-onto-main", facts), /Cherry-pick only this task's own commits/);
-  assert.match(buildStackPrompt("move-onto-main", facts), /gh pr create --base main/);
-  assert.match(buildStackPrompt("reopen-against-main", facts), /from the same branch, `feat\/child`, with `gh pr create --base main`/);
+  const move = buildStackPrompt("move-onto-main", facts);
+  assert.match(move, /open a replacement pull request against main with `repo=\$\(git remote get-url origin/);
+  assert.match(move, /gh api "repos\/\$repo\/pulls" -f head="\$\(git branch --show-current\)" -f base=main /);
+  assert.match(move, /`gh pr close https:\/\/github.com\/acme\/repo\/pull\/32`/, "the replaced pull request is closed by URL");
+  assert.match(buildStackPrompt("reopen-against-main", facts), /from the same branch, `feat\/child`, with `repo=.*-f base=main /);
   const reopen = buildStackPrompt("reopen-on-parent", facts);
   assert.match(reopen, /#31 \(https:\/\/github.com\/acme\/repo\/pull\/31\) is still open/);
   assert.match(reopen, /Open it again against #31's branch/);
-  assert.match(reopen, /from the same branch, `feat\/child`, with `gh pr create --base feat\/parent`/);
+  assert.match(reopen, /from the same branch, `feat\/child`, with `repo=.*-f base=feat\/parent /);
+  for (const kind of ["catch-up", "restack", "move-onto-main", "reopen-on-parent", "reopen-against-main"] as const) {
+    assert.doesNotMatch(buildStackPrompt(kind, facts), /gh pr create|gh pr close \d/, `${kind} names its repository and closes by URL`);
+  }
   assert.match(reopen, /"Stacked on #31"/);
   assert.match(reopen, /Do not reopen it against the default branch/);
   assert.match(reopen, /Do NOT force-push/);
@@ -239,5 +245,5 @@ test("labels name the repository's real default branch, and main only when it is
     obs({ ...trunk, baseRefName: "feat/parent" })).label, "Restacking onto trunk");
   // The prompt it sends targets the same branch.
   assert.match(buildStackPrompt("move-onto-main", { prNumber: 8, prUrl: "u", headRefName: "feat/child", parentNumber: 7,
-    parentUrl: "p", parentHeadRefName: "feat/parent", defaultBranch: "trunk" }), /gh pr create --base trunk/);
+    parentUrl: "p", parentHeadRefName: "feat/parent", defaultBranch: "trunk" }), /-f base=trunk /);
 });

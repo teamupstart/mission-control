@@ -47,6 +47,16 @@ test.beforeEach(async ({ daemon }) => {
   await api(daemon, "/api/inspector/config", { enabled: false }, "PUT");
 });
 
+/**
+ * Add the GitHub remote stacking reads its primary repository from, pinned as gh's default.
+ * The primary repository comes from the checkout resolver (the gh pin, else a GitHub
+ * `origin`), so a remote beside `origin` counts only once `gh repo set-default` names it.
+ */
+function pinGitHubRemote(daemon: DaemonHandle): void {
+  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  execFileSync("git", ["-C", daemon.repo, "config", "remote.github.gh-resolved", "base"]);
+}
+
 async function shoot(target: Page | Locator, name: string): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -326,9 +336,10 @@ test("an explicit After merge choice overrides a Stack Shipping default, and sur
 test("a finished prerequisite with an open pull request releases a stacked dependent that starts on its head", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   await api(daemon, "/api/shipping/config", { stacking: "stack" }, "PUT");
-  // The fixture's origin is a local bare repository. A GitHub remote beside it is what lets the
-  // daemon place the prerequisite's pull request in its PRIMARY repository; it is config only.
-  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  // A GitHub remote beside the fixture's origin, pinned as gh's default the way
+  // `gh repo set-default` records it, is what lets the daemon place the prerequisite's pull
+  // request in its PRIMARY repository; it is config only.
+  pinGitHubRemote(daemon);
 
   const parent = await api<Task>(daemon, "/api/tasks", {
     repoRoot: daemon.repo, intent: "Build the parser groundwork", title: "Parser groundwork",
@@ -418,7 +429,7 @@ test("a finished prerequisite with an open pull request releases a stacked depen
   // Its task contract names the base its pull request belongs on.
   await expect.poll(async () => {
     const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
-    return transcript.messages.some((m) => m.role === "user" && m.text.includes("gh pr create --base feat/parser-groundwork") && m.text.includes("Stacked on #31"));
+    return transcript.messages.some((m) => m.role === "user" && m.text.includes("-f base=feat/parser-groundwork ") && m.text.includes("Stacked on #31"));
   }, { timeout: 30_000 }).toBe(true);
   // Until the child opens a pull request, nothing is written to GitHub at all.
   const gh = () => recordsIn<{ argv: string[] }>(daemon.recordDir, (file) => file.startsWith("gh-") && !file.startsWith("gh-patch-"));
@@ -572,7 +583,7 @@ type LifecycleRow = { key: string; mergeBlock: string | null; stack: { parentPrU
  * parent's head and opens #`childNumber` against the parent's branch. Fake agents, fake `gh`.
  */
 async function openStack(daemon: DaemonHandle, parentNumber: number, childNumber: number) {
-  execFileSync("git", ["-C", daemon.repo, "remote", "add", "github", "https://github.com/acme/mission-e2e.git"]);
+  pinGitHubRemote(daemon);
   expect((await api<ShippingConfig>(daemon, "/api/shipping/config")).stacking, "nothing configured: the shipped default applies").toBeUndefined();
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const hook = async (s: Session, event: "PostToolUse" | "Stop", prUrl?: string) => {
@@ -788,7 +799,7 @@ test("a child closed while its parent is open offers Reopen on the parent's bran
   await expect.poll(async () => {
     const transcript = await api<{ messages: Array<{ role: string; text: string }> }>(daemon, `/api/sessions/${childSession.id}/transcript`);
     return transcript.messages.some((m) => m.role === "user"
-      && m.text.includes("gh pr create --base feat/stack-parent") && m.text.includes("Stacked on #91") && m.text.includes("Do NOT force-push"));
+      && m.text.includes("-f base=feat/stack-parent ") && m.text.includes("Stacked on #91") && m.text.includes("Do NOT force-push"));
   }, { timeout: 30_000, message: "the reopen prompt reached the child's session" }).toBe(true);
 });
 
@@ -900,7 +911,9 @@ test("a child merged into its finished parent's branch reads Stack broken, keeps
       && m.text.includes("create a new branch from `origin/main`")
       && m.text.includes(`gh pr diff ${childPr.url} | git apply --3way`)
       && m.text.includes(`merge commit \`${STRAY}\``)
-      && m.text.includes("gh pr create --base main")
+      // The pull request opens through REST on origin's repository, never `gh pr create`.
+      && m.text.includes('gh api "repos/$repo/pulls"') && m.text.includes("-f base=main ")
+      && !m.text.includes("gh pr create")
       && m.text.includes("Do NOT force-push, rebase, reset or otherwise rewrite `feat/stack-child` or `feat/stack-parent`"));
   }, { timeout: 30_000, message: "the recovery prompt reached the child's session" }).toBe(true);
   await expect(queued).toContainText(`${broken} - recovering`, { timeout: 15_000 });

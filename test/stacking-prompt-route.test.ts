@@ -536,7 +536,7 @@ test("Foreman delivers the recovery prompt for a stray merge to the idle owner e
   assert.doesNotMatch(f.messages[0]!, /UNTRUSTED WORKER TEXT/, "the daemon builds the prompt, never the caller");
   assert.match(f.messages[0]!, /create a new branch from `origin\/main`/);
   assert.ok(String(f.messages[0]).includes(`gh pr diff ${f.session.prUrl} | git apply --3way`));
-  assert.match(f.messages[0]!, /gh pr create --base main/);
+  assert.match(f.messages[0]!, /gh api "repos\/\$repo\/pulls" .*-f base=main /);
   assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY)?.outcome, "delivered");
   assert.equal(readStackPromptClaim(f.key, "recover-merge", STRAY)?.sessionId, f.session.id);
   assert.equal(f.session.inspector?.stack?.label, "Stack broken: merged into #7's branch, not main - recovering");

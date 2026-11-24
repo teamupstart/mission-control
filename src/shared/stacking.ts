@@ -1,6 +1,7 @@
 import type { ShippingConfig } from "./protocol.ts";
 import type { Task, TaskDependency } from "./types.ts";
 import { isWorkDependency } from "./task-dependency.ts";
+import { openPullRequestCommand } from "./pr-command.mjs";
 
 // Stacked pull requests: the shared rules that decide when a dependent task may start on
 // its prerequisite's open pull request instead of waiting for it to merge, which branch its
@@ -863,6 +864,9 @@ export interface StackPromptFacts {
 export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, f: StackPromptFacts): string {
   const parent = f.parentNumber === null ? f.parentUrl : `#${f.parentNumber} (${f.parentUrl})`;
   const base = f.defaultBranch || "the default branch";
+  // Opened with the REST create, which names origin's repository; `gh pr create` reads the
+  // parent's, which an SSO-protected parent refuses (see `openPullRequestCommand`).
+  const open = (onto: string | null): string => `\`${openPullRequestCommand(onto || "<default-branch>")}\``;
   const branch = f.headRefName ? `\`${f.headRefName}\`` : "its branch";
   const noForce = "Do NOT force-push and do NOT rebase: merge, so the branch only moves forward.";
   const steps = (lines: string[]): string => lines.map((line, i) => `${i + 1}. ${line}`).join("\n");
@@ -886,12 +890,12 @@ export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, 
         `Fetch, then create a new branch from \`origin/${base}\`.`,
         `Cherry-pick only this task's own commits from ${branch} onto it - none of ${parent}'s.`,
         "Resolve conflicts and run focused checks.",
-        `Push the new branch and open a replacement pull request with \`gh pr create --base ${base}\`.`,
-        `Then close PR #${f.prNumber} with \`gh pr close ${f.prNumber}\`, saying it was replaced. ${noForce}`,
+        `Push the new branch and, from it, open a replacement pull request against ${base} with ${open(f.defaultBranch)}.`,
+        `Then close PR #${f.prNumber} with \`gh pr close ${f.prUrl}\`, saying it was replaced. ${noForce}`,
       ]);
     case "reopen-on-parent":
       return `PR #${f.prNumber} (${f.prUrl}) was closed, but ${parent} is still open, so this work is still stacked on it. Open it again against ${f.parentNumber === null ? "the parent" : `#${f.parentNumber}`}'s branch.\n\n` + steps([
-        `Open a new pull request from the same branch, ${branch}, with \`gh pr create --base ${f.parentHeadRefName ?? "<parent branch>"}\`, and start its description with "Stacked on ${f.parentNumber === null ? "its parent" : `#${f.parentNumber}`}".`,
+        `Open a new pull request from the same branch, ${branch}, with ${open(f.parentHeadRefName ?? "<parent-branch>")}, and start its description with "Stacked on ${f.parentNumber === null ? "its parent" : `#${f.parentNumber}`}".`,
         "Do not reopen it against the default branch: it merges after its parent does.",
         noForce,
       ]);
@@ -903,13 +907,13 @@ export function buildStackPrompt(kind: StackPromptKind | StackPromptActionKind, 
         `Fetch, then create a new branch from \`origin/${base}\`.`,
         `Bring over every change PR #${f.prNumber} introduced with \`gh pr diff ${f.prUrl} | git apply --3way\`, then commit. That is the pull request's whole diff, whatever merge method GitHub used: for a merge or squash commit it is the diff between merge commit ${merge} and its first parent, and for a rebase merge it spans every rebased commit, where the first-parent diff of ${merge} would hold only the last one. If the diff names binary files git cannot apply, apply the rest with \`--exclude=<path>\` and copy those files from ${branch} with \`git checkout ${f.headRefName ?? "<child branch>"} -- <path>\`.`,
         `Resolve any conflicts with ${base} and run focused checks for what you touched.`,
-        `Push the new branch and open a new pull request with \`gh pr create --base ${base}\`, saying it recovers PR #${f.prNumber}. This task completes when that pull request merges into ${base}.`,
+        `Push the new branch and open a new pull request with ${open(f.defaultBranch)}, saying it recovers PR #${f.prNumber}. This task completes when that pull request merges into ${base}.`,
         `Do NOT force-push, rebase, reset or otherwise rewrite ${merged}: they have already merged.`,
       ]);
     }
     case "reopen-against-main":
       return `GitHub closed PR #${f.prNumber} (${f.prUrl}) when ${parent} merged and its branch was deleted. Open it again against ${base}.\n\n` + steps([
-        `Open a new pull request from the same branch, ${branch}, with \`gh pr create --base ${base}\`.`,
+        `Open a new pull request from the same branch, ${branch}, with ${open(f.defaultBranch)}.`,
         `Then fetch and merge \`origin/${base}\` into ${branch}, resolve any conflicts, run focused checks and push.`,
         noForce,
       ]);

@@ -1,10 +1,8 @@
 import {
   compareCommits,
-  configuredGitHubRepositories,
   fetchPrRefs,
   isAncestor,
   mergeBase,
-  parseGitHubRemoteUrl,
   parsePrUrl,
   retargetPr,
   type BaseComparison,
@@ -12,6 +10,7 @@ import {
   type GitHubRepositoryIdentity,
   type PrRefs,
 } from "../inspector/github.ts";
+import { checkoutGitHubRemote, configuredGitHubRepositories } from "../github/repository.ts";
 import { freshRemoteBranchSha, type RemoteProbe } from "../git/remote-default.ts";
 import { run } from "../util/exec.ts";
 
@@ -79,11 +78,12 @@ export function useStackGitHub(github: StackGitHub): () => void {
 }
 
 /**
- * The GitHub repository a checkout's pull requests are opened in: `origin`'s, when `origin`
- * is a GitHub remote, else the checkout's only GitHub remote. Null when neither holds - two
- * GitHub remotes and no GitHub `origin`, or none at all - because a parent pull request
- * matched against "some remote" can sit in a repository the child's pull request never
- * opens in, and the child would then get no stack lineage and no stacking hold.
+ * The GitHub repository a checkout's pull requests are opened in: the one its `gh` calls
+ * target, from the checkout resolver (`checkoutGitHubRepository`): the gh default pin, else a
+ * GitHub `origin`. Null when that resolver refuses, because a parent pull request matched
+ * against "some remote" can sit in a repository the child's pull request never opens in, and
+ * the child would then get no stack lineage and no stacking hold. A checkout whose `origin` is
+ * not GitHub stacks once `gh repo set-default` names its GitHub remote.
  *
  * A read of the repository root's git config; it never runs git inside a worktree.
  */
@@ -95,18 +95,10 @@ export async function primaryGitHubRepository(repoRoot: string): Promise<GitHubR
 export async function primaryGitHubRemote(
   repoRoot: string,
 ): Promise<{ remote: string; identity: GitHubRepositoryIdentity } | null> {
-  const result = await run("git", ["-C", repoRoot, "config", "--get-regexp", "^remote\\..*\\.url$"], { cwd: repoRoot });
-  if (result.outcomeUnknown || result.code !== 0) return null;
-  const remotes: { remote: string; identity: GitHubRepositoryIdentity }[] = [];
-  for (const line of result.stdout.split("\n")) {
-    const match = /^remote\.(.+)\.url\s+(.+)$/.exec(line.trim());
-    const identity = match ? parseGitHubRemoteUrl(match[2]!) : null;
-    if (match && identity) remotes.push({ remote: match[1]!, identity });
-  }
-  const origin = remotes.find((entry) => entry.remote === "origin");
-  if (origin) return origin;
-  const distinct = new Map(remotes.map((entry) => [`${entry.identity.owner}/${entry.identity.repo}`.toLowerCase(), entry]));
-  return distinct.size === 1 ? [...distinct.values()][0]! : null;
+  const picked = await checkoutGitHubRemote(repoRoot);
+  if (!picked.ok) return null;
+  const [owner, repo] = picked.repo.split("/") as [string, string];
+  return { remote: picked.remote, identity: { owner, repo } };
 }
 
 /**

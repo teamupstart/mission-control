@@ -1,4 +1,5 @@
 import type { InspectorPr, Task } from "@shared/types.ts";
+import { openPullRequestCommand } from "@shared/pr-command.mjs";
 import { expectedStackBase, parentMergedOffDefault, stackPrNumber, stackReleased, type Ancestry } from "@shared/stacking.ts";
 import {
   getInspectorPr,
@@ -278,7 +279,9 @@ function ledgerParentState(parentPrUrl: string): "OPEN" | "CLOSED" | "MERGED" | 
 }
 
 /**
- * What to tell a stacked task's session about the base of the pull request it opens.
+ * What to tell a stacked task's session about the base of the pull request it opens. The
+ * command names origin's repository (`openPullRequestCommand`), so it works on a fork whose
+ * parent enforces SAML SSO.
  *
  * Computed from the same expected-base rule base correction uses, at the moment the text is
  * built: the current parent (the most recently adopted lineage row of this task's current
@@ -305,7 +308,7 @@ export function stackPrInstruction(task: Task, episodeId: string | null | undefi
   const lines = ["## Stacked pull request", `This task is stacked on ${parentUrl}.`];
   if (state === "OPEN" && branch) {
     lines.push(
-      `Open its pull request in this repository with \`gh pr create --base ${branch}\`, not against the default branch.`,
+      `Open its pull request in this repository with \`${openPullRequestCommand(branch)}\`, not against the default branch.`,
       stackedLine,
     );
   } else if (state === "MERGED" || state === "CLOSED") {
@@ -315,7 +318,7 @@ export function stackPrInstruction(task: Task, episodeId: string | null | undefi
     );
   } else {
     lines.push(
-      `While #${number ?? "?"} is open, open this pull request with \`--base\` set to its head branch${branch ? ` (${branch})` : ""}. If it has merged or closed, open it against the repository's default branch.`,
+      `While #${number ?? "?"} is open, open this pull request against its head branch${branch ? ` (\`${branch}\`)` : ""} with \`${openPullRequestCommand(branch ?? "<parent-branch>")}\`. If it has merged or closed, open it against the repository's default branch.`,
       stackedLine,
     );
   }

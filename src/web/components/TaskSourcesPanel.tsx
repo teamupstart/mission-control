@@ -1,5 +1,5 @@
 import { TaskSourceSync } from "./TaskSourceSync.tsx";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   AGENT_TYPES,
   type AgentType,
@@ -7,6 +7,7 @@ import {
   type TaskPriority,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import type { CheckoutRepository } from "@shared/github-repository.mjs";
 import {
   BACKLOG_TASK_KINDS,
   PRIORITY_LABELS,
@@ -186,15 +187,31 @@ function PriorityRow({
   );
 }
 
+/**
+ * What a blank Repository resolves to, in the words the editor shows under the field: the
+ * repository and where it came from, or the resolver's reason there is none.
+ */
+export function repositoryHint(resolution: CheckoutRepository): string {
+  if (!resolution.ok) return resolution.error;
+  return `Resolves to ${resolution.repo} (from ${resolution.source === "gh-default" ? "gh default" : "origin"})`;
+}
+
 /** The kind-specific half of a github-issues source. */
 function GithubFields({
   cfg,
+  resolution,
   onChange,
 }: {
   cfg: GithubIssuesConfig;
+  /** What the daemon resolved the stored blank Repository to; absent when one is set. */
+  resolution?: CheckoutRepository;
   onChange: (next: GithubIssuesConfig) => void;
 }): React.JSX.Element {
   const { val, edit, commit } = useDraftText();
+  const hintId = useId();
+  // Shown only while the field is blank, as typed: a filled-in Repository is what the
+  // sweep names, so there is nothing to explain.
+  const hint = resolution && !val("repo", cfg.repo).trim() ? repositoryHint(resolution) : null;
 
   // Three mutually exclusive answers to one question, so they are one radio group rather
   // than two checkboxes. As checkboxes the pair that selects NOTHING is reachable, and
@@ -204,16 +221,25 @@ function GithubFields({
 
   return (
     <div className="ts-fields">
-      <label className="ts-field">
-        <span className="ts-field-label">Repository (optional)</span>
+      {/* A div rather than the wrapping label the other fields use, so the hint describes the
+          input instead of becoming part of its name. */}
+      <div className="ts-field">
+        <label className="ts-field-label" htmlFor={`${hintId}-input`}>Repository (optional)</label>
         <input
+          id={`${hintId}-input`}
           className="field-input mono"
-          placeholder="owner/repo - blank uses the checkout's origin"
+          placeholder="owner/repo - blank uses the checkout"
           value={val("repo", cfg.repo)}
+          aria-describedby={hint ? hintId : undefined}
           onChange={(e) => edit("repo", e.target.value)}
           onBlur={() => commit("repo", (v) => onChange({ ...cfg, repo: v.trim() }))}
         />
-      </label>
+        {hint && (
+          <span id={hintId} className={resolution?.ok ? "settings-hint ts-repo-hint" : "settings-warn ts-repo-hint"}>
+            {hint}
+          </span>
+        )}
+      </div>
 
       <label className="ts-field">
         <span className="ts-field-label">Labels (any of)</span>
@@ -883,6 +909,7 @@ export function SourceCard({
           sweep: (
             <GithubFields
               cfg={githubConfigOf(src)}
+              resolution={state.view?.repositories.find((r) => r.sourceId === src.id)?.resolution}
               onChange={(config) => onChange({ ...src, config })}
             />
           ),

@@ -1798,7 +1798,7 @@ Attach the generated frames to the pull request; they are never committed.
 `specs/push-task-to-github.spec.ts`, the pair either side of the push being the ones the change
 exists for. `01-task-not-yet-filed.png` is the editor with **Create GitHub issue** in the
 provenance strip above the fields; `02-task-linked-to-issue.png` is the same strip after the
-click, now reading `Filed upstream as acme/demo-repo#123` - the first time `Task.source` is
+click, now reading `Filed upstream as mc-e2e-fixture/demo-repo#123` - the first time `Task.source` is
 drawn anywhere in the dashboard, and the same rendering a swept-in task gets for free.
 
 `03-refusal-keeps-the-button.png` and `04-unknown-outcome-withdraws-it.png` are the two

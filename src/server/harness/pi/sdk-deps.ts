@@ -605,7 +605,7 @@ async function loadOverride(): Promise<PiSdk | null> {
 /** What the shipped driver uses. Tests replace the whole object. */
 export const defaultPiSdkDeps: PiSdkDeps = {
   async repositories(cwd) {
-    const { configuredGitHubRepositories } = await import("../../inspector/github.ts");
+    const { configuredGitHubRepositories } = await import("../../github/repository.ts");
     return (await configuredGitHubRepositories(cwd)).map(({ owner, repo }) => `${owner}/${repo}`.toLowerCase());
   },
   async load(): Promise<PiSdk> {

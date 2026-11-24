@@ -176,7 +176,9 @@ test("the recovery prompt branches from the default branch, brings over the merg
   assert.match(text, /git checkout feat\/phase-2 -- <path>/);
   assert.doesNotMatch(text, /cherry-pick|git diff --binary/);
   assert.match(text, /Resolve any conflicts with main and run focused checks/);
-  assert.match(text, /gh pr create --base main/);
+  assert.match(text, /gh api "repos\/\$repo\/pulls" .*-f base=main /);
+  // The pull request opens through REST on origin, never `gh pr create`.
+  assert.doesNotMatch(text, /gh pr create/);
   assert.match(text, /This task completes when that pull request merges into main/);
   assert.match(text, /Do NOT force-push, rebase, reset or otherwise rewrite `feat\/phase-2` or `feat\/phase-1`/);
 });

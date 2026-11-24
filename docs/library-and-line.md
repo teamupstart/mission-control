@@ -347,7 +347,7 @@ The page has three parts.
 Three details are worth knowing.
 
 **Titles arrive late, and rows are named by what is known.** The adoption signal is a hook
-catching `gh pr create` and carries only a URL, so the title is written by the GitHub Inspector's
+catching a pull-request create command and carries only a URL, so the title is written by the GitHub Inspector's
 first poll afterwards. A row falls back to its branch name until then, and to its number when
 even the branch has not been observed. A row adopted before this build and already closed may
 keep its branch name for ever - the poll retires merged and closed rows and never looks again.

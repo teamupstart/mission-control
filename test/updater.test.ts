@@ -6,6 +6,7 @@ import test from "node:test";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import type { UpdateApplyOutcome } from "../src/shared/update.ts";
+import { GRAPHQL_SSO_STDERR, REST_SSO_STDERR, SSO_AUTHORIZE_URL } from "./helpers/github-sso-stderr.ts";
 import {
   detachedUpdateHelperEnvironment,
   latestStableRelease,
@@ -824,6 +825,26 @@ test("missing and unauthenticated gh failures have specific safe messages", asyn
     latestStableRelease(async () => ({ code: 1, stdout: "", stderr: "authentication required" })),
     /not authenticated/,
   );
+});
+
+test("an SSO refusal names the canonical repository and the authorize link, as a standing auth problem", async () => {
+  // Classified on the full stderr: the authorize link is on the line after the one the
+  // generic classes read.
+  for (const stderr of [GRAPHQL_SSO_STDERR, REST_SSO_STDERR]) {
+    await assert.rejects(
+      latestStableRelease(async () => ({ code: 1, stdout: "", stderr })),
+      (error: Error & { kind?: string }) => {
+        assert.equal(
+          error.message,
+          `GitHub refused ${CANONICAL_REPO}: the teamupstart organization requires SAML SSO and this ` +
+            `gh token is not authorized for it. Authorize: ${SSO_AUTHORIZE_URL}. ` +
+            `Updates come from ${CANONICAL_REPO}; authorize to check for them.`,
+        );
+        assert.equal(error.kind, "gh-auth");
+        return true;
+      },
+    );
+  }
 });
 
 test("rate limiting reads as rate limiting, and does not read as a lapsed credential", async () => {

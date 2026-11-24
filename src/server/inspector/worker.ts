@@ -49,6 +49,7 @@ import {
   reviewHeader,
 } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
+import { configuredGitHubRepositories } from "../github/repository.ts";
 import { maybeMerge } from "../shipping/merge.ts";
 import { reviewBaseChanged } from "@shared/shipping.ts";
 import { activeStackGitHub, useStackGitHub, type StackGitHub } from "../stacking/github.ts";
@@ -60,7 +61,6 @@ import {
   authenticatedLogin,
   classifyReviewRefusal,
   cleanReviewExists,
-  configuredGitHubRepositories,
   hasBodyOnlyFindings,
   fetchDiff,
   fetchHeadSha,

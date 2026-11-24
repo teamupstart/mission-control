@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState }
 import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
-import { useUiConfig } from "../lib/uiConfig.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
@@ -137,7 +136,6 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
   cards: ReadonlyMap<string, DashboardVoiceCard>; fadingCards: ReadonlySet<string>; actions: VoiceCardActions;
   surface?: "pill" | "popover"; sound: boolean; notifications: boolean;
 }) {
-  const { voice } = useUiConfig();
   const [, reselect] = useReducer((revision: number) => revision + 1, 0);
   const [chosenId, setChosenId] = useState<string | null>(null);
   const newestFirst = [...cards.values()].reverse();
@@ -151,8 +149,6 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     const timer = window.setTimeout(reselect, Math.max(0, Math.ceil(nextDeadline - performance.now())));
     return () => window.clearTimeout(timer);
   }, [nextDeadline]);
-  // The dashboard owns the toast until the desktop opens the selected card window in Phase 12.
-  if (surface && surface !== voice.confirmation) return null;
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
     {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}

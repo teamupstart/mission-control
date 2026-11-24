@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard, type VoiceCardRetention } from "../lib/voice-card-clock.ts";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
@@ -16,7 +16,7 @@ export interface VoiceCardActions {
   sessions: readonly Session[];
   reviews: readonly ReviewItem[];
   roster: readonly SpokenName[];
-  setVoiceCardInUse(id: string, inUse: boolean): void;
+  setVoiceCardRetention(id: string, retention: VoiceCardRetention): void;
   openQuestion(sessionId: string): void;
   followUp(taskId: string): Promise<ActionResult> | ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
@@ -58,6 +58,17 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
   });
 }
 
+/** The live region announces the available time once when this window becomes visible. */
+function CountdownAnnouncement({ card, deadline }: { card: DashboardVoiceCard; deadline: number }) {
+  const [message] = useState(() => {
+    const seconds = voiceCountdownSeconds(deadline - performance.now(), card.windowMs);
+    if (!seconds) return "";
+    const amount = (card.provisionalDeadline ? "up to " : "") + seconds + (seconds === 1 ? " second" : " seconds");
+    return "This card opened with " + amount + " to cancel or send now.";
+  });
+  return <span className="sr-only">{message}</span>;
+}
+
 export function VoiceCardView({ card, actions, operation, hidden = false, fading = false }: {
   card: DashboardVoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string, retryAfterMs?: number): Promise<void> };
@@ -69,15 +80,17 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   const [focused, setFocused] = useState(false);
   const deadline = voiceCardDeadline(card);
   const settled = voiceCardCanExpire(card);
-  const { setVoiceCardInUse } = actions;
+  const { setVoiceCardRetention } = actions;
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
     if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
-    const unreadFeedback = hidden && feedback !== "";
-    if (!settled || !(focused || busy || unreadFeedback)) return;
-    setVoiceCardInUse(card.id, true);
-    return () => setVoiceCardInUse(card.id, false);
-  }, [card, settled, focused, busy, hidden, feedback, setVoiceCardInUse]);
+  }, [card, focused, hidden]);
+  const retention = busy || (focused && !hidden) ? "in-use" : hidden && feedback ? "hidden-feedback" : "reading";
+  useLayoutEffect(() => {
+    if (!settled) return;
+    setVoiceCardRetention(card.id, retention);
+  }, [card.id, settled, retention, setVoiceCardRetention]);
+  useLayoutEffect(() => () => setVoiceCardRetention(card.id, "reading"), [card.id, setVoiceCardRetention]);
   useEffect(() => {
     if (hidden || deadline === null) return;
     let timer: number | undefined;
@@ -187,6 +200,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
         {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
+          <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
             {cancel}{button(sendLabel, sendHint, () => act("send-now"), "btn-send")}</div></>}</>;

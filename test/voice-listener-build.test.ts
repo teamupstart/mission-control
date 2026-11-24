@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -134,6 +134,29 @@ for (const selection of ["automatic", "explicit"] as const) {
     assert.deepEqual(JSON.parse(stdout), { args: [process.execPath, binary, "--input-file", recording], directory: verified, manifest: VOICE_TEST_MODEL });
   });
 }
+
+test("an empty --input-file is refused before daemon lookup or FluidAudio capture", async t => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-empty-path-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const native = join(cwd, "dist", "native");
+  mkdirSync(native, { recursive: true });
+  writeFileSync(join(native, "voice-listener"), "#!/bin/sh\ntouch started\n", { mode: 0o755 });
+  let lookups = 0;
+  const server = createServer((_request, response) => {
+    lookups++;
+    response.end(JSON.stringify({ backend: "fluidaudio", directory: cwd, manifest: VOICE_TEST_MODEL }));
+  });
+  t.after(() => server.close());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const env = { ...process.env, MISSION_VOICE_BACKEND: "fluidaudio", MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port };
+  await assert.rejects(promisify(execFile)(process.execPath, [resolve("scripts/run-voice-listener.ts"), "--input-file", ""], { cwd, env }),
+    /--input-file requires a non-empty recording path/);
+  assert.equal(lookups, 0);
+  assert.equal(existsSync(join(cwd, "started")), false);
+});
 
 for (const [description, args, error] of [
   ["file input with FluidAudio", ["--backend", "fluidaudio", "--input-file", resolve("test/fixtures/voice/steve-check-the-build.wav")],

@@ -1,6 +1,7 @@
 // The Phase 4 retest of the voice-routing job rung: a manual evaluation, never a unit test.
 //
 //   node --import tsx scripts/voice-spike/routing-retest.ts --yes [--cases <file>] [--runner claude|codex] [--label <name>]
+//   With the Claude runner, --transport sdk|print selects the protocol to measure.
 //   node --import tsx scripts/voice-spike/routing-retest.ts --summarize <label> [<label> ...]
 //
 // It spends the operator's own provider usage, through the operator's own `claude` (or `codex`)
@@ -20,6 +21,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { VoiceQuestion } from "../../src/shared/voice-decide.ts";
+import type { ClaudeTransport, CodexTransport } from "../../src/shared/llm.ts";
 
 interface CorpusCase {
   id: string;
@@ -46,6 +48,8 @@ interface Row {
   ms: number;
   error: string | null;
   runner: string;
+  /** Absent on results written before transport was recorded. */
+  transport?: ClaudeTransport | CodexTransport;
 }
 
 const OUT = resolve(".tmp/voice-spike");
@@ -74,14 +78,24 @@ function quantile(values: number[], p: number): number | null {
   return sorted[Math.ceil(sorted.length * p) - 1] ?? null;
 }
 
-function summarize(label: string): void {
-  const path = join(OUT, `retest-${label}.jsonl`);
-  if (!existsSync(path)) throw new Error(`no results at ${path}`);
-  const rows = readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Row);
+function readRows(path: string): Row[] {
+  return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Row);
+}
+
+function checkRun(rows: Pick<Row, "id" | "runner" | "transport">[]): void {
   if (new Set(rows.map((r) => r.id)).size !== rows.length) {
     throw new Error("Repeated case IDs: choose a fresh run label or summarize a single pass.");
   }
   if (new Set(rows.map(row => row.runner)).size > 1) throw new Error("Mixed runners: use a separate label for each runner.");
+  const transports = new Set(rows.map(row => row.transport ?? "unrecorded"));
+  if (transports.size > 1) throw new Error("Mixed transports: use a separate label for each transport.");
+}
+
+function summarize(label: string): void {
+  const path = join(OUT, `retest-${label}.jsonl`);
+  if (!existsSync(path)) throw new Error(`no results at ${path}`);
+  const rows = readRows(path);
+  checkRun(rows);
   const latencies = rows.map((r) => r.ms);
   const accepted = (r: Row, floor: number) => r.error === null && r.choice !== null && r.member && r.confidence >= floor;
   const byFloor = FLOORS.map((floor) => {
@@ -106,6 +120,7 @@ function summarize(label: string): void {
     label,
     n: rows.length,
     runner: [...new Set(rows.map((r) => r.runner))],
+    transport: rows[0]?.transport ?? "unrecorded",
     errors: rows.filter((r) => r.error !== null).length,
     overDeadline: rows.filter((r) => r.ms >= DEADLINE_MS).length,
     p50Ms: quantile(latencies, 0.5),
@@ -133,23 +148,31 @@ async function run(): Promise<void> {
 
 async function runCorpus(): Promise<void> {
   const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
-  // The daemon resolves Claude's transport from its config (default `sdk`); `--transport print`
-  // measures `claude -p` instead, which is what the spike timed.
-  const transport = flag("--transport");
-  if (transport === "print" || transport === "sdk") {
+  const { DEFAULT_CLAUDE_TRANSPORT, DEFAULT_CODEX_TRANSPORT } = await import("../../src/shared/llm.ts");
+  const runner = flag("--runner") ?? "claude";
+  if (runner !== "claude" && runner !== "codex") throw new Error("Use --runner claude or codex.");
+  const requested = flag("--transport");
+  let transport: ClaudeTransport | CodexTransport = DEFAULT_CODEX_TRANSPORT;
+  if (runner === "claude") {
+    const selected = requested ?? DEFAULT_CLAUDE_TRANSPORT;
+    if (selected !== "sdk" && selected !== "print") throw new Error("Use --transport sdk or print with Claude.");
     const { configureClaudeRunnerTransport } = await import("../../src/server/llm/claude.ts");
-    configureClaudeRunnerTransport(() => transport);
+    configureClaudeRunnerTransport(() => selected);
+    transport = selected;
+  } else if (requested !== undefined) {
+    throw new Error("--transport selects a Claude transport. Omit it for Codex.");
   }
   const { voiceQuestionChoices } = await import("../../src/shared/voice-decide.ts");
   const casesPath = flag("--cases") ?? "scripts/voice-spike/routing-holdout.json";
-  const runner = (flag("--runner") ?? "claude") as "claude" | "codex";
   const label = flag("--label") ?? `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`;
   const corpus = JSON.parse(readFileSync(casesPath, "utf8")) as Corpus;
   const start = Number(flag("--start") ?? 0);
   const limit = Number(flag("--limit") ?? corpus.cases.length);
   mkdirSync(OUT, { recursive: true });
   const dest = join(OUT, `retest-${label}.jsonl`);
-  for (const row of corpus.cases.slice(start, start + limit)) {
+  const selectedCases = corpus.cases.slice(start, start + limit);
+  checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selectedCases.map(({ id }) => ({ id, runner, transport }))]);
+  for (const row of selectedCases) {
     const question = toQuestion(corpus, row);
     const began = performance.now();
     let choice: string | null = null;
@@ -166,7 +189,7 @@ async function runCorpus(): Promise<void> {
     }
     const member = choice !== null && voiceQuestionChoices(question).includes(choice);
     const result: Row = { id: row.id, category: row.category, expected: row.expected, choice, confidence, member,
-      ms: Math.round(performance.now() - began), error, runner };
+      ms: Math.round(performance.now() - began), error, runner, transport };
     appendFileSync(dest, `${JSON.stringify(result)}\n`);
     console.log(JSON.stringify(result));
   }

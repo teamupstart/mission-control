@@ -5,7 +5,8 @@
 // stand in for the providers; nothing here reaches a model.
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeSdkMessage, ClaudeSdkOneShotDeps, ClaudeSdkOneShotQueryOptions } from "../src/server/harness/claude/sdk-types.ts";
@@ -56,6 +57,28 @@ const { configureClaudeRunnerTransport } = await import("../src/server/llm/claud
 const { setLlmConfig } = await import("../src/server/llm/config.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
+
+test("offline retest summaries distinguish transport-specific results from historical rows", () => {
+  const out = join(home, ".tmp", "voice-spike");
+  mkdirSync(out, { recursive: true });
+  const summarize = (transports: (string | undefined)[]) => {
+    const rows = transports.map((transport, index) => ({ id: String(index), runner: "claude", transport,
+      category: "split", expected: "split", choice: "split", confidence: 1, member: true, ms: 200, error: null }));
+    writeFileSync(join(out, "retest-fixture.jsonl"), rows.map(row => JSON.stringify(row)).join("\n"));
+    return spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"),
+      join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts"), "--summarize", "fixture"], { cwd: home, encoding: "utf8" });
+  };
+  for (const mixed of [["sdk", "print"], ["sdk", undefined]]) {
+    const result = summarize(mixed);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /mixed transports/i);
+  }
+  for (const transport of ["sdk", "print", undefined]) {
+    const result = summarize([transport, transport]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).transport, transport ?? "unrecorded");
+  }
+});
 
 const QUESTION: VoiceQuestion = {
   kind: "split",

@@ -57,7 +57,8 @@ to the system input when no built-in input exists. An unavailable explicit UID s
 listener. The optional `primingAvailable` boolean reports whether the local CTC model loaded.
 With only the TDT repository present, transcription continues with priming off.
 
-Fetch `GET /voice/listener/directive` with the token for an immediate
+Fetch `GET /voice/listener/directive` with both `x-harness-token` and `x-voice-listener-id`
+on every poll. Use the same listener UUID that the daemon accepted at hello. The first poll returns
 `{ capture, roster, inputDevice, pauseMs, revision }`. The roster is an array of spoken names.
 After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
@@ -83,8 +84,9 @@ transcripts and logs no recognized words.
 
 ## Routing a text utterance
 
-A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...` with
-`x-harness-token`. Send the directive revision under which the segment was captured. The daemon
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...`
+with both `x-harness-token` and `x-voice-listener-id`. Set the latter to the UUID from that
+listener's accepted hello. Send the directive revision under which the segment was captured. The daemon
 returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
 Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
 Use a fresh ID per capture and epoch milliseconds for `capturedAt`.

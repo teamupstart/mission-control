@@ -21,6 +21,7 @@ import {
   type VoiceShellReport,
   type VoiceState,
 } from "@shared/voice.ts";
+import type { SpokenName } from "@shared/voice-names.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import { getVoiceConfig, onVoiceConfigChanged } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
@@ -62,8 +63,18 @@ export class VoiceStateStore {
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private timer: unknown = null;
+  /** Where the roster comes from: the daemon's name registry, once it is wired. */
+  private rosterSource: (() => readonly SpokenName[]) | null = null;
 
   constructor(private readonly deps: VoiceStateDeps) {}
+
+  /**
+   * Read the roster from `source` (`wireVoiceNameEvents` passes the name registry), or from
+   * nowhere with null, which reads as an empty roster.
+   */
+  useRoster(source: (() => readonly SpokenName[]) | null): void {
+    this.rosterSource = source;
+  }
 
   /** The state now. Lapsed readings are dropped here, so a read never returns a stale mode. */
   state(): VoiceState {
@@ -99,8 +110,16 @@ export class VoiceStateStore {
       capabilities,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
-      roster: [],
+      roster: [...(this.rosterSource?.() ?? [])],
     };
+  }
+
+  routingState() {
+    const { mode, roster } = this.state();
+    const reported = this.hello?.hello.backend ?? null;
+    const configured = this.deps.config().backend;
+    const backend = configured === "auto" || configured === reported ? reported : null;
+    return { mode, roster, backend };
   }
 
   /**

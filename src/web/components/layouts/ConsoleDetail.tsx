@@ -30,6 +30,8 @@ import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { SessionBlockerBand } from "../SessionBlockerBand.tsx";
 import { SessionAwaitingBand } from "../SessionAwaiting.tsx";
+import { StalledBand } from "../StalledTileFacts.tsx";
+import type { Stall } from "@shared/stall.ts";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import {
@@ -216,9 +218,16 @@ export function ConsoleDetail({
   view,
   session,
   onBack,
+  stall = null,
 }: {
   view: SessionViewProps;
   session: Session;
+  /**
+   * The idle stall this session sits under Idle's Stalled rule for (`idle-stalled`), or null. The
+   * view passes it only for a session its ordering drew in that section, as it does for the card,
+   * so the detail offers the same facts and fixes the Board card does.
+   */
+  stall?: Stall | null;
   /**
    * The Board's way back, drawn at the head's leading edge. Given only when the rail head's back
    * button is not on screen to do the job: the Board opened this session with no rail beside it
@@ -474,6 +483,13 @@ export function ConsoleDetail({
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
+  useEffect(() => {
+    if (view.queueTabSession === session.id) {
+      setTab("queue");
+      view.onQueueTabOpened?.();
+    }
+  }, [view.queueTabSession, view.onQueueTabOpened, session.id]);
+
   const queueCount = session.queue?.openCount ?? 0;
   const invited = session.foremanInvite !== null;
   // The shared reduction keeps the task title rule consistent across surfaces.
@@ -940,6 +956,20 @@ export function ConsoleDetail({
             {/* A declared wait on a background process. Never beside the blocker band: a
                 blocker replaces a wait. Capped like it (`.detail-conv > .awaiting-band`). */}
             <SessionAwaitingBand session={session} />
+            {/* An idle stall the Stalled section draws: the card's facts and fixes, here because
+                the rail row has room only for its mark and the inbox no longer lists it. Capped
+                like the bands above (`.detail-conv > .stalled-band`). */}
+            {stall && (
+              <StalledBand
+                session={session}
+                stall={stall}
+                onMessage={focusReply}
+                onOpenQueue={() => setTab("queue")}
+                onComplete={() => view.onComplete(session.id)}
+                onOpenRun={view.onOpenWorkflowRun}
+                onDismiss={view.onDismissStall ? () => view.onDismissStall!(session.id, stall) : undefined}
+              />
+            )}
             {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} note={session.note} />}
             {session.note && !noteCompanionsOpenAsk && (
               <ForemanStrip

@@ -4,7 +4,7 @@ import { PINNED_PLAN_CHANGE_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { managedPlanPreview, type TaskPlanDependencyRequirements } from "@shared/managed-plans.ts";
 import { dependencyInputKey, dependencyInputOf } from "@shared/task-bulk.ts";
 import { STACKING_SHIPPED_DEFAULT, type StackingMode } from "@shared/stacking.ts";
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   AGENT_TYPES,
   TASK_KINDS,
@@ -74,13 +74,16 @@ import {
 import { WORKFLOW_LAUNCH_FIX_DOORS } from "../lib/workflow-fix.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
+  draftCallSign,
   draftFromTask,
   draftPersonaId,
+  draftStackStartEdge,
   draftsEqual,
   parseLabelInput,
   taskUpdatePatch,
   type DispatchDraft,
 } from "../lib/task-draft.ts";
+import { stackEdgeLabel } from "../lib/backlog-copy.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { repoLeaf } from "../lib/format.ts";
 import {
@@ -106,6 +109,10 @@ import { Tooltip } from "./Tooltip.tsx";
 import { GRILL_FIRST_TIP } from "../lib/grill-first.ts";
 import { DispatchModeToggle } from "./DispatchModeToggle.tsx";
 import { DispatchPersonaField, dispatchPersonaSummary } from "./DispatchPersonaField.tsx";
+import { SpokenNameField } from "./SpokenNameField.tsx";
+import { rosterWithout, VoiceRosterContext } from "../lib/voice-roster.ts";
+import { VOICE_FLAG } from "@shared/voice.ts";
+import { taskSpokenNameKey, validateSpokenName } from "@shared/voice-names.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
 import { ResidentDispatch } from "../residents/ResidentDispatch.tsx";
 import {
@@ -311,6 +318,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.effort === EMPTY_DISPATCH_DRAFT.effort &&
     d.advisorModel === EMPTY_DISPATCH_DRAFT.advisorModel &&
     d.personaId === EMPTY_DISPATCH_DRAFT.personaId &&
+    !d.callSign.trim() &&
     d.workflowId === EMPTY_DISPATCH_DRAFT.workflowId &&
     d.planStorage === EMPTY_DISPATCH_DRAFT.planStorage &&
     d.grillFirst === EMPTY_DISPATCH_DRAFT.grillFirst &&
@@ -1551,6 +1559,13 @@ function DispatchModal({
         : (runId, submittedEnsemble) => onEnsembleLaunched(runId, draft, submittedEnsemble),
   });
   const pinChangesEnabled = useFeatureFlag(PINNED_PLAN_CHANGE_FLAG_ID);
+  // Voice addressing: the Advanced fold's call sign, checked against who else answers to a name.
+  const voiceNames = useFeatureFlag(VOICE_FLAG);
+  const voiceRoster = useContext(VoiceRosterContext);
+  const callSignRoster = useMemo(
+    () => rosterWithout(voiceRoster, editing ? taskSpokenNameKey(editing.id) : null),
+    [voiceRoster, editing],
+  );
   const [editingPin, setEditingPin] = useState<number | null>(null);
   const [pinSelection, setPinSelection] = useState<PinnedPlanSelection | null>(null);
   const pinChange = pinSelection?.change ?? null;
@@ -1649,6 +1664,8 @@ function DispatchModal({
     }
     return out;
   }, [editing, sessions, tasks]);
+  const byId = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks]);
+  const stackEdge = editing && !pinSelection ? draftStackStartEdge(editing, draft, byId) : null;
   const unmetDependencyCount = pinSelection
     ? pinSelection.dependencies.filter(dependency => dependency.satisfiedAt === null).length
     : draft.dependencies.filter((dependency) => {
@@ -1658,7 +1675,7 @@ function DispatchModal({
           dependencyInputOf(candidate),
         ) === dependencyKey(dependency),
     );
-    if (stored?.satisfiedAt != null) return false;
+    if (stored === stackEdge || stored?.satisfiedAt != null) return false;
     // Only the source's sweep can satisfy an external item, only its publication a plan edge,
     // and nothing satisfies an edge this build does not know.
     if (dependency.type === "source" || dependency.type === "unknown" || dependency.type === "plan") return true;
@@ -2762,7 +2779,7 @@ function DispatchModal({
       return;
     }
     const { workflowId } = settled;
-    const draftPatch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent) : null;
+    const draftPatch = editing ? taskUpdatePatch(editing, { ...submitted, workflowId }, intent, voiceNames) : null;
     const patch = pinChange ? { ...draftPatch, planInputChange: pinChange } : draftPatch;
     // One call per mode, chosen by the mode itself rather than by asking which optional inputs
     // happen to be present: an edit PATCHes its row, the tour hands its own fixed dispatcher
@@ -2790,6 +2807,9 @@ function DispatchModal({
           model: submitted.model || undefined,
           effort: submitted.effort || undefined,
           personaId: draftPersonaId(submitted) ?? undefined,
+          // Only while the field is drawn: a name typed before voice was switched off is not
+          // sent from a form that no longer shows it.
+          callSign: voiceNames ? draftCallSign(submitted) ?? undefined : undefined,
           workflowId,
           ...(submitted.kind === "plan" ? { planStorage: submitted.planStorage } : {}),
           // Omitted unless chosen here, so the daemon pins the Settings default itself.
@@ -3382,8 +3402,10 @@ function DispatchModal({
             <Tooltip label={advancedOpen
               ? "Collapse advanced task settings"
               : draft.kind === "plan"
-                ? "Choose this task's Persona and where it saves its plan"
-                : "Choose a Persona for this task's agent"}>
+                ? `Choose this task's Persona${voiceNames ? ", call sign" : ""} and where it saves its plan`
+                : voiceNames
+                  ? "Choose a Persona and a call sign for this task's agent"
+                  : "Choose a Persona for this task's agent"}>
               <button
                 type="button"
                 className={`dispatch-more${advancedOpen ? " open" : ""}${guidedDim}`}
@@ -3394,6 +3416,7 @@ function DispatchModal({
                 {!advancedOpen && (
                   <span className="dispatch-more-summary">
                     {dispatchPersonaSummary(personas, draft.kind, draft.personaId)}
+                    {voiceNames && draftCallSign(draft) && ` · Call sign: ${draftCallSign(draft)}`}
                     {draft.kind === "plan" && ` · Plan storage: ${(draft.planStorage ?? planStorage) === "local" ? "Local plan store" : "Repository"}`}
                   </span>
                 )}
@@ -3408,6 +3431,17 @@ function DispatchModal({
                   personaId={draft.personaId}
                   onChange={(personaId) => update({ personaId })}
                 />
+                {/* Behind the voice preview. A task keeps a name it was given while the field
+                    is hidden; the draft carries it and an unchanged save does not send it. */}
+                {voiceNames && (
+                  <SpokenNameField
+                    label="Call sign"
+                    value={draft.callSign}
+                    onChange={(callSign) => update({ callSign })}
+                    roster={callSignRoster}
+                    placeholder="A short spoken name, like Atlas"
+                  />
+                )}
                 {draft.kind === "plan" && (
                 <label className="field">
                   <span className="field-label">Plan storage</span>
@@ -3769,6 +3803,7 @@ function DispatchModal({
                   <span className="field-hint">
                     Sessions without observable hooks cannot be selected.
                   </span>
+                  {stackEdge && !selectedDependenciesUnmet && <span className="field-hint">{stackEdgeLabel(stackEdge)}</span>}
                   {selectedDependenciesUnmet && (
                     <span className="dispatch-wait-note">
                       <span aria-hidden>◷</span> Waits for {unmetDependencyCount}{" "}
@@ -3878,6 +3913,9 @@ function DispatchModal({
       </div>
 
       <footer className={`modal-foot${guidedDim}`}>
+        {voiceNames && advancedOpen && !ensembleMode && !tourDemo && validateSpokenName(draft.callSign, callSignRoster).length > 0 && (
+          <span className="voice-name-warning">Warning only</span>
+        )}
         {/* Leading edge, ahead of the verbs that keep the task, because it is the one action
             here that destroys something - and edit-only, because a new dispatch has no row
             behind it to delete. Ghost-danger rather than filled: it must be findable without

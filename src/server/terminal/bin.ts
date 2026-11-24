@@ -71,7 +71,7 @@ export function binDropEnv(spec: BinSpec): readonly string[] {
  * not possibly answer.
  */
 export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (binUnsupportedReason(spec)) return false;
+  if (binUnsupportedReason(spec) || spec.enabled?.() === false) return false;
   if (spec.id) return locateExecutableSync(spec.id) !== null;
   const bin = resolveBin(spec);
   if (!bin) return false;
@@ -103,6 +103,7 @@ export function binUnavailableReason(
 ): string | null {
   const unsupported = (deps.unsupported ?? binUnsupportedReason)(spec);
   if (unsupported) return unsupported;
+  if (spec.enabled?.() === false) return `${label} is disabled in Preview Features`;
   return deps.installed(spec) ? null : `${label} is not installed`;
 }
 

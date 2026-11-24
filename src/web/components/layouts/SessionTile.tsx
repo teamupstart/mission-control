@@ -27,6 +27,10 @@ import type { RuntimeMetaPart } from "../session-bits.tsx";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import { AwaitingTileTrack } from "../SessionAwaiting.tsx";
+import { requestComposerFocus } from "../../lib/composer-focus.ts";
+import { StalledTileFacts } from "../StalledTileFacts.tsx";
+import { STUCK_RULE_LABELS } from "../../lib/stall-actions.ts";
+import type { Stall } from "@shared/stall.ts";
 import { openQuestionsLabel } from "../../lib/async-questions.ts";
 import { openQuestionCount } from "@shared/async-input.ts";
 import { BLOCKER_KIND_LABELS, blockerAge, blockerFlagTitle, blockerHref } from "../../lib/blocker.ts";
@@ -75,6 +79,8 @@ export function SessionTile({
   session,
   selected = false,
   onOpen,
+  onOpenQueue,
+  onComplete,
   onCursorTo,
   registerEl,
   draggingRepo,
@@ -97,11 +103,15 @@ export function SessionTile({
   shortcutChord = null,
   resident = null,
   residentLoopFeedback,
+  stall = null,
+  onDismissStall,
 }: {
   session: Session;
   /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
   selected?: boolean;
   onOpen: () => void;
+  onOpenQueue?: () => void;
+  onComplete?: () => void;
   /** Make this tile the board's cursor without opening it. See `onSurfaceClick` below. */
   onCursorTo?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
@@ -164,8 +174,17 @@ export function SessionTile({
    */
   resident?: ResidentSessionMark | null;
   residentLoopFeedback?: ResidentLoopFeedbackBinding;
+  /**
+   * The idle stall this card sits under Idle's Stalled rule for (`idle-stalled`), or null. The
+   * view passes it only for a card it draws in that section, so the tag, the fact sheet and the
+   * section rule cannot disagree about one card.
+   */
+  stall?: Stall | null;
+  /** Dismiss `stall`, returning the card to free or held until its facts change. */
+  onDismissStall?: () => void;
 }): React.JSX.Element {
   const workspaceRoot = sessionWorkspaceRoot(session);
+  const workspaceRepo = session.repoRoot ?? session.gitRoot;
   const workspaceBranch = session.workspace?.branch ?? session.gitBranch;
   // Board tiles draw their own badge rather than `StateBadge`, so the transient stop has to
   // be asked for here too - Ctrl+C works from the board overview, so this is a surface where
@@ -182,7 +201,11 @@ export function SessionTile({
   // the run it returns is the one the tooltip names, so the mark cannot credit a sibling
   // review that has already finished.
   const heldBy = heldByRun(workflowRuns, st.tone);
-  const held = heldBy !== null;
+  // A stalled card is not drawn as held: the ordering takes a held and stalled session out of the
+  // held partition (`orderSessions`), because "a workflow owns the next turn" is exactly what is no
+  // longer true of it. The tag, its tooltip and the held tone would say it anyway.
+  const held = heldBy !== null && !stall;
+  const queueInFactSheet = stall?.facts?.kind === "unfinished-work" && stall.facts.queueOpen > 0;
   // A durable blocker is the card's state, like `held`: the red tone and the `Blocked · age`
   // flag are always drawn, and only the blocker's own facts below are card items.
   const blocker = session.blocker ?? null;
@@ -321,7 +344,7 @@ export function SessionTile({
   const priority = isPrioritySession(fleetPause, session.id);
   const kindStyle = useDisplayChoice("taskKindCard");
   const taskKind = session.task?.kind ?? null;
-  const kindMark = taskKind && kindStyle !== "off" ? kindStyle : null;
+  const kindMark = !stall && taskKind && kindStyle !== "off" ? kindStyle : null;
   // The board half of the background sub-agent treatment the operator chose. Nested sub-cards
   // hang beneath the tile (`SubagentTree`, drawn by the board beside this card), so only the
   // chip is this tile's to draw.
@@ -333,7 +356,7 @@ export function SessionTile({
       ref={setTileRef}
       className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
         selected ? " selected" : ""
-      }${held ? " is-held" : ""}${blocker ? " is-blocked" : ""}${
+      }${held ? " is-held" : ""}${stall ? " is-stalled" : ""}${blocker ? " is-blocked" : ""}${
         droppable ? " can-drop" : ""
       }${over ? " drop-over" : ""}${
         workflowVisiblyExpanded ? " workflow-expanded" : ""
@@ -428,6 +451,12 @@ export function SessionTile({
             <span className="tile-held">held</span>
           </Tooltip>
         )}
+        {/* The stalled tag, for the reason the held one has it: the section rule scrolls off. */}
+        {stall && (
+          <Tooltip label={`Stalled: ${STUCK_RULE_LABELS[stall.kind]}`}>
+            <span className="tile-stalled">stalled</span>
+          </Tooltip>
+        )}
         {/* Last in the head, which is the card's top-right corner: the name above it takes
             the remaining width, so this lands where a reader's eye finishes the title and
             never pushes the title's ellipsis around. `Keycap` is the shared component every
@@ -435,6 +464,7 @@ export function SessionTile({
             and cannot come to look like a different kind of thing. */}
         {pauseControls.has("corner") && <PauseCornerButtons session={session} />}
         {pauseControls.has("menu") && <PauseCardMenu session={session} />}
+        {stall && <span className="tile-stalled-age">{Math.floor(stall.forMs / 60_000)}m</span>}
         {jump && <Keycap chord={jump} />}
       </span>
 
@@ -449,7 +479,14 @@ export function SessionTile({
         </span>
       </span>}
 
-      {shown("goal") && session.goal?.text && (
+      {stall && (
+        <span className="tile-stalled-repo">
+          {taskHasRepository(session.task ?? {})
+            ? [workspaceRepo && repoLeaf(workspaceRepo), workspaceBranch].filter(Boolean).join(" · ") || "No repository reported"
+            : "No repository"}
+        </span>
+      )}
+      {!stall && shown("goal") && session.goal?.text && (
         <span className="tile-goal">{session.goal.text}</span>
       )}
 
@@ -487,6 +524,23 @@ export function SessionTile({
           and how far through the window it is. Always drawn while it stands, like the blocker
           state above, because it is why this idle card is quiet; nothing for any other card. */}
       <AwaitingTileTrack session={session} />
+
+      {/* Why this card sits under Stalled, and the fix. Always drawn while it does, like the
+          blocker above: it is the whole reason the card is in that section. */}
+      {stall && (
+        <StalledTileFacts
+          session={session}
+          stall={stall}
+          onMessage={() => {
+            requestComposerFocus(session.id);
+            onOpen();
+          }}
+          onOpenQueue={onOpenQueue}
+          onComplete={onComplete}
+          onOpenRun={onOpenWorkflowRun}
+          onDismiss={onDismissStall}
+        />
+      )}
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
           tells an actively-editing session apart from one stalled on a prompt. `liveActivity`
@@ -571,13 +625,13 @@ export function SessionTile({
             pane-backed one, which is every session until an operator turns the runtime on.
             The DECISION and the tooltip are shared with the card chip and the rail glyph
             (`RuntimeTileFlag`), so the three cannot drift on what it is called. */}
-        <RuntimeTileFlag session={session} />
+        {!stall && <RuntimeTileFlag session={session} />}
         {blocker && (
           <Tooltip label={blockerFlagTitle(blocker)}>
             <span className="tile-flag tf-blocked">Blocked · {blockerAge(blocker.startedAt)}</span>
           </Tooltip>
         )}
-        {session.note && (
+        {session.note && (!stall || session.note.disposition === "escalated") && (
           <span className={`tile-flag tf-${session.note.disposition}`}>
             {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
           </span>
@@ -589,7 +643,7 @@ export function SessionTile({
         {openQuestionCount(session) > 0 && (
           <span className="tile-flag tf-question">{openQuestionsLabel(openQuestionCount(session))}</span>
         )}
-        {session.queue && session.queue.openCount > 0 && (
+        {!queueInFactSheet && session.queue && session.queue.openCount > 0 && (
           <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
         )}
         {/* A PR the operator can reach in one click, from the board, without a detour
@@ -648,7 +702,7 @@ export function SessionTile({
           means "things that want your attention", and a routine estimate is not an
           alert. When it stops being routine the chip's own tone says so (costTone), which
           keeps one spelling of the number per surface rather than two. */}
-      {runtimeLine && (
+      {!stall && runtimeLine && (
         <span className="tile-runtime-line">
           {/* Leads the row: the same kind of thing as the mode chip beside it - what this
               session may do right now, changeable from here. */}
@@ -671,7 +725,7 @@ export function SessionTile({
           the one place its card can say why. Draws nothing for every other session. */}
       <LaunchFailureNotice sessionId={session.id} />
 
-      {foot && (
+      {!stall && foot && (
         <span className="tile-foot">
           {/* The branch, with its fallback intact: a session with no branch prints where its
               NAME came from instead, so hiding "branch" hides the branch and does not empty

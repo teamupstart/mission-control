@@ -17,6 +17,15 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
+/**
+ * The one owner of the Stalled section's id: idle stalls move from the inbox's Stuck section into
+ * Idle's Stalled section on the Board and the Console rail. See `docs/attention-and-alerts.md`.
+ */
+export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
+
+export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
+
+export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
 
 export const FEATURE_FLAGS = [
   {
@@ -32,13 +41,6 @@ export const FEATURE_FLAGS = [
     description: "Preview and update a backlog task’s exact plan input and originating dependency together.",
     stage: "preview",
     keywords: ["backlog", "plan", "revision", "dependency"],
-  },
-  {
-    id: "codex-resident-native-mcp",
-    label: "Codex resident native MCP",
-    description: "Let Codex residents use their native MCP configuration and saved logins.",
-    stage: "preview",
-    keywords: ["residents", "oauth", "global servers"],
   },
   {
     id: "resident-active-hours",
@@ -147,6 +149,16 @@ export const FEATURE_FLAGS = [
     keywords: ["inbox", "names", "display name", "attention", "alerts", "resident", "reports", "post_report", "to read", "stuck", "stall", "notifications", "what notifies you", "mute", "report guidance", "mark all read"],
   },
   {
+    id: IDLE_STALLED_FLAG_ID,
+    label: "Stalled section in Idle",
+    description:
+      "Sessions that went quiet with work still open move out of the inbox into a Stalled section of " +
+      "the Idle column. Each card says what is open, what it last did and the step that moves it, " +
+      "with the fix in place.",
+    stage: "preview",
+    keywords: ["stalled", "stuck", "stall", "idle", "inbox", "unfinished", "parked", "board"],
+  },
+  {
     id: MCP_SCHEDULES_FLAG_ID,
     label: "Recurring missions through MCP",
     description: "Let sessions preview and create recurring missions through MCP, and read the saved mission catalog.",
@@ -159,11 +171,26 @@ export const FEATURE_FLAGS = [
     description:
       "Talk to agents by name, with speech recognized on this machine. Needs Ask without stopping, " +
       "Reports and inbox upgrades and File plan decisions: the Voice family in Settings > Setup turns " +
-      "them on. Settings > Voice shows whether voice is listening and why not.",
+      "them on. Settings > Voice shows whether voice is listening and why not, and who can be addressed: " +
+      "residents by name or reference name, and sessions given a call sign under Dispatch > Advanced.",
     stage: "preview",
-    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "mute"],
+    keywords: ["voice", "speech", "microphone", "listen", "hands-free", "dictation", "call sign", "reference name", "mute"],
+  },
+  {
+    id: MACOS_TERMINAL_FLAG_ID,
+    label: "macOS Terminal",
+    description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
+    stage: "preview",
+    keywords: ["terminal", "apple", "macos", "dispatch"],
+  },
+  {
+    id: BACKGROUND_REASONING_EFFORT_FLAG_ID,
+    label: "Background reasoning effort",
+    description: "Choose the reasoning effort for each background model call in Settings > Models.",
+    stage: "preview",
+    keywords: ["background jobs", "models", "thinking", "reasoning", "foreman", "inspector"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 
 /** Append-only. Never reuse an id: an old stored choice could gate an unrelated feature. */
-export const RETIRED_FEATURE_FLAG_IDS = [] as const;
+export const RETIRED_FEATURE_FLAG_IDS = ["codex-resident-native-mcp"] as const;

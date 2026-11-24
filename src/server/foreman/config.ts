@@ -147,6 +147,7 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
     ...patch,
     ...pinRoleProviders(cur, patch),
     backlogDefaultModel: { ...cur.backlogDefaultModel, ...patch.backlogDefaultModel },
+    ...(patch.efforts && { efforts: { ...cur.efforts, ...patch.efforts } }),
   });
   setAppConfig(CONFIG_ENTRY, next);
   return next;

@@ -198,6 +198,34 @@ A [resident](residents.md) takes its Persona from its profile and never from thi
 `create_task` and `update_task` do not accept a Persona yet; `get_task` reports a task's
 `personaId`.
 
+## A call sign for the task
+
+With the **Voice addressing** preview on, **Advanced** also offers a **Call sign**: a short name
+you can say to address the task's session by [voice](voice.md#spoken-names). It is optional, 1 to
+40 characters, and every kind offers it. Under the field, the sentence you would say ("**Alice,**
+check the build") sits above a four-step meter that loses a step for each warning: an everyday
+word, a name that sounds like another agent's, one short syllable, or a voice command. The
+warnings explain and never block; **Dispatch** stays enabled whatever they say. Closed, the fold's
+summary names the call sign beside the Persona.
+
+A call sign is not the title and changes nothing the launch provisions. It is annotation, like
+priority: an update may set or clear it while the agent runs (a resident's task takes none; see
+[Call signs](voice.md#call-signs)), and with the
+[inbox](attention-and-alerts.md) naming rule and voice both on it is the name the inbox, the review
+modal, question cards and alerts print for the session.
+
+A task in the backlog answers to its call sign only once it launches. From then on it is listed
+while it runs and while it is hibernated, however long it sleeps. Once it stops it stays listed
+for a while, marked not running, and leaves at once if another agent takes the name first;
+[who can be addressed](voice.md#who-can-be-addressed) has the rules, including its 24 hours and how
+a daemon restart changes them. A call sign already
+saved is kept, and read back by the editor, while the preview is off, but names nothing until it
+is on again; the field is drawn only while it is on, so a save while it is off leaves the saved one
+as it is, even one edited before the preview was turned off.
+
+MCP `create_task` and `update_task` accept `callSign` (null clears it on update), and `get_task`
+and `list_tasks` report it.
+
 ## Grill me first
 
 **Grill me first** makes a task interview you before it starts its work. It is offered for every
@@ -684,7 +712,9 @@ Changing the setting later moves every chip you never set. Set a chip, or the se
 
 A stacked dependency releases only the dependent's **start**. The edge stays unsatisfied
 until the prerequisite's pull request merges, so completion, **Mark done** and **Unblock
-dependents** behave exactly as above. A released card reads *Stacked on #N*. A card whose
+dependents** behave exactly as above. A released card and its editor both show *Stacked on #N*. In the editor,
+**Dispatch now** saves edits and launches from the prerequisite branch. Changing the primary
+repository, dependency set, or a dependency mode invalidates that release for the draft. A card whose
 dependency stacks, because its chip is set to Stack or it inherits a Stack default, but that
 cannot stack yet says why in place of *after X*. The usual reasons are two unmerged
 prerequisites in one repository, a prerequisite in another repository, or a stack at the

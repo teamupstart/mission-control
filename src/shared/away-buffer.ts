@@ -19,6 +19,7 @@ import { reportToRead, type ReportItem } from "./reports.ts";
  * from the alert engine's idea of what counts as "the same event".
  */
 export interface AwayEvent {
+  sessionTitles?: Alert["sessionTitles"];
   key: string;
   kind: AlertKind;
   sessionId: string | null;
@@ -170,6 +171,8 @@ export function closeBuffer(buf: AwayBuffer, at: number): AwayBuffer {
 function absorb(existing: AwayEvent, a: Alert, at: number | null): AwayEvent {
   return {
     ...existing,
+    ...(existing.sessionTitles || a.sessionTitles ? { sessionTitles: a.sessionTitles } : {}),
+    ...(a.agentName !== undefined ? { agentName: a.agentName } : {}),
     title: a.title,
     body: a.body,
     lastAt: at ?? existing.lastAt,
@@ -209,6 +212,7 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
       sessionId: a.sessionId,
       title: a.title,
       body: a.body,
+      ...(a.sessionTitles ? { sessionTitles: a.sessionTitles } : {}),
       firstAt: now,
       lastAt: now,
       count: 1,
@@ -273,13 +277,19 @@ export function reconcileReports(
   const live = new Map(waiting.filter(reportToRead).map((r) => [`report:${r.id}`, r]));
   const kept = buf.events.filter((e) => e.kind !== "report" || live.has(e.key));
   const pruned = kept.length === buf.events.length ? buf : { ...buf, events: kept };
-  if (!addUnannounced) return pruned;
+  const renamed: Alert[] = [];
+  for (const event of kept) {
+    const report = live.get(event.key);
+    if (report && event.agentName !== report.author.name) renamed.push(reportAlert(report));
+  }
+  const refreshed = refreshAlerts(pruned, renamed);
+  if (!addUnannounced) return refreshed;
   const buffered = new Set(kept.map((e) => e.key));
   const missing = [...live.values()]
     .filter((r) => r.createdAt >= buf.since && !buffered.has(`report:${r.id}`))
     .sort((a, b) => a.createdAt - b.createdAt)
-    .map(reportAlert);
-  return foldAlerts(pruned, missing, now);
+    .map((report) => reportAlert(report));
+  return foldAlerts(refreshed, missing, now);
 }
 
 /**

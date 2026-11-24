@@ -181,8 +181,30 @@ shell reads no feature flag, so that frame is how it learns voice is off. Identi
 suppressed by a canonical form. `MissionState.voice` is the only browser owner, null before the
 snapshot and while the flag was off at connect time. `wireVoiceStateEvents` in
 `src/server/voice/state.ts` is the one bridge, wired once at daemon start. The state is a handful
-of scalars, at most seven capabilities with bounded reasons, and a roster that is empty until the
-names phase fills it. It is not a `LINE_INPUT_EVENTS` member. See [Voice addressing](voice.md).
+of scalars, at most seven capabilities with bounded reasons, and the roster. It is not a
+`LINE_INPUT_EVENTS` member.
+
+`voice_card` carries `{ card }` whenever an utterance opens a card or changes its state.
+Consumers replace the card by id. While delivery is in progress the card has state `pending`,
+reason `delivering` and a null deadline. Its card actions are closed. A reconnect snapshot
+carries both open cards and in-flight deliveries in `voiceCards`
+while voice is enabled. The daemon drops them and the dashboard clears its map when voice turns
+off. Recently heard stays in daemon memory and is read separately through the voice routes.
+
+`voice_roster` carries `{ roster }`, who can be addressed (`SpokenName[]` in
+`src/shared/voice-names.ts`), whenever it changes: a resident profile or run, a task's call sign,
+or a session starting or stopping a task with a call sign. It replaces `VoiceState.roster` and
+nothing else, and a roster change sends no `voice_state` frame: the canonical form that suppresses
+repeated states leaves the roster out, so the shell, which follows the mode, is not woken by an
+agent starting. Each `voice_state` frame still carries the roster as it stands. Sent only while the
+`voice` flag is on, and only when the roster changed. `wireVoiceNameEvents` in
+`src/server/voice/names.ts` is the one bridge. It is bounded by the live resident profiles (at most
+200) and the launched tasks with a call sign that are running, hibernated, or recently stopped and
+still kept by the roster's retention rules ([who can be addressed](voice.md#who-can-be-addressed)):
+a hibernated task stays however long it sleeps, and a stopped one leaves when its retention ends
+or sooner when another agent takes its name. It
+is not a `LINE_INPUT_EVENTS` member: the Line reads the task and session frames it is computed
+from. See [Voice addressing](voice.md#spoken-names).
 
 ## Agent reports
 

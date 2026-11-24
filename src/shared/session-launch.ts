@@ -24,7 +24,7 @@
 
 import type { AgentType, SessionRuntime, SessionState } from "./types.ts";
 import type { PaneHandles } from "./pane.ts";
-import { canWriteTo } from "./pane.ts";
+import { innermostPane } from "./pane.ts";
 import { capabilitiesFor } from "./harness-capabilities.ts";
 
 /**
@@ -61,7 +61,7 @@ export interface LaunchableSession extends PaneHandles {
  */
 export function agentLaunchAction(s: LaunchableSession): AgentLaunchAction | null {
   if (s.state === "stopping") return null;
-  if (s.state !== "exited" && canWriteTo(s)) return "focus";
+  if (s.state !== "exited" && innermostPane(s)) return "focus";
   if (!capabilitiesFor(s.agent).resumes) return null;
   if (!s.agentSessionId) return null;
   if (!s.cwd) return null;

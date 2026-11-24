@@ -14,7 +14,6 @@ import {
 } from "@shared/resident-mcp.ts";
 import type { ResidentMcpNativeSources, ResidentProfileRevision } from "@shared/residents.ts";
 import { STATE_DIR, residentMcpLauncherPath } from "../config.ts";
-import { featureEnabled } from "../feature-flags/index.ts";
 import type { ResidentMcpEntry, ResidentMcpLaunch } from "../harness/types.ts";
 import { resolveMissionMcpRuntime } from "../mission-mcp.ts";
 import type { GlobalMcpDefinition, GlobalMcpRead } from "./mcp-catalog.ts";
@@ -73,9 +72,6 @@ export function residentNativeMcpProblem(settings: ResidentProfileRevision): str
   const agent = settings.execution.agent;
   const capability = capabilitiesFor(agent).mcpSelection?.allNativeSources;
   if (!capability) return `${AGENT_IDENTITY[agent].label} cannot start a resident on all of its native MCP sources`;
-  if (capability.previewFlag && !featureEnabled(capability.previewFlag)) {
-    return "Enable Codex resident native MCP in Settings > Feature flags, or choose Pinned at launch";
-  }
   return null;
 }
 

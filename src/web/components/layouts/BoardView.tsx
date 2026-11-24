@@ -16,6 +16,7 @@ import {
   idleHeadCounts,
   orderSessions,
   repoSessionTotals,
+  stalledInOrder,
   type FleetBlock,
   type FleetColumnId,
   type FleetRow,
@@ -34,6 +35,7 @@ import {
 } from "../../lib/column-width.ts";
 import { heldSessionIds, newestSessionRun } from "../../lib/held.ts";
 import { NO_AWAITING_SESSIONS } from "../../lib/awaiting.ts";
+import { NO_STALLED_SESSIONS } from "../../lib/stalled.ts";
 import { pinnedResidentSessions } from "../../residents/marker.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
 import { PendingList } from "../PendingDispatch.tsx";
@@ -185,8 +187,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     blockedPlacement,
     // App's one set, on App's one clock, so this draws the order the arrow keys walk.
     props.awaitingIds ?? NO_AWAITING_SESSIONS,
+    // App's one map, for the same reason.
+    props.stalledById ?? NO_STALLED_SESSIONS,
   );
   const groups = order.groups;
+  // The cards drawn under Idle's Stalled rule, which alone carry their stall's facts.
+  const stalledHere = stalledInOrder(groups);
   const columns = order.columns;
   // The denominator in every repository head's `2 of 7`, folded once for the whole board rather
   // than per frame: the number is about the fleet, and a frame counting only its own column
@@ -298,6 +304,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   );
   const card = (s: Session): React.JSX.Element => {
     const asVisitor = visitor(s, "tile");
+    const stall = stallOf(s);
     if (asVisitor) return asVisitor;
     const commission = pipelineCommissionForSession(props, s);
     const resident = props.residentBySession?.get(s.id);
@@ -306,6 +313,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       session={s}
       selected={s.id === props.selectedId}
       onOpen={() => props.onSelect(s.id)}
+      onOpenQueue={() => props.onSelect(s.id, "queue")}
+      onComplete={() => props.onComplete(s.id)}
       onCursorTo={() => props.onCursorTo(s.id)}
       registerEl={props.registerEl}
       registerWorkflowDisclosure={props.registerWorkflowDisclosure}
@@ -344,8 +353,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
       resident={resident}
       residentLoopFeedback={resident && props.residentLoopFeedbackFor?.(resident.runId)}
+      stall={stall}
+      onDismissStall={stall && props.onDismissStall ? () => props.onDismissStall!(s.id, stall) : undefined}
     />
   };
+  /** The stall a card in the Stalled section carries, or null for every other card. */
+  const stallOf = (s: Session) => (stalledHere.has(s.id) ? props.stalledById?.get(s.id) ?? null : null);
   /**
    * One column's rows - section rules and repository frames included - rendered by whichever
    * row component this surface uses. The rule and frame placement lives in `fleetRows`, so the
@@ -415,6 +428,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       pipelineCommissionRun={commissionRun}
       onOpenPipelineCommission={props.onOpenPipelineCommission}
       resident={props.residentBySession?.get(s.id) ?? null}
+      stall={stallOf(s)}
     />
   };
 
@@ -720,6 +734,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         <span className="board-col-n n-free">{head!.free} free</span>
                       </Tooltip>
                     )}
+                    {/* Between free and held, in the order the column draws them. */}
+                    {head!.stalled !== null && (
+                      <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
+                        <span className="board-col-n n-stalled">{head!.stalled} stalled</span>
+                      </Tooltip>
+                    )}
                     {/* Split by a wait alone, with nothing held, there is no held side. */}
                     {head!.held !== null && (
                       <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
@@ -820,6 +840,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             key={selected.id}
             view={props}
             session={selected}
+            stall={stallOf(selected)}
             // The rail head's back button is off screen both when no rail is drawn and when
             // the rail is folded to its strip, so the detail head carries the way back then.
             onBack={railHidden || railFolded ? props.onDeselect : undefined}

@@ -12,7 +12,6 @@ export function McpAllSourcesConfirm({
   harness,
   sources,
   changingHarness = false,
-  unavailableReason,
   onConfirm,
   onClose,
 }: {
@@ -21,7 +20,6 @@ export function McpAllSourcesConfirm({
   /** What the harness loads on its own (`AllNativeMcpSourcesSpec.sources`). */
   sources: string;
   changingHarness?: boolean;
-  unavailableReason?: string;
   onConfirm: () => void;
   onClose: () => void;
 }): React.JSX.Element {
@@ -38,7 +36,7 @@ export function McpAllSourcesConfirm({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (!unavailableReason) onConfirm();
+          onConfirm();
         }}
       >
         <header className="modal-head">
@@ -72,7 +70,6 @@ export function McpAllSourcesConfirm({
               configuration and stored logins, not Mission Control's scoped launcher.
             </li>
           </ul>
-          {unavailableReason && <p className="resident-error" role="alert">{unavailableReason}</p>}
         </div>
         <footer className="modal-foot">
           <span className="actions-spacer" />
@@ -81,8 +78,8 @@ export function McpAllSourcesConfirm({
               Cancel
             </button>
           </Tooltip>
-          <Tooltip label={unavailableReason ?? `Start this resident on everything ${harness} loads natively`}>
-            <button type="submit" className="btn btn-primary" disabled={!!unavailableReason}>
+          <Tooltip label={`Start this resident on everything ${harness} loads natively`}>
+            <button type="submit" className="btn btn-primary">
               Import all sources
             </button>
           </Tooltip>

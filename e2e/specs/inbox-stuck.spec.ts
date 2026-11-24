@@ -135,8 +135,15 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   // A: an open task, finished from the row. C: an open task, told to continue. B: drawn as a
   // queue-only stall (see the note above), so its row has no task to mark done.
   const a = await dispatch(daemon, "Fix the parser");
+  // A correction makes A worth a retro, so its Complete dialog has one to offer.
+  await api(daemon, `/api/sessions/${encodeURIComponent(a.session.id)}/send`, {
+    text: "no - reproduce it in docker first, it never fails on the Mac", submit: true,
+  });
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === a.session.id)?.retro?.reasons,
+    { timeout: 30_000 }).toEqual(["corrections"]);
   const c = await dispatch(daemon, "Tidy the changelog");
   const b = await dispatch(daemon, "Drain the queue");
+  await api(daemon, `/api/sessions/${encodeURIComponent(b.session.id)}/queue`, { intent: "Inspect the queue" });
   await page.route("**/api/away/stalls", async (route) => {
     const response = await route.fetch();
     const stalls = await response.json() as Array<{ sessionId: string; facts?: unknown; fingerprint?: string }>;
@@ -203,14 +210,29 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   await expect(rowC).toHaveCount(0, { timeout: 30_000 });
   await expect(toAnswer(page)).toHaveText("1", { timeout: 15_000 });
 
-  // Mark done completes the task, and the row leaves.
   reopened = page.getByRole("dialog", { name: "Attention inbox" });
   if (!(await reopened.isVisible())) reopened = await openInbox(page);
+  const taskStatus = async () => (await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === a.task.id)?.status;
+  const complete = page.getByRole("dialog", { name: "Complete task and close session" });
   await stuckRow(reopened, a.task.title).getByRole("button", { name: "Mark done", exact: true }).click();
-  await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === a.task.id)?.status,
-    { timeout: 15_000 }).toBe("done");
-  await expect(stuckRow(reopened, a.task.title)).toHaveCount(0, { timeout: 30_000 });
+  await expect(complete).toBeVisible();
+  await expect(complete).toContainText(a.task.title);
+  await expect(complete.getByRole("button", { name: "Run a retro first" })).toBeVisible();
+  await expect(reopened).toBeHidden();
+  await capture(complete, "09-complete-from-stuck-row", page);
+  await complete.getByRole("button", { name: "Cancel" }).click();
+  await expect(complete).toBeHidden();
+  expect(await taskStatus()).not.toBe("done");
+
+  reopened = await openInbox(page);
+  await stuckRow(reopened, a.task.title).getByRole("button", { name: "Mark done", exact: true }).click();
+  await complete.getByRole("button", { name: "Complete & close" }).click();
+  await expect.poll(taskStatus, { timeout: 15_000 }).toBe("done");
+  await expect(complete).toBeHidden();
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).some((s) => s.id === a.session.id),
+    { timeout: 30_000 }).toBe(false);
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toHaveCount(0, { timeout: 15_000 });
+  await capture(page.locator("body"), "10-after-complete-and-close", page);
 });
 
 test("with the inbox flag off a stalled session draws no Stuck row, and the fixed-message route refuses", async ({ dashboard: page, daemon }) => {
@@ -345,9 +367,10 @@ test("Resubmit on a real parked run's Stuck row reopens that run through the dae
   writeFileSync(join(cwd, "stuck-fix.txt"), "the findings are fixed\n");
   execFileSync("git", ["-C", cwd, "add", "stuck-fix.txt"]);
   execFileSync("git", ["-C", cwd, "-c", "user.name=E2E", "-c", "user.email=e2e@example.invalid", "commit", "-q", "-m", "fix the findings"]);
+  // Keep the previous round in every stall poll so only a live run update can retire its controls.
+  const previousRound = await api(daemon, "/api/away/stalls");
+  await page.route("**/api/away/stalls", route => route.fulfill({ json: previousRound }));
   await row.getByRole("button", { name: "Resubmit", exact: true }).click();
-  await expect(row.getByRole("status")).toHaveText("Resubmitted the run.", { timeout: 30_000 });
-  await expect(row.getByRole("alert")).toHaveCount(0);
 
   // The daemon opened the next round on the same run.
   await expect.poll(async () => (await runOf(daemon, runId)).round, { timeout: 60_000 }).toBe(parked.round + 1);

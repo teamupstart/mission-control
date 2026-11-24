@@ -1,3 +1,4 @@
+import { backgroundEffortEnabled } from "./background-effort.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import {
   heldGapRecoveryApplies,
@@ -48,7 +49,7 @@ import {
 import { setLlmSpendSink } from "../llm/spend.ts";
 import { ForemanHealthTracker, ForemanHealthPublisher } from "./health.ts";
 import type { ForemanHealthOperation } from "@shared/foreman-health.ts";
-import { reviewModel, reviewSession } from "./review.ts";
+import { reviewSession } from "./review.ts";
 import { FOREMAN_MODEL_ROLES, resolveForemanRunner, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { ForemanModelRole } from "@shared/foreman-models.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
@@ -118,13 +119,14 @@ import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { BacklogPlannerCircuit } from "./planner-circuit.ts";
-import { verifyItem, verifyModel } from "./queue-verify.ts";
+import { verifyItem } from "./queue-verify.ts";
 import type { RegisteredEvidenceInput, RegisteredEvidenceItem } from "./queue-prompt.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { DEFAULT_LLM_RUNNER_ID, llmRunner } from "../llm/index.ts";
 import { configureClaudeRunnerTransport } from "../llm/claude.ts";
 import { configureCodexRunnerTransport } from "../llm/codex.ts";
-import type { ClaudeTransport, CodexTransport, LlmRunnerId } from "@shared/llm.ts";
+import { resolveLlmEffort, type ClaudeTransport, type CodexTransport, type LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import { installForemanShutdown } from "./shutdown.ts";
 import {
   drainCompletionClaim,
@@ -872,9 +874,13 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     }
     const identity = backlogPlanner.health(now);
     if (!identity) return false;
+    const effort = await roleEffort(client, cfg, "backlog", identity.runner, identity.model);
     const result = await workerHealth.observe(
       { operation: "backlog", runner: identity.runner, model: identity.model },
-      () => planBacklog(action.tasks, identity.model, identity.runner),
+      () => planBacklog(
+        action.tasks, identity.model, identity.runner,
+        effort,
+      ),
       // planBacklog builds zero/one-task plans locally. Observe every failure, but only
       // a real provider call can establish recovery from a previous model error.
       { recoverOnSuccess: action.tasks.length >= 2 },
@@ -1448,7 +1454,7 @@ async function runShipShepherd(
             reviewFailure = "the bounded task evidence could not be read safely";
           } else {
             const objective = goal.objective;
-            const reviewed = await observeModel("review", cfg, session, () => reviewShipRecovery({
+            const reviewed = await observeModel("review", cfg, session, async () => reviewShipRecovery({
               objective,
               focus: goal.focus,
               diff: diff.patch,
@@ -1461,7 +1467,7 @@ async function runShipShepherd(
               workflowEvidenceEligible: candidate.workflowEvidenceEligible,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
-            }, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review), "ship-recovery");
+            }, ...await roleModelOptions(client, cfg, "review")), "ship-recovery");
             if (reviewed.kind === "failed") {
               reviewFailure = reviewed.reason;
             } else if (reviewed.verdict.action === "escalate") {
@@ -2428,7 +2434,7 @@ export async function processPromptedWrapup(
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy the durable
   // objective, in light of the latest focus?" is one question, and a second prompt for it
   // would be a second thing to keep true.
-  const result = await withPlanPublicationGuard(planPublication, () => observeModel("verify", cfg, session, () => verifyItem({
+  const result = await withPlanPublicationGuard(planPublication, () => observeModel("verify", cfg, session, async () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: candidate.objective,
     focus: candidate.focus,
@@ -2459,7 +2465,7 @@ export async function processPromptedWrapup(
     // handoff only under current workflow ownership; personal sessions carry neither.
     completionContract,
     registeredEvidence,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify)), () => client.planPublicationContext(session.id));
+  }, ...await roleModelOptions(client, cfg, "verify"))), () => client.planPublicationContext(session.id));
   if (!result) {
     log(`${session.name}: prompted wrap-up held - plan publication ownership changed during verification`);
     return false;
@@ -2921,7 +2927,7 @@ async function runVerify(
 
   const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
-  const result = await observeModel("verify", cfg, session, () => verifyItem({
+  const result = await observeModel("verify", cfg, session, async () => verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
     intent: item.intent,
     round: item.round,
@@ -2936,7 +2942,7 @@ async function runVerify(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: item.gaps,
-  }, verifyModel(cfg, roleRunnerIds.verify), roleRunnerIds.verify));
+  }, ...await roleModelOptions(client, cfg, "verify")));
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -3452,7 +3458,7 @@ async function fullReview(
   };
 
   const result = await observeModel("review", cfg, session,
-    () => reviewSession(input, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review));
+    async () => reviewSession(input, ...await roleModelOptions(client, cfg, "review")));
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a
@@ -3521,6 +3527,25 @@ let roleRunnerIds: Record<ForemanModelRole, LlmRunnerId> = Object.fromEntries(
   FOREMAN_MODEL_ROLES.map((role) => [role, DEFAULT_LLM_RUNNER_ID]),
 ) as Record<ForemanModelRole, LlmRunnerId>;
 
+async function roleEffort(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  role: ForemanModelRole,
+  runner: LlmRunnerId,
+  model: string,
+): Promise<ThinkingLevel | undefined> {
+  const enabled = await backgroundEffortEnabled(() => client.llmSelection());
+  return enabled
+    ? resolveLlmEffort(runner, model, cfg.efforts?.[role]).level ?? undefined
+    : undefined;
+}
+
+async function roleModelOptions(client: ForemanClient, cfg: ForemanConfig, role: ForemanModelRole): Promise<[string, LlmRunnerId, ThinkingLevel?]> {
+  const runner = roleRunnerIds[role];
+  const model = resolveForemanModel(role, cfg, process.env, runner).id;
+  return [model, runner, await roleEffort(client, cfg, role, runner, model)];
+}
+
 /**
  * The Claude wire transport this worker process applies to all four Foreman call sites.
  *
@@ -3556,10 +3581,11 @@ function triageDeps(client: ForemanClient, cfg: ForemanConfig, session: Session)
       else workerHealth.success(context);
     },
     transcript: (id, turns) => client.transcript(id, turns),
-    runner: roleRunnerIds.triage,
-    runModel: (prompt, model, schema) =>
-      llmRunner(roleRunnerIds.triage).run(prompt, {
+    runner,
+    runModel: async (prompt, model, schema) =>
+      llmRunner(runner).run(prompt, {
         model,
+        effort: await roleEffort(client, cfg, "triage", runner, model),
         timeoutMs: TRIAGE_TIMEOUT_MS,
         role: "foreman:triage",
         schema,

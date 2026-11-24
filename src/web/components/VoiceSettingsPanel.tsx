@@ -9,7 +9,22 @@ import {
   type VoiceInputDevice,
   type VoiceWhenUnsure,
 } from "@shared/voice.ts";
+import {
+  spokenNameWarningLabel,
+  spokenNameWarningText,
+  validateSpokenName,
+  type SpokenName,
+} from "@shared/voice-names.ts";
+import type { ResidentProfile } from "@shared/residents.ts";
+import type { Session } from "@shared/types.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
+import {
+  rosterAgentName,
+  rosterWithout,
+  sessionsWithoutSpokenName,
+  SPOKEN_NAME_STATE_LABEL,
+} from "../lib/voice-roster.ts";
+import { residentAccentStyle } from "../residents/marker.ts";
 import { useVoiceDevices, type VoiceConfigState } from "../useVoiceConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -97,18 +112,101 @@ function ModeLine({ voice, onOpenSetup }: { voice: VoiceState | null; onOpenSetu
   );
 }
 
+/** One roster row's Check cell: "Distinct", or each warning in a few words. */
+function RosterCheck({ entry, roster }: { entry: SpokenName; roster: readonly SpokenName[] }): React.JSX.Element {
+  const warnings = validateSpokenName(entry.name, rosterWithout(roster, entry.key));
+  if (warnings.length === 0) return <span className="voice-roster-ok">Distinct</span>;
+  return (
+    <Tooltip label={warnings.map((warning) => spokenNameWarningText(warning, entry.name)).join(" ")}>
+      <span className="voice-roster-warn">
+        <span aria-hidden>⚠</span> {warnings.map(spokenNameWarningLabel).join(" · ")}
+      </span>
+    </Tooltip>
+  );
+}
+
+/** "1 session has", "3 sessions have". */
+function sessionsHave(count: number): string {
+  return count === 1 ? "1 session has" : `${count} sessions have`;
+}
+
 /**
- * Settings > Voice, behind the `voice` flag. The mode line, the input device, then the behavior
- * rows. The roster, placement, indicators and hotkey rows arrive with the phases that make them do
- * something.
+ * Who can be addressed (the adopted roster-first design): every resident and every session with
+ * a call sign, what to say, whether it is running, and any name warning. Names are reviewed here
+ * and set elsewhere, so the table is read-only and says where.
+ */
+function RosterSection({
+  roster,
+  sessions,
+  residentProfiles,
+}: {
+  roster: readonly SpokenName[];
+  sessions: readonly Session[];
+  residentProfiles: readonly ResidentProfile[];
+}): React.JSX.Element {
+  const unaddressed = sessionsWithoutSpokenName(sessions, roster);
+  return (
+    <div className="settings-group voice-roster" data-anchor="voice/roster">
+      <p className="settings-group-label">Who you can address</p>
+      {roster.length === 0 ? (
+        <p className="settings-hint">No agent answers to a name yet.</p>
+      ) : (
+        <table className="voice-roster-table" aria-label="Agents that answer to a spoken name">
+          <thead>
+            <tr>
+              <th scope="col">Agent</th>
+              <th scope="col">Kind</th>
+              <th scope="col">Say</th>
+              <th scope="col">State</th>
+              <th scope="col">Check</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roster.map((entry) => (
+              <tr key={entry.key}>
+                <td>
+                  <span
+                    className={`voice-roster-agent${entry.colorId ? " agent-name-resident" : ""}`}
+                    style={entry.colorId ? residentAccentStyle(entry.colorId) : undefined}
+                  >
+                    {rosterAgentName(entry, residentProfiles)}
+                  </span>
+                </td>
+                <td className="voice-roster-kind">{entry.kind === "resident" ? "Resident" : "Session"}</td>
+                <td className="voice-roster-say">{entry.name}</td>
+                <td className={`voice-roster-state voice-roster-state-${entry.state}`}>{SPOKEN_NAME_STATE_LABEL[entry.state]}</td>
+                <td><RosterCheck entry={entry} roster={roster} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="settings-hint">
+        {unaddressed === 0
+          ? "Every running session can be addressed by name."
+          : `${sessionsHave(unaddressed)} no call sign. Answer one through its open card by starting with “reply”.`}
+        {" "}A resident's reference name is set on its profile, and a session's call sign in Dispatch under Advanced.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Settings > Voice, behind the `voice` flag. The mode line, then who can be addressed, the input
+ * device, then the behavior rows. The placement, indicators and hotkey rows arrive with the phases
+ * that make them do something.
  */
 export function VoiceSettingsPanel({
   state,
   voice,
+  sessions = [],
+  residentProfiles = [],
   onNavigate,
 }: {
   state: VoiceConfigState;
   voice: VoiceState | null;
+  sessions?: readonly Session[];
+  residentProfiles?: readonly ResidentProfile[];
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
   const { config, update, error } = state;
@@ -124,6 +222,8 @@ export function VoiceSettingsPanel({
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />
       {error && <p className="settings-error">{error}</p>}
+
+      <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />
 
       <div className="settings-group">
         <p className="settings-group-label">Input</p>

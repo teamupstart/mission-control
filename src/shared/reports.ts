@@ -55,9 +55,15 @@ export const REPORT_ANNOUNCE_GRACE_MS = 20_000;
  * is one author, and `session:<sessionId>` for anything else.
  */
 export interface ReportAuthor {
+  /** Both labels at post time when a distinct spoken name existed. Older rows have just name. */
+  labels?: { spoken: string; fallback: string };
   key: string;
   name: string;
   residentProfileId: string | null;
+}
+
+export function reportAuthorName(author: ReportAuthor, voice: boolean): string {
+  return author.labels ? (voice ? author.labels.spoken : author.labels.fallback) : author.name;
 }
 
 export interface ReportItem {

@@ -4,14 +4,100 @@ Voice addressing is being built in phases behind the **Voice addressing** previe
 When it is finished, the operator will talk to an agent by name, with speech recognized on this
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
-None of that works yet: there are no spoken names, no routing, no cards and no audio. What exists
-today, and what this page describes, is the foundation: the flag, the voice settings, the voice
-state that the dashboard and later the desktop shell follow, the Voice settings category with its
-input device choice, and the Voice family in Setup, whose rows turn on the previews voice needs,
-report the microphone permission, and download and verify the speech model.
+The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
+holds a message for the configured cancel window and queues it to the addressed agent. Audio
+capture and the on-screen confirmation card belong to later phases.
+Setup also reports microphone permission and downloads and verifies the speech model.
 
-With the flag off nothing on this page exists: every voice route answers 404, the reconnect
-snapshot has no `voice` field, and neither the Settings category nor the Setup family is drawn.
+With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
+snapshot has no `voice` field, and neither the Settings category, the Setup family, nor the Call
+sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
+names no agent until the flag is on again.
+
+## Routing a text utterance
+
+A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances` with
+`x-harness-token`. Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix
+milliseconds on the host clock shared by the listener and daemon. A listener using a recognizer
+with its own clock converts its timestamps to host time at capture.
+A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
+underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
+Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
+The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+With the window off the daemon acknowledges the capture as soon as it claims delivery.
+The card reports the final outcome when the queue or interrupt handler finishes.
+The capture must name the backend in the live listener’s hello and agree with any explicit
+backend selection. The daemon drops captures dated more than one second ahead of its clock.
+Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The listener posts captures in spoken order, waiting for each response before posting the next
+capture (including a cancel or pick). This lets the daemon apply a control to an action that
+has already opened. A cancel received with no pending action records `nothing-pending`.
+The daemon starts each delivery deadline when it opens the pending card.
+The cancel window closes at that deadline even if the delivery timer runs late.
+
+“Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
+first word after normalizing case and boundary punctuation. The exact first word takes priority
+over a longer call sign. A later mention alone (“Please ask Will”) is ignored. Timing is
+descriptive only. Recently heard measures from the last address word to the first message word,
+skipping punctuation-only timing entries. Missing or mismatched words leave the pause empty.
+Only whitespace can separate the two tokens of a call sign, both in an address and in a later mention.
+For example, `Release. Captain, stop` does not address Release Captain. Punctuation spelled
+inside a roster name such as `Dr. Ada` participates in exact matching.
+“Release Captain, run tests”
+can address Release Captain, while “Release, Captain needs help” can address Release. A phonetic match such as “Steven” or
+“Steve’s” can address Steve. If both Steve and Steve Captain sound like the start of the capture,
+“Steven Captain, run tests” selects the longer phonetic match. “Will, ask Steve about the build” sends “ask Steve about the build” to Will.
+A unique exact first word settles the address even when the message names another agent.
+A spelling near-miss is ignored even when several names are one edit away. A bare name selects
+a candidate when exactly one option matches across open unsure cards captured by the time
+the name was spoken. A final sentence mark is optional. `Will.` selects Will, while
+`,Will`, `Will,` and `“Will”` leave the card open. An apostrophe within a name such as
+`O’Neil` is part of the name. Multiple matches
+leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
+left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
+no matching option records `no-message`. This includes “Release Captain” when both Release
+and Release Captain are on the roster.
+Ambiguous exact or phonetic matches with message text open an unsure card, as does a later agent mention after a phonetic or
+two-word match. No model is called.
+
+During the cancel window, the message stays in memory. At the deadline, or immediately with
+the window off, the daemon submits the remaining text verbatim to the running target’s operator
+queue. The card and Recently heard show `queued` when the queue accepts the message.
+For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
+`Will, ???` queues `???`. Only one comma separates the address from the message,
+so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
+Quotes and brackets around an address must close in matching pairs. For example,
+`“Will”ship it` queues `ship it` even without a space after the closing quote.
+`[Will, ) stop` queues `) stop` as message text. An unclosed wrapper also makes the body
+ordinary message text. `[Will, stop` queues the word `stop`.
+The pending card keeps the session ID selected when it opened. If that session ends or another
+session takes over its roster entry, the card and Recently heard show `not-running`.
+“Steve, stop” uses the session interrupt path. A bare command may end with sentence punctuation
+such as `!` or `?`. Quoting the word in `Steve, "stop"` queues
+the message `"stop"`. A bare “cancel” stops the newest action that
+is still pending and was opened by the time the cancel was spoken. Quoting the word
+in a standalone `“cancel”` leaves pending actions open. The daemon uses capture
+timestamps when listener requests arrive out of order. For equal timestamps, the last action
+opened wins. An unsure card has no deadline. The five most recent unsure captures stay open.
+An older capture arriving after all five is cancelled. For tied capture times, the later arrival stays.
+The router allows up to 50 open or delivering cards in total. At capacity a capture that
+would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
+Existing cards keep their deadlines, and the operator can still pick or cancel them.
+Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
+timestamp. For a pick through the card API, the daemon records the host time when it applies
+the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
+arrives after the pick.
+The loopback card routes are `POST /api/voice/cards/:id/cancel`,
+`/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
+
+`GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
+time with the latest arrival first for ties. Entries include
+ignored speech, cancellations, the routing rule and any observed pause. A failed delivery includes the reason in the entry’s detail. Muted and unavailable
+captures leave no record. `DELETE /api/voice/heard` clears the list. Captures, timings and
+card history exist only in memory and disappear on daemon restart or disabling voice. Across a preview
+toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
+a newly opened card. A daemon restart clears those IDs. A message
+actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
 
 ## Turning voice on
 
@@ -135,7 +221,8 @@ Two environment variables, read when the daemon starts:
 ## Voice settings
 
 **Settings > Voice** opens with the mode line: a dot, the mode in words and, when voice cannot
-listen, every reason it cannot, with **Open Setup**.
+listen, every reason it cannot, with **Open Setup**. Below it is **Who you can address**, the
+[roster](#who-can-be-addressed).
 
 Under **Input**, **Input device** chooses the microphone (`inputDevice`): **Built-in microphone**
 (`built-in`, the default), **macOS default input** (`system-default`), or one of the devices the
@@ -145,7 +232,7 @@ it stays in the menu as **Saved device (not connected)**, so the menu never show
 was not made. `GET /api/voice/devices` returns `{ devices, listener }` for this menu; a listener
 interprets the id.
 
-Below it are the behavior rows:
+Below that are the behavior rows:
 
 | Row | Field | Default |
 | --- | --- | --- |
@@ -178,6 +265,132 @@ Nothing draws either yet. Like every voice surface it is behind the flag: with
 `voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the
 flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and saves nothing.
 
+## Spoken names
+
+An agent is addressed by a name you can say. A [resident](residents.md) answers to its profile
+name, or to its **reference name** when one is set. A session answers only when its task has a
+**call sign**; a task title is never a spoken name. Any other session is answered through its open
+card by starting with "reply" (a later phase).
+
+### Call signs
+
+**Dispatch > Advanced** has a **Call sign** field for every kind, below **Persona**. It is
+optional: 1 to 40 characters, trimmed, with inner spaces collapsed. Closed, the fold's summary
+names it (`Persona: none · Call sign: Alice`). Reopening a backlog task reads it back, and
+clearing it saves `callSign: null`. See [Dispatch and the backlog](dispatch-and-backlog.md#a-call-sign-for-the-task).
+
+A call sign is `Task.callSign`, stored in `tasks.call_sign` (schema 51, nullable, no backfill),
+and carried to the session card as `TaskSummary.callSign` while the task has one. It is
+annotation, like priority: nothing is provisioned from it, so an update may set or clear it while
+the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
+`create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
+
+A resident's task takes no call sign: the resident answers to its profile's names, and the roster
+would leave a call sign out while its card printed it. Creating or updating one with a call sign
+is refused (`taskKindTakesCallSign` in `src/shared/voice-names.ts`), and the display name never
+calls a resident by one.
+
+### Reference names
+
+A resident profile's **Identity** card pairs **Name** with an optional **Reference name**.
+For example, a resident named "Release Captain" can answer to "Sage". The reference name
+is `identity.referenceName` in the profile's revision JSON, optional with no
+default, so a revision saved before it existed reads exactly as before. Clearing it saves it
+blank, which means none: a save that left the key out would carry the previous revision's forward.
+
+If Voice is switched off during an edit, saving the profile preserves its stored reference name.
+
+A reference name is a spoken name, not a launch setting, so it applies as soon as it is saved,
+also to a resident that is running: the roster reads the profile as it stands, and so does the
+display name a card prints. With no reference name, Voice follows the current profile name
+as soon as the operator renames the resident. With Voice off, cards use the name pinned at launch.
+
+### Checking a name
+
+Dispatch previews "**Alice,** check the build" and the resident profile previews
+"**Sage,** cut the release". Each field shows a four-step meter and one line per warning.
+The meter lights four steps, less one per warning.
+Warnings never block: Dispatch and Save stay enabled whatever they say. They come from one pure
+function, `validateSpokenName(name, roster)` in `src/shared/voice-names.ts`, checked against the
+other names on the roster, never against the agent's own entry:
+
+| Warning | When |
+| --- | --- |
+| `control-word` | The name's first word is, or sounds like (`keysSoundAlike`, so Stopper is heard as stop), a word voice listens for on its own: cancel, stop, reply, answer, submit, option, no (`VOICE_CONTROL_WORDS`) |
+| `sounds-like` | It sounds like another roster name, which the warning names |
+| `symbols-only` | The name contains no letters or numbers in any script. |
+| `common-word` | A one-word name on the bundled list of everyday words (`src/shared/voice-common-words.ts`), such as Will or Sage |
+| `short` | A one-word name of one syllable and four letters or fewer, such as Bo |
+
+"Sounds like" compares `phoneticKey(name)`, a Metaphone-style key with Double Metaphone's choices
+for initial vowels and B: Steve and Stevie are both `STF`, and Steven is `STFN`. Two keys sound
+alike when they are equal, or one edit apart and starting with the same sound: an added or dropped
+sound from three codes, a swapped one from four. Two names also sound alike when their first words
+do, because speech is routed by its first word. The router compares the same keys with the
+same `keysSoundAlike`, so validation and routing agree. A name with no letters a to z, such as
+サクラ, has no key: it draws only `sounds-like`, against a roster name it is identical to.
+
+The field's verdict (Distinctive, or each warning's label) is also kept in a polite `role="status"`
+region that stays mounted, so a screen reader hears the warnings change while the operator types.
+
+### Who can be addressed
+
+The daemon's `VoiceNameRegistry` (`src/server/voice/names.ts`) holds the roster, `VoiceState.roster`.
+It reads the Registry's own catalogs (resident profiles, open runs, tasks and live sessions) and
+recomputes when one of their frames can move it. Each entry is a `SpokenName { key, name, kind,
+taskId, sessionId, role, colorId, agent, state }`:
+
+- one per live resident profile, keyed `resident:<profileId>`: its reference name, else its profile
+  name; its description as its role; its board colour; `running` while it has an open run, else
+  `not-running`. It stays while the profile is live.
+- one per task with a call sign that has launched, keyed `task:<taskId>`: its call sign; its title
+  as its role; `running` while a live session runs it, `hibernated` while the task is hibernated,
+  else `not-running`. A backlog task or an attempt still provisioning its first session cannot
+  displace an agent that already answers to the name.
+
+A task that is not running leaves the roster 24 hours after it stopped, or at once when another
+agent answers to the same name: a resident, a task that is running or hibernated, or a task that
+stopped later. Schema 52 adds the nullable `tasks.retired_call_sign` column to record displacement
+without changing the configured call sign. The displaced name stays off the roster even if the other agent gives it up or the
+daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
+A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
+phase can say "<name> isn't running".
+
+When a task stopped is not always known across a daemon restart, so the 24 hours are not an
+absolute bound:
+
+- A finished task (done, failed or cancelled) counts from its stored completion time, so a restart
+  does not change its 24 hours. That holds for a finished task the Registry no longer keeps in
+  memory (it keeps the 50 most recent): while the daemon runs, an evicted named task is kept, and
+  a restarted daemon reads the day's named finished tasks from storage
+  (`loadFinishedTasksWithCallSign`), not only the 50 it reloads.
+- A task that stopped without finishing (its session exited, the task still open) counts from when
+  the daemon first saw it stopped, even when the call sign was added later. That moment is held in memory only, so a restart starts the
+  clock again and the name can stay listed for longer than a day.
+
+**Settings > Voice** draws the roster as a table: the agent (a resident's profile name in its board
+colour, a session's task title), its kind, what to say, its state, and its check, "Distinct" or
+each warning. Under it, a line counts the live sessions no spoken name reaches and says they are
+answered through their open card with "reply". The table is read-only: names are set on the
+profile and in Dispatch.
+
+The roster reaches windows in the reconnect snapshot's `voice` field, on every `voice_state` frame,
+and on its own `voice_roster` frame when it alone changes. See
+[the event stream](event-stream.md#voice).
+
+### Display names
+
+Both names are the first rank of the display name the inbox plan defines (`agentDisplayName` in
+`src/shared/display-name.ts`): with the `inbox` and `voice` flags on, a session with a call sign is
+called by it on the inbox, the review modal, question cards, alert titles, the Away digest and a
+report's author, and a resident by its reference name in its board colour. They are voice's names,
+so with `voice` off a saved one is kept but names nothing: `sessionDisplayNameInput` takes the flag
+as `spokenNames`, off unless a caller passes it, and the ranks below answer as they did before.
+Schema 53 adds nullable `author_spoken_name` columns to `reports` and `report_mutes`.
+New reports capture both author labels when posted. Switching Voice changes which label is shown,
+even after the session exits. Older reports with a single recorded label keep that attribution.
+Away previews and return digests also select the label for buffered session events when read.
+
 ## The voice state
 
 The daemon publishes one voice state. Its `mode` is one of:
@@ -205,7 +418,7 @@ absent and `hotkeyError` is null. `listener` is the daemon's own reading, never 
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise; a shell report's `listener` entry is dropped.
 `model` is the speech model manager's reading (see [The speech model](#the-speech-model)), and
-`roster` is empty until the names phase fills it.
+`roster` is [who can be addressed](#who-can-be-addressed).
 
 ### Routes
 
@@ -252,6 +465,28 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   digest mismatch, a short file, a wrong offered size, a stall, Cancel, Retry fetching only what
   failed, the start-up hash, a same-size edit refused at the next start, a new revision replacing
   the old, the flag switched off mid-download, and the routes.
+- `test/voice-names.test.ts`: each warning, Steve against Stevie and Steven, control words
+  including Stopper and Summit, a name with no letters a to z, the meter, the stored name's bounds,
+  and a cleared reference name staying cleared.
+- `test/spoken-name-field.test.tsx`: the field's verdict and its polite status region.
+- `test/task-edit-patch.test.ts`: a call-sign edit is sent only while voice is on.
+- `test/voice-registry.test.ts`: a resident launched and stopped, a call sign set by update, a
+  task still waiting for its first launch, a session exiting, a hibernated task, the 24-hour and
+  name-reuse removals, an evicted task, a named finished task read back from storage after a
+  restart past the 50 reloaded, and the `voice_roster` frames from the real Registry.
+- `test/task-startup-cleanup.test.ts`: a call sign, priority or label edit landing while startup
+  tears down a dead terminal home is kept.
+- `test/voice-call-sign.test.ts`: the schemas, a call sign set and cleared on a running task, and
+  one refused on a resident's task, created or updated.
+- `test/voice-call-sign-migration.test.ts`: a version 50 database gains `tasks.call_sign`.
+- `test/display-name.test.ts`: a call sign and a reference name as the first rank, and a
+  resident never named by its task's call sign.
+- `e2e/specs/voice-call-sign.spec.ts`: "Will" draws the everyday-word warning with Dispatch still
+  enabled and its verdict in the status region; dispatched as "Alice", the roster lists Alice
+  running and the question card names the session Alice; a shelved task's call sign survives a
+  restart, stays off the roster while saved, is kept when voice goes off mid-edit, and clears.
+- `e2e/specs/voice-reference-name.spec.ts`: a resident's reference name is checked as it is typed,
+  survives a restart, is listed in the roster, and clears.
 - `e2e/specs/voice-flag-and-settings.spec.ts`: the flag row toggles, the Voice category appears,
   a cancel window change persists across a reload, the Setup row's button turns the three flags on
   and the row passes, and the mode line reads unavailable, then listening once a listener says

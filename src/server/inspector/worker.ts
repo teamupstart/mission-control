@@ -37,7 +37,7 @@ import type {
 } from "@shared/types.ts";
 import type { PipelineRun } from "@shared/pipeline.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
-import { getInspectorConfig, inspectorModel, inspectorRunner } from "./config.ts";
+import { getInspectorConfig, inspectorExecution } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
@@ -184,18 +184,6 @@ const MAX_REPLIES_PER_THREAD = 6;
  * is a bug somewhere, and this is what stops that bug being expensive and public.
  */
 /**
- * The model both the review and the follow-up replies run on: config, then
- * `MISSION_INSPECTOR_MODEL`, then the spec's shipped default.
- *
- * One resolver, in `config.ts`, because the settings panel prints this same answer
- * through `/api/inspector/status` and the two must not be able to disagree about it. See
- * `INSPECTOR_MODEL_SPEC` for why the default is named at all rather than left to the CLI.
- */
-function reviewModel(cfg: InspectorConfig): string {
-  return inspectorModel(cfg).id;
-}
-
-/**
  * `role` rides alongside `timeoutMs` rather than being derived here, because the two calls
  * this builds for are different jobs with different prices - a full review carries the
  * largest prompt in the system, a follow-up reply a third of it - and folding them into one
@@ -208,14 +196,13 @@ function inspectorRunOptions(
   role: LlmSpendRole,
   schema?: Record<string, unknown>,
 ) {
-  // `inspectorRunner`, not `cfg.runner ?? "claude"`: an unset provider inherits the app-wide
-  // ladder, and resolving it here a second way is how the worker and the panel come to print
-  // different providers for the same call.
-  const runner = llmRunner(inspectorRunner(cfg).id);
+  const execution = inspectorExecution(cfg);
+  const runner = llmRunner(execution.runner.id);
   return {
     runner,
     options: {
-      model: reviewModel(cfg),
+      model: execution.model.id,
+      effort: execution.effort,
       timeoutMs,
       role,
       ...(schema ? { schema } : {}),

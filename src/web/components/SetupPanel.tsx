@@ -733,9 +733,13 @@ function MicrophoneRemedy({ label, note, action, onRepaired }: {
     <div className="setup-remedy-actions">
       {!fix && <p className="setup-remedy-note">{note}</p>}
       <div className="setup-run-controls">
-        {fix && action && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void apply()}>
-          {action === "settings" ? "Open System Settings" : "Ask macOS"}
-        </button>}
+        {fix && action && (
+          <Tooltip label={action === "settings" ? "Open the macOS Microphone privacy pane" : "Ask macOS to allow Mission Control to use the microphone"}>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void apply()}>
+              {action === "settings" ? "Open System Settings" : "Ask macOS"}
+            </button>
+          </Tooltip>
+        )}
         {(!fix || action !== "ask") && <Tooltip label="Read the microphone permission again">
           <button type="button" className="btn btn-ghost" onClick={onRepaired}>{label}</button>
         </Tooltip>}

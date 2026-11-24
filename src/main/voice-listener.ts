@@ -58,8 +58,8 @@ export class VoiceListener {
   }
 }
 
-export function nativeVoiceListener(binary: string): VoiceListener {
-  return new VoiceListener(directory => spawn(binary, [], {
+export function nativeVoiceListener(executable: string): VoiceListener {
+  return new VoiceListener(directory => spawn(executable, [], {
     stdio: "ignore",
     env: {
       ...process.env,

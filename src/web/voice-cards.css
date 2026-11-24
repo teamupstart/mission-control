@@ -60,5 +60,5 @@ html:has(.voice-standalone), body:has(.voice-standalone), #root:has(.voice-stand
 .vc-not-running .agent-dot { --agent-accent: var(--exited); }
 @keyframes voice-card-fade { to { opacity: 0; } }
 @media (prefers-reduced-motion: no-preference) {
-  .voice-card:not([data-held]):is(.vc-sent,.vc-queued,.vc-not-running,.vc-failed,.vc-cancelled) { animation: voice-card-fade .3s ease-in 7.7s both; }
+  .voice-card[data-settled] { animation: voice-card-fade .3s ease-in 7.7s both; }
 }

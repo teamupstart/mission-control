@@ -13,13 +13,15 @@ const copy = {
   cancelled: "Cancelled", failed: "Failed to send",
 } satisfies Record<VoiceCard["state"], string>;
 for (const state of Object.keys(copy) as VoiceCard["state"][]) {
-  test("voice confirmation renders " + state, () => {
+  test("voice confirmation renders " + state, (t) => {
+    const allocate = t.mock.method(crypto, "randomUUID", () => { throw new Error("Request id allocated during render"); });
     const card: VoiceCard = { id: "one", state, reason: "exact", deadline: Date.now() + 4000,
       parts: [{ target, text: "check CI" }], candidates: [{ kind: "agent", title: target.name, detail: target.role, id: target.key }], openQuestions: 3 };
     const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions: {
       sessions: [], roster: [target], reviews: [], openQuestion() {}, relaunch: async () => ({ ok: true }), followUp: () => ({ ok: true }),
     } }));
     assert.ok(html.includes(copy[state]));
+    assert.equal(allocate.mock.callCount(), 0);
     assert.match(html, /role="status"/);
     assert.doesNotMatch(html, /data-spoken-action/);
     if (state === "sent" || state === "queued") assert.match(html, /3 open questions/);

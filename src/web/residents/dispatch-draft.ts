@@ -1,3 +1,4 @@
+import { newRequestId } from "../lib/request-id.ts";
 import type { ResidentProfile } from "@shared/residents.ts";
 
 /**
@@ -60,7 +61,7 @@ export function freshResidentDispatchDraft(): ResidentDispatchDraft {
     additionalRepoRoots: [],
     repoFromProfile: true,
     instructions: "",
-    requestId: crypto.randomUUID(),
+    requestId: newRequestId(),
     uncertain: null,
   };
 }
@@ -202,7 +203,7 @@ export function separateResidentLaunch(
     repoRoot: residentDispatchRepo(draft, profile),
     additionalRepoRoots: residentDispatchAttachedRepos(draft, profile),
     repoFromProfile: false,
-    requestId: crypto.randomUUID(),
+    requestId: newRequestId(),
     uncertain: null,
   };
 }

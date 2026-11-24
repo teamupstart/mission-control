@@ -980,9 +980,35 @@ test("cancelling a split keeps the immediate interrupt and drops only the ordina
   await say("Steve, inspect the build, and Will, stop", "split-cancel");
   await resolved("split-cancel");
   assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  const firstCancelFrame = cards.length;
   assert.equal((await act("split-cancel", "cancel")).status, 200);
   assert.equal(queued("Steve").length, 0);
+  const outcomes = cards.slice(firstCancelFrame).map(card => card.parts.map(part => part.outcome));
+  assert.deepEqual(outcomes, [["cancelled", "sent"]]);
   assert.match((await readHeard())[0]!.detail, /Part 1 \(Steve\) cancelled\. Part 2 \(Will\) sent\./);
+});
+
+test("cancelling while a split stop is in flight preserves its status through reconnect and settlement", async (t) => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  let finish!: () => void;
+  const delayed = new Promise<void>(resolve => { finish = resolve; });
+  const driver = t.mock.method(sdk, "interrupt", async () => { await delayed; return "idle"; });
+  await say("Steve, stop, and Will, inspect the build", "delayed-stop");
+  await resolved("delayed-stop");
+  try {
+    assert.equal((await act("delayed-stop", "cancel")).status, 200);
+    const stopping = cards.at(-1)!;
+    assert.deepEqual(stopping.parts.map(p => [p.immediateStop, p.outcome]), [[true, undefined], [undefined, "cancelled"]]);
+    assert.deepEqual(registry.snapshot().voiceCards, [stopping]);
+    assert.equal((await act("delayed-stop", "cancel")).status, 409);
+  } finally {
+    finish();
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assert.equal(driver.mock.callCount(), 1);
+  assert.deepEqual(cards.at(-1)?.parts.map(p => p.outcome), ["sent", "cancelled"]);
+  assert.equal(queued("Will").length, 0);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
 });
 
 test("Recently heard names both deliveries when the second part of a split fails", async (t) => {

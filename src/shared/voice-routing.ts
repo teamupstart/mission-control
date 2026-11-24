@@ -52,6 +52,11 @@ export interface HeardEntry {
   detail: string;
 }
 
+export function voiceCardCanExpire(card: VoiceCard): boolean {
+  return !["pending", "resolving", "unsure", "held"].includes(card.state)
+    && !card.parts.some(part => part.outcome === "held" || (part.immediateStop && !part.outcome));
+}
+
 /**
  * Where a later name would split an utterance: the first target's message (`head`) and the later
  * name's (`tail`), each verbatim from the text. Both messages need content beyond separators.

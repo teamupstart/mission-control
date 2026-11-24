@@ -1,3 +1,4 @@
+import { newRequestId } from "../../lib/request-id.ts";
 import type { EnsembleCreateInput, EnsembleStrategyId } from "@shared/ensemble.ts";
 import { ENSEMBLE_STRATEGY_INFO } from "@shared/ensemble-strategies.ts";
 
@@ -24,7 +25,7 @@ export interface EnsembleDispatchDraft {
 /** A fresh draft for a strategy, with the strategy's own fully-defaulted config. */
 export function freshEnsembleDraft(strategyId: EnsembleStrategyId = "best_of_n"): EnsembleDispatchDraft {
   return {
-    requestId: crypto.randomUUID(),
+    requestId: newRequestId(),
     strategyId,
     strategyVersion: null,
     config: defaultConfigFor(strategyId),

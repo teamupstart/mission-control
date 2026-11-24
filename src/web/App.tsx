@@ -1202,6 +1202,13 @@ export function App(): React.JSX.Element {
   );
 
   const closeDispatch = useCallback(() => setDispatchRequest(null), []);
+  const followUpRequest = dispatchRequest?.kind === "new" && dispatchRequest.repoRoot ? dispatchRequest : null;
+  const closeDispatchOpening = useCallback(() => {
+    setDispatchRequest(current => {
+      const activeFollowUp = current?.kind === "new" && current.repoRoot ? current : null;
+      return activeFollowUp === followUpRequest ? null : current;
+    });
+  }, [followUpRequest]);
   const closeComplete = useCallback(() => {
     setCompleteSessionId(null);
     setRestartPromptSessionId(null);
@@ -5783,7 +5790,7 @@ export function App(): React.JSX.Element {
                       })
                     : `count:${settingsStatus?.pipelines.observing ?? 0}`
                 }
-                onClose={closeDispatch}
+                onClose={closeDispatchOpening}
                 onOpenSchedule={onOpenSchedule}
                 onOpenLaunchFix={openLaunchFix}
                 onOpenEnvironmentFix={openEnvironmentFix}

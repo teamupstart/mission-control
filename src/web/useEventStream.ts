@@ -2,7 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
-import type { VoiceCard } from "@shared/voice-routing.ts";
+import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
@@ -371,6 +371,25 @@ export function useEventStream(): MissionState {
   useEffect(() => {
     const es = new EventSource("/events");
     esRef.current = es;
+    const voiceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    function clearVoiceTimers() {
+      for (const timer of voiceTimers.values()) clearTimeout(timer);
+      voiceTimers.clear();
+    }
+    function scheduleVoiceExpiry(card: VoiceCard) {
+      clearTimeout(voiceTimers.get(card.id));
+      voiceTimers.delete(card.id);
+      if (!voiceCardCanExpire(card)) return;
+      voiceTimers.set(card.id, setTimeout(() => {
+        voiceTimers.delete(card.id);
+        setVoiceCards(current => {
+          if (current.get(card.id) !== card) return current;
+          const next = new Map(current);
+          next.delete(card.id);
+          return next;
+        });
+      }, 8000));
+    }
 
     es.onopen = () => {
       if (esRef.current !== es) return;
@@ -496,6 +515,8 @@ export function useEventStream(): MissionState {
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           // Absent while the flag is off, which reads as off.
+          clearVoiceTimers();
+          msg.voiceCards?.forEach(scheduleVoiceExpiry);
           setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
           setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
           if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion, msg.voiceConfirmation);
@@ -758,17 +779,21 @@ export function useEventStream(): MissionState {
           break;
         case "voice_state":
           setVoice(current => withNewerVoiceMode(msg.state, current));
-          if (msg.state.mode === "off") setVoiceCards(new Map());
+          if (msg.state.mode === "off") {
+            clearVoiceTimers();
+            setVoiceCards(new Map());
+          }
           break;
         case "voice_indicators":
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
           break;
         case "voice_card":
+          scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);
             next.delete(msg.card.id);
             next.set(msg.card.id, msg.card);
-            const completed = [...next.values()].filter((c) => !["pending", "unsure", "resolving", "held"].includes(c.state) && !c.parts.some(p => p.outcome === "held"));
+            const completed = [...next.values()].filter(voiceCardCanExpire);
             if (completed.length > 50) next.delete(completed[0]!.id);
             return next;
           });
@@ -852,6 +877,7 @@ export function useEventStream(): MissionState {
     };
 
     return () => {
+      clearVoiceTimers();
       es.close();
       esRef.current = null;
     };

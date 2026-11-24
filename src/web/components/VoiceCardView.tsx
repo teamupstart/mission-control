@@ -1,12 +1,13 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
-import type { VoiceCard } from "@shared/voice-routing.ts";
+import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { AgentName, SpokenHint } from "./AgentName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { api, type ActionResult } from "../lib/api.ts";
+import { newRequestId } from "../lib/request-id.ts";
 
 export interface VoiceCardActions {
   sessions: readonly Session[];
@@ -54,7 +55,7 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
 
 export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: VoiceCardActions }) {
   const [now, setNow] = useState(Date.now);
-  const [launchId] = useState(() => crypto.randomUUID());
+  const launchIds = useRef(new Map<string, string>());
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
   useEffect(() => {
@@ -87,11 +88,12 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
     const target = part.target;
     const state = part.outcome ?? card.state;
     const name = target?.name ?? "agent";
+    if (part.immediateStop && !part.outcome) return <b>Stopping {named(target)}…</b>;
     switch (state) {
       case "sent":
       case "queued":
         return <div className="vc-success"><Icon name={state === "sent" ? "check" : "clock"} />
-          {state === "sent" ? <>Sent to {named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
+          {state === "sent" ? <>{part.immediateStop ? "Stop sent to " : "Sent to "}{named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
       case "held": {
         // The live outbox also identifies a session that resumed from hibernation.
         const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId)) ?? sessionOf(target);
@@ -112,7 +114,11 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
         return <><div className="vc-row"><b className="vc-grow">{named(target)} {resident ? "isn't running" : "has finished"}</b><span className="vc-meta">Nothing was sent</span></div>
           <RosterRow target={target} title={name} detail={target?.role} state={resident ? "stopped" : "completed"} />
           <div className="vc-row"><span className="vc-hint vc-grow">{resident ? "Relaunch him, then say it again." : "Completed sessions are not resumed."}</span>
-          {resident ? button("Relaunch " + name, "Start a new run for this resident", () => void run(() => actions.relaunch(target, launchId), "Relaunch requested."))
+          {resident ? button("Relaunch " + name, "Start a new run for this resident", () => void run(() => {
+            const id = launchIds.current.get(target.key) ?? newRequestId();
+            launchIds.current.set(target.key, id);
+            return actions.relaunch(target, id);
+          }, "Relaunch requested."))
             : button("Start a follow-up task", "Open a new task on the same repository", () => void run(async () => actions.followUp(target.taskId!)), "", !target?.taskId)}</div></>;
       }
       case "cancelled": return <b>{split ? <>{named(target)} · </> : null}Cancelled</b>;
@@ -152,7 +158,7 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
   }
-  return <article role="status" data-held={card.parts.some(p => p.outcome === "held") || undefined} className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
+  return <article role="status" data-settled={voiceCardCanExpire(card) || undefined} className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>
     {body}{feedback && <span className="vc-meta">{feedback}</span>}
   </article>;

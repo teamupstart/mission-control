@@ -33,6 +33,28 @@ test("three placement previews persist across reload, with a toast fallback and 
 });
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
+  test(`the ${label} route restores the older pending card when the newer result expires`, async ({ dashboard: page, daemon }) => {
+    await enableVoice(daemon);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
+    expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+      identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
+    } } })).ok()).toBe(true);
+    await page.goto(daemon.baseURL + "/#/voice/" + placement);
+    const card = page.getByRole("status");
+    await say(daemon, "Steve, inspect the older message");
+    await expect(card).toContainText("inspect the older message");
+    await say(daemon, "Steve, inspect the newer message");
+    await expect(card).toContainText("inspect the newer message");
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(card).toContainText("Cancelled");
+    await page.mouse.move(640, 400);
+    await expect(card).toContainText("inspect the older message", { timeout: 12_000 });
+    await captureCard(card, "restored-older-" + placement);
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(card).toContainText("Cancelled");
+  });
+
   test(`a floating-window report keeps the ${label} preference actionable on the dashboard`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     await page.goto(daemon.baseURL + "/#/settings/voice");

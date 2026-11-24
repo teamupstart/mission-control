@@ -338,14 +338,17 @@ both captured sessions to still match the roster. An answer that comes after the
 cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
 each captured session immediately before delivering its part. Addressed stops interrupt as soon
 as the split is confirmed. Ordinary message parts keep their cancel window and delivery order.
-Cancelling the remaining message leaves an interrupt that already ran in the delivery history. If a session
+Cancelling the remaining message marks that part as cancelled. The card shows the other
+recipient's stop as in progress until its result arrives. If a session
 has left or been replaced, the other recipient can still receive their part. Recently heard
 lists each recipient and delivery result. The card carries the worse of the two outcomes.
 The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
 
 Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. The confirmation card draws the on-screen candidate picker, the stopped resident and finished
 session with their respective actions, the message held behind a blocking question, and the
-two-message split or one-message mention. It also supplies the clickable rows used when asking
+two-message split or one-message mention. A finished session opens a separate follow-up
+draft on its repository. Reopening regular Dispatch restores the operator's original draft.
+The card also supplies the clickable rows used when asking
 aloud. Phase 12 adds the spoken question, listening state and Recently heard link. The roster
 in Voice settings lists addressable agents independently of these outcomes.
 [Selected routing-exceptions mock-up](plans/voice-addressing-for-agents/mockup-routing-exceptions.html#b)

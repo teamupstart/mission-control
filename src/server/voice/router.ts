@@ -448,6 +448,7 @@ export class VoiceRouter {
       const window = this.window();
       card.openQuestions = this.openQuestionCount(card);
       if (card.parts.length > 1 && item.commands?.includes("stop")) {
+        card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
         const delivery = this.newDelivery(item);
         const { signal } = this.lifetime;
         const stops = card.parts.flatMap((_, index) => item.commands?.[index] === "stop"
@@ -457,7 +458,6 @@ export class VoiceRouter {
       if (card.parts.every((_, index) => item.commands?.[index] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
       card.windowMs = ms;
-      if (item.splitStops) card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
       card.deadline = Date.now() + ms;
       item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
       item.timer.unref?.();
@@ -482,14 +482,28 @@ export class VoiceRouter {
     item.modelStep?.abort();
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;
-    this.publish({ ...item.card, state: "cancelled", deadline: null });
     if (item.splitStops) {
       const { delivery, done } = item.splitStops;
-      const { signal } = this.lifetime;
       for (const index of item.card.parts.keys()) {
         if (item.commands?.[index] !== "stop") delivery.results[index] = { outcome: "cancelled" };
       }
-      void done.then(() => { if (!signal.aborted) this.publishDelivery(delivery); });
+      if (delivery.card.parts.every((_, i) => delivery.results[i])) {
+        delivery.ready = true;
+        this.publishDelivery(delivery);
+      } else {
+        const stopping: VoiceCard = { ...delivery.card, state: "cancelled",
+          parts: delivery.card.parts.map((part, i) => ({ ...part, ...delivery.results[i] })) };
+        this.delivering.set(id, stopping);
+        this.publish(stopping);
+        void done.then(() => {
+          if (this.delivering.get(id) !== stopping) return;
+          this.delivering.delete(id);
+          delivery.ready = true;
+          this.publishDelivery(delivery);
+        });
+      }
+    } else {
+      this.publish({ ...item.card, state: "cancelled", deadline: null });
     }
     return true;
   }

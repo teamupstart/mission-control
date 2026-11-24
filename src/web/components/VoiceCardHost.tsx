@@ -1,20 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { VoiceCard } from "@shared/voice-routing.ts";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { useUiConfig } from "../lib/uiConfig.ts";
 import { api } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
+import { newRequestId } from "../lib/request-id.ts";
 
 function Card({ card, actions, notify, sound, notifications }: {
   card: VoiceCard; actions: VoiceCardActions; notify: boolean; sound: boolean; notifications: boolean;
 }) {
-  const [expired, setExpired] = useState<VoiceCard | null>(null);
   const announced = useRef<number | null>(null);
-  useEffect(() => {
-    if (["pending", "resolving", "unsure", "held"].includes(card.state) || card.parts.some(p => p.outcome === "held")) return;
-    const timer = setTimeout(() => setExpired(card), 8000);
-    return () => clearTimeout(timer);
-  }, [card]);
   useEffect(() => {
     if (!notify || !card.deadline || card.state !== "pending" || announced.current === card.deadline) return;
     announced.current = card.deadline;
@@ -31,7 +26,7 @@ function Card({ card, actions, notify, sound, notifications }: {
       const body = card.parts.map(p => card.parts.length === 1 ? p.text : p.target?.name + ": " + p.text).join("\n");
       const shell = window.missionDesktop;
       if (shell?.showVoiceCardNotice) {
-        const id = crypto.randomUUID();
+        const id = newRequestId();
         let active = true;
         void shell.showVoiceCardNotice({ id, title, body, deadline: card.deadline }).then(choice => {
           if (active && choice) void api.voiceCardAction(card.id, choice);
@@ -43,7 +38,7 @@ function Card({ card, actions, notify, sound, notifications }: {
       return () => note.close();
     } catch { /* A browser may require a service worker for system notifications. */ }
   }, [card, notify, notifications]);
-  return expired === card ? null : <VoiceCardView card={card} actions={actions} />;
+  return <VoiceCardView card={card} actions={actions} />;
 }
 
 export function VoiceCardHost({ cards, actions, surface, sound, notifications }: {

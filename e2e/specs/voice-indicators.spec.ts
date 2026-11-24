@@ -193,6 +193,60 @@ test("a changed voice shortcut stays hidden until the shell confirms the exact c
   }
 });
 
+for (const muted of [true, false]) {
+  const action = muted ? "mute" : "unmute";
+  test(`a stalled ${action} blocks duplicate clicks, reports uncertainty and follows the daemon`, async ({ dashboard: page, daemon }) => {
+    await enableVoice(daemon);
+    const listener = await beListener(daemon);
+    const endpoint = daemon.baseURL + "/api/voice/mute";
+    try {
+      expect((await page.request.put(daemon.baseURL + "/api/voice/indicators", { data: { id: "floating", enabled: true } })).ok()).toBe(true);
+      if (!muted) expect((await page.request.post(endpoint, { data: { muted: true } })).ok()).toBe(true);
+      const mode = muted ? "Voice: listening. Mute" : "Voice: muted. Unmute";
+      const nextMode = muted ? "Voice: muted. Unmute" : "Voice: listening. Mute";
+      const status = page.locator("button.vi-status-line");
+      const floating = page.locator("button.vi-floating");
+      await expect(status).toHaveAccessibleName(mode);
+      await expect(floating).toBeVisible();
+      let requests = 0;
+      await page.route(endpoint, route => {
+        if (++requests > 1) return route.continue();
+        // Leave the first request unanswered through the dashboard's deadline.
+      });
+      const write = page.waitForRequest(endpoint);
+      await status.click();
+      const first = await write;
+      expect(first.postDataJSON()).toEqual({ muted });
+      const pending = page.getByRole("status").filter({ hasText: muted ? "Muting voice…" : "Unmuting voice…" });
+      await expect(pending).toBeVisible({ timeout: 2000 });
+      await expect(status).toBeDisabled();
+      await expect(floating).toBeDisabled();
+      await floating.click({ force: true });
+      await expect(status).toHaveAccessibleName(mode);
+      const alert = page.getByRole("alert").filter({ hasText: "Voice mute change timed out" });
+      await expect(alert).toContainText("unconfirmed", { timeout: 8000 });
+      expect(requests).toBe(1);
+      await expect(pending).toHaveCount(0);
+      await expect(floating).toBeEnabled();
+      await expect(status).toHaveAccessibleName(mode);
+      if (muted && process.env.MC_E2E_EVIDENCE) {
+        const root = artifactsDir("voice-window");
+        mkdirSync(root, { recursive: true });
+        await page.locator(".vi-window-feedback").screenshot({ path: join(mkdtempSync(join(root, "mute-timeout-")), "alert.png") });
+      }
+      if (muted) {
+        // A transport timeout can precede the daemon committing this same request.
+        expect((await page.request.fetch(first)).ok()).toBe(true);
+      } else {
+        await floating.click();
+      }
+      await expect(status).toHaveAccessibleName(nextMode);
+      await expect(alert).toHaveCount(0);
+      expect(requests).toBe(muted ? 1 : 2);
+    } finally { listener.stop(); }
+  });
+}
+
 test("a failed mute keeps the indicator listening until a peer retries, then the error stays cleared", async ({ dashboard: page, daemon, context }) => {
   await enableVoice(daemon);
   const listener = await beListener(daemon);

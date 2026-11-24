@@ -265,6 +265,8 @@ The indicators are configured under **Settings > Voice > In the window**. Select
 
 If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
 
+While a mute or unmute request is pending, the dashboard shows its progress and disables the other mute controls in that window. If the daemon takes more than five seconds to confirm the change, the controls become available again. The indicators continue to show the daemon's latest mode, including a change that arrives after the timeout.
+
 **Recently heard** shows the latest 50 utterances, newest first, including the match, deciding rule and outcome. An exact opening name routes with or without a pause. A name mentioned later alone does not address an agent. A read that takes over five seconds shows an error and keeps the last known rows until polling succeeds. Clear empties the daemon’s in-memory history, even when the table is empty or cannot refresh. If Clear times out, the table reports that deletion is unconfirmed, resumes polling and lets you retry. Audio is never stored.
 
 With

@@ -12,6 +12,7 @@ import { Tooltip } from "./Tooltip.tsx";
 export const VoiceWindow = createContext<{
   state: VoiceState;
   settings: VoiceConfigState;
+  mutePending: boolean;
   setMuted(id: VoiceIndicatorId, muted: boolean): Promise<void>;
   openSetup(): void;
 } | null>(null);
@@ -22,12 +23,31 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
   const { config, update, error } = useVoiceConfig(enabled);
   const { voice: { indicators } } = useUiConfig();
   const [failure, setFailure] = useState<{ id: VoiceIndicatorId; muted: boolean; message: string } | null>(null);
-  const latestRequest = useRef(0);
+  const [pendingMute, setPendingMute] = useState<boolean | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    if (!enabled) setPendingMute(null);
+    return () => {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
+  }, [enabled]);
   const setMuted = useCallback(async (id: VoiceIndicatorId, muted: boolean) => {
-    const request = ++latestRequest.current;
-    const result = await api.setVoiceMuted(muted);
-    if (request === latestRequest.current) {
-      setFailure(result.ok ? null : { id, muted, message: result.error ?? "Could not change voice mute." });
+    if (activeRequest.current) return;
+    const request = new AbortController();
+    activeRequest.current = request;
+    setPendingMute(muted);
+    setFailure(null);
+    const deadline = AbortSignal.timeout(5000);
+    const result = await api.setVoiceMuted(muted, AbortSignal.any([request.signal, deadline]));
+    if (request.signal.aborted) return;
+    activeRequest.current = null;
+    setPendingMute(null);
+    if (deadline.aborted || !result.ok) {
+      const message = deadline.aborted
+        ? "Voice mute change timed out. The result is unconfirmed. Check the indicator and retry if needed."
+        : result.error ?? "Could not change voice mute.";
+      setFailure({ id, muted, message });
     }
   }, []);
   const mode = state?.mode;
@@ -39,10 +59,13 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
     if (failure && !showFailure) setFailure(null);
   }, [failure, showFailure]);
   const value = useMemo(() => enabled && state ? {
-    state, settings: { config, update, error }, openSetup, setMuted,
-  } : null, [enabled, state, config, update, error, openSetup, setMuted]);
+    state, settings: { config, update, error }, openSetup, setMuted, mutePending: pendingMute !== null,
+  } : null, [enabled, state, config, update, error, openSetup, setMuted, pendingMute]);
   return <VoiceWindow.Provider value={value}>
     {children}
+    {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status">
+      {pendingMute !== null && (pendingMute ? "Muting voice…" : "Unmuting voice…")}
+    </div>}
     {showFailure && <div className="vi-window-feedback">
       <span role="alert">{failure.message}</span>
       <Tooltip label="Dismiss voice error"><button type="button" className="btn btn-ghost"
@@ -69,8 +92,8 @@ const styles: Record<VoiceIndicatorId, string> = {
   edge: "Edge light", composer: "Composer microphone",
 };
 
-export function VoiceIndicatorButton({ id, mode, chord, onClick }: {
-  id: VoiceIndicatorId; mode: Exclude<VoiceMode, "off">; chord?: string; onClick?: () => void;
+export function VoiceIndicatorButton({ id, mode, chord, onClick, pending }: {
+  id: VoiceIndicatorId; mode: Exclude<VoiceMode, "off">; chord?: string; onClick?: () => void; pending?: boolean;
 }): React.JSX.Element {
   const [word, hint, path] = modes[mode];
   const action = mode === "muted" ? "Unmute" : mode === "unavailable" ? "Open Setup" : "Mute";
@@ -91,7 +114,7 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick }: {
     description: `${tip}${chord ? ` Hold ${formatChord(chord)} ${holdAction}. Tap the shortcut to toggle mute.` : ""}`,
     // The floating control expands into its own hint on hover or focus.
     content: id === "floating" ? null : <>{tip}{shortcut && <> {shortcut}. Tap the shortcut to toggle mute.</>}</>,
-  }}><button type="button" className={cls} aria-label={name} onClick={onClick}>{face}</button></Tooltip>
+  }}><button type="button" className={cls} aria-label={name} disabled={pending} onClick={onClick}>{face}</button></Tooltip>
     : <span className={cls}>{face}</span>;
   return id === "edge" ? <div className={`vi-edge-line vi-${mode}`}>{button}</div> : button;
 }
@@ -126,7 +149,8 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
     if (state.mode === "unavailable") openSetup();
     else void setMuted(id, state.mode !== "muted");
   };
-  return <VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={activate} />;
+  return <VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={activate}
+    pending={voice.mutePending && state.mode !== "unavailable"} />;
 }
 
 const previewModes = ["listening", "muted", "auto-muted", "push-to-talk"] as const;

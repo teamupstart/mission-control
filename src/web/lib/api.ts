@@ -2508,8 +2508,8 @@ export const api = {
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
     put<ActionResult & { indicators?: string[] }>("/api/voice/indicators", { id, enabled }, { signal }),
-  setVoiceMuted: (muted: boolean) =>
-    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
+  setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
+    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */
   startVoiceModelDownload: () =>
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),

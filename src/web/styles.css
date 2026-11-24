@@ -43350,6 +43350,7 @@ button.vi { cursor: pointer; }
   background: var(--panel); box-shadow: var(--shadow); color: var(--attention);
   font: 12px/1.4 var(--sans); overflow-wrap: anywhere; -webkit-app-region: no-drag;
 }
+.vi-window-feedback .btn { flex-shrink: 0; }
 .vi-composer-hint { color: var(--muted); font: 12px/1.4 var(--sans); }
 .compose > .vi-composer-hint { flex-basis: 100%; }
 .vi-topbar:hover { background: color-mix(in oklab, var(--vi) 12%, transparent); }

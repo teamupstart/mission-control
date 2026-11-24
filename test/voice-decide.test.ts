@@ -184,18 +184,32 @@ test("a provider error falls to the job, and its detail never carries the key", 
   assert.equal((await jev.ask()).rung, "job");
 });
 
-test("a provider that hangs times out and the job gets only what is left of the budget", async () => {
+test("a provider that hangs times out and the job gets only what is left of the budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  let onProviderStart!: (signal: AbortSignal) => void;
+  const started = new Promise<AbortSignal>(resolve => { onProviderStart = resolve; });
   const { ask, jobs } = rig({
     env: { OPENAI_API_KEY: OPENAI_ENV },
     deadlineMs: 600,
     providerTimeoutMs: 150,
-    reply: (_call, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))),
+    now: Date.now,
+    reply: (_call, signal) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")));
+      onProviderStart(signal);
+    }),
   });
-  const result = await ask();
+  const pending = ask();
+  const signal = await started;
+  t.mock.timers.tick(149);
+  assert.equal(signal.aborted, false);
+  assert.equal(jobs.length, 0);
+  t.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(signal.aborted, true);
   assert.equal(result.rung, "job");
-  assert.match(result.detail, /OpenAI Decisions request failed: timed out; job on claude answered/);
+  assert.match(result.detail, /OpenAI Decisions (?:request failed: )?timed out; job on claude answered/);
   assert.equal(jobs.length, 1);
-  assert.ok(jobs[0]!.timeoutMs <= 450 && jobs[0]!.timeoutMs > 300, `job budget ${jobs[0]!.timeoutMs}`);
+  assert.equal(jobs[0]!.timeoutMs, 450);
 });
 
 test("a job past the deadline is not sure, and its late answer is never used", async () => {

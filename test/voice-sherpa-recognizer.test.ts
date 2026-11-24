@@ -35,6 +35,14 @@ test("the published sherpa addon transcribes a recording through the listener an
   await run(process.execPath, ["scripts/build-voice-sherpa.mjs", join(cwd, "dist")]);
   const manifests = join(cwd, "models.json");
   await writeFile(manifests, JSON.stringify({ "sherpa-onnx": VOICE_TEST_MODEL }));
+  for (const key of ["MISSION_VOICE_BACKEND", "MISSION_VOICE_MODEL_MANIFEST"]) {
+    const original = process.env[key];
+    t.after(() => {
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+    });
+  }
+  delete process.env.MISSION_VOICE_BACKEND;
   process.env.MISSION_VOICE_MODEL_MANIFEST = manifests;
   const installed = join(stateDir(), "voice", "models", "sherpa-onnx");
   await mkdir(installed, { recursive: true });
@@ -89,7 +97,6 @@ test("the published sherpa addon transcribes a recording through the listener an
   const fixture = resolve("test/fixtures/voice/steve-check-the-build.wav");
   const env: NodeJS.ProcessEnv = { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + addr.port, MISSION_VOICE_TOKEN_FILE: tokenPath() };
   delete env.MISSION_VOICE_MODEL_MANIFEST;
-  delete env.MISSION_VOICE_BACKEND;
   const play = (file: string, ...args: string[]) => run(process.execPath,
     [resolve("scripts/run-voice-listener.ts"), ...args, "--input-file", file], { cwd, env, timeout: 60_000 });
   // The fixture is mono 16-bit PCM with a 44-byte RIFF header.

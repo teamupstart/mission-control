@@ -112,6 +112,7 @@ export class VoiceModelManager {
    * deletes files a later download wrote.
    */
   private readonly removing = new Map<string, Promise<void>>();
+  private readonly launchChecks = new Map<string, { controller: AbortController; done: Promise<boolean>; callers: number }>();
   /** The backend and revision the model state describes, or null before the first check. */
   private target: { backend: VoiceBackend; revision: string | null } | null = null;
   private readonly listeners = new Set<(model: VoiceModelState) => void>();
@@ -140,10 +141,33 @@ export class VoiceModelManager {
     }
     // A CLI override can use a previously installed backend without changing the operator's selection.
     const directory = this.revisionDir(backend, manifest.revision);
-    for (const file of manifest.files) {
-      if (!await this.alreadyVerified(join(directory, file.path), file, signal)) return null;
+    signal.throwIfAborted();
+    let check = this.launchChecks.get(directory);
+    if (!check) {
+      const controller = new AbortController();
+      check = { controller, done: this.verifyInstall(directory, manifest, controller.signal), callers: 0 };
+      this.launchChecks.set(directory, check);
     }
-    return { backend, manifest, directory };
+    check.callers++;
+    const disconnected = Promise.withResolvers<never>();
+    const onAbort = () => disconnected.reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      return await Promise.race([check.done, disconnected.promise]) ? { backend, manifest, directory } : null;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      if (--check.callers === 0) {
+        this.launchChecks.delete(directory);
+        check.controller.abort();
+      }
+    }
+  }
+
+  private async verifyInstall(directory: string, manifest: VoiceModelManifest, signal: AbortSignal): Promise<boolean> {
+    for (const file of manifest.files) {
+      if (!await this.alreadyVerified(join(directory, file.path), file, signal)) return false;
+    }
+    return true;
   }
 
   onChange(listener: (model: VoiceModelState) => void): () => void {

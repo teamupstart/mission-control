@@ -622,7 +622,16 @@ test("an explicit launcher override verifies the alternate revision without swit
   const signal = new AbortController().signal;
   assert.equal(await manager.listenerModel("sherpa-onnx", signal), null);
   placeFiles(directory);
-  assert.deepEqual(await manager.listenerModel("sherpa-onnx", signal), { backend: "sherpa-onnx", manifest: alternate, directory });
+  const files = alternate.files;
+  let passes = 0;
+  Object.defineProperty(alternate, "files", { get() { passes++; return files; } });
+  const disconnected = new AbortController();
+  const firstLaunch = manager.listenerModel("sherpa-onnx", disconnected.signal);
+  const secondLaunch = manager.listenerModel("sherpa-onnx", signal);
+  disconnected.abort();
+  await assert.rejects(firstLaunch, { name: "AbortError" });
+  assert.deepEqual(await secondLaunch, { backend: "sherpa-onnx", manifest: alternate, directory });
+  assert.equal(passes, 1, "concurrent callers share a checksum pass even when the first caller disconnects");
   const first = FILES[0]!;
   writeFileSync(join(directory, first.path), Buffer.alloc(first.body.length));
   assert.equal(await manager.listenerModel("sherpa-onnx", signal), null, "a same-size corrupt file is refused");

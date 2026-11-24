@@ -550,3 +550,27 @@ test("the Idle rail scrolls a focused row into view after a live status move", a
   await expect(row).toBeFocused();
   await expect(row).toBeInViewport({ ratio: 0.95 });
 });
+
+test("the Idle rail keeps focus in the rail when a focused session starts working", async ({ dashboard, daemon }) => {
+  const free = await dispatchIdleAgent(dashboard, daemon, "keep this conversation open");
+  const leaving = await dispatchIdleAgent(dashboard, daemon, "start working from Idle");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await useBoardLayout(dashboard, daemon);
+
+  const freeName = await sessionName(daemon, free);
+  const leavingName = await sessionName(daemon, leaving);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await idle.getByRole("button", { name: `Open ${freeName}`, exact: true }).press("Enter");
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  const row = rail.getByRole("button", { name: leavingName, exact: true });
+  await row.focus();
+  await expect(row).toBeFocused();
+
+  await api(daemon, `/api/sessions/${encodeURIComponent(leaving)}/send`, {
+    text: "hold the current turn open for queued review setup",
+    submit: true,
+  });
+  await expect(row).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "free 1", exact: true })).toBeFocused();
+  await expect(dashboard.locator(".cdetail .detail-head")).toContainText(freeName);
+});

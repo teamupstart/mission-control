@@ -25,6 +25,7 @@ import { repoColor } from "../../lib/repo-color.ts";
 import { hiddenSessionIds, toggleRepoCollapsed, useRepoCollapsed } from "../../lib/repo-collapse.ts";
 import { updateUiConfig, useUiConfig } from "../../lib/uiConfig.ts";
 import { useSessionRailFolded } from "../../lib/session-rail.ts";
+import { idleRailFocusFallback } from "../../lib/idle-rail-sections.ts";
 import {
   collapsedColumnSessionIds,
   columnWidthOf,
@@ -99,11 +100,7 @@ function keepIdleHeadingFocus(heading: HTMLButtonElement | null): (() => void) |
       if (document.activeElement !== document.body) return;
       // An empty section unmounts its heading. Prefer the open session's heading,
       // then the first remaining section, then the rail's navigation control.
-      const currentRail = rail?.isConnected ? rail : document.querySelector(".board-col.is-rail");
-      const next = currentRail?.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
-        ?? currentRail?.querySelector<HTMLElement>(".idle-rail-section-toggle")
-        ?? currentRail?.querySelector<HTMLElement>(".board-back, .session-rail-strip");
-      next?.focus();
+      idleRailFocusFallback(rail)?.focus();
     });
   };
 }

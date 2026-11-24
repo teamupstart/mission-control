@@ -16,6 +16,17 @@ export interface IdleRailSections {
   onToggle: (key: string, expanded: boolean) => void;
 }
 
+/** A keyboard target when the focused row or heading leaves the rail. */
+export function idleRailFocusFallback(previousRail: Element | null): HTMLElement | null {
+  const rail = previousRail?.isConnected && previousRail.matches(".board-col.is-rail")
+    ? previousRail
+    : document.querySelector(".board-col.is-rail");
+  return rail?.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
+    ?? rail?.querySelector<HTMLElement>(".idle-rail-section-toggle")
+    ?? rail?.querySelector<HTMLElement>(".board-back, .session-rail-strip")
+    ?? null;
+}
+
 /** Keep the fleet's section boundaries, repository frames, and run clusters in their drawn order. */
 export function idleRailSections(column: FleetColumn): IdleRailSection[] {
   const sections: IdleRailSection[] = [];

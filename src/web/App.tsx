@@ -126,7 +126,7 @@ import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
-import { idleRailSections, type IdleRailSections } from "./lib/idle-rail-sections.ts";
+import { idleRailFocusFallback, idleRailSections, type IdleRailSections } from "./lib/idle-rail-sections.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
@@ -1084,6 +1084,7 @@ export function App(): React.JSX.Element {
     sessionEls.current.delete(id);
     const idleSectionRow = ".has-idle-sections .rail-row";
     if (previous !== document.activeElement || !previous?.matches(idleSectionRow)) return;
+    const rail = previous.closest(".has-idle-sections");
     // A status update can remount a session under a different heading. Let React attach
     // the replacement ref and keep any focus the operator has already moved elsewhere.
     queueMicrotask(() => {
@@ -1096,10 +1097,10 @@ export function App(): React.JSX.Element {
       }
       const destination = committedIdleSections.current?.find((section) =>
         !section.expanded && section.sessionIds.includes(id));
-      if (!destination) return;
-      document.querySelector<HTMLButtonElement>(
-        `.has-idle-sections .idle-rail-section-toggle[data-idle-section="${CSS.escape(destination.key)}"]`,
-      )?.focus();
+      const heading = destination && rail?.querySelector<HTMLButtonElement>(
+        `.idle-rail-section-toggle[data-idle-section="${CSS.escape(destination.key)}"]`,
+      );
+      (heading ?? idleRailFocusFallback(rail))?.focus();
     });
   }, []);
 

@@ -116,8 +116,12 @@ struct SpeechGate {
 
     init(held: Bool = false) { self.held = held }
 
-    mutating func interrupt() {
-        let interruptedSpeech = discarding || !samples.isEmpty
+    func canRecover(with pending: [Float]) -> Bool {
+        overflowPrefix != nil || !samples.isEmpty || (!discarding && pending.contains { abs($0) > Self.activityFloor })
+    }
+
+    mutating func interrupt(unfinished: Bool = false) {
+        let interruptedSpeech = unfinished || discarding || !samples.isEmpty
         self = SpeechGate(held: held)
         discarding = interruptedSpeech
     }
@@ -204,10 +208,12 @@ final class SpeechSegmenter {
 
     deinit { fvad_free(detector) }
 
-    func interrupt() {
+    var canRecover: Bool { gate.canRecover(with: pending) }
+
+    func interrupt(unfinished: Bool = false) {
         pending.removeAll()
         pendingStart = nil
-        gate.interrupt()
+        gate.interrupt(unfinished: unfinished)
     }
 
     func finish(at release: Int64) -> Segment? {
@@ -264,19 +270,53 @@ final class SpeechSegmenter {
 final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
-    private let segmenter: SpeechSegmenter
+    private var segmenter: SpeechSegmenter
+    private let held: Bool
+    // Each interruption starts a discard through 800 ms of silence. At most three
+    // interrupted phrases can therefore overlap a two-second release grace period.
+    private var interrupted: [(speech: SpeechSegmenter, through: Int64, expires: ContinuousClock.Instant)] = []
     private var anchor: AVAudioTime?
     private var nextSample: AVAudioFramePosition?
     private var nextHostSeconds: TimeInterval?
     private var converterDelay: TimeInterval = 0
     private(set) var deliveredThrough: Int64?
 
-    func finish(at release: Int64) -> Segment? { segmenter.finish(at: release) }
+    private func expireInterrupted(through end: Int64? = nil) {
+        guard !interrupted.isEmpty else { return }
+        let now = ContinuousClock.now
+        interrupted.removeAll { prior in
+            if let end, end - prior.through > 2000 { return true }
+            return prior.expires <= now
+        }
+    }
+
+    func covers(_ release: Int64) -> Bool {
+        expireInterrupted()
+        return deliveredThrough.map { $0 >= release } == true || interrupted.contains { $0.through >= release }
+    }
+
+    func finish(at release: Int64) -> Segment? {
+        expireInterrupted()
+        defer { interrupted.removeAll() }
+        if let prior = interrupted.first(where: { release <= $0.through }) {
+            return prior.speech.finish(at: release)
+        }
+        return segmenter.finish(at: release)
+    }
 
     private func interrupt() {
         converter.reset()
         converterDelay = 0
-        segmenter.interrupt()
+        if held, let end = deliveredThrough, segmenter.canRecover, let next = try? SpeechSegmenter(held: true) {
+            // Keep the original detector and its partial frame so late key-up
+            // classifies only the samples actually inside the hold.
+            if interrupted.count == 3 { interrupted.removeFirst() }
+            interrupted.append((segmenter, end, .now + .seconds(2)))
+            next.interrupt(unfinished: true)
+            segmenter = next
+        } else {
+            segmenter.interrupt()
+        }
         anchor = nil
         nextSample = nil
         nextHostSeconds = nil
@@ -284,6 +324,7 @@ final class InputSegmenter {
     }
 
     init(source: AVAudioFormat, held: Bool = false) throws {
+        self.held = held
         guard source.sampleRate > 0, source.channelCount > 0,
               let mono = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1),
               let converter = AVAudioConverter(from: source, to: mono) else { throw CaptureError.format }
@@ -308,7 +349,7 @@ final class InputSegmenter {
     }
 
     func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, cutoff: Int64? = nil) -> [Segment] {
-        if let cutoff, let deliveredThrough, deliveredThrough >= cutoff { return [] }
+        if let cutoff, covers(cutoff) { return [] }
         let rate = buffer.format.sampleRate
         let hostSeconds = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : nil
         // Detect discontinuity before extrapolating. A reset position cannot use
@@ -335,6 +376,7 @@ final class InputSegmenter {
         let inputStart = Int64((AVAudioTime.seconds(forHostTime: time.hostTime) * 1e9).rounded())
         let inputDuration = Double(buffer.frameLength) / rate
         let inputEnd = inputStart + Int64((inputDuration * 1e9).rounded())
+        expireInterrupted(through: inputEnd / 1_000_000)
         let atRelease = cutoff.map { $0 <= inputEnd / 1_000_000 } ?? false
         var input: AVAudioPCMBuffer? = buffer
         if atRelease, let cutoff {
@@ -481,7 +523,7 @@ final class Microphone {
                     queueFullReported = false
                 }
             }
-            guard let cutoff, let end = segmenter.deliveredThrough, end >= cutoff else { return nil }
+            guard let cutoff, segmenter.covers(cutoff) else { return nil }
             defer { onBoundary = nil }
             return onBoundary
         }
@@ -491,7 +533,7 @@ final class Microphone {
     @MainActor func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) {
         let ready = tapLock.withLock {
             cutoff = release
-            if let end = segmenter?.deliveredThrough, end >= release { return true }
+            if segmenter?.covers(release) == true { return true }
             onBoundary = finish
             return false
         }
@@ -520,7 +562,7 @@ final class Microphone {
             // The timeout closes a stalled input before its final callback.
             // Only a tap that covered key-up can certify unfinished speech.
             var final: Segment?
-            if let segmenter, let end = segmenter.deliveredThrough, end >= releasedAt {
+            if let segmenter, segmenter.covers(releasedAt) {
                 final = segmenter.finish(at: releasedAt)
             }
             if heldSpeech == nil { return final.map { [$0] } ?? [] }

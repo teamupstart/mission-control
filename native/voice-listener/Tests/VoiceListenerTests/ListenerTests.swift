@@ -506,6 +506,36 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testDelayedKeyUpRecoversOnlySpeechCoveredBeforeTheTapGap() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        func record(release: Int64, resumeAt: Int = 1600, timestamped: Bool = true) throws -> Segment? {
+            let input = try InputSegmenter(source: format, held: true)
+            func callback(from start: Int, count: Int, dated: Bool) throws {
+                let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)))
+                frame.frameLength = frame.frameCapacity
+                for i in 0..<count { frame.floatChannelData![0][i] = start == 0 ? 0.2 * sin(Float(i) * .pi / 20) : -0.6 }
+                let time = dated ? AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 16_000),
+                                              sampleTime: Int64(start), atRate: 16_000) :
+                    AVAudioTime(sampleTime: Int64(start), atRate: 16_000)
+                XCTAssertTrue(input.consume(frame, at: time).isEmpty)
+            }
+            try callback(from: 0, count: 1536, dated: true) // Speech through 96 ms, including a partial VAD frame.
+            try callback(from: resumeAt, count: 320, dated: timestamped)
+            if !timestamped { XCTAssertTrue(input.covers(release), "A later undated tap must not block closing the input at key-up") }
+            return input.finish(at: release)
+        }
+        for release in [Int64(90), 96] {
+            let phrase = try XCTUnwrap(record(release: release))
+            XCTAssertEqual(phrase.endedAt, release)
+            XCTAssertEqual(phrase.samples.count, Int(release * 16))
+            XCTAssertFalse(phrase.samples.contains(-0.6))
+        }
+        XCTAssertNotNil(try record(release: 95, timestamped: false))
+        XCTAssertNil(try record(release: 98)) // In the missing interval.
+        XCTAssertNil(try record(release: 110)) // Would join speech across the gap.
+        XCTAssertNil(try record(release: 90, resumeAt: 48_000)) // Recovery period elapsed.
+    }
+
     private func captureFourPhrases(held: Bool, onQueueFull: @escaping () -> Void) throws -> (Microphone, Int) {
         let (_, corpus) = try fixtureDirectories()
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))

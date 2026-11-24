@@ -94,6 +94,9 @@ also receives the release time for its queried revision. An ordinary capture sto
 The native helper dates the samples from the input tap's audio timestamp on the shared host
 clock, so a delayed callback still includes speech recorded before key-up. A gap in
 the input timeline discards the interrupted utterance through the next silence boundary.
+During push-to-talk the helper retains the interrupted prefix for up to two seconds.
+If delayed key-up falls on or before the last contiguous sample boundary, the helper
+can finish the phrase using only samples through release. A key-up in the gap discards it.
 If the gap falls between utterances, the helper clears the lead-in and accepts the next phrase immediately.
 
 The shell timestamps every snapshot, including idle heartbeats, at observation time with

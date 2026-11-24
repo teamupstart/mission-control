@@ -298,28 +298,41 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     const commit = Promise.withResolvers<void>();
     const readStarted = Promise.withResolvers<string | null>();
     const releaseRead = Promise.withResolvers<void>();
+    const confirmedRead = Promise.withResolvers<void>();
+    const releaseConfirmedRead = Promise.withResolvers<void>();
     await page.route("**/api/voice/config", async route => {
       if (route.request().method() === "PUT") await commit.promise;
       await route.continue();
     });
     await page.route("**/api/voice/decision-key", async route => {
       const old = await route.fetch();
-      readStarted.resolve((await old.json()).provider);
+      const provider = (await old.json()).provider;
+      if (provider === null) {
+        confirmedRead.resolve();
+        await releaseConfirmedRead.promise;
+        await route.fulfill({ response: old });
+        return;
+      }
+      readStarted.resolve(provider);
       await releaseRead.promise;
       await route.fulfill({ response: old, headers: { ...old.headers(), "x-e2e-old-provider": "yes" } });
-    }, { times: 1 });
+    });
     const saved = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
     const oldReport = page.waitForResponse(r => r.headers()["x-e2e-old-provider"] === "yes");
     try {
       await providerMenu(page).selectOption({ label: "Off" });
       await page.clock.fastForward(5_000);
       expect(await readStarted.promise).toBe("openai");
+      await expect(line(page)).toHaveText(using("OpenAI Decisions"));
       commit.resolve();
       expect((await saved).ok()).toBe(true);
+      await confirmedRead.promise;
       await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
+      await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "18-off-before-status");
     } finally {
       commit.resolve();
       releaseRead.resolve();
+      releaseConfirmedRead.resolve();
       await (await oldReport).finished();
     }
     await page.clock.runFor(50);

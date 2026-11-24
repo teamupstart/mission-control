@@ -165,7 +165,10 @@ export interface VoiceDecisionKeyState {
  * window or a provider chosen there shows here too.
  */
 export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceConfigState["confirmedDecisionProvider"]): VoiceDecisionKeyState {
-  const [report, setReport] = useState<VoiceDecisionKeyReport | null>();
+  const [status, setStatus] = useState<{
+    selection: VoiceConfigState["confirmedDecisionProvider"];
+    report: VoiceDecisionKeyReport | null;
+  }>();
   const [error, setError] = useState<string | null>(null);
   const writes = useRef(0);
   const refresh = useRef<(() => Promise<void>) | null>(null);
@@ -183,7 +186,7 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
       const read = await fetchVoiceDecisionKey();
       if (alive && writes.current === at && id > appliedRead) {
         appliedRead = id;
-        setReport(read);
+        setStatus({ selection: confirmedProvider, report: read });
       }
     };
     refresh.current = tick;
@@ -205,7 +208,7 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
       writes.current++;
       if (res.ok && res.keys && res.provider !== undefined) {
         // Another window may have changed the keys since this mutation was applied.
-        setReport(undefined);
+        setStatus(undefined);
         void refresh.current?.();
         setError(null);
         return true;
@@ -223,5 +226,6 @@ export function useVoiceDecisionKey(enabled: boolean, confirmedProvider: VoiceCo
   const remove = useCallback(async (provider: VoiceKeyProvider) =>
     mutate(() => api.removeVoiceDecisionKey(provider), "The key could not be removed."), [mutate]);
 
+  const report = status?.selection === confirmedProvider ? status?.report : undefined;
   return { report, save, remove, error, busy };
 }

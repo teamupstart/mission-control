@@ -293,19 +293,23 @@ function DecisionKeyRow({ provider, keys }: {
  * sentence, and each provider's key. The line at the top names the provider in use and says what
  * is sent to it, so a key picked up from the environment is visible and one choice from Off.
  */
-function FasterRoutingGroup({ config, update, keys }: {
-  config: VoiceConfigState["config"];
-  update: VoiceConfigState["update"];
+function FasterRoutingGroup({ state, keys }: {
+  state: VoiceConfigState;
   keys: VoiceDecisionKeyState;
 }): React.JSX.Element {
+  const { config, update, confirmedDecisionProvider } = state;
   const stored = config?.decisionProvider ?? null;
   const chosen = DECISION_PROVIDER_CHOICES.find((choice) => choice.stored === stored)?.value ?? "auto";
-  const provider = keys.report?.provider ?? null;
+  const off = confirmedDecisionProvider === "off";
+  const provider = off ? null : keys.report?.provider ?? null;
+  const status = off ? VOICE_ROUTING_WITHOUT_PROVIDER
+    : keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable)
+    : keys.report === null ? "Key status unavailable" : "Reading…";
   return (
     <div className="settings-group voice-faster-routing" data-anchor="voice/faster-routing">
       <p className="settings-group-label">Faster routing</p>
       <p className={`voice-routing-line${provider ? " is-on" : ""}`} role="status" aria-label="Decision model in use">
-        {keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable) : keys.report === null ? "Key status unavailable" : "Reading…"}
+        {status}
       </p>
       {keys.error && <p className="settings-error">{keys.error}</p>}
 
@@ -521,7 +525,7 @@ export function VoiceSettingsPanel({
         </div>
       </div>
 
-      <FasterRoutingGroup config={config} update={update} keys={keys} />
+      <FasterRoutingGroup state={state} keys={keys} />
     </section>
   );
 }

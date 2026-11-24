@@ -1253,14 +1253,17 @@ test("a comma before the connector lets a split end the first instruction with a
   }
 });
 
-test("a confirmed split keeps the argument in 'explain how to use then'", async (t) => {
+test("a confirmed split keeps the last word of an incomplete first instruction", async (t) => {
   for (const choice of ["split", null]) {
     const { router, say, delivered } = routerRig(() => answered(choice));
     t.after(() => router.reset());
-    await say("Steve, explain how to use then, Alice, review the PR", "use");
-    if (choice === null) assert.ok(await router.pick("use", "task:Alice"));
-    assert.ok(await router.sendNow("use"));
-    assert.deepEqual(delivered, [["Steve", "explain how to use then", "use"], ["Alice", "review the PR", "use#2"]]);
+    for (const first of ["explain how to use then", "compare or and"]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${first}, Alice, review the PR`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+    }
   }
 });
 

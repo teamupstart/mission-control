@@ -538,6 +538,10 @@ test("a hello makes voice listen, mute mutes it, and every change reaches the ev
   assert.equal((getAppConfig(APP_CONFIG_ENTRIES.voice) as { muted: boolean }).muted, true);
   await json("/api/voice/mute", "POST", { muted: false });
   assert.equal(frames.at(-1)?.mode, "listening");
+  for (const mode of ["muted", "listening"]) {
+    const toggled = await json("/api/voice/mute", "POST", { toggle: true });
+    assert.equal((await toggled.json() as { state: VoiceState }).state.mode, mode);
+  }
   assert.equal((await json("/api/voice/mute", "POST", { muted: "yes" })).status, 400);
 });
 

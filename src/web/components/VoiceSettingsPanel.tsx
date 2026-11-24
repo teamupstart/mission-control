@@ -1,4 +1,7 @@
+import { ConsoleSwitch } from "./settings-console.tsx";
 import { useState } from "react";
+import { useChordCapture } from "../lib/useChordCapture.ts";
+import { formatChord } from "../lib/keybindings.ts";
 import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
 import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
@@ -44,8 +47,8 @@ import { Tooltip } from "./Tooltip.tsx";
 const CANCEL_WINDOW_CHOICES = [2, 3, 4, 5, 6, 8, 10, 15, 20, 30] as const;
 
 const UNSURE_CHOICES: readonly { id: VoiceWhenUnsure; label: string; description: string }[] = [
-  { id: "show", label: "Show on screen", description: "Show the agents it could have been, and say or click one." },
-  { id: "ask", label: "Ask aloud", description: "Ask aloud which agent you meant, and answer by name." },
+  { id: "ask", label: "Ask", description: "Ask aloud which agent you meant, and answer by name." },
+  { id: "show", label: "Show", description: "Show the agents it could have been, and say or click one." },
 ];
 
 const FIXED_INPUTS: readonly { id: string; label: string }[] = [
@@ -353,6 +356,38 @@ function FasterRoutingGroup({ state, keys }: {
   );
 }
 
+function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceState | null }) {
+  const [recording, setRecording] = useState(false);
+  const available = !!voice?.capabilities.hotkey?.available && !!state.config;
+  const error = voice?.hotkeyError;
+  const chord = error ? error.chordInForce : state.config?.hotkey;
+  const label = chord ? formatChord(chord) : "Unset";
+  useChordCapture(recording && available, () => setRecording(false), captured => {
+    setRecording(false);
+    // The config trims strings. Spell a physical space explicitly on this wire.
+    void state.update({ hotkey: captured.replace(/[ \u00a0]$/, "Space") });
+  });
+  return (
+    <div className={`kb-row${error ? " has-conflict" : ""}`} data-anchor="voice/hotkey">
+      <div className="kb-row-text">
+        <span className="kb-row-label">Mute hotkey</span>
+        {recording && available ? <span className="kb-row-desc">Press the chord you want. Esc keeps {label}.</span>
+          : error && <span className="kb-row-conflict" role="alert">
+            {error.reason}{" "}
+            {chord ? `${label} is still your hotkey.` : "No hotkey is in force."}
+          </span>}
+      </div>
+      <div className="kb-row-controls">
+        {available ? <button type="button" aria-label="Mute hotkey" aria-pressed={recording}
+          className={`kb-capture${recording ? " is-recording" : ""}`}
+          onBlur={() => setRecording(false)} onClick={() => setRecording(!recording)}>
+          {recording ? <span className="kb-recording">Press a key…</span> : <kbd>{label}</kbd>}
+        </button> : <span className="kb-row-desc">{voice?.capabilities.hotkey?.reason ?? "Needs the desktop app"}</span>}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Settings > Voice, behind the `voice` flag. The mode line, then who can be addressed, the input
  * device, then the behavior rows. The indicator previews and recently heard table follow the behavior rows.
@@ -419,89 +454,60 @@ export function VoiceSettingsPanel({
       <div className="settings-group">
         <p className="settings-group-label">Behavior</p>
 
-        <div className="kb-row" data-anchor="voice/auto-mute">
-          <div className="kb-row-text">
-            <span className="kb-row-label">Auto-mute during calls</span>
-            <span className="kb-row-desc">
-              While another app is using the microphone, such as a call, voice stops listening
-              until it is done.
-            </span>
+        <div className="voice-hardware-settings">
+          <MuteHotkey state={state} voice={voice} />
+          <div className="kb-row" data-anchor="voice/auto-mute">
+            <div className="kb-row-text">
+              <span className="kb-row-label">Auto-mute on calls</span>
+              <span className="kb-row-desc">{voice?.capabilities["call-detection"]?.reason}</span>
+            </div>
+            <div className="kb-row-controls">
+              <ConsoleSwitch label="Auto-mute on calls" tone="ok" checked={config?.autoMuteDuringCalls ?? true}
+                disabled={!config || voice?.capabilities["call-detection"]?.available === false}
+                onChange={autoMuteDuringCalls => void update({ autoMuteDuringCalls })}
+                tooltip="Stop listening while another app is using the microphone" />
+            </div>
           </div>
-          <div className="kb-row-controls">
-            <Tooltip label="Stop listening while another app is using the microphone">
-              <label className="skill-switch">
-                <input
-                  type="checkbox"
-                  checked={config?.autoMuteDuringCalls ?? true}
-                  disabled={!config}
-                  onChange={(e) => void update({ autoMuteDuringCalls: e.target.checked })}
-                  aria-label="Auto-mute during calls"
-                />
-              </label>
-            </Tooltip>
-          </div>
-        </div>
 
-        <div className="kb-row" data-anchor="voice/cancel-window">
-          <div className="kb-row-text">
-            <span className="kb-row-label">Cancel window</span>
-            <span className="kb-row-desc">
-              How long a spoken message waits for you to say “cancel” before it is sent. Off sends
-              it at once.
-            </span>
-          </div>
-          <div className="kb-row-controls">
-            <Tooltip label="Wait for “cancel” before a spoken message is sent">
-              <label className="skill-switch">
-                <input
-                  type="checkbox"
-                  checked={config?.cancelWindow.enabled ?? true}
+          <div className="kb-row" data-anchor="voice/cancel-window">
+            <div className="kb-row-text"><span className="kb-row-label">Cancel window</span></div>
+            <div className="kb-row-controls">
+              <Tooltip label="How long to wait for “cancel” before sending a spoken message">
+                <select
+                  className="settings-select"
+                  value={config?.cancelWindow.enabled === false ? "off" : seconds}
                   disabled={!config}
-                  onChange={(e) => void update({ cancelWindow: { enabled: e.target.checked } })}
                   aria-label="Cancel window"
-                />
-              </label>
-            </Tooltip>
-            <Tooltip label="How many seconds a spoken message waits before it is sent">
-              <select
-                className="settings-select"
-                value={seconds}
-                disabled={!config || !config.cancelWindow.enabled}
-                aria-label="Cancel window length"
-                onChange={(e) => void update({ cancelWindow: { seconds: Number(e.target.value) } })}
-              >
-                {lengths
-                  .filter((length) => length >= VOICE_CANCEL_WINDOW_SECONDS.min && length <= VOICE_CANCEL_WINDOW_SECONDS.max)
-                  .map((length) => <option key={length} value={length}>{length} s</option>)}
-              </select>
-            </Tooltip>
+                  onChange={({ target: { value } }) => {
+                    const cancelWindow = value === "off" ? { enabled: false }
+                      : { seconds: Number(value), ...(config?.cancelWindow.enabled ? {} : { enabled: true }) };
+                    void update({ cancelWindow });
+                  }}
+                >
+                  {lengths
+                    .filter((length) => length >= VOICE_CANCEL_WINDOW_SECONDS.min && length <= VOICE_CANCEL_WINDOW_SECONDS.max)
+                    .map((length) => <option key={length} value={length}>{length} s</option>)}
+                  <option value="off">Off</option>
+                </select>
+              </Tooltip>
+            </div>
           </div>
-        </div>
 
-        <div className="kb-row" data-anchor="voice/when-unsure">
-          <div className="kb-row-text">
-            <span className="kb-row-label">When routing is unsure</span>
-            <span className="kb-row-desc">
-              What happens when Mission Control cannot tell which agent you addressed.
-            </span>
-          </div>
-          <div className="kb-row-controls">
-            <div className="display-choice-options" role="radiogroup" aria-label="When routing is unsure">
-              {UNSURE_CHOICES.map((choice) => (
-                <Tooltip key={choice.id} label={choice.description}>
-                  <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
-                    <input
-                      type="radio"
-                      name="voice-when-unsure"
-                      value={choice.id}
-                      checked={unsure === choice.id}
-                      disabled={!config}
-                      onChange={() => void update({ whenUnsure: choice.id })}
-                    />
-                    {choice.label}
-                  </label>
-                </Tooltip>
-              ))}
+          <div className="kb-row" data-anchor="voice/when-unsure">
+            <div className="kb-row-text"><span className="kb-row-label">Unsure</span></div>
+            <div className="kb-row-controls">
+              <div className="display-choice-options" role="radiogroup" aria-label="Unsure">
+                {UNSURE_CHOICES.map((choice) => (
+                  <Tooltip key={choice.id} label={choice.description}>
+                    <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
+                      <input type="radio" name="voice-when-unsure" value={choice.id}
+                        checked={unsure === choice.id} disabled={!config}
+                        onChange={() => void update({ whenUnsure: choice.id })} />
+                      {choice.label}
+                    </label>
+                  </Tooltip>
+                ))}
+              </div>
             </div>
           </div>
         </div>

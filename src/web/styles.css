@@ -43593,3 +43593,18 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   outline: 2px solid var(--select);
   outline-offset: -2px;
 }
+
+.voice-hardware-settings {
+  display: grid;
+  line-height: 1.5;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 10px;
+}
+.voice-hardware-settings .kb-row { padding: 6px 8px; }
+.voice-hardware-settings .kb-capture { min-width: 66px; }
+.voice-hardware-settings .kb-row-desc:empty { display: none; }
+
+.voice-settings { container-type: inline-size; }
+@container (max-width: 460px) {
+  .voice-hardware-settings { grid-template-columns: 1fr; }
+}

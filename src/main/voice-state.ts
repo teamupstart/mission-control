@@ -1,8 +1,8 @@
 import { shell, systemPreferences } from "electron";
 import { EventSource } from "eventsource";
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import { loadVoiceHostClock } from "../server/voice/native-clock.ts";
+import { macVoiceHardware, type VoiceHardware } from "./voice-hardware.ts";
+import { dirname, isAbsolute } from "node:path";
 import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
@@ -16,6 +16,7 @@ import { nativeVoiceListener } from "./voice-listener.ts";
 // including roster-only updates, have no consumer in this shell.
 const ShellVoiceStateSchema = z.object({
   mode: z.enum(VOICE_MODES),
+  configuredHotkey: z.string().nullable().optional(),
   muted: z.boolean().optional(),
   model: z.object({
     status: z.enum(VOICE_MODEL_STATUSES),
@@ -37,6 +38,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let streamDeadline: NodeJS.Timeout | undefined;
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
+  let hardware: VoiceHardware | undefined;
   let state: ShellVoiceState = voiceStateOff();
   let lastEnabledMute: boolean | undefined;
   let nextPromptAt = 0;
@@ -57,7 +59,6 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let reportRequested = false;
   let reportFailed = false;
   let sending: Promise<boolean> | undefined;
-  let hostTimeUs: (() => number) | undefined;
   let lastReportUs = -1;
   const disabled = () => state.mode === "off";
 
@@ -67,15 +68,18 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       while (connection && reportRequested && state.mode !== "off") {
         reportRequested = false;
         const microphone = systemPreferences.getMediaAccessStatus("microphone");
-        hostTimeUs ??= loadVoiceHostClock(join(dirname(binary), "state-lock.node"));
-        lastReportUs = Math.max(hostTimeUs(), lastReportUs + 1);
+        if (!hardware) break;
+        const controls = hardware.report();
+        lastReportUs = Math.max(controls.reportedAtHostUs, lastReportUs + 1);
         const report: VoiceShellReport = {
+          ...controls,
           reportedAtHostUs: lastReportUs,
           capabilities: {
+            ...controls.capabilities,
             tray: { available: true, reason: null },
             microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
           },
-          microphone, hotkeyError: null, callActive: false, pushToTalk: false,
+          microphone,
         };
         const current = connection;
         const response = await current.postStatus("/voice/shell-report", report,
@@ -107,6 +111,8 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
 
   async function sync() {
     if (state.mode === "off") {
+      hardware?.stop();
+      hardware = undefined;
       listener.update(state, false);
       reportRequested = false;
       nextPromptAt = 0;
@@ -114,6 +120,9 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       return;
     }
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
+    hardware ??= macVoiceHardware(dirname(binary), () => listener.pid,
+      () => void sendMute({ toggle: true }), () => void requestReport());
+    hardware.update(state.configuredHotkey ?? null, state.mode);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
     listener.update(state, installed && microphone === "granted");
@@ -195,6 +204,12 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     // A replacement daemon has its own key. Re-read its local identity on every reconnect.
     stream.onerror = requestSnapshot;
   }
+  async function sendMute(command: { muted: boolean } | { toggle: true }) {
+    if (!connection || state.mode === "off") return false;
+    const response = await connection.postStatus("/api/voice/mute", command,
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+    return response?.ok ?? false;
+  }
   connect();
   const heartbeat = setInterval(() => void sync(), 5000);
   return {
@@ -212,15 +227,12 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       if (!accepted) throw new Error("Microphone status report was not accepted");
       return "checked";
     },
-    async mute(muted: boolean) {
-      if (!connection || state.mode === "off") return false;
-      const response = await connection.postStatus("/api/voice/mute", { muted },
-        AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
-      return response?.ok ?? false;
-    },
+    mute: (muted: boolean) => sendMute({ muted }),
     stop() {
       clearTimeout(reconnect);
       disconnect();
+      hardware?.stop();
+      hardware = undefined;
       lifetime.abort();
       clearInterval(heartbeat);
       state = voiceStateOff();

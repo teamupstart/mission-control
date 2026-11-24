@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerResponse } from "node:http";
@@ -32,6 +33,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     process.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(join(root, "stopped"))}, "stopped"); process.exit(0); });
     setInterval(() => {}, 1000);
   `, {mode: 0o755});
+  execFileSync(process.execPath, ["scripts/build-voice-hardware.mjs"], { stdio: "pipe" });
+  for (const name of ["voice-hotkey", "mic-activity"]) {
+    symlinkSync(resolve("dist/native", name + ".node"), join(root, name + ".node"));
+  }
+  const eventFixture = join(root, "queue.node");
+  execFileSync("xcrun", ["clang++", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
+    "-I", resolve(process.execPath, "../../include/node"), "test/fixtures/voice-hotkey-event.cc", "-o", eventFixture]);
   let events: ServerResponse | undefined;
   let connects = 0;
   let unavailableHandshakes = 1;
@@ -39,6 +47,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let reconnectSnapshot: string | undefined;
   const heartbeatMs = 750;
   let keepalive: "ping" | "registry" | "silent" = "ping";
+  let toggles = 0;
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
@@ -82,7 +91,9 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url === "/api/voice/mute") {
-      requests.push(JSON.parse(body).muted);
+      const command = JSON.parse(body);
+      if (command.toggle) toggles++;
+      else requests.push(command.muted);
       if (muteResponse === "timeout") return;
       if (muteResponse === "refused") res.statusCode = 503;
     }
@@ -143,7 +154,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         let lastMenu;
         tray.popUpContextMenu = menu => { lastMenu = menu; labels = menu.items.map(item => item.label); };
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
-        global.fixture = { tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
+        const post = require("node:module").createRequire(__filename)(${JSON.stringify(eventFixture)});
+        global.fixture = { post, tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -153,7 +165,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
+  type Fixture = { post(down: boolean): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -185,6 +197,32 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   assert.equal(reports.length, 0);
   await click("click");
   assert.equal((await read()).opens, 1);
+  await t.test("Electron dispatches Carbon down and up from its application queue and reports replacement failures", async () => {
+    const publish = (configuredHotkey: string | null) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey },
+    }) + "\n\n");
+    const chord = "cmd+ctrl+shift+F9";
+    const startUs = voiceHostTimeUs();
+    publish(chord);
+    await until(() => reports.at(-1)?.registeredHotkey === chord);
+    publish("cmd+ctrl+shift+F10");
+    await until(() => reports.at(-1)?.hotkeyError?.chordInForce === chord);
+    assert.equal(reports.at(-1)?.registeredHotkey, chord);
+    for (const down of [true, false]) {
+      await app.evaluate((_, pressed) => (globalThis as unknown as { fixture: Fixture }).fixture.post(pressed), down);
+    }
+    await until(() => toggles === 1 && !!reports.at(-1)?.pushToTalkReleasedAtHostUs);
+    const released = reports.at(-1)!;
+    assert.ok(startUs <= released.pushToTalkReleasedAtHostUs!);
+    assert.ok(released.pushToTalkReleasedAtHostUs! <= released.reportedAtHostUs!);
+    assert.ok(released.reportedAtHostUs! <= voiceHostTimeUs());
+
+    publish(null);
+    await until(() => reports.at(-1)?.registeredHotkey === null && reports.at(-1)?.hotkeyError === null);
+    publish("UnknownKey");
+    await until(() => !!reports.at(-1)?.hotkeyError);
+    assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, null);
+  });
   const images: string[] = [];
   for (const mode of ["listening", "muted", "auto-muted", "push-to-talk", "unavailable", "off"] satisfies VoiceMode[]) {
     events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode } }) + "\n\n");

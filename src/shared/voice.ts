@@ -81,7 +81,7 @@ export const VoiceConfigSchema = z.object({
    * none. Nothing registers it before Phase 11, and nothing names it before the shell reports
    * the `hotkey` capability.
    */
-  hotkey: ChordSchema.nullable().default("ctrl+alt+m"),
+  hotkey: ChordSchema.nullable().default("cmd+ctrl+alt+v"),
   autoMuteDuringCalls: z.boolean().default(true),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
@@ -143,7 +143,10 @@ export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPat
 }
 
 /** `POST /api/voice/mute`. */
-export const VoiceMuteRequestSchema = z.object({ muted: z.boolean() }).strict();
+export const VoiceMuteRequestSchema = z.union([
+  z.object({ muted: z.boolean() }).strict(),
+  z.object({ toggle: z.literal(true) }).strict(),
+]);
 
 /** Where a routed message's confirmation card appears (Phases 6 and 12). */
 export const VOICE_CONFIRMATION_PLACEMENTS = ["pill", "toast", "popover"] as const;

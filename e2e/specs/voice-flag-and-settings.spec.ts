@@ -123,7 +123,7 @@ test("only Settings > Voice polls for voice config, and a pending save survives 
   expect(reads, "the Display category does not read voice config").toBe(0);
 
   await voiceTab(page).click();
-  const length = page.getByRole("combobox", { name: "Cancel window length" });
+  const length = page.getByRole("combobox", { name: "Cancel window" });
   await expect(length).toHaveValue("4");
   expect((await page.request.put(endpoint, { data: { cancelWindow: { seconds: 6 } } })).ok()).toBe(true);
   await page.clock.fastForward(6000);
@@ -185,22 +185,21 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     await capture(peer, "settings-unavailable");
 
     const panel = peer.getByRole("tabpanel", { name: "Voice" });
-    await expect(panel.getByRole("checkbox", { name: "Auto-mute during calls" })).toBeChecked();
-    await expect(panel.getByRole("checkbox", { name: "Cancel window", exact: true })).toBeChecked();
-    await expect(panel.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("4");
-    await expect(panel.getByRole("radio", { name: "Show on screen" })).toBeChecked();
+    await expect(panel.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeChecked();
+    await expect(panel.getByRole("combobox", { name: "Cancel window" })).toHaveValue("4");
+    await expect(panel.getByRole("radio", { name: "Show" })).toBeChecked();
     await expect(panel.getByRole("checkbox", { name: "Plan forms by voice" })).toBeChecked();
 
-    await panel.getByRole("combobox", { name: "Cancel window length" }).selectOption("8");
+    await panel.getByRole("combobox", { name: "Cancel window" }).selectOption("8");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(8);
-    await panel.getByRole("radio", { name: "Ask aloud" }).check();
+    await panel.getByRole("radio", { name: "Ask" }).check();
     await expect.poll(async () => (await voiceConfig(daemon)).whenUnsure).toBe("ask");
     await peer.reload();
     const reloaded = peer.getByRole("tabpanel", { name: "Voice" });
-    await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("8");
-    await expect(reloaded.getByRole("radio", { name: "Ask aloud" })).toBeChecked();
-    await reloaded.getByRole("checkbox", { name: "Cancel window", exact: true }).uncheck();
-    await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toBeDisabled();
+    await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("8");
+    await expect(reloaded.getByRole("radio", { name: "Ask" })).toBeChecked();
+    await reloaded.getByRole("combobox", { name: "Cancel window" }).selectOption("off");
+    await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("off");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: false, seconds: 8 });
 
     await modeLine(peer).getByRole("button", { name: "Open Setup" }).click();
@@ -282,7 +281,7 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   // Settings > Voice: the daemon refuses every config write.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const panel = page.getByRole("tabpanel", { name: "Voice" });
-  const length = panel.getByRole("combobox", { name: "Cancel window length" });
+  const length = panel.getByRole("combobox", { name: "Cancel window" });
   const planForms = panel.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(length).toHaveValue("4");
   let refusedWrites = 0;
@@ -352,7 +351,7 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   expect(voiceOn.ok).toBe(true);
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const panel = page.getByRole("tabpanel", { name: "Voice" });
-  const length = panel.getByRole("combobox", { name: "Cancel window length" });
+  const length = panel.getByRole("combobox", { name: "Cancel window" });
   const planForms = panel.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(length).toHaveValue("4");
   await expect(planForms).toBeChecked();

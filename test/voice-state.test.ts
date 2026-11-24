@@ -65,7 +65,7 @@ test("voiceUnavailableReasons names every reason that holds, in order", () => {
 test("the config schema holds every contract A field with its default", () => {
   assert.deepEqual(VoiceConfigSchema.parse({}), {
     muted: false,
-    hotkey: "ctrl+alt+m",
+    hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show",
@@ -219,6 +219,10 @@ test("mute, a call with auto-mute, and push-to-talk come from the config and the
   h.setConfig({ muted: false });
   h.store.acceptShellReport({ ...REPORT, callActive: true });
   assert.equal(h.store.state().mode, "auto-muted");
+  h.setConfig({ muted: true }); // a hotkey tap during the call
+  assert.equal(h.store.state().mode, "muted");
+  h.setConfig({ muted: false });
+  assert.equal(h.store.state().mode, "auto-muted");
   h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true, reportedAtHostUs: h.hostNowUs() });
   assert.equal(h.store.state().mode, "push-to-talk");
   h.setConfig({ autoMuteDuringCalls: false });
@@ -256,21 +260,21 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
       // A capability this build does not know is dropped, not refused.
       "teleport": { available: true, reason: null },
     },
-    registeredHotkey: "ctrl+alt+m",
-    hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" },
+    registeredHotkey: "cmd+ctrl+alt+v",
+    hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "cmd+ctrl+alt+v" },
   });
   const state = h.store.state();
   assert.ok(voiceCapable(state, "hotkey"));
-  assert.equal(state.registeredHotkey, "ctrl+alt+m");
-  assert.equal(state.configuredHotkey, "ctrl+alt+m");
+  assert.equal(state.registeredHotkey, "cmd+ctrl+alt+v");
+  assert.equal(state.configuredHotkey, "cmd+ctrl+alt+v");
   h.setConfig({ hotkey: "ctrl+alt+k" });
   assert.equal(h.store.state().configuredHotkey, "ctrl+alt+k");
-  assert.equal(h.store.state().registeredHotkey, "ctrl+alt+m");
+  assert.equal(h.store.state().registeredHotkey, "cmd+ctrl+alt+v");
   assert.notEqual(canonicalVoiceState(state), canonicalVoiceState(h.store.state()));
   assert.ok(!voiceCapable(state, "call-detection"));
   assert.equal(state.capabilities["call-detection"]?.reason, "Needs macOS 14.2 or later.");
   assert.equal(Object.hasOwn(state.capabilities, "teleport"), false);
-  assert.deepEqual(state.hotkeyError, { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" });
+  assert.deepEqual(state.hotkeyError, { reason: "Another app owns ⌥Space.", chordInForce: "cmd+ctrl+alt+v" });
 
   h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
   assert.equal(h.published.at(-1)?.capabilities.hotkey, undefined, "the lapse is published");

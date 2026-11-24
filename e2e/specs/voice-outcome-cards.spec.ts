@@ -221,6 +221,12 @@ test("a finished task opens a separate follow-up draft and preserves the regular
     const session = await runningAgent(page, daemon, name);
     expect((await page.request.post(daemon.baseURL + "/api/tasks/" + session.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
   }
+  await page.route("**/api/environment/checks", route => route.fulfill({ json: { checks: [{
+    id: "mission-hook-events", label: "Claude Code hook events", warning: "Hook event missing", detail: null,
+  }] } }));
+  await page.evaluate(() => { window.location.hash = "#/library/personas/new"; });
+  const nameField = page.getByRole("textbox", { name: "Name", exact: true });
+  await nameField.fill("Unfinished reviewer");
   await page.clock.install();
   await say(daemon, "Steve, check again");
   const done = page.getByRole("status").filter({ hasText: "Steve has finished" });
@@ -231,6 +237,13 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(followUp).toBeFocused({ timeout: 3000 });
   await expect(done).toHaveCSS("opacity", "1");
   await followUp.press("Enter");
+  const leave = page.getByRole("dialog", { name: "Leave with unsaved changes" });
+  await expectContentClearsBorder(leave);
+  await expect(dialog).toHaveCount(0);
+  await leave.getByRole("button", { name: "Cancel" }).click();
+  await expect(nameField).toHaveValue("Unfinished reviewer");
+  await followUp.click();
+  await leave.getByRole("button", { name: "Discard and leave" }).click();
   await expectContentClearsBorder(dialog);
   await expect(repo).toHaveValue(daemon.repo);
   await expect(intent).toHaveValue("");
@@ -245,12 +258,24 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await transfer.dispose();
   const attachment = dialog.getByRole("button", { name: "Remove first-follow-up.png" });
   await expect(attachment).toBeVisible();
-  await say(daemon, "Will, check again");
-  await page.getByRole("status").filter({ hasText: "Will has finished" }).getByRole("button", { name: "Start a follow-up task" }).click();
+  await dialog.getByRole("button", { name: "Fix Claude Code hook events in Setup" }).click();
+  await expect(page).toHaveURL(/#\/settings\/setup/);
+  await expect(dialog).toHaveCount(0);
+  await openDispatch.click();
   await expectContentClearsBorder(dialog);
   await expect(repo).toHaveValue(daemon.repo);
-  await expect(intent).toHaveValue("", { timeout: 2000 });
+  await expect(intent).toHaveValue("Only for the follow-up");
+  await expect(attachment).toBeVisible();
+  await say(daemon, "Will, check again");
+  await page.getByRole("status").filter({ hasText: "Will has finished" }).getByRole("button", { name: "Start a follow-up task" }).click();
+  await expect(intent).toHaveValue("", { timeout: 3000 });
+  await expectContentClearsBorder(dialog);
+  await expect(repo).toHaveValue(daemon.repo);
   await expect(attachment).toHaveCount(0);
+  await intent.fill("Discard this edit");
+  await dialog.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect(intent).toHaveValue("");
+  await expect(repo).toHaveValue(daemon.repo);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await openDispatch.click();
@@ -272,8 +297,15 @@ test("a held card identifies the blocking question and recalls the queued words"
   await page.reload();
   await expect(held).toContainText(title);
   await captureCard(held, "held");
+  await page.evaluate(() => { window.location.hash = "#/library/personas/new"; });
+  await page.getByRole("textbox", { name: "Name", exact: true }).fill("Unfinished persona");
   await held.getByRole("button", { name: "Open question" }).click();
-  await expect(page.getByRole("dialog").filter({ hasText: title })).toBeVisible();
+  const leave = page.getByRole("dialog", { name: "Leave with unsaved changes" });
+  await expectContentClearsBorder(leave);
+  const question = page.getByRole("dialog").filter({ hasText: title });
+  await expect(question).toHaveCount(0);
+  await leave.getByRole("button", { name: "Discard and leave" }).click();
+  await expectContentClearsBorder(question);
   await page.keyboard.press("Escape");
   await held.getByRole("button", { name: "Cancel message" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();

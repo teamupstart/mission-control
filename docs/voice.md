@@ -23,6 +23,7 @@ desktop notification identifies that stop separately and counts down only the wa
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 If a desktop action fails, the dashboard card names the unconfirmed action and shows
 the reason. Its controls remain available for a retry while the cancel window is open.
+Reloading or closing the desktop dashboard dismisses the native notice for that page.
 The browser closes its notification at the cancel deadline even if its connection to the daemon drops.
 At the deadline the card removes its delivery controls. If the outcome has yet to arrive,
 it shows “Awaiting delivery confirmation”.
@@ -32,7 +33,8 @@ progress, including when the dashboard reconnects to the daemon. Once both end, 
 gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
 Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
-draft stays available when the follow-up closes.
+draft stays available when the follow-up closes. If you leave the follow-up through a setup
+or launch repair link, reopening Dispatch restores its instructions and attachments.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
@@ -330,6 +332,8 @@ the pick. A cancel spoken before that instant leaves the picked card pending eve
 arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
+A finished card reads its stored task’s repository from `GET /api/voice/tasks/:id/follow-up`,
+including tasks that have aged out of the dashboard’s recent list.
 
 `GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
 time with the latest arrival first for ties. Entries include

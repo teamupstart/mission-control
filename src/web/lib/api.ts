@@ -2536,8 +2536,10 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
+  voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
+    "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
   setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement) =>
-    put("/api/voice/confirmation", { confirmation }),
+    put("/api/voice/confirmation", { confirmation }, { signal: AbortSignal.timeout(5000) }),
   submitVoiceAnswerCompanion: (id: string) => post(`/api/voice/cards/${encodeURIComponent(id)}/send-now?source=card`),
   voiceCardAction: (id: string, action: "cancel" | "send-now" | "pick", candidateId?: string) =>
     post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`, candidateId ? { id: candidateId } : undefined),

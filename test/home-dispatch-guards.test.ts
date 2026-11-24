@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 473 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 474 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -75,11 +75,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The macOS Terminal backend extends enum validation for Pipeline console, Pipeline install, and Setup install.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
   // The confirmation card placement route, PUT /api/voice/confirmation, returns 404 with Voice off.
-  // PUT /api/voice/open-cards also returns 404 with Voice off.
+  // PUT /api/voice/open-cards and GET /api/voice/tasks/:id/follow-up also return 404 with Voice off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 473);
+  assert.equal(others.length, 474);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "ac711ffc25ea36b2f8d7922d6059629e9d97cfc217aeded15549a8585c878fe7");
+    "c55bae380b05f45cc897e10fbec52b1bb0f14b3e09483231859e73e28cf9b609");
 });
 
 function sourceFiles(dir: string): string[] {

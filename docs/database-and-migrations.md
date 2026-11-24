@@ -229,3 +229,9 @@ and generation on the outbox row. Confirming delivery and retiring the row atomi
 the work cycle clears the hold in the same write that advances its generation.
 The `session_spoken_turns` ledger binds the spoken words to the native transcript turn, so its
 disclosure survives retirement of the pending row and daemon restarts.
+
+When the native transcript is missing at handoff, the Claude and Codex SDKs receive the
+reservation UUID as a user-message identifier. The transcript reader uses that identifier
+even if another turn contains identical text. For a transport without client identifiers,
+a file created after reservation supplies the starting boundary. An older file of unknown
+size cannot establish which turn was spoken.

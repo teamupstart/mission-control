@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import * as db from "../src/server/db.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "../src/shared/voice-delivery.ts";
@@ -72,6 +75,70 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   assert.deepEqual(spokenLedger.rows(conversation.key), [
     { ...spoken, contested: false, messageId: turn.id, messageTs: turn.ts },
   ]);
+});
+
+test("a spoken reservation with no transcript binds its native receipt, even beside identical typed turns", async () => {
+  const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+  const transcript = fakeTranscript();
+  const key = "first-spoken-receipt";
+  const spokenWords = "check the build";
+  const received = spokenMessageText(spokenWords, { openQuestions: null, unseenReports: null });
+  const now = Date.now();
+  const earlier = transcript.append("typed-before", received, now);
+  const row = reserveSpokenTurn({ key, transcript: null }, spokenWords, received, true);
+  assert.equal(row.transcriptOffset, null);
+  const actual = transcript.append(row.id, received, now);
+  const later = transcript.append("typed-after", received, now);
+  forgetDeliveryBindingState();
+  db.closeDb();
+  const { attributeTranscript } = await import("../src/server/transcript-attribution.ts");
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  const presentations = attributeTranscript("sdk:test", [earlier, actual, later], null, undefined, transcript.conversation(key))
+    .map(message => message.presentation);
+  assert.deepEqual(presentations, [undefined, { kind: "spoken", displayText: spokenWords, received }, undefined]);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, actual.id);
+});
+
+test("a separate Codex client receipt follows the first native conversation key, including across restart", async () => {
+  const { reserveSpokenTurn, followSpokenConversationKey, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { parseCodexMessages } = await import("../src/server/harness/codex/transcript.ts");
+  const synthetic = "sdk:cold-codex";
+  const key = "codex-native";
+  const received = "check the build\n\nWhen you have finished this, post a report.";
+  const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true);
+  const messages = parseCodexMessages([{
+    type: "event_msg", timestamp: new Date().toISOString(),
+    payload: { type: "item_completed", item: { type: "UserMessage", id: "item-1", client_id: row.id, content: [{ text: received }] } },
+  }]);
+  followSpokenConversationKey(synthetic, synthetic, key);
+  followSpokenConversationKey(synthetic, key, "different-conversation");
+  spokenLedger.forgetCaches();
+  db.closeDb();
+  assert.equal(messages[0]?.id, "item-1");
+  assert.equal(spokenLedger.bound({ key, transcript: null }, messages).rows.get("item-1")?.id, row.id);
+  assert.deepEqual(spokenLedger.rows("different-conversation"), []);
+});
+
+test("a terminal transcript created after reservation supplies a boundary; an older file with identical text does not", async t => {
+  const { spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const dir = mkdtempSync(join(tmpdir(), "voice-late-transcript-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "native.jsonl");
+  writeFileSync(path, "");
+  const created = statSync(path).birthtimeMs;
+  const text = "check the build";
+  const transcript = fakeTranscript();
+  const native = transcript.append("first-native", text, Math.ceil(created) + 5);
+  const repeat = transcript.append("typed-repeat", text, native.ts + 1);
+  for (const [key, reservedAt, expected] of [
+    ["before-file", Math.floor(created) - 1, [native.id]], ["after-file", Math.ceil(created) + 1, []],
+  ] as const) {
+    spokenLedger.reserve({ key, transcript: null }, text, base => ({ ...base, spokenWords: text, received: text }), reservedAt);
+    const located = { key, transcript: { read: transcript.conversation(key).transcript!.read, path } };
+    assert.deepEqual([...spokenLedger.bound(located, [native, repeat]).rows.keys()], expected);
+  }
 });
 
 test("busy spoken message takes the live ask list on idle, matches its composed echo and records one human Goal", async t => {

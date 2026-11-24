@@ -55,6 +55,8 @@ export interface DeliveryConversation {
 
 /** One table's persistence, and who its rows would be credited to. */
 export interface DeliveryStore<Row extends BindableDelivery> {
+  /** Optional byte boundary for a transcript proven to have been created after reservation. */
+  newTranscriptAfter?(transcript: SessionMessages, deliveredAt: number): boolean;
   /** For log lines: "a delegated turn". */
   label: string;
   /** A conversation's rows, in reservation (rowid) order. */
@@ -198,6 +200,10 @@ function claimedTurns(noteKey: string): Set<string> {
   return new Set(ledgers.flatMap((ledger) => ledger.rows(noteKey).flatMap((row) => row.messageId === null ? [] : [row.messageId])));
 }
 
+function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
+  return claimed.has(message.id) || (message.clientMessageId !== undefined && claimed.has(message.clientMessageId));
+}
+
 /** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
 function bindAll(conversation: DeliveryConversation, now: number): void {
   if (!conversation.transcript) return;
@@ -339,7 +345,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       noteKey: conversation.key,
       fingerprint,
       deliveredAt: now,
-      // Null when the size could not be read: an unknown boundary is never bound, whatever else.
+      // Null when the size could not be read. Never assume an unknown boundary is byte zero.
       transcriptOffset: transcriptSize(conversation.transcript),
       contested: this.otherSendInFlight(conversation, rows, fingerprint, now),
       messageId: null,
@@ -411,7 +417,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
   bindLanded(noteKey: string, transcript: SessionMessages, now: number): void {
     const rows = this.rows(noteKey);
-    if (rows.some((row) => row.messageId === null && !row.contested && row.transcriptOffset !== null)) this.bindPending(rows, transcript, now);
+    if (rows.some((row) => row.messageId === null && !row.contested && (row.transcriptOffset !== null || this.store.newTranscriptAfter))) this.bindPending(rows, transcript, now);
   }
 
   private contest(row: Row, contested = true): void {
@@ -440,7 +446,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       for (;;) {
         const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS);
         for (const m of page.messages) {
-          if (m.role === "user" && m.text && !claimed.has(m.id) && injectionFingerprint(m.text) === fingerprint) landed += 1;
+          if (m.role === "user" && m.text && !isClaimed(m, claimed) && injectionFingerprint(m.text) === fingerprint) landed += 1;
         }
         if (page.atEnd || page.end <= from) break;
         from = page.end;
@@ -461,8 +467,9 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // count, so a turn another table already bound is never bound again here.
     const claimed = rows.length ? claimedTurns(rows[0]!.noteKey) : new Set<string>();
     for (const row of rows) {
-      if (row.messageId !== null || row.contested || row.transcriptOffset === null || this.expired.has(row.id)) continue;
-      let from = this.scanned.get(row.id) ?? row.transcriptOffset;
+      if (row.messageId !== null || row.contested || this.expired.has(row.id)) continue;
+      if (row.transcriptOffset === null && !this.store.newTranscriptAfter?.(transcript, row.deliveredAt)) continue;
+      let from = this.scanned.get(row.id) ?? row.transcriptOffset ?? 0;
       let found: TranscriptMessage | null = null;
       let closed = false;
       try {
@@ -474,7 +481,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
               break;
             }
             if (m.role !== "user" || !m.text || injectionFingerprint(m.text) !== row.fingerprint) continue;
-            if (claimed.has(m.id)) continue;
+            if (row.transcriptOffset === null && m.ts < row.deliveredAt) continue;
+            if (isClaimed(m, claimed)) continue;
             found = m;
             break;
           }
@@ -593,8 +601,11 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const fingerprint = prints.get(m.id);
       if (!fingerprint) continue;
       result.matched.add(m.id);
-      const exact = byId.get(m.id);
-      if (exact) {
+      const clientReceipt = m.clientMessageId ? byId.get(m.clientMessageId) : undefined;
+      // Some runtimes store the caller's receipt alongside their own native id.
+      const exact = byId.get(m.id) ??
+        (clientReceipt && clientReceipt.id === clientReceipt.messageId ? clientReceipt : undefined);
+      if (exact && (exact.messageId !== exact.id || exact.fingerprint === fingerprint)) {
         result.rows.set(m.id, exact);
         continue;
       }

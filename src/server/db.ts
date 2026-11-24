@@ -13312,6 +13312,10 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
   return rows.map(row => ({ ...row, contested: row.contested === 1 }));
 }
 
+export function moveSpokenTurns(fromKey: string, toKey: string): number {
+  return Number(openDb().prepare("UPDATE session_spoken_turns SET note_key = ? WHERE note_key = ?").run(toKey, fromKey).changes);
+}
+
 export function deleteSpokenTurn(id: string): void {
   openDb().prepare("DELETE FROM session_spoken_turns WHERE id = ?").run(id);
 }

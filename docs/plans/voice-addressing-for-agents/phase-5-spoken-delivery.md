@@ -64,7 +64,7 @@ As of `2088bd522`:
      kind so the card can choose its hint;
    - the state is `hibernated`: resume the task, then `submitSpoken`, outcome `queued`;
    - the session has a pending call-mode ask: `submitSpoken`, outcome `held`;
-   - the session is working: `queued`; idle: `sent`.
+   - a working or idle session: `queued` until the outbox delivery receipt moves the card and Recently heard to `sent`.
    The card's `openQuestions` count is filled from `openAsks`.
 5. **Stop.** `stop` interrupts through `interruptSession` and, where the harness cannot be
    interrupted, reports `failed` with the reason.

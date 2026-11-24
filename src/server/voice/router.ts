@@ -2,7 +2,9 @@ import { routeUtterance, type HeardEntry, type VoiceAddressedCommand, type Voice
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceBackend, VoiceConfig, VoiceState } from "@shared/voice.ts";
 
-type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed"> | { outcome: "failed"; detail: string };
+type DeliveryResult = Exclude<VoiceDeliveryOutcome, "failed">
+  | { outcome: "failed"; detail: string }
+  | { outcome: "queued" | "held"; turnId: string };
 
 export interface VoiceDeliverer {
   openQuestions?(sessionId: string): number;
@@ -44,6 +46,8 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
+  // Keep receipt correlations only as long as the associated Recently heard entry survives.
+  private readonly outbox = new WeakMap<HeardEntry, { turnId: string; card: VoiceCard }>();
   private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
@@ -211,7 +215,7 @@ export class VoiceRouter {
     if (this.delivering.get(id) !== inFlight) return true;
     this.delivering.delete(id);
     const outcome = typeof result === "string" ? result : result.outcome;
-    if (typeof result !== "string") item.entry.detail = result.detail;
+    if (typeof result !== "string" && result.outcome === "failed") item.entry.detail = result.detail;
     const recipient = target ?? part.target;
     if (outcome === "not-running" && !target) {
       item.entry.detail = "The selected session is unavailable.";
@@ -222,13 +226,26 @@ export class VoiceRouter {
     const current = this.state();
     if (current.mode !== "off") {
       const latest = (target && current.roster.find(name => name.key === target.key)) ?? recipient;
-      this.publish({ ...item.card, state: outcome, deadline: null,
+      const card: VoiceCard = { ...item.card, state: outcome, deadline: null,
         parts: [{ ...part, target: latest }],
         openQuestions: latest?.sessionId ? this.deliverer.openQuestions?.(latest.sessionId) ?? 0 : 0,
         ...(item.entry.detail && { detail: item.entry.detail }),
-      });
+      };
+      if (typeof result !== "string" && "turnId" in result) this.outbox.set(item.entry, { turnId: result.turnId, card });
+      this.publish(card);
     }
     return true;
+  }
+
+  settleSpoken(turnId: string, outcome: "sent" | "cancelled"): void {
+    for (const entry of this.heard.list()) {
+      const pending = this.outbox.get(entry);
+      if (pending?.turnId !== turnId) continue;
+      this.outbox.delete(entry);
+      entry.outcome = outcome;
+      this.publish({ ...pending.card, state: outcome });
+      return;
+    }
   }
 
   clearActionsAndHistory(): void {

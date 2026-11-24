@@ -8,7 +8,7 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
-import { spokenLedger } from "./delivery-ledgers.ts";
+import { followSpokenConversationKey, reserveSpokenTurn, spokenLedger } from "./delivery-ledgers.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
@@ -37,7 +37,7 @@ import {
 } from "./db.ts";
 import { noteKeyFor, type Registry } from "./registry.ts";
 import type { SdkTurn } from "./harness/types.ts";
-import { sessionMessages, type SessionMessages } from "./harness/index.ts";
+import { sdkFor, sessionMessages, type SessionMessages } from "./harness/index.ts";
 import { journalScoutPrompt } from "./scouts/prompt-journal.ts";
 import { noteOtherSend, withdrawOtherSend, type OtherSendHandle } from "./delegated-turns.ts";
 import {
@@ -230,15 +230,16 @@ function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
  */
 type OutboxSend =
   | { kind: "review"; noteKey: string; id: string }
-  | { kind: "spoken"; noteKey: string; id: string }
+  | { kind: "spoken"; id: string; clientMessageId: string | null }
   | { kind: "other"; handle: OtherSendHandle };
 
 function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
   const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
   if (turn.spokenWords !== undefined) {
     const spokenWords = turn.spokenWords;
-    const row = spokenLedger.reserve(conversation, turn.text, base => ({ ...base, spokenWords, received: turn.text }));
-    return { kind: "spoken", noteKey: conversation.key, id: row.id };
+    const row = reserveSpokenTurn(conversation, spokenWords, turn.text,
+      session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds === true);
+    return { kind: "spoken", id: row.id, clientMessageId: row.messageId };
   }
   // Only a row the daemon queued about a review: an operator's message that happens to begin
   // with the marker line is the operator's, and is noted like any other send.
@@ -247,9 +248,9 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
 }
 
 /** Positive evidence that nothing landed: give the record back. */
-function withdrawOutboxSend(send: OutboxSend): void {
+function withdrawOutboxSend(send: OutboxSend, turn: PendingTurn): void {
   if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
-  else if (send.kind === "spoken") spokenLedger.release(send.noteKey, send.id);
+  else if (send.kind === "spoken") spokenLedger.release(turn.noteKey, send.id);
   else withdrawOtherSend(send.handle);
 }
 
@@ -320,6 +321,7 @@ export class PendingTurnManager {
     recoverSendingPendingTurns(this.deps.now());
     this.unsubscribe = this.registry.subscribe((event) => this.observe(event));
     for (const session of this.registry.snapshot().sessions) {
+      followSpokenConversationKey(session.id, session.id, noteKeyFor(session));
       this.knownKeys.set(session.id, noteKeyFor(session));
       this.registry.refreshPendingTurns(noteKeyFor(session));
       this.observeSession(this.registry.getSession(session.id) ?? session);
@@ -578,7 +580,10 @@ export class PendingTurnManager {
     if (!session) return null;
     const key = noteKeyFor(session);
     const recalled = recallPendingTurn(key, id, revision);
-    if (recalled) this.registry.refreshPendingTurns(key);
+    if (recalled) {
+      if (recalled.spokenWords !== undefined) this.registry.voiceRouter?.settleSpoken(recalled.id, "cancelled");
+      this.registry.refreshPendingTurns(key);
+    }
     return recalled;
   }
 
@@ -637,7 +642,14 @@ export class PendingTurnManager {
       if (deleteClaimedPendingTurn(interruption.turn.id, interruption.turn.revision)) dropped++;
     }
     dropped += dropQueuedPendingTurns(key);
-    if (dropped > 0) this.registry.refreshPendingTurns(key);
+    if (dropped > 0) {
+      const spoken = session.pendingTurns.filter(turn => turn.spokenWords !== undefined);
+      this.registry.refreshPendingTurns(key);
+      const remaining = this.registry.getSession(sessionId)?.pendingTurns;
+      for (const turn of spoken) {
+        if (!remaining?.some(row => row.id === turn.id)) this.registry.voiceRouter?.settleSpoken(turn.id, "cancelled");
+      }
+    }
     return dropped;
   }
 
@@ -665,6 +677,7 @@ export class PendingTurnManager {
     if (!row || row.noteKey !== key) return false;
     const resolved = resolveUncertainPendingTurn(id, revision, this.deps.now());
     if (resolved) {
+      if (row.spokenWords !== undefined) this.registry.voiceRouter?.settleSpoken(row.id, "sent");
       this.registry.refreshPendingTurns(key);
       this.scheduleDrain(key);
     }
@@ -697,6 +710,7 @@ export class PendingTurnManager {
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
+    if (previousKey !== key) followSpokenConversationKey(session.id, previousKey ?? session.id, key);
     if (previousKey && previousKey !== key) {
       this.registry.moveSteeredTurns(previousKey, key);
       // Review deliveries follow a session id becoming its native key, never a `/clear`.
@@ -1210,7 +1224,8 @@ export class PendingTurnManager {
     let generation = session.workCycle?.generation ?? 0;
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
-      const accepted = await send(session.id, { text: turn.text }, () => {
+      const input = { text: turn.text, ...(outboxSend.kind === "spoken" && outboxSend.clientMessageId && { clientMessageId: outboxSend.clientMessageId }) };
+      const accepted = await send(session.id, input, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
         if (!blocker) {
           generation = this.registry.getSession(session.id)?.workCycle?.generation ?? 0;
@@ -1253,7 +1268,7 @@ export class PendingTurnManager {
       } else if (accepted === null) {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
-        withdrawOutboxSend(outboxSend);
+        withdrawOutboxSend(outboxSend, turn);
         withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
@@ -1343,7 +1358,7 @@ export class PendingTurnManager {
       } else {
         if (humanEcho) releaseHumanEcho(humanEcho, this.deps.now());
         if (author) releaseInjection(session.id, turn.text);
-        withdrawOutboxSend(outboxSend);
+        withdrawOutboxSend(outboxSend, turn);
         withdrawPersonDelivery(personSend);
         releasePendingTurn(turn.id, turn.revision, errorMessage(err), this.deps.now());
       }
@@ -1445,7 +1460,7 @@ export class PendingTurnManager {
         );
       } else {
         if (author) releaseInjection(session.id, turn.text);
-        withdrawOutboxSend(outboxSend);
+        withdrawOutboxSend(outboxSend, turn);
         withdrawPersonDelivery(personSend);
         releasePendingTurn(
           turn.id,
@@ -1518,7 +1533,7 @@ export class PendingTurnManager {
       }
     } else {
       if (author) releaseInjection(session.id, turn.text);
-      withdrawOutboxSend(outboxSend);
+      withdrawOutboxSend(outboxSend, turn);
       withdrawPersonDelivery(personSend);
       releasePendingTurn(
         turn.id,

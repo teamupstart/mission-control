@@ -2270,6 +2270,7 @@ export class Registry extends EventEmitter {
 
   /** Announce a confirmed delivery. `PendingTurnManager.journalDelivered` is the only caller. */
   turnDelivered(e: TurnDelivered): void {
+    if (e.spoken) this.voiceRouter?.settleSpoken(e.turnId, "sent");
     this.emit("turn_delivered", e);
   }
 

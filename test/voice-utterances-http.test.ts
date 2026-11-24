@@ -124,7 +124,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(1);
   await Promise.resolve();
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
-  assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["pending", "pending", "cancelled", "delivering", "sent"]);
+  assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["pending", "pending", "cancelled", "delivering", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
@@ -256,7 +256,7 @@ test("window off queues immediately and an addressed stop interrupts the session
   assert.ok(queued("Steve").includes("ship   it!"));
   await say("Steve, stop.");
   assert.deepEqual(interrupts, ["sdk:Steve"]);
-  assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["delivering", "sent", "delivering", "sent"]);
+  assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["delivering", "queued", "delivering", "sent"]);
 });
 
 test("quoted stop messages reach the queue verbatim while bare stop still interrupts", async () => {
@@ -266,7 +266,7 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
     const id = "quoted-stop-" + index;
     await say("Steve, " + message, id);
     assert.equal((await act(id, "send-now")).status, 200);
-    assert.deepEqual([cards.at(-1)?.state, queued("Steve").at(-1)], ["sent", message]);
+    assert.deepEqual([cards.at(-1)?.state, queued("Steve").at(-1)], ["queued", message]);
   }
   assert.equal(interrupts.length, before);
   for (const command of ["stop", "Stop!"]) {
@@ -285,7 +285,7 @@ test("extra message punctuation is queued verbatim and cannot turn stop into an 
     const id = randomUUID();
     await say(captureText, id);
     assert.equal((await act(id, "send-now")).status, 200);
-    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["sent", message]);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
   }
   assert.equal(interrupts.length, before);
   await say("Will, STOP。", "punctuated-command");
@@ -303,10 +303,10 @@ test("space before an address's closing quote preserves bare and quoted stop beh
   assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will", "sdk:Will"]);
   await say("“Will, ” “stop”", "message-quote");
   assert.equal((await act("message-quote", "send-now")).status, 200);
-  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["sent", "“stop”"]);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
   await say("“Will, ” ! stop", "message-exclamation");
   assert.equal((await act("message-exclamation", "send-now")).status, 200);
-  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["sent", "! stop"]);
+  assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "! stop"]);
   assert.equal(interrupts.length, before + 3);
 });
 
@@ -320,7 +320,7 @@ test("mismatched address wrappers stay in the queued message and cannot trigger 
     const id = randomUUID();
     await say(captureText, id);
     assert.equal((await act(id, "send-now")).status, 200);
-    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["sent", message]);
+    assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", message]);
   }
   assert.equal(interrupts.length, before);
   for (const captureText of ["[Will, ] stop", "「[Will, ] 」 stop"]) {
@@ -340,7 +340,7 @@ test("a stop after an unclosed address wrapper queues as text at the deadline", 
   await Promise.resolve();
   assert.equal(interrupts.length, before);
   assert.deepEqual(queued("Will").slice(messages.length), ["stop", "STOP!", "stop", "stop"]);
-  assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["sent", "sent", "sent", "sent"]);
+  assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["queued", "queued", "queued", "queued"]);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {

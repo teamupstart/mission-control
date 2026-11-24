@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import {
   bindDelegatedTurn,
   bindReviewDelivery,
@@ -14,11 +15,12 @@ import {
   loadDelegatedTurns,
   loadReviewDeliveries,
   loadSpokenTurns,
+  moveSpokenTurns,
   type DelegatedTurnRow,
   type ReviewDeliveryRow,
   type SpokenTurnRow,
 } from "./db.ts";
-import { DeliveryLedger, onSend, registerDeliveryLedgers } from "./delivery-binding.ts";
+import { DeliveryLedger, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
 export {
@@ -81,6 +83,14 @@ onSend(settleSteerEchoesBeforeSend(reviewLedger));
 
 export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   label: "a spoken message",
+  newTranscriptAfter(transcript, deliveredAt) {
+    try {
+      const created = statSync(transcript.path).birthtimeMs;
+      return created > 0 && created >= deliveredAt;
+    } catch {
+      return false;
+    }
+  },
   load: loadSpokenTurns,
   insert: insertSpokenTurn,
   remove: deleteSpokenTurn,
@@ -88,5 +98,17 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
   bind: bindSpokenTurn,
   sender: row => row.spokenWords,
 });
+
+/** On runtimes that accept a native user-message id, reserve that identity before the write. */
+export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWords: string, received: string, clientMessageIds: boolean) {
+  return spokenLedger.reserve(conversation, received, base => ({
+    ...base, spokenWords, received,
+    messageId: clientMessageIds && base.transcriptOffset === null ? base.id : null,
+  }));
+}
+
+export function followSpokenConversationKey(sessionId: string, fromKey: string, toKey: string): void {
+  if (fromKey === sessionId && fromKey !== toKey && moveSpokenTurns(fromKey, toKey)) spokenLedger.forgetCaches();
+}
 
 registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger]);

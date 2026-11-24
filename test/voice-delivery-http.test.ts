@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say } from "./helpers/voice-http.ts";
+import { act, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk } from "./helpers/voice-http.ts";
 import { HibernationManager } from "../src/server/hibernation/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
@@ -8,7 +8,7 @@ test("idle starts, busy queues and an addressed stop bypasses the enabled cancel
   registry.applyDriverEvent("sdk:Steve", { kind: "state", state: "idle", activity: null });
   await say("Steve, check idle", "idle");
   await act("idle", "send-now");
-  assert.equal(cards.at(-1)?.state, "sent");
+  assert.equal(cards.at(-1)?.state, "queued");
   registry.applyDriverEvent("sdk:Steve", { kind: "state", state: "working", activity: null });
   await say("Steve, check busy", "busy");
   await act("busy", "send-now");
@@ -19,6 +19,48 @@ test("idle starts, busy queues and an addressed stop bypasses the enabled cancel
   assert.deepEqual(interrupts, ["sdk:Steve"]);
   assert.deepEqual(queued("Steve"), before);
   assert.equal((await act("stop", "cancel")).status, 409);
+});
+
+test("an idle agent with a backlog stays queued until its own receipt, and recall cancels only the unsent utterance", async () => {
+  const sessionId = "sdk:Steve";
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  pending.submit(sessionId, "typed ahead of speech");
+  for (const id of ["first-spoken", "recalled-spoken"]) {
+    await say("Steve, inspect the build", id);
+    await act(id, "send-now");
+    assert.equal(cards.at(-1)?.state, "queued");
+  }
+  const [typed, first, recalled] = registry.getSession(sessionId)!.pendingTurns;
+  const receipt = (turnId: string, spoken: boolean) => registry.turnDelivered({
+    sessionId, turnId, deliveredAt: Date.now(), ...(spoken && { spoken: { generation: 0 } }),
+  });
+  receipt(typed!.id, false);
+  assert.equal(pending.recall(sessionId, recalled!.id, recalled!.revision)?.id, recalled!.id);
+  receipt(first!.id, true);
+  receipt(first!.id, true);
+  assert.deepEqual((await readHeard()).map(({ id, outcome }) => [id, outcome]), [
+    ["recalled-spoken", "cancelled"], ["first-spoken", "sent"],
+  ]);
+  assert.deepEqual(cards.filter(card => card.state === "sent").map(card => card.id), ["first-spoken"]);
+});
+
+test("an SDK refusal after queue acceptance leaves the card and Recently heard queued", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const send = t.mock.method(sdk, "sendWhenIdle", async () => null);
+  const sessionId = "sdk:Bill";
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  await say("Bill, inspect the build", "refused-by-driver");
+  await act("refused-by-driver", "send-now");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  const row = registry.getSession(sessionId)!.pendingTurns.at(-1)!;
+  assert.equal(row.state, "queued");
+  assert.match(row.lastError!, /busy before delivery/);
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
+  assert.equal(pending.dropQueued(sessionId), 1);
+  assert.equal((await readHeard())[0]?.outcome, "cancelled");
 });
 
 test("hibernated task queues on the resumed binding and stopped agents get their own hint", async t => {

@@ -689,6 +689,8 @@ export type ControlSpec =
  * pane-backed whatever this slot says. See `docs/plans/agent-sdk-sessions/plan.md`.
  */
 export interface SdkSpec {
+  /** The SDK accepts a caller-supplied identifier on the native user message. */
+  clientMessageIds?: true;
   /**
    * Start (or resume) an embedded session.
    *
@@ -942,6 +944,7 @@ export interface SdkImage {
 /** One turn of user input. */
 export interface SdkTurn {
   text: string;
+  clientMessageId?: string;
   images?: readonly SdkImage[];
 }
 

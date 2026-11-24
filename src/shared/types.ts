@@ -4384,6 +4384,8 @@ export interface ToolCall {
 
 /** One normalized turn from a Claude/Codex transcript, for the session detail. */
 export interface TranscriptMessage {
+  /** Client-supplied user message identity when the runtime stores it separately from its native id. */
+  clientMessageId?: string;
   /** Stable id (the record uuid) - used to de-dupe across init/append. */
   id: string;
   role: "user" | "assistant";

@@ -24,8 +24,11 @@ const { closeDb } = await import("../../src/server/db.ts");
 const token = ensureToken();
 const registry = new Registry();
 const interrupts: string[] = [];
-const sdk = { interrupt: async (id: string) => { interrupts.push(id); return "idle"; } } as unknown as SdkSupervisor;
-const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000 });
+const sdk = {
+  interrupt: async (id: string) => { interrupts.push(id); return "idle"; },
+  sendWhenIdle: async () => null,
+} as unknown as SdkSupervisor;
+const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000, now: () => Date.now() });
 const reviews = new ReviewManager(registry);
 const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, reviews,
   tasks: new TaskManager(registry), queues: new QueueManager(registry) });
@@ -59,7 +62,7 @@ beforeEach(async () => {
 afterEach(() => {
   registry.voiceRouter!.reset();
   for (const session of registry.snapshot().sessions) {
-    for (const turn of session.pendingTurns) pending.recall(session.id, turn.id, turn.revision);
+    for (const turn of session.pendingTurns.toReversed()) pending.recall(session.id, turn.id, turn.revision);
   }
 });
 after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });

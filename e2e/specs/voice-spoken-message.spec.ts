@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -30,7 +30,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
   await expect.poll(async () => {
     const entries = (await (await request.get(`${daemon.baseURL}/api/voice/heard`)).json()).entries;
     return entries[0]?.outcome;
-  }).toBe("queued");
+  }).toBe("sent");
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
   await expect(page.getByText(/Mock reply to: resume the inspection/).first()).toBeVisible({ timeout: 30_000 });
   const title = "Which build should I inspect?";
@@ -41,6 +41,10 @@ test("spoken words and the exact delivered payload in both conversation views", 
   expect(filed.ok(), await filed.text()).toBe(true);
   const ask = await filed.json();
   expect(ask.wait).toBe("message");
+  // The fake CLI normally creates its file eagerly. Exercise delivery before a transcript exists.
+  const nativePath = join(daemon.home, ".claude", "projects", session.cwd.replace(/[/.]/g, "-"), `${session.agentSessionId}.jsonl`);
+  renameSync(nativePath, nativePath + ".before-spoken");
+
   expect(await (await say(daemon, "Steve, check the build")).json()).toEqual({ accepted: true });
   for (const view of ["chat", "terminal"]) {
     expect((await request.put(`${daemon.baseURL}/api/ui/config`, { data: { conversationView: view } })).ok()).toBe(true);
@@ -52,7 +56,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
     await expect(payload).toBeHidden();
     const capture = async (state: string) => {
       if (process.env.MC_E2E_EVIDENCE !== "1") return;
-      const dir = artifactsDir("voice-spoken-message");
+      const dir = artifactsDir("voice-spoken-message-cold-transcript");
       mkdirSync(dir, { recursive: true });
       await page.mouse.move(0, 0);
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -78,6 +82,6 @@ test("spoken words and the exact delivered payload in both conversation views", 
   const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
-    await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message"), "not-running.png") });
+    await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message-cold-transcript"), "not-running.png") });
   }
 });

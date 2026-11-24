@@ -60,7 +60,10 @@ export async function readInstalledMod(claude: ClaudeCli, deps: SetupDeps): Prom
   } catch {
     return { error: "`claude plugin list --json` printed something that is not JSON" };
   }
-  const rows = Array.isArray(parsed) ? parsed : [];
+  // A valid JSON value that is not a list (say, an object wrapping one) is a format this check does
+  // not understand, not proof that nothing is installed.
+  if (!Array.isArray(parsed)) return { error: "`claude plugin list --json` printed JSON that is not a list of plugins" };
+  const rows = parsed;
   // The same plugin may be listed at several scopes. Readiness is the user-scope entry, so it is
   // preferred wherever it sits in the list; another scope's entry is only reported when there is none.
   let first: InstalledMod | null = null;

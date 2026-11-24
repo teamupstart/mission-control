@@ -893,3 +893,39 @@ test("a backup folder that cannot be removed after a successful publish does not
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a plugin listing that is JSON but not a list is reported, never read as nothing installed", async () => {
+  const r = await rig();
+  try {
+    const wrapped = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+      const real = await realExec(file, args, options);
+      return args[1] === "list" ? { ...real, stdout: JSON.stringify({ plugins: JSON.parse(real.stdout) }) } : real;
+    };
+    const deps = { env: r.env, exec: wrapped };
+    const setup = await runModStep({ live: false, deps });
+    assert.equal(setup.status, "failed");
+    assert.match(setup.message, /not a list of plugins/);
+    assert.ok(!pluginCalls(r.claude).includes("install"), "setup does not keep reinstalling on a format it cannot read");
+    const doctor = await runDoctorStep({ live: false, deps });
+    const check = doctor.checks!.find((c) => c.name === "mod-enabled")!;
+    assert.equal(check.status, "fail");
+    assert.match(check.message, /not a list of plugins/);
+    for (const value of ["null", "7", '"x"']) {
+      const odd = async (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => {
+        const real = await realExec(file, args, options);
+        return args[1] === "list" ? { ...real, stdout: value } : real;
+      };
+      assert.match((await runModStep({ live: false, deps: { env: r.env, exec: odd } })).message, /not a list of plugins/, value);
+    }
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("the state home resolves through the one shared rule, whichever environment it is given", async () => {
+  const { resolveStateDir, envVar } = await import("../src/shared/harness-runtime.mjs");
+  assert.equal(envVar("HOME", { FLEET_HOME: "/f", HARNESS_HOME: "/h" }), "/f", "MISSION_ then FLEET_ then HARNESS_");
+  assert.equal(resolveStateDir({ MISSION_HOME: "/m", FLEET_HOME: "/f" }, "/home/u"), "/m");
+  assert.equal(resolveStateDir({ HARNESS_HOME: "/h" }, "/home/u"), "/h");
+  assert.equal(resolveStateDir({}, "/nonexistent-home-for-test"), "/nonexistent-home-for-test/.mission-control");
+});

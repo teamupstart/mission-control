@@ -29,11 +29,11 @@ import { dirname, join, resolve } from "node:path";
  * fail loudly - the hook swallows its fetch errors - it would just quietly stop
  * reporting until someone reinstalled it.
  */
-export function envVar(suffix) {
+export function envVar(suffix, env = process.env) {
   return (
-    process.env[`MISSION_${suffix}`] ??
-    process.env[`FLEET_${suffix}`] ??
-    process.env[`HARNESS_${suffix}`]
+    env[`MISSION_${suffix}`] ??
+    env[`FLEET_${suffix}`] ??
+    env[`HARNESS_${suffix}`]
   );
 }
 
@@ -77,7 +77,7 @@ export function stateDir() {
  * directory the daemon does instead of keeping a second copy of the rule.
  */
 export function resolveStateDir(env, home) {
-  const override = env.MISSION_HOME ?? env.FLEET_HOME ?? env.HARNESS_HOME;
+  const override = envVar("HOME", env);
   if (override) return override;
   for (const name of STATE_DIRS) {
     const p = join(home, name);

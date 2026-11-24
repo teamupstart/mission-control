@@ -41,6 +41,44 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
 });
 
+for (const connection of ["first", "reconnected"] as const) {
+  test(`a delayed ${connection} snapshot cannot extend the daemon cancel window`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon, 7);
+    await runningAgent(page, daemon, "Steve");
+    await say(daemon, "Steve, check the snapshot");
+    await page.addInitScript(connection => {
+      const Native = window.EventSource;
+      window.EventSource = class extends Native {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init);
+          this.addEventListener("message", event => {
+            if (!event.isTrusted) return;
+            const frame = JSON.parse(event.data);
+            if (frame.type === "voice_card") event.stopImmediatePropagation();
+            if (frame.type !== "snapshot") return;
+            if (connection === "first") event.stopImmediatePropagation();
+            // Buffer the daemon's exact snapshot. For a reconnect, replay it after
+            // the dashboard already knows this card's original cancel window.
+            setTimeout(() => {
+              this.dispatchEvent(new MessageEvent("message", { data: event.data }));
+              document.documentElement.dataset.snapshotReleased = "true";
+            }, 2200);
+          });
+        }
+      };
+    }, connection);
+    await page.reload();
+    const card = page.getByRole("status").filter({ hasText: "check the snapshot" });
+    await expect(page.locator("html")).toHaveAttribute("data-snapshot-released", "true");
+    await expect(card.getByRole("button", { name: "Cancel" })).toBeVisible();
+    await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
+      "SELECT count(*) AS n FROM session_spoken_turns WHERE spoken_words = ?",
+    ).get("check the snapshot")?.n), { timeout: 8000, intervals: [50] }).toBe(1);
+    await expect(card.getByRole("button", { name: "Cancel" })).toHaveCount(0, { timeout: 600 });
+    await expect(card).toContainText("Awaiting delivery confirmation");
+  });
+}
+
 test("leaving a focused dashboard during the countdown shows the desktop notice and applies its action", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;

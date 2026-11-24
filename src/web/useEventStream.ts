@@ -409,9 +409,19 @@ export function useEventStream(): MissionState {
   const latestSettingsRestoreRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let connectionStartedAt = performance.now();
     const es = new EventSource("/events");
     esRef.current = es;
-    let voiceClockOffset = Infinity;
+    let voiceClockOffset: number | undefined;
+    function cardClockOffset(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }) {
+      const receivedOffset = performance.now() - (frame.voiceServerTime ?? Date.now());
+      // The browser started connecting before the daemon accepted the request. This
+      // bound excludes time that even the first snapshot spent buffered on its way back.
+      const requestBound = frame.voiceStreamStartedAt === undefined ? voiceClockOffset ?? receivedOffset
+        : connectionStartedAt - frame.voiceStreamStartedAt - 1;
+      voiceClockOffset = Math.min(receivedOffset, Math.max(voiceClockOffset ?? -Infinity, requestBound));
+      return voiceClockOffset;
+    }
     function clearVoiceTimers() {
       for (const { timer, fadeTimer } of voiceExpiry.values()) {
         window.clearTimeout(timer ?? undefined);
@@ -438,6 +448,7 @@ export function useEventStream(): MissionState {
     };
     es.onerror = () => {
       if (esRef.current !== es) return;
+      connectionStartedAt = performance.now(); // EventSource will retry after this point.
       observeBrowserConnection(false);
       setConnected(false);
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
@@ -547,12 +558,12 @@ export function useEventStream(): MissionState {
           if (msg.voice && msg.voice.mode !== "off") {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
-            voiceClockOffset = performance.now() - (msg.voiceServerTime ?? Date.now());
-            const active = (msg.voiceCards ?? []).map(card => receiveVoiceCard(card, voiceClockOffset));
+            const offset = cardClockOffset(msg);
+            const active = msg.voiceCards ?? [];
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
-              for (const card of active) next.set(card.id, card);
+              for (const card of active) next.set(card.id, receiveVoiceCard(card, offset, current.get(card.id)));
               return next;
             });
           } else {
@@ -829,9 +840,7 @@ export function useEventStream(): MissionState {
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
           break;
         case "voice_card": {
-          // A slow frame cannot extend the deadline beyond an earlier clock sample.
-          const offset = Math.min(voiceClockOffset, performance.now() - (msg.voiceServerTime ?? Date.now()));
-          voiceClockOffset = offset;
+          const offset = cardClockOffset(msg);
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);

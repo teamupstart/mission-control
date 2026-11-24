@@ -282,6 +282,41 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(repo).toHaveValue(regularRepo);
   await expect(intent).toHaveValue("Keep this unrelated dispatch");
 });
+test("a delayed follow-up lookup cannot replace the newer dispatch opening", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+  for (const name of ["Steve", "Will"]) {
+    const session = await runningAgent(page, daemon, name);
+    expect((await page.request.post(daemon.baseURL + "/api/tasks/" + session.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+  }
+  const waiting = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/voice/tasks/*/follow-up", async route => {
+    const response = await route.fetch();
+    waiting.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  }, { times: 1 });
+  const older = page.getByRole("status").filter({ hasText: "Steve has finished" });
+  await say(daemon, "Steve, check again");
+  await older.getByRole("button", { name: "Start a follow-up task" }).click();
+  await waiting.promise;
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  const intent = dialog.getByPlaceholder("What should this agent do?");
+  try {
+    await say(daemon, "Will, check again");
+    await page.getByRole("status").filter({ hasText: "Will has finished" }).getByRole("button", { name: "Start a follow-up task" }).click();
+    await expectContentClearsBorder(dialog);
+    await intent.fill("Keep the second opening");
+    await expect(older.getByRole("button", { name: "Start a follow-up task" })).toBeDisabled();
+  } finally {
+    release.resolve();
+  }
+  // The old action has finished and its caller can act again.
+  await expect(older.getByRole("button", { name: "Start a follow-up task" })).toBeEnabled();
+  await expect(intent).toHaveValue("Keep the second opening");
+});
+
 test("a held card identifies the blocking question and recalls the queued words", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const session = await runningAgent(page, daemon, "Steve");

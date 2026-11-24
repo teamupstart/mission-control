@@ -728,6 +728,7 @@ export function App(): React.JSX.Element {
   // edit made anywhere else - or the task being dispatched out from under the modal - is seen
   // here rather than shadowed by a copy taken at open time.
   const [dispatchRequest, setDispatchRequest] = useState<DispatchRequest | null>(null);
+  const latestVoiceFollowUp = useRef<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     if (reportOpen) featureVisit("report", "open", "reports");
@@ -5095,11 +5096,16 @@ export function App(): React.JSX.Element {
     actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,
       openQuestion: id => { navigate({ page: "fleet" }, allowed => { if (allowed) setReviewSessionId(id); }); },
       followUp: async taskId => {
+        const id = newRequestId();
+        latestVoiceFollowUp.current = id;
+        const superseded = { ok: false, error: "A newer follow-up was requested." };
         const task = await api.voiceFollowUpRepository(taskId);
+        if (latestVoiceFollowUp.current !== id) return superseded;
         if (!task.ok || !task.repoRoot) return { ok: false, error: task.error ?? "The task repository is unavailable." };
         const repoRoot = task.repoRoot;
         return new Promise(resolve => navigate({ page: "fleet" }, allowed => {
-          if (allowed) setDispatchRequest({ kind: "new", followUp: { id: newRequestId(), repoRoot } });
+          if (latestVoiceFollowUp.current !== id) return resolve(superseded);
+          if (allowed) setDispatchRequest({ kind: "new", followUp: { id, repoRoot } });
           resolve(allowed ? { ok: true } : { ok: false, error: "Follow-up stayed closed. Your draft is still open." });
         }));
       },

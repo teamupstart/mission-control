@@ -4,6 +4,8 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
+import type { VoiceCard } from "../../src/shared/voice-routing.ts";
+import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
 
 test("spoken words and the exact delivered payload in both conversation views", async ({ dashboard: page, daemon, request }) => {
   test.setTimeout(120_000);
@@ -83,5 +85,53 @@ test("spoken words and the exact delivered payload in both conversation views", 
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
     await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message-cold-transcript"), "not-running.png") });
+  }
+});
+
+test("an earlier spoken failure stays visible when a newer card updates in the same render", async ({ dashboard: page, daemon, request }) => {
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) {
+    expect((await request.put(`${daemon.baseURL}/api/feature-flags`, { data: { kind: "flag", id, enabled: true } })).ok()).toBe(true);
+  }
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
+  const resident = await request.post(`${daemon.baseURL}/api/residents/profiles`, { data: { settings: {
+    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } });
+  expect(resident.ok(), await resident.text()).toBe(true);
+
+  // Deliver two real daemon frames in one browser task, in their original order.
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) !== "/events") return;
+        let earlier: string | undefined;
+        this.addEventListener("message", event => {
+          const frame = JSON.parse(event.data) as { type: string; card?: VoiceCard };
+          if (frame.type !== "voice_card") return;
+          if (frame.card?.id === "earlier" && frame.card.state === "not-running" && !earlier) {
+            earlier = event.data;
+            event.stopImmediatePropagation();
+          } else if (frame.card?.id === "newer" && frame.card.state === "cancelled" && earlier) {
+            this.dispatchEvent(new MessageEvent("message", { data: earlier }));
+            earlier = undefined;
+          }
+        });
+      }
+    };
+  });
+  await page.reload();
+  await expect(page.locator(".pulse")).not.toHaveClass(/is-down/);
+  for (const id of ["earlier", "newer"]) {
+    expect(await (await say(daemon, "Marlowe, check the build", { id })).json()).toEqual({ accepted: true });
+  }
+  expect((await request.post(`${daemon.baseURL}/api/voice/cards/earlier/send-now`)).ok()).toBe(true);
+  expect((await request.post(`${daemon.baseURL}/api/voice/cards/newer/cancel`)).ok()).toBe(true);
+  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
+  await expect(feedback).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = artifactsDir("voice-overlapping-cards");
+    mkdirSync(dir, { recursive: true });
+    await feedback.screenshot({ path: join(dir, "earlier-failure.png") });
   }
 });

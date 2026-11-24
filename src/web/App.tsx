@@ -2674,12 +2674,18 @@ export function App(): React.JSX.Element {
     },
     [],
   );
-  const latestVoiceCard = [...voiceCards.values()].at(-1);
+  const previousVoiceCards = useRef(voiceCards);
   useEffect(() => {
-    if ((latestVoiceCard?.state === "not-running" || latestVoiceCard?.state === "failed") && latestVoiceCard.detail) {
-      showFleetActionError(latestVoiceCard.detail);
+    const messages: string[] = [];
+    for (const card of voiceCards.values()) {
+      if ((card.state === "not-running" || card.state === "failed") && card.detail) {
+        const previous = previousVoiceCards.current.get(card.id);
+        if (previous?.state !== card.state || previous.detail !== card.detail) messages.push(card.detail);
+      }
     }
-  }, [latestVoiceCard, showFleetActionError]);
+    previousVoiceCards.current = voiceCards;
+    if (messages.length) showFleetActionError(messages.join(" "));
+  }, [voiceCards, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);

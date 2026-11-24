@@ -135,9 +135,11 @@ export interface VoiceDeciderDeps {
 class Expired extends Error {}
 
 /** Race `work` against the absolute deadline `at`; at the deadline it rejects with `Expired`. */
-function within<T>(work: () => Promise<T>, at: number, now: () => number, signal?: AbortSignal): Promise<T> {
+function within<T>(work: (signal: AbortSignal) => Promise<T>, at: number, now: () => number, signal?: AbortSignal): Promise<T> {
   const left = at - now();
   if (left <= 0) return Promise.reject(new Expired());
+  const controller = new AbortController();
+  const workSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   const expiry = new Promise<never>((_, reject) => {
@@ -151,12 +153,15 @@ function within<T>(work: () => Promise<T>, at: number, now: () => number, signal
   const start = () => {
     signal?.throwIfAborted();
     if (now() >= at) throw new Expired();
-    return work();
+    return work(workSignal);
   };
   return Promise.race([Promise.resolve().then(start), expiry]).then((value) => {
     signal?.throwIfAborted();
     if (now() >= at) throw new Expired();
     return value;
+  }).catch(error => {
+    controller.abort(error);
+    throw error;
   }).finally(() => {
     clearTimeout(timer);
     if (onAbort) signal?.removeEventListener("abort", onAbort);
@@ -191,24 +196,17 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
       const key = provider ? decisionKeyFor(provider, saved, env) : null;
       if (provider && key) {
         const label = VOICE_KEY_PROVIDER_LABEL[provider];
-        const controller = new AbortController();
-        const requestSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
         const providerDeadline = Math.min(deadline, now() + (deps.providerTimeoutMs ?? VOICE_DECISION_PROVIDER_TIMEOUT_MS));
-        const timer = setTimeout(() => controller.abort(), Math.max(0, providerDeadline - now()));
-        timer.unref?.();
         try {
           const raw = await within(
-            () => deps.providers[provider].ask(questions, { key, signal: requestSignal, fetch: deps.fetch }),
+            requestSignal => deps.providers[provider].ask(questions, { key, signal: requestSignal, fetch: deps.fetch }),
             providerDeadline,
             now,
             signal,
           );
           return { rung: provider, answers: accept(questions, raw, VOICE_CONFIDENCE_FLOOR), detail: `${label} answered` };
         } catch (error) {
-          controller.abort();
           notes.push(`${label} ${describe(error)}`);
-        } finally {
-          clearTimeout(timer);
         }
       }
 
@@ -220,8 +218,8 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; ") };
       }
       try {
-        const raw = await within(() => deps.job(questions, {
-          runner, timeoutMs: Math.max(0, Math.floor(deadline - now())), signal,
+        const raw = await within(jobSignal => deps.job(questions, {
+          runner, timeoutMs: Math.max(0, Math.floor(deadline - now())), signal: jobSignal,
         }), deadline, now, signal);
         notes.push(`job on ${runner} answered`);
         return { rung: "job", answers: accept(questions, raw, rung.floor), detail: notes.join("; ") };

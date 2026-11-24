@@ -40,7 +40,7 @@ function rig(options: {
   saved?: Partial<Record<VoiceKeyProvider, string>>;
   env?: NodeJS.ProcessEnv;
   reply?: (call: Call, signal: AbortSignal) => Response | Promise<Response>;
-  job?: (runner: LlmRunnerId, timeoutMs: number) => Promise<{ choice: string | null; confidence: number }[]>;
+  job?: (runner: LlmRunnerId, timeoutMs: number, signal?: AbortSignal) => Promise<{ choice: string | null; confidence: number }[]>;
   jobRunner?: LlmRunnerId;
   rungs?: typeof VOICE_ROUTING_JOB_RUNGS;
   deadlineMs?: number;
@@ -66,7 +66,7 @@ function rig(options: {
     }) as typeof fetch,
     job: async (_questions, run) => {
       jobs.push(run);
-      return options.job ? options.job(run.runner, run.timeoutMs) : [{ choice: "mention", confidence: 1 }];
+      return options.job ? options.job(run.runner, run.timeoutMs, run.signal) : [{ choice: "mention", confidence: 1 }];
     },
     jobRunner: () => options.jobRunner ?? "claude",
     rungs: options.rungs ?? { ...VOICE_ROUTING_JOB_RUNGS, claude: { enabled: true, floor: 0.9, why: "" } },
@@ -928,4 +928,40 @@ test("a spoken boundary choice waits for the model's follow-up rows", async (t) 
   await capture("current", "Alice", 200);
   assert.ok(await router.sendNow("model"));
   assert.deepEqual(delivered, [["Steve", "check the build", "model"], ["Alice", "review the PR", "model#2"]]);
+});
+
+test("job discovery cannot launch after the shared model deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100 });
+  let start!: () => void;
+  let finishDiscovery!: () => void;
+  const started = new Promise<void>(resolve => { start = resolve; });
+  const discovery = new Promise<void>(resolve => { finishDiscovery = resolve; });
+  let launches = 0;
+  let jobSignal: AbortSignal | undefined;
+  const { ask } = rig({ now: Date.now, deadlineMs: 100, job: async (_runner, _budget, signal) => {
+    jobSignal = signal;
+    start();
+    await discovery;
+    signal?.throwIfAborted();
+    launches++;
+    return [{ choice: "split", confidence: 1 }];
+  } });
+  const pending = ask(["codex"]);
+  await started;
+  t.mock.timers.tick(100);
+  const result = await pending;
+  finishDiscovery();
+  await Promise.resolve();
+  assert.equal(result.rung, "none");
+  assert.deepEqual(result.answers, [{ choice: null, confidence: 0 }]);
+  assert.equal(launches, 0);
+  assert.equal(jobSignal?.aborted, true);
+});
+
+test("a split removes a comma-delimited connector and preserves the text before it", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  await say("Steve, explain C plus plus, and then, Alice, review the PR", "connector");
+  assert.ok(await router.sendNow("connector"));
+  assert.deepEqual(delivered, [["Steve", "explain C plus plus", "connector"], ["Alice", "review the PR", "connector#2"]]);
 });

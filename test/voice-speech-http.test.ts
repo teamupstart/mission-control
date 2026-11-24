@@ -1328,7 +1328,9 @@ test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep cap
   assert.deepEqual(await pollWhileHeld(), stop);
 
   t.mock.timers.tick(4999);
-  assert.equal((await holder.event(id, "started")).status, 200);
+  const late = await holder.event(id, "started");
+  assert.equal(late.status, 409);
+  assert.deepEqual(await late.json(), { ok: false, speak: stop });
   assert.equal(job.state, "stopping");
   assert.deepEqual(store.state().capabilities.listener, { available: true, reason: null });
   assert.deepEqual(await pollWhileHeld(), stop);
@@ -1356,7 +1358,9 @@ test("a start report checks the elapsed deadline even before the timer callback 
     const id = await audition();
     t.mock.timers.setTime(Date.now() + elapsed);
     assert.equal(store.speech.live?.state, "ready"); // setTime leaves the timer callback pending.
-    assert.equal((await holder.event(id, "started")).status, 200);
+    const start = await holder.event(id, "started");
+    assert.equal(start.status, elapsed < 2000 ? 200 : 409);
+    assert.deepEqual(await start.json(), elapsed < 2000 ? { ok: true } : { ok: false, speak: { id, stop: true } });
     const directive = await holder.poll();
     assert.equal(directive.capture, false);
     if (elapsed < 2000) assert.equal(store.speech.live?.state, "speaking");
@@ -1382,7 +1386,7 @@ test("a holder poll serves Stop at the elapsed deadline before the timer runs", 
   const expired = await holder.poll();
   assert.deepEqual(expired.speak, { id, stop: true });
   assert.equal(expired.capture, false);
-  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.equal((await holder.event(id, "started")).status, 409);
   assert.deepEqual((await holder.poll()).speak, { id, stop: true });
   await holder.event(id, "ended");
   assert.equal((await holder.poll()).capture, true);
@@ -1463,6 +1467,9 @@ test("a late start or a stop before pickup waits for the holder; muting permits 
     if (action === "mute") await post("/api/voice/mute", { muted: true });
     else assert.equal((await act(words.id, action, action === "pick" ? { id: "task:Steve" } : {})).status, 200);
     assert.equal(ask.state, "stopping");
+    const refused = await p.event(ask.id, "started");
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { ok: false, speak: { id: ask.id, stop: true } });
     assert.deepEqual((await p.poll()).speak, { id: ask.id, stop: true });
     await p.event(ask.id, "ended");
     assert.equal(ask.state, "stopped");

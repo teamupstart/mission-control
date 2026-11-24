@@ -342,9 +342,20 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
   let playing = false;
   const event = async (type: "started" | "ended", outcome?: "finished" | "stopped") => {
     if (!current) throw new Error("Fixture has no speech job.");
-    if (!(await post("/voice/speech/jobs/" + current + "/events", { type, outcome })).ok) throw new Error("Speech report refused.");
+    const id = current;
+    const response = await post("/voice/speech/jobs/" + id + "/events", { type, outcome });
+    if (response.ok) return true;
+    if (type === "started" && response.status === 409) {
+      const { speak } = await response.json();
+      if (speak?.stop === true && speak.id === id) return false;
+    }
+    throw new Error("Speech report refused.");
   };
-  const start = async () => { await event("started"); playing = true; };
+  const start = async () => {
+    const accepted = await event("started");
+    if (accepted) playing = true;
+    return accepted;
+  };
   const end = async (outcome: "finished" | "stopped" = "finished") => {
     playing = false;
     await event("ended", outcome);
@@ -375,8 +386,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
           if (!audio.ok) continue; // Stop may have raced the audio fetch.
           await audio.arrayBuffer();
         }
-        await start();
-        if (!options.holdPlayback) await end();
+        if (await start() && !options.holdPlayback) await end();
       }
     }
   }

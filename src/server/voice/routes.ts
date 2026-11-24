@@ -315,6 +315,7 @@ export function registerVoiceRoutes(
     const result = store.speech.event(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER), event.type,
       event.type === "ended" ? event.outcome : undefined);
     if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
+    if (result === "stopping") return c.json({ ok: false, speak: { id: c.req.param("id"), stop: true } }, 409);
     const ok = result === "accepted";
     return c.json({ ok }, ok ? 200 : 409);
   });

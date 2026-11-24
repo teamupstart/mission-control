@@ -78,6 +78,24 @@ test("a saved Ask aloud choice with a capture-only listener shows the usual cand
   await expect(page.getByRole("status").filter({ hasText: "Two messages" })).toBeVisible();
 });
 
+test("a delayed player cannot start after Stop and confirms silence before recapture", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const speaker = await beSpeaker(daemon, { delayStart: true, ignoreStop: true });
+  try {
+    const opened = await page.request.post(daemon.baseURL + "/api/voice/speech/audition");
+    expect(opened.ok()).toBe(true);
+    const { id } = await opened.json();
+    const stopped = await page.request.post(daemon.baseURL + "/api/voice/speech/stop", { data: { id } });
+    expect(stopped.ok()).toBe(true);
+    await expect.poll(async () => (await speaker.poll()).speak).toEqual({ id, stop: true });
+    await expect(async () => expect(await speaker.start()).toBe(false)).toPass();
+    expect(speaker.playing).toBe(false);
+    expect((await speaker.poll()).capture).toBe(false);
+    await speaker.end("stopped");
+    expect((await speaker.poll()).capture).toBe(true);
+  } finally { await speaker.exit(); }
+});
+
 test("an unrelated audition changes the unsure card hint until silence without adding asking controls", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   for (const name of ["Steve", "Will"]) await runningAgent(page, daemon, name);

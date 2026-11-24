@@ -1026,7 +1026,10 @@ voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
 duration triggers a stop request. The daemon checks elapsed time before serving a
 playback directive or WAV and before recording a holder's completion. An overdue
 completion confirms silence and records the job as timed out even when its timer
-callback is delayed. After 5 seconds without confirmation, the
+callback is delayed. A holder reporting `started` after Stop receives HTTP 409
+with `{ ok: false, speak: { id, stop: true } }`. It must keep playback stopped
+or stop it immediately, then report `ended` to confirm silence.
+After 5 seconds without confirmation, the
 daemon reports the listener unavailable and fails jobs still waiting to play. Capture resumes only after the holder
 reports playback ended or its supervisor confirms process exit. Switching off
 the preview still lets the holder poll for Stop and either party confirm silence,

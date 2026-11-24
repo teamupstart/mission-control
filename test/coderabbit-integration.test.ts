@@ -107,7 +107,7 @@ test("CodeRabbit reuse requires an exact comparison and respects --fresh", async
       } else {
         const request = execute.mock.calls[0]!.arguments[0];
         assert.deepEqual(request.coderabbit, current);
-        assert.equal(request.command.includes("--fresh"), current.command.includes("--fresh"));
+        assert.equal(request.command.includes("--fresh"), current.command?.includes("--fresh") ?? false);
         assert.equal(result.outcome.status, "failed");
         assert.equal(result.outcome.exitCode, 2);
         assert.equal(result.outcome.output, "fresh review output");

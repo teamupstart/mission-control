@@ -9,6 +9,7 @@ import {
   KIND_HINTS,
   UNAVAILABLE_WORKFLOW_LABEL,
   briefText,
+  shaperInputFor,
   buildDispatchQuestions,
   draftSummaryText,
   kindAfterWork,
@@ -191,4 +192,14 @@ test("the draft text is the Form 3 message", () => {
   assert.equal(draftSummaryText(input), "Repo: /r\nKind: ship\nAfter work: None\n\nDescription:\nadd retries");
   assert.equal(draftSummaryText({ ...input, context: "see client.ts" }),
     "Repo: /r\nKind: ship\nAfter work: None\n\nDescription:\nadd retries\n\nContext Claude added:\nsee client.ts");
+});
+
+test("shaperInputFor sends only the person's words as the task and keeps Claude's context apart (D62)", () => {
+  assert.deepEqual(shaperInputFor({ words: "add retries" }), { task: "add retries", context: null });
+  assert.deepEqual(shaperInputFor({ words: "add retries", context: "   " }), { task: "add retries", context: null });
+  const split = shaperInputFor({ words: "add retries", context: "see client.ts" });
+  assert.deepEqual(split, { task: "add retries", context: "see client.ts" });
+  // Unlike the worker's brief, the task never carries the context heading or the context.
+  assert.ok(!split.task.includes("Context Claude added") && !split.task.includes("client.ts"));
+  assert.ok(briefText({ words: "add retries", context: "see client.ts" }).includes("## Context Claude added"));
 });

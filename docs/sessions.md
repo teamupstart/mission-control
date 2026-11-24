@@ -3595,3 +3595,9 @@ A Pi assistant turn recorded with an error shows **Pi turn failed** and a bounde
 provider diagnostic in the conversation, including when the provider produced no response.
 The marker survives reload and remains beside later successful turns. The managed session
 stays available for another message after the provider or credentials are repaired.
+
+## Spoken messages
+
+With Voice addressing enabled, a spoken operator turn waits for the agent to finish working.
+In either conversation view, the Spoken mark identifies the operator’s words. Expand **What the
+agent received** to read those words together with the notes the daemon appended at delivery.

@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import type { ResidentProfile } from "../../src/shared/residents.ts";
 import type { Session } from "../../src/shared/types.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -283,4 +284,43 @@ test("with the preview off the tool says it is off, and switching the preview of
   await expect(card.locator(".tile-awaiting")).toHaveCount(0);
   await expect(page.getByText("awaiting background work", { exact: true })).toHaveCount(0);
   await expect.poll(async () => (await session(daemon, agent.id))?.awaiting ?? null).toBeNull();
+});
+
+test("the Idle rail distinguishes pinned sections from the ordinary status headings", async ({ dashboard: page, daemon }) => {
+  await setFlag(daemon, true);
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  const waiting = await dispatch(daemon, "Awaiting in Idle");
+  await dispatch(daemon, "Free in Idle");
+  const profile: ResidentProfile = await api(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Pinned observer" },
+    instructions: { markdown: "Wait for your next scheduled observation." },
+    workspace: { defaultRepoRoot: daemon.repo },
+    execution: { model: "claude-fable-5" },
+    loop: { prompt: "Observe again.", delaySeconds: 3600, minDelaySeconds: 1 },
+  } });
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, {
+    repoRoot: daemon.repo, requestId: "idle-rail-pinned-observer",
+  });
+  await expect.poll(async () => {
+    const sessions = await api(daemon, "/api/sessions") as Session[];
+    return sessions.find((session) => session.task?.kind === "resident")?.state;
+  }).toBe("idle");
+  const client = await connect(daemon, waiting);
+  try {
+    const result = await client.callTool({ name: "report_awaiting", arguments: declaration() });
+    expect(result.isError, toolText(result)).toBeFalsy();
+  } finally {
+    await client.close();
+  }
+  await useBoard(page, daemon);
+  const idle = page.locator("section.board-col.tone-idle");
+  await idle.getByRole("button", { name: "Open Free in Idle", exact: true }).press("Enter");
+  const rail = page.locator("section.board-col.is-rail.tone-idle");
+  const headings = rail.getByRole("button", { name: /^(pinned )?(free|awaiting background work) 1$/ });
+  await expect(headings).toHaveCount(3);
+  await expect(headings.nth(0)).toHaveAccessibleName("pinned free 1");
+  await expect(headings.nth(1)).toHaveAccessibleName("awaiting background work 1");
+  await expect(headings.nth(2)).toHaveAccessibleName("free 1");
+
+  await shoot(rail, "03-pinned-idle-rail-headings");
 });

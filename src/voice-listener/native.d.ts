@@ -9,7 +9,6 @@ declare module "sherpa-onnx-node" {
     acceptWaveform(wave: Waveform): void;
   }
 
-  export function readWave(path: string): Waveform;
   export class OfflineRecognizer {
     constructor(config: {
       featConfig: { sampleRate: number; featureDim: number };
@@ -37,5 +36,6 @@ declare module "sherpa-onnx-node" {
     isEmpty(): boolean;
     front(): { samples: Float32Array };
     pop(): void;
+    reset(): void;
   }
 }

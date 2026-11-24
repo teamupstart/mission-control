@@ -126,6 +126,26 @@ export class VoiceModelManager {
     return { ...this.model };
   }
 
+  /** Standalone launchers use the same selection, files and verified directory as Setup. */
+  async listenerModel(override: VoiceBackend | undefined, signal: AbortSignal) {
+    const selected = this.deps.backend();
+    const backend = override ?? selected;
+    const manifest = this.manifest(backend);
+    if (!manifest) return null;
+    if (backend === selected) {
+      this.sync();
+      const { status, revision, directory } = this.model;
+      return status === "ready" && revision === manifest.revision && directory
+        ? { backend, manifest, directory } : null;
+    }
+    // A CLI override can use a previously installed backend without changing the operator's selection.
+    const directory = this.revisionDir(backend, manifest.revision);
+    for (const file of manifest.files) {
+      if (!await this.alreadyVerified(join(directory, file.path), file, signal)) return null;
+    }
+    return { backend, manifest, directory };
+  }
+
   onChange(listener: (model: VoiceModelState) => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };

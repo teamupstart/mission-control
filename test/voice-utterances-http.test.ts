@@ -1,58 +1,16 @@
+import { VOICE_HELLO_LAPSE_MS, VOICE_SHELL_REPORT_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } from "../src/shared/voice.ts";
+import type { HeardEntry } from "../src/shared/voice-routing.ts";
 import assert from "node:assert/strict";
-import { after, afterEach, before, beforeEach, test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SdkSupervisor } from "../src/server/sdk/supervisor.ts";
-import type { HeardEntry, VoiceCard } from "../src/shared/voice-routing.ts";
-import type { SpokenName } from "../src/shared/voice-names.ts";
+import { model, utterancePath, listenerId, act, app, applyFeatureFlagIntent, capture, cards, home, interrupts, name, pending, post, queued, readHeard, registry, roster, say, sdk, token, voiceStateStore } from "./helpers/voice-http.ts";
+
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
-import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 
-before(() => { ensureNativeStateLockAddon(); });
-
-const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
-process.env.MISSION_HOME = home;
-const { buildApp } = await import("../src/server/routes.ts");
-const { Registry } = await import("../src/server/registry.ts");
-const { ReviewManager } = await import("../src/server/reviews.ts");
-const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
-const { QueueManager } = await import("../src/server/queue.ts");
-const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
-const { voiceStateStore, wireVoiceStateEvents } = await import("../src/server/voice/state.ts");
-const { VOICE_REQUIRED_FLAGS, VOICE_HELLO_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION, VOICE_SHELL_REPORT_LAPSE_MS } = await import("../src/shared/voice.ts");
-const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
-const { ensureToken } = await import("../src/server/auth.ts");
-const { closeDb } = await import("../src/server/db.ts");
-const token = ensureToken();
-const registry = new Registry();
-const interrupts: string[] = [];
-const sdk = { interrupt: async (id: string) => { interrupts.push(id); return "idle"; } } as unknown as SdkSupervisor;
-const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000 });
-const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, reviews: new ReviewManager(registry),
-  tasks: new TaskManager(registry), queues: new QueueManager(registry) });
-const cards: VoiceCard[] = [];
-registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
-const stop = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
-const listenerId = randomUUID();
-const post = (path: string, body: unknown = {}, auth?: string) => app.request(path, { method: "POST",
-  headers: { host: "localhost", "content-type": "application/json", ...(auth ? { "x-harness-token": auth, "x-voice-listener-id": listenerId } : {}) },
-  body: JSON.stringify(body) });
-const capture = (text: string, id = String(randomUUID())) => ({ id, text, backend: "fluidaudio", capturedAt: Date.now() });
-const utterancePath = (revision = voiceStateStore.directive().revision) => "/voice/utterances?revision=" + encodeURIComponent(revision);
-const say = (text: string, id?: string) => post(utterancePath(), capture(text, id), token);
-const readHeard = async () => (await (await app.request("/api/voice/heard", { headers: { host: "localhost" } })).json() as { entries: HeardEntry[] }).entries;
-const act = (id: string, action: string, body?: unknown) => post(`/api/voice/cards/${id}/${action}`, body);
-const name = (name: string): SpokenName => ({ key: "task:" + name, name, kind: "session", taskId: name,
-  sessionId: "sdk:" + name, role: "", colorId: null, agent: "claude", state: "running" });
-const roster = ["Steve", "Will", "Bill"].map(name);
-for (const target of roster) registry.registerSdkSession({ id: target.sessionId!, agent: "claude", name: target.name, cwd: home, agentSessionId: target.key });
-voiceStateStore.useRoster(() => roster);
-pending.start();
-const queued = (agent: string) => registry.getSession("sdk:" + agent)!.pendingTurns.map((row) => row.text);
-
+const resolved = (id: string) => registry.voiceRouter!.resolution(id) ?? Promise.resolve();
 let reportUs = 0;
 function orderedShellReport(snapshot: object, auth: string) {
   // These fixtures drive the shell clock with the test timer. The wall-step
@@ -61,19 +19,7 @@ function orderedShellReport(snapshot: object, auth: string) {
   return post("/voice/shell-report", { reportedAtHostUs: reportUs, ...snapshot }, auth);
 }
 
-beforeEach(async () => {
-  reportUs = 0;
-  voiceStateStore.reset();
-  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
-  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
-  const hello = await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
-    devices: [], microphone: "granted", modelLoaded: true }, token);
-  assert.equal(hello.status, 200);
-  cards.length = 0;
-});
-afterEach(() => { registry.voiceRouter!.reset(); });
-after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
+beforeEach(() => { reportUs = 0; });
 
 test("token and schema gates and muted drop", async () => {
   assert.equal((await post(utterancePath(), capture("Steve hello"))).status, 401);
@@ -403,12 +349,13 @@ test("released speech must start at or after physical key-down and end by key-up
 });
 
 test("released controls follow monotonic capture order when Unix times move backward", async (t) => {
-  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
+  let hostNow = 1_000_000;
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostNow);
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   await report({ reportedAtHostUs: 201_000, callActive: true, pushToTalk: true, pushToTalkPressedAtHostUs: 200_000 });
-  const held = voiceStateStore.directive().revision;
+  let held = voiceStateStore.directive().revision;
   await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 800_000 });
   const submit = async (id: string, text: string, hostUs: number, unixMs: number) => {
     const response = await app.request(utterancePath(held), { method: "POST", headers: {
@@ -421,14 +368,23 @@ test("released controls follow monotonic capture order when Unix times move back
   await submit("later-command", "Will keep this", 500_000, now - 2000);
   await submit("cancel", "cancel", 400_000, now - 60_000);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["command", "cancelled"]);
-  await submit("choice", "Steven ask Will", 600_000, now - 61_000);
+  await submit("choice", "Steven ask Will about the deployment", 600_000, now - 61_000);
+  await resolved("choice");
   await submit("too-early", "Will", 550_000, now);
   assert.equal(cards.at(-1)?.state, "unsure");
-  await submit("pick", "Will", 650_000, now - 62_000);
+  await submit("before-choices", "Will", 650_000, now);
+  assert.equal(cards.at(-1)?.state, "unsure");
+
+  // Only the second hold was recorded after the candidate rows became available.
+  hostNow = 2_000_000;
+  await report({ reportedAtHostUs: 1_201_000, pushToTalk: true, pushToTalkPressedAtHostUs: 1_200_000 });
+  held = voiceStateStore.directive().revision;
+  await report({ reportedAtHostUs: 1_800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 1_800_000 });
+  await submit("pick", "Will", 1_650_000, now - 62_000);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
-  await submit("before-pick", "cancel", 625_000, now);
+  await submit("before-pick", "cancel", 1_625_000, now);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["later-command", "cancelled"]);
-  await submit("after-pick", "cancel", 675_000, now - 63_000);
+  await submit("after-pick", "cancel", 1_675_000, now - 63_000);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
   assert.equal((await readHeard()).find(entry => entry.id === "cancel")?.time, now - 60_000);
 });
@@ -571,12 +527,13 @@ test("a delayed capture cannot follow a spoken name to a different recipient", a
 test("future captures beyond clock tolerance are dropped and a cancel on the same listener clock can act immediately", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
-  const unsure = capture("Steven ask Will", "clock");
+  const unsure = capture("Steven ask Will about the build", "clock");
   const postAt = (capturedAt: number) => post(utterancePath(), { ...unsure, capturedAt }, token);
   assert.deepEqual(await (await postAt(now + 1001)).json(), { accepted: false });
   assert.deepEqual(await readHeard(), []);
   assert.equal(cards.length, 0);
   assert.deepEqual(await (await postAt(now + 1000)).json(), { accepted: true });
+  await resolved(unsure.id);
   await post(utterancePath(), { ...capture("cancel"), capturedAt: now + 1000 }, token);
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["clock", "unsure"], ["clock", "cancelled"]]);
 });
@@ -591,7 +548,8 @@ test("a listener clock ahead of the daemon preserves out-of-order cancel and pic
   assert.equal(cards.at(-1)?.deadline, now + 1000);
   await postAt("delayed-cancel", "cancel", 300);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["older", "cancelled"]);
-  await postAt("unsure", "Steven ask Will", 700);
+  await postAt("unsure", "Steven ask Will about the build", 700);
+  await resolved("unsure");
   await postAt("delayed-pick", "Will", 600);
   assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "pending"], ["unsure", "unsure"]]);
   assert.deepEqual((await readHeard()).map((entry) => [entry.id, entry.time - now]), [
@@ -606,7 +564,8 @@ test("capture IDs must address a single card action URL segment", async () => {
   assert.deepEqual(await readHeard(), []);
   assert.equal(cards.length, 0);
   const id = "call.1~A_b-c";
-  assert.equal((await say("Steven ask Will", id)).status, 200);
+  assert.equal((await say("Steven ask Will about the build", id)).status, 200);
+  await resolved(id);
   assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
   assert.equal((await act(id, "cancel")).status, 200);
   assert.equal(cards.at(-1)?.state, "cancelled");
@@ -687,7 +646,7 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   t.mock.timers.tick(999);
   assert.ok(!queued("Steve").includes("check the build"));
   t.mock.timers.tick(1);
-  await Promise.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(queued("Steve").filter((s) => ["check the build", "drop this one"].includes(s)), ["check the build"]);
   assert.deepEqual(cards.map((c) => c.reason === "delivering" ? c.reason : c.state), ["pending", "pending", "cancelled", "delivering", "queued"]);
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
@@ -726,7 +685,8 @@ test("API and spoken cancels respect the deadline even when the timer callback i
   t.mock.timers.setTime(now + 1000);
   assert.equal((await act("api-expired", "cancel")).status, 409);
 
-  await say("Steven ask Will", "still-eligible");
+  await say("Steven ask Will about the build", "still-eligible");
+  await resolved("still-eligible");
   await say("Will keep the second", "spoken-expired");
   t.mock.timers.setTime(now + 2001);
   await say("cancel", "cancel-choice");
@@ -759,8 +719,10 @@ test("a delayed spoken cancel targets the latest preceding capture even when POS
 
 test("a picked card's new cancel window follows the time of the pick", async (t) => {
   const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
-  await post(utterancePath(), { ...capture("Steven ask Will", "choice"), capturedAt: now - 400 }, token);
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: now - 400 });
+  await post(utterancePath(), { ...capture("Steven ask Will about the build", "choice"), capturedAt: now - 400 }, token);
+  await resolved("choice");
+  t.mock.timers.tick(400);
   await post(utterancePath(), { ...capture("Will"), capturedAt: now - 200 }, token);
 
   await post(utterancePath(), { ...capture("cancel", "before-pick"), capturedAt: now - 300 }, token);
@@ -779,7 +741,7 @@ test("ordinary speech and dashboard picks use the native host clock after wall t
       "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
       "x-voice-capture-start-host-us": String(startUs),
     }, body: JSON.stringify({ ...capture(text, id), capturedAt }) })).json();
-  assert.deepEqual(await speak("choice", "Steven ask Will", unix, voiceHostTimeUs()), { accepted: true });
+  assert.deepEqual(await speak("choice", "Steven ask Will about the deployment", unix, voiceHostTimeUs()), { accepted: true });
   const beforePick = voiceHostTimeUs() - 1;
   assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
   wallNow -= 60_000;
@@ -791,7 +753,7 @@ test("ordinary speech and dashboard picks use the native host clock after wall t
 });
 
 test("quiet lead-in before a dashboard pick does not predate the spoken cancel", async () => {
-  await say("Steven ask Will", "choice");
+  await say("Steven ask Will about the deployment", "choice");
   const pcmStart = voiceHostTimeUs() - 100_000;
   assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
   const speechStart = voiceHostTimeUs();
@@ -813,7 +775,10 @@ test("an API pick and a spoken cancel use the shared host clock", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const postAt = (id: string, text: string, capturedAt: number) =>
     post(utterancePath(), { ...capture(text, id), capturedAt }, token);
+  const steveBefore = queued("Steve");
+  const willBefore = queued("Will");
   await postAt("choice", "Steven ask Will about the clock", now);
+  await resolved("choice");
   t.mock.timers.tick(900);
   assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
   assert.equal(cards.at(-1)?.deadline, Date.now() + 1000);
@@ -823,7 +788,8 @@ test("an API pick and a spoken cancel use the shared host clock", async (t) => {
   await postAt("after-click", "cancel", now + 1100);
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "cancelled"]);
   t.mock.timers.tick(1000);
-  assert.ok(!queued("Will").includes("ask Will about the clock"));
+  assert.deepEqual(queued("Steve"), steveBefore);
+  assert.deepEqual(queued("Will"), willBefore);
 });
 
 test("capture transport delay does not move an API pick before a pre-click cancel", async (t) => {
@@ -832,6 +798,7 @@ test("capture transport delay does not move an API pick before a pre-click cance
   const postAt = (id: string, text: string, capturedAt: number) =>
     post(utterancePath(), { ...capture(text, id), capturedAt }, token);
   await postAt("choice", "Steven ask Will about transit", now - 300);
+  await resolved("choice");
   t.mock.timers.tick(500);
   assert.equal((await act("choice", "pick", { id: "task:Will" })).status, 200);
   t.mock.timers.tick(50);
@@ -875,7 +842,7 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
   for (const command of ["stop", "Stop!"]) {
     const id = randomUUID();
     await say("Steve, " + command, id);
-    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal((await act(id, "send-now")).status, 409);
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
 });
@@ -892,7 +859,7 @@ test("extra message punctuation is queued verbatim and cannot turn stop into an 
   }
   assert.equal(interrupts.length, before);
   await say("Will, STOP。", "punctuated-command");
-  await act("punctuated-command", "send-now");
+  assert.equal((await act("punctuated-command", "send-now")).status, 409);
   assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
 });
 
@@ -901,7 +868,7 @@ test("space before an address's closing quote preserves bare and quoted stop beh
   for (const text of ["“Will, ” stop", "“ Will ” , stop", "“Will, ”! stop"]) {
     const id = randomUUID();
     await say(text, id);
-    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal((await act(id, "send-now")).status, 409);
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will", "sdk:Will"]);
   await say("“Will, ” “stop”", "message-quote");
@@ -929,7 +896,7 @@ test("mismatched address wrappers stay in the queued message and cannot trigger 
   for (const captureText of ["[Will, ] stop", "「[Will, ] 」 stop"]) {
     const id = randomUUID();
     await say(captureText, id);
-    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal((await act(id, "send-now")).status, 409);
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
 });
@@ -940,7 +907,7 @@ test("a stop after an unclosed address wrapper queues as text at the deadline", 
   const messages = queued("Will");
   for (const text of ["[Will, stop", "“Will, STOP!", "「[Will, ] stop", ", [Will, stop"]) await say(text);
   t.mock.timers.tick(1000);
-  await Promise.resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(interrupts.length, before);
   assert.deepEqual(queued("Will").slice(messages.length), ["stop", "STOP!", "stop", "stop"]);
   assert.deepEqual(cards.slice(-4).map(({ state }) => state), ["queued", "queued", "queued", "queued"]);
@@ -948,8 +915,14 @@ test("a stop after an unclosed address wrapper queues as text at the deadline", 
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {
   const body = "ask Steve about the build";
+  model.decide = (questions) => {
+    assert.deepEqual(questions.map((q) => q.kind === "split" && [q.first.label, q.second.label]), [["Will", "Steve"]]);
+    return { rung: "job", answers: [{ choice: "mention", confidence: 1 }], detail: "scripted" };
+  };
   await say("Will, " + body, "mention");
+  await resolved("mention");
   assert.equal(cards[0]?.state, "pending");
+  assert.equal(cards[0]?.reason, "mention");
   assert.equal(cards[0]?.parts[0]?.target?.name, "Will");
   assert.equal(cards[0]?.parts[0]?.text, body);
   assert.deepEqual(cards[0]?.candidates, []);
@@ -958,8 +931,109 @@ test("a later mention of Steve opens a pending card for Will and queues the enti
   assert.ok(!queued("Steve").includes(body));
 });
 
-test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async () => {
+test("a split stays queued until both agents confirm their own deliveries", async () => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  await say("Steve, check the build, and Will, review the PR", "split");
+  await resolved("split");
+  assert.deepEqual(cards.at(-1)?.parts.map((p) => [p.target?.name, p.text]), [["Steve", "check the build"], ["Will", "review the PR"]]);
+  assert.equal((await act("split", "send-now")).status, 200);
+  assert.ok(queued("Steve").includes("check the build"));
+  assert.ok(queued("Will").includes("review the PR"));
+  assert.equal(cards.at(-1)?.state, "queued");
+  for (const [who, state, detail] of [
+    ["Will", "queued", "Part 1 (Steve) queued. Part 2 (Will) sent."],
+    ["Steve", "sent", "Part 1 (Steve) sent. Part 2 (Will) sent."],
+  ] as const) {
+    const sessionId = "sdk:" + who;
+    const turn = registry.getSession(sessionId)!.pendingTurns.at(-1)!;
+    registry.turnDelivered({ sessionId, turnId: turn.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
+    const card = cards.at(-1)!;
+    const entry = (await readHeard())[0]!;
+    assert.deepEqual([card.state, entry.outcome], [state, state]);
+    assert.equal(card.detail?.split("\n").at(-1), detail);
+    assert.equal(entry.detail, card.detail);
+  }
+});
+
+test("split delivery interrupts on each bare stop and queues quoted stop verbatim", async () => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  for (const [text, interrupted, messaged] of [
+    ['Steve, "stop", and Will, Stop!', "Will", "Steve"],
+    ['Steve, Stop!, and Will, "stop"', "Steve", "Will"],
+  ] as const) {
+    const before = interrupts.length;
+    const id = randomUUID();
+    const queuedBefore = queued(messaged).length;
+    await say(text, id);
+    await resolved(id);
+    assert.deepEqual(interrupts.slice(before), ["sdk:" + interrupted]);
+    assert.equal(queued(messaged).length, queuedBefore);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.deepEqual(interrupts.slice(before), ["sdk:" + interrupted]);
+    assert.equal(queued(messaged).at(-1), '"stop"');
+  }
+});
+
+test("cancelling a split keeps the immediate interrupt and drops only the ordinary message", async () => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  const before = interrupts.length;
+  await say("Steve, inspect the build, and Will, stop", "split-cancel");
+  await resolved("split-cancel");
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  assert.equal((await act("split-cancel", "cancel")).status, 200);
+  assert.equal(queued("Steve").length, 0);
+  assert.match((await readHeard())[0]!.detail, /Part 1 \(Steve\) cancelled\. Part 2 \(Will\) sent\./);
+});
+
+test("Recently heard names both deliveries when the second part of a split fails", async (t) => {
+  model.decide = () => ({ rung: "job", answers: [{ choice: "split", confidence: 1 }], detail: "scripted" });
+  t.mock.method(sdk, "interrupt", async () => null);
+  await say("Steve, check the queue, and Will, stop", "partial");
+  await resolved("partial");
+  assert.equal((await act("partial", "send-now")).status, 200);
+  assert.equal(queued("Steve").at(-1), "check the queue");
+  const entry = (await readHeard())[0]!;
+  assert.equal(entry.outcome, "failed");
+  assert.match(entry.detail, /Part 1 \(Steve\) queued\. Part 2 \(Will\) failed\. this session has no live embedded driver/);
+  const turn = registry.getSession("sdk:Steve")!.pendingTurns.at(-1)!;
+  registry.turnDelivered({ sessionId: "sdk:Steve", turnId: turn.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
+  assert.equal(cards.at(-1)?.state, "failed");
+  assert.match((await readHeard())[0]!.detail, /Part 1 \(Steve\) sent\. Part 2 \(Will\) failed\./);
+});
+
+test("an unclosed address wrapper keeps stop as text for model and picked splits", async () => {
+  for (const manual of [false, true]) {
+    model.decide = () => ({ rung: "job", answers: [{ choice: manual ? null : "split", confidence: manual ? 0 : 1 }], detail: "scripted" });
+    const before = interrupts.length;
+    const id = randomUUID();
+    await say("[Steve, stop, and [ Will, stop", id);
+    await resolved(id);
+    if (manual) assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(interrupts.length, before);
+    assert.deepEqual([queued("Steve").at(-1), queued("Will").at(-1)], ["stop", "stop"]);
+  }
+});
+
+test("model and manual split delivery preserve stop punctuation and command-line flags", async () => {
+  for (const manual of [false, true]) {
+    model.decide = () => ({ rung: "job", answers: [{ choice: manual ? null : "split", confidence: 1 }], detail: "scripted" });
+    const id = randomUUID();
+    const before = interrupts.length;
+    await say("Steve, stop:, and Will, --force is the flag", id);
+    await resolved(id);
+    if (manual) assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+    assert.equal((await act(id, "send-now")).status, 200);
+    assert.equal(interrupts.length, before);
+    assert.deepEqual([queued("Steve").at(-1), queued("Will").at(-1)], ["stop:", "--force is the flag"]);
+  }
+});
+
+test("unsure waits indefinitely, cancels without sending, and accepts a spoken or clicked candidate", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  model.decide = (questions) => ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" });
   await say("Steven tell Will something", "ambiguous");
+  await resolved("ambiguous");
   assert.equal(cards[0]?.state, "unsure");
   assert.equal(cards[0]?.deadline, null);
   assert.equal((await act("ambiguous", "send-now")).status, 409);
@@ -967,19 +1041,25 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
   assert.equal(cards.at(-1)?.state, "cancelled");
   assert.ok(!queued("Steve").includes("tell Will something"));
   for (const method of ["spoken", "click"]) {
-    await say("Steven ask Will", method);
+    t.mock.timers.setTime(Date.now() + 1);
+    await say("Steven ask Will about it", method);
+    await resolved(method);
     assert.equal((await act(method, "pick", { id: "unknown" })).status, 409);
+    t.mock.timers.setTime(Date.now() + 1);
     if (method === "spoken") await say("Will");
     else assert.equal((await act(method, "pick", { id: "task:Will" })).status, 200);
     assert.equal(cards.at(-1)?.state, "pending");
-    assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+    assert.deepEqual(cards.at(-1)?.parts.map(part => [part.target?.name, part.text]), [["Steve", "ask"], ["Will", "about it"]]);
     assert.equal((await act(method, "cancel")).status, 200);
   }
 });
 
-test("a spoken pick finds the only matching unsure card, even when it is older", async () => {
+test("a spoken pick finds the only matching unsure card, even when it is older", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await say("Steven ask Will about the build", "older");
   await say("Steven ask Bill about the release", "newer");
+  await resolved("newer");
+  t.mock.timers.setTime(Date.now() + 1);
   await say("Steve");
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["older", "unsure"], ["newer", "unsure"]]);
   assert.equal((await readHeard())[0]?.rule, "ambiguous-pick");
@@ -988,41 +1068,56 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [
     ["newer", "unsure"], ["older", "pending"],
   ]);
-  assert.equal(cards.at(-1)?.parts[0]?.target?.name, "Will");
+  assert.deepEqual(cards.at(-1)?.parts.map(p => [p.target?.name, p.text]), [
+    ["Steve", "ask"], ["Will", "about the build"],
+  ]);
   assert.equal((await act("older", "send-now")).status, 200);
-  assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
+  assert.equal(queued("Steve").at(-1), "ask");
+  assert.equal(queued("Will").at(-1), "about the build");
 });
 
-test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async () => {
+test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
-  const before = queued("Will");
+  const willBefore = queued("Will");
+  const steveBefore = queued("Steve");
   await say("Steven ask Will about the results", "choice");
+  await resolved("choice");
+  t.mock.timers.setTime(Date.now() + 1);
   for (const text of [",Will", " ?Will.", "Will,", "(Will)", "“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.rule, "no-message");
-    assert.deepEqual(queued("Will"), before);
+    assert.deepEqual(queued("Will"), willBefore);
+    assert.deepEqual(queued("Steve"), steveBefore);
     assert.deepEqual(registry.snapshot().voiceCards?.map((card) => card.state), ["unsure"]);
   }
   await say("Will.");
-  assert.deepEqual(queued("Will"), [...before, "ask Will about the results"]);
+  assert.deepEqual(queued("Will"), [...willBefore, "about the results"]);
+  assert.deepEqual(queued("Steve"), [...steveBefore, "ask"]);
   assert.deepEqual(registry.snapshot().voiceCards, []);
 });
 
-test("a delayed spoken pick can only queue an unsure capture that preceded it", async () => {
+test("a delayed spoken pick can only queue choices that were offered when it was captured", async (t) => {
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: now - 300 });
   const postAt = (id: string, text: string, capturedAt: number) =>
     post(utterancePath(), { ...capture(text, id), capturedAt }, token);
   const before = queued("Will");
+  await postAt("older", "Steven ask Will about yesterday", now - 300);
+  await resolved("older");
+  t.mock.timers.setTime(now - 100);
   await postAt("newer", "Steven ask Will about tomorrow", now - 100);
+  await resolved("newer");
+  t.mock.timers.setTime(now);
   await postAt("too-early", "Will", now - 400);
   assert.deepEqual(queued("Will"), before);
   assert.equal((await readHeard()).find((entry) => entry.id === "too-early")?.rule, "no-message");
-  await postAt("older", "Steven ask Will about yesterday", now - 300);
   await postAt("between", "Will", now - 200);
-  assert.deepEqual(queued("Will"), [...before, "ask Will about yesterday"]);
+  assert.deepEqual(queued("Will"), [...before, "about yesterday"]);
+  assert.equal(queued("Steve").at(-1), "ask");
   assert.equal((await readHeard()).find((entry) => entry.id === "between")?.rule, "pick");
   assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "unsure"]]);
 });
@@ -1060,32 +1155,34 @@ test("punctuation-only messages reach the named agent and leave an unsure card o
   assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["unsure", "unsure"]]);
 });
 
-test("a replacement session receives neither a pending message nor a pending interrupt", async (t) => {
+test("a stop reaches the original session immediately and a pending message cannot follow its replacement", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const will = name("Will");
   voiceStateStore.useRoster(() => [will, name("Steve")]);
   t.after(() => voiceStateStore.useRoster(() => roster));
+  const startingInterrupts = interrupts.length;
   await say("Will, stop", "stop-original");
-  await say("Steven ask Will about the deployment", "picked-message");
+  assert.deepEqual(interrupts.slice(startingInterrupts), ["sdk:Will"]);
+  await say("Steve, check the build, and Will, review the PR", "picked-message");
+  await resolved("picked-message");
+  t.mock.timers.tick(1);
   await say("Will.");
+  const firstQueue = queued("Steve");
   const replacementQueue = queued("Bill");
   const beforeInterrupts = [...interrupts];
   will.sessionId = "sdk:Bill";
 
-  assert.equal((await act("stop-original", "send-now")).status, 200);
+  assert.equal((await act("stop-original", "send-now")).status, 409);
   t.mock.timers.tick(1000);
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(queued("Steve"), [...firstQueue, "check the build"]);
   assert.deepEqual(queued("Bill"), replacementQueue);
   assert.deepEqual(interrupts, beforeInterrupts);
-  assert.deepEqual(cards.slice(-2).map((c) => [c.id, c.state, c.parts[0]?.target?.sessionId]), [
-    ["stop-original", "not-running", "sdk:Will"], ["picked-message", "not-running", "sdk:Will"],
-  ]);
-  const deliveries = (await readHeard()).filter((entry) => entry.outcome !== "control");
-  assert.equal(deliveries.length, 2);
-  for (const entry of deliveries) {
-    assert.equal(entry.outcome, "not-running");
-    assert.equal(entry.detail, "The selected session is unavailable.");
-  }
+  const entries = await readHeard();
+  assert.equal(entries.find(entry => entry.id === "stop-original")?.outcome, "sent");
+  const stale = entries.find(entry => entry.id === "picked-message");
+  assert.equal(stale?.outcome, "not-running");
+  assert.match(stale.detail, /Part 1 \(Steve\) queued\. Part 2 \(Will\) unavailable\./);
 });
 
 test("a reconnect sees an in-flight interrupt until its final event and cannot act on it again", async (t) => {
@@ -1095,7 +1192,6 @@ test("a reconnect sees an in-flight interrupt until its final event and cannot a
   const delayed = new Promise<void>((resolve) => { finish = resolve; });
   const driver = t.mock.method(sdk, "interrupt", async () => { started(); await delayed; return "idle"; });
   await say("Will, stop", "in-flight");
-  const send = act("in-flight", "send-now");
   await entered;
   try {
     const card = cards.at(-1);
@@ -1106,7 +1202,7 @@ test("a reconnect sees an in-flight interrupt until its final event and cannot a
     assert.equal((await act("in-flight", "cancel")).status, 409);
   } finally {
     finish();
-    await send;
+    await new Promise<void>(resolve => setImmediate(resolve));
   }
   assert.equal(driver.mock.callCount(), 1);
   assert.equal(cards.at(-1)?.state, "sent");
@@ -1119,7 +1215,8 @@ test("acknowledging an immediate interrupt lets the listener send another messag
   let finish!: () => void;
   const delayed = new Promise<void>((resolve) => { finish = resolve; });
   t.mock.method(sdk, "interrupt", async () => { await delayed; return "idle"; });
-  await say("Steven ask Will", "choice");
+  await say("Steven ask Will about the build", "choice");
+  await resolved("choice");
   const captures = (async () => {
     for (const [text, id] of [["Will, stop", "slow-stop"], ["Bill keep going", "other"], ["cancel", "dismiss"]] as const) {
       assert.deepEqual(await (await say(text, id)).json(), { accepted: true });
@@ -1148,8 +1245,25 @@ test("a selected session missing from the registry is reported as unavailable", 
   assert.equal((await readHeard())[0]?.outcome, "not-running");
 });
 
+test("a manual split pick leaves the card open when its running roster row has no live session", async (t) => {
+  const gone = { ...name("Will"), sessionId: "sdk:gone" };
+  voiceStateStore.useRoster(() => [name("Steve"), gone]);
+  t.after(() => voiceStateStore.useRoster(() => roster));
+  await say("Steve, ask Will about the release", "pick-gone");
+  await resolved("pick-gone");
+  assert.equal((await act("pick-gone", "pick", { id: "task:Will" })).status, 409);
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.equal((await act("pick-gone", "send-now")).status, 409);
+  assert.equal((await act("pick-gone", "pick", { id: "task:Steve" })).status, 200);
+  assert.equal((await act("pick-gone", "send-now")).status, 200);
+  assert.equal(queued("Steve").at(-1), "ask Will about the release");
+});
+
 test("a spoken pick for a departed candidate records why the unsure card stays open", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await say("Steven ask Will about the release", "choose");
+  await resolved("choose");
+  t.mock.timers.setTime(Date.now() + 1);
   voiceStateStore.useRoster(() => roster.filter((target) => target.name !== "Will"));
   t.after(() => voiceStateStore.useRoster(() => roster));
   await say("Will", "departed");
@@ -1273,8 +1387,11 @@ test("a sixth unsure card cancels the oldest unsure card and preserves pending d
 });
 
 test("at capacity the router rejects new cards but preserves deadlines, picks, cancels and retries", async (t) => {
+  model.decide = () => ({ rung: "none", answers: [{ choice: null, confidence: 0 }], detail: "scripted" });
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
-  await say("Steven ask Will", "choice");
+  await say("Steve, ask Will about the build", "choice");
+  await resolved("choice");
+  assert.equal(cards.at(-1)?.state, "unsure");
   for (let i = 1; i < 50; i++) {
     assert.deepEqual(await (await say("Will wait", "pending-" + i)).json(), { accepted: true });
   }
@@ -1284,6 +1401,7 @@ test("at capacity the router rejects new cards but preserves deadlines, picks, c
   assert.deepEqual(registry.snapshot().voiceCards, snapshot);
   assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 50);
   assert.ok(!(await readHeard()).some(({ id }) => id === "overflow"));
+  t.mock.timers.tick(1);
   assert.deepEqual(await (await say("Will")).json(), { accepted: true });
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
   await say("cancel");
@@ -1294,7 +1412,7 @@ test("at capacity the router rejects new cards but preserves deadlines, picks, c
 
 test("out-of-order unsure captures keep the five newest choices, including when the incoming card is oldest", async () => {
   const postUnsure = (id: string, capturedAt: number) =>
-    post(utterancePath(), { ...capture("Steven ask Will", id), capturedAt }, token);
+    post(utterancePath(), { ...capture("Steven ask Will about the build", id), capturedAt }, token);
   for (const time of [30, 10, 50, 20, 40]) await postUnsure(String(time), time);
   await postUnsure("stale", 5);
   assert.deepEqual(cards.filter((card) => card.id === "stale").map((card) => card.state), ["cancelled"]);
@@ -1307,7 +1425,7 @@ test("out-of-order unsure captures keep the five newest choices, including when 
 });
 
 test("Recently heard keeps the refusal reasons from the queue and interrupt adapters", async (t) => {
-  t.mock.method(pending, "submit", () => ({ ok: false, error: "Queue full." }));
+  t.mock.method(pending, "submitSpoken", () => ({ ok: false, error: "Queue full." }));
   await say("Steve send this", "queue-refusal");
   await act("queue-refusal", "send-now");
   t.mock.method(sdk, "interrupt", async () => null);

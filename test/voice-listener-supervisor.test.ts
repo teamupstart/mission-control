@@ -14,7 +14,10 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   const listener = new VoiceListener(directory => {
     models.push(directory);
     child = new EventEmitter();
-    return Object.assign(child, { kill: (signal: string) => signals.push(signal) }) as unknown as ChildProcess;
+    return Object.assign(child, {
+      pid: models.length === 1 ? undefined : 100 + models.length,
+      kill: (signal: string) => signals.push(signal),
+    }) as unknown as ChildProcess;
   }, line => diagnostics.push(line));
   const state: VoiceState = voiceStateOff();
   listener.update(state, true);
@@ -28,12 +31,12 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   listener.update(state, true);
   assert.deepEqual(models, ["/model/a"]);
   child.emit("error", Object.assign(new Error("spawn path should stay private"), {code: "EACCES"}));
-  child.emit("close", 1);
+  child.emit("close", -13, null);
   t.mock.timers.tick(499);
   assert.equal(models.length, 1);
   t.mock.timers.tick(1);
   assert.equal(models.length, 2);
-  child.emit("close", 1);
+  child.emit("close", 1, null);
   t.mock.timers.tick(999);
   assert.equal(models.length, 2);
   t.mock.timers.tick(1);
@@ -41,7 +44,7 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   listener.update(state, true);
   assert.deepEqual(signals, ["SIGTERM"]);
   assert.equal(models.length, 3);
-  child.emit("close", 0);
+  child.emit("close", 0, null);
   assert.equal(models.at(-1), "/model/b");
   const stopped = listener.stop();
   let drained = false;
@@ -50,9 +53,20 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   assert.equal(drained, false);
   t.mock.timers.tick(2000);
   assert.equal(signals.at(-1), "SIGKILL");
-  child.emit("close", 0);
+  child.emit("close", null, "SIGKILL");
   await stopped;
-  assert.deepEqual(diagnostics, ["Voice listener failed to launch (EACCES)", "Voice listener exited (1)"]);
+  assert.deepEqual(diagnostics, [
+    'Voice listener launch pid=none modelRevision="a"',
+    "Voice listener close pid=none code=-13 signal=none requested=false error=EACCES",
+    "Voice listener retry pid=none attempt=1 delayMs=500",
+    'Voice listener launch pid=102 modelRevision="a"',
+    "Voice listener close pid=102 code=1 signal=none requested=false",
+    "Voice listener retry pid=102 attempt=2 delayMs=1000",
+    'Voice listener launch pid=103 modelRevision="a"',
+    "Voice listener close pid=103 code=0 signal=none requested=true",
+    'Voice listener launch pid=104 modelRevision="b"',
+    "Voice listener close pid=104 code=none signal=SIGKILL requested=true",
+  ]);
   assert.ok(drained);
   listener.update(state, true);
   t.mock.timers.tick(5000);

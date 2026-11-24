@@ -35,10 +35,50 @@ test("phonetic variants and possessives address Steve, while an exact Steven win
   });
 });
 
-test("a unique exact first word keeps the target when the body mentions another agent", () => {
-  assert.deepEqual(route("Will, ask Steve about the build"), {
-    kind: "addressed", target: agent("Will"), match: "exact", text: "ask Steve about the build", pauseMs: null,
+test("an exact first word with a later name asks split or mention, and the first target stays fixed", () => {
+  const decision = route("Will, ask Steve about the build");
+  assert.equal(decision.kind, "needs-model");
+  if (decision.kind !== "needs-model" || decision.reason !== "second-name") return;
+  assert.deepEqual(decision.target, agent("Will"));
+  assert.equal(decision.match, "exact");
+  assert.equal(decision.text, "ask Steve about the build");
+  assert.deepEqual(decision.splits, [{ target: agent("Steve"), at: 10, head: "ask", tail: "about the build" }]);
+});
+
+test("a split point keeps each message verbatim and drops only what joins them", () => {
+  const names = ["Steve", "Alice", "Ezra", "Ruby", "Release Captain"];
+  const splits = (text: string) => {
+    const decision = route(text, names);
+    return decision.kind === "needs-model" && decision.reason === "second-name"
+      ? decision.splits.map((split) => [split.target.name, split.head, split.tail])
+      : decision.kind;
+  };
+  assert.deepEqual(splits("Steve, check the build, and Alice, review the PR"), [["Alice", "check the build", "review the PR"]]);
+  assert.deepEqual(splits('“Steve,” "check the build", and “Alice,” "review the PR"'), [
+    ["Alice", '"check the build"', '"review the PR"'],
+  ]);
+  assert.equal(splits("Steve, check the build, and Alice, ,,,"), "addressed");
+  assert.equal(splits("Steve, ???, and Alice, check"), "addressed");
+  assert.deepEqual(splits("Steve, explain C plus plus, and Alice, --force is a flag"),
+    [["Alice", "explain C plus plus", "--force is a flag"]]);
+  const stop = route("Steve, stop:, and Alice, review the PR", names);
+  assert.ok(stop.kind === "needs-model" && stop.reason === "second-name");
+  assert.equal(stop.splits[0]?.head, "stop:");
+  assert.equal(stop.splits[0]?.commands?.[0], undefined);
+  assert.equal(splits("Steve, check the build, and Release, Captain needs help"), "addressed");
+  assert.deepEqual(splits("Ezra, check the disk alerts. Also Ruby, vacuum the old tables"),
+    [["Ruby", "check the disk alerts.", "vacuum the old tables"]]);
+  assert.deepEqual(splits("Steve, ask Release Captain to cut it, then Alice, review"), [
+    ["Release Captain", "ask", "to cut it, then Alice, review"],
+    ["Alice", "ask Release Captain to cut it", "review"],
+  ]);
+});
+
+test("a later name with nothing on one side cannot split, so the first target keeps the whole message", () => {
+  assert.deepEqual(route("Steve and Will, check the build"), {
+    kind: "addressed", target: agent("Steve"), match: "exact", text: "and Will, check the build", pauseMs: null,
   });
+  assert.equal(route("Steve, ping Will").kind, "addressed");
 });
 
 test("two-word call signs and a subsequent agent name", () => {
@@ -71,7 +111,7 @@ test("later two-word roster mentions must be on the same side of a comma", () =>
       kind: "addressed", target: agent("Steve"), match: "phonetic", text: body, pauseMs: null,
     });
   }
-  const decision = route("Steven, ask Release Captain.", roster);
+  const decision = route("Steven, ask Release Captain for a review.", roster);
   assert.equal(decision.kind, "needs-model");
   if (decision.kind === "needs-model") assert.deepEqual(decision.candidates.map(({ name }) => name), roster);
 });
@@ -212,4 +252,10 @@ test("an apostrophe inside a candidate name is part of an unquoted pick", () => 
     candidates: [{ kind: "agent", id: "oneil", title: "O’Neil", detail: "" }] };
   assert.deepEqual(route("O’Neil!", ["O’Neil"], [], [card]), { kind: "control", command: "pick", cardId: "open", candidateId: "oneil" });
   assert.deepEqual(route("“O’Neil”!", ["O’Neil"], [], [card]), { kind: "ignored", reason: "no-message" });
+});
+
+test("an unmatched address quote and trailing whitespace preserve the first split message", () => {
+  const decision = route('Steve", echo ok, and Alice, review    ', ["Steve", "Alice"]);
+  assert.ok(decision.kind === "needs-model" && decision.reason === "second-name");
+  assert.deepEqual(decision.splits.map(s => [s.head, s.tail]), [['", echo ok', "review"]]);
 });

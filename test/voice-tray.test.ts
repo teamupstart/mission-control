@@ -10,6 +10,7 @@ test("selected tray glyphs and native menu actions cover every mode", () => {
     ["auto-muted", "phone", "muted for a call"],
     ["push-to-talk", "ptt", "push-to-talk active"],
     ["unavailable", "mic-off", "not listening"],
+    ["reconnecting", "mic-off", "reconnecting"],
   ] as const) {
     const muted = mode === "muted";
     assert.deepEqual(voiceTray(mode, muted), {
@@ -18,4 +19,5 @@ test("selected tray glyphs and native menu actions cover every mode", () => {
     });
   }
   assert.equal(voiceTray("unavailable", true)?.action, "Unmute Voice");
+  assert.equal(voiceTray("reconnecting", true)?.action, "Unmute Voice");
 });

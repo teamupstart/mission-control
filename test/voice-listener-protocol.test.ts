@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { before, after, describe } from "node:test";
 import { Hono } from "hono";
 import { playRecording } from "../src/voice-listener/playback.ts";
+import { recordingSegments } from "../src/voice-listener/segments.ts";
 import { ListenerClient } from "../src/voice-listener/client.ts";
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "../src/server/voice/routes.ts";
@@ -182,11 +183,11 @@ test("sherpa waits for capture, discards a stale decode and posts the next file 
     return response;
   });
   function* samples() {
-    assert.ok(resumed, "file read waited for the released mute directive");
+    assert.ok(resumed, "speech detection waited for the released mute directive");
     yield Float32Array.of(1);
     yield Float32Array.of(2);
   }
-  await playRecording(client, samples(), async segment => {
+  await playRecording(client, () => Object.assign(samples(), { exhausted: false }), async segment => {
     if (segment[0] === 1) {
       setVoiceConfig({ muted: true });
       setVoiceConfig({ muted: false });
@@ -195,6 +196,114 @@ test("sherpa waits for capture, discards a stale decode and posts the next file 
   });
   assert.deepEqual(posts.map(({ text, accepted }) => [text, accepted]), [["stale", false], ["fresh", true]]);
   assert.notEqual(posts[0]!.revision, posts[1]!.revision);
+});
+
+test("sherpa skips a blank decode and posts speech from the next file segment", async () => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
+  const posts: string[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    if (new URL(url).pathname === "/voice/utterances") posts.push(JSON.parse(String(init.body)).text);
+    return app.request(url, init);
+  });
+  const blank = Float32Array.of(1);
+  const speech = Float32Array.of(2);
+  const decoded: Float32Array[] = [];
+  await playRecording(client, () => Object.assign([blank, speech].values(), { exhausted: false }), async segment => {
+    decoded.push(segment);
+    return { text: segment[0] === blank[0] ? " \t" : "check the build", tokens: [], timestamps: [], durations: [] };
+  });
+  assert.deepEqual(decoded, [blank, speech]);
+  assert.deepEqual(posts, ["check the build"]);
+});
+
+test("a mute during speech detection pauses the file scan and resumes at the next unread sample", async () => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
+  const windows = 256;
+  let scanned = 0;
+  let pausedAt = 0;
+  const decoded: number[] = [];
+  const posts: boolean[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    const response = app.request(url, init);
+    if (url.includes("directive?revision=")) {
+      pausedAt = scanned;
+      assert.ok(pausedAt > 0 && pausedAt < windows);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(scanned, pausedAt);
+      assert.deepEqual(decoded, []);
+      setVoiceConfig({ muted: false });
+    }
+    if (new URL(url).pathname === "/voice/utterances") posts.push((await (await response).clone().json()).accepted);
+    return response;
+  });
+  const samples = new Float32Array(512 * windows);
+  let detected = 0;
+  let partial = 0;
+  await playRecording(client, signal => recordingSegments(samples, {
+    acceptWaveform(batch) {
+      assert.equal(batch.byteOffset / 4, scanned * 512);
+      scanned++;
+      if (scanned === 1) partial = scanned;
+      if (scanned === windows) detected = partial || scanned;
+      if (scanned === 2) setVoiceConfig({ muted: true });
+    },
+    isEmpty: () => detected === 0, front: () => ({ samples: Float32Array.of(detected) }),
+    pop() { detected = 0; },
+    reset() { partial = 0; detected = 0; },
+    flush() {},
+  }, signal), async segment => {
+    decoded.push(segment[0]!);
+    return { text: "speech", tokens: [], timestamps: [], durations: [] };
+  });
+  assert.ok(pausedAt > 0, "the scan must observe the mute before EOF");
+  assert.equal(scanned, windows);
+  assert.deepEqual(decoded, [windows], "only speech captured under the resumed directive is decoded");
+  assert.deepEqual(posts, [true]);
+});
+
+test("muting during the last decode discards it and ends playback while capture stays muted", async () => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
+  const accepted: boolean[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    assert.equal(new URL(url).searchParams.has("revision") && url.includes("/directive"), false,
+      "a finished recording must not wait for capture to resume");
+    const response = await app.request(url, init);
+    if (new URL(url).pathname === "/voice/utterances") accepted.push((await response.clone().json()).accepted);
+    return response;
+  });
+  let ready = false;
+  await playRecording(client, signal => recordingSegments(Float32Array.of(1), {
+    acceptWaveform() {}, flush() { ready = true; }, isEmpty: () => !ready,
+    front: () => ({ samples: Float32Array.of(1) }), pop() { ready = false; }, reset() { ready = false; },
+  }, signal), async () => {
+    setVoiceConfig({ muted: true });
+    return { text: "last", tokens: [], timestamps: [], durations: [] };
+  });
+  assert.deepEqual(accepted, [false]);
+});
+
+test("completed speech is delivered before the scanner reads any trailing silence", async () => {
+  voiceStateStore.reset();
+  setVoiceConfig({ muted: false, backend: "sherpa-onnx" });
+  const windows = 256;
+  let scanned = 0;
+  let ready = false;
+  const deliveredAt: number[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    const response = await app.request(url, init);
+    if (new URL(url).pathname === "/voice/utterances" && (await response.clone().json()).accepted) deliveredAt.push(scanned);
+    return response;
+  });
+  await playRecording(client, signal => recordingSegments(new Float32Array(512 * windows), {
+    acceptWaveform() { ready = ++scanned === 3; },
+    isEmpty: () => !ready, front: () => ({ samples: Float32Array.of(1) }),
+    pop() { ready = false; }, reset() { ready = false; }, flush() {},
+  }, signal), async () => ({ text: "command", tokens: [], timestamps: [], durations: [] }));
+  assert.deepEqual(deliveredAt, [3]);
+  assert.equal(scanned, windows);
 });
 
 for (const [failure, error] of [
@@ -206,17 +315,53 @@ for (const [failure, error] of [
     const client = new ListenerClient("http://localhost", tokenPath(), async url => {
       switch (new URL(url).pathname) {
         case "/voice/listener/hello": return new Response(null, { status: failure === "refused hello" ? 409 : 200 });
-        case "/voice/listener/directive": return Response.json({ revision: "unchanged", capture: true, roster: [] });
+        case "/voice/listener/directive": return Response.json({ revision: "unchanged", capture: true, roster: [], inputDevice: "built-in" });
         case "/voice/utterances": return Response.json({ accepted: false }, { status: failure === "failed post" ? 503 : 200 });
         default: throw new Error("Unexpected request " + url);
       }
     });
-    const segments = (function* () { yield Float32Array.of(1); })();
+    const segments = Object.assign((function* () { yield Float32Array.of(1); })(), { exhausted: false });
     const close = t.mock.method(segments, "return");
-    await assert.rejects(playRecording(client, segments, async () => ({
+    await assert.rejects(playRecording(client, () => segments, async () => ({
       text: "test", tokens: [], timestamps: [], durations: [],
     })), { message: error });
     assert.equal(close.mock.callCount(), 1);
     assert.equal(segments.next().done, true);
   });
 }
+
+test("the listener client accepts HTTP loopback origins and refuses external hosts and other schemes", () => {
+  for (const origin of ["http://localhost:7317", "http://127.0.0.1", "http://[::1]"]) {
+    assert.doesNotThrow(() => new ListenerClient(origin, tokenPath()));
+  }
+  for (const origin of ["http://example.com", "https://localhost"]) {
+    assert.throws(() => new ListenerClient(origin, tokenPath()), { message: "Expected a loopback daemon URL" });
+  }
+});
+
+test("an incompatible directive ends playback before a second poll or a recording read", async () => {
+  let polls = 0;
+  const client = new ListenerClient("http://localhost", tokenPath(), async url => {
+    if (new URL(url).pathname === "/voice/listener/directive") assert.equal(++polls, 1);
+    return Response.json({});
+  });
+  await assert.rejects(playRecording(client, () => ({ exhausted: false, next: () => assert.fail("unexpected recording read") }),
+    async () => assert.fail("unexpected decode")), { message: "Invalid voice listener directive" });
+  assert.equal(polls, 1);
+});
+
+test("scanning a silent recording lets the event loop run before reaching EOF", async () => {
+  const lifetime = new AbortController();
+  const windows = 256;
+  let scanned = 0;
+  const segments = recordingSegments(new Float32Array(512 * windows), {
+    acceptWaveform() {
+      if (++scanned === 1) setImmediate(() => lifetime.abort());
+    },
+    isEmpty: () => true,
+    flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
+  }, lifetime.signal);
+  assert.deepEqual(await segments.next("active"), { done: false, value: null });
+  await assert.rejects(segments.next("active"), { name: "AbortError" });
+  assert.ok(scanned > 0 && scanned < windows);
+});

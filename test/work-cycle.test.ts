@@ -11,6 +11,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-work-cycle-"));
 process.env.MISSION_HOME = home;
 
 const { completeWorkCycle, hooksEverSeen, markWorkCycleActive, openDb, workCycleFor } = await import("../src/server/db.ts");
+const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
 const { Registry, SDK_SESSION_ID_PREFIX } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -64,6 +65,65 @@ function applyTerminalHook(input: {
     source: input.source,
   });
 }
+
+for (const [sawStart, priorGeneration] of [[true, 1], [false, 1], [false, 0]] as const) {
+test(`a first native Stop closes a stamped spoken handoff ${sawStart ? "with" : "without"} a preceding start hook at generation ${priorGeneration}`, async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: 5 });
+  const db = await import("../src/server/db.ts");
+  const registry = new Registry();
+  const id = `terminal-spoken-before-binding-${sawStart}-${priorGeneration}`;
+  const native = `spoken-bound-by-stop-${sawStart}-${priorGeneration}`;
+  const paneId = "%73";
+  registry.applyDiscovery([discovered("claude", id, paneId)]);
+  // A resumed native conversation already has its own generation counter.
+  if (priorGeneration) {
+    db.markWorkCycleActive(native, 1);
+    db.completeWorkCycle(native, 2, 2);
+  }
+  const row = db.createPendingTurn({ id: "spoken-before-stop", noteKey: id, text: "inspect", spokenWords: "inspect", now: 3 });
+  const claim = db.claimNextPendingTurn(id, 4, row, words => words)!;
+  const reservation = reserveSpokenHandoff({ key: id, transcript: null }, claim, "inspect", false, 0, Date.now())?.id;
+  assert.ok(reservation);
+  assert.equal(db.completeWorkCycle(id, 3, 5), null, "a Stop timestamped before the claim is not its completion");
+  if (sawStart) {
+    registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: null, cwd: "/repo",
+      transcriptPath: null, env: { tmuxPane: paneId }, ts: 5, prompt: "inspect" });
+    assert.equal(db.workCycleFor(id)?.active, true);
+  }
+  applyTerminalHook({ registry, agent: "claude", event: "Stop", logicalKey: native, paneId, ts: 6 });
+  assert.equal(registry.getSession(id)?.agentSessionId, native);
+  assert.equal(db.workCycleFor(native)?.generation, priorGeneration + 1);
+  assert.ok(!db.workCycleFor(id)?.active);
+  applyTerminalHook({ registry, agent: "claude", event: "Stop", logicalKey: native, paneId, ts: 7 });
+  assert.equal(db.workCycleFor(native)?.generation, priorGeneration + 1, "a repeated Stop cannot close the same handoff twice");
+  db.closeDb();
+  assert.ok(db.retireDeliveredPendingTurn(row.id, claim.revision, 7, reservation));
+  assert.equal(db.hasDeliveredSpokenHold(native), false);
+  assert.equal(db.workCycleFor(native)?.active, false);
+});
+}
+
+test("a delayed Stop between claim and handoff cannot release the receiving turn before or after its receipt", async t => {
+  const db = await import("../src/server/db.ts");
+  t.mock.timers.enable({ apis: ["Date"], now: 20 });
+  for (const receiptFirst of [false, true]) {
+    const key = "handoff-boundary-" + receiptFirst;
+    const turn = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: 1 });
+    const claim = db.claimNextPendingTurn(key, 10, turn, words => words)!;
+    const reservation = reserveSpokenHandoff({ key, transcript: null }, claim, "inspect", false, 0, Date.now())?.id;
+    assert.ok(reservation);
+    const receive = () => assert.ok(db.retireDeliveredPendingTurn(turn.id, claim.revision, 22, reservation));
+    if (receiptFirst) receive();
+    db.closeDb();
+    db.completeWorkCycle(key, 15, 23);
+    assert.equal(db.workCycleFor(key)?.generation ?? 0, 0);
+    if (!receiptFirst) receive();
+    assert.equal(db.hasDeliveredSpokenHold(key), true);
+    db.completeWorkCycle(key, 25, 25);
+    assert.equal(db.workCycleFor(key)?.generation, 1);
+    assert.equal(db.hasDeliveredSpokenHold(key), false);
+  }
+});
 
 test("Claude and Codex terminal turns share one durable generation contract", () => {
   for (const [index, agent] of (["claude", "codex"] as const).entries()) {

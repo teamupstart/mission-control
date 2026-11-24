@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { BASE_URL, tokenPath } from "../shared/harness-runtime.mjs";
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import { tokenPath } from "../shared/harness-runtime.mjs";
 import { logMain } from "./main-log.ts";
 import type { ShellVoiceState } from "./voice-state.ts";
 
@@ -31,21 +33,23 @@ export class VoiceListener {
     if (!directory || this.closed) return;
     const child = this.launch(directory);
     this.child = child;
+    const pid = child.pid ?? "none";
+    this.log(`Voice listener launch pid=${pid} modelRevision=${JSON.stringify(basename(directory))}`);
     // close follows both a normal exit and a spawn error (including a missing binary).
     let spawnError: string | undefined;
     child.once("error", (error: NodeJS.ErrnoException) => { spawnError = error.code ?? error.name; });
     this.exited = new Promise(resolve => child.once("close", (code, signal) => {
-      if (!this.stopping && !this.closed) {
-        const reason = spawnError ? `failed to launch (${spawnError})` : `exited (${signal ?? code})`;
-        this.log(`Voice listener ${reason}`);
-      }
+      this.log(`Voice listener close pid=${pid} code=${code ?? "none"} signal=${signal ?? "none"} requested=${!!this.stopping}` +
+        (spawnError ? ` error=${spawnError}` : ""));
       clearTimeout(this.stopping);
       this.stopping = undefined;
       this.child = null;
       resolve();
       if (!this.directory || this.closed) return;
-      if (directory !== this.directory) this.start();
-      else this.retry = setTimeout(() => this.start(), Math.min(500 * ++this.restarts, 5000));
+      if (directory !== this.directory) { this.start(); return; }
+      const delayMs = Math.min(500 * ++this.restarts, 5000);
+      this.log(`Voice listener retry pid=${pid} attempt=${this.restarts} delayMs=${delayMs}`);
+      this.retry = setTimeout(() => this.start(), delayMs);
     }));
   }
 
@@ -64,14 +68,21 @@ export class VoiceListener {
   }
 }
 
-export function nativeVoiceListener(executable: string): VoiceListener {
-  return new VoiceListener(directory => spawn(executable, [], {
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      MISSION_VOICE_DAEMON_URL: BASE_URL,
-      MISSION_VOICE_TOKEN_FILE: tokenPath(),
-      MISSION_VOICE_MODEL_DIR: directory,
-    },
-  }));
+export function nativeVoiceListener(executable: string, endpoint: () => { origin: string; certificate: string }): VoiceListener {
+  // The supervisor waits for close before replacing its child, so only one helper uses this lease at a time.
+  const owner = randomUUID();
+  return new VoiceListener(directory => {
+    const { origin, certificate } = endpoint();
+    return spawn(executable, [], {
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        MISSION_VOICE_DAEMON_URL: origin,
+        MISSION_VOICE_DAEMON_CERT: certificate,
+        MISSION_VOICE_SUPERVISOR_ID: owner,
+        MISSION_VOICE_TOKEN_FILE: tokenPath(),
+        MISSION_VOICE_MODEL_DIR: directory,
+      },
+    });
+  });
 }

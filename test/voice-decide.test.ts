@@ -1,0 +1,1697 @@
+import { buildVoiceRoutingPrompt, parseVoiceRoutingReply, voiceChoiceValues, voiceQuestionInstructions, VOICE_ROUTING_SYSTEM_PROMPT } from "../src/server/voice/decide-prompt.ts";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { before, test } from "node:test";
+import type { LlmRunnerId } from "../src/shared/llm.ts";
+import type { AgentType } from "../src/shared/types.ts";
+import type { VoiceDecisionProvider } from "../src/shared/voice.ts";
+import {
+  effectiveDecisionProvider,
+  type VoiceDecisionResult,
+  type VoiceKeyProvider,
+  type VoiceQuestion,
+} from "../src/shared/voice-decide.ts";
+import type { SpokenName } from "../src/shared/voice-names.ts";
+import { VoiceUtteranceSchema, type VoiceCard } from "../src/shared/voice-routing.ts";
+import { createVoiceDecider, voiceRoutingRunner, VOICE_ROUTING_JOB_RUNGS, type VoiceDecider } from "../src/server/voice/decide.ts";
+import { DECISION_PROVIDERS, JEV_MODEL, OPENAI_DECISIONS_MODEL } from "../src/server/voice/decision-providers.ts";
+import { VoiceRouter } from "../src/server/voice/router.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+
+before(() => { ensureNativeStateLockAddon(); });
+
+// The model step (contract E) with fake rungs: both real adapters over a fake `fetch` answering
+// in each provider's documented reply shape, and a scripted job. No test reaches a provider or
+// spawns a model.
+
+const recorded = JSON.parse(readFileSync(new URL("./fixtures/voice-decision-providers.json", import.meta.url), "utf8"));
+for (const prefix of ["MISSION", "FLEET", "HARNESS"]) {
+  delete process.env[`${prefix}_VOICE_OPENAI_DECISIONS_URL`];
+  delete process.env[`${prefix}_VOICE_JEV_URL`];
+}
+
+const steve = { id: "task:steve", label: "Steve", detail: "build engineer" };
+const alice = { id: "task:alice", label: "Alice", detail: "code reviewer" };
+const SPLIT: VoiceQuestion = { kind: "split", text: "Steve, check the build, and Alice, review the PR", first: steve, second: alice };
+const OPENAI_ENV = "sk-env-openai-0000";
+const JEV_ENV = "ts-env-jev-0000";
+
+interface Call { url: string; auth: string | null; body: Record<string, unknown>; redirect?: RequestRedirect }
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+function rig(options: {
+  decisionProvider?: VoiceDecisionProvider | null;
+  saved?: Partial<Record<VoiceKeyProvider, string>>;
+  env?: NodeJS.ProcessEnv;
+  reply?: (call: Call, signal: AbortSignal) => Response | Promise<Response>;
+  job?: (runner: LlmRunnerId, timeoutMs: number, signal?: AbortSignal) => Promise<{ choice: string | null; confidence: number }[]>;
+  jobRunner?: LlmRunnerId;
+  rungs?: typeof VOICE_ROUTING_JOB_RUNGS;
+  deadlineMs?: number;
+  providerTimeoutMs?: number;
+  now?: () => number;
+}) {
+  const calls: Call[] = [];
+  const jobs: { runner: LlmRunnerId; timeoutMs: number }[] = [];
+  const decider = createVoiceDecider({
+    config: () => ({ decisionProvider: options.decisionProvider ?? null }),
+    savedKeys: () => options.saved ?? {},
+    env: () => options.env ?? {},
+    providers: DECISION_PROVIDERS,
+    fetch: (async (url: string, init: RequestInit) => {
+      const call: Call = {
+        url,
+        redirect: init.redirect,
+        auth: new Headers(init.headers).get("authorization"),
+        body: JSON.parse(String(init.body)) as Record<string, unknown>,
+      };
+      calls.push(call);
+      return options.reply ? options.reply(call, init.signal!) : json(url.endsWith("/v1/decisions") ? recorded.openai.split : recorded.jev.mention);
+    }) as typeof fetch,
+    job: async (_questions, run) => {
+      jobs.push(run);
+      return options.job ? options.job(run.runner, run.timeoutMs, run.signal) : [{ choice: "mention", confidence: 1 }];
+    },
+    jobRunner: () => options.jobRunner ?? "claude",
+    rungs: options.rungs ?? { ...VOICE_ROUTING_JOB_RUNGS, claude: { enabled: true, floor: 0.9, why: "" } },
+    deadlineMs: options.deadlineMs,
+    now: options.now,
+    providerTimeoutMs: options.providerTimeoutMs,
+  });
+  return { decider, calls, jobs, ask: (agents: AgentType[] = ["claude"], questions = [SPLIT]) => decider.ask(questions, { agents }) };
+}
+
+test("automatic follows one order: saved OpenAI, saved Jev, OPENAI_API_KEY, TYPESAFE_API_KEY; off and a missing chosen key are none", () => {
+  const keys = (saved: VoiceKeyProvider[], env: VoiceKeyProvider[]) => ({
+    saved: { openai: saved.includes("openai"), jev: saved.includes("jev") },
+    environment: { openai: env.includes("openai"), jev: env.includes("jev") },
+  });
+  const auto = { decisionProvider: null };
+  assert.equal(effectiveDecisionProvider(auto, keys([], [])), null);
+  assert.equal(effectiveDecisionProvider(auto, keys([], ["openai"])), "openai");
+  assert.equal(effectiveDecisionProvider(auto, keys([], ["jev"])), "jev");
+  assert.equal(effectiveDecisionProvider(auto, keys([], ["openai", "jev"])), "openai");
+  assert.equal(effectiveDecisionProvider(auto, keys(["openai", "jev"], [])), "openai");
+  assert.equal(effectiveDecisionProvider(auto, keys(["jev"], ["openai"])), "jev");
+  assert.equal(effectiveDecisionProvider({ decisionProvider: "jev" }, keys(["openai", "jev"], [])), "jev");
+  assert.equal(effectiveDecisionProvider({ decisionProvider: "jev" }, keys([], ["openai"])), null);
+  assert.equal(effectiveDecisionProvider({ decisionProvider: "off" }, keys(["openai"], ["openai", "jev"])), null);
+});
+
+test("no key: the job answers and no HTTPS request is made", async () => {
+  const { ask, calls, jobs } = rig({});
+  const result = await ask(["codex"]);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(jobs.map((j) => j.runner), ["codex"]);
+  assert.equal(result.rung, "job");
+  assert.deepEqual(result.answers, [{ choice: "mention", confidence: 1 }]);
+});
+
+test("OPENAI_API_KEY alone switches OpenAI Decisions on, with the pinned model and every question as a typed choice", async () => {
+  const { ask, calls, jobs } = rig({ env: { OPENAI_API_KEY: OPENAI_ENV } });
+  const speech = "Steve, archive the release notes, and Alice, check the spelling";
+  const result = await ask(["claude"], [{ ...SPLIT, text: speech }]);
+  assert.equal(calls.length, 1);
+  assert.equal(jobs.length, 0);
+  assert.equal(calls[0]!.url, "https://api.openai.com/v1/decisions");
+  assert.equal(calls[0]!.auth, `Bearer ${OPENAI_ENV}`);
+  assert.equal(calls[0]!.body.model, OPENAI_DECISIONS_MODEL);
+  const [question] = calls[0]!.body.questions as { type: string; name: string; instructions: string; choices: { value: string }[] }[];
+  assert.equal(question!.type, "choice");
+  assert.equal(question!.name, "q1");
+  assert.deepEqual(question!.choices.map((c) => c.value), ["split", "mention", "not sure"]);
+  assert.ok(String(calls[0]!.body.input).includes(speech));
+  assert.ok(!question!.instructions.includes(speech));
+  assert.deepEqual(result, { rung: "openai", answers: [{ choice: "split", confidence: 0.99 }], detail: "OpenAI Decisions answered" });
+});
+
+test("TYPESAFE_API_KEY alone asks Jev, pinned to a version, with named questions and a criteria map", async () => {
+  const { ask, calls } = rig({ env: { TYPESAFE_API_KEY: JEV_ENV } });
+  const result = await ask();
+  assert.equal(calls[0]!.url, "https://api.typesafe.ai/v1/systemone");
+  assert.equal(calls[0]!.auth, `Bearer ${JEV_ENV}`);
+  assert.equal(calls[0]!.body.model, JEV_MODEL);
+  const questions = calls[0]!.body.questions as Record<string, { type: string; criteria: Record<string, string> }>;
+  assert.deepEqual(Object.keys(questions), ["q1"]);
+  assert.equal(questions.q1!.type, "choice");
+  assert.deepEqual(Object.keys(questions.q1!.criteria), ["split", "mention", "not sure"]);
+  assert.deepEqual(result.answers, [{ choice: "mention", confidence: 0.99 }]);
+  assert.equal(result.rung, "jev");
+});
+
+test("with both variables set, automatic asks OpenAI Decisions", async () => {
+  const { ask, calls } = rig({ env: { OPENAI_API_KEY: OPENAI_ENV, TYPESAFE_API_KEY: JEV_ENV } });
+  await ask();
+  assert.deepEqual(calls.map((c) => c.url), ["https://api.openai.com/v1/decisions"]);
+});
+
+test("saved keys come first: both saved asks OpenAI with its saved key; a saved Jev key beats OPENAI_API_KEY; Jev chosen asks Jev", async () => {
+  const both = rig({ saved: { openai: "sk-saved-openai", jev: "ts-saved-jev" }, env: { OPENAI_API_KEY: OPENAI_ENV } });
+  await both.ask();
+  assert.deepEqual(both.calls.map((c) => [c.url, c.auth]), [["https://api.openai.com/v1/decisions", "Bearer sk-saved-openai"]]);
+
+  const jevSaved = rig({ saved: { jev: "ts-saved-jev" }, env: { OPENAI_API_KEY: OPENAI_ENV } });
+  await jevSaved.ask();
+  assert.deepEqual(jevSaved.calls.map((c) => [c.url, c.auth]), [["https://api.typesafe.ai/v1/systemone", "Bearer ts-saved-jev"]]);
+
+  const chosen = rig({ decisionProvider: "jev", saved: { openai: "sk-saved-openai", jev: "ts-saved-jev" } });
+  await chosen.ask();
+  assert.deepEqual(chosen.calls.map((c) => c.url), ["https://api.typesafe.ai/v1/systemone"]);
+});
+
+test("Off with a key in the environment makes no HTTPS request and the job answers", async () => {
+  const { ask, calls, jobs } = rig({ decisionProvider: "off", env: { OPENAI_API_KEY: OPENAI_ENV, TYPESAFE_API_KEY: JEV_ENV } });
+  const result = await ask();
+  assert.equal(calls.length, 0);
+  assert.equal(jobs.length, 1);
+  assert.equal(result.rung, "job");
+});
+
+test("Jev chosen with only OPENAI_API_KEY makes no HTTPS request, so that key never reaches Jev", async () => {
+  const { ask, calls, jobs } = rig({ decisionProvider: "jev", env: { OPENAI_API_KEY: OPENAI_ENV } });
+  const result = await ask();
+  assert.equal(calls.length, 0);
+  assert.equal(jobs.length, 1);
+  assert.equal(result.rung, "job");
+});
+
+test("a provider error falls to the job, and its detail never carries the key", async () => {
+  const { ask, jobs } = rig({
+    env: { OPENAI_API_KEY: OPENAI_ENV },
+    reply: () => json({ error: { message: `Incorrect API key provided: ${OPENAI_ENV}` } }, 401),
+  });
+  const result = await ask();
+  assert.equal(jobs.length, 1);
+  assert.equal(result.rung, "job");
+  assert.match(result.detail, /OpenAI Decisions request failed|OpenAI Decisions HTTP 401/);
+  assert.ok(!result.detail.includes(OPENAI_ENV));
+
+  const jev = rig({ env: { TYPESAFE_API_KEY: JEV_ENV }, reply: () => json(recorded.jev.validation, 422) });
+  assert.equal((await jev.ask()).rung, "job");
+});
+
+test("a provider that hangs times out and the job gets only what is left of the budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  let onProviderStart!: (signal: AbortSignal) => void;
+  const started = new Promise<AbortSignal>(resolve => { onProviderStart = resolve; });
+  const { ask, jobs } = rig({
+    env: { OPENAI_API_KEY: OPENAI_ENV },
+    deadlineMs: 600,
+    providerTimeoutMs: 150,
+    now: Date.now,
+    reply: (_call, signal) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")));
+      onProviderStart(signal);
+    }),
+  });
+  const pending = ask();
+  const signal = await started;
+  t.mock.timers.tick(149);
+  assert.equal(signal.aborted, false);
+  assert.equal(jobs.length, 0);
+  t.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(signal.aborted, true);
+  assert.equal(result.rung, "job");
+  assert.match(result.detail, /OpenAI Decisions (?:request failed: )?timed out; job on claude answered/);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]!.timeoutMs, 450);
+});
+
+test("a job past the deadline is not sure, and its late answer is never used", async () => {
+  const { ask } = rig({
+    deadlineMs: 100,
+    job: () => new Promise((resolve) => setTimeout(() => resolve([{ choice: "split", confidence: 1 }]), 300)),
+  });
+  const result = await ask();
+  assert.equal(result.rung, "none");
+  assert.deepEqual(result.answers, [{ choice: null, confidence: 0 }]);
+  assert.match(result.detail, /job on claude timed out/);
+});
+
+test("an answer that settles after the absolute deadline is discarded even before the timeout callback runs", async () => {
+  let now = 0;
+  const { decider } = rig({
+    now: () => now,
+    job: async () => {
+      now = 5_000;
+      return [{ choice: "split", confidence: 1 }];
+    },
+  });
+  const result = await decider.ask([SPLIT]);
+  assert.equal(result.rung, "none");
+  assert.equal(result.answers[0]?.choice, null);
+});
+
+test("below the floor is not sure, a choice that is not one of the question's is not sure even at 1.0, and a refusal is not sure", async () => {
+  const low = rig({ env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () => json({ ...recorded.openai.split, answers: [{ ...recorded.openai.split.answers[0], confidence: 0.9 }] }) });
+  assert.deepEqual((await low.ask()).answers, [{ choice: null, confidence: 0.9 }]);
+
+  const invalid = rig({ job: async () => [{ choice: "split", confidence: 2 }] });
+  assert.equal((await invalid.ask()).answers[0]?.choice, null);
+
+  const option: VoiceQuestion = { kind: "option", text: "neither of these", prompt: "Which database?",
+    options: [{ id: "pg", label: "Postgres", detail: "server" }, { id: "lite", label: "SQLite", detail: "file" }] };
+  const outside = rig({ job: async () => [{ choice: "lite", confidence: 0.99 }], env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () => json({ ...recorded.openai.split,
+    answers: [{ type: "choice", name: "q1", choice: "neither of these", confidence: 1, probabilities: [] }] }) });
+  const recovered = await outside.ask(["codex"], [option]);
+  assert.equal(recovered.rung, "job");
+  assert.deepEqual(outside.jobs.map(j => j.runner), ["codex"]);
+  assert.deepEqual(recovered.answers, [{ choice: "lite", confidence: 0.99 }]);
+
+  const job = rig({ job: async () => [{ choice: "Atlas", confidence: 1 }] });
+  const who: VoiceQuestion = { kind: "who", text: "Stevie, run it", candidates: [steve, alice] };
+  assert.deepEqual((await job.ask(["codex"], [who])).answers, [{ choice: null, confidence: 1 }]);
+
+  const refusal = rig({ env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () => json(recorded.openai.refusal) });
+  const refused = await refusal.ask();
+  assert.equal(refused.rung, "openai");
+  assert.deepEqual(refused.answers, [{ choice: null, confidence: 0 }]);
+});
+
+test("an option answer maps back to the option's id", async () => {
+  const option: VoiceQuestion = { kind: "option", text: "the embedded one", prompt: "Which database?",
+    options: [{ id: "pg", label: "Postgres", detail: "server" }, { id: "lite", label: "SQLite", detail: "file" }] };
+  const { ask } = rig({ env: { TYPESAFE_API_KEY: JEV_ENV }, reply: () => json({ model: JEV_MODEL, usage: {},
+    answers: { q1: { type: "choice", choice: "SQLite", confidence: 0.99, probabilities: {} } } }) });
+  assert.deepEqual((await ask(["claude"], [option])).answers, [{ choice: "lite", confidence: 0.99 }]);
+});
+
+test("an internal ID is accepted only when its value was offered to the model", async () => {
+  const who: VoiceQuestion = { kind: "who", text: "Stevie, run it", candidates: [steve, alice] };
+  const option: VoiceQuestion = { kind: "option", text: "the embedded one", prompt: "Which database?",
+    options: [{ id: "lite", label: "SQLite", detail: "embedded" }] };
+  for (const [question, id, label] of [[who, steve.id, steve.label], [option, "lite", "SQLite"]] as const) {
+    for (const choice of [id, label]) {
+      const answer = { type: "choice", choice, confidence: 1 };
+      const expected = choice === label ? [{ choice: id, confidence: 1 }] : null;
+      for (const provider of ["openai", "jev"] as const) {
+        const { ask, jobs } = rig({ saved: { [provider]: "fixture-key" },
+          job: async () => [{ choice: id, confidence: 0.98 }],
+          reply: () => json({ answers: provider === "openai" ? [{ ...answer, name: "q1" }] : { q1: answer } }) });
+        const result = await ask(["codex"], [question]);
+        assert.equal(result.rung, choice === label ? provider : "job");
+        assert.deepEqual(jobs.map(j => j.runner), choice === label ? [] : ["codex"]);
+        assert.deepEqual(result.answers, [{ choice: id, confidence: choice === label ? 1 : 0.98 }]);
+      }
+      assert.deepEqual(parseVoiceRoutingReply({ answers: { q1: answer } }, [question]), expected, "job");
+    }
+  }
+});
+
+for (const provider of ["openai", "jev"] as const) {
+  test(`${provider} malformed answers fall through to Luna and explicit uncertainty stops`, async () => {
+    for (const answer of [{ type: "choice", choice: "split" }, { type: "choice", choice: "split", confidence: "high" },
+      { type: "choice", choice: true, confidence: 1 }, { type: "choice", choice: "split", confidence: 2 },
+      { type: "choice", choice: "not sure", confidence: 1 }]) {
+      const { ask, jobs } = rig({ saved: { [provider]: "fixture-key" },
+        reply: () => json({ answers: provider === "openai" ? [{ ...answer, name: "q1" }] : { q1: answer } }) });
+      const result = await ask(["codex"]);
+      if (answer.choice === "not sure") {
+        assert.equal(result.rung, provider);
+        assert.equal(result.answers[0]?.choice, null);
+        assert.equal(jobs.length, 0);
+      } else {
+        assert.equal(result.rung, "job");
+        assert.equal(result.answers[0]?.choice, "mention");
+        assert.deepEqual(jobs.map(j => j.runner), ["codex"]);
+      }
+    }
+  });
+
+  test(`${provider} sends credentials only to HTTPS or loopback HTTP gateways`, async (t) => {
+    const variable = provider === "openai" ? "MISSION_VOICE_OPENAI_DECISIONS_URL" : "MISSION_VOICE_JEV_URL";
+    const original = process.env[variable];
+    t.after(() => { if (original === undefined) delete process.env[variable]; else process.env[variable] = original; });
+    for (const [base, allowed] of [
+      ["http://gateway.invalid", false], ["file:///tmp/gateway", false],
+      ["https://gateway.invalid?key=value", false], ["https://gateway.invalid#section", false],
+      ["https://gateway.invalid", true], ["http://127.0.0.1", true], ["http://[::1]", true],
+    ] as const) {
+      process.env[variable] = base;
+      const { calls, ask } = rig({ saved: { [provider]: "fixture-key" } });
+      assert.equal((await ask(["codex"])).rung, allowed ? provider : "job", base);
+      assert.equal(calls.length, allowed ? 1 : 0, base);
+    }
+  });
+
+  test(`${provider} bounds the streamed reply and uses Luna on overflow`, async () => {
+    const reply = JSON.stringify(provider === "openai" ? recorded.openai.split : recorded.jev.mention);
+    const cap = 256 * 1024;
+    for (const extra of [0, 1]) {
+      let cancelled = false;
+      const atLimit = new TextEncoder().encode(reply.padEnd(cap));
+      const chunks = [atLimit.subarray(0, cap / 2), atLimit.subarray(cap / 2)];
+      if (extra) chunks.push(Uint8Array.of(32));
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) controller.enqueue(chunk);
+          else controller.close();
+        },
+        cancel() { cancelled = true; },
+      }, { highWaterMark: 0 });
+      const { ask, jobs } = rig({ saved: { [provider]: "fixture-key" },
+        reply: () => new Response(stream, { headers: { "content-length": "1" } }) });
+      assert.equal((await ask(["codex"])).rung, extra ? "job" : provider);
+      assert.equal(cancelled, Boolean(extra));
+      assert.deepEqual(jobs.map(j => j.runner), extra ? ["codex"] : []);
+    }
+  });
+
+  test(`${provider} requests reject redirects at the fetch boundary`, async () => {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" }, reply: () => { throw new TypeError("redirect refused"); } });
+    const result = await ask(["codex"]);
+    assert.deepEqual(calls.map(c => c.redirect), ["error"]);
+    assert.equal(result.rung, "job");
+  });
+}
+
+test("Jev rejects a confident split when its reply includes an unrequested question", async () => {
+  const split = { type: "choice", choice: "split", confidence: 1 };
+  for (const [answers, valid] of [[{ q1: split }, true], [{ q1: split, extra: split }, false], [{ q2: split }, false]] as const) {
+    const { ask, jobs } = rig({ saved: { jev: "fixture-key" }, reply: () => json({ answers }) });
+    const result = await ask(["codex"]);
+    assert.equal(result.rung, valid ? "jev" : "job");
+    assert.deepEqual(result.answers.map(a => a.choice), [valid ? "split" : "mention"]);
+    assert.deepEqual(jobs.map(job => job.runner), valid ? [] : ["codex"]);
+  }
+});
+
+test("OpenAI split answers must name each question in request order", async () => {
+  const questions: VoiceQuestion[] = [SPLIT, { ...SPLIT, second: steve }];
+  for (const names of [["q1", "q2"], ["q2", "q1"], ["q1", "q1"], ["q1", undefined]]) {
+    const answers = names.map((name, i) => ({ name, type: "choice", choice: i ? "split" : "mention", confidence: 1 }));
+    const { ask, jobs } = rig({ saved: { openai: "fixture-key" }, reply: () => json({ answers }) });
+    const result = await ask(["codex"], questions);
+    if (names[0] === "q1" && names[1] === "q2") {
+      assert.equal(result.rung, "openai");
+      assert.deepEqual(result.answers.map(a => a.choice), ["mention", "split"]);
+    } else {
+      assert.equal(result.rung, "job");
+      assert.deepEqual(jobs.map(j => j.runner), ["codex"]);
+    }
+  }
+});
+
+test("the job runs on the candidates' provider, or the background-job provider for a mixed roster; a disabled rung is not run", async () => {
+  assert.equal(voiceRoutingRunner(["claude", "claude"], "codex"), "claude");
+  assert.equal(voiceRoutingRunner(["codex"], "claude"), "codex");
+  assert.equal(voiceRoutingRunner(["claude", "codex"], "codex"), "codex");
+  assert.equal(voiceRoutingRunner(["pi"], "claude"), "claude");
+
+  const shipped = rig({ rungs: VOICE_ROUTING_JOB_RUNGS });
+  const claude = await shipped.ask(["claude"]);
+  const codex = await shipped.ask(["codex"]);
+  assert.deepEqual(shipped.jobs.map((j) => j.runner), VOICE_ROUTING_JOB_RUNGS.claude.enabled ? ["claude", "codex"] : ["codex"]);
+  assert.equal(codex.rung, "job");
+  if (!VOICE_ROUTING_JOB_RUNGS.claude.enabled) {
+    assert.equal(claude.rung, "none");
+    assert.deepEqual(claude.answers, [{ choice: null, confidence: 0 }]);
+  }
+});
+
+// ---- the router over the model step ----
+
+function name(spoken: string, agent: AgentType = "claude"): SpokenName {
+  return { key: `task:${spoken}`, name: spoken, kind: "session", taskId: spoken, sessionId: `s:${spoken}`, role: `${spoken}'s role`,
+    colorId: null, agent, state: "running" };
+}
+
+function routerRig(answer: (...args: Parameters<VoiceDecider["ask"]>) => Promise<VoiceDecisionResult> | VoiceDecisionResult,
+  roster = ["Steve", "Alice", "Will"].map((n) => name(n))) {
+  const cards: VoiceCard[] = [];
+  const delivered: [string, string, string][] = [];
+  const asked: VoiceQuestion[][] = [];
+  const decider: VoiceDecider = { ask: async (questions, options) => { asked.push([...questions]); return answer(questions, options); } };
+  const router = new VoiceRouter(
+    () => ({ mode: "listening", roster, backend: "fluidaudio" }),
+    () => ({ enabled: true, seconds: 4 }),
+    { deliver: async (target, text, id) => { delivered.push([target.name, text, id]); return "queued"; } },
+    (card) => cards.push(structuredClone(card)),
+    decider,
+  );
+  const say = async (text: string, id: string = crypto.randomUUID()) => {
+    await router.accept(VoiceUtteranceSchema.parse({ id, text, capturedAt: Date.now(), backend: "fluidaudio" }));
+    await router.resolution(id);
+  };
+  return { router, cards, delivered, asked, say };
+}
+
+const answered = (...choices: (string | null)[]): VoiceDecisionResult => ({
+  rung: "job", answers: choices.map((choice) => ({ choice, confidence: choice ? 1 : 0 })), detail: "job on claude answered",
+});
+
+test("a split is one pending card with two parts, delivered to each in order, and one cancel stops both", async () => {
+  const { router, cards, delivered, asked, say } = routerRig(() => answered("split"));
+  await say("Steve, check the build, and Alice, review the PR", "split");
+  assert.deepEqual(asked[0]!.map((q) => q.kind), ["split"]);
+  const card = cards.at(-1)!;
+  assert.equal(card.state, "pending");
+  assert.equal(card.reason, "split");
+  assert.deepEqual(card.parts.map((p) => [p.target?.name, p.text]), [["Steve", "check the build"], ["Alice", "review the PR"]]);
+  assert.deepEqual(router.pendingVoiceActions.map((a) => a.id), ["split"]);
+  assert.equal(await router.sendNow("split"), true);
+  assert.deepEqual(delivered, [["Steve", "check the build", "split"], ["Alice", "review the PR", "split#2"]]);
+  assert.equal(cards.at(-1)!.state, "queued");
+
+  await say("Steve, check the build, and Alice, review the PR", "cancel-me");
+  router.pendingVoiceActions.at(-1)!.cancel();
+  assert.equal(cards.at(-1)!.state, "cancelled");
+  assert.equal(await router.sendNow("cancel-me"), false);
+  assert.equal(delivered.length, 2);
+  router.reset();
+});
+
+const REPEATED_NAME = "Steve, ask Alice to check the build, and Alice, review the PR";
+
+test("a single eligible split identifies the later occurrence in the model question", async (t) => {
+  const { router, asked, delivered, say } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const address of ["Alice", "“Alice”"]) {
+    const text = `Steve, Alice is busy. ${address}, verify the changelog`;
+    const id = `single-${asked.length}`;
+    await say(text, id);
+    const questions = asked.at(-1)!;
+    assert.equal(questions.length, 1);
+    const [question] = questions;
+    assert.ok(question?.kind === "split");
+    const offset = text.lastIndexOf("Alice");
+    assert.equal(question.nameOffset, offset);
+    const instructions = voiceQuestionInstructions(question);
+    assert.ok(instructions.includes(`offset ${offset}.`));
+    assert.ok(!instructions.includes(text.slice(offset)));
+    assert.equal(await router.sendNow(id), true);
+    assert.deepEqual(delivered.slice(-2), [["Steve", "Alice is busy.", id], ["Alice", "verify the changelog", `${id}#2`]]);
+  }
+});
+
+test("each repeated name gets its own split question and only the later command reaches Alice", async (t) => {
+  const { router, asked, delivered, say } = routerRig(() => answered("mention", "split"));
+  t.after(() => router.reset());
+  await say(REPEATED_NAME, "repeat");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice", "Alice"]);
+  assert.equal(new Set(asked[0]?.map(q => voiceQuestionInstructions(q))).size, 2);
+  assert.equal(await router.sendNow("repeat"), true);
+  assert.deepEqual(delivered, [["Steve", "ask Alice to check the build", "repeat"], ["Alice", "review the PR", "repeat#2"]]);
+});
+
+test("picking a repeated name requires choosing its split point", async (t) => {
+  const { router, cards, delivered, say } = routerRig(() => answered(null, null));
+  t.after(() => router.reset());
+  await say(REPEATED_NAME, "pick-repeat");
+  const options = cards.at(-1)!.candidates.filter(candidate => candidate.title === "Alice");
+  assert.equal(options.length, 2);
+  assert.notEqual(options[0]!.id, options[1]!.id);
+  await say("Alice");
+  assert.equal(await router.sendNow("pick-repeat"), false);
+  assert.equal(await router.pick("pick-repeat", "task:Alice"), false);
+  assert.deepEqual(delivered, []);
+  assert.match(options[1]!.detail, /review the PR/);
+  assert.equal(await router.pick("pick-repeat", options[1]!.id), true);
+  await router.sendNow("pick-repeat");
+  assert.deepEqual(delivered, [["Steve", "ask Alice to check the build", "pick-repeat"], ["Alice", "review the PR", "pick-repeat#2"]]);
+});
+
+test("manual split choices distinguish repeated names with identical 120-character previews", async (t) => {
+  const { router, cards, delivered, say } = routerRig(() => answered(null, null));
+  t.after(() => router.reset());
+  const common = "review the deployment notes ".repeat(6);
+  const first = `prepare notes, and Alice, ${common}first`;
+  const second = `${common}second`;
+  await say(`Steve, ${first}, and Alice, ${second}`, "preview");
+  const rows = cards.at(-1)!.candidates.filter(row => row.title === "Alice");
+  assert.equal(rows.length, 2);
+  assert.notEqual(rows[0]!.detail, rows[1]!.detail);
+  assert.match(rows[0]!.detail, /Split option 1:/);
+  assert.match(rows[1]!.detail, /Split option 2:/);
+  assert.equal(await router.pick("preview", rows[1]!.id), true);
+  assert.equal(await router.sendNow("preview"), true);
+  assert.deepEqual(delivered, [["Steve", first, "preview"], ["Alice", second, "preview#2"]]);
+});
+
+test("a repeated first addressee has distinct picks for the whole message and the split", async (t) => {
+  const { router, cards, delivered, say } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  const body = "check the build, and Alice, review the PR";
+
+  async function choices(id: string) {
+    await say(`Alice, ${body}`, id);
+    const card = cards.at(-1)!;
+    assert.equal(card.state, "unsure");
+    assert.deepEqual(card.candidates.map(row => row.title), ["Alice", "Alice"]);
+    const whole = card.candidates.find(row => row.detail.includes("Keep the whole message"))!;
+    const split = card.candidates.find(row => row.detail.includes("Split here: review the PR"))!;
+    assert.notEqual(whole.id, split.id);
+    return { whole, split };
+  }
+
+  const { whole } = await choices("keep");
+  assert.equal(await router.pick("keep", whole.id), true);
+  assert.equal(await router.sendNow("keep"), true);
+  assert.deepEqual(delivered, [["Alice", body, "keep"]]);
+
+  const { split } = await choices("divide");
+  assert.equal(await router.pick("divide", split.id), true);
+  assert.equal(await router.sendNow("divide"), true);
+  assert.deepEqual(delivered.slice(1), [["Alice", "check the build", "divide"], ["Alice", "review the PR", "divide#2"]]);
+});
+
+test("a split after three mentioned agents still reaches its addressee", async (t) => {
+  const roster = ["Steve", "Alice", "Will", "Ruby", "Ezra"].map(n => name(n));
+  const { router, asked, delivered, say } = routerRig(() => answered("mention", "mention", "mention", "split"), roster);
+  t.after(() => router.reset());
+  await say("Steve, ask Alice and Will about Ruby today, then Ezra, review the PR", "four");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice", "Will", "Ruby", "Ezra"]);
+  assert.equal(await router.sendNow("four"), true);
+  assert.deepEqual(delivered, [["Steve", "ask Alice and Will about Ruby today", "four"], ["Ezra", "review the PR", "four#2"]]);
+});
+
+test("a roster pick after an uncertain mention never redirects Steve's whole message to Alice", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, delivered, say } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  await say("Steve, ask Alice about the build", "one");
+  assert.equal(await router.pick("one", "task:Steve"), true);
+  await router.sendNow("one");
+  assert.deepEqual(delivered, [["Steve", "ask Alice about the build", "one"]]);
+  t.mock.timers.setTime(101);
+  await say("Steve, ask Alice about the build", "two");
+  t.mock.timers.setTime(102);
+  await say("Alice");
+  assert.equal(await router.sendNow("two"), true);
+  assert.deepEqual(delivered.slice(1), [["Steve", "ask", "two"], ["Alice", "about the build", "two#2"]]);
+});
+
+const TWO_LATER_NAMES = "Steve, ask Will about the build, and Alice, review the PR";
+
+test("a mention followed by a split delivers the mention to the first agent and the second instruction to its addressee", async (t) => {
+  const { router, cards, delivered, asked, say } = routerRig(() => answered("mention", "split"));
+  t.after(() => router.reset());
+  await say(TWO_LATER_NAMES, "multi");
+  assert.deepEqual(asked.map((batch) => batch.map((q) => q.kind === "split" && [q.first.label, q.second.label])),
+    [[["Steve", "Will"], ["Steve", "Alice"]]]);
+  const card = cards.at(-1)!;
+  assert.deepEqual([card.state, card.reason], ["pending", "split"]);
+  assert.deepEqual(card.parts.map((part) => [part.target?.name, part.text]),
+    [["Steve", "ask Will about the build"], ["Alice", "review the PR"]]);
+  assert.equal(await router.sendNow("multi"), true);
+  assert.deepEqual(delivered, [["Steve", "ask Will about the build", "multi"], ["Alice", "review the PR", "multi#2"]]);
+});
+
+test("an uncertain first later name prevents a subsequent split from sending", async (t) => {
+  const { router, cards, delivered, say } = routerRig(() => answered(null, "split"));
+  t.after(() => router.reset());
+  await say(TWO_LATER_NAMES, "unsure-multi");
+  const card = cards.at(-1)!;
+  assert.equal(card.state, "unsure");
+  assert.equal(card.deadline, null);
+  assert.deepEqual(card.candidates.map((candidate) => candidate.title), ["Steve", "Will", "Alice"]);
+  assert.equal(await router.sendNow("unsure-multi"), false);
+  assert.deepEqual(delivered, []);
+});
+
+test("a mention sends the whole text to the first target, and the model is never asked who that is", async () => {
+  const { router, cards, asked, delivered, say } = routerRig(() => answered("mention"));
+  await say("Steve, ask Alice about the build", "mention");
+  assert.equal(asked[0]![0]!.kind, "split");
+  assert.equal((asked[0]![0] as Extract<VoiceQuestion, { kind: "split" }>).first.id, "task:Steve");
+  const card = cards.at(-1)!;
+  assert.deepEqual([card.state, card.reason], ["pending", "mention"]);
+  assert.deepEqual(card.parts.map((p) => [p.target?.name, p.text]), [["Steve", "ask Alice about the build"]]);
+  await router.sendNow("mention");
+  assert.deepEqual(delivered.map(([to, text]) => [to, text]), [["Steve", "ask Alice about the build"]]);
+  assert.equal(router.heard.list()[0]!.detail, "job on claude answered: mention");
+  router.reset();
+});
+
+test("not sure, or no rung at all, opens the roster rows and is never an error", async () => {
+  const { router, cards, say } = routerRig(() => ({ rung: "none", answers: [{ choice: null, confidence: 0 }], detail: "job on claude not run" }));
+  await say("Steve, check the build, and Alice, review the PR", "unsure");
+  const card = cards.at(-1)!;
+  assert.equal(card.state, "unsure");
+  assert.deepEqual(card.candidates.map((c) => c.title), ["Steve", "Alice"]);
+  assert.equal(await router.pick("unsure", "task:Alice"), true);
+  assert.deepEqual(cards.at(-1)!.parts.map(part => part.target?.name), ["Steve", "Alice"]);
+  router.reset();
+
+  const thrown = routerRig(() => { throw new Error("boom"); });
+  await thrown.say("Steve, ask Alice about the build", "thrown");
+  assert.equal(thrown.cards.at(-1)!.state, "unsure");
+  thrown.router.reset();
+});
+
+test("a later duplicate name leaves an earlier split available and stays unsure after a mention", async (t) => {
+  const ruby = name("Ruby");
+  const roster = [name("Steve"), name("Alice"), ruby, { ...ruby, key: "other-ruby", sessionId: "s:other-ruby" }];
+  for (const choice of ["split", "mention"]) {
+    const { router, asked, cards, delivered, say } = routerRig(() => answered(choice), roster);
+    t.after(() => router.reset());
+    await say("Steve, check the build, and Alice, ask Ruby about the tests", choice);
+    assert.deepEqual(asked.map(batch => batch.map(q => q.kind === "split" && q.second.label)), [["Alice"]]);
+    if (choice === "split") {
+      assert.equal(await router.sendNow(choice), true);
+      assert.deepEqual(delivered, [["Steve", "check the build", choice], ["Alice", "ask Ruby about the tests", choice + "#2"]]);
+    } else {
+      assert.equal(cards.at(-1)?.state, "unsure");
+      assert.equal(cards.at(-1)?.candidates.filter(c => c.title === "Ruby").length, 2);
+      assert.equal(await router.sendNow(choice), false);
+    }
+  }
+});
+
+for (const action of ["cancel", "voice off"]) {
+  test(`${action} aborts the resolving provider and prevents fallback after a late failure`, async (t) => {
+    let onStart!: (signal: AbortSignal) => void;
+    const started = new Promise<AbortSignal>(resolve => { onStart = resolve; });
+    let fail!: (error: Error) => void;
+    const pending = new Promise<Response>((_, reject) => { fail = reject; });
+    const { decider, jobs } = rig({ saved: { openai: "fixture-key" },
+      reply: (_call, signal) => { onStart(signal); return pending; } });
+    const { router, delivered } = routerRig(decider.ask, [name("Steve", "codex"), name("Alice", "codex")]);
+    t.after(() => router.reset());
+    await router.accept(VoiceUtteranceSchema.parse({ id: "pending", text: SPLIT.text, capturedAt: Date.now(), backend: "fluidaudio" }));
+    const resolution = router.resolution("pending");
+    const signal = await started;
+    if (action === "cancel") assert.equal(router.cancel("pending"), true);
+    else router.clearActionsAndHistory();
+    fail(new Error("fixture provider stopped"));
+    await resolution;
+    assert.equal(signal.aborted, true);
+    assert.deepEqual(jobs, []);
+    assert.deepEqual(delivered, []);
+    assert.deepEqual(router.activeCards(), []);
+  });
+}
+
+test("identical spoken names at the start or a possible split show the candidates without asking a model", async () => {
+  const alice = name("Alice");
+  const roster = [name("Steve"), alice, { ...alice, key: "another-alice" }];
+  const { router, cards, asked, say } = routerRig(() => answered("split"), roster);
+  for (const text of ["Alice, check the build", "Steve, check the build, and Alice, review the PR"]) {
+    await say(text);
+    assert.equal(cards.at(-1)?.state, "unsure");
+    assert.equal(cards.at(-1)?.candidates.filter((candidate) => candidate.title === "Alice").length, 2);
+  }
+  assert.equal(asked.length, 0);
+  router.reset();
+});
+
+test("a doubtful first name asks who, and the answer is the target", async () => {
+  const roster = ["Steve", "Stevie"].map((n) => name(n, "codex"));
+  const cards: VoiceCard[] = [];
+  const router = new VoiceRouter(() => ({ mode: "listening", roster, backend: "fluidaudio" }), () => ({ enabled: true, seconds: 4 }),
+    { deliver: async () => "sent" }, (card) => cards.push(structuredClone(card)),
+    { ask: async (questions, options) => {
+      assert.deepEqual(options?.agents, ["codex", "codex"]);
+      assert.equal(questions[0]!.kind, "who");
+      return answered("task:Stevie");
+    } });
+  await router.accept(VoiceUtteranceSchema.parse({ id: "who", text: "Steven, go", capturedAt: 1, backend: "fluidaudio" }));
+  await router.resolution("who");
+  assert.deepEqual([cards.at(-1)!.state, cards.at(-1)!.reason, cards.at(-1)!.parts[0]!.target?.name, cards.at(-1)!.parts[0]!.text],
+    ["pending", "model", "Stevie", "go"]);
+  router.reset();
+});
+
+test("a slow step shows resolving after a second, and a cancel then drops the late answer", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let release!: (result: VoiceDecisionResult) => void;
+  const { router, cards, delivered } = routerRig(() => new Promise((resolve) => { release = resolve; }));
+  await router.accept(VoiceUtteranceSchema.parse({ id: "slow", text: "Steve, check the build, and Alice, review the PR", capturedAt: 1, backend: "fluidaudio" }));
+  t.mock.timers.tick(999);
+  assert.deepEqual(router.activeCards(), []);
+  assert.equal(cards.length, 0);
+  t.mock.timers.tick(1);
+  assert.deepEqual(cards.map((c) => c.state), ["resolving"]);
+  assert.deepEqual(router.activeCards(), cards);
+  assert.deepEqual(router.pendingVoiceActions.map((a) => a.id), ["slow"]);
+  router.pendingVoiceActions.at(-1)!.cancel();
+  release(answered("split"));
+  await router.resolution("slow");
+  assert.deepEqual(cards.map((c) => c.state), ["resolving", "cancelled"]);
+  assert.equal(delivered.length, 0);
+  router.reset();
+});
+
+test("a quick step publishes no resolving card", async () => {
+  const { router, cards, say } = routerRig(() => answered("mention"));
+  await say("Steve, ask Alice about the build", "quick");
+  assert.deepEqual(cards.map((c) => c.state), ["pending"]);
+  router.reset();
+});
+
+for (const choice of ["split", null]) {
+  test(`model completion preserves cancel order when it becomes ${choice ? "pending" : "unsure"}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    let finish!: (result: VoiceDecisionResult) => void;
+    const { router, cards, delivered } = routerRig(() => new Promise(resolve => { finish = resolve; }));
+    t.after(() => router.reset());
+    const accept = (id: string, text: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+      id, text, capturedAt, backend: "fluidaudio",
+    }));
+    await accept("older", SPLIT.text, 101);
+    const original = router.pendingVoiceActions[0];
+    assert.equal(original?.openedAt, 101);
+    await accept("newer", "Will, check the queue", 102);
+    finish(answered(choice));
+    await router.resolution("older");
+    assert.equal(cards.at(-1)?.state, choice ? "pending" : "unsure");
+    await accept("cancel", "cancel", 103);
+    assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["newer", "cancelled"]);
+    assert.equal(router.pendingVoiceActions[0], original);
+    assert.equal(await router.sendNow("newer"), false);
+    assert.deepEqual(delivered, []);
+  });
+}
+
+for (const replaced of ["Steve", "Alice"]) {
+  test(`a manual split pick stays unsure if ${replaced}'s captured session was replaced`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const { router, delivered, say } = routerRig(() => answered(null), roster);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "pick");
+    const target = roster.find(agent => agent.name === replaced)!;
+    const original = target.sessionId;
+    target.sessionId = "replacement";
+    assert.equal(await router.pick("pick", "task:Alice"), false);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(await router.sendNow("pick"), false);
+    assert.deepEqual(delivered, []);
+    target.sessionId = original;
+    assert.equal(await router.pick("pick", "task:Alice"), true);
+    assert.equal(await router.sendNow("pick"), true);
+    assert.deepEqual(delivered, [["Steve", "check the build", "pick"], ["Alice", "review the PR", "pick#2"]]);
+  });
+}
+
+for (const stopped of ["Steve", "Alice"]) {
+  test(`a split pick stays open when ${stopped} was already stopped at capture`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const gone = roster.find(row => row.name === stopped)!;
+    gone.state = "not-running";
+    gone.sessionId = null;
+    const { router, say, delivered } = routerRig(() => answered(null), roster);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "stopped");
+    assert.equal(await router.pick("stopped", "task:Alice"), false);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(await router.sendNow("stopped"), false);
+    assert.deepEqual(delivered, []);
+    if (stopped === "Alice") {
+      assert.ok(await router.pick("stopped", "task:Steve"));
+      assert.ok(await router.sendNow("stopped"));
+      assert.deepEqual(delivered, [["Steve", "check the build, and Alice, review the PR", "stopped"]]);
+    }
+  });
+}
+
+test("picking one stopped resident reports its delivery outcome", async (t) => {
+  const steve: SpokenName = { ...name("Steve"), kind: "resident", key: "resident:steve", state: "not-running", sessionId: null };
+  const { router, cards, delivered, say } = routerRig(() => answered(null), [steve, name("Stevie")]);
+  t.after(() => router.reset());
+  await say("Steven, check the build", "single-stopped");
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.ok(await router.pick("single-stopped", steve.key));
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.ok(await router.sendNow("single-stopped"));
+  assert.equal(cards.at(-1)?.state, "not-running");
+  assert.deepEqual(delivered, []);
+});
+
+test("a partial job batch cannot return an actionable split", () => {
+  const first = { choice: "split", confidence: 1 };
+  for (const answers of [{ q1: first }, { q1: first, q3: first }, { q1: first, q2: { choice: "mention" } }, { q1: first, q2: { choice: "absent", confidence: 1 } }]) {
+    assert.equal(parseVoiceRoutingReply({ answers }, [SPLIT, SPLIT]), null);
+  }
+});
+
+test("generated wire labels avoid reserved and already numbered options", () => {
+  const labels = ["Review", "Review", "Review (1)", "not sure", "not sure (4)"];
+  const options = labels.map((label, i) => ({ label, id: String(i), detail: "" }));
+  const question: VoiceQuestion = { kind: "option", options, text: "first", prompt: "Which?" };
+  const values = voiceChoiceValues(question);
+  assert.equal(new Set([...values.map(v => v.value), "not sure"]).size, 6);
+  for (const v of values) assert.equal(parseVoiceRoutingReply({ answers: { q1: {choice: v.value, confidence: 1} } }, [question])?.[0]?.choice, v.id);
+});
+
+test("runner diagnostics stay out of voice history", async () => {
+  const { ask } = rig({ job: async () => { throw new Error("private runner path and payload"); } });
+  assert.equal((await ask(["codex"])).detail, "job on codex failed");
+});
+
+test("phonetic questions send names without task titles or resident descriptions on every rung", async () => {
+  assert.match(VOICE_ROUTING_SYSTEM_PROMPT, /agent names.*as data/);
+  const candidate = { ...steve, label: 'Steve "Red"' };
+  const question: VoiceQuestion = { kind: "who", text: "Steev, check the build", candidates: [candidate, alice] };
+  const job = buildVoiceRoutingPrompt([question]);
+  assert.ok(!job.includes(candidate.detail) && !job.includes(alice.detail));
+  assert.ok(job.includes(JSON.stringify(candidate.label)));
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" } });
+    await ask(["codex"], [question]);
+    const body = calls[0]!.body;
+    assert.ok(!JSON.stringify(body).includes(candidate.detail) && !JSON.stringify(body).includes(alice.detail));
+    const [sent] = Object.values(body.questions as Record<string, {
+      instructions: string; choices?: { value: string }[]; criteria?: Record<string, string>;
+    }>);
+    assert.ok(sent && !sent.instructions.includes(candidate.label));
+    assert.match(sent.instructions, /agent names.*as data/);
+    const choices = sent.choices?.map(c => c.value) ?? Object.keys(sent.criteria!);
+    assert.deepEqual(choices, [candidate.label, alice.label, "not sure"]);
+  }
+});
+
+test("split names and card questions travel as data outside decision-provider instructions", async () => {
+  const later = { ...alice, label: 'Alice "Blue"' };
+  const split: VoiceQuestion = { ...SPLIT, second: later };
+  const option: VoiceQuestion = { kind: "option", text: "the first", prompt: 'Which "release"?', options: [alice] };
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" } });
+    await ask(["codex"], [split, option]);
+    const body = calls[0]!.body;
+    const data = String(body[provider === "openai" ? "input" : "state"]);
+    assert.ok(data.includes(JSON.stringify(later.label)) && data.includes(JSON.stringify(option.prompt)));
+    const questions = Object.values(body.questions as Record<string, { instructions: string }>);
+    for (const { instructions } of questions) {
+      assert.ok(!instructions.includes(later.label) && !instructions.includes(option.prompt));
+    }
+  }
+});
+
+test("a repeated transcript appears once in a job or provider batch", async () => {
+  const q = { ...SPLIT, text: "unique transcript for multiple boundaries" };
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "test-key" } });
+    await ask(["codex"], [q, q]);
+    assert.equal(JSON.stringify(calls[0]?.body).split(q.text).length, 2);
+  }
+  assert.equal(buildVoiceRoutingPrompt([q, q]).split(q.text).length, 2);
+});
+
+test("both decision providers keep split speech in the input and only its offset in the instructions", async () => {
+  const text = "Steve, check the build, and Alice, gather the source maps";
+  const nameOffset = text.lastIndexOf("Alice");
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "fixture-key" } });
+    await ask(["codex"], [{ ...SPLIT, text, nameOffset }]);
+    const body = calls[0]!.body;
+    assert.ok(String(body[provider === "openai" ? "input" : "state"]).includes(JSON.stringify(text)));
+    const [question] = Object.values(body.questions as Record<string, { instructions: string }>);
+    assert.ok(question!.instructions.includes(`offset ${nameOffset}.`));
+    assert.ok(!question!.instructions.includes("gather the source maps"), provider);
+  }
+});
+
+test("each provider associates a mixed batch's questions with their own transcripts", async () => {
+  const first = { ...SPLIT, text: "Steve, check the issue and Alice, triage it" };
+  const second = { ...SPLIT, text: "Steve, ask Alice about the report" };
+  const jobLines = buildVoiceRoutingPrompt([first, second, first]).split("\n");
+  assert.deepEqual(jobLines.filter(line => line.includes(first.text)).map(line => line.match(/q\d+/gu)), [["q1", "q3"]]);
+  assert.deepEqual(jobLines.filter(line => line.includes(second.text)).map(line => line.match(/q\d+/gu)), [["q2"]]);
+  for (const provider of ["openai", "jev"] as const) {
+    const { ask, calls } = rig({ saved: { [provider]: "test-key" } });
+    await ask(["codex"], [first, second, first]);
+    const speech = String(calls[0]!.body[provider === "openai" ? "input" : "state"]);
+    const lines = speech.split("\n");
+    assert.deepEqual(lines.filter(line => line.includes(first.text)).map(line => line.match(/q\d+/gu)), [["q1", "q3"]]);
+    assert.deepEqual(lines.filter(line => line.includes(second.text)).map(line => line.match(/q\d+/gu)), [["q2"]]);
+  }
+});
+
+test("an over-limit sentence keeps all manual split points without asking a model", async (t) => {
+  const { router, asked, cards, say } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  await say("Steve, ask " + "Alice about it and ".repeat(10) + "Alice, review the PR", "long");
+  assert.equal(asked.length, 0);
+  assert.equal(cards.at(-1)?.candidates.length, 12);
+});
+
+test("the split limit counts spoken positions across a duplicate name before asking any model question", async (t) => {
+  const ruby = name("Ruby");
+  const roster = [name("Steve"), name("Stevie"), name("Alice"), ruby, { ...ruby, key: "other-ruby", sessionId: "s:other-ruby" }];
+  for (const [first, count] of [["Steve", 8], ["Steve", 9], ["Steven", 9]] as const) {
+    const { router, say, asked, cards } = routerRig(() => answered("split"), roster);
+    t.after(() => router.reset());
+    await say(`${first}, check the build, and Alice, ask Ruby about ${"Alice and ".repeat(count - 3)}Alice today`, "card");
+    if (count === 8) {
+      assert.deepEqual(asked.map(batch => batch.map(q => q.kind)), [["split"]]);
+      assert.equal(cards.at(-1)?.state, "pending");
+    } else {
+      assert.equal(asked.length, 0);
+      if (first === "Steven") assert.ok(await router.pick("card", "task:Steve"));
+      const card = cards.at(-1)!;
+      assert.equal(card.state, "unsure");
+      assert.equal(card.candidates.length, count + 2); // The first agent and two targets at Ruby's position.
+      assert.equal(await router.sendNow("card"), false);
+    }
+  }
+});
+
+test("a bare later call sign cannot supply the payload for its shorter roster name", async (t) => {
+  const roster = ["Steve", "Release", "Release Captain", "Captain", "Alice"].map(n => name(n));
+  const { router, say, delivered, asked, cards } = routerRig(() => answered("split"), roster);
+  t.after(() => router.reset());
+  for (const [index, ending] of ["Release Captain", "Release Captain, ,,,", "“Release Captain”."].entries()) {
+    const id = `bare-${index}`;
+    const body = `check the build, and ${ending}`;
+    await say(`Steve, ${body}`, id);
+    assert.equal(asked.length, 0);
+    assert.equal(cards.at(-1)?.candidates.length, 0);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.at(-1), ["Steve", body, id]);
+  }
+  await say("Steve, check the build, and Alice, ask Release Captain", "earlier");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice"]);
+  assert.ok(await router.sendNow("earlier"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", "earlier"], ["Alice", "ask Release Captain", "earlier#2"]]);
+  await say("Steve, check the build, and Release, Captain", "explicit");
+  assert.ok(await router.sendNow("explicit"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", "explicit"], ["Release", "Captain", "explicit#2"]]);
+});
+
+test("the second word of a call sign cannot create a missing first message", async (t) => {
+  const roster = ["Steve", "Release Captain", "Captain", "Alice"].map(n => name(n));
+  const { router, say, asked, cards, delivered } = routerRig(() => answered("split"), roster);
+  t.after(() => router.reset());
+  for (const [index, prefix] of ["", "and ", "??? and "].entries()) {
+    const body = `${prefix}Release Captain, review the PR`;
+    const id = `overlap-head-${index}`;
+    await say(`Steve, ${body}`, id);
+    assert.equal(asked.length, 0);
+    assert.equal(cards.at(-1)?.candidates.length, 0);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.at(-1), ["Steve", body, id]);
+  }
+  await say("Steve, Release Captain is busy, and Alice, review the PR", "later");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Alice"]);
+  assert.ok(await router.sendNow("later"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", "Release Captain is busy", "later"], ["Alice", "review the PR", "later#2"]]);
+});
+
+test("Release Captain is the only model question after the explicit joiner when Captain is also on the roster", async (t) => {
+  const roster = ["Steve", "Release Captain", "Captain"].map(n => name(n));
+  const { router, say, delivered, asked } = routerRig(() => answered("split"), roster);
+  t.after(() => router.reset());
+  await say("Steve, check the build, and Release Captain, review the PR", "joined");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Release Captain"]);
+  assert.ok(await router.sendNow("joined"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "joined"], ["Release Captain", "review the PR", "joined#2"]]);
+});
+
+test("a joined two-word address only offers split targets starting at its first word", async (t) => {
+  const roster = ["Steve", "Release Captain", "Captain", "Release"].map(n => name(n));
+  const { router, say, delivered, cards } = routerRig(() => answered(null), roster);
+  t.after(() => router.reset());
+  await say("Steve, check the build, and Release Captain, review the PR", "joined");
+  assert.deepEqual(cards.at(-1)?.candidates.map(c => c.title), ["Steve", "Release Captain", "Release"]);
+  assert.equal(await router.pick("joined", "task:Captain"), false);
+  assert.ok(await router.pick("joined", "task:Release Captain"));
+  assert.ok(await router.sendNow("joined"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "joined"], ["Release Captain", "review the PR", "joined#2"]]);
+});
+
+test("manual split choices preserve overlapping one- and two-word names", async (t) => {
+  for (const [second, firstText, secondText] of [
+    ["Captain", "check the release", "review the PR"],
+    ["Release Captain", "check the", "review the PR"],
+    ["Release", "check the", "Captain, review the PR"],
+  ]) {
+    const { router, say, delivered, cards } = routerRig(() => answered(null), ["Steve", "Release Captain", "Captain", "Release"].map(n => name(n)));
+    t.after(() => router.reset());
+    await say("Steve, check the release Captain, review the PR", "overlap");
+    assert.equal(cards.at(-1)?.state, "unsure");
+    assert.ok(await router.pick("overlap", "task:" + second));
+    assert.ok(await router.sendNow("overlap"));
+    assert.deepEqual(delivered, [["Steve", firstText, "overlap"], [second, secondText, "overlap#2"]]);
+  }
+});
+
+test("excluded duplicate-name candidates cannot change a Codex split to a mixed roster", async (t) => {
+  const ruby = name("Ruby");
+  const { router, say, cards } = routerRig((_q, opts) => {
+    assert.deepEqual(opts?.agents, ["codex", "codex"]);
+    return answered("split");
+  }, [name("Steve", "codex"), name("Alice", "codex"), ruby, { ...ruby, key: "other-ruby" }]);
+  t.after(() => router.reset());
+  await say("Steve, check the build, and Alice, ask Ruby about the tests");
+  assert.equal(cards.at(-1)?.reason, "split");
+});
+
+test("a resolving card suppresses a spoken pick that could match two captures", async (t) => {
+  let finish!: (result: VoiceDecisionResult) => void;
+  const pending = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+  let calls = 0;
+  const { router, say, cards } = routerRig(() => ++calls === 1 ? answered(null) : pending);
+  t.after(() => router.reset());
+  await say(SPLIT.text, "older");
+  await router.accept(VoiceUtteranceSchema.parse({ id: "newer", text: SPLIT.text, capturedAt: Date.now(), backend: "fluidaudio" }));
+  await say("Alice", "pick");
+  finish(answered(null));
+  await router.resolution("newer");
+  assert.equal(router.heard.list().find(e => e.id === "pick")?.rule, "ambiguous-pick");
+  assert.deepEqual(cards.map(c => c.state), ["unsure", "unsure"]);
+});
+
+for (const phase of ["resolving", "settled"] as const) {
+  test(`a delayed ${phase} capture cannot invalidate a pick spoken before it arrived`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    let finish!: (result: VoiceDecisionResult) => void;
+    const later = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+    const { router, say, delivered } = routerRig(q => q[0]?.text.startsWith("Will,") ? later : answered(null));
+    t.after(() => router.reset());
+    await say(SPLIT.text, "original");
+    t.mock.timers.setTime(400);
+    const capture = (id: string, text: string, capturedAt: number) => router.accept(
+      VoiceUtteranceSchema.parse({ id, text, capturedAt, backend: "fluidaudio" }));
+    await capture("delayed", "Will, ask Alice about the build", 200);
+    if (phase === "settled") {
+      finish(answered("mention"));
+      await router.resolution("delayed");
+    }
+    await capture("pick", "Alice", 300);
+    finish(answered("mention"));
+    await router.resolution("delayed");
+    assert.ok(await router.sendNow("original"));
+    assert.deepEqual(delivered, [["Steve", "check the build", "original"], ["Alice", "review the PR", "original#2"]]);
+  });
+}
+
+test("a symbol-only instruction on either side of a split reaches its recipient", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const [head, tail] of [["check the build", "👍"], ["👍", "review the PR"], ["±", "👍🏽"], ["#️⃣", "✓"]]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${head}, and Alice, ${tail}`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", head, id], ["Alice", tail, id + "#2"]]);
+    }
+  }
+});
+
+test("a numbered duplicate in a phonetic question stays unsure until a manual pick", async (t) => {
+  const first = name("Steve", "codex");
+  const other = { ...name("STEVE", "codex"), key: "other-steve" };
+  const roster = [first, other, name("Stevie", "codex"), name("Alice", "codex")];
+  let providerChoice = "Steve (1)";
+  const { decider, calls } = rig({ saved: { openai: "fixture-key" }, reply: () => json({
+    answers: [{ name: "q1", type: "choice", choice: providerChoice, confidence: 1 }],
+  }) });
+  const { router, say, cards, delivered } = routerRig((questions, options) => decider.ask(questions, options), roster);
+  t.after(() => router.reset());
+  for (const [id, text] of [["single", "Steven, check the build"], ["later", "Steven, check the build, and Alice, review the PR"]] as const) {
+    await say(text, id);
+    assert.equal(cards.at(-1)?.state, "unsure");
+    assert.equal(await router.sendNow(id), false);
+    assert.ok(cards.at(-1)?.candidates.some(c => c.id === other.key));
+  }
+  assert.equal(calls.length, 2);
+  assert.deepEqual(delivered, []);
+  assert.ok(await router.pick("single", other.key));
+  assert.ok(await router.sendNow("single"));
+  assert.deepEqual(delivered, [["STEVE", "check the build", "single"]]);
+
+  providerChoice = "Stevie";
+  await say("Steven, check the tests", "distinct");
+  assert.ok(await router.sendNow("distinct"));
+  assert.deepEqual(delivered.at(-1), ["Stevie", "check the tests", "distinct"]);
+});
+
+test("a phonetic first choice and a later split share one deadline, including manual choices", async (t) => {
+  for (const manual of [false, true]) {
+    const starts: (number | undefined)[] = [];
+    const { router, say, asked, delivered } = routerRig((questions, opts) => {
+      starts.push(opts?.startedAt);
+      return answered(manual ? null : questions[0]?.kind === "who" ? "task:Steve" : "split");
+    }, ["Steve", "Stevie", "Alice"].map(n => name(n, "codex")));
+    t.after(() => router.reset());
+    await say("Steven, check the build, and Alice, review the PR", "compound");
+    if (manual) {
+      assert.ok(await router.pick("compound", "task:Steve"));
+      assert.equal(await router.sendNow("compound"), false);
+      assert.equal(await router.pick("compound", "task:Steve"), false);
+      const split = router.activeCards()[0]?.candidates.find(candidate => candidate.title === "Alice");
+      assert.ok(split);
+      assert.ok(await router.pick("compound", split.id));
+    } else {
+      assert.deepEqual(asked.map(q => q[0]?.kind), ["who", "split"]);
+      assert.equal(typeof starts[0], "number");
+      assert.equal(starts[0], starts[1]);
+    }
+    assert.ok(await router.sendNow("compound"));
+    assert.deepEqual(delivered, [["Steve", "check the build", "compound"], ["Alice", "review the PR", "compound#2"]]);
+  }
+});
+
+test("a phonetic choice and its split share the two-second provider allowance, leaving three seconds for Luna", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  t.mock.method(performance, "now", () => Date.now());
+  let startSecond!: (signal: AbortSignal) => void;
+  const secondStarted = new Promise<AbortSignal>(resolve => { startSecond = resolve; });
+  let requests = 0;
+  const { decider, jobs } = rig({ saved: { openai: OPENAI_ENV }, reply: (_call, signal) => {
+    if (++requests === 1) {
+      t.mock.timers.tick(1_700);
+      return json({ answers: [{ name: "q1", type: "choice", choice: "Steve", confidence: 1 }] });
+    }
+    startSecond(signal);
+    return new Promise<Response>(() => {});
+  }, job: async () => [{ choice: "split", confidence: 1 }] });
+  const { router, say, delivered } = routerRig(decider.ask, ["Steve", "Stevie", "Alice"].map(n => name(n, "codex")));
+  t.after(() => router.reset());
+  const pending = say("Steven, check the build, and Alice, review the PR", "shared-budget");
+  const signal = await secondStarted;
+  t.mock.timers.tick(299);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(signal.aborted, true);
+  await pending;
+  assert.deepEqual(jobs.map(({ runner, timeoutMs }) => [runner, timeoutMs]), [["codex", 3_000]]);
+  assert.equal(await router.sendNow("shared-budget"), true);
+  assert.deepEqual(delivered.map(([agent, text]) => [agent, text]), [["Steve", "check the build"], ["Alice", "review the PR"]]);
+});
+
+test("a retried first pick leaves the whole-message choice available", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null), ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await say("Steven, close the release, and Alice, update the docs", "choice");
+  assert.ok(await router.pick("choice", "task:Steve"));
+  const rows = router.activeCards()[0]!.candidates;
+  assert.equal(await router.pick("choice", "task:Steve"), false);
+  assert.deepEqual(router.activeCards()[0]?.candidates, rows);
+  assert.ok(await router.pick("choice", rows.find(row => row.title === "Steve")!.id));
+  assert.ok(await router.sendNow("choice"));
+  assert.deepEqual(delivered, [["Steve", "close the release, and Alice, update the docs", "choice"]]);
+});
+
+test("a late split boundary retains its surrounding speech in the job request", async (t) => {
+  const { router, say, asked } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  const text = "Steve, " + "check the build notes ".repeat(105) + "then ask Alice about the changelog";
+  await say(text, "long");
+  assert.equal(asked.length, 1);
+  assert.ok(buildVoiceRoutingPrompt(asked[0]!).includes("then ask Alice about the changelog"));
+});
+
+test("an errored provider body cannot replace its sanitized HTTP status", async () => {
+  const { ask, jobs } = rig({ env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () =>
+    new Response(new ReadableStream({ start(controller) { controller.error(new Error("private gateway diagnostic")); } }), { status: 401 }) });
+  const result = await ask(["codex"]);
+  assert.equal(result.rung, "job");
+  assert.equal(jobs.length, 1);
+  assert.match(result.detail, /OpenAI Decisions HTTP 401/);
+  assert.doesNotMatch(result.detail, /private gateway diagnostic/);
+});
+
+for (const [remaining, expected, detail] of [
+  ["Steve", [["Steve", "check the build", "part"]], "Part 1 (Steve) queued. Part 2 (Alice) unavailable."],
+  ["Alice", [["Alice", "review the PR", "part#2"]], "Part 1 (Steve) unavailable. Part 2 (Alice) queued."],
+  ["neither", [], "Part 1 (Steve) unavailable. Part 2 (Alice) unavailable."],
+] as const) {
+  test(`a confirmed split delivers each available part when ${remaining} remains before dispatch`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const { router, say, delivered, cards } = routerRig(() => answered("split"), roster);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "part");
+    assert.equal(cards.at(-1)?.reason, "split");
+    for (const target of roster) if (target.name !== remaining) target.state = "not-running";
+    assert.ok(await router.sendNow("part"));
+    assert.deepEqual(delivered, expected);
+    assert.equal(cards.at(-1)?.state, "not-running");
+    assert.equal(router.heard.list()[0]?.detail.split("\n").at(-1), detail);
+    assert.equal(await router.sendNow("part"), false);
+  });
+}
+
+for (const change of ["not-running", "unavailable"] as const) {
+  test(`a later split part is withheld when its target becomes ${change} during the first delivery`, async (t) => {
+    const roster = [name("Steve"), name("Alice")];
+    const calls: string[] = [];
+    let available = true;
+    const router = new VoiceRouter(() => ({ mode: "listening", roster, backend: "fluidaudio" }),
+      () => ({ enabled: true, seconds: 4 }), {
+        available: () => available,
+        deliver: async target => {
+          calls.push(target.name);
+          if (change === "unavailable") available = false;
+          else roster[1]!.state = "not-running";
+          return "queued";
+        },
+      }, () => {}, { ask: async () => answered("split") });
+    t.after(() => router.reset());
+    await router.accept(VoiceUtteranceSchema.parse({ text: SPLIT.text, id: "part", capturedAt: Date.now(), backend: "fluidaudio" }));
+    await router.resolution("part");
+    assert.ok(await router.sendNow("part"));
+    assert.deepEqual(calls, ["Steve"]);
+    assert.equal(router.heard.list()[0]?.outcome, "not-running");
+    assert.match(router.heard.list()[0]!.detail, /Part 1 \(Steve\) queued\. Part 2 \(Alice\) unavailable\./);
+  });
+}
+
+test("a spoken split pick must follow the change of candidate rows", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, say, delivered } = routerRig(() => answered(null), ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await say("Steven, check the build, and Alice, review the PR", "stages");
+  t.mock.timers.setTime(200);
+  assert.ok(await router.pick("stages", "task:Steve"));
+  const sayAt = (id: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+    id, text: "Alice", backend: "fluidaudio", capturedAt,
+  }));
+  await sayAt("early", 150);
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  assert.equal(await router.sendNow("stages"), false);
+  await sayAt("current", 200);
+  assert.ok(await router.sendNow("stages"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "stages"], ["Alice", "review the PR", "stages#2"]]);
+});
+
+test("confirming a comma-only split preserves literal C plus plus", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  await say("Steve, explain C plus plus, Alice, review the PR", "literal");
+  assert.ok(await router.pick("literal", "task:Alice"));
+  assert.ok(await router.sendNow("literal"));
+  assert.deepEqual(delivered, [["Steve", "explain C plus plus", "literal"], ["Alice", "review the PR", "literal#2"]]);
+});
+
+test("a spoken name cannot confirm a different action in the millisecond the rows change", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, say, delivered } = routerRig(() => answered(null), ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await say("Steven, check the build, and Alice, review the PR", "stage");
+  t.mock.timers.setTime(200);
+  assert.ok(await router.pick("stage", "task:Steve"));
+  t.mock.timers.setTime(201);
+  await router.accept(VoiceUtteranceSchema.parse({ id: "tie", text: "Steve", backend: "fluidaudio", capturedAt: 200 }));
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  assert.equal(router.heard.list().find(e => e.id === "tie")?.rule, "ambiguous-pick");
+  assert.equal(await router.sendNow("stage"), false);
+  await say("Steve", "fresh");
+  assert.ok(await router.sendNow("stage"));
+  assert.deepEqual(delivered, [["Steve", "check the build, and Alice, review the PR", "stage"]]);
+});
+
+test("a spoken boundary choice waits for the model's follow-up rows", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  let showRows!: (result: VoiceDecisionResult) => void;
+  const result = new Promise<VoiceDecisionResult>(resolve => { showRows = resolve; });
+  let onBoundary!: () => void;
+  const boundary = new Promise<void>(resolve => { onBoundary = resolve; });
+  const { router, delivered } = routerRig(questions => {
+    if (questions[0]?.kind === "who") return answered("task:Steve");
+    onBoundary();
+    return result;
+  }, ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  const capture = (id: string, text: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+    id, text, backend: "fluidaudio", capturedAt,
+  }));
+  await capture("model", "Steven, check the build, and Alice, review the PR", 100);
+  await boundary;
+  t.mock.timers.setTime(200);
+  showRows(answered(null));
+  await router.resolution("model");
+  await capture("early", "Alice", 150);
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  t.mock.timers.setTime(201);
+  await capture("tied", "Alice", 200);
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  await capture("current", "Alice", 201);
+  assert.ok(await router.sendNow("model"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "model"], ["Alice", "review the PR", "model#2"]]);
+});
+
+test("job discovery cannot launch after the shared model deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100 });
+  let start!: () => void;
+  let finishDiscovery!: () => void;
+  const started = new Promise<void>(resolve => { start = resolve; });
+  const discovery = new Promise<void>(resolve => { finishDiscovery = resolve; });
+  let launches = 0;
+  let jobSignal: AbortSignal | undefined;
+  const { ask } = rig({ now: Date.now, deadlineMs: 100, job: async (_runner, _budget, signal) => {
+    jobSignal = signal;
+    start();
+    await discovery;
+    signal?.throwIfAborted();
+    launches++;
+    return [{ choice: "split", confidence: 1 }];
+  } });
+  const pending = ask(["codex"]);
+  await started;
+  t.mock.timers.tick(100);
+  const result = await pending;
+  finishDiscovery();
+  await Promise.resolve();
+  assert.equal(result.rung, "none");
+  assert.deepEqual(result.answers, [{ choice: null, confidence: 0 }]);
+  assert.equal(launches, 0);
+  assert.equal(jobSignal?.aborted, true);
+});
+
+test("a split removes a comma-delimited connector and preserves the text before it", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  await say("Steve, explain C plus plus, and then, Alice, review the PR", "connector");
+  assert.ok(await router.sendNow("connector"));
+  assert.deepEqual(delivered, [["Steve", "explain C plus plus", "connector"], ["Alice", "review the PR", "connector#2"]]);
+});
+
+test("speech captured during initial resolution cannot confirm newly offered choices", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  for (const [text, target] of [[SPLIT.text, "Alice"], ["Steven, check the build", "Steve"]] as const) {
+    t.mock.timers.setTime(100);
+    let finish!: (result: VoiceDecisionResult) => void;
+    const pending = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+    const { router } = routerRig(() => pending, ["Steve", "Stevie", "Alice"].map(n => name(n)));
+    t.after(() => router.reset());
+    const capture = (id: string, speech: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+      id, text: speech, backend: "fluidaudio", capturedAt,
+    }));
+    await capture("initial", text, 100);
+    t.mock.timers.setTime(200);
+    finish(answered(null));
+    await router.resolution("initial");
+    await capture("early", target, 150);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    t.mock.timers.setTime(201);
+    await capture("tied", target, 200);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(router.heard.list().find(e => e.id === "tied")?.rule, "ambiguous-pick");
+    await capture("current", target, 201);
+    assert.equal(router.activeCards()[0]?.state, "pending");
+  }
+});
+
+for (const later of ["resolving", "unsure", "pending", "cancelled"] as const) {
+  test(`the same captured name cannot select the older card after the newer card becomes ${later}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    let finish!: (result: VoiceDecisionResult) => void;
+    const pending = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+    let calls = 0;
+    const { router, say, delivered } = routerRig(() => ++calls === 1 ? answered(null) : pending);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "older");
+    const capture = (id: string, text: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+      id, text, backend: "fluidaudio", capturedAt,
+    }));
+    t.mock.timers.setTime(200);
+    await capture("newer", SPLIT.text, 200);
+    t.mock.timers.setTime(300);
+    if (later === "cancelled") router.cancel("newer");
+    if (later !== "resolving") {
+      finish(answered(later === "pending" ? "mention" : null));
+      await router.resolution("newer");
+    }
+    await capture("late-name", "Alice", 250);
+    finish(answered(null));
+    await router.resolution("newer");
+    assert.equal(router.heard.list().find(e => e.id === "late-name")?.rule, "ambiguous-pick");
+    assert.equal(await router.sendNow("older"), false);
+    assert.deepEqual(delivered, []);
+  });
+}
+
+for (const closedAt of [200, 300]) {
+  test(`a pick captured when a competing card closes at ${closedAt} stays ambiguous`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const { router, say } = routerRig(() => answered(null));
+    t.after(() => router.reset());
+    await say(SPLIT.text, "older");
+    t.mock.timers.setTime(200);
+    await say(SPLIT.text, "newer");
+    t.mock.timers.setTime(closedAt);
+    assert.ok(router.cancel("newer"));
+    t.mock.timers.setTime(closedAt + 1);
+    await router.accept(VoiceUtteranceSchema.parse({ id: "tie", text: "Alice", backend: "fluidaudio", capturedAt: closedAt }));
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(router.heard.list().find(e => e.id === "tie")?.rule, "ambiguous-pick");
+    await say("Alice", "after");
+    assert.equal(router.activeCards()[0]?.state, "pending");
+  });
+}
+
+for (const closingSpeech of ["Steve", "cancel"]) {
+  test(`a later-spoken ${closingSpeech} keeps an earlier pick ambiguous across listener clock skew`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    const { router, say } = routerRig(() => answered(null));
+    t.after(() => router.reset());
+    await say("Will, ask Alice to check the build", "older");
+    t.mock.timers.setTime(150);
+    await say(SPLIT.text, "newer");
+    t.mock.timers.setTime(200);
+    const capture = (id: string, text: string, capturedAt: number) => router.accept(
+      VoiceUtteranceSchema.parse({ id, text, capturedAt, backend: "fluidaudio" }));
+    await capture("close", closingSpeech, 400);
+    assert.equal(router.activeCards().find(c => c.id === "newer")?.state, closingSpeech === "cancel" ? undefined : "pending");
+    await capture("late", "Alice", 300);
+    assert.equal(router.heard.list().find(e => e.id === "late")?.rule, "ambiguous-pick");
+    assert.equal(await router.sendNow("older"), false);
+    await capture("fresh", "Alice", 401);
+    assert.equal(router.activeCards().find(c => c.id === "older")?.state, "pending");
+  });
+}
+
+test("a comma-free split preserves the literal word before the next name", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  for (const first of ["explain C plus plus", "explain the word then", "define also", "spell and"]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${first} Alice, review the PR`, id);
+    assert.ok(await router.pick(id, "task:Alice"));
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+  }
+});
+
+test("a pick older than the retained choice history abstains while a fresh pick works", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, say } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  await say(SPLIT.text, "open");
+  for (let i = 0; i <= 50; i++) {
+    t.mock.timers.setTime(200 + 2 * i);
+    await say("Will, check the issue with Steve about the queue", "other-" + i);
+    t.mock.timers.setTime(201 + 2 * i);
+    assert.ok(router.cancel("other-" + i));
+  }
+  await router.accept(VoiceUtteranceSchema.parse({ id: "old", text: "Alice", backend: "fluidaudio", capturedAt: 150 }));
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  await say("Alice", "fresh");
+  assert.equal(router.activeCards()[0]?.state, "pending");
+});
+
+test("a confirmed split removes one conjunction before the address and preserves literal words", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const [spoken, expected, beforeComma = expected] of [
+    ["check the build and", "check the build", "check the build and"], ["check the build and then", "check the build"],
+    ["check the build then", "check the build", "check the build then"], ["spell then", "spell then"],
+    ["spell and", "spell and"], ["explain the word and", "explain the word and"],
+    ["spell the word: and", "spell the word: and"], ["say, then", "say, then"],
+    ["define the term: plus", "define the term: plus"],
+    ["replace foo with then", "replace foo with then"], ["rename foo to and", "rename foo to and"],
+  ]) {
+    for (const separator of [" ", ", ", ",", " , "]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${spoken}${separator}Alice, review the PR`, id);
+      assert.ok(await router.sendNow(id));
+      const first = separator.includes(",") ? beforeComma : expected;
+      assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+    }
+  }
+});
+
+test("a split after a question with a stranded preposition drops its connector", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const first of ["find out who this is for", "check what branch it was from"]) {
+      for (const connector of [", and ", " and "]) {
+        const id = String(delivered.length);
+        await say(`Steve, ${first}${connector}Alice, review the PR`, id);
+        if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+        assert.ok(await router.sendNow(id));
+        assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+      }
+    }
+  }
+});
+
+test("model and manual splits keep a lone ambiguous word before the address comma", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const [spoken, first] of [
+      ["echo done then,", "echo done then"],
+      ["echo done AND,", "echo done AND"],
+      ["echo done, then,", "echo done"],
+      ["check the build and then,", "check the build"],
+    ] as const) {
+      const id = String(delivered.length);
+      await say(`Steve, ${spoken} Alice, review the PR`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+    }
+  }
+});
+
+test("a comma-delimited joiner after a completed instruction about a keyword is removed", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    await say("Steve, update the keyword, and Alice, review the PR", "keyword");
+    if (choice === null) assert.ok(await router.pick("keyword", "task:Alice"));
+    assert.ok(await router.sendNow("keyword"));
+    assert.deepEqual(delivered, [["Steve", "update the keyword", "keyword"], ["Alice", "review the PR", "keyword#2"]]);
+  }
+});
+
+test("a confirmed split keeps the title that ends the first command", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const [spoken, expected] of [
+    ["read the section titled Then", "read the section titled Then"],
+    ["read the section called then", "read the section called then"],
+    ["read the section titled Setup, then", "read the section titled Setup"],
+  ] as const) {
+    const id = String(delivered.length);
+    await say(`Steve, ${spoken}, Alice, review the PR`, id);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+  }
+});
+
+test("a confirmed split keeps the last word of an incomplete first instruction", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const first of ["explain how to use then", "compare or and", "replace foo with the text and", "rename it to the string then"]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${first}, Alice, review the PR`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+    }
+  }
+});
+
+test("an explicit comma before the joiner ends a complete replacement instruction", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  await say("Steve, replace foo with the text, and Alice, review the PR", "replace");
+  assert.ok(await router.sendNow("replace"));
+  assert.deepEqual(delivered, [["Steve", "replace foo with the text", "replace"], ["Alice", "review the PR", "replace#2"]]);
+});
+
+test("a comma after 'and then' keeps the second operand of a comparison", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    for (const [spoken, expected] of [
+      ["explain the difference between if and then", "explain the difference between if and then"],
+      ["compare performance between client and server and then", "compare performance between client and server"],
+    ]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${spoken}, Alice, review the PR`, id);
+      if (choice === null) assert.ok(await router.pick(id, "task:Alice"));
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+    }
+  }
+});
+
+test("the resolving event and reconnect snapshot agree while the second model call is pending", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let chooseFirst!: (result: VoiceDecisionResult) => void;
+  let chooseSplit!: (result: VoiceDecisionResult) => void;
+  let startSecond!: () => void;
+  const first = new Promise<VoiceDecisionResult>(resolve => { chooseFirst = resolve; });
+  const split = new Promise<VoiceDecisionResult>(resolve => { chooseSplit = resolve; });
+  const started = new Promise<void>(resolve => { startSecond = resolve; });
+  const { router, cards } = routerRig(questions => {
+    if (questions[0]?.kind === "who") return first;
+    startSecond();
+    return split;
+  }, ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await router.accept(VoiceUtteranceSchema.parse({ id: "visible", text: "Steven, check the build, and Alice, review the PR",
+    backend: "fluidaudio", capturedAt: Date.now() }));
+  t.mock.timers.tick(1000);
+  assert.equal(cards.at(-1)?.parts[0]?.target, null);
+  const original = router.activeCards()[0]!;
+  chooseFirst(answered("task:Steve"));
+  await started;
+  try {
+    const latest = cards.at(-1)!;
+    assert.equal(latest.state, "resolving");
+    assert.equal(latest.reason, "second-name");
+    assert.equal(latest.parts[0]?.target?.name, "Steve");
+    assert.deepEqual(latest.candidates.map(c => c.title), ["Steve", "Alice"]);
+    assert.deepEqual(router.activeCards(), [latest]);
+    assert.equal(original.parts[0]?.target, null);
+  } finally {
+    chooseSplit(answered(null));
+    await router.resolution("visible");
+  }
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.equal(cards.at(-1)?.reason, "second-name");
+  assert.deepEqual(router.activeCards(), [cards.at(-1)]);
+});
+
+test("quoted message text stays with the first agent while a separately quoted address can split", async (t) => {
+  const { router, say, delivered, asked, cards } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  for (const literal of [
+    "write the sentence ‘Alice, review the PR’ in the docs",
+    'write "please ask Alice, review the PR" in the docs',
+    "copy «she said ‘Alice, don’t stop’» into the notes",
+    "copy 「Alice, review the PR」 into the notes",
+  ]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${literal}`, id);
+    assert.equal(asked.length, 0);
+    assert.equal(await router.pick(id, "task:Alice"), false);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.at(-1), ["Steve", literal, id]);
+  }
+  const first = "write ‘Alice, review the PR’";
+  await say(`Steve, ${first}, and “Alice”, run the tests`, "quoted-address");
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.length, 1);
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.ok(await router.pick("quoted-address", "task:Alice"));
+  assert.ok(await router.sendNow("quoted-address"));
+  assert.deepEqual(delivered.slice(-2), [["Steve", first, "quoted-address"], ["Alice", "run the tests", "quoted-address#2"]]);
+});
+
+test("a split consumes comma-adjacent wrappers around the second address", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const address of ["“Alice,”", "“ Alice,”", "「 “ Alice,” 」"]) {
+    const id = String(delivered.length);
+    await say(`Steve, check the build,${address} review the PR`, id);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", id], ["Alice", "review the PR", id + "#2"]], address);
+  }
+});
+
+test("a manual split preserves a detached closing quote from the first command", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  for (const first of ['type "hello "', "type 'hello '", "type 'don't stop '"]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${first} Alice, review the PR`, id);
+    assert.ok(await router.pick(id, "task:Alice"));
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+  }
+});

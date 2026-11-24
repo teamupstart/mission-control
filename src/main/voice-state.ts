@@ -3,7 +3,11 @@ import { EventSource } from "eventsource";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { BASE_URL, readToken } from "../shared/harness-runtime.mjs";
+import { desktopVoiceConnection } from "./voice-connection.ts";
+import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
+import { desktopVoiceEndpointPath } from "../shared/harness-runtime.mjs";
+import type { TrayVoiceState } from "./voice-tray.ts";
+import { logMain } from "./main-log.ts";
 import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
 
@@ -21,12 +25,19 @@ const ShellVoiceStateSchema = z.object({
 export type ShellVoiceState = z.infer<typeof ShellVoiceStateSchema>;
 
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
-export function startShellVoice(binary: string, onState: (state: ShellVoiceState) => void) {
-  const listener = nativeVoiceListener(binary);
-  let stream: EventSource;
+export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS) {
+  let connection: ReturnType<typeof desktopVoiceConnection>;
+  const listener = nativeVoiceListener(binary, () => {
+    if (!connection) throw new Error("Voice listener has no daemon connection");
+    return connection;
+  });
+  let stream: EventSource | undefined;
+  let hasSnapshot = false;
+  let streamDeadline: NodeJS.Timeout | undefined;
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
   let state: ShellVoiceState = voiceStateOff();
+  let lastEnabledMute: boolean | undefined;
   let nextPromptAt = 0;
   let retryDelay = 5000;
   let prompt: Promise<boolean> | undefined;
@@ -43,12 +54,13 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   };
   const lifetime = new AbortController();
   let reportRequested = false;
+  let reportFailed = false;
   let sending: Promise<boolean> | undefined;
 
   async function sendReports() {
     let accepted = false;
     try {
-      while (reportRequested && state.mode !== "off") {
+      while (connection && reportRequested && state.mode !== "off") {
         reportRequested = false;
         const microphone = systemPreferences.getMediaAccessStatus("microphone");
         const report: VoiceShellReport = {
@@ -58,10 +70,14 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
           },
           microphone, hotkeyError: null, callActive: false, pushToTalk: false,
         };
-        accepted = await fetch(BASE_URL + "/voice/shell-report", {
-          method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-harness-token": readToken() },
-          body: JSON.stringify(report), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-        }).then(response => response.ok, () => false);
+        const current = connection;
+        const response = await current.postStatus("/voice/shell-report", report,
+          AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+        accepted = response?.ok ?? false;
+        if (connection === current) {
+          if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
+          reportFailed = !accepted;
+        }
       }
       return accepted;
     } finally {
@@ -100,13 +116,33 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   }
   function update(next: ShellVoiceState) {
     state = next;
+    lastEnabledMute = next.mode === "off" ? undefined : (next.muted ?? next.mode === "muted");
     onState(state);
     void sync();
   }
+  function disconnect() {
+    clearTimeout(streamDeadline);
+    if (stream) {
+      stream.removeEventListener("ping", noteActivity);
+      stream.onmessage = stream.onerror = null;
+      stream.close();
+      stream = undefined;
+    }
+    connection?.close();
+    connection = undefined;
+    hasSnapshot = false;
+    reportFailed = false;
+  }
+  function noteActivity() {
+    // Pings and incremental updates cannot extend the initial snapshot deadline.
+    if (hasSnapshot) streamDeadline?.refresh();
+  }
   function requestSnapshot() {
-    stream.onmessage = stream.onerror = null;
-    stream.close();
-    update(voiceStateOff());
+    disconnect();
+    state = voiceStateOff();
+    if (!existsSync(desktopVoiceEndpointPath())) lastEnabledMute = undefined;
+    onState(lastEnabledMute === undefined ? state : { mode: "reconnecting", muted: lastEnabledMute });
+    void sync();
     reconnect = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
   }
@@ -119,26 +155,36 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       return;
     }
     if (message.type !== "voice_state" && message.type !== "snapshot") return;
-    // An omitted voice field is a valid flag-off snapshot.
-    if (message.type === "snapshot" && !("voice" in message)) {
-      reconnectDelay = 500;
-      update(voiceStateOff());
-      return;
-    }
+    // A snapshot without voice establishes a disabled baseline.
     const payload = message.type === "snapshot"
-      ? ("voice" in message && message.voice)
+      ? ("voice" in message ? message.voice : voiceStateOff())
       : ("state" in message && message.state);
     const parsed = ShellVoiceStateSchema.safeParse(payload);
     if (!parsed.success) { requestSnapshot(); return; }
+    if (!hasSnapshot) {
+      if (message.type !== "snapshot") return;
+      hasSnapshot = true;
+      clearTimeout(streamDeadline);
+      streamDeadline = setTimeout(requestSnapshot, 3 * heartbeatMs);
+    }
     reconnectDelay = 500;
     update(parsed.data);
   }
   function connect() {
-    stream = new EventSource(BASE_URL + "/events", {
-      fetch: (url, options) => fetch(url, { ...options, redirect: "error" }),
+    const current = connection = desktopVoiceConnection();
+    if (!current) {
+      if (lastEnabledMute !== undefined && !existsSync(desktopVoiceEndpointPath())) update(voiceStateOff());
+      reconnect = setTimeout(connect, 1000);
+      return;
+    }
+    stream = new EventSource(current.origin + "/events", {
+      fetch: (_url, options) => current.request("/events", options),
     });
-    stream.onmessage = ({data}) => receive(data);
-    stream.onerror = () => update(voiceStateOff());
+    streamDeadline = setTimeout(requestSnapshot, 2 * heartbeatMs);
+    stream.addEventListener("ping", noteActivity);
+    stream.onmessage = ({data}) => { noteActivity(); receive(data); };
+    // A replacement daemon has its own key. Re-read its local identity on every reconnect.
+    stream.onerror = requestSnapshot;
   }
   connect();
   const heartbeat = setInterval(() => void sync(), 5000);
@@ -155,15 +201,14 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       return "checked";
     },
     async mute(muted: boolean) {
-      if (state.mode === "off") return false;
-      return fetch(BASE_URL + "/api/voice/mute", {
-        method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
-        body: JSON.stringify({ muted }), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-      }).then(response => response.ok, () => false);
+      if (!connection || state.mode === "off") return false;
+      const response = await connection.postStatus("/api/voice/mute", { muted },
+        AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      return response?.ok ?? false;
     },
     stop() {
       clearTimeout(reconnect);
-      stream.close();
+      disconnect();
       lifetime.abort();
       clearInterval(heartbeat);
       state = voiceStateOff();

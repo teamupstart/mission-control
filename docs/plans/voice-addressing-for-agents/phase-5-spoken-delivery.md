@@ -64,7 +64,7 @@ As of `2088bd522`:
      kind so the card can choose its hint;
    - the state is `hibernated`: resume the task, then `submitSpoken`, outcome `queued`;
    - the session has a pending call-mode ask: `submitSpoken`, outcome `held`;
-   - the session is working: `queued`; idle: `sent`.
+   - a working or idle session: `queued` until the outbox delivery receipt moves the card and Recently heard to `sent`.
    The card's `openQuestions` count is filled from `openAsks`.
 5. **Stop.** `stop` interrupts through `interruptSession` and, where the harness cannot be
    interrupted, reports `failed` with the reason.
@@ -78,11 +78,8 @@ As of `2088bd522`:
      Recalling or removing the row ends it. `composed_at` is not read here, because it is
      stamped at the claim and says nothing about delivery;
    - the spoken turn's delivery has been confirmed (`turn_delivered` for its id) and the
-     agent's turn that received it has not ended, for at most 10 minutes after that event's
-     `deliveredAt`. The limit guards against a turn end that is never observed and cannot
-     start before the delivery is confirmed.
-   The second case is read from the row, so it survives a daemon restart with it. The third
-   is in memory and lapses on a restart, by which time the agent has the message.
+     receiving turn has not ended. Its durable work cycle carries the hold through a daemon
+     restart. The operator chose to keep Foreman out for the entire turn, however long it runs.
    `foremanWriteRefusal` refuses review writes for a held session with the reason
    `voice-message-pending`.
 7. **Conversation.** Present a turn with the voice prefix as `spoken_words` with a small
@@ -92,11 +89,11 @@ As of `2088bd522`:
 
 ## 6. Data and compatibility
 
-One migration: two nullable columns on `pending_turns`, `spoken_words` and `composed_at`. An
-existing database opens unchanged and other turns leave both null. It takes the next schema
+The migration adds nullable `spoken_words`, `composed_at`, `spoken_handoff_key`, and
+`spoken_handoff_generation` columns on `pending_turns`. Other turns leave these fields null. It takes the next schema
 number at merge time. A spoken turn's row survives a daemon restart as any pending turn does, and
 so does its hold, which is the row's existence. A pending card is in memory, so a card lost in a
-restart is not delivered and holds nothing. The hold after a confirmed delivery is in memory.
+restart is not delivered and holds nothing. Confirmation transfers the hold to the work cycle in the same transaction as outbox retirement.
 
 ## 7. Tests and verification
 
@@ -107,14 +104,14 @@ restart is not delivered and holds nothing. The hold after a confirmed delivery 
   carries the later list; a daemon restart before delivery keeps the words and composes once; a
   retry after composition resends the same text with one set of notes; the echo is matched on
   the composed text.
-- A database upgrade test for the two columns.
+- A database upgrade test for the spoken outbox and work-cycle fields.
 - `test/voice-foreman-hold.test.ts`: refused while held, allowed after the turn ends and after a
   cancel. With the `held` outcome and the clock moved past 10 minutes, Foreman is still refused
   on the blocking question; it is still refused after a daemon restart; it is allowed once the
   queued turn is removed. A turn that was claimed and composed but whose send keeps failing
   sits past 10 minutes with `composed_at` set: Foreman is still refused. An `uncertain` row
   holds until the operator settles it. After `turn_delivered`, the hold ends when the agent's
-  turn ends, and 10 minutes after `deliveredAt` when that end is never observed.
+  turn ends. It still holds past ten minutes and across a restart during that turn.
 - `e2e/specs/voice-spoken-message.spec.ts`: say "Steve, check the build" to a fake session with an
   open question; its conversation shows "check the build" marked Spoken; the disclosure shows the
   open-questions note and the post-a-report line.
@@ -147,3 +144,7 @@ text builders are also what phases 13 and 14 use when an answer falls back to a 
   waiting was already on the 10-minute clock. The hold now follows the repository's own
   delivery fact: the row exists until delivery is confirmed, and the clock starts at
   `turn_delivered`.
+
+- Operator decision after implementation review: confirmed delivery holds Foreman until the
+  receiving turn finishes, including through a daemon restart. This supersedes the earlier
+  ten-minute fallback. A missing completion signal can therefore keep Foreman waiting.

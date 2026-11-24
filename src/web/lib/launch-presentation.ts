@@ -32,6 +32,7 @@ import type { TranscriptMessage } from "@shared/types.ts";
  */
 export function projectLaunchPresentation(
   messages: readonly TranscriptMessage[],
+  voiceEnabled = true,
 ): TranscriptMessage[] {
   const projected: TranscriptMessage[] = [];
   for (const message of messages) {
@@ -39,6 +40,10 @@ export function projectLaunchPresentation(
     // A review message keeps its native text here: it is drawn as answer cards where the
     // conversation is merged with its reviews (`mergeConversation`), and its text is what
     // "What the agent received" discloses.
+    if (presentation?.kind === "spoken" && !voiceEnabled) {
+      projected.push({ ...message, presentation: undefined });
+      continue;
+    }
     if (!presentation || presentation.kind === "review-message") {
       projected.push(message);
       continue;

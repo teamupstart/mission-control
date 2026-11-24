@@ -9,8 +9,7 @@ import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 
 import { join } from "node:path";
-import { voiceTray } from "./voice-tray.ts";
-import type { VoiceState } from "../shared/voice.ts";
+import { voiceTray, type TrayVoiceState } from "./voice-tray.ts";
 
 interface ReportCounts {
   needsYou: number;
@@ -35,7 +34,7 @@ let muteError = "";
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
 
-export function setTrayVoice(state: Pick<VoiceState, "mode" | "muted">): void {
+export function setTrayVoice(state: TrayVoiceState): void {
   const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
   if (next?.nextMuted !== presentation?.nextMuted) {
     clearTimeout(muteConfirmation);

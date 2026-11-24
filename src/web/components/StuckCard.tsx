@@ -15,8 +15,7 @@ import { AgentDot } from "./session-bits.tsx";
  * fired, why, and the fix in place.
  *
  * Every control is drawn from its `INBOX_ACTIONS` entry through `InboxActionButton`, and only
- * when its target exists: Mark done only with an open task (it opens the Complete dialog, so the
- * session completes like any other), Resubmit only on a run that a
+ * when its target exists: Mark done only with an open task, Resubmit only on a run that a
  * resubmission can move, Tell it to push only with commits the remote has not seen, Continue on
  * a parked run only when neither of those applies and the session's next turn is the step,
  * Interrupt
@@ -54,7 +53,7 @@ export function StuckCard({
   subject: AgentNameView;
   onOpenSession: (sessionId: string) => void;
   onOpenRun: (runId: string) => void;
-  /** Open the session's Complete dialog. Absent where nothing can host it, and Mark done is not drawn. */
+  /** Absent where nothing can host the Complete dialog, and Mark done is not drawn. */
   onComplete?: (sessionId: string) => void;
   onDismiss: () => void;
   /**

@@ -135,6 +135,12 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   // A: an open task, finished from the row. C: an open task, told to continue. B: drawn as a
   // queue-only stall (see the note above), so its row has no task to mark done.
   const a = await dispatch(daemon, "Fix the parser");
+  // A correction makes A worth a retro, so its Complete dialog has one to offer.
+  await api(daemon, `/api/sessions/${encodeURIComponent(a.session.id)}/send`, {
+    text: "no - reproduce it in docker first, it never fails on the Mac", submit: true,
+  });
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === a.session.id)?.retro?.reasons,
+    { timeout: 30_000 }).toEqual(["corrections"]);
   const c = await dispatch(daemon, "Tidy the changelog");
   const b = await dispatch(daemon, "Drain the queue");
   await api(daemon, `/api/sessions/${encodeURIComponent(b.session.id)}/queue`, { intent: "Inspect the queue" });
@@ -211,7 +217,9 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   await stuckRow(reopened, a.task.title).getByRole("button", { name: "Mark done", exact: true }).click();
   await expect(complete).toBeVisible();
   await expect(complete).toContainText(a.task.title);
+  await expect(complete.getByRole("button", { name: "Run a retro first" })).toBeVisible();
   await expect(reopened).toBeHidden();
+  await capture(complete, "09-complete-from-stuck-row", page);
   await complete.getByRole("button", { name: "Cancel" }).click();
   await expect(complete).toBeHidden();
   expect(await taskStatus()).not.toBe("done");
@@ -224,6 +232,7 @@ test("a stalled session gets a Stuck row with the fix in place, and the row leav
   await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).some((s) => s.id === a.session.id),
     { timeout: 30_000 }).toBe(false);
   await expect(page.locator("button.pulse-seg", { hasText: "to answer" })).toHaveCount(0, { timeout: 15_000 });
+  await capture(page.locator("body"), "10-after-complete-and-close", page);
 });
 
 test("with the inbox flag off a stalled session draws no Stuck row, and the fixed-message route refuses", async ({ dashboard: page, daemon }) => {

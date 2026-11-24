@@ -236,6 +236,7 @@ other names on the roster, never against the agent's own entry:
 | --- | --- |
 | `control-word` | The name's first word is, or sounds like (`keysSoundAlike`, so Stopper is heard as stop), a word voice listens for on its own: cancel, stop, reply, answer, submit, option, no (`VOICE_CONTROL_WORDS`) |
 | `sounds-like` | It sounds like another roster name, which the warning names |
+| `symbols-only` | The name contains no letters or numbers in any script. |
 | `common-word` | A one-word name on the bundled list of everyday words (`src/shared/voice-common-words.ts`), such as Will or Sage |
 | `short` | A one-word name of one syllable and four letters or fewer, such as Bo |
 

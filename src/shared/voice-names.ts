@@ -276,24 +276,25 @@ function syllables(word: string): number {
 
 // ---- validation ----
 
-/** The four warnings, in the order they are reported: the riskiest first. */
-export const SPOKEN_NAME_WARNING_KINDS = ["control-word", "sounds-like", "common-word", "short"] as const;
+/** The warnings, in the order they are reported: the riskiest first. */
+export const SPOKEN_NAME_WARNING_KINDS = ["control-word", "sounds-like", "common-word", "short", "symbols-only"] as const;
 export type SpokenNameWarningKind = (typeof SPOKEN_NAME_WARNING_KINDS)[number];
 
 export type SpokenNameWarning =
   | { kind: "control-word"; word: VoiceControlWord }
   | { kind: "sounds-like"; names: readonly string[] }
   | { kind: "common-word" }
-  | { kind: "short" };
+  | { kind: "short" }
+  | { kind: "symbols-only" };
 
 /** The steps of the distinctiveness meter: four, less one per warning. */
-export const SPOKEN_NAME_METER_STEPS = SPOKEN_NAME_WARNING_KINDS.length;
+export const SPOKEN_NAME_METER_STEPS = 4;
 
 /**
  * Why a name may be hard to address by voice, against the names already on the roster. Empty
  * when it is distinctive, and for a blank name. The caller leaves the agent's own entry out of
  * `roster`, so a name is never warned against itself. A name with no letters a to z has no
- * phonetic key, so of these it can only be the same as a roster name, and that is still warned.
+ * phonetic key, so it is checked for an exact roster match. Symbols alone also draw a warning.
  *
  * - `control-word`: the name's first word is, or sounds like (`keysSoundAlike`, as routing will
  *   compare it), one of `VOICE_CONTROL_WORDS`;
@@ -307,6 +308,7 @@ export function validateSpokenName(name: string, roster: readonly Pick<SpokenNam
   const words = spokenWords(name);
   const first = words[0];
   const warnings: SpokenNameWarning[] = [];
+  if (!/[\p{L}\p{N}]/u.test(normalized)) warnings.push({ kind: "symbols-only" });
   if (first) {
     const firstKey = metaphone(first);
     const control = VOICE_CONTROL_WORDS.find((word) => word === first || keysSoundAlike(metaphone(word), firstKey));
@@ -343,6 +345,8 @@ export function spokenNameWarningLabel(warning: SpokenNameWarning): string {
       return `Sounds like ${either(warning.names)}`;
     case "common-word":
       return "Everyday word";
+    case "symbols-only":
+      return "Symbols only";
     case "short":
       return "Very short";
   }
@@ -360,6 +364,8 @@ export function spokenNameWarningText(warning: SpokenNameWarning, name: string):
       return said.toLowerCase() === "will"
         ? "Sentences like “Will you grab the door?” start the same way. You can keep it; a rarer name is safer."
         : `Everyday sentences can start with “${said}”. You can keep it; a rarer name is safer.`;
+    case "symbols-only":
+      return "This name has no letters or numbers to say. You can keep it or choose a spoken word.";
     case "short":
       return "One short syllable is easy to miss or mishear. You can keep it; two syllables or more is safer.";
   }

@@ -103,6 +103,8 @@ test("control-word: a name that is, or sounds like, a word voice listens for on 
 
 test("a name with no letters a to z is still warned when another agent answers to the same name", () => {
   assert.deepEqual(validateSpokenName("サクラ", [{ name: "サクラ" }, { name: "Steve" }]), [{ kind: "sounds-like", names: ["サクラ"] }]);
+  for (const name of ["!!!", "✨"]) assert.deepEqual(validateSpokenName(name), [{ kind: "symbols-only" }]);
+  assert.deepEqual(validateSpokenName("١٢"), []);
   assert.deepEqual(validateSpokenName(" サクラ ", [{ name: "サクラ" }]), [{ kind: "sounds-like", names: ["サクラ"] }], "compared trimmed");
   assert.deepEqual(validateSpokenName("サクラ", [{ name: "ハナ" }]), [], "it has no key to sound like anything by");
   assert.deepEqual(validateSpokenName("   ", [{ name: "サクラ" }]), [], "a blank name still draws nothing");

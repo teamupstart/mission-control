@@ -128,6 +128,13 @@ test("a call sign is chosen with a heard-as preview that warns without blocking,
   await expect(dialog.getByText("Warning only", { exact: true })).toBeVisible();
   await shoot(dialog, "02-warning-everyday-word");
 
+  await field.fill("!!!");
+  await expect(dialog.locator(".voice-meter-bad")).toHaveText("Symbols only");
+  await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "3");
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await field.fill("サクラ");
+  await expect(meterOf(dialog)).toHaveAttribute("aria-valuenow", "4");
+
   // "Alice": distinctive, all four steps.
   await field.fill("Alice");
   await expect(dialog.locator(".voice-heard")).toHaveText("Alice, check the build");

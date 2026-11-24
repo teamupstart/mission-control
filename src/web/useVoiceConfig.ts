@@ -147,6 +147,7 @@ export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
 }
 
 export interface VoiceDecisionKeyState {
+  busy: boolean;
   /** The provider in use and where each provider's key comes from. Null until the first read. */
   report: VoiceDecisionKeyReport | null;
   /** Save a key. Resolves to whether the daemon kept it; the key is never read back. */
@@ -165,6 +166,8 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
   const [report, setReport] = useState<VoiceDecisionKeyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const writes = useRef(0);
+  const writing = useRef(false);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!enabled) return;
@@ -182,21 +185,30 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
     };
   }, [enabled, decisionProvider]);
 
-  const settle = useCallback((res: Awaited<ReturnType<typeof api.saveVoiceDecisionKey>>, failed: string): boolean => {
-    writes.current++;
-    if (res.ok && res.keys && res.provider !== undefined) {
-      setReport({ provider: res.provider, keys: res.keys });
-      setError(null);
-      return true;
+  const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>, failed: string): Promise<boolean> => {
+    if (writing.current) return false;
+    writing.current = true;
+    setBusy(true);
+    try {
+      const res = await request();
+      writes.current++;
+      if (res.ok && res.keys && res.provider !== undefined) {
+        setReport({ provider: res.provider, keys: res.keys });
+        setError(null);
+        return true;
+      }
+      setError(res.reason ?? failed);
+      return false;
+    } finally {
+      writing.current = false;
+      setBusy(false);
     }
-    setError(res.reason ?? failed);
-    return false;
   }, []);
 
   const save = useCallback(async (provider: VoiceKeyProvider, key: string) =>
-    settle(await api.saveVoiceDecisionKey(provider, key), "The key could not be saved."), [settle]);
+    mutate(() => api.saveVoiceDecisionKey(provider, key), "The key could not be saved."), [mutate]);
   const remove = useCallback(async (provider: VoiceKeyProvider) =>
-    settle(await api.removeVoiceDecisionKey(provider), "The key could not be removed."), [settle]);
+    mutate(() => api.removeVoiceDecisionKey(provider), "The key could not be removed."), [mutate]);
 
-  return { report, save, remove, error };
+  return { report, save, remove, error, busy };
 }

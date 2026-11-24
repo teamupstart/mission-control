@@ -250,5 +250,7 @@ export function voiceRoutingWithoutProvider(rungs = VOICE_ROUTING_JOB_RUNGS): st
   if (on.length === Object.keys(rungs).length) return `routing uses ${on.map((r) => VOICE_ROUTING_MODEL_NAME[r].model).join(" or ")}`;
   if (on.length === 0) return "routing shows the candidates for you to pick";
   const parts = on.map((r) => `${VOICE_ROUTING_MODEL_NAME[r].model} for ${VOICE_ROUTING_MODEL_NAME[r].agents} sessions`);
-  return `routing uses ${parts.join(" and ")}, and shows the candidates for others`;
+  const off = (Object.keys(rungs) as LlmRunnerId[]).filter(r => !rungs[r].enabled);
+  const manual = off.map(r => VOICE_ROUTING_MODEL_NAME[r].agents).join(" and ");
+  return `routing uses ${parts.join(" and ")}. ${manual} sessions show roster choices. Mixed rosters use the Voice routing job if its model is enabled, or show roster choices.`;
 }

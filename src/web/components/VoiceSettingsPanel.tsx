@@ -232,16 +232,14 @@ function DecisionKeyRow({ provider, source, keys }: {
   keys: VoiceDecisionKeyState;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
+  const { busy } = keys;
   const label = VOICE_KEY_PROVIDER_LABEL[provider];
   const from = VOICE_KEY_SOURCE_TEXT[source ?? "none"];
   const save = async (): Promise<void> => {
     const key = draft.trim();
     if (!key) return;
-    setBusy(true);
     // The field empties once the key is kept: nothing on the page holds it after that.
     if (await keys.save(provider, key)) setDraft("");
-    setBusy(false);
   };
   return (
     <div className="kb-row voice-key-row" data-anchor={`voice/key-${provider}`} role="group" aria-label={label}>
@@ -277,7 +275,7 @@ function DecisionKeyRow({ provider, source, keys }: {
         {source === "settings" && (
           <Tooltip label={`Remove the ${label} key saved on this Mac`}>
             <button className="btn btn-ghost" type="button" disabled={busy}
-              onClick={() => { setBusy(true); void keys.remove(provider).finally(() => setBusy(false)); }}>
+              onClick={() => void keys.remove(provider)}>
               Remove
             </button>
           </Tooltip>
@@ -322,7 +320,7 @@ function FasterRoutingGroup({ config, update, keys }: {
             <select
               className="settings-select"
               value={chosen}
-              disabled={!config}
+              disabled={!config || keys.busy}
               aria-label="Decision model provider"
               onChange={(event) => {
                 const next = DECISION_PROVIDER_CHOICES.find((choice) => choice.value === event.target.value);

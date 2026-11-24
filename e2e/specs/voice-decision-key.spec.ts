@@ -163,6 +163,36 @@ test("a saved key is never shown again: its row reads Saved on this Mac, the gro
   expect(decisions.requests, "saving a key sends nothing to a provider").toEqual([]);
 });
 
+test("a pending save prevents the other key row from publishing a stale provider", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  await openVoiceSettings(page, daemon);
+  await keyField(page, "Jev").fill(SAVED_JEV);
+  await keyField(page, "OpenAI Decisions").fill(SAVED_OPENAI);
+  let release!: () => void;
+  let begin!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { begin = resolve; });
+  await page.route("**/api/voice/decision-key", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    const response = await route.fetch();
+    begin();
+    await held;
+    await route.fulfill({ response });
+  });
+  await row(page, "Jev").getByRole("button", { name: "Save" }).click();
+  await started;
+  const saveOpenAI = row(page, "OpenAI Decisions").getByRole("button", { name: "Save" });
+  try {
+    await expect(saveOpenAI).toBeDisabled({ timeout: 1500 });
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "09-key-save-in-progress");
+  } finally {
+    release();
+  }
+  await saveOpenAI.click();
+  await expect(row(page, "Jev")).toContainText("Saved on this Mac");
+  await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+});
+
 test("with keys on both rows Automatic names OpenAI Decisions, choosing Jev names Jev, and a split sentence reaches Jev with its own key", async ({ dashboard: page, daemon, decisions }) => {
   await turnVoiceOn(daemon);
   await codexAgents(daemon);
@@ -211,6 +241,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(row(page, "OpenAI Decisions"), "Off leaves the key where it is").toContainText("From the environment");
     await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "04-off");
 
+    await expect(line(page)).toContainText("Mixed rosters use the Voice routing job");
     // Off: no request leaves for a provider, and the fake Codex answers the routing job.
     const viaJob = await sayAndSettle(daemon, SPLIT);
     expect(viaJob.entry.detail).toBe("job on codex answered: split");

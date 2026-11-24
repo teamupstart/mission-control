@@ -430,10 +430,10 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   await freeSection.focus();
   await dashboard.keyboard.press("Tab");
   await dashboard.keyboard.press("Tab");
-  await expect(heldSection).toBeFocused();
   const detailBody = dashboard.locator(".cdetail .detail-body");
   const freeRow = rail.getByRole("button", { name: freeName, exact: true });
-  await freeRow.press("Tab");
+  await expect(freeRow).toBeFocused();
+  await dashboard.keyboard.press("Tab");
   await expect(detailBody).toBeFocused();
   await dashboard.keyboard.press("Escape");
   await expect(freeRow).toBeFocused();
@@ -441,10 +441,13 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   // key, keeping focus on the row instead of moving to the previous control.
   await freeRow.press("Shift+Tab");
   await expect(freeRow).toBeFocused();
-  await heldSection.focus();
+  await freeSection.press("ArrowDown");
+  await expect(heldSection).toBeFocused();
   await dashboard.keyboard.press("Enter");
   await expect(heldSection).toHaveAttribute("aria-expanded", "true");
-  await expect(rail.locator(".rail-row.is-held")).toBeVisible();
+  await dashboard.keyboard.press("Tab");
+  await dashboard.keyboard.press("Tab");
+  await expect(rail.locator(".rail-row.is-held")).toBeFocused();
   await shoot(dashboard, "idle-rail-section-counts");
   await heldSection.click();
   await expect(rail.locator(".rail-row.is-held")).toHaveCount(0);

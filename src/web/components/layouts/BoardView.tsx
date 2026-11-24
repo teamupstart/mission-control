@@ -409,7 +409,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
-      tabIndex={props.idleRailSections ? -1 : undefined}
       onSelect={() => props.onSelect(s.id)}
       // Register the element like the console rail does, so Shift+Tab/Escape out of the
       // reader can land focus back on the selected row here.
@@ -646,13 +645,22 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           const idleRail = isRail && c.id === "idle" ? props.idleRailSections : undefined;
           const ownRows = idleRail ? idleRail.sections.map((section) => (
             <div className={`idle-rail-section fleet-section-${section.kind}`} key={section.key}>
-              <Tooltip label={section.expanded ? "Collapse section" : "Expand section"}>
+              <Tooltip label={`${section.expanded ? "Collapse" : "Expand"} section. Use ↑ and ↓ to move between headings.`}>
                 <button
                   type="button"
                   className="idle-rail-section-toggle"
                   aria-expanded={section.expanded}
                   data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}
                   onClick={() => idleRail.onToggle(section.key, !section.expanded)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                    const headings = event.currentTarget.closest(".has-idle-sections")
+                      ?.querySelectorAll<HTMLButtonElement>(".idle-rail-section-toggle");
+                    if (!headings) return;
+                    event.preventDefault();
+                    const index = Array.from(headings).indexOf(event.currentTarget);
+                    headings[index + (event.key === "ArrowDown" ? 1 : -1)]?.focus();
+                  }}
                 >
                   <span>
                     {section.pinned && "pinned "}

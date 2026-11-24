@@ -4393,8 +4393,8 @@ export function App(): React.JSX.Element {
       // it natively. Without this they would act as they do on a rail row: Tab dives into the
       // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
       // never get from Intake to Backlog.
-      // In the Idle preview, Tab walks the section controls. The session rows are
-      // reached with the fleet arrows and keep their conversation and mode shortcuts.
+      // In the Idle preview, Tab enters a section's controls and rows natively.
+      // Once a row has focus, Tab and Shift+Tab keep their session shortcuts.
       const inIdleSections = Boolean(target?.closest(".has-idle-sections"));
       if ((chord === "Tab" || chord === "shift+Tab") && (
         target?.closest(".line-dock") || (inIdleSections && !target?.closest(".rail-row"))
@@ -4510,8 +4510,9 @@ export function App(): React.JSX.Element {
       // The drawer's Needs you group keeps the review chord live on a fleet with no rows.
       const drawerReview = chord === bindings.review && residentKeysRef.current.drawerAsking.length > 0;
       // The selected session's section can hide the last row while its reader stays open.
-      const leavingReader = chord === "Escape" && readerSession && target?.closest(".cdetail");
-      if (ids.length === 0 && !residentOpen && !drawerReview && !leavingReader) return;
+      const escapingDetail = chord === "Escape" && readerSession
+        && (boardDetailOpen || target?.closest(".cdetail"));
+      if (ids.length === 0 && !residentOpen && !drawerReview && !escapingDetail) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 

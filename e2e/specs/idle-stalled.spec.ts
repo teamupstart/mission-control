@@ -136,7 +136,9 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await page.keyboard.press("Escape");
   await expect(stalledHeading).toBeFocused();
   await capture(rail, "04-stalled-rail-collapsed", page);
-  await stalledHeading.click();
+  await page.keyboard.press("Escape");
+  await expect(rail).toHaveCount(0);
+  await idle.locator(".tile.is-stalled").first().getByRole("button", { name: /^Open / }).press("Enter");
   await expect(rail.locator(".rail-row.is-stalled")).toHaveCount(2);
   await rail.getByRole("button", { name: "Back to the board" }).click();
 

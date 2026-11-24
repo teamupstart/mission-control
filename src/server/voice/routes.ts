@@ -18,7 +18,7 @@ import {
   VoiceShellReportSchema,
 } from "@shared/voice.ts";
 import { checkToken } from "../auth.ts";
-import { requireFeature } from "../feature-flags/index.ts";
+import { disabledFeatureResponse, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
 import { getVoiceConfig, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
@@ -172,6 +172,8 @@ export function registerVoiceUtteranceRoutes(
       // The physical key may already be up. Sending to the router here would make
       // delivery irreversible before the shell has confirmed the audio boundary.
       await waitForDirective(voiceStateStore, revision, c.req.raw.signal);
+      const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+      if (disabled) return disabled;
       if (c.req.raw.signal.aborted || !voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
       directive = voiceStateStore.directive();
       if (directive.revision === revision) {

@@ -568,6 +568,19 @@ test("capture IDs must address a single card action URL segment", async () => {
   assert.equal(cards.at(-1)?.state, "cancelled");
 });
 
+test("turning voice off while a held utterance waits returns the disabled route response", async () => {
+  await orderedShellReport({ callActive: true, pushToTalk: true }, token);
+  const count = queued("Steve").length;
+  const waiting = say("Steve check the build", "disabled-during-post");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+  const response = await waiting;
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "This feature is disabled.", feature: "voice" });
+  assert.equal(queued("Steve").length, count);
+  assert.deepEqual(cards, []);
+});
+
 test("turning voice off clears pending actions and gates every contract D route", async () => {
   await say("Steve stale", "disabled");
   applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });

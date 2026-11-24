@@ -1,6 +1,6 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3184,6 +3184,46 @@ test("recovery capture replays the inherited parent digest before and after star
   assert.equal(service.activeSnapshot(child)?.digest, digest);
   assert.throws(() => store.inheritRepositoryClaim(child), /capturing recovery child/);
   store.cancelRun(runId, "test complete", Date.now());
+});
+
+test("terminal-run maintenance verifies local lease and home ownership without restarting", async t => {
+  const { LocalRepositoryWorkloadOwnership } = await import("../src/server/workflows/persona-workload/local-ownership.ts");
+  const id = "local-terminal-cleanup", runId = `run-${id}`, submissionId = `submission-${id}`;
+  const store = seedSubmission(id, graph);
+  const service = await captureRepositoryFixture(t, store, submissionId);
+  const snapshot = service.activeSnapshot(submissionId)!;
+  const attemptId = randomUUID(), callId = randomUUID();
+  store.insertAttempt({ id: attemptId, submissionId, nodeId: "p1", attempt: 1, state: "running",
+    persona: persona("p1", "Reviewer", "claude", "Review"), inputFingerprint: "frozen", now: 5 });
+  store.insertLlmCall({ id: callId, runId, submissionId, nodeAttemptId: attemptId, purpose: "persona_review",
+    runner: "claude", model: "fixture", attempt: 1, state: "running", startedAt: 6, finishedAt: null,
+    durationMs: null, inputBytes: 1, outputBytes: 0, costUsd: null, errorCode: null });
+  const db = openDb();
+  db.prepare(`INSERT INTO workflow_repository_workloads(id,attempt_id,digest,state,deadline)
+    VALUES(?,?,?,'running',?)`).run(callId, attemptId, snapshot.digest, Date.now() + 30_000);
+  db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(callId);
+  const request = { workloadId: callId, attemptId, submissionId, digest: snapshot.digest, locator: snapshot.locator };
+  service.setActiveRequestLookup(key => key === callId ? request : null);
+  const lease = await service.materialize(request, new AbortController().signal);
+  const providerHome = mkdtempSync(join(tmpdir(), "mission-repository-workload-"));
+  t.after(() => rmSync(providerHome, { recursive: true, force: true }));
+  new LocalRepositoryWorkloadOwnership(store, () => false).recordHome(callId, providerHome);
+  const nonce = store.repositoryLocalOwner(callId)!.lease_nonce!;
+  store.markRepositoryCancellationPending(callId, 1);
+  store.cancelRun(runId, "Operator cancelled");
+  const engine = new WorkflowEngine(store, () => {});
+  const setNonce = db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?");
+  setNonce.run(randomUUID(), callId);
+  await engine.reconcileTerminalRepositoryWorkloads();
+  assert.ok(existsSync(lease.objectDirectory) && existsSync(providerHome));
+  assert.ok(store.repositoryLocalOwner(callId));
+  setNonce.run(nonce, callId);
+  await engine.reconcileTerminalRepositoryWorkloads();
+  assert.equal(store.repositoryLocalOwner(callId), undefined);
+  assert.equal(existsSync(lease.objectDirectory), false);
+  assert.equal(existsSync(providerHome), false);
+  assert.equal(store.getRun(runId)?.status, "cancelled");
+  assert.equal(store.listLlmCallPage(runId).items.length, 1);
 });
 
 for (const restartState of ["cancellation_pending", "running", "interrupted", "cancelled run"] as const)

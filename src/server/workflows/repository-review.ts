@@ -41,6 +41,7 @@ type ReviewInput = Pick<PersonaWorkloadRequest, "attemptId" | "submissionId" | "
   & { persona: import("@shared/workflow.ts").PersonaSnapshot };
 
 export class RepositoryReview {
+  private readonly dispatching = new Set<string>();
   private readonly recoveringLocal = new Map<string, Promise<void>>();
   private readonly local: LocalRepositoryWorkloadOwnership;
   constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {
@@ -53,31 +54,32 @@ export class RepositoryReview {
 
   async confirmCancellations(runId: string, nodeId: string): Promise<void> {
     for (const { id, generation } of this.pendingCancellations(runId, nodeId)) {
-      if (this.store.repositoryLocalOwner(id)) {
-        await this.recoverLocal(id);
-        continue;
-      }
-      await this.confirmExternalCancellation(id, generation);
+      await this.confirmCancellation(id, generation);
     }
   }
 
   reconcileTerminalRuns(): Promise<void> | undefined {
-    if (!this.injected) return;
-    const pending = this.store.terminalRunRepositoryCancellations();
-    if (pending.length) return this.reconcileExternalCancellations(pending);
+    // The dispatch that requested cancellation gets the first chance to release its
+    // resources. Once it returns, maintenance owns any remaining durable cleanup.
+    const pending = this.store.terminalRunRepositoryCancellations().filter(row => !this.dispatching.has(row.id));
+    if (pending.length) return this.reconcileCancellations(pending);
   }
 
-  private async reconcileExternalCancellations(pending: { id: string; generation: number }[]) {
+  private async reconcileCancellations(pending: { id: string; generation: number }[]) {
     for (const { id, generation } of pending) {
       try {
-        await this.confirmExternalCancellation(id, generation);
+        await this.confirmCancellation(id, generation);
       } catch {
         workflowLog("warn", { event: "repository_workload_cleanup_pending", call: id });
       }
     }
   }
 
-  private async confirmExternalCancellation(id: string, generation: number) {
+  private async confirmCancellation(id: string, generation: number) {
+    if (this.store.repositoryLocalOwner(id)) {
+      await this.recoverLocal(id);
+      return;
+    }
     const executor = this.injected;
     if (!executor) throw new Error(`Repository workload ${id} has not confirmed cleanup`);
     const timeout = AbortSignal.timeout(cleanupTimeoutMs);
@@ -133,6 +135,14 @@ export class RepositoryReview {
   }
 
   async run(input: ReviewInput, shutdown: AbortSignal): Promise<string> {
+    const id = input.accounting.callId;
+    if (this.dispatching.has(id)) throw new Error("Repository workload is already dispatching");
+    this.dispatching.add(id);
+    try { return await this.dispatch(input, shutdown); }
+    finally { this.dispatching.delete(id); }
+  }
+
+  private async dispatch(input: ReviewInput, shutdown: AbortSignal): Promise<string> {
     const service = WorkflowRepositoryArtifactService.forRoot(this.store);
     const snapshot = service.activeSnapshot(input.submissionId);
     if (!snapshot) throw new Error("The submitted repository artifact is unavailable");

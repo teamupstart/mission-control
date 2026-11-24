@@ -94,20 +94,22 @@ function addressedCommand(text: string, wrappersClosed: boolean): VoiceAddressed
   return wrappersClosed && barePhrase(text) === "stop" ? "stop" : undefined;
 }
 
-function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
-  const first = normalized(token[0]);
-  if (!next || !/^\s+$/u.test(text.slice(token.index + token[0].length, next.index))) return [first];
-  return [first, normalized(text.slice(token.index, next.index + next[0].length))];
+interface Token { raw: string; index: number }
+
+function namesStartingAt(text: string, token: Token, next?: Token): [string] | [string, string] {
+  const first = normalized(token.raw);
+  if (!next || !/^\s+$/u.test(text.slice(token.index + token.raw.length, next.index))) return [first];
+  return [first, normalized(text.slice(token.index, next.index + next.raw.length))];
 }
 
-function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
+function observedPause(words: VoiceUtterance["words"], tokens: Token[], addressWords: number): number | null {
   let index = 0;
   let previousEndMs = 0;
   for (const word of words) {
     const timedText = normalized(word.text);
     if (!timedText) continue;
     const token = tokens[index];
-    if (!token || normalized(token[0]) !== timedText) return null;
+    if (!token || normalized(token.raw) !== timedText) return null;
     if (index === addressWords) return word.startMs - previousEndMs;
     previousEndMs = word.endMs;
     index++;
@@ -124,6 +126,32 @@ const WRAPPER_PAIRS = new Set(`
   〈〉 《》 「」 『』 【】 〔〕 〖〗 〘〙 〚〛 ︗︘ ︵︶ ︷︸ ︹︺ ︻︼ ︽︾ ︿﹀ ﹁﹂ ﹃﹄ ﹇﹈
   ﹙﹚ ﹛﹜ ﹝﹞ （） ［］ ｛｝ ｟｠ ｢｣
 `.trim().split(/\s+/u));
+
+function wrappedAddressBoundary(text: string, roster: readonly SpokenName[]): number {
+  const prefix = text.match(/^[\s\p{Ps}\p{Pi}"']+/u)?.[0] ?? "";
+  const wrappers = prefix.match(/[\p{Ps}\p{Pi}"']/gu) ?? [];
+  if (!wrappers.length) return text.length;
+  const inner = text.slice(prefix.length);
+  for (const mark of inner.matchAll(/[,\p{Pe}\p{Pf}"']/gu)) {
+    const char = mark[0];
+    if (char === ",") break;
+    // An apostrophe inside a roster spelling is part of the name, even in single quotes.
+    if ((char === "'" || char === "’") && /[\p{L}\p{N}]/u.test(inner[mark.index + 1] ?? "") &&
+        roster.some(({ name }) => normalizeSpokenName(name).startsWith(normalizeSpokenName(inner.slice(0, mark.index + 2))))) continue;
+    if (!WRAPPER_PAIRS.has(wrappers.pop()! + char)) break;
+    if (!wrappers.length) {
+      const end = prefix.length + mark.index + char.length;
+      const adjacent = text.slice(end).match(/^[^\s,]+/u)?.[0];
+      return adjacent && normalized(adjacent) ? end : text.length;
+    }
+  }
+  return text.length;
+}
+
+function tokensIn(span: string, offset: number): Token[] {
+  return Array.from(span.matchAll(/[^\s,]+/gu), (m) => ({ raw: m[0], index: offset + m.index }))
+    .filter(({ raw }) => normalized(raw));
+}
 
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
 function messageAfterAddress(text: string, start: number, end: number): { body: string; wrappersClosed: boolean } {
@@ -166,10 +194,11 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const { text, words } = utterance;
   // Keep offsets into the original capture. Name matching ignores boundary punctuation,
   // while a message made entirely of punctuation still has a body.
-  const tokens = Array.from(text.matchAll(/[^\s,]+/gu)).filter((m) => normalized(m[0]));
+  const boundary = wrappedAddressBoundary(text, context.roster);
+  const tokens = tokensIn(text.slice(0, boundary), 0).concat(tokensIn(text.slice(boundary), boundary));
   const [firstToken, secondToken] = tokens;
   if (!firstToken) return { kind: "ignored", reason: "no-name" };
-  const bodyAfter = (token: RegExpExecArray) => messageAfterAddress(text, 0, token.index + token[0].length);
+  const bodyAfter = (token: Token) => messageAfterAddress(text, 0, token.index + token.raw.length);
   const phrase = bodyAfter(tokens.at(-1)!).body ? null : normalized(text);
   const controlPhrase = barePhrase(text);
   if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
@@ -243,7 +272,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const wrappers = preceding.match(/(?:^|\s)([\p{Ps}\p{Pi}"'\s]+)$/u)?.[1] ?? "";
       const addressStart = at.index - wrappers.length;
       const head = splitHead(text.slice(text.length - body.length, addressStart));
-      const second = messageAfterAddress(text, addressStart, end.index + end[0].length);
+      const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
       const tail = second.body.replace(/^[\s;:–—-]+/u, "").trim();
       if (head && tail) {
         const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];

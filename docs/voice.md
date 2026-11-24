@@ -70,6 +70,7 @@ For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`. Only one comma separates the address from the message,
 so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
 Quotes and brackets around an address must close in matching pairs. For example,
+`“Will”ship it` queues `ship it` even without a space after the closing quote.
 `[Will, ) stop` queues `) stop` as message text. An unclosed wrapper also makes the body
 ordinary message text. `[Will, stop` queues the word `stop`.
 The pending card keeps the session ID selected when it opened. If that session ends or another

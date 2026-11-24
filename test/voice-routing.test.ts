@@ -192,6 +192,23 @@ test("punctuation around the address stays separate from the quoted message", ()
   }
 });
 
+test("a matched wrapper ends an address even when the message starts against it", () => {
+  for (const [text, name, body, match] of [
+    ["“Will”ship it", "Will", "ship it", "exact"],
+    ['"Will""ship it"', "Will", '"ship it"', "exact"],
+    ["「[Release Captain]」run tests", "Release Captain", "run tests", "exact"],
+    ["(Steven)take a look", "Steve", "take a look", "phonetic"],
+    ["“O’Neil”call back", "O’Neil", "call back", "exact"], ["‘O’Neil’call back", "O’Neil", "call back", "exact"],
+  ] as const) {
+    assert.deepEqual(route(text, [name]), { kind: "addressed", match, target: agent(name), text: body, pauseMs: null });
+  }
+  assert.equal(route("“Willow”ship it", ["Will"]).kind, "ignored");
+  const timed = route("“Will”ship it", ["Will"], [
+    { text: "Will", startMs: 0, endMs: 100 }, { text: "ship", startMs: 120, endMs: 150 },
+  ]);
+  assert.equal(timed.kind === "addressed" && timed.pauseMs, 20);
+});
+
 test("Release wins the exact first word even when Release Captain is listed first", () => {
   assert.deepEqual(route("Release Captain, run tests", ["Release Captain", "Release"]), {
     kind: "addressed", target: agent("Release"), match: "exact", text: "Captain, run tests", pauseMs: null,

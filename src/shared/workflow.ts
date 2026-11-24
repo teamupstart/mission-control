@@ -2761,6 +2761,8 @@ export const WORKFLOW_GATE_WAIT_REASONS = [
 export type WorkflowGateWaitReason = (typeof WORKFLOW_GATE_WAIT_REASONS)[number];
 
 export interface WorkflowInspectorGateState {
+  /** Ignore the saved observation when selecting the first head after a grant. */
+  grantObservation?: { minimumObservedAt: number; requestedAt: number; verifiedHeadSha?: string };
   /** Present when a published shipping continuation differs from its semantic review. */
   reviewedContent?: {
     submissionId: string;

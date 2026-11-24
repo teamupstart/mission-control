@@ -68,7 +68,8 @@ and `parameters` using the dashboard's existing request body schema:
 | Actions | Target | Additional parameters |
 | --- | --- | --- |
 | `grant-rounds` | `runId` | `rounds` |
-| `cancel`, `prepare-pr`, `recheck-inspector` | `runId` | None |
+| `cancel`, `prepare-pr` | `runId` | None |
+| `recheck-inspector` | `runId` | Optional `recoverStaleGrant` for [legacy grant recovery](#legacy-inspector-grant-recovery) |
 | `retry` | `runId` | Optional `nodeAttemptId` |
 | `resubmit` | `runId` | Optional `resubmitUnchanged` and `evidence` |
 | `restart-full` | `runId` | `confirmation` when required by the server |
@@ -2244,10 +2245,15 @@ Every arm restores a status something watches, because nothing polls a blocked r
 - A **parked round on any other posture** keeps the number alone and stays blocked, correctly:
   a `manual` version or a `Preview` binding has no observer to be handed back to, so the next
   round is the operator's to start and the header says so.
-- A **GitHub Inspector-only gate run** needs `waiting_for_new_head` back, so the gate re-enters
-  on the next observation and picks up the very head it refused. Without that the grant would
-  flip the merge block from "gave up" to "still working" while nothing was working, which is
-  worse than the dead end it replaced.
+- A **GitHub Inspector-only gate run** resumes in `waiting_for_new_head` and requests a fresh
+  read of its pinned PR. Selection requires a positive observation dated strictly after the
+  grant. A read from the spent window or the grant's own millisecond leaves the round available.
+  A recheck can retry a failed grant read. After a restart, a qualifying durable read can
+  supply the head even if its notification was lost. If the ledger records a read with
+  unknown PR state, a queued notification must be strictly newer than
+  that read to supply the head. After resolving the selected commit, the evaluator reads
+  the ledger again. A failed read at or after the accepted observation keeps the submission
+  waiting until a positive read confirms its head.
 
 **And the grant says what it bought.** It was the one primary on the page with no visible
 result, so a click that worked was indistinguishable from a click that failed. The header now
@@ -2785,6 +2791,81 @@ Shipping remains vetoed. **Adopt clean Inspector head** grants the existing audi
 budget and hands the run back to the same gate evaluator. Only that evaluator may create the
 next immutable Inspector-only submission and complete after exact-head proof. Dirty, stale,
 closed, mismatched, non-live, or unavailable evidence keeps the ordinary grant label.
+
+#### Legacy Inspector grant recovery
+
+After verifying from the timeline that a legacy grant selected the cached head, an authorized
+operator can send `recheck-inspector` with a new `requestId` and the recovery parameter shown below.
+
+```json
+{
+  "recoverStaleGrant": {
+    "grantRequestId": "request-id-from-repair_rounds_granted",
+    "submissionId": "stranded-inspector-only-submission-id",
+    "staleHeadSha": "head-on-that-submission",
+    "currentHeadSha": "current-open-PR-head"
+  }
+}
+```
+
+Concurrent copies of the same recovery request share the initial GitHub verification.
+Each caller then checks the current run inside the recovery transaction. If the read
+fails, a later request can try again.
+
+The daemon checks the named legacy grant, its first bypass receipt, the original failed head
+and findings, the mismatch block, and a current open PR observation after the submission.
+It also requires a stored observation of that same replacement head strictly between the
+round-limit event and the grant. The blocked gate can retain a delayed observation from
+that interval, or the Inspector ledger can retain the head and timestamp of its review.
+Inspector timestamps a poll when it starts. To confirm that the read also finished before
+the grant, recovery checks the adoption row for a completed open-PR scan by the CodeRabbit
+observer or a retained delivery claim for that head within the same interval. This uses
+the recorded head and daemon completion time. A CodeRabbit verdict is unnecessary.
+
+Recovery reads the open PR and its source ref twice, including for fork PRs. Starting
+at the same latest ref update, it follows GitHub's before/after SHAs back to an update
+at least one second older than GitHub's PR creation time. The replacement head must
+have been reached only once during that history. The completed local observation then
+places that unique arrival before the grant even if the daemon and GitHub clocks differ.
+The existing one-second grant cutoff can still veto recovery. A return to the head,
+a broken chain, a missing completed observation, or history that does not reach PR
+creation within 100 updates keeps the mismatch blocked. The recovery receipt records
+the completed observation ID and time, source ref, tip and anchor activity IDs and
+times, PR creation time, and count of updates checked.
+[GitHub repository activity API](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
+Ordinary polling and recheck leave the mismatch blocked. A successful recovery records `inspector_stale_grant_recovered` and
+re-enters the repair wait pinned to the verified replacement head. After resolving the
+prior commits, the evaluator checks the receipt's ref update ID and reads the PR from
+GitHub twice. Each PR response includes its state, source branch, head, and timeline
+of force pushes, branch deletions or restorations, and PR closures or reopenings
+since the verified update. If the replacement arrived by force push, the receipt records
+the GitHub timeline event ID after matching its source ref, before and after commits,
+and GitHub timestamp bucket to the verified activity. Only that event is accepted
+in the final timeline. An additional rewrite blocks even in the same second. A return to the
+same SHA or a closure during the final read can therefore block the replacement
+even while the local ledger still shows the old open tip. A confirmed live mismatch
+blocks immediately, including when the local ledger records a failed read. A closed
+or merged PR also blocks if its source fork has been deleted.
+If the GitHub CLI returns partial GraphQL data with a field error, a matching
+PR's closed or merged state still blocks when the errors affect only source or timeline
+fields. On an identified PR, an intact head OID, source branch, source repository, or
+rewrite history can independently establish a mismatch. An error on a field makes its
+value unusable. Missing or malformed head OIDs leave recovery pending in the absence
+of an independent mismatch, including
+when the GitHub CLI exits successfully. Confirming a match requires a successful read
+with complete source and timeline evidence. A response for another PR or an activity
+row for another ref supplies no evidence about the pinned identity. Replaying the
+original request retries verification while that receipt is pending. Replays and
+Inspector updates for the same receipt share one queued or active check. After the
+live read, selection compares the latest positive notification with the current
+durable PR observation. A later replay or update can retry an unavailable check.
+An unavailable read leaves the round available for the next
+evaluation. The insertion transaction also checks for a conversation transfer hold.
+Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.
+[GitHub pull request timeline](https://docs.github.com/en/graphql/reference/pulls)
+The stale submission keeps its head and round. Its
+replacement round must fit within the granted cap and requires the usual exact-head review
+and resolution of open findings. A stranded submission already at the cap stays blocked. Retrying the same request returns the run idempotently.
 
 Findings produce one frozen, bounded, hashed `inspector_feedback` packet through the same Preview
 or safe Live delivery state machine as Persona repair. The published default,

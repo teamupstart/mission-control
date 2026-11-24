@@ -17894,8 +17894,8 @@ export function noteInspectorPrStack(key: string, note: string | null, now: numb
     .run(note, now, key);
 }
 
-export function getInspectorPr(key: string): InspectorPr | null {
-  const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
+export function getInspectorPr(key: string, db = openDb()): InspectorPr | null {
+  const r = db.prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
     | InspectorPrRow
     | undefined;
   return r ? rowToInspectorPr(r) : null;
@@ -19446,8 +19446,8 @@ export function setFileCommentReviewState(
 // its owner. Retain at most 2,000 root identities and 10,000 conversation/episode receipts
 // per PR; exceeding either holds observation/delivery instead of evicting replay protection.
 const codeRabbitProcessId = randomUUID();
-export function readCodeRabbit(prKey: string): CodeRabbitRecord | null {
-  const row = openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
+export function readCodeRabbit(prKey: string, db = openDb()): CodeRabbitRecord | null {
+  const row = db.prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
   try {
     const parsed = CodeRabbitRecordSchema.safeParse(JSON.parse(row?.code_rabbit_state ?? "null"));
     return parsed.success ? parsed.data : null;

@@ -584,11 +584,9 @@ export class VoiceRouter {
       this.questionNotice(item, result === "matcher-failed" ? "Could not match an option. Try again." : "No matching option.");
       return;
     }
-    let originId = item.answer?.originId ?? item.entry.id;
     for (const other of this.open.values()) {
       if (other === item || other.answerAttempt?.reviewId !== review.id) continue;
       if (compareAnswerCaptures(other.answerAttempt, attempt) > 0) continue;
-      if (other.answer) originId = other.answer.originId ?? other.entry.id;
       if (!this.cancel(other.card.id)) { this.take(item); return; }
     }
     item.answerAttempt = attempt;
@@ -607,7 +605,7 @@ export class VoiceRouter {
       action.cancel = () => this.cancel(id);
       if (!item.answer?.footerWindowId) this.questions!.removeCompanion(previousId);
     }
-    item.answer = { ...result, id, originId, reviewId: review.id, deadline, windowMs, switched: !!correction,
+    item.answer = { ...result, id, originId: item.entry.id, reviewId: review.id, deadline, windowMs, switched: !!correction,
       footerWindowId: this.openCards.footerOwner(review.id) };
     if (!correction) this.recordCorrectionTarget(false);
     item.card = { ...item.card, id, state: "pending", reason: "voice-answer", questionTitle: review.title, deadline, windowMs,

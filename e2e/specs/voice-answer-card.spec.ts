@@ -416,3 +416,42 @@ test("a spoken correction during manual cancellation leaves the draft visible an
     retry.resolve();
   }
 });
+
+test("a fresh spoken answer survives the previous draft’s delayed cancellation", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "When should the build start?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title, body: title },
+  });
+  expect(filed.ok()).toBe(true);
+  const { id } = await filed.json();
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const card = inbox.locator(".review").filter({ hasText: title });
+  const input = card.getByRole("textbox");
+  await say(daemon, "Steve, answer: tomorrow", { id: "first-dictation" });
+  await expect(input).toHaveValue("tomorrow");
+  const release = Promise.withResolvers<void>();
+  const requested = Promise.withResolvers<void>();
+  await page.route("**/api/voice/cards/first-dictation/cancel", async route => {
+    requested.resolve();
+    await release.promise;
+    await route.continue();
+  });
+  try {
+    await input.fill("after lunch");
+    await requested.promise;
+    await say(daemon, "Steve, answer: tonight", { id: "fresh-dictation" });
+    await expect(input).toHaveValue("tonight");
+    const stale = page.waitForResponse(r => r.url().endsWith("/first-dictation/cancel"));
+    release.resolve();
+    expect((await stale).status()).toBe(409);
+    await card.getByRole("button", { name: "Submit now" }).click();
+    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tonight");
+  } finally {
+    release.resolve();
+  }
+});

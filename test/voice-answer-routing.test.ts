@@ -385,11 +385,13 @@ test("an option mentioned in a sentence is a message, while an unavailable selec
     await say("Steve, option B looks risky", id);
     assert.deepEqual(answers(), []);
     assert.equal((await act(id, "send-now")).status, 200);
+    await say("Steve, option pricing", "pricing-" + open);
+    assert.equal((await act("pricing-" + open, "send-now")).status, 200);
     await say("Steve, option 99");
     assert.equal(cards.at(-1)?.detail, "No matching option.");
     assert.deepEqual(answers(), []);
   }
-  assert.deepEqual(queued("Steve"), ["option B looks risky", "option B looks risky"]);
+  assert.deepEqual(queued("Steve"), ["option B looks risky", "option pricing", "option B looks risky", "option pricing"]);
   assert.equal(registry.getReview(q.id)?.status, "pending");
 });
 
@@ -410,9 +412,11 @@ test("multi-letter option commands use the displayed letters and never become me
   const title = "Which choice?";
   const q = reviews.create("sdk:Steve", "input", title, title, [{ id: "q", question: title, allowOther: true,
     options: Array.from({ length: 53 }, (_, i) => ({ id: String(i + 1), label: "Choice " + (i + 1) })) }]);
-  await say("Steve, option BA");
-  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["53"]);
-  await say("cancel");
+  for (const label of ["BA", "ba", "b a"]) {
+    await say("Steve, option " + label);
+    assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["53"]);
+    await say("cancel");
+  }
   for (const open of [false, true]) {
     await show(open ? [q.id] : []);
     for (const label of ["BB", "ZZ", "AAA"]) {

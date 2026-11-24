@@ -225,15 +225,18 @@ function spokenNumber(value: string, start = 0): number | undefined {
 }
 
 export function spokenIndex(words: string, explicitLetters = false): number | undefined {
-  const value = words.trim().toLowerCase().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/u, "").replace(/-/gu, " ");
+  const selector = words.trim().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/iu, "");
+  const value = selector.toLowerCase().replace(/-/gu, " ");
   if (/^\d+(?:st|nd|rd|th)?$/u.test(value)) return parseInt(value, 10) - 1;
   const number = spokenNumber(value) ?? (value.endsWith(" one") ? positions.get(value.slice(0, -4)) : undefined);
   if (number !== undefined) return number - 1;
-  // In an explicit selector every letter belongs to the badge. Keep ordinary
-  // single-word dictation available to the matcher and the Other field.
-  if (!(explicitLetters ? /^[a-z]+$/u : /^a?[a-z]$/u).test(value)) return undefined;
+  // Two letters cover every badge on a supported form. Longer labels can
+  // still be identified as capitals or spelled letters, unlike “option pricing”.
+  const letters = explicitLetters && /^(?:[a-z]\s+)+[a-z]$/u.test(value) ? value.replace(/\s+/gu, "") : value;
+  const badge = explicitLetters && (/^[A-Z]+$/u.test(selector) || letters !== value || /^[a-z]{1,2}$/u.test(value));
+  if (!badge && !/^a?[a-z]$/u.test(value)) return undefined;
   let position = 0;
-  for (const letter of value) position = position * 26 + letter.charCodeAt(0) - 96;
+  for (const letter of letters) position = position * 26 + letter.charCodeAt(0) - 96;
   return position - 1;
 }
 

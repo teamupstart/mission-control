@@ -141,5 +141,8 @@ test("a manual edit cancels corrected actions of the same answer and cannot canc
   await say("Steve, option B", "fresh-answer");
   assert.equal((await editCancel(q.id, "original")).status, 409);
   assert.equal(answers()[0]?.id, "fresh-answer");
+  await say("Steve, option A", "fresh-replacement");
+  assert.equal((await editCancel(q.id, "fresh-answer")).status, 409);
+  assert.equal(answers()[0]?.id, "fresh-replacement");
   assert.equal(registry.getReview(q.id)?.status, "pending");
 });

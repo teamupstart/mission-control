@@ -134,7 +134,7 @@ export function VoiceIndicatorSettings(): React.JSX.Element {
   return <fieldset className="settings-group vi-settings" data-anchor="voice/indicators">
     <legend className="settings-group-label">In the window</legend>
     {VOICE_INDICATOR_IDS.map(id => <div className="vi-choice" key={id}>
-      <Tooltip label={`Show the ${styles[id].toLowerCase()} in the window`}><label>
+      <Tooltip label={`Show the ${styles[id].toLowerCase()} in the window`}><label className="kb-row-label">
         <input type="checkbox" disabled={saving !== null} checked={saving?.id === id ? saving.enabled : voice.indicators.includes(id)} onChange={async e => {
           const enabled = e.target.checked;
           setSaving({ id, enabled });
@@ -144,7 +144,7 @@ export function VoiceIndicatorSettings(): React.JSX.Element {
       </label></Tooltip>
       <div className="vi-samples">{previewModes.map(mode => <div className="vi-sample" key={mode}>
         <VoiceIndicatorButton id={id} mode={mode} />
-        {(id === "floating" || id === "composer") && modes[mode][0]}
+        {(id === "floating" || id === "composer") && <span className="kb-row-desc">{modes[mode][0]}</span>}
       </div>)}</div>
     </div>)}
     {error && <p className="settings-error" role="alert">Could not save the indicator selection.</p>}

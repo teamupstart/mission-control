@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
+import type { Locator } from "@playwright/test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
@@ -243,6 +244,106 @@ test("a delayed indicator acknowledgement keeps the newer two-window configurati
     await edge.blur();
     await expect(page.locator(".tooltip")).toHaveCount(0);
     await page.getByRole("group", { name: "In the window" }).screenshot({ path: join(mkdtempSync(join(root, "late-save-")), "settings.png") });
+  }
+});
+
+for (const failure of ["unavailable", "stalled"] as const) {
+  test(`an acknowledged save recovers without a reload when the reconciliation read is ${failure}`, async ({ page, daemon }) => {
+    await enableVoice(daemon);
+    const endpoint = daemon.baseURL + "/api/voice/indicators";
+    const preference = (id: string) => page.request.put(endpoint, { data: { id, enabled: true } });
+    expect((await preference("floating")).ok()).toBe(true);
+    const snapshotReady = Promise.withResolvers<void>();
+    const releaseSnapshot = Promise.withResolvers<void>();
+    const saved = Promise.withResolvers<void>();
+    const releaseSave = Promise.withResolvers<void>();
+    const firstReconciliation = Promise.withResolvers<void>();
+    const releaseStalled = Promise.withResolvers<void>();
+    let reads = 0;
+    await page.route("**/api/ui/config", async route => {
+      reads++;
+      if (reads === 1) {
+        const snapshot = await route.fetch();
+        snapshotReady.resolve();
+        await releaseSnapshot.promise;
+        return route.fulfill({ response: snapshot });
+      }
+      if (reads === 2) {
+        firstReconciliation.resolve();
+        if (failure === "unavailable") return route.fulfill({ status: 503 });
+        await releaseStalled.promise;
+        return route.abort();
+      }
+      return route.continue();
+    });
+    await page.route("**/api/voice/indicators", async route => {
+      const result = await route.fetch();
+      saved.resolve();
+      await releaseSave.promise;
+      await route.fulfill({ response: result });
+    });
+    try {
+      await page.goto(daemon.baseURL + "/#/settings/voice");
+      await snapshotReady.promise;
+      const edge = page.getByRole("checkbox", { name: "Edge light" });
+      await edge.check();
+      await saved.promise;
+      releaseSnapshot.resolve();
+      await expect(page.getByRole("checkbox", { name: "Floating button" })).toBeChecked();
+      releaseSave.resolve();
+      await firstReconciliation.promise;
+      expect((await preference("topbar")).ok()).toBe(true);
+      await expect(edge).toBeEnabled();
+      await expect(edge).toBeChecked();
+      await expect(page.locator("button.vi-edge")).toBeVisible();
+      await expect(page.getByRole("checkbox", { name: "Top-bar segment" })).toBeChecked();
+      expect(reads).toBeGreaterThanOrEqual(3);
+    } finally {
+      releaseSnapshot.resolve();
+      releaseSave.resolve();
+      releaseStalled.resolve();
+    }
+  });
+}
+
+test("indicator labels and captions match neighboring Voice settings and the history table matches variant E", async ({ dashboard: page, context, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const group = page.getByRole("group", { name: "In the window" });
+  const typography = (locator: Locator) => locator.evaluate(element => {
+    const style = getComputedStyle(element);
+    return { size: style.fontSize, weight: style.fontWeight, family: style.fontFamily };
+  });
+  const label = page.getByText("Auto-mute during calls", { exact: true });
+  const description = page.locator('[data-anchor="voice/auto-mute"] .kb-row-desc');
+  const sampleCaption = group.locator(".vi-sample").filter({ has: page.locator(".vi-floating") }).first();
+  const history = page.getByRole("region", { name: "Recently heard" });
+  const option = await typography(group.getByText("Status line", { exact: true }));
+  const reference = await typography(label);
+  const caption = await typography(sampleCaption.getByText("Listening", { exact: true }).last());
+  const referenceCaption = await typography(description);
+  expect(option).toEqual(reference);
+  expect(caption).toEqual(referenceCaption);
+  const mock = await context.newPage();
+  await mock.goto(new URL("../../docs/plans/voice-addressing-for-agents/mockup-recently-heard.html", import.meta.url).href);
+  const referenceTable = mock.locator("#e .rh-dialog").first();
+  const tableSizes = (panel: Locator) => Promise.all([".rh-dialog-head strong", ".rh-table", ".rh-table th"].map(async selector =>
+    (await typography(panel.locator(selector).first())).size));
+  const actual = await tableSizes(history);
+  const approved = await tableSizes(referenceTable);
+  expect(actual).toEqual(approved);
+  await mock.close();
+  if (process.env.MC_E2E_EVIDENCE) {
+    console.log("Typography measured in CSS pixels", JSON.stringify({
+      indicator: option, neighbor: reference, preview: caption, description: referenceCaption, table: actual, variantE: approved,
+    }));
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    const dir = mkdtempSync(join(root, "settings-type-"));
+    await group.scrollIntoViewIfNeeded();
+    await group.screenshot({ path: join(dir, "indicators.png") });
+    await page.getByText("Plan forms by voice", { exact: true }).first().scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(dir, "in-context.png") });
   }
 });
 

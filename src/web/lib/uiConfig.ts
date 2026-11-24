@@ -193,21 +193,36 @@ export async function refreshAnnouncedTours(): Promise<boolean> {
   return true;
 }
 
+let indicatorReadGeneration = 0;
+let indicatorRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+
+/** Retry a failed or superseded read without keeping the settings controls disabled. */
+async function reconcileVoiceIndicators(): Promise<void> {
+  const generation = ++indicatorReadGeneration;
+  clearTimeout(indicatorRetryTimer);
+  const atRead = current.voice.indicators;
+  const view = await fetchUiConfig(AbortSignal.timeout(5000));
+  if (generation !== indicatorReadGeneration) return;
+  if (view && (!view.config.voice || current.voice.indicators === atRead)) {
+    indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
+    if (view.config.voice) commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+    return;
+  }
+  indicatorRetryTimer = setTimeout(() => void reconcileVoiceIndicators(), indicatorRetryDelay);
+  indicatorRetryDelay = Math.min(indicatorRetryDelay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
+}
+
 /** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
 export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): Promise<boolean> {
   const atWrite = current.voice.indicators;
   const result = await api.setVoiceIndicator(id, enabled);
   if (!result.ok || !result.indicators) return false;
-  let indicators = result.indicators;
-  const atReply = current.voice.indicators;
-  if (atReply !== atWrite) {
-    // Either the PUT or the intervening snapshot could be newer. A GET started after
-    // both sees their result. Keep a still newer snapshot if one arrives during it.
-    const view = await fetchUiConfig(AbortSignal.timeout(5000));
-    if (!view?.config.voice || current.voice.indicators !== atReply) return true;
-    indicators = view.config.voice.indicators;
+  if (current.voice.indicators !== atWrite) {
+    await reconcileVoiceIndicators();
+  } else {
+    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
   }
-  commit({ ...current, voice: { ...current.voice, indicators } });
   return true;
 }
 

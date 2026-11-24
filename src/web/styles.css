@@ -43204,7 +43204,7 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .vi-composer.vi-muted { background: var(--panel-2); border-color: var(--border); }
 .vi-settings { border: 0; min-width: 0; padding: 0; }
 .vi-choice { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
-.vi-choice label { font-weight: 600; cursor: pointer; }
+.vi-choice label { cursor: pointer; }
 .vi-samples { display: grid; grid-template-columns: repeat(auto-fit,minmax(112px,1fr)); gap: 12px; margin-top: 8px; }
 .vi-sample { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 12px; color: var(--muted); }
 .vi-sample :is(.vi-topbar,.vi-status-line) { border: 1px solid var(--border-soft); border-radius: 7px; }

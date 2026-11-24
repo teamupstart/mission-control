@@ -90,6 +90,24 @@ function clusterNeedsYou(
 /** The repository frame row, named so the two render helpers below can take it as a parameter. */
 type FleetRepoRow = Extract<FleetRow, { kind: "repo" }>;
 
+function keepIdleHeadingFocus(heading: HTMLButtonElement | null): (() => void) | undefined {
+  if (!heading) return;
+  const rail = heading.closest(".has-idle-sections");
+  return () => {
+    if (document.activeElement !== heading) return;
+    queueMicrotask(() => {
+      if (document.activeElement !== document.body) return;
+      // An empty section unmounts its heading. Prefer the open session's heading,
+      // then the first remaining section, then the rail's navigation control.
+      const currentRail = rail?.isConnected ? rail : document.querySelector(".board-col.is-rail");
+      const next = currentRail?.querySelector<HTMLElement>(".idle-rail-section-toggle[data-contains-selection]")
+        ?? currentRail?.querySelector<HTMLElement>(".idle-rail-section-toggle")
+        ?? currentRail?.querySelector<HTMLElement>(".board-back, .session-rail-strip");
+      next?.focus();
+    });
+  };
+}
+
 /** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
 interface PendingDrop {
   taskId: string;
@@ -649,6 +667,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                 <button
                   type="button"
                   className="idle-rail-section-toggle"
+                  ref={keepIdleHeadingFocus}
                   aria-expanded={section.expanded}
                   data-idle-section={section.key}
                   data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}

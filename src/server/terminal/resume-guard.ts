@@ -139,7 +139,15 @@ async function execWithAgentEnvironment(): Promise<void> {
     writeFileSync(dispatch.outcomePath, fits ? "shaped" : "original", { mode: 0o600 });
   }
   if (!argv[0]) throw new Error("Missing agent command");
-  return process.execve(argv[0], [...argv], env);
+  try {
+    return process.execve(argv[0], [...argv], env);
+  } catch (error) {
+    // The original dispatch shell runs executable text without a shebang as a shell
+    // program. Only ENOEXEC selects that interpreter; retain normal permission errors.
+    if (!dispatch || (error as NodeJS.ErrnoException).code !== "ENOEXEC") throw error;
+    const shell = FIXED_OS_EXECUTABLES.sh;
+    return process.execve(shell, [shell, ...argv], env);
+  }
 }
 
 const dispatchReader = process.argv[2] === "--with-agent-environment" || process.argv[2] === "--dispatch-agent";

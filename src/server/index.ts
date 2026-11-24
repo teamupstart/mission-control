@@ -3,7 +3,7 @@
 // before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
 // under a path that is about to be renamed. See migrate-state.ts.
 import "./migrate-state.ts";
-import { stopTerminalEnvironmentHandoffs } from "./terminal/environment-handoff.ts";
+import { reconcileTerminalEnvironmentHandoffs, stopTerminalEnvironmentHandoffs } from "./terminal/environment-handoff.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
 import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
@@ -218,6 +218,7 @@ warnIfSessionAttributionDisabled();
 if (getCostConfig().enabled) void refreshManagedMetricsPolicy();
 warnRetiredTreehouseCadence();
 reconcileDisposableAgentStateHomes();
+reconcileTerminalEnvironmentHandoffs(STATE_DIR);
 const reconcileManagedResumeResources = () => {
   try { recheckManagedResumes(); } catch (error) {
     console.error("[managed-resume] resource journal requires inspection:", error instanceof Error ? error.message : "unreadable journal");

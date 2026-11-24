@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -14,7 +16,7 @@ import { agentEnvironmentPresence, launchAgentEnvironment, saveAgentEnvironment 
 import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { isolatedAgentArgv } from "../src/server/agent-subprocess-env.ts";
 import { beginResumeLaunch, createResumeLease, RESUME_START_MS, resumeLeaseRoot, writeResumeEnvironmentSocket, writeResumeRecord } from "../src/server/terminal/resume-lease.ts";
-import { openTerminalEnvironmentHandoff, stopTerminalEnvironmentHandoffs, terminalEnvironmentArgv } from "../src/server/terminal/environment-handoff.ts";
+import { openTerminalEnvironmentHandoff, reconcileTerminalEnvironmentHandoffs, stopTerminalEnvironmentHandoffs, terminalEnvironmentArgv } from "../src/server/terminal/environment-handoff.ts";
 import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
 
 test("names reject assignments, duplicates, object keys, launcher identities and state credentials", () => {
@@ -160,6 +162,20 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     });
   }
 
+  await t.test("named dispatch runs executable shell text without a shebang and preserves its arguments and credential", async (t) => {
+    const stateHome = mkdtempSync(join(dir, "dispatch-shim-"));
+    const shim = join(dir, "harness-shim");
+    writeFileSync(shim, 'exec "$@"\n', { mode: 0o700 });
+    const output = join(dir, "shim started");
+    const handoff = await terminalEnvironmentArgv([shim, ...agent, output], { cwd: dir, stateHome }, named, {
+      wrap: (reader) => isolatedAgentArgv(reader, { stateHome }), fallbackArgv: null,
+    });
+    t.after(handoff.dispose);
+    await promisify(execFile)(handoff.argv[0]!, handoff.argv.slice(1), { env: pane });
+    assert.equal(readFileSync(output, "utf8"), "started\n");
+    assert.equal(existsSync(stateHome), false, "the owning wrapper cleaned up");
+  });
+
   await t.test("a named dispatch probes the final agent size and records only the command that ran", async (t) => {
     for (const fits of [true, false]) {
       const stateHome = mkdtempSync(join(dir, "dispatch-fit-"));
@@ -227,6 +243,43 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     });
     assert.equal(existsSync(marker), false);
   });
+});
+
+test("startup reclaims a crashed handoff owner and leaves live, foreign and unexpected entries alone", { timeout: 15_000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "agent-env-crash-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const script = `
+    import { openTerminalEnvironmentHandoff } from "./src/server/terminal/environment-handoff.ts";
+    const home = process.env.MISSION_HOME;
+    const handoff = await openTerminalEnvironmentHandoff({ cwd: home, stateHome: home }, { extraEnv: {}, missing: [] });
+    console.log(handoff.path);
+    setInterval(() => {}, 60_000);
+  `;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script],
+    { env: { ...process.env, MISSION_HOME: home } });
+  const closed = once(child, "close");
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const lines = createInterface({ input: child.stdout });
+  t.after(() => lines.close());
+  const ready = await lines[Symbol.asyncIterator]().next();
+  assert.ok(!ready.done, "the fixture daemon opened its handoff");
+  const path = ready.value;
+  const directory = dirname(path);
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  reconcileTerminalEnvironmentHandoffs(home);
+  assert.ok(lstatSync(path).isSocket(), "the live owner's socket survives startup");
+  child.kill("SIGKILL");
+  assert.deepEqual(await closed, [null, "SIGKILL"]);
+  reconcileTerminalEnvironmentHandoffs(join(home, "another-state"));
+  assert.ok(lstatSync(path).isSocket(), "a different state home cannot reclaim this socket");
+  const unexpected = join(directory, "unexpected");
+  writeFileSync(unexpected, "preserve");
+  reconcileTerminalEnvironmentHandoffs(home);
+  assert.ok(existsSync(unexpected) && existsSync(path));
+  rmSync(unexpected);
+  reconcileTerminalEnvironmentHandoffs(home);
+  assert.equal(existsSync(directory), false);
+  reconcileTerminalEnvironmentHandoffs(home);
 });
 
 test("shutdown removes pending handoff sockets and directories and refuses new handoffs", async (t) => {

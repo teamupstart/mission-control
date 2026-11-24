@@ -1112,7 +1112,10 @@ After a restart, the daemon asks each recorded holder to stop. If the speech
 ledger is missing or unreadable, it checks the launch inventory and supervisor
 records. It asks each identifiable player to stop. If speech has been used and
 the inventory is unavailable, capture stays paused even after every listener
-with a surviving receipt confirms. Recovery needs a complete launch inventory
+with a surviving receipt confirms. When a supervisor report reveals another
+player, the daemon persists its Stop request alongside the unidentified hold.
+It records the player's confirmation so later reports and restarts do not ask
+the same launch to stop again. Recovery needs a complete launch inventory
 to account for players whose receipts may have disappeared. A fresh state home
 with no launch history can capture immediately.
 

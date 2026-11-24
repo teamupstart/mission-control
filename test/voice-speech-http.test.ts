@@ -558,6 +558,36 @@ for (const inventoryState of ["missing", "unreadable"] as const) {
   }
 }
 
+test("a partially restored directory stops each newly identified player once while unknown launches stay held", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  assert.equal((await holder.event(await audition(), "started")).status, 200);
+  const receipt = join(supervised, announcementName(holder.instance) + ".json");
+  const original = readFileSync(receipt);
+  const launches = readFileSync(inventory);
+  rmSync(receipt); rmSync(inventory); writeFileSync(ledger, "{");
+  store.reset(); await holder.hello();
+  assert.equal((await holder.poll()).capture, false);
+  assert.equal((await holder.poll()).speak, null);
+  writeFileSync(receipt, original, { mode: 0o600 });
+  assert.equal((await peer.report("exited")).status, 200);
+  const stop = (await holder.poll()).speak;
+  assert.ok(stop?.stop);
+  assert.equal((await peer.poll()).speak, null);
+  store.reset(); await holder.hello();
+  assert.deepEqual((await holder.poll()).speak, stop);
+  assert.equal((await holder.event(stop.id, "ended")).status, 200);
+  store.reset(); await holder.hello();
+  assert.equal((await peer.report("exited")).status, 200);
+  const waiting = await holder.poll();
+  assert.equal(waiting.speak, null);
+  assert.equal(waiting.capture, false);
+  writeFileSync(inventory, launches, { mode: 0o600 });
+  assert.equal((await peer.report("exited")).status, 200);
+  assert.equal((await holder.poll()).capture, true);
+  assert.deepEqual(entries(), []);
+});
+
 test("a surviving peer receipt cannot account for a missing player when the inventory is lost", async () => {
   const holder = player(), peer = player(crypto.randomUUID());
   await holder.announce(); await holder.hello();

@@ -13,9 +13,10 @@ const supervisor = z.string().min(1).refine(name => !name.includes("/") && !name
 const launchSchema = z.union([SpeechInstanceSchema, z.object({ supervisor }).strict()]);
 type Launch = z.infer<typeof launchSchema>;
 const exitRecord = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
+const receiptName = z.string().regex(/^announced-[a-f0-9]{64}$/u);
 const entry = z.union([
   z.object({ jobId: z.string().uuid(), instance: SpeechInstanceSchema, purpose: z.enum(["ask", "audition"]) }).strict(),
-  z.object({ jobId: z.string().uuid(), supervisor, lastCandidate: z.string().regex(/^announced-[a-f0-9]{64}$/u).optional() }).strict(),
+  z.object({ jobId: z.string().uuid(), supervisor, lastCandidate: receiptName.optional(), confirmed: z.array(receiptName).optional() }).strict(),
 ]);
 export type Hold = z.infer<typeof entry>;
 function missing(error: unknown, path: string) {

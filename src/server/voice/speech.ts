@@ -154,11 +154,21 @@ export class VoiceSpeechManager {
   }
   private holds() { return this.items().flatMap(item => item.hold ? [item.hold] : []); }
   private save() { return this.ledger.save(this.holds()); }
-  private recoverDiscovered(hold: Hold) {
-    const exists = this.holds().some(existing => "instance" in hold
+  private hasHold(hold: Hold) {
+    return this.holds().some(existing => "instance" in hold
       ? "instance" in existing && existing.instance === hold.instance
       : "supervisor" in existing && existing.supervisor === hold.supervisor);
-    if (!exists) this.recoverHold(hold);
+  }
+  private releaseHold(hold: Hold) {
+    const remaining = this.holds().filter(other => other !== hold);
+    const directory = remaining.find(other => "supervisor" in other && other.supervisor === SUPERVISOR_DIRECTORY);
+    if (!("instance" in hold) || !directory || !("supervisor" in directory)) return this.ledger.save(remaining);
+    // While discovery is incomplete this receipt can reappear on every supervisor
+    // report. Record its confirmation in the same write that releases its exact hold.
+    const confirmed = [...new Set([...(directory.confirmed ?? []), announcementName(hold.instance)])];
+    if (!this.ledger.save(remaining.map(other => other === directory ? { ...directory, confirmed } : other))) return false;
+    directory.confirmed = confirmed;
+    return true;
   }
   supervised(instance: string, state: SupervisorReportState, proof?: string): "accepted" | "unauthorized" | "already_exited" | "unavailable" | "hold_unavailable" {
     if (!proof || !verifySupervisorReport(instance, state, proof, () => this.knowsLaunch(instance))) return "unauthorized";
@@ -175,8 +185,13 @@ export class VoiceSpeechManager {
       if (hold && "supervisor" in hold) {
         if (hold.supervisor === SUPERVISOR_DIRECTORY) {
           const discovered = this.ledger.discover();
+          const additions = discovered.filter(possible => !this.hasHold(possible)
+            && !hold.confirmed?.includes("instance" in possible ? announcementName(possible.instance) : possible.supervisor));
+          if (additions.length) {
+            if (!this.ledger.save([...this.holds(), ...additions])) return "hold_unavailable";
+            for (const possible of additions) this.recoverHold(possible);
+          }
           if (discovered.some(h => "supervisor" in h && h.supervisor === SUPERVISOR_DIRECTORY)) continue;
-          for (const possible of discovered) this.recoverDiscovered(possible);
         } else {
           // A signed report matches its exact launch receipt even if the receipt has disappeared.
           const recorded = hold.supervisor === announcementName(instance) ? instance : this.ledger.supervisorRecord(hold.supervisor);
@@ -184,7 +199,8 @@ export class VoiceSpeechManager {
           const receipt = announcementName(recorded);
           if (hold.lastCandidate === receipt) continue;
           if (!this.ledger.exitRecorded(receipt)) {
-            this.recoverDiscovered({ jobId: randomUUID(), instance: recorded, purpose: "ask" });
+            const possible = { jobId: randomUUID(), instance: recorded, purpose: "ask" } as const;
+            if (!this.hasHold(possible)) this.recoverHold(possible);
           }
           if (hold.supervisor !== receipt) {
             // Stop a possible replacement as well. Its silence cannot discharge the original slot.
@@ -306,7 +322,7 @@ export class VoiceSpeechManager {
   private finish(item: Playback, state: "stopped" | "timed-out" | "failed" | "finished") {
     if (item.confirmBy !== undefined && this.deps.now() >= item.confirmBy) this.missedConfirmation(item);
     const wasFirst = item.job === this.live;
-    if (item.hold && !this.ledger.save(this.holds().filter(hold => hold !== item.hold))) {
+    if (item.hold && !this.releaseHold(item.hold)) {
       item.job.state = "stopping";
       item.onStop = state;
       this.confirm(item);

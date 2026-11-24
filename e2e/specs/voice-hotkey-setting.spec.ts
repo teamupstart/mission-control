@@ -79,7 +79,17 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect(row.getByRole("alert")).toHaveText("macOS refused ⌥Space: another app already owns it. ⌃K is still your hotkey.");
     await expect(capture).toHaveText("⌃K");
     await screenshot("refused");
+    await capture.click();
+    await page.keyboard.press("v");
+    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config.hotkey).toBe("v");
+    await report({ hotkeyError: { reason: "macOS refused v: Use Command, Control, or Option with a typing key.", chordInForce: "ctrl+k" } });
+    await expect(row.getByRole("alert")).toContainText("Use Command, Control, or Option with a typing key. ⌃K is still your hotkey.");
+    await expect(capture).toHaveText("⌃K");
     await report({ callActive: true });
+    await expect(mode).toContainText("Muted for a call");
+    await report({ callActive: true, capabilities: { hotkey: { available: true },
+      "call-detection": { available: false, reason: "CoreAudio input query failed." } } });
+    await expect(controls).toContainText("CoreAudio input query failed.");
     await expect(mode).toContainText("Muted for a call");
     await report({ callActive: true, pushToTalk: true });
     await expect(mode).toContainText("Push to talk");

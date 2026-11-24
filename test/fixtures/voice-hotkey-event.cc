@@ -21,7 +21,11 @@ static napi_value post(napi_env env, napi_callback_info info) {
   return nullptr;
 }
 static EventHotKeyRef reserved;
-static void cleanup(void*) { UnregisterEventHotKey(reserved); }
+static void cleanup(void*) {
+  if (reserved) UnregisterEventHotKey(reserved);
+  reserved = nullptr;
+}
+static napi_value releaseReservation(napi_env, napi_callback_info) { cleanup(nullptr); return nullptr; }
 
 NAPI_MODULE_INIT() {
   // A separate owner forces a real Carbon refusal while the original chord is live.
@@ -31,7 +35,10 @@ NAPI_MODULE_INIT() {
     return nullptr;
   }
   napi_add_env_cleanup_hook(env, cleanup, nullptr);
-  napi_value fn;
-  napi_create_function(env, "post", NAPI_AUTO_LENGTH, post, nullptr, &fn);
-  return fn;
+  napi_property_descriptor props[] = {
+    {"post", nullptr, post, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"releaseReservation", nullptr, releaseReservation, nullptr, nullptr, nullptr, napi_default, nullptr}
+  };
+  napi_define_properties(env, exports, 2, props);
+  return exports;
 }

@@ -39,6 +39,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
   let hardware: VoiceHardware | undefined;
+  let layoutSubscription: number | undefined;
   let state: ShellVoiceState = voiceStateOff();
   let lastEnabledMute: boolean | undefined;
   let nextPromptAt = 0;
@@ -109,10 +110,16 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     return "checked";
   }
 
+  function stopHardware() {
+    if (layoutSubscription !== undefined) systemPreferences.unsubscribeNotification(layoutSubscription);
+    layoutSubscription = undefined;
+    hardware?.stop();
+    hardware = undefined;
+  }
+
   async function sync() {
     if (state.mode === "off") {
-      hardware?.stop();
-      hardware = undefined;
+      stopHardware();
       listener.update(state, false);
       reportRequested = false;
       nextPromptAt = 0;
@@ -120,8 +127,12 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       return;
     }
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
-    hardware ??= macVoiceHardware(dirname(binary), () => listener.pid,
-      () => void sendMute({ toggle: true }), () => void requestReport());
+    if (!hardware) {
+      hardware = macVoiceHardware(dirname(binary), () => listener.pid,
+        () => void sendMute({ toggle: true }), () => void requestReport());
+      layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
+        () => hardware?.layoutChanged());
+    }
     hardware.update(state.configuredHotkey ?? null, state.mode);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
@@ -231,8 +242,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     stop() {
       clearTimeout(reconnect);
       disconnect();
-      hardware?.stop();
-      hardware = undefined;
+      stopHardware();
       lifetime.abort();
       clearInterval(heartbeat);
       state = voiceStateOff();

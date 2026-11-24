@@ -9,6 +9,7 @@ namespace {
 constexpr OSType signature = 'McVc';
 EventHandlerRef handler;
 EventHotKeyRef active;
+UInt32 activeCode, activeModifiers;
 UInt32 generation;
 napi_threadsafe_function callback;
 
@@ -50,20 +51,24 @@ napi_value fail(napi_env env, const std::string& why) {
   return nullptr;
 }
 
-// Translate characters with the user's current keyboard layout, including shifted punctuation.
-std::optional<UInt32> keyCode(const std::string& key, UInt32& modifiers) {
-  static const std::map<std::string, UInt32> named = {
-    {"Space", kVK_Space}, {"Tab", kVK_Tab}, {"Enter", kVK_Return}, {"Backspace", kVK_Delete},
-    {"Delete", kVK_ForwardDelete}, {"Home", kVK_Home}, {"End", kVK_End},
+const std::map<std::string, UInt32> nonTypingKeys = {
+    {"Home", kVK_Home}, {"End", kVK_End},
     {"ArrowLeft", kVK_LeftArrow}, {"ArrowRight", kVK_RightArrow}, {"ArrowUp", kVK_UpArrow},
     {"ArrowDown", kVK_DownArrow}, {"PageUp", kVK_PageUp}, {"PageDown", kVK_PageDown},
     {"F1", kVK_F1}, {"F2", kVK_F2}, {"F3", kVK_F3}, {"F4", kVK_F4}, {"F5", kVK_F5},
     {"F6", kVK_F6}, {"F7", kVK_F7}, {"F8", kVK_F8}, {"F9", kVK_F9}, {"F10", kVK_F10},
     {"F11", kVK_F11}, {"F12", kVK_F12}
+};
+
+// Translate typing keys with the selected input source's layout, including shifted punctuation.
+std::optional<UInt32> typingKeyCode(const std::string& key, UInt32& modifiers) {
+  static const std::map<std::string, UInt32> named = {
+    {"Space", kVK_Space}, {"Tab", kVK_Tab}, {"Enter", kVK_Return},
+    {"Backspace", kVK_Delete}, {"Delete", kVK_ForwardDelete}
   };
   auto found = named.find(key);
   if (found != named.end()) return found->second;
-  auto source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+  auto source = TISCopyCurrentKeyboardLayoutInputSource();
   if (!source) return {};
   auto data = static_cast<CFDataRef>(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
   std::optional<UInt32> result;
@@ -109,8 +114,21 @@ napi_value replace(napi_env env, napi_callback_info info) {
     modifiers |= mod->second;
     key.erase(0, plus + 1);
   }
-  auto code = keyCode(key, modifiers);
+  std::optional<UInt32> code;
+  auto special = nonTypingKeys.find(key);
+  if (special != nonTypingKeys.end()) {
+    code = special->second;
+  } else {
+    if (!(modifiers & (cmdKey | controlKey | optionKey)))
+      return fail(env, "Use Command, Control, or Option with a typing key.");
+    code = typingKeyCode(key, modifiers);
+  }
   if (!code) return fail(env, "This key is unavailable on the current keyboard layout.");
+  napi_value changed;
+  if (active && activeCode == *code && activeModifiers == modifiers) {
+    napi_get_boolean(env, false, &changed);
+    return changed;
+  }
   EventTypeSpec events[] = {{kEventClassKeyboard, kEventHotKeyPressed},{kEventClassKeyboard, kEventHotKeyReleased}};
   if (!handler && InstallApplicationEventHandler(receive, 2, events, nullptr, &handler))
     return fail(env, "Cannot install the application hotkey handler.");
@@ -127,9 +145,12 @@ napi_value replace(napi_env env, napi_callback_info info) {
   if (active) UnregisterEventHotKey(active);
   if (callback) napi_release_threadsafe_function(callback, napi_tsfn_release);
   active = replacement;
+  activeCode = *code;
+  activeModifiers = modifiers;
   callback = next;
   ++generation;
-  return nullptr;
+  napi_get_boolean(env, true, &changed);
+  return changed;
 }
 napi_value unregister(napi_env, napi_callback_info) { clear(nullptr); return nullptr; }
 }

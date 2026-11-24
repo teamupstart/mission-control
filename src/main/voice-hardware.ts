@@ -6,7 +6,8 @@ import { VOICE_LIMITS, type VoiceCapability, type VoiceHotkeyError, type VoiceMo
 
 type Edge = (down: boolean, hostUs: number) => void;
 interface Registrar {
-  register(chord: string, onEdge: Edge): void;
+  /** False when the same physical key and modifiers are already registered. */
+  register(chord: string, onEdge: Edge): boolean;
   unregister(): void;
 }
 interface InputActivity { running(listenerPid: number): boolean }
@@ -44,16 +45,37 @@ export class VoiceHardware {
     }
     if (this.desired === chord) return;
     this.desired = chord;
-    if (!this.registrar.value) return;
+    this.bind(chord);
+  }
+
+  layoutChanged() {
+    if (!this.desired) return;
+    const previous = this.registeredHotkey;
+    // A refused preference may have left a different shortcut in force. Remap it too.
+    if (previous) this.bind(previous, true);
+    if (this.desired !== previous) this.bind(this.desired);
+    this.changed();
+  }
+
+  private bind(chord: string | null, remap = false) {
+    const registrar = this.registrar.value;
+    if (!registrar) return;
     try {
-      if (chord !== this.registeredHotkey) {
-        if (chord) this.registrar.value.register(chord, this.edge);
-        else this.registrar.value.unregister();
+      if (chord) {
+        if (registrar.register(chord, this.edge)) this.cancelPress();
+      } else if (this.registeredHotkey) {
+        registrar.unregister();
         this.cancelPress();
-        this.registeredHotkey = chord;
       }
+      this.registeredHotkey = chord;
       this.hotkeyError = null;
     } catch (error) {
+      if (remap) {
+        // The old physical key no longer represents the advertised shortcut on this layout.
+        registrar.unregister();
+        this.registeredHotkey = null;
+        this.cancelPress();
+      }
       const reason = `macOS refused ${formatChord(chord ?? "")}: ${reasonOf(error)}`;
       this.hotkeyError = { reason: reason.slice(0, VOICE_LIMITS.reasonChars), chordInForce: this.registeredHotkey };
     }
@@ -61,7 +83,7 @@ export class VoiceHardware {
 
   private sample() {
     if (!this.activity.value) return;
-    let active = false;
+    let active = this.callActive;
     let capability: VoiceCapability = available;
     try { active = this.activity.value.running(this.listenerPid()); }
     catch (error) { capability = unavailable(reasonOf(error)); }

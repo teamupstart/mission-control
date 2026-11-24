@@ -15,6 +15,7 @@ import { voiceStateOff, type VoiceMode, type VoiceShellReport } from "../src/sha
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
+import { formatChord } from "../src/shared/keyboard-chords.ts";
 
 test("Electron keeps one template tray in sync while minimized, handles both clicks and restores the off menu", {
   skip: process.platform !== "darwin", timeout: 60_000,
@@ -40,6 +41,10 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   const eventFixture = join(root, "queue.node");
   execFileSync("xcrun", ["clang++", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
     "-I", resolve(process.execPath, "../../include/node"), "test/fixtures/voice-hotkey-event.cc", "-o", eventFixture]);
+  const layoutAddon = join(root, "layout-hotkey.node");
+  execFileSync("xcrun", ["clang++", "-std=c++17", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
+    "-framework", "CoreFoundation", "-I", resolve(process.execPath, "../../include/node"),
+    "native/voice-hotkey/hotkey.mm", "test/fixtures/voice-hotkey-layout.cc", "-o", layoutAddon]);
   let events: ServerResponse | undefined;
   let connects = 0;
   let unavailableHandshakes = 1;
@@ -153,9 +158,15 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         let labels = [];
         let lastMenu;
         tray.popUpContextMenu = menu => { lastMenu = menu; labels = menu.items.map(item => item.label); };
+        // Exercise distributed notification delivery without announcing a layout change to other apps.
+        const layoutEvent = "com.missioncontrol.test.input-source." + process.pid;
+        const subscribe = systemPreferences.subscribeNotification.bind(systemPreferences);
+        systemPreferences.subscribeNotification = (name, cb) => subscribe(
+          name === "com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged" ? layoutEvent : name, cb);
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
-        const post = require("node:module").createRequire(__filename)(${JSON.stringify(eventFixture)});
-        global.fixture = { post, tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
+        const { post, releaseReservation } = require("node:module").createRequire(__filename)(${JSON.stringify(eventFixture)});
+        const freeKeyAndNotify = () => { releaseReservation(); systemPreferences.postNotification(layoutEvent, {}, true); };
+        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -165,7 +176,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { post(down: boolean): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
+  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -205,8 +216,15 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     const startUs = voiceHostTimeUs();
     publish(chord);
     await until(() => reports.at(-1)?.registeredHotkey === chord);
-    publish("cmd+ctrl+shift+F10");
-    await until(() => reports.at(-1)?.hotkeyError?.chordInForce === chord);
+    for (const key of ["v", "7", "+", "Space", "Enter", "shift+v"]) {
+      publish(key);
+      await until(() => reports.at(-1)?.hotkeyError?.reason ===
+        `macOS refused ${formatChord(key)}: Use Command, Control, or Option with a typing key.`);
+      assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, chord);
+    }
+    const reserved = "cmd+ctrl+shift+F10";
+    publish(reserved);
+    await until(() => reports.at(-1)?.hotkeyError?.reason.includes("another app already owns it.") === true);
     assert.equal(reports.at(-1)?.registeredHotkey, chord);
     for (const down of [true, false]) {
       await app.evaluate((_, pressed) => (globalThis as unknown as { fixture: Fixture }).fixture.post(pressed), down);
@@ -217,11 +235,34 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.ok(released.pushToTalkReleasedAtHostUs! <= released.reportedAtHostUs!);
     assert.ok(released.reportedAtHostUs! <= voiceHostTimeUs());
 
+    await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.freeKeyAndNotify());
+    await until(() => reports.at(-1)?.registeredHotkey === reserved && reports.at(-1)?.hotkeyError === null);
+
     publish(null);
     await until(() => reports.at(-1)?.registeredHotkey === null && reports.at(-1)?.hotkeyError === null);
     publish("UnknownKey");
     await until(() => !!reports.at(-1)?.hotkeyError);
     assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, null);
+  });
+  await t.test("Carbon moves the same V shortcut from US to Dvorak and reuses an unchanged physical binding", async () => {
+    const changes = await app.evaluate((_, path) => {
+      const registrar = process.getBuiltinModule("node:module").createRequire(path)(path);
+      const chord = "cmd+ctrl+alt+shift+v";
+      try {
+        delete process.env.MC_TEST_VOICE_DVORAK;
+        const us = registrar.register(chord, () => {});
+        process.env.MC_TEST_VOICE_DVORAK = "1";
+        const moved = registrar.register(chord, () => {});
+        const repeated = registrar.register(chord, () => {});
+        delete process.env.MC_TEST_VOICE_DVORAK;
+        // Dvorak V is on the US period key. This must reuse the current Carbon reservation.
+        return [us, moved, repeated, registrar.register("cmd+ctrl+alt+shift+.", () => {}), registrar.register(chord, () => {})];
+      } finally {
+        delete process.env.MC_TEST_VOICE_DVORAK;
+        registrar.unregister();
+      }
+    }, layoutAddon);
+    assert.deepEqual(changes, [true, true, false, false, true]);
   });
   const images: string[] = [];
   for (const mode of ["listening", "muted", "auto-muted", "push-to-talk", "unavailable", "off"] satisfies VoiceMode[]) {

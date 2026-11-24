@@ -182,6 +182,31 @@ test("a replay observes a receipt during submission before its queued card can p
   }
 });
 
+test("an early session upsert for a held split leg only publishes the live split card", async t => {
+  const id = "split-delivery";
+  const sessionId = "sdk:Will";
+  const ask = reviews.create(sessionId, "input", "Which deployment?", "Choose one.", null);
+  t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+  const submit = pending.submitSpoken.bind(pending);
+  t.mock.method(pending, "submitSpoken", (...[session, words, partId, onQueued]: Parameters<typeof submit>) => {
+    // Make the real queue publish its session upsert before handing the receipt to the router.
+    const result = submit(session, words, partId);
+    if (result.pendingTurn) onQueued?.(result.pendingTurn.id);
+    return result;
+  });
+  await say("Steve, inspect the build, and Will, check the deployment", id);
+  await registry.voiceRouter!.resolution(id);
+  assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+  assert.equal((await act(id, "send-now")).status, 200);
+  const turn = registry.getSession(sessionId)!.pendingTurns.find(row => row.id === "voice:" + id + "#2");
+  assert.ok(turn);
+  assert.deepEqual(cards.filter(card => card.state === "held").map(card => card.id), [id]);
+  assert.deepEqual(registry.voiceRouter!.activeCards().map(card => card.id), [id]);
+  assert.equal(pending.recall(sessionId, turn.id, turn.revision)?.id, turn.id);
+  assert.equal(cards.at(-1)?.parts[1]?.outcome, "cancelled");
+  assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+});
+
 test("resuming a session with a blocking review reports held on its card and in Recently heard", async t => {
   const sleeping = { ...name("Ada"), state: "hibernated" as const, sessionId: null };
   roster.push(sleeping);

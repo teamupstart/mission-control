@@ -2044,10 +2044,10 @@ export const api = {
     focused,
     typed,
   }),
-  recallPendingTurn: (id: string, turnId: string, revision: number) =>
+  recallPendingTurn: (id: string, turnId: string, revision: number, signal?: AbortSignal) =>
     post<ActionResult & { text?: string }>(
       `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,
-      { revision },
+      { revision }, { signal },
     ),
   retryPendingTurn: (id: string, turnId: string, revision: number) =>
     post(

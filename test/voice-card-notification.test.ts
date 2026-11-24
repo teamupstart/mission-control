@@ -22,7 +22,7 @@ function notificationFixture({ focused = false, supported = true } = {}) {
   const register = (channel: string, handler: Handler) => handlers.set(channel, handler);
   const owner = { webContents: Object.assign(new EventEmitter(), { mainFrame: {} }), isFocused: () => focused, show() {} };
   registerVoiceCardNotifications({ on: register, handle: register }, () => owner, NativeNotice);
-  const input = { id: crypto.randomUUID(), title: "To Steve · sending in 4s", body: "check the build", deadline: Date.now() + 4000 };
+  const input = { id: crypto.randomUUID(), title: "To Steve · sending in 4s", body: "check the build", remainingMs: 4000 };
   return {
     input, notices, contents: owner.webContents,
     show: (payload: unknown = input, sender: unknown = owner.webContents, senderFrame: unknown = owner.webContents.mainFrame) =>
@@ -108,29 +108,44 @@ test("native actions name whether both deliveries or just the remaining message 
   }
 });
 
-test("the handler rejects late native clicks even before the expiry timer runs", async t => {
+test("both native buttons expire on the main process monotonic clock even before its timer runs", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => elapsed);
   for (const [index, lateness] of [0, 1].entries()) {
     const fixture = notificationFixture();
-    const result = fixture.show();
+    const result = fixture.show({ ...fixture.input, remainingMs: 2000 });
     const [notice] = fixture.notices;
     assert.ok(notice?.shown);
-    t.mock.timers.setTime(fixture.input.deadline + lateness);
+    elapsed += 2000 + lateness;
     notice.emit("action", {}, index);
     assert.equal(await result, null);
     assert.ok(notice.closed);
-    assert.equal(fixture.show(), null);
+    assert.equal(fixture.show({ ...fixture.input, remainingMs: 0 }), null);
     assert.equal(fixture.notices.length, 1);
   }
+});
+
+test("a wall clock jump leaves an unexpired native button usable", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  const fixture = notificationFixture();
+  const result = fixture.show({ ...fixture.input, remainingMs: 2000 });
+  t.mock.timers.setTime(121_000);
+  fixture.notices[0]!.emit("action", {}, 0);
+  assert.equal(await result, "cancel");
 });
 
 test("expiry and renderer dismissal both close a pending notification without an action", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
   for (const close of ["dismiss", "timeout"]) {
     const fixture = notificationFixture();
-    const result = fixture.show();
+    const result = fixture.show({ ...fixture.input, remainingMs: 2000 });
     if (close === "dismiss") fixture.dismiss();
-    else t.mock.timers.tick(4000);
+    else {
+      t.mock.timers.tick(1999);
+      assert.equal(fixture.notices[0]?.closed, false);
+      t.mock.timers.tick(1);
+    }
     assert.equal(await result, null);
     assert.ok(fixture.notices[0]?.closed);
   }

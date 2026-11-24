@@ -109,6 +109,7 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await page.getByRole("status").filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
   const mixed = page.getByRole("status").filter({ hasText: "Sent to Steve" });
   await expect(mixed).toContainText("Held for Will");
+  await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(2);
   await page.reload();
   await expect(mixed).toContainText(title);
   await expect.poll(pendingWords).toEqual([earlier, ["voice:split#2", "about the deployment"]]);
@@ -118,6 +119,7 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await mixed.getByRole("button", { name: "Cancel message" }).click();
   expect(await (await recall).json()).toEqual({ ok: true, text: "about the deployment" });
   await expect(mixed).toContainText("Will · Cancelled");
+  await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(1);
   await expect.poll(pendingWords).toEqual([earlier]);
   await captureCard(mixed, "mixed-split-recalled");
 });
@@ -340,6 +342,11 @@ test("a held card identifies the blocking question and recalls the queued words"
   await captureCard(held, "held");
   await page.evaluate(() => { window.location.hash = "#/library/personas/new"; });
   await page.getByRole("textbox", { name: "Name", exact: true }).fill("Unfinished persona");
+  const recall = held.getByRole("button", { name: "Cancel message" });
+  await page.route("**/pending-turns/*/recall", () => {}, { times: 1 });
+  await recall.click();
+  await expect(held).toContainText("Recall was not confirmed", { timeout: 6000 });
+  await expect(recall).toBeEnabled();
   await held.getByRole("button", { name: "Open question" }).click();
   const leave = page.getByRole("dialog", { name: "Leave with unsaved changes" });
   await expectContentClearsBorder(leave);
@@ -348,7 +355,7 @@ test("a held card identifies the blocking question and recalls the queued words"
   await leave.getByRole("button", { name: "Discard and leave" }).click();
   await expectContentClearsBorder(question);
   await page.keyboard.press("Escape");
-  await held.getByRole("button", { name: "Cancel message" }).click();
+  await recall.click();
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
   await expect.poll(async () => ((await (await page.request.get(daemon.baseURL + "/api/sessions")).json()) as Session[]).find(s => s.id === session.id)?.pendingTurns.length).toBe(0);
 });

@@ -220,7 +220,7 @@ test("each parked-run fix on a Stalled card sends its request and lands its effe
   await expect.poll(() => new URL(page.url()).hash).toBe("#/runs/run-e2e");
 });
 
-test("Mark done on a Stalled card completes the card's task through the daemon", async ({ dashboard: page, daemon }) => {
+test("Mark done on a Stalled card opens the session's Complete dialog, which offers a retro and completes it", async ({ dashboard: page, daemon }) => {
   test.setTimeout(180_000);
   const flags = await api<{ config: { overrides: Record<string, boolean> } }>(
     daemon, "/api/feature-flags", { kind: "flag", id: "idle-stalled", enabled: true }, "PUT");
@@ -233,6 +233,13 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
     session = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === task.id)!;
     return session?.agentSessionId ? session.state : null;
   }, { timeout: 60_000 }).toBe("idle");
+
+  // A correction is what makes a session worth a retro, so the Complete dialog has one to offer.
+  const correction = "no - reproduce it in docker first, it never fails on the Mac";
+  await api(daemon, `/api/sessions/${encodeURIComponent(session.id)}/send`, { text: correction, submit: true });
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.retro?.reasons,
+    { timeout: 30_000 }).toEqual(["corrections"]);
+  await expect.poll(() => sessionState(daemon, session.id), { timeout: 30_000 }).toBe("idle");
 
   // The poll still names a previous assignment until it catches up with the live session.
   const queuePath = `/api/sessions/${encodeURIComponent(session.id)}/queue`;
@@ -277,12 +284,29 @@ test("Mark done on a Stalled card completes the card's task through the daemon",
   await page.getByRole("button", { name: "Back to the board" }).click();
   await expect(card).toBeVisible({ timeout: 15_000 });
   await card.getByRole("button", { name: "Mark done", exact: true }).click();
-  // The card asked to complete exactly its own task, and the daemon completed it.
-  await expect.poll(() => completions).toEqual([expect.objectContaining({ outcome: "Marked done from the Stalled section" })]);
+  const complete = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(complete).toBeVisible();
+  await expect(complete).toContainText("Tidy the changelog");
+  await expect(complete.getByRole("button", { name: "Run a retro first" })).toBeVisible();
+  expect(completions).toEqual([]);
+  await capture(complete, "05-complete-dialog-from-stalled-card", page);
+
+  await complete.getByRole("button", { name: "Cancel" }).click();
+  await expect(complete).toBeHidden();
+  expect(completions).toEqual([]);
+  expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).not.toBe("done");
+  await expect(card).toBeVisible();
+
+  await card.getByRole("button", { name: "Mark done", exact: true }).click();
+  await complete.getByRole("textbox", { name: /Outcome/ }).fill("tidied in PR #193");
+  await complete.getByRole("button", { name: "Complete & close" }).click();
+  await expect.poll(() => completions).toEqual([expect.objectContaining({ outcome: "tidied in PR #193" })]);
   await expect.poll(async () => (await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status,
     { timeout: 15_000 }).toBe("done");
-  // Completing a worktree task closes its session, so the card leaves the board.
+  await expect(complete).toBeHidden();
   await expect(card).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).some((s) => s.id === session.id),
+    { timeout: 30_000 }).toBe(false);
 });
 
 test("in the Console layout the stalled rail row's detail carries the facts, the fixes and Dismiss", async ({ dashboard: page, daemon }) => {
@@ -337,6 +361,15 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await expect(band.locator("dd").last()).toHaveText(brief);
   await expect(band.getByRole("button")).toHaveText(["Nudge", "Message…", "Mark done", "Dismiss"]);
   await capture(band, "03-console-stalled-band", page);
+
+  await band.getByRole("button", { name: "Mark done", exact: true }).click();
+  const complete = page.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(complete).toBeVisible();
+  await expect(complete).toContainText(task.title);
+  await complete.getByRole("button", { name: "Cancel" }).click();
+  await expect(complete).toBeHidden();
+  expect((await api<Task[]>(daemon, "/api/tasks")).find((t) => t.id === task.id)?.status).not.toBe("done");
+  await expect(band).toBeVisible();
 
   // Nudge reaches the agent through the real outbox.
   await band.getByRole("button", { name: "Nudge", exact: true }).click();

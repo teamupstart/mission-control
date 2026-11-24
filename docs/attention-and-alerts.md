@@ -284,7 +284,9 @@ inbox card.
   Complete dialog, it does not stop the session: a session in a worktree is closed by Mission
   Control when its task completes, and any other session keeps running. A row about a queue alone
   has no Mark done, because there is no task to complete; a queue's items are managed in the
-  session.
+  session. On a Stalled card in Idle (`idle-stalled`) and in its session detail, **Mark done** is
+  the Complete dialog itself rather than this shortcut: the outcome note, **Unblock dependents**,
+  the retro offer and closing the session all apply, and nothing completes until you confirm it.
 - **Interrupt** stops the turn the session is in and drops the messages queued behind it, as the
   session's own Interrupt does; if the turn had already ended, nothing is stopped and the row
   says so. **Resubmit** opens the run's repair round, as the Runs page's Resubmit does.

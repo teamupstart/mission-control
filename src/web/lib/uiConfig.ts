@@ -75,7 +75,7 @@ function applyHydratedConfig({ config, voiceIndicatorVersion }: UiConfigView, in
   const overlap = current.voice.indicators !== indicatorsAtRead;
   if (config.voice && (overlap || !acceptIndicatorVersion(voiceIndicatorVersion))) {
     // The snapshot may predate our save or include a peer's later edit.
-    commit({ ...config, voice: { ...voice, indicators: current.voice.indicators } });
+    commit({ ...config, voice: current.voice });
     if (overlap) void reconcileVoiceIndicators();
     return;
   }
@@ -216,12 +216,12 @@ function acceptIndicatorVersion(next?: VoiceRevision, fromStream = false): boole
 }
 
 /** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
-export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision): void {
+export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision, confirmation = current.voice.confirmation): void {
   if (!acceptIndicatorVersion(version, true)) return;
   indicatorReadGeneration++;
   clearTimeout(indicatorRetryTimer);
   indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
-  commit({ ...current, voice: { ...current.voice, indicators } });
+  commit({ ...current, voice: { ...current.voice, confirmation, indicators } });
 }
 
 /** Retry a failed or superseded read without keeping the settings controls disabled. */

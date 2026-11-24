@@ -45,9 +45,9 @@ export function onVoiceIndicatorsChanged(listener: (indicators: string[]) => voi
 }
 
 /** Reading the event-stream snapshot must not depend on unrelated dashboard preferences. */
-export function storedVoiceIndicators(): string[] {
+export function storedVoiceUi() {
   const voice = VoiceUiConfigSchema.safeParse(getAppConfig(CONFIG_ENTRY)?.voice);
-  return voice.success ? voice.data.indicators : [...VOICE_UI_DEFAULTS.indicators];
+  return voice.success ? voice.data : { ...VOICE_UI_DEFAULTS, indicators: [...VOICE_UI_DEFAULTS.indicators] };
 }
 
 /**

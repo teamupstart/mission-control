@@ -1,0 +1,58 @@
+import type { NotificationConstructorOptions } from "electron";
+import { z } from "zod";
+import { VOICE_CANCEL_WINDOW_SECONDS } from "../shared/voice.ts";
+
+const noticeSchema = z.object({
+  id: z.string().uuid(), title: z.string().max(256), body: z.string().max(32768),
+  deadline: z.number().int(),
+}).strict();
+
+type IpcListener = (event: { sender: unknown }, input: unknown) => unknown;
+interface NoticeConstructor {
+  new(options: NotificationConstructorOptions): {
+    once(event: "action", listener: (event: { actionIndex: number }) => void): void;
+    once(event: "click" | "close" | "failed", listener: () => void): void;
+    show(): void;
+    close(): void;
+  };
+  isSupported(): boolean;
+}
+
+/** The renderer owns the card. Return only an action on this still-open notice. */
+export function registerVoiceCardNotifications(
+  ipcMain: { on(channel: string, listener: IpcListener): void; handle(channel: string, listener: IpcListener): void },
+  window: () => { webContents: unknown; isFocused(): boolean; show(): void } | null,
+  NativeNotification: NoticeConstructor,
+): void {
+  const dismiss = new Map<string, () => void>();
+  ipcMain.on("mission:voice-card-dismiss", (event, id) => {
+    if (typeof id === "string" && event.sender === window()?.webContents) dismiss.get(id)?.();
+  });
+  ipcMain.handle("mission:voice-card-notice", (event, input: unknown) => {
+    const owner = window();
+    if (!owner || event.sender !== owner.webContents || owner.isFocused() || !NativeNotification.isSupported()) return null;
+    const parsed = noticeSchema.safeParse(input);
+    if (!parsed.success) return null;
+    const { id, title, body, deadline } = parsed.data;
+    const ms = Math.min(VOICE_CANCEL_WINDOW_SECONDS.max * 1000, deadline - Date.now());
+    if (ms <= 0 || dismiss.has(id)) return null;
+    return new Promise<"cancel" | "send-now" | null>(resolve => {
+      const notice = new NativeNotification({ title, subtitle: "Say “cancel” to stop.", body, silent: true, actions: [
+        { type: "button", text: "Cancel" }, { type: "button", text: "Send now" },
+      ] });
+      const finish = (action: "cancel" | "send-now" | null) => {
+        if (!dismiss.delete(id)) return;
+        clearTimeout(timer);
+        notice.close();
+        resolve(Date.now() < deadline ? action : null);
+      };
+      const timer = setTimeout(() => finish(null), ms);
+      dismiss.set(id, () => finish(null));
+      notice.once("action", ({ actionIndex }) => finish(actionIndex === 0 ? "cancel" : actionIndex === 1 ? "send-now" : null));
+      notice.once("click", () => { owner.show(); finish(null); });
+      notice.once("close", () => finish(null));
+      notice.once("failed", () => finish(null));
+      notice.show();
+    });
+  });
+}

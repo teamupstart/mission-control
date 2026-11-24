@@ -7,13 +7,25 @@ machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On Apple silicon, the standalone listener captures and
-recognizes speech locally. The on-screen confirmation card belongs to a later phase.
+recognizes speech locally. The corner confirmation card names the recipient and shows the spoken words. Its bar and
+seconds count down together. Click Cancel, say “cancel”, or click Send now. With the cancel
+window off, delivery begins immediately. Sent and queued cards show the open question count.
+The Sound preference controls the pending chime. During the cancel window, an unfocused
+dashboard repeats the spoken words in a desktop notification if notifications are enabled
+in Mission Control, notification permission is granted, and the platform supports desktop
+notifications.
+
+Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
+The floating pill is the default preference. The dashboard shows a corner toast for all three
+choices until the desktop implements the floating windows. It saves the selected placement
+for those windows. Their reserved routes are `#/voice/pill` and `#/voice/popover`.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
-With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
-snapshot has no `voice` field, and neither the Settings category, the Setup family, nor the Call
-sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
-names no agent until the flag is on again.
+With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect
+snapshot omits the `voice` field. The dashboard redirects both `#/voice/pill` and
+`#/voice/popover` to Fleet (`#/fleet`), including when the flag is turned off while either
+view is open. It also hides the Voice settings category, the Voice setup family, and the
+Call sign and Reference name fields. Saved names become available again when the flag is on.
 
 ## Running the listener on a development Mac
 
@@ -331,9 +343,7 @@ has left or been replaced, the other recipient can still receive their part. Rec
 lists each recipient and delivery result. The card carries the worse of the two outcomes.
 The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
 
-Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. None of
-the five moments in the selected **Roster rows** design (variant B) has a rendered outcome card
-in this phase. Phase 6 draws the on-screen candidate picker, the stopped resident and finished
+Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. The confirmation card draws the on-screen candidate picker, the stopped resident and finished
 session with their respective actions, the message held behind a blocking question, and the
 two-message split or one-message mention. It also supplies the clickable rows used when asking
 aloud. Phase 12 adds the spoken question, listening state and Recently heard link. The roster
@@ -861,7 +871,7 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 - `test/voice-utterances-http.test.ts`: the routes, the cancel order and delivery, with a scripted
   model step, including a split queued to each agent.
 - `test/voice-config-http.test.ts`: defaults, patches, mute, the token routes, the frames, and
-  every route answering 404 with the flag off.
+  HTTP 404 responses from gated server endpoints with the flag off.
 - `test/setup-probes.test.ts`: the **Voice previews**, **Microphone access** and **Voice speech
   model** rows, and the family following the flag.
 - `test/voice-models.test.ts`: the manifest's shape, that every URL is pinned to a commit, and that

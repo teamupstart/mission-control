@@ -887,6 +887,16 @@ export function DispatchLayer({
     }
   }
 
+  const followUpRepo = requested?.kind === "new" ? requested.repoRoot : undefined;
+  const [seededRepo, setSeededRepo] = useState<string>();
+  if (followUpRepo !== seededRepo) {
+    setSeededRepo(followUpRepo);
+    if (followUpRepo) {
+      setLaunchMode("single");
+      setDraft(previous => ({ ...previous, repoRoot: followUpRepo }));
+    }
+  }
+
   const slot = editTask && edit?.id === editTask.id ? edit : null;
   const editDraft = slot ? slot.draft : stored;
   // The effective slot, refreshed every render, for the callbacks below that can fire

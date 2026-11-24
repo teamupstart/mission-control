@@ -2269,3 +2269,13 @@ instead.
 ## Voice in the dashboard
 
 With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
+
+
+### Voice confirmation cards
+
+With the Voice preview enabled, routed speech appears in a corner card. Click a candidate
+row or say its name to resolve an ambiguous address. A stopped resident can be relaunched
+from its card. A finished session opens a follow-up dispatch on its repository. A held card
+opens the blocking question or recalls the queued words. Settings > Voice > Confirmation card
+previews all three placements. See [Voice addressing](voice.md) for the placement fallback
+and cancel window.

@@ -74,7 +74,7 @@ const LaunchModeChangeField = callback<(mode: DispatchLaunchMode) => void>();
  * `DispatchLayer`, which survives a close. The layer turns an opening into exactly one mode.
  */
 export const DispatchOpeningSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("new") }).strict(),
+  z.object({ kind: z.literal("new"), repoRoot: z.string().optional() }).strict(),
   z.object({ kind: z.literal("ensemble"), strategyId: z.enum(ENSEMBLE_STRATEGY_IDS) }).strict(),
   z.object({ kind: z.literal("edit"), task: TaskField }).strict(),
   z.object({ kind: z.literal("tour"), demo: TourDemoField }).strict(),
@@ -210,7 +210,7 @@ export function dispatchModeProblem(mode: DispatchMode): string | null {
  * `edit` names its row by id, because the row itself is live and is read back per render.
  */
 export type DispatchRequest =
-  | { kind: "new" }
+  | { kind: "new"; repoRoot?: string }
   | { kind: "edit"; taskId: string }
   | { kind: "ensemble"; strategyId: EnsembleStrategyId }
   | { kind: "resident"; profileId: string | null };
@@ -272,6 +272,6 @@ export function resolveDispatchOpening(
     case "new":
       return world.tourDemo
         ? { opening: { kind: "tour", demo: world.tourDemo }, problem: null }
-        : { opening: { kind: "new" }, problem: null };
+        : { opening: request, problem: null };
   }
 }

@@ -94,6 +94,7 @@ interface CardDelivery {
   routingDetail: string;
   results: PartDelivery[];
   ready: boolean;
+  published?: VoiceCard;
 }
 
 interface OutboxReceipt {
@@ -124,7 +125,7 @@ function splitPickOptions(firstKey: string, splits: VoiceSplitPoint[], prefix: s
 }
 
 function agentRow(target: SpokenName): VoiceCard["candidates"][number] {
-  return { kind: "agent", id: target.key, title: target.name, detail: target.role };
+  return { kind: "agent", id: target.key, title: target.name, detail: target.role, target };
 }
 
 function setSplitPicks(item: OpenCard, card: VoiceCard, first: SpokenName, splits: VoiceSplitPoint[], prefix = ""): void {
@@ -220,7 +221,11 @@ export class VoiceRouter {
 
   activeCards(): VoiceCard[] {
     const visible = [...this.open.values()].filter(item => item.card.state !== "resolving" || item.resolvingVisible);
-    return [...visible.map(item => item.card), ...this.delivering.values()];
+    const held = new Set<VoiceCard>();
+    for (const { delivery } of this.outbox.values()) {
+      if (delivery.published?.parts.some(part => part.outcome === "held")) held.add(delivery.published);
+    }
+    return [...held, ...visible.map(item => item.card), ...this.delivering.values()];
   }
 
   private now(): ActionTime {
@@ -416,7 +421,8 @@ export class VoiceRouter {
       }
       if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
       this.openCard({ ...item, timer: undefined, commands: resolved.commands ?? item.commands,
-        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } });
+        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts,
+          ...(resolved.reason === "mention" && decision.reason === "second-name" && { mentions: decision.candidates.filter(t => t.key !== resolved.parts[0]?.target?.key) }) } });
     };
     const done = settle().finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
     this.resolutions.set(id, done);
@@ -450,6 +456,8 @@ export class VoiceRouter {
       }
       if (card.parts.every((_, index) => item.commands?.[index] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
+      card.windowMs = ms;
+      if (item.splitStops) card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
       card.deadline = Date.now() + ms;
       item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
       item.timer.unref?.();
@@ -517,6 +525,7 @@ export class VoiceRouter {
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
     this.openCard({ ...item, time: pickedAt, commands: split ? split.commands : item.commands, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
+      ...(!split && item.splitPicks && { mentions: [...new Set([...item.splitPicks.values()].map(s => s.target))].filter(t => t.key !== target.key) }),
       candidates: [], parts } });
     return true;
   }
@@ -552,7 +561,8 @@ export class VoiceRouter {
     }
     const entry = delivery.entry.deref();
     if (entry) Object.assign(entry, { outcome: state, detail });
-    this.publish({ ...card, state, ...(detail && { detail }) });
+    delivery.published = { ...card, state, parts: card.parts.map((part, i) => ({ ...part, ...results[i] })), ...(detail && { detail }) };
+    this.publish(delivery.published);
   }
 
   private newDelivery(item: OpenCard): CardDelivery {
@@ -591,7 +601,7 @@ export class VoiceRouter {
         ? `${latest.name} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
         : "The selected session is unavailable.";
     }
-    delivery.card.parts[index] = { ...part, target: latest };
+    delivery.card.parts[index] = { ...part, target: latest, ...(typeof result !== "string" && "turnId" in result && { turnId: result.turnId }) };
     // A replay can settle synchronously inside submitSpoken, before deliver returns its row.
     if (!delivery.results[index]) {
       delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };

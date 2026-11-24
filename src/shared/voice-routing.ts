@@ -22,9 +22,20 @@ export type VoiceDeliveryOutcome = "sent" | "queued" | "held" | "not-running" | 
 export interface VoiceCard {
   id: string;
   state: "pending" | "resolving" | "unsure" | "cancelled" | VoiceDeliveryOutcome;
-  parts: { target: SpokenName | null; text: string }[];
+  parts: {
+    target: SpokenName | null;
+    text: string;
+    outcome?: VoiceDeliveryOutcome | "cancelled";
+    detail?: string;
+    /** The exact outbox row to recall, including after a two-part delivery. */
+    turnId?: string;
+    /** Addressed stops run as soon as routing resolves, even during a split's countdown. */
+    immediateStop?: boolean;
+  }[];
+  mentions?: SpokenName[];
+  windowMs?: number;
   deadline: number | null;
-  candidates: { kind: "agent" | "question"; id: string; title: string; detail: string }[];
+  candidates: { kind: "agent" | "question"; id: string; title: string; detail: string; target?: SpokenName }[];
   reason: string;
   openQuestions: number;
   detail?: string;

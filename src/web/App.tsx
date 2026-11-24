@@ -10,6 +10,8 @@ import type { Stall } from "@shared/stall.ts";
 import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
+import { VoiceCardHost } from "./components/VoiceCardHost.tsx";
+import { launchResident } from "./residents/launch.ts";
 import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
@@ -432,8 +434,15 @@ export function App(): React.JSX.Element {
     latestSessionTransfer,
   } = useEventStream();
   const [workflowDirty, setWorkflowDirty] = useState(false);
-  const { route, navigate, replace, pendingRoute, confirmPending, cancelPending } =
+  const { route: requestedRoute, navigate, replace, pendingRoute, confirmPending, cancelPending } =
     useWorkflowRoute(workflowDirty);
+  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
+  // The initial flag defaults precede the snapshot, including on an enabled shell deep link.
+  const disabledVoiceRoute = requestedRoute.page === "voice-card" && hasSnapshot && !spokenNames;
+  const route = disabledVoiceRoute ? { page: "fleet" as const } : requestedRoute;
+  useEffect(() => {
+    if (disabledVoiceRoute) replace({ page: "fleet" });
+  }, [disabledVoiceRoute, replace]);
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest, buffered, returning: returningFromAway } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
@@ -451,7 +460,6 @@ export function App(): React.JSX.Element {
     [residentRuns, residentProfiles],
   );
   // Call signs and reference names are voice's names: they name an agent only while it is on.
-  const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
   const voiceConfig = useVoiceConfig(spokenNames && route.page === "settings" && route.category === "voice");
   // Muted report authors: left out of the fold and its to read figure, and never notified.
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
@@ -482,6 +490,7 @@ export function App(): React.JSX.Element {
   });
   const { bindings } = useKeybindings();
   useEffect(() => {
+    if (route.page === "voice-card") return;
     const feature: FeatureId = route.page === "fleet" ? "board" : route.page === "scouts" ? "archives"
       : route.page === "settings" ? "settings" : route.page === "library" ? "library"
       : route.page === "ensembles" ? "ensembles" : route.page === "shipped" ? "reports"
@@ -2679,18 +2688,6 @@ export function App(): React.JSX.Element {
     },
     [],
   );
-  const previousVoiceCards = useRef(voiceCards);
-  useEffect(() => {
-    const messages: string[] = [];
-    for (const card of voiceCards.values()) {
-      if ((card.state === "not-running" || card.state === "failed") && card.detail) {
-        const previous = previousVoiceCards.current.get(card.id);
-        if (previous?.state !== card.state || previous.detail !== card.detail) messages.push(card.detail);
-      }
-    }
-    previousVoiceCards.current = voiceCards;
-    if (messages.length) showFleetActionError(messages.join(" "));
-  }, [voiceCards, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);
@@ -5001,6 +4998,28 @@ export function App(): React.JSX.Element {
           />
         );
 
+  const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards}
+    surface={route.page === "voice-card" ? route.placement : undefined}
+    sound={alertSettings.sound} notifications={alertSettings.notifications}
+    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews,
+      openQuestion: id => { navigate({ page: "fleet" }); setReviewSessionId(id); },
+      followUp: taskId => {
+        const task = tasks.find(t => t.id === taskId);
+        if (!task?.repoRoot) return { ok: false, error: "The task repository is unavailable." };
+        navigate({ page: "fleet" });
+        setDispatchRequest({ kind: "new", repoRoot: task.repoRoot });
+        return { ok: true };
+      },
+      relaunch: async (target, requestId) => {
+        const profile = residentProfiles.find(p => "resident:" + p.id === target.key);
+        if (!profile) return { ok: false, error: "The resident profile is unavailable." };
+        const { defaultRepoRoot, additionalRepoRoots } = profile.settings.workspace;
+        const result = await launchResident(profile.id, { repoRoot: defaultRepoRoot, additionalRepoRoots, requestId, answerWhen: "accepted" }, { profile });
+        return result.state === "failed" || result.state === "refused" ? { ok: false, error: result.error } : { ok: true };
+      },
+    }} />;
+  if (route.page === "voice-card") return <main className="voice-standalone">{voiceCardHost}</main>;
+
   return (
     <OverlayHost value={overlays}>
       <FeatureFlagsContext.Provider value={featureFlags}>
@@ -5020,6 +5039,7 @@ export function App(): React.JSX.Element {
       >
       <ContextMenuHost ref={contextMenuRef} />
       <div className={`app app-${layout}`}>
+        {voiceCardHost}
         <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}

@@ -28,19 +28,21 @@ export function AgentName({
  * `VoiceHintsContext` turns hints on, which only the voice plan does.
  */
 export function SpokenHint({
+  children,
   action,
   name,
   cardOpen = false,
 }: {
   action: InboxActionId;
   name: string;
+  children?: React.ReactNode;
   /** Whether the card is open on screen, which adds the action's short form when it has one. */
   cardOpen?: boolean;
 }): React.JSX.Element | null {
   const on = useContext(VoiceHintsContext);
   if (!on) return null;
   const text = spokenHintText(inboxAction(action), name, cardOpen);
-  return text ? <span className="spoken-hint" data-spoken-action={action}>{text}</span> : null;
+  return text ? <span className="spoken-hint" data-spoken-action={action}>{children ?? text}</span> : null;
 }
 
 /**

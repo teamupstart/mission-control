@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { VoiceCardPlacement } from "./VoiceCardPlacement.tsx";
 import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
 import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
@@ -531,6 +532,7 @@ export function VoiceSettingsPanel({
       </div>
 
       <FasterRoutingGroup state={state} keys={keys} />
+      <VoiceCardPlacement state={voice} />
       <VoiceIndicatorSettings />
       <RecentlyHeard roster={voice?.roster ?? []} />
     </section>

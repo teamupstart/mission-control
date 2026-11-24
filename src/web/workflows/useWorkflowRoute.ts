@@ -184,6 +184,7 @@ function scoutBound(raw: string | null): number | undefined {
 }
 export type MissionRoute =
   | { page: "fleet" }
+  | { page: "voice-card"; placement: "pill" | "popover" }
   | {
       page: "library";
       /** Absent on the shelves index; present when an authoring surface is mounted. */
@@ -382,6 +383,7 @@ export function parseMissionRoute(hash: string): MissionRoute {
       ...(withScoutFilters ? { filters: withScoutFilters } : {}),
     };
   }
+  if (path === "/voice/pill" || path === "/voice/popover") return { page: "voice-card", placement: path === "/voice/pill" ? "pill" : "popover" };
   if (path === "/library") return { page: "library" };
   const library = /^\/library\/([^/]+)(?:\/([^/]+))?$/.exec(path);
   if (library) {
@@ -515,6 +517,7 @@ export function parseMissionRoute(hash: string): MissionRoute {
 }
 
 export function missionRouteHash(route: MissionRoute): string {
+  if (route.page === "voice-card") return `#/voice/${route.placement}`;
   if (route.page === "fleet") return "#/fleet";
   // Always spelled out with its category, so every settings link is a deep link and
   // back/forward steps between categories rather than collapsing them into one entry.

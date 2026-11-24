@@ -22,6 +22,7 @@ import {
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
   VOICE_SPEECH_START_HEADER,
+  VoiceUiConfigPatchSchema,
   VoiceConfigPatchSchema,
   VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
@@ -32,7 +33,7 @@ import {
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
+import { getUiConfig, setUiConfig, setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -139,6 +140,12 @@ export function registerVoiceRoutes(
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
     const ticket = reserveProviderWrite(parsed.data);
     return ticket ? c.json({ ticket, intentReceipt: providerIntentReceipt() }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
+  });
+  app.put("/api/voice/confirmation", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }));
+    if (!parsed.ok) return parsed.res;
+    setUiConfig({ voice: { ...getUiConfig().voice, ...parsed.data } });
+    return c.json({ ok: true });
   });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });

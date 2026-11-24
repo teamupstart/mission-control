@@ -498,7 +498,7 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which reads as off.
           setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
           setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
-          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion);
+          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion, msg.voiceConfirmation);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -761,14 +761,14 @@ export function useEventStream(): MissionState {
           if (msg.state.mode === "off") setVoiceCards(new Map());
           break;
         case "voice_indicators":
-          applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion);
+          applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
           break;
         case "voice_card":
           setVoiceCards((prev) => {
             const next = new Map(prev);
             next.delete(msg.card.id);
             next.set(msg.card.id, msg.card);
-            const completed = [...next.values()].filter((c) => !["pending", "unsure", "resolving"].includes(c.state));
+            const completed = [...next.values()].filter((c) => !["pending", "unsure", "resolving", "held"].includes(c.state) && !c.parts.some(p => p.outcome === "held"));
             if (completed.length > 50) next.delete(completed[0]!.id);
             return next;
           });

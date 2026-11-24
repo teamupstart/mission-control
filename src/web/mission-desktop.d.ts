@@ -11,6 +11,8 @@ export {};
 declare global {
   interface MissionDesktop {
     isDesktop: boolean;
+    showVoiceCardNotice?(input: { id: string; title: string; body: string; deadline: number }): Promise<"cancel" | "send-now" | null>;
+    dismissVoiceCardNotice?(id: string): void;
     version(): Promise<string>;
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;

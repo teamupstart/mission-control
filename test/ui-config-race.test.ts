@@ -70,9 +70,10 @@ test("initial hydration cannot undo an indicator save acknowledged after the GET
   assert.equal(uiConfig().richText, true);
   assert.equal(reads, 2);
   const indicators = ["status-line", "edge", "floating"];
-  finishRefresh(Response.json({ configured: true, config: { ...before, voice: { ...before.voice, indicators } } }));
+  finishRefresh(Response.json({ configured: true, config: { ...before, voice: { ...before.voice, confirmation: "popover", indicators } } }));
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(uiConfig().voice.indicators, indicators);
+  assert.equal(uiConfig().voice.confirmation, "popover");
   assert.equal(uiConfig().richText, true);
 });
 

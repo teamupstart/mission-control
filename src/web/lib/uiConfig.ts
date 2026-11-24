@@ -234,7 +234,7 @@ async function reconcileVoiceIndicators(): Promise<void> {
   if (view && (!view.config.voice || current.voice.indicators === atRead)) {
     indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
     if (view.config.voice && acceptIndicatorVersion(view.voiceIndicatorVersion)) {
-      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators, confirmation: view.config.voice.confirmation } });
     }
     return;
   }

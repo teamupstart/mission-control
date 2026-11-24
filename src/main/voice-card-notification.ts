@@ -1,12 +1,7 @@
+import type { EventEmitter } from "node:events";
 import type { NotificationConstructorOptions } from "electron";
-import { z } from "zod";
 import { VOICE_CANCEL_WINDOW_SECONDS } from "../shared/voice.ts";
-import type { VoiceCardNoticeResult } from "../shared/voice-routing.ts";
-
-const noticeSchema = z.object({
-  id: z.string().uuid(), title: z.string().max(256), body: z.string().max(32768),
-  deadline: z.number().int(), scope: z.enum(["single", "both", "remaining"]).default("single"),
-}).strict();
+import { VoiceCardNoticeSchema, type VoiceCardNoticeResult } from "../shared/voice-routing.ts";
 
 const actionLabels = {
   single: ["Cancel", "Send now"],
@@ -16,7 +11,8 @@ const actionLabels = {
 
 type IpcSource = { sender: unknown; senderFrame: unknown };
 type IpcListener = (event: IpcSource, input: unknown) => unknown;
-type NoticeWindow = { webContents: { mainFrame: unknown }; isFocused(): boolean; show(): void };
+type NoticeContents = Pick<EventEmitter, "on"> & { mainFrame: unknown };
+type NoticeWindow = { webContents: NoticeContents; isFocused(): boolean; show(): void };
 function ownsMainFrame(event: IpcSource, owner: NoticeWindow | null): owner is NoticeWindow {
   return owner !== null && event.sender === owner.webContents && event.senderFrame != null && event.senderFrame === owner.webContents.mainFrame;
 }
@@ -36,14 +32,29 @@ export function registerVoiceCardNotifications(
   window: () => NoticeWindow | null,
   NativeNotification: NoticeConstructor,
 ): void {
-  const dismiss = new Map<string, () => void>();
+  const dismiss = new Map<string, { contents: NoticeContents; close(): void }>();
+  const observed = new WeakSet<NoticeContents>();
+  function watchPage(contents: NoticeContents) {
+    if (observed.has(contents)) return;
+    observed.add(contents);
+    const closePageNotices = () => {
+      for (const pending of dismiss.values()) if (pending.contents === contents) pending.close();
+    };
+    // did-navigate only fires for a committed main-frame document change, including reload.
+    contents.on("did-navigate", closePageNotices);
+    contents.on("render-process-gone", closePageNotices);
+    contents.on("destroyed", closePageNotices);
+  }
   ipcMain.on("mission:voice-card-dismiss", (event, id) => {
-    if (typeof id === "string" && ownsMainFrame(event, window())) dismiss.get(id)?.();
+    const owner = window();
+    if (typeof id !== "string" || !ownsMainFrame(event, owner)) return;
+    const pending = dismiss.get(id);
+    if (pending?.contents === owner.webContents) pending.close();
   });
   ipcMain.handle("mission:voice-card-notice", (event, input: unknown): VoiceCardNoticeResult | Promise<VoiceCardNoticeResult> => {
     const owner = window();
     if (!ownsMainFrame(event, owner) || !NativeNotification.isSupported()) return null;
-    const parsed = noticeSchema.safeParse(input);
+    const parsed = VoiceCardNoticeSchema.safeParse(input);
     if (!parsed.success) return null;
     const { id, title, body, deadline, scope } = parsed.data;
     const ms = Math.min(VOICE_CANCEL_WINDOW_SECONDS.max * 1000, deadline - Date.now());
@@ -53,18 +64,21 @@ export function registerVoiceCardNotifications(
       const notice = new NativeNotification({ title, subtitle: "Say “cancel” to stop.", body, silent: true,
         actions: actionLabels[scope].map(text => ({ type: "button", text })) });
       const finish = (action: "cancel" | "send-now" | null) => {
-        if (!dismiss.delete(id)) return;
+        if (dismiss.get(id) !== pending) return;
+        dismiss.delete(id);
         clearTimeout(timer);
         notice.close();
         resolve(Date.now() < deadline ? action : null);
       };
       const timer = setTimeout(() => finish(null), ms);
-      dismiss.set(id, () => finish(null));
+      const pending = { contents: owner.webContents, close: () => finish(null) };
+      dismiss.set(id, pending);
+      watchPage(owner.webContents);
       notice.once("action", (event, actionIndex) => {
         const index = actionIndex ?? event.actionIndex;
         finish(index === 0 ? "cancel" : index === 1 ? "send-now" : null);
       });
-      notice.once("click", () => { owner.show(); finish(null); });
+      notice.once("click", () => { if (dismiss.get(id) === pending) owner.show(); finish(null); });
       notice.once("close", () => finish(null));
       notice.once("failed", () => finish(null));
       notice.show();

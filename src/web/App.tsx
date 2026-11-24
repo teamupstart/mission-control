@@ -1269,7 +1269,8 @@ export function App(): React.JSX.Element {
     setDispatchRequest({ kind: "edit", taskId });
   }, []);
   /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
-  const openDispatch = useCallback(() => setDispatchRequest({ kind: "new" }), []);
+  const openDispatch = useCallback(() => setDispatchRequest(current => current?.kind === "repair-follow-up"
+    ? { kind: "new", followUp: current.followUp } : { kind: "new" }), []);
   /** Dispatch in Resident mode on one profile: the Residents page's Launch. */
   const openResidentLaunch = useCallback(
     (profileId: string) => setDispatchRequest({ kind: "resident", profileId }),
@@ -4427,7 +4428,7 @@ export function App(): React.JSX.Element {
         return;
       }
       if ((chord === "Tab" || chord === "shift+Tab") && (
-        target?.closest(".line-dock") || (inIdleSections && !target?.closest(".rail-row"))
+        target?.closest(".line-dock, .voice-card, .voice-card-surface") || (inIdleSections && !target?.closest(".rail-row"))
       )) return;
 
       if (readerSession && !typing) {
@@ -5092,13 +5093,15 @@ export function App(): React.JSX.Element {
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
     actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardInUse,
-      openQuestion: id => { navigate({ page: "fleet" }); setReviewSessionId(id); },
-      followUp: taskId => {
-        const task = tasks.find(t => t.id === taskId);
-        if (!task?.repoRoot) return { ok: false, error: "The task repository is unavailable." };
-        navigate({ page: "fleet" });
-        setDispatchRequest({ kind: "new", followUp: { id: newRequestId(), repoRoot: task.repoRoot } });
-        return { ok: true };
+      openQuestion: id => { navigate({ page: "fleet" }, allowed => { if (allowed) setReviewSessionId(id); }); },
+      followUp: async taskId => {
+        const task = await api.voiceFollowUpRepository(taskId);
+        if (!task.ok || !task.repoRoot) return { ok: false, error: task.error ?? "The task repository is unavailable." };
+        const repoRoot = task.repoRoot;
+        return new Promise(resolve => navigate({ page: "fleet" }, allowed => {
+          if (allowed) setDispatchRequest({ kind: "new", followUp: { id: newRequestId(), repoRoot } });
+          resolve(allowed ? { ok: true } : { ok: false, error: "Follow-up stayed closed. Your draft is still open." });
+        }));
       },
       relaunch: async (target, requestId) => {
         const profile = residentProfiles.find(p => "resident:" + p.id === target.key);
@@ -5858,6 +5861,7 @@ export function App(): React.JSX.Element {
 
               <DispatchLayer
                 opening={dispatchOpening}
+                repairFollowUpId={dispatchRequest?.kind === "repair-follow-up" ? dispatchRequest.followUp.id : undefined}
                 tasks={tasks}
                 sessions={sessions}
                 personas={personas}
@@ -5875,8 +5879,14 @@ export function App(): React.JSX.Element {
                 }
                 onClose={closeDispatchOpening}
                 onOpenSchedule={onOpenSchedule}
-                onOpenLaunchFix={openLaunchFix}
-                onOpenEnvironmentFix={openEnvironmentFix}
+                onOpenLaunchFix={fix => {
+                  if (followUpRequest?.followUp) setDispatchRequest({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+                  openLaunchFix(fix);
+                }}
+                onOpenEnvironmentFix={check => {
+                  if (followUpRequest?.followUp) setDispatchRequest({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+                  openEnvironmentFix(check);
+                }}
                 onEnsembleLaunched={openEnsembleRun}
                 residentProfiles={residentProfiles}
                 onEditResidentProfile={(profileId) =>

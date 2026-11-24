@@ -21,7 +21,15 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
   for (const method of ["click", "speech"]) {
     await say(daemon, "Steve, cancelled by " + method);
     await expect(pending).toBeVisible();
-    if (method === "click") await pending.getByRole("button", { name: "Cancel", exact: true }).click();
+    if (method === "click") {
+      const cancel = pending.getByRole("button", { name: "Cancel", exact: true });
+      await cancel.focus();
+      await page.keyboard.press("Tab");
+      await expect(pending.getByRole("button", { name: "Send now" })).toBeFocused({ timeout: 1000 });
+      await page.keyboard.press("Shift+Tab");
+      await expect(cancel).toBeFocused();
+      await cancel.press("Enter");
+    }
     else await say(daemon, "cancel");
     await expect(pending).toHaveCount(0);
     await expect(page.getByRole("status").filter({ hasText: "Cancelled" }).last()).toBeVisible();

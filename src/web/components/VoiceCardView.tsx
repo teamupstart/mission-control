@@ -16,7 +16,7 @@ export interface VoiceCardActions {
   roster: readonly SpokenName[];
   setVoiceCardInUse(id: string, inUse: boolean): void;
   openQuestion(sessionId: string): void;
-  followUp(taskId: string): ActionResult;
+  followUp(taskId: string): Promise<ActionResult> | ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
 }
 

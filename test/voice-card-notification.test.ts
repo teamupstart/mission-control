@@ -20,7 +20,7 @@ function notificationFixture({ focused = false, supported = true } = {}) {
   type Handler = (event: { sender: unknown; senderFrame: unknown }, input: unknown) => unknown;
   const handlers = new Map<string, Handler>();
   const register = (channel: string, handler: Handler) => handlers.set(channel, handler);
-  const owner = { webContents: { mainFrame: {} }, isFocused: () => focused, show() {} };
+  const owner = { webContents: Object.assign(new EventEmitter(), { mainFrame: {} }), isFocused: () => focused, show() {} };
   registerVoiceCardNotifications({ on: register, handle: register }, () => owner, NativeNotice);
   const input = { id: crypto.randomUUID(), title: "To Steve · sending in 4s", body: "check the build", deadline: Date.now() + 4000 };
   return {
@@ -133,5 +133,24 @@ test("expiry and renderer dismissal both close a pending notification without an
     else t.mock.timers.tick(4000);
     assert.equal(await result, null);
     assert.ok(fixture.notices[0]?.closed);
+  }
+});
+
+test("native notices close with their originating page and a reloaded page can notify again", async () => {
+  for (const end of ["did-navigate", "render-process-gone", "destroyed"]) {
+    const f = notificationFixture();
+    const first = f.show();
+    const second = f.show({ ...f.input, id: crypto.randomUUID() });
+    f.contents.emit("did-navigate-in-page");
+    assert.ok(f.notices.every(n => !n.closed));
+    f.contents.emit(end);
+    assert.ok(f.notices.every(n => n.closed));
+    assert.deepEqual(await Promise.all([first, second]), [null, null]);
+    if (end === "destroyed") continue;
+    const reloaded = f.show();
+    f.notices[0]!.emit("action", {}, 0);
+    assert.equal(f.notices[2]!.closed, false);
+    f.notices[2]!.emit("action", {}, 1);
+    assert.equal(await reloaded, "send-now");
   }
 });

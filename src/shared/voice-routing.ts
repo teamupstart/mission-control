@@ -19,13 +19,11 @@ export const VoiceUtteranceSchema = z.object({
 export type VoiceUtterance = z.infer<typeof VoiceUtteranceSchema>;
 
 export type VoiceDeliveryOutcome = "sent" | "queued" | "held" | "not-running" | "failed";
-export interface VoiceCardNotice {
-  id: string;
-  title: string;
-  body: string;
-  deadline: number;
-  scope?: "single" | "both" | "remaining";
-}
+export const VoiceCardNoticeSchema = z.object({
+  id: z.string().uuid(), title: z.string().max(256), body: z.string().max(32768),
+  deadline: z.number().int(), scope: z.enum(["single", "both", "remaining"]).default("single"),
+}).strict();
+export type VoiceCardNotice = z.input<typeof VoiceCardNoticeSchema>;
 /** A focus race can be retried on blur. A null result ends the request without an action. */
 export type VoiceCardNoticeResult = "cancel" | "send-now" | "window-focused" | null;
 export interface VoiceCard {

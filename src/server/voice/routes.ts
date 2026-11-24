@@ -30,6 +30,7 @@ import {
   VoiceProviderIntentSchema,
   VoiceShellReportSchema,
 } from "@shared/voice.ts";
+import { getTask } from "../db.ts";
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
@@ -140,6 +141,11 @@ export function registerVoiceRoutes(
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
     const ticket = reserveProviderWrite(parsed.data);
     return ticket ? c.json({ ticket, intentReceipt: providerIntentReceipt() }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
+  });
+  app.get("/api/voice/tasks/:id/follow-up", gate, c => {
+    const task = getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "The finished task could not be found." }, 404);
+    return c.json({ repoRoot: task.repoRoot });
   });
   app.put("/api/voice/confirmation", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }));

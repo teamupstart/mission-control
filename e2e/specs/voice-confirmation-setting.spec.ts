@@ -32,6 +32,29 @@ test("three placement previews persist across reload, with a toast fallback and 
   await expect(page.locator(".app")).toHaveCount(0);
 });
 
+test("a stalled placement save releases the controls and can be retried", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const group = page.getByRole("group", { name: "Confirmation card" });
+  const pill = group.getByRole("radio", { name: /Floating pill/ });
+  let stalled = true;
+  await page.route("**/api/voice/confirmation", route => {
+    if (stalled) { stalled = false; return; }
+    return route.continue();
+  });
+  await pill.click();
+  await expect(pill).toBeDisabled();
+  await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
+  await expect(pill).toBeEnabled();
+  await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
+  await page.mouse.move(0, 0);
+  await captureCard(group, "placement-retry");
+  await pill.click();
+  await expect(pill).toBeEnabled();
+  await page.reload();
+  await expect(pill).toBeChecked();
+});
+
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
   test(`the ${label} keeps an unresolved recipient picker reachable ahead of a newer held result`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
@@ -162,6 +185,7 @@ test("standalone held messages can be switched and recalled while a new countdow
     await expect(card).toContainText("Held for Will");
   }
   await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 3000 });
+  await expect(choose).toHaveAccessibleDescription("Choose which message to view and act on");
   await choose.selectOption("first");
   await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
   await captureCard(page.locator(".voice-card-surface"), "standalone-held-switcher");

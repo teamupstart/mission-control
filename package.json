@@ -97,7 +97,7 @@
     "build:pi-installer": "esbuild scripts/install-pi-extension.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/pi-installer/index.mjs",
     "build:resume-guard": "esbuild src/server/terminal/resume-guard.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resume-guard.mjs",
     "build:resident-mcp-launcher": "esbuild src/server/residents/mcp-launcher.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/satellites/resident-mcp-launcher.mjs",
-    "build:repository-mcp": "esbuild src/repository-mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/repository-mcp/server.mjs"
+    "build:repository-mcp": "esbuild src/repository-mcp/server.ts src/repository-mcp/provider.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outdir=dist/repository-mcp --out-extension:.js=.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.325",

@@ -53,6 +53,8 @@ export interface CheckSpawnRequest {
   attemptId: string;
   /** argv, never a shell string, spawned with `shell: false`. */
   command: readonly string[];
+  /** Private input for a trusted command. Ordinary workflow checks receive a closed stdin. */
+  input?: string;
   /** The leased checkout joined with the command's working subpath. */
   cwd: string;
   /** Already scrubbed - see `check-env.ts`. This module does not decide what a check may see. */
@@ -184,7 +186,7 @@ gate.on("data", function () {
   let child;
   try {
     child = cp.spawn(argv[0], argv.slice(1), {
-      stdio: ["ignore", "inherit", "inherit"],
+      stdio: [0, "inherit", "inherit"],
       shell: false,
     });
   } catch (e) {
@@ -336,12 +338,12 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       // build spawns - and what makes the emptiness proof a question about a group rather
       // than about one process.
       detached: true,
-      // stdin is IGNORED rather than piped: a command that blocks on input should fail
-      // immediately on a closed stdin instead of hanging until the timeout. fds 3 and 4 are
+      // Checks receive a closed stdin. A trusted worker can receive private input once its
+      // supervisor identity is durable. Fds 3 and 4 are
       // the control channel - 3 is the gate the parent writes one byte to, 4 is how the shim
       // reports readiness and the command's outcome. Two fds rather than one duplex socket so
       // each direction's EOF means exactly one thing.
-      stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
+      stdio: [request.input === undefined ? "ignore" : "pipe", "pipe", "pipe", "pipe", "pipe"],
       windowsHide: true,
     });
   } catch (err) {
@@ -533,6 +535,10 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       report.destroy();
     });
     gate.write("G");
+    if (child.stdin) {
+      child.stdin.on("error", () => {}); // A command may exit or be cancelled before reading its input.
+      child.stdin.end(request.input);
+    }
   }
 
   /**

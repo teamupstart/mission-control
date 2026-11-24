@@ -80,6 +80,16 @@ export const locatorFor = (digest: string) => `repository-v1-${digestSchema.pars
 
 export class RepositoryOwnership {
   constructor(private store: WorkflowStore) {}
+  recordLocalLease(workloadId: string, leaseId: string, nonce: string) {
+    this.store.transact(db => {
+      if (!db.prepare("SELECT 1 FROM workflow_repository_local_owners WHERE workload_id=?").get(workloadId)) return;
+      if (!db.prepare("UPDATE workflow_repository_local_owners SET lease_id=?, lease_nonce=? WHERE workload_id=? AND lease_id IS NULL")
+        .run(leaseId, nonce, workloadId).changes) unavailable();
+    });
+  }
+  localLease(leaseId: string) {
+    return this.store.transact(db => db.prepare("SELECT group_pid FROM workflow_repository_local_owners WHERE lease_id=?").get(leaseId));
+  }
   attach(submissionId: string, digest: string, manifest: Manifest, publish: () => void) {
     return this.store.transact((db) => {
       if (

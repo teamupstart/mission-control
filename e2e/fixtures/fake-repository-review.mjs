@@ -1,5 +1,5 @@
 // Used only by the fixture provider binaries inside the executor's disposable provider cwd.
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -10,6 +10,8 @@ const tools = ["read", "search", "glob", "git_status", "git_diff", "git_show", "
 async function review(mcp, prompt) {
   // The browser changes the live checkout after the capture event, then releases this fixture.
   const release = new URL("../repository-review-ready", import.meta.url);
+  if (prompt.includes("E2E_LOCAL_CLEANUP_RESTART"))
+    writeFileSync(new URL("../repository-provider-started", import.meta.url), "started");
   const expires = Date.now() + 30_000;
   while (!existsSync(release)) {
     if (Date.now() >= expires) throw Error("Timed out waiting for the fixture checkout change");

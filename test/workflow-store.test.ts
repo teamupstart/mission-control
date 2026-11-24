@@ -368,6 +368,7 @@ test("the v54 upgrade fingerprints historical graph bytes and gives existing Per
     DROP TABLE workflow_repository_handles;
     DROP TABLE workflow_repository_queries;
     DROP TABLE workflow_repository_events;
+    DROP TABLE workflow_repository_local_owners;
     DROP TABLE workflow_repository_workloads;
     DROP TABLE persona_builtin_overrides;
     PRAGMA user_version=54;`);

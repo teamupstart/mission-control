@@ -37,6 +37,8 @@ export interface LocalPersonaWorkloadExecutorOptions {
   nodeBinary: string;
   gitBinary: string;
   providerBinary: (provider: "claude" | "codex") => Promise<string>;
+  /** After registration the durable owner removes this home once its process group is empty. */
+  ownWorkspace?: (workloadId: string, path: string) => void;
   /** Explicit provider authentication only. Never pass the daemon environment or Mission credentials. */
   providerEnvironment: (
     provider: "claude" | "codex",
@@ -131,6 +133,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   private async run(job: Job): Promise<void> {
     const { request } = job;
     let root: string | undefined;
+    let registeredHome = false;
     let lease: RepositoryViewLease | undefined;
     const emit = (payload: Record<string, unknown>) =>
       job.events.push({
@@ -190,6 +193,10 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       job.controller.signal.throwIfAborted();
       emit({ type: "repository_verified" });
       root = await mkdtemp(join(tmpdir(), "mission-repository-workload-"));
+      if (this.options.ownWorkspace) {
+        this.options.ownWorkspace(request.workloadId, root);
+        registeredHome = true;
+      }
       const cwd = join(root, "provider");
       await mkdir(cwd);
       const auditPath = join(root, "audit.jsonl"),
@@ -317,7 +324,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       } catch {
         result = { status: "failed", code: "artifact_unavailable" };
       }
-      if (root)
+      if (root && !registeredHome)
         await rm(root, { recursive: true, force: true }).catch(() => {
           result = { status: "failed", code: "artifact_unavailable" };
         });

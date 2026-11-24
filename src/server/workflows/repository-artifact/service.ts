@@ -461,6 +461,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         signal.throwIfAborted();
         const { marker, path } = this.allocate("leases");
         try {
+          this.ownership.recordLocalLease(identity.workloadId, marker.id, marker.nonce);
           const manifest = await this.verifyPublished(identity.digest, signal, path);
           this.checkRequest(identity);
           this.ownership.verified(identity.digest);
@@ -469,6 +470,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
             descriptor: descriptor(manifest, identity.digest, marker.id),
             objectDirectory: path,
             release: async () => {
+              if (this.ownership.localLease(marker.id)?.group_pid != null) unavailable();
               if (this.live.has(marker.id)) this.remove("leases", marker.id, marker.nonce);
             },
           };
@@ -481,6 +483,25 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
   }
   async release(submissionId: string) {
     this.ownership.release(submissionId);
+  }
+  /** The local supervisor proved the process group empty. Remove only its recorded lease. */
+  releaseLocalLease(id: string, nonce: string) {
+    return this.exclusive(async () => {
+      z.uuid().parse(id);
+      z.uuid().parse(nonce);
+      const dir = this.namespace("leases", false);
+      if (!dir) return;
+      const ticket = readdirSync(dir).find(name => cleanupTicket.exec(name)?.[1] === id);
+      if (ticket) {
+        const proof = join(dir, ticket);
+        if (!lstatSync(proof).isFile() || markerSchema.parse(JSON.parse(readFileSync(proof, "utf8"))).nonce !== nonce) unavailable();
+        this.storage.release(finishRemoval(dir, ticket));
+        this.forget(id);
+      } else if (lstatSync(join(dir, id), { throwIfNoEntry: false })) {
+        this.remove("leases", id, nonce);
+      }
+      syncDirectory(dir);
+    });
   }
   activeSnapshot(submissionId: string) {
     return this.ownership.active(submissionId);
@@ -509,6 +530,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           const ticket = cleanupTicket.exec(name);
           if (!ticket) continue;
           removing.add(ticket[1]!);
+          if (kind === "leases" && this.ownership.localLease(ticket[1]!)) continue;
           try {
             if (this.live.has(ticket[1]!)) unavailable();
             const path = finishRemoval(directory, name);
@@ -520,7 +542,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
           }
         }
         for (const id of names) {
-          if (cleanupTicket.test(id) || this.live.has(id) || removing.has(id)) continue;
+          if (cleanupTicket.test(id) || this.live.has(id) || removing.has(id) || (kind === "leases" && this.ownership.localLease(id))) continue;
           let owned: string | undefined;
           try {
             owned = this.marked(kind, id);

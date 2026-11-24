@@ -1518,6 +1518,15 @@ function createSchemaObjects(d: DatabaseSync): void {
       cancellation_generation INTEGER NOT NULL DEFAULT 0, error_code TEXT, usage_json TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_current_workload ON workflow_repository_workloads(attempt_id) WHERE state='running';
+    CREATE TABLE IF NOT EXISTS workflow_repository_local_owners (
+      workload_id TEXT PRIMARY KEY REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
+      group_pid INTEGER, group_identity TEXT, lease_id TEXT UNIQUE, lease_nonce TEXT,
+      home_path TEXT, home_dev TEXT, home_ino TEXT,
+      CHECK ((group_pid IS NULL) = (group_identity IS NULL)),
+      CHECK (group_pid > 1 AND length(group_identity) > 0),
+      CHECK ((lease_id IS NULL) = (lease_nonce IS NULL)),
+      CHECK ((home_path IS NULL) = (home_dev IS NULL) AND (home_path IS NULL) = (home_ino IS NULL))
+    );
     CREATE TABLE IF NOT EXISTS workflow_repository_events (
       workload_id TEXT NOT NULL REFERENCES workflow_repository_workloads(id) ON DELETE CASCADE,
       sequence INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE, hash TEXT NOT NULL,

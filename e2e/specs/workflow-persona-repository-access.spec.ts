@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -121,6 +121,8 @@ const scenarios = [
   { title: "claude reviews the submitted dirty checkout and cites exact MCP ranges", provider: "claude", marker: "Inspect submitted.txt." },
   { title: "codex reviews the submitted dirty checkout and cites exact MCP ranges", provider: "codex", marker: "Inspect submitted.txt." },
   { title: "query history labels file ranges with each round's submitted snapshot", provider: "claude", marker: "E2E_QUERY_SNAPSHOTS" },
+  { title: "a fresh daemon confirms local provider and lease cleanup before retrying", provider: "claude", marker: "E2E_LOCAL_CLEANUP_RESTART" },
+  { title: "a fresh daemon holds a mismatched lease until local ownership is verified", provider: "codex", marker: "E2E_LOCAL_CLEANUP_RESTART_MISMATCH" },
   { title: "a fabricated repository citation retries and blocks without a verdict", provider: "claude", marker: "E2E_INVALID_REPOSITORY_CITATION" },
   { title: "MCP failure retries and blocks without a verdict", provider: "claude", marker: "E2E_REPOSITORY_MCP_FAILURE" },
   { title: "a read-enabled review retains the rejected verdict and corrects it against the same digest", provider: "codex", marker: "E2E_REVIEW_CORRECTION" },
@@ -202,6 +204,42 @@ for (const { title, provider, marker } of scenarios) {
     // HTTP 202 reserves a submission. The captured event marks the sealed checkout.
     await expect.poll(async () => (await detail()).events.some((e: { kind: string }) => e.kind === "submission_captured"), { timeout: marker === "E2E_HISTORY_LIMIT" ? 85_000 : 20_000 }).toBe(true);
     writeFileSync(file, "later checkout\n");
+    if (marker === "E2E_LOCAL_CLEANUP_RESTART" || marker === "E2E_LOCAL_CLEANUP_RESTART_MISMATCH") {
+      await expect.poll(() => existsSync(join(daemon.home, "repository-provider-started")), { timeout: 40_000 }).toBe(true);
+      const owner = withDaemonDb(daemon, db => db.prepare("SELECT * FROM workflow_repository_local_owners").get())!;
+      expect(Number(owner.group_pid)).toBeGreaterThan(1);
+      expect(owner.group_identity).toBeTruthy();
+      const lease = join(daemon.home, "workflow-repositories", "leases", String(owner.lease_id));
+      expect(existsSync(lease)).toBe(true);
+      expect(existsSync(String(owner.home_path))).toBe(true);
+      await daemon.crash();
+      // Model a cancellation whose acknowledgement was lost just before the crash.
+      withDaemonDb(daemon, db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+        cancellation_generation=1, error_code='cancellation_unconfirmed' WHERE id=?`).run(owner.workload_id!));
+      if (marker === "E2E_LOCAL_CLEANUP_RESTART_MISMATCH")
+        withDaemonDb(daemon, db => db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?")
+          .run(crypto.randomUUID(), owner.workload_id!));
+      writeFileSync(join(daemon.home, "repository-review-ready"), "ready");
+      await daemon.restart();
+      if (marker === "E2E_LOCAL_CLEANUP_RESTART_MISMATCH") {
+        await expect.poll(async () => (await detail()).run.status, { timeout: 40_000 }).toBe("blocked");
+        expect((await detail()).llmCalls.filter((call: { purpose: string }) => call.purpose === "persona_review")).toHaveLength(1);
+        expect(existsSync(lease)).toBe(true);
+        expect(existsSync(String(owner.home_path))).toBe(true);
+        withDaemonDb(daemon, db => db.prepare("UPDATE workflow_repository_local_owners SET lease_nonce=? WHERE workload_id=?")
+          .run(owner.lease_nonce!, owner.workload_id!));
+        await post(`/api/workflow-runs/${run.id}/retry`, { requestId: "retry-confirmed-local-owner" });
+      }
+      await expect.poll(async () => (await detail()).run.status, { timeout: 40_000 }).toBe("completed");
+      const result = await detail();
+      expect(result.llmCalls.filter((call: { purpose: string }) => call.purpose === "persona_review")).toHaveLength(2);
+      expect(withDaemonDb(daemon, db => db.prepare("SELECT state FROM workflow_repository_workloads WHERE id=?")
+        .get(owner.workload_id!)?.state)).toBe("failed");
+      expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM workflow_repository_local_owners").get()?.n)).toBe(0);
+      expect(existsSync(lease)).toBe(false);
+      expect(existsSync(String(owner.home_path))).toBe(false);
+      return;
+    }
     writeFileSync(join(daemon.home, "repository-review-ready"), "ready");
     if (marker === "E2E_QUERY_SNAPSHOTS") {
       await expect.poll(async () => (await detail()).run.status).toBe("waiting_for_session");

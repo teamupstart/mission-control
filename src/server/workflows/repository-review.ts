@@ -1,6 +1,7 @@
 import { featureEnabled } from "../feature-flags/index.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { locateExecutable } from "../executables/locator.ts";
 import { repositoryMcpServerPath } from "../config.ts";
 import { ProviderFailure } from "../llm/provider-failure.ts";
@@ -14,6 +15,8 @@ import type { WorkflowStore } from "./store.ts";
 import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
 import { LocalPersonaWorkloadExecutor } from "./persona-workload/executor.ts";
 import type { PersonaWorkloadExecutor } from "./persona-workload/contracts.ts";
+import { LocalRepositoryWorkloadOwnership } from "./persona-workload/local-ownership.ts";
+import { workflowLog } from "./log.ts";
 
 async function binary(id: "node" | "git" | "claude" | "codex") {
   const resolved = await locateExecutable(id);
@@ -26,7 +29,11 @@ type ReviewInput = Pick<PersonaWorkloadRequest, "attemptId" | "submissionId" | "
 
 export class RepositoryReview {
   private readonly cleanupExecutors = new Map<string, PersonaWorkloadExecutor>();
-  constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {}
+  private readonly recoveringLocal = new Map<string, Promise<void>>();
+  private readonly local: LocalRepositoryWorkloadOwnership;
+  constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {
+    this.local = new LocalRepositoryWorkloadOwnership(store);
+  }
 
   pendingCancellations(runId: string, nodeId: string) {
     return this.store.transact(db => db.prepare(`SELECT w.id, w.cancellation_generation AS generation
@@ -37,6 +44,10 @@ export class RepositoryReview {
 
   async confirmCancellations(runId: string, nodeId: string): Promise<void> {
     for (const { id, generation } of this.pendingCancellations(runId, nodeId)) {
+      if (this.store.transact(db => db.prepare("SELECT 1 FROM workflow_repository_local_owners WHERE workload_id=?").get(id))) {
+        await this.recoverLocal(id);
+        continue;
+      }
       const executor = this.cleanupExecutors.get(id) ?? this.injected;
       let status = await executor?.reconcile(id, 0);
       if (executor && status?.workloadId === id && status.state === "running") {
@@ -49,6 +60,21 @@ export class RepositoryReview {
         WHERE id=? AND state='cancellation_pending' AND cancellation_generation=?`).run(id, generation));
       this.cleanupExecutors.delete(id);
     }
+  }
+
+  private recoverLocal(id: string): Promise<void> {
+    const active = this.recoveringLocal.get(id);
+    if (active) return active;
+    const recovery = this.local.confirmClosed(id, WorkflowRepositoryArtifactService.forRoot(this.store)).then(() => {
+      this.store.transact(db => {
+        if (db.prepare(`UPDATE workflow_repository_workloads SET state='failed', error_code='workload_interrupted'
+          WHERE id=? AND state='cancellation_pending'`).run(id).changes)
+          db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+      });
+      this.cleanupExecutors.delete(id);
+    }).finally(() => this.recoveringLocal.delete(id));
+    this.recoveringLocal.set(id, recovery);
+    return recovery;
   }
 
   private current(id: string) {
@@ -66,8 +92,34 @@ export class RepositoryReview {
   }
 
   interrupt() {
-    this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='interrupted',
-      cancellation_generation=cancellation_generation+1 WHERE state='running'`).run());
+    const local = this.store.transact(db => {
+      db.prepare(`UPDATE workflow_repository_workloads SET state=CASE WHEN id IN (SELECT workload_id
+        FROM workflow_repository_local_owners) THEN 'cancellation_pending' ELSE 'interrupted' END,
+        cancellation_generation=cancellation_generation+1 WHERE state='running'`).run();
+      return db.prepare(`SELECT id FROM workflow_repository_workloads JOIN workflow_repository_local_owners
+        ON workload_id=id WHERE state='cancellation_pending'`).all();
+    });
+    for (const row of local) void this.recoverLocal(String(row.id)).catch(() => {
+      workflowLog("warn", { event: "repository_workload_cleanup_pending", call: String(row.id) });
+    });
+  }
+
+  private async localExecutor(service: WorkflowRepositoryArtifactService) {
+    const [node, git] = await Promise.all([binary("node"), binary("git")]);
+    const worker = join(dirname(repositoryMcpServerPath()), "provider.mjs");
+    const runProvider: import("./persona-workload/providers.ts").RepositoryProvider = launch => this.local.runProvider(launch, node, worker);
+    return new LocalPersonaWorkloadExecutor({
+      materializer: service, repositoryMcpBundle: repositoryMcpServerPath(),
+      nodeBinary: node, gitBinary: git, providerBinary: binary,
+      providers: { claude: runProvider, codex: runProvider },
+      ownWorkspace: (id, path) => this.local.recordHome(id, path),
+      providerEnvironment: async provider => {
+        const env: Record<string, string> = {};
+        const keys = provider === "codex" ? ["OPENAI_API_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+        for (const key of keys) if (process.env[key]) env[key] = process.env[key]!;
+        return env;
+      },
+    });
   }
 
   async run(input: ReviewInput, shutdown: AbortSignal): Promise<string> {
@@ -82,22 +134,15 @@ export class RepositoryReview {
       policy: { version: 1, operations: REPOSITORY_OPERATION_IDS }, budgets: REPOSITORY_DEFAULT_BUDGETS,
     });
     service.setActiveRequestLookup(key => this.current(key) ?? null);
-    const executor = this.injected ?? new LocalPersonaWorkloadExecutor({
-      materializer: service, repositoryMcpBundle: repositoryMcpServerPath(),
-      nodeBinary: await binary("node"), gitBinary: await binary("git"), providerBinary: binary,
-      providerEnvironment: async provider => {
-        const env: Record<string, string> = {};
-        const keys = provider === "codex" ? ["OPENAI_API_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
-        for (const key of keys) if (process.env[key]) env[key] = process.env[key]!;
-        return env;
-      },
-    });
+    const executor = this.injected ?? await this.localExecutor(service);
     if (executor.repositoryEvidenceCapability !== request.requiredCapability) throw new Error("Repository executor capability mismatch");
     // Executable lookup can yield after the engine's check. Recheck before granting workload ownership.
     if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) throw new Error("Persona repository access preview is off");
-    this.store.transact(db => db.prepare(`INSERT INTO workflow_repository_workloads
-      (id,attempt_id,digest,state,deadline) VALUES(?,?,?,'running',?)`)
-      .run(id, input.attemptId, snapshot.digest, input.deadline));
+    this.store.transact(db => {
+      db.prepare(`INSERT INTO workflow_repository_workloads (id,attempt_id,digest,state,deadline)
+        VALUES(?,?,?,'running',?)`).run(id, input.attemptId, snapshot.digest, input.deadline);
+      if (!this.injected) db.prepare("INSERT INTO workflow_repository_local_owners(workload_id) VALUES(?)").run(id);
+    });
     const cancel = new AbortController();
     const signal = AbortSignal.any([shutdown, cancel.signal, AbortSignal.timeout(Math.max(1, input.deadline - Date.now()))]);
     const timer = setInterval(() => {
@@ -126,6 +171,7 @@ export class RepositoryReview {
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     let errorCode = "workload_interrupted";
+    let completed = false;
     let terminal: Extract<PersonaWorkloadEvent, { type: "terminal" }> | undefined;
     let events: AsyncIterator<PersonaWorkloadEvent> | undefined;
     let streamFinished = false;
@@ -211,8 +257,8 @@ export class RepositoryReview {
           WHERE q.workload_id=? AND q.operation_id=? AND h.id=?`);
         for (const ref of refs) if (ref.kind === "repository" && !find.get(id, ref.operationId, ref.evidenceHandleId))
           throw new Error("Repository citation does not belong to this review");
-        db.prepare("UPDATE workflow_repository_workloads SET state='completed' WHERE id=?").run(id);
       });
+      completed = true;
       return JSON.stringify(verdict);
     } finally {
       clearInterval(timer);
@@ -223,9 +269,23 @@ export class RepositoryReview {
         if (!streamFinished) await events?.return?.();
       } finally {
         await stopping;
-        this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='failed',
-          error_code=?, cancellation_generation=? WHERE id=? AND state IN ('running','cancellation_pending')`).run(errorCode,generation,id));
+        if (!this.injected) await this.finishLocal(id, service);
+        this.store.transact(db => {
+          db.prepare(`UPDATE workflow_repository_workloads SET state=?, error_code=?, cancellation_generation=?
+            WHERE id=? AND state IN ('running','cancellation_pending')`).run(completed ? "completed" : "failed", completed ? null : errorCode, completed ? 0 : generation, id);
+          if (!this.injected) db.prepare("DELETE FROM workflow_repository_local_owners WHERE workload_id=?").run(id);
+        });
       }
+    }
+  }
+
+  private async finishLocal(id: string, service: WorkflowRepositoryArtifactService) {
+    try {
+      await this.local.confirmClosed(id, service);
+    } catch (error) {
+      this.store.transact(db => db.prepare(`UPDATE workflow_repository_workloads SET state='cancellation_pending',
+        error_code='cancellation_unconfirmed', cancellation_generation=MAX(1,cancellation_generation) WHERE id=?`).run(id));
+      throw error;
     }
   }
 }

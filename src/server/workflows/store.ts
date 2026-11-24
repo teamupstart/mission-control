@@ -450,6 +450,7 @@ export const WORKFLOW_TABLES = [
   "workflow_deliveries",
   "workflow_llm_calls",
   "workflow_repository_workloads",
+  "workflow_repository_local_owners",
   "workflow_repository_events",
   "workflow_repository_queries",
   "workflow_repository_handles",

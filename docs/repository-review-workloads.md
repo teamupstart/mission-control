@@ -37,9 +37,14 @@ returned identities again.
 If the supervisor rejects an event or the stream ends without a terminal result, it requests
 cancellation from the executor and waits for cleanup before the review attempt can retry.
 If cancellation fails, the supervisor records the pending cancellation and blocks the run.
-A retry asks the executor about that workload ID. A running workload receives the same
-cancellation generation again. Only a terminal confirmation permits a replacement reviewer
-to start, including after a daemon restart.
+A retry asks a remote executor about that workload ID and reissues the same cancellation
+generation if it is still running. For a local reviewer, the daemon records the checkout
+lease ID and nonce, the temporary provider home's filesystem identity, and the provider
+supervisor's PID and start identity. The supervisor opens its launch gate only after the
+daemon persists that process identity. On startup, the daemon verifies the group is empty
+and removes the matching lease and home before another reviewer can start. An unidentified
+group or a mismatched lease stays pending. Older pending rows without a local ownership
+record still require confirmation from their executor.
 
 ## Sealing and retention
 

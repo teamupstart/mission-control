@@ -5,7 +5,7 @@ import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
-import { registerVoiceRoutes } from "./voice/routes.ts";
+import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -9309,6 +9309,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
+  registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
+    async deliver(target, text, _utteranceId, command) {
+      if (target.state !== "running" || !target.sessionId) return "not-running";
+      const session = registry.getSession(target.sessionId);
+      if (!session || session.state === "exited") return "not-running";
+      if (command === "stop") {
+        const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
+        if (unsupported) return { outcome: "failed", detail: unsupported };
+        const result = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
+        return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
+      }
+      if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
+      const result = pendingTurns.submit(target.sessionId, text);
+      return result.ok ? "queued" : { outcome: "failed", detail: result.error || "Queue refused the message." };
+    },
+  }, (card) => registry.emitVoiceCard(card));
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

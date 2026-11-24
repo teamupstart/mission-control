@@ -394,8 +394,9 @@ export function useEventStream(): MissionState {
       setSettingsStatus(null);
       // And the keep-awake status, under the same contract with a sharper edge: `on` is a
       // claim about a live OS power assertion, and the daemon restarting - the one event
-      // most likely to have severed this stream - is exactly what resets that assertion
-      // to off. Unknown disables the toggle; the reconnect snapshot restores the truth.
+      // most likely to have severed this stream - releases that assertion until the new
+      // daemon has reacquired it. Unknown disables the toggle; the reconnect snapshot
+      // restores the truth.
       setKeepAwakeStatus(null);
     };
 

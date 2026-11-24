@@ -88,6 +88,7 @@ import { reportMissionMcpDrift } from "./mission-mcp.ts";
 import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
+import { keepAwakePreferenceStore } from "./keep-awake-preference.ts";
 import { getCostConfig, reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
 import { refreshManagedMetricsPolicy } from "./environment/claude-managed.ts";
 import { reconcilePiExtension } from "./extensions/config.ts";
@@ -822,12 +823,14 @@ const schedules = new ScheduleManager({
 let stopSchedules = () => {};
 let stopSnoozeClock = () => {};
 
-// The transient Keep Awake owner. Constructed before the app so the routes never see a
-// daemon without it, and SEEDED into the registry before the server accepts traffic so
-// the very first snapshot already carries a truthful status - which, on every boot, is
-// `off`: the mode is deliberately never persisted or reacquired across restarts.
+// The Keep Awake owner. Constructed before the app so the routes never see a daemon without
+// it, and SEEDED into the registry before the server accepts traffic so the very first
+// snapshot already carries a truthful status - which is `off` until the operator's saved
+// choice has been applied. That happens in the listening callback below, once this process
+// has won the port: a daemon that lost it must not take a power assertion.
 const keepAwake = new KeepAwakeManager({
   onStatus: (status) => registry.setKeepAwakeStatus(status),
+  preference: keepAwakePreferenceStore(),
 });
 registry.setKeepAwakeStatus(keepAwake.status());
 
@@ -994,6 +997,14 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   // Settle resident runs a previous process left pending, from session-start evidence, then
   // follow run ends. After the port for the reason the schedules above are: it writes rows.
   residents.start();
+  // Put the Mac back in the state the operator chose before this daemon (or the one an
+  // upgrade replaced) went away. The assertion died with that process; the choice did not.
+  // After the port, like every other writer, because it takes a process-owned OS assertion.
+  if (!shutdownStarted) {
+    void keepAwake.restore().catch((error: unknown) => {
+      console.warn("[mission-control] could not restore the Keep awake choice:", error);
+    });
+  }
   // Discovery starts HERE, after the callback that means "we are serving", for the reason
   // the manager's construction documents: the first pass over a restored library can be
   // long, and it must not be able to delay the port answering. It is fire-and-forget by
@@ -1201,9 +1212,10 @@ async function shutdown(): Promise<void> {
   // finish or be abandoned with the process: every write it makes is an idempotent replace of
   // derived rows, so a half-finished pass costs the next one a re-verify and nothing else.
   archives.stop();
-  // Release the idle-sleep assertion while we can still do it gracefully. `caffeinate`'s
-  // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
-  // orderly half of a two-part cleanup, not the only one.
+  // Release the idle-sleep assertion while we can still do it gracefully. This releases the
+  // assertion only: the operator's saved choice stays, so the next daemon puts it back.
+  // `caffeinate`'s own `-w <daemon PID>` covers every exit that never reaches this line, so
+  // this is the orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
   // Stop taking new export work, commit whatever is captured but unprojected, and release this
   // process's leases. Time-bounded by construction: the local commit gets a budget and the

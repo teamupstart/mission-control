@@ -1341,8 +1341,10 @@ export class Registry extends EventEmitter {
    * default is a truthful placeholder for a registry no manager has seeded yet (the
    * ~20 hand-built route-test registries): unsupported and off, which a browser renders
    * as unavailable rather than as a claim about host power state. `src/server/index.ts`
-   * seeds the real status before the server accepts traffic. Deliberately TRANSIENT -
-   * a new daemon always snapshots `off`, which is the approved restart-reset behavior.
+   * seeds the real status before the server accepts traffic. An OBSERVATION, never
+   * persisted here: the operator's saved choice lives in `app_config.keepAwake`, and the
+   * manager applies it once the daemon is serving, so a new daemon snapshots `off` until
+   * that acquisition is confirmed.
    */
   private keepAwake: KeepAwakeStatus = {
     supported: false,

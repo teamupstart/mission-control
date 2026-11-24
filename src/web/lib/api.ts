@@ -1799,7 +1799,8 @@ export async function submitProductIssue(
 }
 
 /**
- * Turn the transient Keep Awake mode on or off: `PUT /api/keep-awake`.
+ * Turn the Keep Awake mode on or off: `PUT /api/keep-awake`. The daemon remembers the choice
+ * across restarts and upgrades.
  *
  * Resolves with the daemon's OBSERVED status - never an echo of the request - and never
  * throws into React, like the other mutators here. On a refusal (unsupported host, failed

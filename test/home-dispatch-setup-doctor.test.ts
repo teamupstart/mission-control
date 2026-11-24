@@ -929,3 +929,18 @@ test("the state home resolves through the one shared rule, whichever environment
   assert.equal(resolveStateDir({ HARNESS_HOME: "/h" }, "/home/u"), "/h");
   assert.equal(resolveStateDir({}, "/nonexistent-home-for-test"), "/nonexistent-home-for-test/.mission-control");
 });
+
+test("a passing mod-calls check lists the daemon paths the bundle actually names", async () => {
+  const r = await rig();
+  try {
+    writeModBuild(r.source, "2.2.0", 'fetch("/dispatch/answers"); fetch("/dispatch/inbox?x=1");');
+    assert.equal((await r.run("setup")).code, 0);
+    const doctor = await r.run("doctor");
+    assert.equal(doctor.code, 0, doctor.out + doctor.err);
+    assert.match(doctor.out, /ok {4}mod-calls: the staged mod calls only these daemon paths, all allowed: \/dispatch\/answers, \/dispatch\/inbox\?x=1\n/);
+    const line = doctor.out.split("\n").find((l) => l.includes("mod-calls:"))!;
+    assert.doesNotMatch(line, /\/api\/health/, "a path the bundle never names is not claimed");
+  } finally {
+    await r.cleanup();
+  }
+});

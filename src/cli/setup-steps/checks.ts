@@ -225,7 +225,8 @@ export async function checkModCallsAt(claude: ClaudeCli | null, deps: SetupDeps,
     const why = record.checked === true ? "the staged bundle is not the one the build checked" : "the staged mod has no build-time mod-calls record";
     return { name: "mod-calls", status: "fail", message: why + ", so its daemon calls cannot be established", fix: "Rebuild with `npm run build`, then run `mctl setup`." };
   }
-  const refused = calledPaths(bundle).filter((path) => !isAllowedModCall(path, allowedCalls));
+  const paths = calledPaths(bundle);
+  const refused = paths.filter((path) => !isAllowedModCall(path, allowedCalls));
   if (refused.length > 0) {
     return { name: "mod-calls", status: "fail", message: `the staged mod calls daemon paths that are not allowed: ${refused.join(", ")}`, fix: "Rebuild with `npm run build`, then run `mctl setup`." };
   }
@@ -238,7 +239,7 @@ export async function checkModCallsAt(claude: ClaudeCli | null, deps: SetupDeps,
       return { name: "mod-calls", status: "fail", message: `\`claude plugin validate\` refused the staged mod: ${(validated.stderr || validated.stdout).trim()}`, fix: "Rebuild with `npm run build`, then run `mctl setup`." };
     }
   }
-  return { name: "mod-calls", status: "ok", message: "the staged mod calls only /api/health and /dispatch/*" };
+  return { name: "mod-calls", status: "ok", message: paths.length > 0 ? `the staged mod calls only these daemon paths, all allowed: ${paths.join(", ")}` : "the staged mod names no daemon paths" };
 }
 
 /** Every kept check, in the order `mctl doctor` prints them. */

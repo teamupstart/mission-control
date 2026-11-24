@@ -275,6 +275,39 @@ test("Publish is idempotent and immutable versions are readable", async () => {
   assert.equal((await replay.json() as typeof firstBody).version.id, firstBody.version.id);
 });
 
+test("a legacy publish retry preserves its frozen grant while the draft revision stays the same", async () => {
+  const { request, store } = fixture();
+  const { workflow } = await seedValid(request);
+  const publish = (requestId?: string) => request(`/api/workflows/${workflow.id}/publish`, {
+    method: "POST", body: JSON.stringify({ expectedDraftRevision: 1, requestId }),
+  });
+  const initial = await publish();
+  assert.equal(initial.status, 200);
+  const original = await initial.json();
+  const judge = store.personaCatalog().find(p => p.name === "Judge")!;
+  assert.ok(judge.repositoryAccessRevision !== undefined);
+  assert.ok(store.setPersonaRepositoryAccess(judge.id, judge.repositoryAccessRevision, "read", 10).ok);
+  const retry = await publish();
+  assert.equal(retry.status, 200);
+  const replay = await retry.json();
+  assert.equal(replay.idempotent, true);
+  assert.deepEqual(replay.version, original.version);
+  assert.equal(store.getWorkflow(workflow.id)?.currentVersionId, original.version.id);
+  assert.equal(store.listWorkflowVersions(workflow.id).length, 1);
+
+  const fresh = await publish("explicit-new-grant");
+  assert.equal(fresh.status, 200);
+  const { version } = await fresh.json();
+  assert.notEqual(version.id, original.version.id);
+  const frozen = store.getWorkflowVersionById(version.id)!.graph.nodes.find(n => n.kind === "persona");
+  assert.equal(frozen?.persona.repositoryAccess, "read");
+  const ambiguous = await publish();
+  assert.equal(ambiguous.status, 409);
+  assert.equal((await ambiguous.json()).code, "workflow_publish_request_id_required");
+  assert.equal(store.getWorkflow(workflow.id)?.currentVersionId, version.id);
+  assert.equal(store.listWorkflowVersions(workflow.id).length, 2);
+});
+
 test("lost publish responses replay the exact version after a grant change and a draft advance", async () => {
   const { request, store } = fixture();
   const { workflow } = await seedValid(request);

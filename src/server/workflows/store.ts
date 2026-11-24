@@ -2623,7 +2623,7 @@ export type WorkflowPublishWrite =
   | { ok: true; workflow: WorkflowDefinition; version: WorkflowVersion; idempotent: boolean }
   | {
       ok: false;
-      reason: "not_found" | "revision_conflict" | "archived" | "validation" | "builtin";
+      reason: "not_found" | "revision_conflict" | "publish_request_id_required" | "archived" | "validation" | "builtin";
       current: WorkflowDefinition | null;
       diagnostics?: WorkflowDiagnostic[];
     };
@@ -4873,11 +4873,12 @@ export class WorkflowStore {
           if (version.sourceDraftRevision !== expectedDraftRevision) return { ok: false, reason: "revision_conflict", current: workflow };
           return { ok: true, workflow, version, idempotent: true };
         }
-      } else if (workflow.draftRevision !== expectedDraftRevision || workflow.archivedAt !== null) {
-        // Older clients identify a publish by draft revision alone. Replay only an unambiguous result.
+      } else {
+        // A legacy retry identifies only the draft revision. Resolve it before reading live grants.
         const versions = this.db.prepare(`SELECT * FROM workflow_versions
           WHERE workflow_id=? AND source_draft_revision=? LIMIT 2`).all(id, expectedDraftRevision);
         if (versions.length === 1) return { ok: true, workflow, version: parseWorkflowVersionRow(versions[0]), idempotent: true };
+        if (versions.length > 1) return { ok: false, reason: "publish_request_id_required", current: workflow };
       }
       if (workflow.archivedAt !== null) return { ok: false, reason: "archived", current: workflow };
       if (workflow.draftRevision !== expectedDraftRevision) {

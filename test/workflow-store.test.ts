@@ -326,11 +326,11 @@ test("only a read-enabled pinned graph selects repository capture, including aft
   assert.equal(store.setPersonaRepositoryAccess("p1", 1, "none", 6).ok, false);
   const firstJudge = original.version.graph.nodes.find(node => node.kind === "persona")!;
   assert.equal(personaSnapshotIsOutdated(firstJudge.persona, updated.persona), true);
-  const republished = store.publishWorkflow("w1", 1, "with-access");
+  const republished = store.publishWorkflow("w1", 1, "with-access", 7, "publish-changed-grant");
   assert.ok(republished.ok);
   assert.equal(republished.idempotent, false);
   assert.equal(workflowRequiresRepositoryCapture(republished.version.graph), true);
-  const repeat = store.publishWorkflow("w1", 1, "unused");
+  const repeat = store.publishWorkflow("w1", 1, "unused", 8, "publish-identical-snapshot");
   assert.ok(repeat.ok && repeat.idempotent);
   assert.equal(workflowRequiresRepositoryCapture(store.getWorkflowVersion("w1", 1)!.graph), false);
   assert.equal(store.setPersonaRepositoryAccess("p1", 2, "none", 7).ok, true);
@@ -377,7 +377,7 @@ test("the v54 upgrade fingerprints historical graph bytes and gives existing Per
     assert.equal(migrated.graph_json, raw);
     assert.match(String(migrated.source_snapshot_fingerprint), /^[a-f0-9]{64}$/);
     assert.equal(store.getPersona("p1")!.repositoryAccess, "none");
-    const published = store.publishWorkflow("w1", 1, "unused");
+    const published = store.publishWorkflow("w1", 1, "unused", 10 + i, `publish-after-migration-${i}`);
     assert.ok(published.ok && published.idempotent);
     assert.equal(published.version.id, "legacy");
   }

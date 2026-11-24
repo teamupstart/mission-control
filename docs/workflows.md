@@ -3150,7 +3150,10 @@ Persona stores its local access override separately from its shipped guidance. V
 shows the permission frozen at publication and identifies older snapshots as outdated.
 The editor retries an interrupted publish with the same request ID. The daemon returns
 the version it originally selected, even if another editor has since changed the draft
-or published a different grant. A separate publish gets a new request ID.
+or published a different grant. A separate publish gets a new request ID. Clients that omit
+the ID can publish a draft revision once or retrieve its sole published version. If multiple
+versions already exist for that revision, the API returns HTTP 409. Publishing a changed
+grant at the same draft revision requires a fresh request ID.
 
 Submitting starts an asynchronous capture. Once the submission is captured, later changes to
 the worktree cannot affect its review. Runs shows repository queries, denials, truncation and

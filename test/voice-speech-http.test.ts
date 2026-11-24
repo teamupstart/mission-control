@@ -587,7 +587,7 @@ test("a restarted launcher can confirm the original player's exit using its prov
   t.after(() => { credential.fill(0); Object.assign(process.env, fixtureSupervisorEnv); });
   const boot = () => {
     const child = fork(new URL("./helpers/voice-restart-supervisor.mjs", import.meta.url), [], {
-      execArgv: [], stdio: ["ignore", "ignore", "inherit", "ipc", "pipe"],
+      execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "inherit", "ipc", "pipe"],
     });
     (child.stdio[4] as Writable).end(credential);
     t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });

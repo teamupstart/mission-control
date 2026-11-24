@@ -146,6 +146,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],
+  "src/server/voice/supervised-listener.ts": [
+    { operation: "spawn", command: "command", contract: "fixed-os-utility", reason: "the voice supervisor starts its child through the pinned platform filesystem sandbox before granting playback authority" },
+  ],
   "src/server/util/git.ts": [
     { operation: "spawnSync", command: "executable.path", contract: "locator-result", reason: "bounded Git config parser for synchronous repository identity, cached for configs without includes" },
   ],

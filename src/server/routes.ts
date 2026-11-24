@@ -8,6 +8,7 @@ import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import type { VoiceDecider } from "./voice/decide.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
+import { voiceHeldByReview } from "@shared/voice-delivery.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -9403,8 +9404,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
       const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
       if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      const held = session.pendingReviews > 0 || session.state === "awaiting_review";
-      return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
+      return { outcome: voiceHeldByReview(session) ? "held" : "queued", turnId: result.pendingTurn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider);
 

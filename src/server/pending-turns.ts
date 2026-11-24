@@ -12,7 +12,7 @@ import {
   followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff,
   SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, SpokenTranscriptUnavailable, type PreparedSpokenTranscript,
 } from "./delivery-ledgers.ts";
-import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
+import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText, voiceHeldByReview } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
 import {
@@ -945,7 +945,7 @@ export class PendingTurnManager {
   }
 
   private spokenBlocked(session: Session, turn: PendingTurn): boolean {
-    return turn.spokenWords !== undefined && (!featureEnabled("voice") || session.pendingReviews > 0);
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || voiceHeldByReview(session));
   }
 
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {

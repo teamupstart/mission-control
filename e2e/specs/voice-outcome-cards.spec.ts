@@ -359,3 +359,29 @@ test("a held card identifies the blocking question and recalls the queued words"
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
   await expect.poll(async () => ((await (await page.request.get(daemon.baseURL + "/api/sessions")).json()) as Session[]).find(s => s.id === session.id)?.pendingTurns.length).toBe(0);
 });
+
+test("a nonblocking question after daemon restart leaves the spoken turn queued without a held card", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const sessionURL = daemon.baseURL + "/api/sessions/" + encodeURIComponent(steve.id);
+  const ask = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, asyncCapable: true, kind: "input", title: "Which release?", body: "Keep working meanwhile.", snoozable: true },
+  });
+  expect((await ask.json()).wait).toBe("message");
+  // Pausing keeps the row queued across restart independently of the filed question.
+  expect((await page.request.post(sessionURL + "/pause", { data: { mode: "now" } })).ok()).toBe(true);
+  await say(daemon, "Steve, check the release", { id: "still-queued" });
+  await page.getByRole("button", { name: "Send now" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Queued behind Steve" })).toBeVisible();
+  await daemon.crash();
+  await daemon.restart();
+  await page.reload();
+  await expect.poll(async () => {
+    const sessions = await (await page.request.get(daemon.baseURL + "/api/sessions")).json() as Session[];
+    const session = sessions.find(s => s.id === steve.id);
+    return [session?.pendingReviews, session?.openQuestions, session?.pendingTurns.map(turn => turn.spokenWords)];
+  }).toEqual([0, 1, ["check the release"]]);
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: steve.name }).first()).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Held for Steve" })).toHaveCount(0);
+});

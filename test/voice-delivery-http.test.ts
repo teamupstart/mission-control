@@ -207,6 +207,21 @@ test("an early session upsert for a held split leg only publishes the live split
   assert.deepEqual(registry.voiceRouter!.activeCards(), []);
 });
 
+test("an awaiting-review session label alone cannot turn a queued spoken message into a held card", async t => {
+  const sessionId = "sdk:Will";
+  const ask = reviews.create(sessionId, "input", "Which release?", "Keep working meanwhile.", null, { waitMode: "message", snoozable: true });
+  t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+  const session = registry.getSession(sessionId)!;
+  assert.equal(session.pendingReviews, 0);
+  assert.equal(session.openQuestions, 1);
+  await say("Will, check the release", "still-queued");
+  await act("still-queued", "send-now");
+  assert.equal(cards.at(-1)?.state, "queued");
+  registry.voiceRouter!.reset();
+  registry.voiceRouter!.restoreHeldTurns({ ...registry.getSession(sessionId)!, state: "awaiting_review" });
+  assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+});
+
 test("resuming a session with a blocking review reports held on its card and in Recently heard", async t => {
   const sleeping = { ...name("Ada"), state: "hibernated" as const, sessionId: null };
   roster.push(sleeping);

@@ -563,7 +563,9 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await page.clock.install();
     await openVoiceSettings(page, daemon);
     await saveKey(page, "Jev", SAVED_JEV);
-    await expect(line(page)).toHaveText(using("Jev"));
+    // A Jev banner later in the test must come from the other window's change.
+    await providerMenu(page).selectOption("openai");
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
     const committed = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     await page.route("**/api/voice/config", async route => {
@@ -1341,6 +1343,33 @@ test("a timed-out key replacement arriving after removal cannot restore the cred
 });
 
 for (const mutation of ["save", "remove"] as const) {
+  test(`an expired key ${mutation} arriving after reconciliation cannot change routing`, async ({ dashboard: page, daemon }) => {
+    await turnVoiceOn(daemon);
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(NOT_SET);
+    if (mutation === "remove") await saveKey(page, "OpenAI Decisions", SAVED_OPENAI);
+    const stalled = Promise.withResolvers<Route>();
+    await page.route("**/api/voice/decision-key*", route => {
+      if (route.request().method() === "GET") return route.continue();
+      stalled.resolve(route);
+    });
+    if (mutation === "save") await keyField(page, "OpenAI Decisions").fill(SAVED_OPENAI);
+    await row(page, "OpenAI Decisions").getByRole("button", { name: mutation === "save" ? "Save" : "Remove" }).click();
+    const late = await stalled.promise;
+    try {
+      const priorStatus = mutation === "save" ? NOT_SET : using("OpenAI Decisions");
+      await expect(panel(page)).toContainText("The key change could not be confirmed.", { timeout: 20_000 });
+      await expect(line(page)).toHaveText(priorStatus);
+      expect((await page.request.fetch(late.request())).status()).toBe(409);
+      await page.reload();
+      await expect(line(page)).toHaveText(priorStatus);
+      expect(existsSync(join(daemon.home, "voice", "decision-key.json"))).toBe(mutation === "remove");
+      if (mutation === "save") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "46-expired-key-delivery");
+    } finally {
+      await late.abort().catch(() => undefined);
+    }
+  });
+
   test(`a stalled key ${mutation} releases both rows and reads the committed change`, async ({ dashboard: page, daemon }) => {
     await turnVoiceOn(daemon);
     await page.clock.install();

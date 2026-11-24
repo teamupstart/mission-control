@@ -504,6 +504,16 @@ export interface VoiceDashboardSnapshot {
   intentReceipt?: string;
 }
 
+export interface VoiceKeyWriteOptions {
+  revision: string;
+  expiresAt: number;
+  signal: AbortSignal;
+}
+
+function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) {
+  return { signal, headers: { "x-voice-key-revision": revision, "x-voice-key-expires-at": String(expiresAt) } };
+}
+
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
@@ -2528,12 +2538,12 @@ export const api = {
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
-  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, revision: string, signal: AbortSignal) =>
+  saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },
-      { signal, headers: { "x-voice-key-revision": revision } }),
-  removeVoiceDecisionKey: (provider: VoiceKeyProvider, revision: string, signal: AbortSignal) =>
+      keyWriteRequest(options)),
+  removeVoiceDecisionKey: (provider: VoiceKeyProvider, options: VoiceKeyWriteOptions) =>
     request<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>(
-      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, { signal, headers: { "x-voice-key-revision": revision } }),
+      "DELETE", `/api/voice/decision-key?provider=${encodeURIComponent(provider)}`, undefined, keyWriteRequest(options)),
   // --- Task shaping, behind its preview flag (404 while it is off) ---
   /** The config view, the folder's shapers and whether each named variable is set. Never a value. */
   getShaping: () =>

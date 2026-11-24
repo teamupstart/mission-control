@@ -8,8 +8,9 @@ import {
   VoiceDecisionKeyPutSchema,
   voiceDecisionKeyReport,
   type VoiceKeyAvailability,
+  type VoiceKeyProvider,
 } from "@shared/voice-decide.ts";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
@@ -32,6 +33,23 @@ import { voiceStateStore, type VoiceStateStore } from "./state.ts";
  * disabled route still answers 404 before any body is read.
  */
 const VOICE_BODY_MAX_BYTES = 128 * 1024;
+
+function writeExpired(value?: string): boolean {
+  if (value === undefined) return false;
+  const expiry = Number(value);
+  return !Number.isSafeInteger(expiry) || expiry <= Date.now();
+}
+
+function keyWriteConflict(c: Context, provider: VoiceKeyProvider) {
+  if (writeExpired(c.req.header("x-voice-key-expires-at"))) {
+    return { error: "expired_key_write", reason: "The key change expired. Check its current source and try again." };
+  }
+  const observed = c.req.header("x-voice-key-revision");
+  if (observed !== undefined && observed !== decisionKeyRevisions()[provider]) {
+    return { error: "stale_key", reason: "The key changed since this row was read. Check its current source and try again." };
+  }
+  return null;
+}
 
 const limitBody = bodyLimit({
   maxSize: VOICE_BODY_MAX_BYTES,
@@ -98,8 +116,7 @@ export function registerVoiceRoutes(
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
-    const expiry = c.req.header("x-voice-config-expires-at");
-    if (expiry !== undefined && (!Number.isSafeInteger(Number(expiry)) || Number(expiry) <= Date.now())) {
+    if (writeExpired(c.req.header("x-voice-config-expires-at"))) {
       return c.json({ error: "The settings change expired.", config: getVoiceConfig() }, 409);
     }
     const ticket = c.req.header("x-voice-provider-ticket");
@@ -124,7 +141,6 @@ export function registerVoiceRoutes(
   app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
 
   const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
-  const keyConflict = { error: "stale_key", reason: "The key changed since this row was read. Check its current source and try again." };
   app.get("/api/voice/decision-key", gate, (c) => {
     c.header("Cache-Control", "no-store");
     const saved = savedDecisionKeys();
@@ -149,8 +165,8 @@ export function registerVoiceRoutes(
     if (!parsed.success) {
       return c.json({ error: "invalid_key", reason: "Send { provider, key } with a key of 8 to 512 printable characters and no spaces." }, 400);
     }
-    const observed = c.req.header("x-voice-key-revision");
-    if (observed !== undefined && observed !== decisionKeyRevisions()[parsed.data.provider]) return c.json(keyConflict, 409);
+    const conflict = keyWriteConflict(c, parsed.data.provider);
+    if (conflict) return c.json(conflict, 409);
     let availability: VoiceKeyAvailability;
     try {
       availability = saveDecisionKey(parsed.data.provider, parsed.data.key);
@@ -163,8 +179,8 @@ export function registerVoiceRoutes(
   app.delete("/api/voice/decision-key", gate, (c) => {
     const provider = VoiceDecisionKeyProviderSchema.safeParse(c.req.query("provider"));
     if (!provider.success) return c.json({ error: "invalid_provider", reason: "Name the provider: openai or jev." }, 400);
-    const observed = c.req.header("x-voice-key-revision");
-    if (observed !== undefined && observed !== decisionKeyRevisions()[provider.data]) return c.json(keyConflict, 409);
+    const conflict = keyWriteConflict(c, provider.data);
+    if (conflict) return c.json(conflict, 409);
     let availability: VoiceKeyAvailability;
     try {
       availability = removeDecisionKey(provider.data);

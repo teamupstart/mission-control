@@ -1024,7 +1024,13 @@ test("Idle rail sections keep counts and navigation order across pinned resident
   );
   const idle = ordered.columns.find((column) => column.id === "idle")!;
   const sections = idleRailSections(idle);
-  assert.deepEqual(sections.map((section) => section.key), ["pinned-awaiting", "pinned-free", "awaiting", "free", "held"]);
+  assert.deepEqual(sections.map(({ key, kind, pinned }) => [key, kind, pinned]), [
+    ["pinned-awaiting", "awaiting", true],
+    ["pinned-free", "free", true],
+    ["awaiting", "awaiting", false],
+    ["free", "free", false],
+    ["held", "held", false],
+  ]);
   assert.deepEqual(sections.flatMap((section) => section.sessionIds), idle.sessions.map((session) => session.id));
   for (const section of sections) assert.deepEqual(renderedIds(section.rows), section.sessionIds);
 });

@@ -6,6 +6,7 @@ type SessionRow = Exclude<FleetRow, { kind: "section" }>;
 interface IdleRailSection {
   key: string;
   kind: SectionKind;
+  pinned: boolean;
   rows: SessionRow[];
   sessionIds: string[];
 }
@@ -18,10 +19,11 @@ export interface IdleRailSections {
 /** Keep the fleet's section boundaries, repository frames, and run clusters in their drawn order. */
 export function idleRailSections(column: FleetColumn): IdleRailSection[] {
   const sections: IdleRailSection[] = [];
-  const start = (kind: SectionKind, key: string = kind): IdleRailSection => {
+  const start = (kind: SectionKind, pinned = false): IdleRailSection => {
     const section = {
-      key,
+      key: pinned ? `pinned-${kind}` : kind,
       kind,
+      pinned,
       rows: [],
       sessionIds: [],
     };
@@ -39,13 +41,13 @@ export function idleRailSections(column: FleetColumn): IdleRailSection[] {
   for (const row of fleetRows(group)) {
     if (row.kind === "section") {
       // A Free rule before the Awaiting span belongs to pinned residents.
-      const pinnedFree = row.section === "free" && group.awaiting && !sections.some((item) => item.key === "awaiting");
-      section = start(row.section, pinnedFree ? "pinned-free" : row.section);
+      const pinnedFree = row.section === "free" && group.awaiting !== null && !sections.some((item) => item.key === "awaiting");
+      section = start(row.section, pinnedFree);
       continue;
     }
     // Before the first rule, rows are either the unsplit Free group or pinned Awaiting residents.
     section ??= group.awaitingCount > (group.awaiting?.length ?? 0)
-      ? start("awaiting", "pinned-awaiting")
+      ? start("awaiting", true)
       : start("free");
     section.rows.push(row);
     const blocks = row.kind === "repo" ? row.blocks : [row];

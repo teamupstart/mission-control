@@ -4379,8 +4379,12 @@ export function App(): React.JSX.Element {
       // it natively. Without this they would act as they do on a rail row: Tab dives into the
       // reader and Shift+Tab cycles the selected session's permission mode, so a keyboard could
       // never get from Intake to Backlog.
-      // The preview Idle rail includes section disclosures in its native tab order.
-      if ((chord === "Tab" || chord === "shift+Tab") && target?.closest(".line-dock, .has-idle-sections")) return;
+      // In the Idle preview, Tab walks the section controls. The session rows are
+      // reached with the fleet arrows and keep their conversation and mode shortcuts.
+      const inIdleSections = Boolean(target?.closest(".has-idle-sections"));
+      if ((chord === "Tab" || chord === "shift+Tab") && (
+        target?.closest(".line-dock") || (inIdleSections && !target?.closest(".rail-row"))
+      )) return;
 
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
@@ -4491,7 +4495,9 @@ export function App(): React.JSX.Element {
       const detailResident = residentKeysRef.current.detailResidentId;
       // The drawer's Needs you group keeps the review chord live on a fleet with no rows.
       const drawerReview = chord === bindings.review && residentKeysRef.current.drawerAsking.length > 0;
-      if (ids.length === 0 && !residentOpen && !drawerReview) return;
+      // The selected session's section can hide the last row while its reader stays open.
+      const leavingReader = chord === "Escape" && readerSession && target?.closest(".cdetail");
+      if (ids.length === 0 && !residentOpen && !drawerReview && !leavingReader) return;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
@@ -4563,7 +4569,7 @@ export function App(): React.JSX.Element {
             setSelectedId(nextId);
             // Walking the console rail: focus follows to the new row (we only reach here
             // when the keyboard was NOT in the reader - that path returned above).
-            if (layout === "console" || allSessionsRail) focusReaderRail(nextId);
+            if (layout === "console" || allSessionsRail || inIdleSections) focusReaderRail(nextId);
             // Once drilled in, the board is a console rail: arrows switch the open detail
             // too, which `boardOpenId` gets for free. In the overview they only move the
             // tile cursor - and take DOM focus with them, so Enter opens what you see.

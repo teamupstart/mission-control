@@ -430,9 +430,18 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   await freeSection.focus();
   await dashboard.keyboard.press("Tab");
   await dashboard.keyboard.press("Tab");
-  await expect(rail.getByRole("button", { name: freeName, exact: true })).toBeFocused();
-  await dashboard.keyboard.press("Tab");
   await expect(heldSection).toBeFocused();
+  const detailBody = dashboard.locator(".cdetail .detail-body");
+  const freeRow = rail.getByRole("button", { name: freeName, exact: true });
+  await freeRow.press("Tab");
+  await expect(detailBody).toBeFocused();
+  await dashboard.keyboard.press("Escape");
+  await expect(freeRow).toBeFocused();
+  // SDK sessions have no writable terminal pane. The mode shortcut still consumes the
+  // key, keeping focus on the row instead of moving to the previous control.
+  await freeRow.press("Shift+Tab");
+  await expect(freeRow).toBeFocused();
+  await heldSection.focus();
   await dashboard.keyboard.press("Enter");
   await expect(heldSection).toHaveAttribute("aria-expanded", "true");
   await expect(rail.locator(".rail-row.is-held")).toBeVisible();
@@ -441,7 +450,6 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   await expect(rail.locator(".rail-row.is-held")).toHaveCount(0);
   // Held follows Free in fleet order. Down would select the hidden held session if it
   // were still in the keyboard navigation list.
-  const freeRow = rail.getByRole("button", { name: freeName, exact: true });
   await freeRow.press("ArrowDown");
   await expect(freeRow).toHaveAttribute("aria-current", "true");
   await expect(heldSection).toHaveAttribute("aria-expanded", "false");
@@ -456,6 +464,9 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   await heldSection.click();
   await expect(heldSection).toHaveAttribute("aria-expanded", "false");
   await expect(heldRow).toHaveCount(0);
+  await detailBody.focus();
+  await dashboard.keyboard.press("Escape");
+  await expect(heldSection).toBeFocused();
   await header.getByRole("button", { name: "Back to the board" }).click();
   await idle.getByRole("button", { name: `Open ${heldName}`, exact: true }).press("Enter");
   await expect(heldSection).toHaveAttribute("aria-expanded", "true");

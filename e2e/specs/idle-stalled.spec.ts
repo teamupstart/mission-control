@@ -132,6 +132,9 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await stalledHeading.click();
   await expect(stalledHeading).toHaveAttribute("aria-expanded", "false");
   await expect(rail.locator(".rail-row.is-stalled")).toHaveCount(0);
+  await page.locator(".cdetail .detail-body").focus();
+  await page.keyboard.press("Escape");
+  await expect(stalledHeading).toBeFocused();
   await capture(rail, "04-stalled-rail-collapsed", page);
   await stalledHeading.click();
   await expect(rail.locator(".rail-row.is-stalled")).toHaveCount(2);

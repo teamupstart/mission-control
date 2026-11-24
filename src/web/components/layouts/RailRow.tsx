@@ -46,6 +46,7 @@ export function RailRow({
   session,
   shortcutChord = null,
   selected,
+  tabIndex,
   onSelect,
   registerEl,
   workflowRun = null,
@@ -74,6 +75,7 @@ export function RailRow({
    */
   shortcutChord?: string | null;
   selected: boolean;
+  tabIndex?: number;
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   workflowRun?: WorkflowRunSummary | null;
@@ -170,6 +172,7 @@ export function RailRow({
     <>
       <button
         ref={setRef}
+        tabIndex={tabIndex}
         className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${stall ? " is-stalled" : ""}${
           selected ? " selected" : ""}${
           residentMark ? " is-resident" : ""

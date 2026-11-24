@@ -409,6 +409,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       key={s.id}
       session={s}
       selected={s.id === props.selectedId}
+      tabIndex={props.idleRailSections ? -1 : undefined}
       onSelect={() => props.onSelect(s.id)}
       // Register the element like the console rail does, so Shift+Tab/Escape out of the
       // reader can land focus back on the selected row here.
@@ -653,7 +654,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}
                   onClick={() => idleRail.onToggle(section.key, !section.expanded)}
                 >
-                  <span>{section.kind === "blocked" ? BLOCKED_LABEL : FLEET_SECTION_TITLES[section.kind]}</span>
+                  <span>
+                    {section.pinned && "pinned "}
+                    {section.kind === "blocked" ? BLOCKED_LABEL : FLEET_SECTION_TITLES[section.kind]}
+                  </span>
                   <strong>{section.sessionIds.length}</strong>
                 </button>
               </Tooltip>

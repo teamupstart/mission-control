@@ -373,6 +373,37 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     expect(mention.card?.parts.map((p) => [p.target?.name, p.text])).toEqual([["Steve", "ask Alice about the build"]]);
     expect(decisions.requests, "Off sent nothing more to the provider").toHaveLength(1);
   });
+
+  test("a fresh provider report discloses routing enabled in another window while config is stalled", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await page.clock.install();
+    await openVoiceSettings(page, daemon);
+    await providerMenu(page).selectOption({ label: "Off" });
+    await expect(line(page)).toHaveText(NOT_SET);
+    const writer = await context.newPage();
+    await openVoiceSettings(writer, daemon);
+    await expect(providerMenu(writer)).toHaveValue("off");
+    const releaseConfig = Promise.withResolvers<void>();
+    await page.route("**/api/voice/config", async route => {
+      await releaseConfig.promise;
+      await route.continue();
+    });
+    try {
+      await providerMenu(writer).selectOption({ label: "Automatic" });
+      await expect(line(writer)).toHaveText(using("OpenAI Decisions"));
+      const refreshed = page.waitForResponse(r => r.url().endsWith("/api/voice/decision-key"));
+      await page.clock.fastForward(5_000);
+      expect((await (await refreshed).json()).provider).toBe("openai");
+      await expect(line(page)).toHaveText(using("OpenAI Decisions"), { timeout: 1_500 });
+      const { entry } = await sayAndSettle(daemon, SPLIT);
+      expect(entry.detail).toBe("OpenAI Decisions answered: split");
+      expect(decisions.requests).toHaveLength(1);
+      await capture(line(page), "19-fresh-active-provider");
+    } finally {
+      releaseConfig.resolve();
+    }
+  });
 });
 
 test("the voice preview gates the routing controls and background job live", async ({ dashboard: page, daemon }) => {

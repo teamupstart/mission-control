@@ -300,11 +300,10 @@ function FasterRoutingGroup({ state, keys }: {
   const { config, update, confirmedDecisionProvider } = state;
   const stored = config?.decisionProvider ?? null;
   const chosen = DECISION_PROVIDER_CHOICES.find((choice) => choice.stored === stored)?.value ?? "auto";
-  const off = confirmedDecisionProvider === "off";
-  const provider = off ? null : keys.report?.provider ?? null;
-  const status = off ? VOICE_ROUTING_WITHOUT_PROVIDER
-    : keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable)
-    : keys.report === null ? "Key status unavailable" : "Reading…";
+  const provider = keys.report?.provider ?? null;
+  const status = keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable)
+    : keys.report === null ? "Key status unavailable"
+    : confirmedDecisionProvider === "off" ? VOICE_ROUTING_WITHOUT_PROVIDER : "Reading…";
   return (
     <div className="settings-group voice-faster-routing" data-anchor="voice/faster-routing">
       <p className="settings-group-label">Faster routing</p>

@@ -1279,6 +1279,17 @@ test("a split after a question with a stranded preposition drops its connector",
   }
 });
 
+test("a comma-delimited joiner after a completed instruction about a keyword is removed", async (t) => {
+  for (const choice of ["split", null]) {
+    const { router, say, delivered } = routerRig(() => answered(choice));
+    t.after(() => router.reset());
+    await say("Steve, update the keyword, and Alice, review the PR", "keyword");
+    if (choice === null) assert.ok(await router.pick("keyword", "task:Alice"));
+    assert.ok(await router.sendNow("keyword"));
+    assert.deepEqual(delivered, [["Steve", "update the keyword", "keyword"], ["Alice", "review the PR", "keyword#2"]]);
+  }
+});
+
 test("a confirmed split keeps the last word of an incomplete first instruction", async (t) => {
   for (const choice of ["split", null]) {
     const { router, say, delivered } = routerRig(() => answered(choice));

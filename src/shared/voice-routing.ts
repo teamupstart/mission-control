@@ -67,8 +67,13 @@ function splitHead(text: string): string {
   // A literal directive or an unfinished phrase ("replace x with", "rename x to")
   // still needs the final word as its argument. The comma alone separates the address.
   const before = preceding.replace(/[\p{P}\s]+$/u, "");
-  if (/\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu.test(before)) return raw;
-  if (conjunction[0].startsWith(",")) return preceding;
+  const literalVerb = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print)$/iu.exec(before);
+  if (conjunction[0].startsWith(",")) {
+    // "Say, then" still needs its object. "Update the keyword, and" already has one.
+    const bareDirective = literalVerb && /^(?:please\s+)?$/iu.test(before.slice(0, literalVerb.index));
+    return bareDirective ? raw : preceding;
+  }
+  if (literalVerb || /\b(?:word|term|literal|keyword|token|conjunction)$/iu.test(before)) return raw;
   if (/\b(?:or|use)$/iu.test(before)) return raw;
   const preposition = /\b(?:with|to|from|by|as|for|of|into)$/iu.exec(before);
   if (!preposition) return preceding;

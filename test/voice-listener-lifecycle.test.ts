@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { describe, it, before, after, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+
+import { ensureToken } from "../src/server/auth.ts";
+import { serveDesktopVoice } from "../src/server/voice/desktop-endpoint.ts";
 
 async function until(condition: () => boolean, description: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
@@ -111,6 +114,38 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     apply(initial, "first", true);
     return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts };
   }
+
+  it("the managed Swift listener authenticates its daemon before delivering its first hello", async t => {
+    const endpointFile = join(dir, "desktop.json");
+    const tokenFile = join(dir, "desktop-token");
+    writeFileSync(tokenFile, ensureToken());
+    const previous = new AbortController();
+    await serveDesktopVoice(() => assert.fail("unused endpoint"), endpointFile, previous.signal);
+    const staleCertificate = JSON.parse(readFileSync(endpointFile, "utf8")).certificate;
+    previous.abort();
+
+    const received: string[] = [];
+    const current = new AbortController();
+    t.after(() => current.abort());
+    await serveDesktopVoice((req, res) => {
+      received.push(req.url!);
+      res.end("{}");
+    }, endpointFile, current.signal);
+    const endpoint = JSON.parse(readFileSync(endpointFile, "utf8"));
+    const run = async (certificate: string) => {
+      // A denial lets the real helper send its hello and exit without touching audio hardware.
+      const child = spawn(join(dir, "listener"), [], { env: {
+        ...process.env, VOICE_FIXTURE_PERMISSION: "denied", MISSION_VOICE_MODEL_DIR: dir,
+        MISSION_VOICE_TOKEN_FILE: tokenFile, MISSION_VOICE_DAEMON_CERT: certificate,
+        MISSION_VOICE_DAEMON_URL: "https://127.0.0.1:" + endpoint.port,
+      } });
+      await once(child, "close");
+    };
+    await run(staleCertificate);
+    assert.deepEqual(received, []);
+    await run(endpoint.certificate);
+    assert.deepEqual(received, ["/voice/listener/hello"]);
+  });
 
   it("explains the authorized-terminal prerequisite on first launch and keeps unapproved capture closed", async t => {
     const { nextPoll, hellos, events, diagnostics, posted, child, closed } = await launch(t, { microphone: "not-determined" });

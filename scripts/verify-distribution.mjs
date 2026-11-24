@@ -13,12 +13,12 @@ import { distributionDiagnostic, distributionToolError } from './distribution-di
 import { imagePublisherRequirement } from '../src/shared/binary-publisher-policy.mjs';
 import { dmgRootProblem } from '../src/shared/binary-distribution.mjs';
 
-function runMacTool(command, args) {
-  return spawnSync(command, args, {encoding: 'utf8', timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
+function runMacTool(command, args, input) {
+  return spawnSync(command, args, {encoding: 'utf8', input, timeout: 60_000, env: {...process.env, LC_ALL: 'C'}});
 }
 
-function macTool(command, args) {
-  const result = runMacTool(command, args);
+function macTool(command, args, input) {
+  const result = runMacTool(command, args, input);
   if (result.error || result.status !== 0) throw distributionToolError(command, result);
   return {stdout: result.stdout.trim(), stderr: result.stderr};
 }
@@ -45,6 +45,14 @@ export async function validateDistributionTicket(path, {
   }
 }
 
+export function verifyMicrophoneAccess(app, run = macTool) {
+  const usage = run('/usr/libexec/PlistBuddy', ['-c', 'Print :NSMicrophoneUsageDescription', join(app, 'Contents/Info.plist')]).stdout;
+  assert.ok(usage.trim(), 'Missing microphone usage description');
+  const signed = run('/usr/bin/codesign', ['-d', '--entitlements', ':-', app]).stdout;
+  const entitlements = run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '-'], signed).stdout;
+  assert.equal(JSON.parse(entitlements)['com.apple.security.device.audio-input'], true, 'Missing signed parent microphone entitlement');
+}
+
 export async function verifyDistributionApp(app, metadata, policy) {
   assertBuildMetadata(metadata);
   verifyBinaryPublisher(app, policy);
@@ -55,6 +63,7 @@ export async function verifyDistributionApp(app, metadata, policy) {
     CFBundleShortVersionString: metadata.version, LSMinimumSystemVersion: metadata.minimumSystemVersion})) {
     assert.equal(macTool('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist]).stdout, value, key);
   }
+  verifyMicrophoneAccess(app);
   const executable = join(app, 'Contents/MacOS', APP_EXECUTABLE_NAME);
   assert.equal(macTool('/usr/bin/lipo', ['-archs', executable]).stdout, 'arm64');
   const signature = macTool('/usr/bin/codesign', ['-d', '--verbose=4', app]).stderr;

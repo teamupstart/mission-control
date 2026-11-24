@@ -174,6 +174,7 @@ export class VoiceStateStore {
       this.modeRevision++;
     }
     return {
+      muted: config.muted,
       mode,
       modeVersion: { source: this.source, revision: this.modeRevision },
       reasons,

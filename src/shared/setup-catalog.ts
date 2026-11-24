@@ -268,9 +268,9 @@ export type SetupRemedy =
   // daemon's manifest says what is fetched and what it must hash to, and the panel draws the
   // download's progress from the live voice state rather than from this snapshot.
   | { kind: "voice-model-download"; label: string; note: string }
-  // Microphone access for voice. Until the desktop shell can ask macOS (a later phase), the fix is
-  // the operator's: the panel says where the switch is and re-reads the permission on request.
-  | { kind: "microphone-access"; label: string; note: string };
+  // Ask macOS requests microphone access from the desktop app. After a denial or restriction,
+  // Open System Settings opens the Microphone privacy pane. Check again refreshes the reading.
+  | { kind: "microphone-access"; action?: "settings" | "ask"; label: string; note: string };
 
 /**
  * Start Herdr's default server, offered in place of the install link while the CLI is

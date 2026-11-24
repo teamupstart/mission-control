@@ -987,6 +987,7 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 With a question card open in the focused dashboard, say “Steve, option B” or “Steve, answer: Postgres”.
 “Reply, neither yet” fills the text field of the focused question, including a question from an
 agent without a spoken name. If several cards from one agent are open, focus the one you mean.
+Choice-only cards show an option example in the footer. Cards that accept text also show how to dictate it.
 Letters, ordinals and exact option labels match directly. Other wording uses the option matcher.
 Asking for an unavailable option or a recommendation without a single recommended choice
 shows “No matching option.” The Other field stays as you left it and no countdown starts.
@@ -1007,9 +1008,12 @@ and restarts its countdown. The footer's **Cancel** and **Submit now** act on th
 Editing the form requests cancellation and keeps the edit in your draft. Until cancellation is
 confirmed, the footer shows the original voice answer and its deadline. Use **Retry cancel**
 if the request fails or takes too long. The original answer can still submit at the deadline.
-When the question is closed, its voice card carries
-the countdown. Disabling the cancel window submits a matched answer immediately.
+A closed question shows the countdown on a companion card. Opening the question moves
+the controls to its footer and keeps the same deadline. Disabling the cancel window submits a matched answer immediately.
 
 The daemon keeps pending answers in memory, includes them in reconnect snapshots, and
 publishes changes with `voice_answer`. The focused dashboard reports its drawn question
-cards to `PUT /api/voice/open-cards`. A disconnected stream's report expires after ten seconds.
+cards to `PUT /api/voice/open-cards`. A focus timestamp in the request header orders reports
+across windows. If two windows claim focus at the same instant, an unaddressed reply cannot answer either
+question. Turning voice back on refreshes the report, even when the dashboard shows no questions.
+A disconnected stream's report expires after ten seconds.

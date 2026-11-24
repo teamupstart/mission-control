@@ -70,7 +70,7 @@ export class RecentlyHeard {
 interface OpenCard {
   answer?: VoiceAnswer;
   companion?: boolean;
-  questionPick?: { target: SpokenName; words: string; allowText: boolean };
+  questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
   card: VoiceCard;
   entry: HeardEntry;
@@ -193,14 +193,14 @@ export function resolveVoiceDecision(
 
 export class VoiceRouter {
   readonly openCards = new VoiceOpenCards(() => {
-    const pending = this.questions?.pending() ?? [];
     for (const item of this.open.values()) {
-      if (!item.answer || item.companion) continue;
-      const review = pending.find(q => q.id === item.answer!.reviewId);
-      if (review && !this.openCards.target([review])) {
-        item.companion = true;
-        this.publish(item.card);
-      }
+      if (!item.answer) continue;
+      const companion = !this.openCards.showing(item.answer.reviewId);
+      if (companion === item.companion) continue;
+      if (companion && !this.questions!.pending().some(q => q.id === item.answer!.reviewId)) continue;
+      item.companion = companion;
+      if (companion) this.publish(item.card);
+      else this.questions!.removeCompanion(item.card.id);
     }
   });
   readonly heard = new RecentlyHeard();
@@ -422,7 +422,7 @@ export class VoiceRouter {
     }
     if (explicit && (!content || (!open && pending.length > 1))) {
       item.choicesOfferedAt = laterTime(time, this.now());
-      item.questionPick = { target: target!, words: content, allowText: !choiceCommand };
+      item.questionPick = { target: target!, words: content, choiceCommand };
       item.card.state = "unsure";
       item.card.candidates = pending.map((q, i) => ({ kind: "question", id: q.id, title: q.title,
         detail: (i + 1) + " · asked " + Math.max(0, Math.floor((Date.now() - q.createdAt) / 60000)) + "m ago" }));
@@ -431,8 +431,12 @@ export class VoiceRouter {
     }
     const review = open ?? (explicit && pending.length === 1 ? pending[0] : undefined);
     if (!review) return false;
-    const allowText = !choiceCommand && (!!open || (explicit && !review.decisions?.length));
-    return this.prepareAnswer(item, review, content, allowText).then(() => true);
+    return this.prepareQuestionReply(item, review, content, choiceCommand, open).then(() => true);
+  }
+
+  private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
+    const allowText = !choiceCommand && (review.id === open?.id || !review.decisions?.length);
+    return this.prepareAnswer(item, review, words, allowText);
   }
 
   private questionNotice(item: OpenCard, detail: string): void {
@@ -479,7 +483,7 @@ export class VoiceRouter {
       parts: [{ target, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
-    item.companion ||= !this.openCards.target([review]);
+    item.companion = !this.openCards.showing(review.id);
     this.questions!.publish(review.id, item.answer);
     if (item.companion) this.publish(item.card);
     if (!windowMs) { await this.sendNow(id); return; }
@@ -668,15 +672,16 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
     if (item.questionPick) {
-      const { target, words, allowText } = item.questionPick;
-      const review = this.questions!.pending().find(q => q.sessionId === target.sessionId && q.id === candidateId);
+      const { target, words, choiceCommand } = item.questionPick;
+      const pending = this.questions!.pending().filter(q => q.sessionId === target.sessionId);
+      const review = pending.find(q => q.id === candidateId);
       this.take(item, time);
       delete item.questionPick;
       if (!review) this.questionNotice(item, "That question is already settled.");
       else if (words) {
         this.publish({ ...item.card, state: "cancelled", deadline: null });
         item.time = time ?? this.now();
-        await this.prepareAnswer(item, review, words, allowText);
+        await this.prepareQuestionReply(item, review, words, choiceCommand, this.openCards.target(pending, item.time.openedAt));
       } else {
         const dashboard = this.openCards.dashboard;
         if (dashboard) this.questions!.open(dashboard, review);
@@ -796,9 +801,9 @@ export class VoiceRouter {
     }
   }
 
-  async sendNow(id: string): Promise<boolean> {
+  async sendNow(id: string, fromCompanion = false): Promise<boolean> {
     const item = this.open.get(id);
-    if (item?.card.state !== "pending") return false;
+    if (item?.card.state !== "pending" || (fromCompanion && !item.companion)) return false;
     this.take(item);
     if (this.state().mode === "off") return false;
     if (item.answer) {

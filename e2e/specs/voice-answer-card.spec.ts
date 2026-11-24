@@ -120,13 +120,44 @@ test("answer, correct, cancel and submit through a question card or its countdow
   await expect.poll(async () => (await read(free)).selections).toEqual([{ decisionId: "q", selected: [], other: "neither yet" }]);
 });
 
-test("choosing a question opens and focuses that review without answering", async ({ dashboard: page, daemon }) => {
+test("after voice restarts on the same dashboard, choosing a question opens and focuses it without answering", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 10);
+  // Keep the feature-flag view at its enabled snapshot. The voice-state frames
+  // alone must restart reporting when the daemon drops its dashboard on shutdown.
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        if (String(url) === "/events") this.addEventListener("message", event => {
+          if (JSON.parse(event.data).type === "feature_flags") event.stopImmediatePropagation();
+        });
+      }
+    };
+  });
+  const emptyReport = () => page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().focused && !r.request().postDataJSON().cards.length);
+  const initialReport = emptyReport();
+  await page.reload();
+  const initial = await initialReport;
+  const toggleVoice = (enabled: boolean) => page.request.put(daemon.baseURL + "/api/feature-flags", {
+    data: { kind: "flag", id: "voice", enabled },
+  });
+  await expect(page.locator("button.vi").first()).toBeVisible();
+  expect((await toggleVoice(false)).ok()).toBe(true);
+  await expect(page.locator("button.vi")).toHaveCount(0);
+  const restoredReport = emptyReport();
+  expect((await toggleVoice(true)).ok()).toBe(true);
+  const restored = await restoredReport;
+  expect(restored.request().postDataJSON().windowId).toBe(initial.request().postDataJSON().windowId);
+  expect(Number(restored.request().headers()["x-voice-focus-at-us"])).toBeGreaterThan(
+    Number(initial.request().headers()["x-voice-focus-at-us"]));
   const session = await runningAgent(page, daemon, "Steve");
   const titles = ["Where should I start?", "When should I stop?"] as const;
   for (const title of titles) {
     const response = await page.request.post(daemon.baseURL + "/mcp/reviews", { headers: { "x-harness-token": voiceToken(daemon) },
-      data: { kind: "input", env: {}, cwd: session.cwd, title, body: title } });
+      data: { kind: "input", env: {}, cwd: session.cwd, title, body: title, ...(title === titles[0] && {
+        decisions: [{ id: "q", question: title, allowOther: false, options: [{ id: "one", label: "Build" }, { id: "two", label: "Docs" }] }],
+      }) } });
     expect(response.ok(), await response.text()).toBe(true);
   }
   await say(daemon, "Steve, answer");
@@ -140,6 +171,9 @@ test("choosing a question opens and focuses that review without answering", asyn
   const modal = page.getByRole("dialog", { name: "Review request" });
   await expectContentClearsBorder(modal);
   await report;
+  const choiceOnly = modal.locator(".review").filter({ hasText: titles[0] });
+  await expect(choiceOnly.locator(".vh-foot")).toHaveText("Say Steve, option B to select an option.");
+  await captureCard(choiceOnly, "answer-choice-only-hint");
   const selected = modal.locator(".review").filter({ hasText: titles[1] });
   await expect(selected).toBeFocused();
   await expect(selected.getByRole("textbox")).toBeEmpty();
@@ -167,6 +201,12 @@ for (const scenario of [
     });
     expect(filed.ok(), await filed.text()).toBe(true);
     const { id } = await filed.json();
+    const startsClosed = scenario.retry && !withOptions;
+    const companion = page.locator(".voice-card").filter({ hasText: "Voice answer" });
+    if (startsClosed) {
+      await say(daemon, "Steve, answer: tomorrow");
+      await expect(companion.getByRole("button", { name: "Submit now" })).toBeVisible();
+    }
     const report = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
       r.request().postDataJSON().cards.some((card: { id: string }) => card.id === id));
     await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
@@ -175,7 +215,8 @@ for (const scenario of [
     await expectContentClearsBorder(inbox);
     const card = inbox.locator(".review").filter({ hasText: title });
     const input = card.getByRole("textbox");
-    await say(daemon, "reply, tomorrow");
+    if (startsClosed) await expect(companion).toHaveCount(0);
+    else await say(daemon, "reply, tomorrow");
     await expect(input).toHaveValue("tomorrow");
 
     let release!: () => void;
@@ -203,6 +244,7 @@ for (const scenario of [
         await expect(footer).toContainText("Could not cancel");
       }
       await expect(footer).toContainText(/submits in \d+s/);
+      await expect(page.getByRole("button", { name: "Submit now", includeHidden: true })).toHaveCount(1);
       await expect(footer.getByRole("button", { name: "Submit now" })).toBeDisabled();
       const retry = footer.getByRole("button", { name: "Retry cancel" });
       await expect(retry).toBeEnabled();

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { PlanDecisionAnswer } from "./types.ts";
 
+export const VOICE_FOCUS_TIME_HEADER = "x-voice-focus-at-us";
+
 export const OpenCardsSchema = z.object({
   windowId: z.string().min(1).max(128),
   focused: z.boolean(),

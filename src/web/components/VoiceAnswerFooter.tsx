@@ -1,5 +1,5 @@
 import { optionLetter, type VoiceAnswer } from "@shared/voice-answers.ts";
-import type { PlanDecisionOption } from "@shared/types.ts";
+import type { PlanDecision, PlanDecisionOption } from "@shared/types.ts";
 import { useNow } from "../useNow.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { VoiceIcon } from "./VoiceCardView.tsx";
@@ -8,12 +8,15 @@ export function CardVoiceFoot({ children }: { children: React.ReactNode }) {
   return <div className="vh-foot"><VoiceIcon name="mic" /><span>{children}</span></div>;
 }
 
-export function QuestionVoiceHint({ name, count }: { name?: string; count: number }) {
+export function QuestionVoiceHint({ name, decision }: { name?: string; decision?: PlanDecision }) {
+  const count = decision?.options.length ?? 0;
   const addressed = name ?? "reply";
   const example = count > 1 && name ? "B" : "A";
+  const prefix = name ? "Say " : "No spoken name: with this card open, say ";
+  const option = <q>{addressed}, option {example}</q>;
+  if (decision && !decision.allowOther) return <CardVoiceFoot>{prefix}{option} to select an option.</CardVoiceFoot>;
   return <CardVoiceFoot>
-    {name ? "Say " : "No spoken name: with this card open, say "}
-    {count > 0 && <><q>{addressed}, option {example}</q>{name ? " to answer, or " : " or "}</>}
+    {prefix}{count > 0 && <>{option}{name ? " to answer, or " : " or "}</>}
     <q>{name ? name + ", answer: …" : "reply, …"}</q>{name ? " to answer in your own words." : "."}
   </CardVoiceFoot>;
 }

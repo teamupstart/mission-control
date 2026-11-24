@@ -2538,6 +2538,7 @@ export const api = {
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
   setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement) =>
     put("/api/voice/confirmation", { confirmation }),
+  submitVoiceAnswerCompanion: (id: string) => post(`/api/voice/cards/${encodeURIComponent(id)}/send-now?source=card`),
   voiceCardAction: (id: string, action: "cancel" | "send-now" | "pick", candidateId?: string) =>
     post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`, candidateId ? { id: candidateId } : undefined),
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),

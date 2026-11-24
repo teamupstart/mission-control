@@ -4271,6 +4271,7 @@ export type ServerEvent =
    */
   | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null }
   | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
+  | { type: "voice_card_remove"; id: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }

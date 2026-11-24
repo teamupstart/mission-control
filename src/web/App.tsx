@@ -541,7 +541,8 @@ export function App(): React.JSX.Element {
   const gearPhrase = gearDotPhrase(gearDot);
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
-  useVoiceOpenCards(spokenNames && connected && route.page !== "voice-card" ? voiceWindowId : undefined);
+  const voiceHints = spokenNames && !!voice && voice.mode !== "off";
+  useVoiceOpenCards(voiceHints && connected && route.page !== "voice-card" ? voiceWindowId : undefined);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   // The entry point can ask for initial focus on a conversation's question. The inbox still
   // renders the live attention fold.
@@ -5095,7 +5096,6 @@ export function App(): React.JSX.Element {
     if (openVoiceQuestion) setReviewSessionId(openVoiceQuestion.sessionId);
   }, [openVoiceQuestion]);
 
-  const voiceHints = spokenNames && !!voice && voice.mode !== "off";
   const voiceCardHost = spokenNames && <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}

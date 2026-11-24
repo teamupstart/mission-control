@@ -8,8 +8,8 @@ export function question(title = "Which database?", sessionId = "sdk:Steve") {
     options: [{ id: "sqlite", label: "SQLite" }, { id: "postgres", label: "Postgres", recommended: true }] }]);
 }
 
-export function put(path: string, data: unknown) {
-  return app.request(path, { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+export function put(path: string, data: unknown, headers: Record<string, string> = {}) {
+  return app.request(path, { method: "PUT", headers: { host: "localhost", "content-type": "application/json", ...headers },
     body: JSON.stringify(data) });
 }
 

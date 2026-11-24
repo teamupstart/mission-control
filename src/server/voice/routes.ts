@@ -1,4 +1,4 @@
-import { OpenCardsSchema } from "@shared/voice-answers.ts";
+import { OpenCardsSchema, VOICE_FOCUS_TIME_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
@@ -292,7 +292,12 @@ export function registerVoiceUtteranceRoutes(
   app.put("/api/voice/open-cards", gate, limitBody, async c => {
     const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const ok = router.openCards.report(parsed.data);
+    const stamp = c.req.header(VOICE_FOCUS_TIME_HEADER);
+    const focusAtUs = stamp === undefined ? undefined : Number(stamp);
+    if (stamp !== undefined && (!/^\d+$/.test(stamp) || !Number.isSafeInteger(focusAtUs))) {
+      return c.json({ error: "Invalid focus timestamp." }, 400);
+    }
+    const ok = router.openCards.report(parsed.data, focusAtUs);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/voice/utterances", gate, limitBody, async (c) => {
@@ -353,7 +358,7 @@ export function registerVoiceUtteranceRoutes(
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/send-now", gate, async (c) => {
-    const ok = await router.sendNow(c.req.param("id"));
+    const ok = await router.sendNow(c.req.param("id"), c.req.query("source") === "card");
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/pick", gate, limitBody, async (c) => {

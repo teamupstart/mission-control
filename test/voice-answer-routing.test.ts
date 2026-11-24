@@ -140,18 +140,21 @@ test("a missing option on a closed question cannot send a message at the deadlin
   const q = reviews.create("sdk:Steve", "input", "Which cache?", "Which cache?", [
     { id: "q", question: "Which cache?", options: [{ id: "sqlite", label: "SQLite" }] },
   ]);
-  await say("Steve, option B", "missing-option");
+  for (const argument of ["zero", "0", "B"]) {
+    await say("Steve, option " + argument, "missing-" + argument);
+    assert.equal(cards.at(-1)?.detail, "No matching option.");
+    assert.equal((await act("missing-" + argument, "send-now")).status, 409);
+  }
   t.mock.timers.tick(1001);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(queued("Steve"), []);
   assert.equal(registry.getReview(q.id)?.status, "pending");
   assert.deepEqual(answers(), []);
   assert.equal(cards.at(-1)?.detail, "No matching option.");
-  assert.equal((await act("missing-option", "send-now")).status, 409);
 });
 
 for (const [command, phrases] of [
-  ["option B", ["Steve, option B", "reply, option B", "reply, second"]],
+  ["option B", ["Steve, option B", "Steve, option zero", "Steve, option 0", "reply, option B", "reply, second"]],
   ["go with your recommendation", ["Steve, go with your recommendation", "reply, go with your recommendation"]],
 ] as const) {
   test(`an unavailable “${command}” cannot submit Other on an open question`, async t => {
@@ -238,4 +241,84 @@ test("ordinary addressed speech bypasses answer matching and delivers a message 
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(queued("Steve"), ["check the build"]);
   assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
+test("a closed question picker applies the chosen question's dictation rule", async () => {
+  const choices = question();
+  const free = reviews.create("sdk:Steve", "input", "What next?", "What next?");
+  for (const [index, review] of [choices, free].entries()) {
+    const id = "pick-text-" + index;
+    await say("Steve, answer: something else", id);
+    assert.equal((await act(id, "pick", { id: review.id })).status, 200);
+    if (review === choices) {
+      assert.equal(cards.at(-1)?.detail, "No matching option.");
+      assert.deepEqual(answers(), []);
+      assert.equal((await act(id, "send-now")).status, 409);
+      assert.equal(registry.getReview(choices.id)?.status, "pending");
+    } else {
+      assert.equal(answers()[0]?.reviewId, free.id);
+      assert.equal((await act(id, "send-now")).status, 200);
+      assert.equal(registry.getReview(free.id)?.response, "something else");
+    }
+  }
+});
+
+test("the inline footer takes over the same countdown and retires stale companion submits", async () => {
+  const q = question();
+  const router = registry.voiceRouter!;
+  await say("Steve, option A", "companion");
+  const [answer] = answers();
+  const visible = () => router.activeCards().some(card => card.id === "companion");
+  assert.equal(visible(), true);
+  for (const ids of [[q.id], [], [q.id]]) {
+    await show(ids);
+    assert.equal(visible(), !ids.length);
+    assert.deepEqual(answers(), [answer]);
+    assert.equal(router.pendingVoiceActions.length, 1);
+  }
+  // Another focused dashboard does not make the still-drawn inline footer relinquish its countdown.
+  router.openCards.connect("other-dashboard");
+  await put("/api/voice/open-cards", { windowId: "other-dashboard", focused: true, cards: [] });
+  assert.equal(visible(), false);
+  assert.equal((await act("companion", "send-now?source=card")).status, 409);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.equal((await act("companion", "cancel")).status, 200);
+  assert.deepEqual(answers(), []);
+  await show([q.id]);
+  await say("Steve, option A", "settled");
+  reviews.resolve(q.id, "dismiss", null);
+  await show([]);
+  assert.equal(router.activeCards().some(card => card.id === "settled"), false);
+});
+
+test("delayed focus and blur reports cannot steal or clear the newer dashboard's reply target", async t => {
+  const first = question();
+  const second = question("Which cache?");
+  const windows = registry.voiceRouter!.openCards;
+  t.after(windows.connect("first"));
+  t.after(windows.connect("second"));
+  const report = async (windowId: string, id: string, focused: boolean, stamp: number) => {
+    assert.equal((await put("/api/voice/open-cards", { windowId, focused, cards: [{ kind: "question", id, focused: true }] },
+      { "x-voice-focus-at-us": String(stamp) })).status, 200);
+  };
+  await report("second", second.id, true, 30);
+  await report("first", first.id, true, 10);
+  await say("reply, option B");
+  assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
+  await say("cancel");
+  await report("first", first.id, false, 20);
+  await say("reply, option B");
+  assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
+  await say("cancel");
+  await report("first", first.id, true, 40);
+  await report("first", first.id, false, 20);
+  await say("reply, option A");
+  assert.deepEqual(answers().map(a => a.reviewId), [first.id]);
+  await say("cancel");
+  await report("second", second.id, true, 40);
+  await say("reply, option B");
+  assert.deepEqual(answers(), []);
+  await report("first", first.id, false, 41);
+  await say("reply, option B");
+  assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
 });

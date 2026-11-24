@@ -8,14 +8,16 @@ export interface VoiceQuestions {
   pending(): ReviewItem[];
   resolve(answer: VoiceAnswer): Promise<boolean>;
   publish(reviewId: string, answer: VoiceAnswer | null): void;
+  removeCompanion(id: string): void;
   open(windowId: string, review: ReviewItem): void;
 }
 
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
   private readonly streams = new Map<string, symbol>();
-  private current?: OpenCardsReport;
   private changedAt = 0;
+  private latestFocusUs = 0;
+  private readonly reports = new Map<string, { report: OpenCardsReport; focusAtUs: number }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -27,32 +29,58 @@ export class VoiceOpenCards {
       this.streams.delete(windowId);
       setTimeout(() => {
         if (this.streams.has(windowId)) return;
-        if (this.current?.windowId === windowId) { this.clear(); this.changed(); }
+        const current = this.current;
+        if (this.reports.delete(windowId)) {
+          if (this.current !== current) this.changedAt = Date.now();
+          this.changed();
+        }
       }, 10_000).unref();
     };
   }
 
-  report(report: OpenCardsReport): boolean {
+  report(report: OpenCardsReport, focusAtUs = Math.max(Date.now() * 1000, this.latestFocusUs + 1)): boolean {
     if (!this.streams.has(report.windowId)) return false;
-    if (report.focused || report.windowId === this.current?.windowId) {
-      this.current = report;
-      this.changedAt = Date.now();
-      this.changed();
-    }
+    // A focus transition is dated by the observing dashboard, before HTTP delivery.
+    if (focusAtUs < (this.reports.get(report.windowId)?.focusAtUs ?? 0)) return true;
+    const previous = this.current;
+    this.reports.set(report.windowId, { report, focusAtUs });
+    if (report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
+    if (this.current !== previous) this.changedAt = Date.now();
+    this.changed();
     return true;
   }
 
-  get dashboard(): string | undefined { return this.current?.focused && this.streams.has(this.current.windowId) ? this.current.windowId : undefined; }
+  private get current(): OpenCardsReport | undefined {
+    let current: OpenCardsReport | undefined;
+    for (const { report, focusAtUs } of this.reports.values()) {
+      if (!report.focused || focusAtUs !== this.latestFocusUs) continue;
+      if (current) return undefined; // Indistinguishable focus transitions cannot target a reply.
+      current = report;
+    }
+    return current;
+  }
+
+  get dashboard(): string | undefined {
+    const id = this.current?.windowId;
+    return id && this.streams.has(id) ? id : undefined;
+  }
+
+  showing(reviewId: string): boolean {
+    return [...this.reports.values()].some(({ report }) => report.cards.some(card => card.id === reviewId));
+  }
 
   target(questions: ReviewItem[], capturedAt = Infinity): ReviewItem | undefined {
     if (capturedAt < this.changedAt) return undefined;
-    const cards = this.current?.focused ? this.current.cards : [];
+    const cards = this.current?.cards ?? [];
     const open = questions.filter(q => cards.some(c => c.id === q.id));
     const focused = open.filter(q => cards.some(c => c.id === q.id && c.focused));
     return open.length === 1 ? open[0] : focused.length === 1 ? focused[0] : undefined;
   }
 
-  clear(): void { this.current = undefined; }
+  clear(): void {
+    this.latestFocusUs = 0;
+    this.reports.clear();
+  }
 }
 
 const cardinals = "one two three four five six seven eight nine ten".split(" ");
@@ -70,8 +98,7 @@ export function spokenIndex(words: string): number {
 export function requestedChoice(words: string): number | "recommended" | undefined {
   if (/^go with your recommendation[.!?]*$/iu.test(words)) return "recommended";
   if (!/^option\s+/iu.test(words)) return undefined;
-  const index = spokenIndex(words);
-  return index >= 0 ? index : undefined;
+  return spokenIndex(words);
 }
 
 export async function matchAnswer(review: ReviewItem, words: string, allowText: boolean,

@@ -848,6 +848,13 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "voice_card_remove":
+          setVoiceCards(prev => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
         case "voice_card":
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {

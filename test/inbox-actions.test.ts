@@ -199,7 +199,10 @@ test("a question card's spoken hints address the agent, and stay hidden until vo
   const open = card(question, { inbox: true, voice: true, resident: true });
   assert.match(open, /Say <q>Linter watcher, answer: …<\/q> to answer in your own words/);
   const options = card(withOptions, { inbox: true, voice: true, resident: true });
-  assert.match(options, /Say <q>Linter watcher, option B<\/q> to answer, or/);
+  assert.match(options, /Say <q>Linter watcher, option B<\/q> to select an option/);
+  assert.doesNotMatch(options, /in your own words/);
+  const other = { ...withOptions, decisions: withOptions.decisions!.map(d => ({ ...d, allowOther: true })) };
+  assert.match(card(other, { inbox: true, voice: true, resident: true }), /option B<\/q> to answer, or <q>Linter watcher, answer: …/);
   assert.match(card(withOptions, { inbox: true, voice: true }), /with this card open, say <q>reply, option A<\/q>/);
 });
 

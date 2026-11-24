@@ -30,7 +30,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications, onD
     announced.current = card.deadline;
     if (sound) playChime("info");
   }, [card, notify, sound]);
-  const { id: cardId, deadline, state } = card;
+  const { id: cardId, deadline, state, reason } = card;
   const waiting = card.parts.filter(part => !part.immediateStop);
   const stops = card.parts.filter(part => part.immediateStop);
   const scope = waiting.length > 1 ? "both" : stops.length ? "remaining" : "single";
@@ -64,7 +64,8 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications, onD
             if (!active || !choice) return;
             if (choice === "window-focused") return allowRetry();
             const label = choice === "cancel" ? "Cancel" : "Send now";
-            void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
+            void run(() => reason === "voice-answer" && choice === "send-now"
+              ? api.submitVoiceAnswerCompanion(cardId) : api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
           }, allowRetry);
           return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
         }
@@ -97,7 +98,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications, onD
       document.removeEventListener("visibilitychange", notifyWhenAway);
       dismiss?.();
     };
-  }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
+  }, [cardId, deadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
   return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
 }
 

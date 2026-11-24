@@ -484,7 +484,7 @@ export function ReviewCard({
           </Tooltip>
         </div>
       )}
-      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} count={decisions?.[0]?.options.length ?? 0} />}
+      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} decision={decisions?.[0]} />}
       {err && <p className="review-err">{err}</p>}
       {foremanOpen && foremanAvailable && foremanNote && (
         <ForemanRecommendationSidecar

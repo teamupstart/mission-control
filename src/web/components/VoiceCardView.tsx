@@ -97,7 +97,8 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       setNow(time);
       return;
     }
-    void run(() => api.voiceCardAction(card.id, action));
+    void run(() => card.reason === "voice-answer" && action === "send-now"
+      ? api.submitVoiceAnswerCompanion(card.id) : api.voiceCardAction(card.id, action));
   };
   const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost");
   const remaining = Math.max(0, (card.deadline ?? 0) - now);

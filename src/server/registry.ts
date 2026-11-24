@@ -1680,7 +1680,7 @@ export class Registry extends EventEmitter {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", confirmation: storedVoiceUi().confirmation, indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
   }
 
-  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_answer" | "voice_open_question" }>): void {
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_answer" | "voice_open_question" | "voice_card_remove" }>): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 

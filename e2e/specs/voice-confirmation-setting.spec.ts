@@ -1,6 +1,6 @@
 import { expect, test } from "../fixtures/test.ts";
 import { enableVoice, say, voiceToken } from "../fixtures/voice.ts";
-import { allowStreamDisconnect, captureCard, setupCards } from "../fixtures/voice-cards.ts";
+import { allowStreamDisconnect, captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 
 test("three placement previews persist across reload, with a toast fallback and reserved card-only routes", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
@@ -33,6 +33,36 @@ test("three placement previews persist across reload, with a toast fallback and 
 });
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
+  test(`the ${label} keeps an unresolved recipient picker reachable ahead of a newer held result`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await runningAgent(page, daemon, "Steve");
+    const will = await runningAgent(page, daemon, "Will");
+    const question = "Which release should I inspect?";
+    expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question },
+    })).ok()).toBe(true);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
+    await page.goto(daemon.baseURL + "/#/voice/" + placement);
+    const card = page.getByRole("status");
+    await say(daemon, "Steven ask Will about the deployment");
+    await expect(card).toContainText("Who is this for?");
+    await say(daemon, "Will, inspect the release");
+    await expect(card).toContainText("inspect the release");
+    await card.getByRole("button", { name: "Send now" }).click();
+    await expect(card.getByRole("button", { name: /Steve/ })).toBeVisible({ timeout: 3000 });
+    await expect(card.getByRole("button", { name: /Will/ })).toBeVisible();
+    await captureCard(card, "picker-before-held-" + placement);
+    await card.getByRole("button", { name: /Steve/ }).click();
+    await expect(card).toContainText("Will is mentioned");
+    await page.clock.install();
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(card).toContainText("Cancelled");
+    await page.clock.fastForward(9000);
+    await expect(card).toContainText(question);
+    await expect(card.getByRole("button", { name: "Cancel message" })).toBeEnabled();
+  });
+
   test(`the ${label} route switches at the displayed deadline while disconnected`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     await allowStreamDisconnect(page);

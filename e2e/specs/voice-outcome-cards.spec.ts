@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
@@ -25,6 +27,25 @@ test("resolve roster rows by click and speech, cancel a split and identify a men
     await card.getByRole("button", { name: "Cancel" }).click();
     await expect(card).toHaveCount(0);
   }
+});
+
+test("a queued message gets a fresh visible interval when its receipt changes to Sent", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const session = daemon.baseURL + "/api/sessions/" + encodeURIComponent(steve.id);
+  expect((await page.request.post(session + "/send", { data: { text: "E2E_HOLD_TURN_UNTIL_RELEASED", submit: true, origin: "human" } })).ok()).toBe(true);
+  await say(daemon, "Steve, check the receipt");
+  const card = page.getByRole("status").filter({ hasText: "Steve" });
+  await card.getByRole("button", { name: "Send now" }).click();
+  await expect(card).toContainText("Queued behind Steve");
+  // Use the browser's real animation clock. The old queued interval must end during the new reading interval.
+  await page.waitForTimeout(4000);
+  writeFileSync(join(daemon.recordDir, "e2e-release-held-turn"), "");
+  await expect(card).toContainText("Sent to Steve");
+  await page.waitForTimeout(5500);
+  await expect(card).toHaveCSS("opacity", "1", { timeout: 1000 });
+  await captureCard(card, "sent-after-queue");
+  await expect(card).toHaveCount(0, { timeout: 4000 });
 });
 
 test("Send now releases both split messages or only the addressed message for a mention", async ({ dashboard: page, daemon }) => {

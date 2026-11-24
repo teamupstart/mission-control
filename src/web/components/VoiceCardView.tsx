@@ -54,8 +54,8 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
   });
 }
 
-export function VoiceCardView({ card, actions, operation, hidden = false, onDeadline }: {
-  card: VoiceCard; actions: VoiceCardActions; hidden?: boolean;
+export function VoiceCardView({ card, actions, operation, hidden = false, fading = false, onDeadline }: {
+  card: VoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string): Promise<void> };
   onDeadline?: () => void;
 }) {
@@ -188,7 +188,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, onDead
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
   }
-  return <article ref={article} role="status" data-settled={(settled && !focused && !busy) || undefined}
+  return <article ref={article} role="status" data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>

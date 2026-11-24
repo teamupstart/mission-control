@@ -215,6 +215,7 @@ export interface MissionState {
   voice: VoiceState | null;
   acknowledgeVoiceMode: (ack: VoiceState) => void;
   voiceCards: Map<string, VoiceCard>;
+  fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardInUse: (id: string, inUse: boolean) => void;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
@@ -346,23 +347,39 @@ export function useEventStream(): MissionState {
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
   const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
+  const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
+  const setVoiceCardFading = useCallback((id: string, fading: boolean) => {
+    setFadingVoiceCards(current => {
+      if (current.has(id) === fading) return current;
+      const next = new Set(current);
+      if (fading) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   // A null timer holds an outcome while the operator is using it.
-  const voiceExpiry = useRef(new Map<string, { card: VoiceCard; timer: number | null }>()).current;
+  const voiceExpiry = useRef(new Map<string, { card: VoiceCard; timer: number | null; fadeTimer?: number }>()).current;
   const scheduleVoiceExpiry = useCallback((card: VoiceCard, inUse = voiceExpiry.get(card.id)?.timer === null) => {
-    window.clearTimeout(voiceExpiry.get(card.id)?.timer ?? undefined);
+    const previous = voiceExpiry.get(card.id);
+    window.clearTimeout(previous?.timer ?? undefined);
+    window.clearTimeout(previous?.fadeTimer);
+    setVoiceCardFading(card.id, false);
     voiceExpiry.delete(card.id);
     if (!voiceCardCanExpire(card)) return;
+    const readingMs = 8000;
+    const fadeTimer = inUse ? undefined : window.setTimeout(() => setVoiceCardFading(card.id, true), readingMs - 300);
     const timer = inUse ? null : window.setTimeout(() => {
       voiceExpiry.delete(card.id);
+      setVoiceCardFading(card.id, false);
       setVoiceCards(current => {
         if (current.get(card.id) !== card) return current;
         const next = new Map(current);
         next.delete(card.id);
         return next;
       });
-    }, 8000);
-    voiceExpiry.set(card.id, { card, timer });
-  }, [voiceExpiry]);
+    }, readingMs);
+    voiceExpiry.set(card.id, { card, timer, fadeTimer });
+  }, [voiceExpiry, setVoiceCardFading]);
   const setVoiceCardInUse = useCallback((id: string, inUse: boolean) => {
     const expiry = voiceExpiry.get(id);
     if (expiry && (expiry.timer === null) !== inUse) scheduleVoiceExpiry(expiry.card, inUse);
@@ -394,8 +411,12 @@ export function useEventStream(): MissionState {
     const es = new EventSource("/events");
     esRef.current = es;
     function clearVoiceTimers() {
-      for (const { timer } of voiceExpiry.values()) window.clearTimeout(timer ?? undefined);
+      for (const { timer, fadeTimer } of voiceExpiry.values()) {
+        window.clearTimeout(timer ?? undefined);
+        window.clearTimeout(fadeTimer);
+      }
       voiceExpiry.clear();
+      setFadingVoiceCards(new Set());
     }
 
     es.onopen = () => {
@@ -990,6 +1011,7 @@ export function useEventStream(): MissionState {
     voice,
     acknowledgeVoiceMode,
     voiceCards,
+    fadingVoiceCards,
     setVoiceCardInUse,
     settingsStatus,
     keepAwakeStatus,

@@ -6,8 +6,8 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, hidden, notify, sound, notifications, onDeadline }: {
-  card: VoiceCard; actions: VoiceCardActions; hidden: boolean; notify: boolean; sound: boolean; notifications: boolean;
+function Card({ card, actions, hidden, fading, notify, sound, notifications, onDeadline }: {
+  card: VoiceCard; actions: VoiceCardActions; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
   onDeadline?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -98,11 +98,11 @@ function Card({ card, actions, hidden, notify, sound, notifications, onDeadline 
       dismiss?.();
     };
   }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView card={card} actions={actions} hidden={hidden} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
+  return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
 }
 
-export function VoiceCardHost({ cards, actions, surface, sound, notifications }: {
-  cards: ReadonlyMap<string, VoiceCard>; actions: VoiceCardActions;
+export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, notifications }: {
+  cards: ReadonlyMap<string, VoiceCard>; fadingCards: ReadonlySet<string>; actions: VoiceCardActions;
   surface?: "pill" | "popover"; sound: boolean; notifications: boolean;
 }) {
   const { voice } = useUiConfig();
@@ -114,10 +114,10 @@ export function VoiceCardHost({ cards, actions, surface, sound, notifications }:
   if (surface) {
     const now = Date.now();
     const pending = newestFirst.find(card => card.state === "pending" && card.deadline !== null && card.deadline > now);
-    selected = pending ?? newestFirst[0];
+    selected = pending ?? newestFirst.find(card => card.state === "unsure") ?? newestFirst[0];
   }
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
     {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
-      notify={!surface} sound={sound} notifications={notifications} onDeadline={surface ? reselect : undefined} />)}
+      fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} onDeadline={surface ? reselect : undefined} />)}
   </div>;
 }

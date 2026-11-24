@@ -29,6 +29,7 @@ it shows “Awaiting delivery confirmation”.
 A settled card stays visible while one of its controls has focus or its action is in
 progress, including when the dashboard reconnects to the daemon. Once both end, the card
 gives you another eight seconds to read the result or retry.
+When a queued message changes to Sent, its reading interval starts again before the card fades.
 Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
 draft stays available when the follow-up closes.
 
@@ -38,6 +39,8 @@ choices until the desktop implements the floating windows. It saves the selected
 for those windows. Their reserved routes are `#/voice/pill` and `#/voice/popover`. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.
+With no countdown open, an address awaiting a recipient choice appears ahead of delivery results,
+including messages held behind a question.
 If a countdown interrupts a relaunch, the standalone card keeps its result for you to read
 when it returns. Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.

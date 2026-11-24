@@ -149,11 +149,12 @@ export class VoiceModelManager {
       this.launchChecks.set(directory, check);
     }
     check.callers++;
-    const disconnected = Promise.withResolvers<never>();
-    const onAbort = () => disconnected.reject(signal.reason);
+    let rejectDisconnected!: (reason: unknown) => void;
+    const disconnected = new Promise<never>((_, reject) => { rejectDisconnected = reject; });
+    const onAbort = () => rejectDisconnected(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
     try {
-      return await Promise.race([check.done, disconnected.promise]) ? { backend, manifest, directory } : null;
+      return await Promise.race([check.done, disconnected]) ? { backend, manifest, directory } : null;
     } finally {
       signal.removeEventListener("abort", onAbort);
       if (--check.callers === 0) {

@@ -3281,6 +3281,8 @@ export interface ReviewItem {
    * other review and every ask made with the flags off. Persisted (`reviews.wait_mode`).
    */
   waitMode?: "message";
+  /** A pending voice-filed ask replays its receipt to a convertible wait poll. */
+  filedByVoiceAt?: number;
   /**
    * The agent's own line on what it does while a message-mode question is open: the assumption
    * it proceeds on, or what it holds back. At most 300 characters. Persisted

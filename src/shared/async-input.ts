@@ -20,6 +20,9 @@ export const ASYNC_INPUT_FLAG = "async-input" as const;
  */
 export const FILED_PLAN_DECISIONS_FLAG = "filed-plan-decisions" as const;
 
+/** A wait response carries the receipt only to a child that offered to return it. */
+export type ReviewWaitResponse = ReviewItem & { converted?: { receipt: string } };
+
 /** The longest `meanwhile` line an agent may file with a question. */
 export const MEANWHILE_MAX_CHARS = 300;
 

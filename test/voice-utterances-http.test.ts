@@ -128,6 +128,17 @@ test("at the deadline only the older uncancelled card reaches the real pending-t
   assert.equal((await readHeard()).find((e) => e.id === "newer")?.outcome, "cancelled");
 });
 
+test("quoted cancel leaves the pending card open until a bare cancel dismisses it", async () => {
+  await say("Will check the build", "waiting");
+  for (const text of ["“cancel”", '"CANCEL!"', "'cancel'", "«cancel»."]) {
+    await say(text);
+    assert.equal((await readHeard())[0]?.outcome, "ignored");
+    assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["waiting", "pending"]]);
+  }
+  await say("Cancel!");
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["waiting", "cancelled"]);
+});
+
 test("successive cancels stop exactly one action across kinds; a duplicate capture does nothing", async () => {
   await say("Will first", "a");
   const actions = registry.voiceRouter!.pendingVoiceActions;

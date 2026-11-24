@@ -15,6 +15,8 @@ import {
 import { sleep } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
+import { latestSpokenTextReceipt } from "./db.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
 
 // The live transcript feed behind the session detail: send the recent history, then poll
 // the file and push turns as the agent appends them.
@@ -114,9 +116,27 @@ export function transcriptStreamHandler(registry: Registry) {
         return from;
       };
 
+      const voice = featureEnabled("voice");
+      const receipt = () => {
+        const current = voice && id ? registry.getSession(id) : undefined;
+        return current ? latestSpokenTextReceipt(noteKeyFor(current)) : null;
+      };
+      let spokenReceipt = receipt();
+      const sendWindow = async (confirmed: string | null, refreshSpoken: boolean) => {
+        const init = read.initial(path);
+        await send({
+          type: "init",
+          messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
+          start: init.start, atStart: init.atStart, pos: init.pos,
+          ...(voice && { spokenReceipt: confirmed }), ...(refreshSpoken && { refreshSpoken: true }),
+        });
+        pos = init.pos;
+        spokenReceipt = confirmed;
+      };
       try {
         const from = resumeFrom();
-        if (from !== null) {
+        const stale = voice && c.req.query("from") !== undefined && (c.req.query("spokenReceipt") || null) !== spokenReceipt;
+        if (from !== null && !stale) {
           const resumed = read.appended(path, from);
           pos = resumed.pos;
           await send({
@@ -125,15 +145,7 @@ export function transcriptStreamHandler(registry: Registry) {
             pos,
           });
         } else {
-          const init = read.initial(path);
-          pos = init.pos;
-          await send({
-            type: "init",
-            messages: titled.transcript(attributeTranscript(id, init.messages, launch(), anchor, conversation())),
-            start: init.start,
-            atStart: init.atStart,
-            pos,
-          });
+          await sendWindow(spokenReceipt, stale);
         }
       } catch {
         await send({ type: "unavailable", reason: "Could not read the transcript file." });
@@ -145,6 +157,12 @@ export function transcriptStreamHandler(registry: Registry) {
         await sleep(POLL_MS);
         if (stream.aborted) break;
         try {
+          const confirmed = receipt();
+          if (confirmed !== spokenReceipt) {
+            await sendWindow(confirmed, true);
+            sinceHeartbeat = 0;
+            continue;
+          }
           const size = statSync(path).size;
           if (size < pos) pos = 0; // truncated / rotated - re-read from the top
           const { messages, pos: next } = read.appended(path, pos);

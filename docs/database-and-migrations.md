@@ -250,6 +250,11 @@ same transaction that retires the delivered outbox row. A retry, discard, or ope
 an uncertain attempt sent cannot supply that receipt. A confirmation without a recorded receiving
 generation also leaves the current work cycle alone.
 
+A runtime receipt for text-only delivery also records its confirmation order in the ledger.
+The transcript stream compares its last confirmed reservation ID with the reader's receipt.
+When confirmation changes the attribution of bytes already read, the open dashboard refreshes
+its window and previously loaded pages. Reconnecting after that receipt uses the same check.
+
 For SDK messages, `message_ts` records that the daemon saw the client UUID and matching payload
 in the native transcript. A reserved UUID alone leaves this field null. Abandoning an unconfirmed
 attempt sets `abandoned_at` once. Startup gives existing orphans the same reconciliation window.

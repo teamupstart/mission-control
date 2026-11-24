@@ -187,3 +187,36 @@ test("a malformed offset is ignored rather than trusted", async () => {
     assert.equal(frame.type, "init", `from=${bad} should re-seed`);
   }
 });
+
+test("a byte resume after a missed text-only receipt refreshes existing words and then resumes normally", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const db = await import("../src/server/db.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const key = noteKeyFor(session);
+  const words = "inspect the build";
+  const payload = words + "\n\nWhen you have finished this, post a report.";
+  const now = Date.now();
+  const queued = db.createPendingTurn({ id: "stream-receipt", noteKey: key, spokenWords: words, text: words, now });
+  const claim = db.claimNextPendingTurn(key, now, queued, () => payload)!;
+  const reservation = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, false, 0, now)!;
+  appendFileSync(path, JSON.stringify({ type: "user", uuid: "early-user", timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: payload } }) + "\n");
+  const early = await firstFrame();
+  assert.ok(early.type === "init");
+  assert.equal(early.messages.at(-1)?.text, payload);
+  assert.equal(early.messages.at(-1)?.presentation, undefined);
+  assert.equal(early.spokenReceipt, null);
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, reservation.id));
+  db.closeDb();
+  const refreshed = await firstFrame("?from=" + early.pos);
+  assert.ok(refreshed.type === "init" && refreshed.refreshSpoken);
+  assert.deepEqual(refreshed.messages.at(-1)?.presentation, { kind: "spoken", displayText: words, received: payload });
+  assert.equal(refreshed.spokenReceipt, reservation.id);
+  const current = await firstFrame("?from=" + early.pos + "&spokenReceipt=" + reservation.id);
+  assert.ok(current.type === "resume");
+  assert.deepEqual(current.messages, []);
+});

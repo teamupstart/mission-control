@@ -4521,6 +4521,10 @@ export type TranscriptStreamMsg =
   | {
       type: "init";
       messages: TranscriptMessage[];
+      /** The latest confirmed text-only spoken handoff included in this reading. */
+      spokenReceipt?: string | null;
+      /** Previously read bytes may have acquired a spoken disclosure. Refresh held pages too. */
+      refreshSpoken?: true;
       /** Byte offset of the first turn in `messages` - the back-paging anchor. */
       start: number;
       /** True when `start` is the top of the file, so nothing older exists. */

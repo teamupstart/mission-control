@@ -940,7 +940,13 @@ export function TranscriptPanel({
       // A byte resume only returns new turns. Refresh the held range to acquire spoken attribution.
       const from = refreshFrom === undefined ? resumeAnchor(sessionId) : null;
       const base = `/api/sessions/${encodeURIComponent(sessionId)}/transcript/stream`;
-      es = new EventSource(from === null ? base : `${base}?from=${encodeURIComponent(String(from))}`);
+      const params = new URLSearchParams();
+      if (from !== null) {
+        params.set("from", String(from));
+        const receipt = readHistory(sessionId)?.spokenReceipt;
+        if (voiceEnabled && receipt) params.set("spokenReceipt", receipt);
+      }
+      es = new EventSource(from === null ? base : `${base}?${params}`);
       es.onopen = () => {
         delay = RECONNECT_MIN_MS;
       };
@@ -956,8 +962,16 @@ export function TranscriptPanel({
           // The start-over path: a first connect, or a resume the server refused because
           // the file moved or too much was written to bridge. `seedTail` keeps whatever
           // pages still abut this window and reports what survived.
+          const previous = readHistory(sessionId);
+          if (msg.refreshSpoken && previous) {
+            refreshFrom = markVoiceRefresh(previous);
+            historyEpoch.current += 1;
+            setLoadingOlder(false);
+            setOlderError(null);
+          }
           if (refreshFrom !== undefined) dropHistory(sessionId);
           const next = seedTail(sessionId, msg);
+          next.spokenReceipt = msg.spokenReceipt;
           if (!voiceEnabled) markVoiceRefresh(next);
           if (refreshFrom !== undefined) {
             next.voiceRefreshFrom = refreshFrom;

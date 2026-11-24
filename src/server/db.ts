@@ -3860,6 +3860,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_spoken_turns", "transcript_cwd", "TEXT");
   addColumn(d, "session_spoken_turns", "transcript_path", "TEXT");
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
+  addColumn(d, "session_spoken_turns", "text_receipt_order", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_text_receipt ON session_spoken_turns(note_key, text_receipt_order) WHERE text_receipt_order IS NOT NULL");
   addColumn(d, "session_spoken_turns", "abandoned_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_abandoned ON session_spoken_turns(abandoned_at) WHERE abandoned_at IS NOT NULL");
   d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_unbound_confirmed ON session_spoken_turns(runtime_confirmed_at) WHERE message_id IS NULL AND runtime_confirmed_at IS NOT NULL");
@@ -13384,6 +13386,13 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
     WHERE id = ? AND message_id = id AND message_ts IS NULL`).run(messageTs, id);
 }
 
+/** A stream cursor covers file bytes. This receipt identifies changes to attribution behind that cursor. */
+export function latestSpokenTextReceipt(noteKey: string): string | null {
+  const row = openDb().prepare(`SELECT id FROM session_spoken_turns
+    WHERE note_key = ? AND text_receipt_order IS NOT NULL ORDER BY text_receipt_order DESC, rowid DESC LIMIT 1`).get(noteKey);
+  return row ? String(row.id) : null;
+}
+
 export function expiredSpokenReservations(cutoff: number) {
   return openDb().prepare(`SELECT note_key AS noteKey, transcript_agent AS transcriptAgent,
       transcript_cwd AS transcriptCwd, transcript_path AS transcriptPath FROM session_spoken_turns
@@ -15605,7 +15614,11 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
     if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId, deliveredAt);
     if (retired?.spoken && retired.generation !== null) {
       if (reservationId !== null) {
-        d.prepare("UPDATE session_spoken_turns SET runtime_confirmed_at = ? WHERE id = ?").run(deliveredAt, reservationId);
+        // Only a text-only reservation needs a receipt before its already-streamed native turn can bind.
+        d.prepare(`UPDATE session_spoken_turns SET runtime_confirmed_at = ?, text_receipt_order = CASE WHEN message_id IS NULL THEN
+          (SELECT COALESCE(MAX(other.text_receipt_order), 0) + 1 FROM session_spoken_turns other
+           WHERE other.note_key = session_spoken_turns.note_key AND other.text_receipt_order IS NOT NULL) END
+          WHERE id = ?`).run(deliveredAt, reservationId);
       }
       // If the receiving cycle completed before acknowledgement (or during a retire retry),
       // its generation already advanced. Never put a hold on the following turn.

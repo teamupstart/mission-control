@@ -102,7 +102,7 @@ test("an in-transit Cancel can reach the daemon after the retry control returns"
   expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
 });
 
-test("an uncertain desktop countdown uses the same configured cap as the card", async ({ dashboard: page, daemon }) => {
+test("a buffered frame caps desktop actions and disconnected card controls at one cancel window", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 4);
   await runningAgent(page, daemon, "Steve");
   const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
@@ -123,6 +123,7 @@ test("an uncertain desktop countdown uses the same configured cap as the card", 
     window.EventSource = class extends EventSource {
       constructor(url: string | URL, init?: EventSourceInit) {
         super(url, init);
+        window.addEventListener("disconnect-buffered-stream", () => this.close(), { once: true });
         this.addEventListener("message", event => {
           if (!event.isTrusted) return;
           const frame = JSON.parse(event.data);
@@ -145,9 +146,14 @@ test("an uncertain desktop countdown uses the same configured cap as the card", 
     window.dispatchEvent(new Event("blur"));
   });
   await expect(page.locator("html")).toHaveAttribute("data-notice-title", "To Steve · up to 4s to cancel", { timeout: 1000 });
-  expect(Number(await page.locator("html").getAttribute("data-notice-budget"))).toBeGreaterThan(4000);
-  await card.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  const budget = Number(await page.locator("html").getAttribute("data-notice-budget"));
+  expect(budget).toBeGreaterThan(0);
+  expect(budget).toBeLessThanOrEqual(4000);
+  await page.evaluate(() => window.dispatchEvent(new Event("disconnect-buffered-stream")));
+  await expect(card).toContainText("Awaiting delivery confirmation", { timeout: 4500 });
+  await expect(card.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Send now" })).toHaveCount(0);
+  await captureCard(card, "awaiting-buffered-receipt");
 });
 
 test("a desktop Cancel accepted before clock refinement is applied when its reply arrives", async ({ dashboard: page, daemon }) => {

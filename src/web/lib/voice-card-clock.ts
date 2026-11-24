@@ -2,12 +2,12 @@ import type { VoiceCard } from "@shared/voice-routing.ts";
 
 import type { VoiceAnswer, VoiceTimeBounds } from "@shared/voice-answers.ts";
 
-type LocalDeadline = { localDeadline?: number; provisionalDeadline?: boolean };
+type LocalDeadline = { localDeadline?: number; provisionalDeadline?: boolean; firstReceivedAt?: number };
 export type DashboardVoiceCard = VoiceCard & LocalDeadline;
 export type DashboardVoiceAnswer = VoiceAnswer & LocalDeadline;
 export type VoiceCardRetention = "reading" | "in-use" | "hidden-feedback";
 
-type Estimate = { offset: number; uncertain: boolean };
+type Estimate = { offset: number; uncertain: boolean; receivedAt: number };
 
 /** Bounds on the browser's monotonic time minus daemon wall time. Request travel time
  * and response travel time are both unknown. Intersect samples from independent requests. */
@@ -34,7 +34,7 @@ export class VoiceCardClock {
     }
     // Until the latest possible deadline the daemon may still accept Cancel. Its
     // response settles the action even when the independent time probe failed.
-    return { offset: this.upper, uncertain: this.upper - this.lower > 100 };
+    return { offset: this.upper, uncertain: this.upper - this.lower > 100, receivedAt: received };
   }
 }
 
@@ -44,14 +44,20 @@ export function receiveVoiceCard(card: VoiceCard, sample: Estimate, previous?: D
   return receiveVoiceCountdown(card, sample, previous);
 }
 
-export function receiveVoiceCountdown<T extends { id: string; deadline: number | null }>(
+export function receiveVoiceCountdown<T extends { id: string; deadline: number | null; windowMs?: number }>(
   card: T, sample: Estimate, previous?: T & LocalDeadline,
 ): T & LocalDeadline {
   if (card.deadline === null) return card;
-  if (previous?.id === card.id && previous.deadline === card.deadline && previous.localDeadline !== undefined && !previous.provisionalDeadline) {
-    return { ...card, localDeadline: previous.localDeadline };
+  const sameWindow = previous?.id === card.id && previous.deadline === card.deadline;
+  const firstReceivedAt = (sameWindow ? previous.firstReceivedAt : undefined) ?? sample.receivedAt;
+  if (sameWindow && previous.localDeadline !== undefined && !previous.provisionalDeadline) {
+    return { ...card, firstReceivedAt, localDeadline: previous.localDeadline };
   }
-  return { ...card, localDeadline: card.deadline + sample.offset, provisionalDeadline: sample.uncertain };
+  // Even an arbitrarily delayed frame was received after the daemon opened its window.
+  // Reconnects and later clock probes cannot move that first-receipt upper bound.
+  const translated = card.deadline + sample.offset;
+  const localDeadline = card.windowMs === undefined ? translated : Math.min(translated, firstReceivedAt + card.windowMs);
+  return { ...card, firstReceivedAt, localDeadline, provisionalDeadline: sample.uncertain };
 }
 
 export function voiceCardDeadline(card: { deadline: number | null } & LocalDeadline): number | null {

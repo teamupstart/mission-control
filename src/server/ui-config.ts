@@ -29,10 +29,10 @@ const indicatorSource = randomUUID();
 let lastIndicators: string | undefined;
 let indicatorRevision = 0;
 
-/** Called with the persisted selection, synchronously, when building a reply or stream frame. */
-export function voiceIndicatorVersion(voice: UiConfig["voice"]): VoiceRevision {
+/** Reads share a version. A committed choice supersedes older requests even if the value is unchanged. */
+export function voiceIndicatorVersion(voice: UiConfig["voice"], committed = false): VoiceRevision {
   const key = JSON.stringify([voice.indicators, voice.confirmation]);
-  if (key !== lastIndicators) {
+  if (committed || key !== lastIndicators) {
     lastIndicators = key;
     indicatorRevision++;
   }
@@ -183,6 +183,7 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
   const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
   persistUiConfig(next, stored, patch.skin !== undefined);
   if (patch.voice) {
+    voiceIndicatorVersion(next.voice, true);
     for (const listener of indicatorListeners) {
       try { listener(next.voice.indicators); }
       catch (error) { console.warn("[voice] indicator listener failed:", error); }

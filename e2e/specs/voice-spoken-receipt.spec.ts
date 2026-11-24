@@ -11,7 +11,7 @@ import { say } from "../fixtures/voice.ts";
 test.use(PANE_AGENT_DAEMON);
 test.skip(!hasTmux(), "tmux is required for terminal pickup");
 
-test("an open terminal conversation restores Spoken when its delivery receipt commits after the native turn", async ({ dashboard, daemon, request }) => {
+test("a terminal conversation restores late spoken receipts and rechecks rewritten native records", async ({ dashboard, daemon, request }) => {
   test.setTimeout(90_000);
   const pane = startPaneAgent(daemon, { turns: true, prefix: "mc-spoken-receipt" });
   try {
@@ -63,9 +63,28 @@ test("an open terminal conversation restores Spoken when its delivery receipt co
     expect(await (await say(daemon, "Steve, " + second)).json()).toEqual({ accepted: true });
     await expect.poll(() => pane.turns().find(text => text.startsWith(second)), { timeout: 30_000 }).toContain("post a report");
     const secondPayload = pane.turns().find(text => text.startsWith(second))!;
-    appendFileSync(path, line("second-native", secondPayload));
+    // More than one forward scan page. The binder has already passed the provisional
+    // record by the time the runtime rewrites it, keeping the same inode and file size.
+    const provisional = "inspect the black build";
+    const filler = Array.from({ length: 65 }, (_, i) => JSON.stringify({ type: "user", uuid: "later-" + i,
+      timestamp: new Date().toISOString(), padding: "x".repeat(9000), message: { role: "user", content: "Later turn " + i } })).join("\n") + "\n";
+    appendFileSync(path, line("second-native", secondPayload.replace(second, provisional)) + filler);
+    await expect(dashboard.locator("article.turn-user").filter({ hasText: provisional })).toBeVisible();
+    writeFileSync(path, readFileSync(path, "utf8").replace(provisional, second));
+    await dashboard.reload();
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session.name }).first().click();
     const green = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: second });
     await expect(green.getByText("Spoken", { exact: true })).toBeVisible();
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const dir = artifactsDir("voice-spoken-rewritten-suffix");
+      mkdirSync(dir, { recursive: true });
+      await green.getByText("What the agent received", { exact: true }).click();
+      await expect(green.locator(".review-received-text")).toHaveText(secondPayload);
+      await dashboard.mouse.move(0, 0);
+      await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
+      await green.screenshot({ path: join(dir, "rescanned.png") });
+    }
     // Rewrite the first native record in place, preserving its UUID and changing its words
     // to another recorded payload. Reopen the transcript to inspect those actual bytes.
     writeFileSync(path, readFileSync(path, "utf8").replace(words, second));

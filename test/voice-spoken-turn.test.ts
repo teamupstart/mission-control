@@ -542,6 +542,37 @@ test("a rewritten terminal record that reuses a native ID cannot present an earl
   assert.deepEqual(original?.presentation, { kind: "spoken", displayText: "second instruction", received: "second instruction" });
 });
 
+test("a rewritten transcript suffix is searched again from the confirmed spoken handoff", async t => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-rescan-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const key = "rescan-terminal";
+  const path = join(dir, key + ".jsonl");
+  const now = Date.now();
+  const words = "red build";
+  const line = (uuid: string, text: string) => JSON.stringify({ type: "user", uuid,
+    timestamp: new Date(now).toISOString(), message: { role: "user", content: text } }) + "\n";
+  const prefix = line("typed-before-handoff", words);
+  writeFileSync(path, prefix);
+  const read = claudeTranscript.messages!;
+  const conversation = { key, transcript: { path, read } };
+  const attempt = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(conversation, words, words, false, attempt, now);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+  const tail = Array.from({ length: 180 }, (_, i) => line("later-" + i, "x".repeat(4000))).join("");
+  appendFileSync(path, line("record", "old draft") + tail);
+  const page = read.after(path, prefix.length);
+  assert.ok(!page.atEnd);
+  assert.equal(spokenLedger.bound(conversation, page.messages).rows.size, 0);
+  const before = statSync(path).size;
+  writeFileSync(path, prefix + line("record", words) + tail);
+  assert.equal(statSync(path).size, before);
+  const reopened = read.after(path, 0).messages;
+  assert.deepEqual([...spokenLedger.bound(conversation, reopened).rows.keys()], ["record"]);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, "record");
+});
+
 test("confirmed text-only payloads in unavailable transcripts expire at the orphan cutoff without erasing SDK receipts", async () => {
   const { pruneExpiredSpokenTurns, reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");

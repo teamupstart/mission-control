@@ -306,6 +306,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   private readonly cache = new Map<string, Row[]>();
   /** How far each unbound row's walk has read, so a later frame continues instead of restarting. */
   private readonly scanned = new Map<string, number>();
+  /** Spoken scan progress is reusable only in the file revision that supplied its bytes. */
+  private readonly scanVersions = new Map<string, string>();
   /** Rows whose window closed with no turn of theirs: never scanned again this process. */
   private readonly expired = new Set<string>();
   /**
@@ -338,12 +340,15 @@ export class DeliveryLedger<Row extends BindableDelivery> {
 
   /** Release one conversation's rows and scan state. A later read reloads them from SQLite. */
   forgetConversation(key: string): void {
-    for (const row of this.cache.get(key) ?? []) {
-      this.scanned.delete(row.id);
-      this.expired.delete(row.id);
-      this.twins.delete(row.id);
-    }
+    for (const row of this.cache.get(key) ?? []) this.forgetScan(row.id);
+    this.scanVersions.delete(key);
     this.cache.delete(key);
+  }
+
+  private forgetScan(id: string): void {
+    this.scanned.delete(id);
+    this.expired.delete(id);
+    this.twins.delete(id);
   }
 
   /** Drop every cache, so the next read comes from the table. */
@@ -351,6 +356,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     this.onForget();
     this.cache.clear();
     this.scanned.clear();
+    this.scanVersions.clear();
     this.expired.clear();
     this.twins.clear();
   }
@@ -402,7 +408,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     const released = this.rows(noteKey).find((row) => row.id === id);
     this.store.remove(id);
     this.cache.set(noteKey, this.rows(noteKey).filter((row) => row.id !== id));
-    this.scanned.delete(id);
+    this.forgetScan(id);
     // A rival that never landed no longer races the deliveries it contested.
     if (released) this.reconsider(noteKey, released.fingerprint);
   }
@@ -444,8 +450,19 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
   bindLanded(noteKey: string, transcript: SessionMessages, now: number, requireReadable = false): void {
     const rows = this.rows(noteKey);
+    let version: string | undefined;
+    if (rows.length && this.store.textBoundaryIntact) {
+      version = transcript.read.snapshot?.(transcript.path)?.version;
+      if (!version || this.scanVersions.get(noteKey) !== version) {
+        // Native files can rewrite a suffix without changing size. Offsets, expiry and
+        // timestamp uniqueness were all observed in the previous revision.
+        for (const row of rows) this.forgetScan(row.id);
+        if (version) this.scanVersions.set(noteKey, version);
+        else this.scanVersions.delete(noteKey);
+      }
+    }
     if (rows.some((row) => row.messageId === null && !row.contested && (row.transcriptOffset !== null || this.store.newTranscriptAfter))) {
-      this.bindPending(rows, transcript, now, requireReadable);
+      this.bindPending(rows, transcript, now, requireReadable, version);
     }
   }
 
@@ -496,7 +513,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Walk the transcript forward from each unbound row's offset, in reservation order, and bind
    * the row to the first user turn with its words that no earlier row has claimed.
    */
-  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable = false): void {
+  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable: boolean, version?: string): void {
     // Claimed by id only: one walk reads ids consistently, and a timestamp two identical turns
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
@@ -508,7 +525,6 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         if (requireReadable && createdAfter === null) throw new Error("Could not check transcript creation time");
         if (!createdAfter) continue;
       }
-      const version = this.store.textBoundaryIntact && transcript.read.snapshot?.(transcript.path)?.version;
       let from = this.scanned.get(row.id) ?? row.transcriptOffset ?? 0;
       let found: TranscriptMessage | null = null;
       let closed = false;

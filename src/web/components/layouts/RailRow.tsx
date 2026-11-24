@@ -129,8 +129,14 @@ export function RailRow({
   // Keep the selected row in view as the arrow keys walk the rail. Local to the row
   // because the rail scrolls independently of the detail beside it.
   useEffect(() => {
-    if (!selected) return;
-    ref.current?.scrollIntoView({ block: "nearest" });
+    const row = ref.current;
+    if (!selected || !row) return;
+    // A status update can remount a repository group. Leave a focused row or heading
+    // visible even if the open conversation's selected row is elsewhere in the Idle rail.
+    const rail = row.closest(".has-idle-sections");
+    const focused = document.activeElement;
+    if (focused !== row && focused?.matches(".rail-row, .idle-rail-section-toggle") && rail?.contains(focused)) return;
+    row.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
   const marks: string[] = [];

@@ -520,3 +520,28 @@ for (const focused of ["row", "heading"] as const) {
     await expect(dashboard.locator(".cdetail .detail-head")).toContainText(freeName);
   });
 }
+
+test("the Idle rail scrolls a focused row into view after a live status move", async ({ dashboard, daemon }) => {
+  const free = await dispatchIdleAgent(dashboard, daemon, "keep reading this free session");
+  await dispatchIdleAgent(dashboard, daemon, "second free session");
+  const held = await dispatchIdleAgent(dashboard, daemon, "alpha moved session");
+  const run = await openRunOn(daemon, held, "scroll-destination");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await useBoardLayout(dashboard, daemon);
+
+  const freeName = await sessionName(daemon, free);
+  const heldName = await sessionName(daemon, held);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await idle.getByRole("button", { name: `Open ${freeName}`, exact: true }).press("Enter");
+  await dashboard.setViewportSize({ width: 700, height: 320 });
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  await rail.getByRole("button", { name: "held by a workflow 1", exact: true }).click();
+  const row = rail.getByRole("button", { name: heldName, exact: true });
+  await row.focus();
+  await expect(row).toBeInViewport({ ratio: 0.95 });
+
+  await api(daemon, `/api/workflow-runs/${run}/cancel`, { requestId: "release-to-offscreen-row" });
+  await expect(rail.getByRole("button", { name: "free 3", exact: true })).toHaveCount(1);
+  await expect(row).toBeFocused();
+  await expect(row).toBeInViewport({ ratio: 0.95 });
+});

@@ -1091,6 +1091,7 @@ export function App(): React.JSX.Element {
       const replacement = sessionEls.current.get(id);
       if (replacement?.matches(idleSectionRow)) {
         replacement.focus({ preventScroll: true });
+        replacement.scrollIntoView({ block: "nearest", inline: "nearest" });
         return;
       }
       const destination = committedIdleSections.current?.find((section) =>

@@ -330,7 +330,10 @@ let db: DatabaseSync | undefined;
 //     Historical submissions acquire no claim. Readiness is checked on first activation.
 // 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
 // 56: unique identities for spoken outbox claims before runtime handoff.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 56;
+// 57: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
+// 58: index retained workflow deliveries that have an active native receipt.
+// 59: seek unresolved workflow receipts by delivery state and age on cold reads.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 59;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1451,6 +1454,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       updated_at            INTEGER NOT NULL,
       completed_at          INTEGER,
       evidence_pruned_at    INTEGER,
+      publication_handoff_generation INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
@@ -1849,6 +1853,22 @@ function createSchemaObjects(d: DatabaseSync): void {
       ON workflow_deliveries(run_id, created_at);
     -- The two node_attempt_id indexes are created by migrate() beside their ALTER, for the
     -- reason spelled out on workflow_submissions above.
+
+    CREATE TABLE IF NOT EXISTS workflow_delivery_turns (
+      id                TEXT PRIMARY KEY,
+      delivery_id       TEXT NOT NULL REFERENCES workflow_deliveries(id) ON DELETE CASCADE,
+      transcript_path   TEXT,
+      note_key          TEXT NOT NULL,
+      fingerprint       TEXT NOT NULL,
+      delivered_at      INTEGER NOT NULL,
+      transcript_offset INTEGER,
+      contested         INTEGER NOT NULL,
+      message_id        TEXT,
+      discarded_at      INTEGER,
+      message_ts        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_key ON workflow_delivery_turns(note_key);
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_delivery ON workflow_delivery_turns(delivery_id);
 
     CREATE TABLE IF NOT EXISTS workflow_llm_calls (
       id               TEXT PRIMARY KEY,
@@ -4033,8 +4053,38 @@ function migrate(d: DatabaseSync): void {
   // evidence and delivery payloads. The sweep fills them only after its transaction
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
+  addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
+  addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  addColumn(d, "workflow_deliveries", "has_transcript_receipt", "INTEGER NOT NULL DEFAULT 0");
+  if (databaseSchemaVersion(d) < 58) {
+    d.exec(`UPDATE workflow_deliveries SET has_transcript_receipt = 1
+      WHERE id IN (SELECT delivery_id FROM workflow_delivery_turns WHERE discarded_at IS NULL)`);
+  }
   d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_window
+      ON workflow_deliveries(note_key, session_id, delivered_at DESC, id DESC)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_workflow_receipt_unresolved
+      ON workflow_deliveries(note_key, session_id, state, updated_at)
+      WHERE has_transcript_receipt = 1 AND payload_pruned_at IS NULL AND delivered_at IS NULL;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_inserted AFTER INSERT ON workflow_delivery_turns
+      WHEN NEW.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = 1 WHERE id = NEW.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_removed AFTER DELETE ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
+    CREATE TRIGGER IF NOT EXISTS workflow_receipt_discarded AFTER UPDATE OF discarded_at ON workflow_delivery_turns
+      WHEN OLD.discarded_at IS NULL AND NEW.discarded_at IS NOT NULL BEGIN
+        UPDATE workflow_deliveries SET has_transcript_receipt = EXISTS(
+          SELECT 1 FROM workflow_delivery_turns WHERE delivery_id = OLD.delivery_id AND discarded_at IS NULL
+        ) WHERE id = OLD.delivery_id;
+      END;
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution
       ON workflow_deliveries(session_id, note_key, delivered_at DESC)
       WHERE delivered_at IS NOT NULL AND payload_pruned_at IS NULL;
@@ -17750,8 +17800,8 @@ export function noteInspectorPrStack(key: string, note: string | null, now: numb
     .run(note, now, key);
 }
 
-export function getInspectorPr(key: string): InspectorPr | null {
-  const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
+export function getInspectorPr(key: string, db = openDb()): InspectorPr | null {
+  const r = db.prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
     | InspectorPrRow
     | undefined;
   return r ? rowToInspectorPr(r) : null;
@@ -19302,8 +19352,8 @@ export function setFileCommentReviewState(
 // its owner. Retain at most 2,000 root identities and 10,000 conversation/episode receipts
 // per PR; exceeding either holds observation/delivery instead of evicting replay protection.
 const codeRabbitProcessId = randomUUID();
-export function readCodeRabbit(prKey: string): CodeRabbitRecord | null {
-  const row = openDb().prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
+export function readCodeRabbit(prKey: string, db = openDb()): CodeRabbitRecord | null {
+  const row = db.prepare("SELECT code_rabbit_state FROM inspector_prs WHERE key = ?").get(prKey) as { code_rabbit_state: string | null } | undefined;
   try {
     const parsed = CodeRabbitRecordSchema.safeParse(JSON.parse(row?.code_rabbit_state ?? "null"));
     return parsed.success ? parsed.data : null;

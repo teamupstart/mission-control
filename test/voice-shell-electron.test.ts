@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerResponse } from "node:http";
@@ -12,6 +12,8 @@ import { buildSync } from "esbuild";
 import { _electron } from "@playwright/test";
 import { voiceStateOff, type VoiceMode, type VoiceShellReport } from "../src/shared/voice.ts";
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
+import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 
 test("Electron keeps one template tray in sync while minimized, handles both clicks and restores the off menu", {
   skip: process.platform !== "darwin", timeout: 60_000,
@@ -21,6 +23,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "token"), ensureToken());
   const binary = join(root, "voice-listener");
+  symlinkSync(ensureNativeStateLockAddon(), join(root, "state-lock.node"));
   writeFileSync(binary, `#!/usr/bin/env node
     const fs = require("node:fs");
     const {MISSION_VOICE_MODEL_DIR, MISSION_VOICE_TOKEN_FILE, MISSION_VOICE_DAEMON_URL, MISSION_VOICE_DAEMON_CERT} = process.env;
@@ -198,6 +201,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await until(() => requests.length === 2);
   assert.deepEqual(requests, [true, false]);
   assert.ok(reports.length);
+  assert.ok(reports.every(({ reportedAtHostUs }, index) => reportedAtHostUs !== undefined &&
+    reportedAtHostUs > (reports[index - 1]?.reportedAtHostUs ?? -1) && reportedAtHostUs <= voiceHostTimeUs()));
   assert.equal(new Set(images).size, 4);
   await click("click");
   assert.equal((await read()).opens, 2);
@@ -295,6 +300,14 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.deepEqual(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.calls), [
       "microphone", "microphone", "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone", "microphone",
     ]);
+    holdReport = true;
+    const repairing = fix();
+    await until(() => !!heldReport);
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
+    await until(async () => (await read()).mode === "off");
+    heldReport!.writeHead(503).end();
+    assert.equal(await repairing, "unavailable", "turning Voice off supersedes the pending microphone check");
+    heldReport = undefined;
     await configure("not-determined", "reject");
   });
   events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
@@ -387,6 +400,17 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(exited(second), false);
     events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
     await until(() => exited(second));
+  });
+  await t.test("switching a ready desktop to sherpa stops FluidAudio capture", async () => {
+    const before = pids().length;
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: ready }) + "\n\n");
+    await until(() => pids().length === before + 1);
+    const pid = pids().at(-1)!;
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: {
+      ...ready, model: { ...ready.model, backend: "sherpa-onnx", directory: "/verified-sherpa" },
+    } }) + "\n\n");
+    await until(() => exited(pid));
+    assert.equal(pids().length, before + 1);
   });
   await t.test("stalled streams stop capture and reconnect, even when pings arrive before the first snapshot", async () => {
     const snapshot = JSON.stringify({type: "snapshot", voice: ready});

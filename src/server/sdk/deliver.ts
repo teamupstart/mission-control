@@ -6,6 +6,8 @@ import {
   type PromptWriteGuard,
 } from "../actions.ts";
 import { noteKeyFor } from "../registry.ts";
+import { sdkFor } from "../harness/index.ts";
+import type { SdkTurn } from "../harness/types.ts";
 import type { SdkSupervisor } from "./supervisor.ts";
 
 /** The two prompt routes' complete authorship vocabulary. */
@@ -54,15 +56,17 @@ export async function deliverToDriver(
   });
   if (!supervisor) return failed("this build has no session supervisor");
   try {
-    const blocked = beforeSend?.();
+    const blocked = beforeSend?.("preflight");
     if (blocked) return failed(blocked);
     // The second guard runs inside the supervisor's per-session serialization. The first
     // catches an already-invalid target without entering its send queue; the second closes
     // the window in which a queued reset or handoff could change the conversation.
+    const turn: SdkTurn = { text };
+    const receiptTarget = sdkFor(session.agent)?.clientMessageIds ? turn : undefined;
     const delivery = await supervisor.send(
       session.id,
-      { text },
-      beforeSend,
+      turn,
+      beforeSend && (() => beforeSend(undefined, receiptTarget)),
       origin === "human" ? { prompt: text, noteKey: noteKeyFor(session) } : undefined,
     );
     return { ok: true, pasted: true, submitVerified: true, delivery };

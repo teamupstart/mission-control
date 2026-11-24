@@ -46,10 +46,13 @@ import type { TurnOrigin, WorkCycleSummary } from "@shared/types.ts";
  * retyping it. Only the human can do that, and swallowing it would leave them unable to
  * change the Goal by saying the same thing twice.
  */
+type InjectionEchoHook = { transcriptPath: string | null; ts?: number };
+type InjectionEchoObserver = (hook?: InjectionEchoHook) => void;
+
 interface RememberedInjection {
   origin: TurnOrigin;
   /** Receipt for one unambiguous prompt echo; never retained after consumption. */
-  onEcho?: () => void;
+  onEcho?: InjectionEchoObserver;
   /** Echoes delivered and not yet claimed by the Goal path. Incremented per delivery. */
   pending: number;
   /**
@@ -385,7 +388,7 @@ function withdrawAutomatedClaim(sessionId: string, key: string): void {
 }
 
 /** Write the label and count one owed echo. `landed` marks the label permanent. */
-function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean, onEcho?: () => void): void {
+function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean, onEcho?: InjectionEchoObserver): void {
   if (AUTOMATED_ORIGINS.has(origin)) noteAutomatedClaim(sessionId, injectionFingerprint(text), landed);
   let byText = seen.get(sessionId);
   if (!byText) {
@@ -460,7 +463,7 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
  * on a waiting session's wait (`onAutomatedDelivery`). Nothing is reserved then, and the sender
  * types nothing: it handles the throw as positive evidence that nothing was delivered.
  */
-export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin, onEcho?: () => void): void {
+export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin, onEcho?: InjectionEchoObserver): void {
   remember(sessionId, text, origin, false, onEcho);
 }
 
@@ -568,14 +571,14 @@ export function confirmReservedInjection(
  * question about the same turn every time it renders, and an answer that decayed on first read
  * would relabel automation as the operator on the second scroll past it.
  */
-export function claimInjectionEcho(sessionId: string, text: string): TurnOrigin | undefined {
+export function claimInjectionEcho(sessionId: string, text: string, hook?: InjectionEchoHook): TurnOrigin | undefined {
   const byText = seen.get(sessionId);
   const prior = byText?.get(injectionFingerprint(text));
   if (!prior || prior.pending <= 0) return undefined;
   prior.pending -= 1;
   const onEcho = prior.onEcho;
   prior.onEcho = undefined;
-  onEcho?.();
+  onEcho?.(hook);
   return prior.origin;
 }
 

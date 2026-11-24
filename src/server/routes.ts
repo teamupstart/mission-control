@@ -293,6 +293,7 @@ import {
   ArchiveWorkflowBindingSchema,
   CancelWorkflowRunSchema,
   GrantWorkflowRepairRoundsSchema,
+  RecheckWorkflowInspectorSchema,
   CreateWorkflowBindingSchema,
   ReattachWorkflowBindingSchema,
   RestartFullWorkflowSchema,
@@ -3583,9 +3584,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/workflow-runs/:id/recheck-inspector", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
-    const parsed = await parseBody(c, WorkflowRunActionSchema);
+    const parsed = await parseBody(c, RecheckWorkflowInspectorSchema);
     if (!parsed.ok) return parsed.res;
-    const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
+    const result = parsed.data.recoverStaleGrant
+      ? await manager.recoverStaleInspectorGrant(c.req.param("id"), parsed.data.requestId, parsed.data.recoverStaleGrant)
+      : manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
     return result.ok
       ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);

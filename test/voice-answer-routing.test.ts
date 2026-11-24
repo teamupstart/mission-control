@@ -594,6 +594,32 @@ test("a companion submit must hear from every live dashboard before resolving th
   assert.equal(registry.getReview(q.id)?.status, "answered");
 });
 
+test("a suspended background window releases the companion and must answer a fresh request to reclaim focus", async t => {
+  const q = question();
+  const router = registry.voiceRouter!;
+  await show([]);
+  const id = "suspended";
+  t.after(router.openCards.connect(id));
+  const report = (focused: boolean, sequence?: number) => put("/api/voice/open-cards", {
+    windowId: id, focused, cards: [{ kind: "question", id: q.id, focused }],
+  }, sequence ? { "x-voice-confirm-focus": String(sequence) } : {});
+  await report(false);
+  const requested: number[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus" && event.windowId === id) requested.push(event.sequence);
+    else publish(event);
+  });
+  await say("Steve, option B", "submit-with-background");
+  assert.equal((await act("submit-with-background", "send-now?source=card")).status, 200);
+  assert.equal(registry.getReview(q.id)?.status, "answered");
+  assert.equal(requested.length, 2);
+  await report(true, requested[0]);
+  assert.equal(router.openCards.footerOwner(q.id), undefined);
+  await report(true, requested[1]);
+  assert.equal(router.openCards.footerOwner(q.id), id);
+});
+
 test("a late report from a timed-out request cannot reinstate a closed card on the same focus transition", async t => {
   const q = question();
   const windowId = "late-report";

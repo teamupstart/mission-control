@@ -471,3 +471,34 @@ test("switching the same stream to the standalone surface withdraws the footer a
   await companion.getByRole("button", { name: "Submit now" }).click();
   await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tonight");
 });
+
+test("a responsive companion submits while a background dashboard cannot acknowledge the ownership check", async ({ dashboard: background, daemon }) => {
+  await setupCards(background, daemon, 30);
+  const steve = await runningAgent(background, daemon, "Steve");
+  const id = await file(background, daemon, steve.cwd, "When should the build start?");
+  const foreground = await background.context().newPage();
+  const focused = foreground.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && r.request().postDataJSON().focused);
+  await foreground.goto(daemon.baseURL + "/#/fleet");
+  await focused;
+  const probed = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  await background.route("**/api/voice/open-cards*", async route => {
+    if (route.request().headers()["x-voice-confirm-focus"]) {
+      probed.resolve();
+      await resume.promise;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await say(daemon, "Steve, answer: tonight");
+    const companion = foreground.getByRole("status").filter({ hasText: "Voice answer" });
+    const result = foreground.waitForResponse(r => r.url().includes("/send-now?source=card"));
+    await companion.getByRole("button", { name: "Submit now" }).click();
+    await probed.promise;
+    expect((await result).status()).toBe(200);
+    expect((await (await foreground.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tonight");
+  } finally {
+    resume.resolve();
+    await foreground.close();
+  }
+});

@@ -86,6 +86,26 @@ test("a reload after a backward clock adjustment restores focus and rejects olde
   closeOlder();
 });
 
+test("restarting voice after a backward clock change preserves the connected dashboard’s timestamps", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const mono = performance.now();
+  t.mock.method(performance, "now", () => mono);
+  const q = question();
+  const windows = registry.voiceRouter!.openCards;
+  t.after(windows.connect("surviving"));
+  const stamp = Math.floor((performance.timeOrigin + mono) * 1000);
+  const report = (revision: number) => put("/api/voice/open-cards", { windowId: "surviving", focused: true,
+    cards: [{ kind: "question", id: q.id, focused: true }] },
+  { "x-voice-focus-at-us": String(stamp), "x-voice-report-revision": String(revision) });
+  assert.equal((await report(1)).status, 200);
+  t.mock.timers.setTime(now - 60_000);
+  windows.clear();
+  assert.equal((await report(2)).status, 200);
+  assert.equal(windows.footerOwner(q.id), "surviving");
+  assert.equal(windows.target([q])?.id, q.id);
+});
+
 test("withdrawing a dashboard rejects late reports and a newer dashboard report supersedes a late withdrawal", async t => {
   const q = question();
   const windowId = "role-change";

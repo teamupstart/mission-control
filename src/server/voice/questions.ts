@@ -25,10 +25,20 @@ interface CardReportTiming {
 
 // The browser and daemon each round their wall-to-monotonic calibration to milliseconds.
 const FOCUS_CLOCK_ROUNDING_US = 2_000;
+// Leave time to submit during even the shortest (one second) cancel window.
+const BACKGROUND_CONFIRM_MS = 400;
+
+interface CardStream {
+  floorUs: number;
+  clockOffsetUs: number;
+  connectedAt: number;
+  browser: boolean;
+  resume?: { sequence: number; ask(): void };
+}
 
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
-  private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number; browser: boolean }>();
+  private readonly streams = new Map<string, CardStream>();
   private clockSkewMs = 0;
   private changedAt = 0;
   private observedAt?: VoiceTimeBounds;
@@ -77,6 +87,13 @@ export class VoiceOpenCards {
     // A focus transition is dated by the observing dashboard, before HTTP delivery.
     const last = this.reports.get(report.windowId);
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
+    if (stream.resume) {
+      if (calibrating || timing.confirmed !== stream.resume.sequence) {
+        if (!calibrating) stream.resume.ask();
+        return true;
+      }
+      delete stream.resume;
+    }
     // A standalone surface keeps its stream but ceases to be a dashboard. Retain
     // the order of its withdrawal so an in-flight report cannot resurrect its footer.
     const sameObservation = observationId !== undefined && last?.observationId === observationId;
@@ -133,13 +150,30 @@ export class VoiceOpenCards {
   }
 
   private reportingWindows(): string[] {
-    return [...this.streams].filter(([id, stream]) => stream.browser || this.reports.has(id)).map(([id]) => id);
+    return [...this.streams].filter(([id, stream]) => !stream.resume && (stream.browser || this.reports.has(id))).map(([id]) => id);
+  }
+
+  private inactive(windowId: string): boolean {
+    const last = this.reports.get(windowId);
+    return !!last && (!last.report?.focused || last.focusAtUs < this.latestFocusUs);
   }
 
   async confirmCompanion(reviewId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
     const confirmed = new Set<string>();
     await Promise.all(this.reportingWindows().map(async windowId => {
-      if (await this.confirmReport(windowId, request, signal)) confirmed.add(windowId);
+      const stream = this.streams.get(windowId)!;
+      const timeout = this.inactive(windowId) ? AbortSignal.timeout(BACKGROUND_CONFIRM_MS) : undefined;
+      if (await this.confirmReport(windowId, request, timeout ? AbortSignal.any([timeout, signal]) : signal)) {
+        confirmed.add(windowId);
+      } else if (timeout?.aborted && !signal.aborted && this.streams.get(windowId) === stream && !stream.resume && this.inactive(windowId)) {
+        // A frozen background tab cannot retain the right to claim a footer.
+        // Fence its delayed reports until it reads its DOM again after suspension.
+        const sequence = ++this.confirmationSequence;
+        stream.resume = { sequence, ask: () => request(windowId, sequence) };
+        this.reports.get(windowId)!.report = null;
+        this.reportChanged();
+        stream.resume.ask();
+      }
     }));
     // A dashboard may have connected or disappeared during confirmation. Every
     // window still capable of taking the footer must have replied for this click.
@@ -197,7 +231,8 @@ export class VoiceOpenCards {
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
     for (const stream of this.streams.values()) {
       stream.floorUs = 0;
-      stream.clockOffsetUs = this.clockSkewMs * 1000;
+      // The browser preserves its time origin for this stream across a voice restart.
+      delete stream.resume;
     }
     this.reports.clear();
   }

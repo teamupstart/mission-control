@@ -1111,3 +1111,4 @@ acknowledges the choice immediately and publishes the matched answer when it is 
 If two windows claim focus at the same instant, an unaddressed reply cannot answer either
 question. Turning voice back on refreshes the report, even when the dashboard shows no questions.
 A disconnected stream's report expires after ten seconds.
+A background window that stops responding during a companion submit gives up its footer until it answers a fresh focus request. Restarting voice preserves the clock calibration for dashboards that stay connected.

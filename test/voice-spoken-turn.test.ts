@@ -113,6 +113,25 @@ test("preparation settlement cannot spend a replacement spoken claim's retry bud
   assert.equal(db.listPendingTurns(key)[0]?.state, "queued");
 });
 
+test("stale preparation failure preserves a replacement's retry budget with identical timestamps", () => {
+  const key = "same-time-preparation-replay";
+  const claim = () => {
+    const queued = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: 1 });
+    return db.claimNextPendingTurn(key, 2, queued, words => words)!;
+  };
+  const original = claim();
+  assert.ok(db.deleteClaimedPendingTurn(original.id, original.revision));
+  const replacement = claim();
+  assert.equal(replacement.revision, original.revision);
+  assert.notEqual(replacement.spokenClaimId, original.spokenClaimId);
+
+  assert.equal(db.failSpokenPreparation(original, 3, "stale failure"), null);
+  const row = db.openDb().prepare("SELECT state, spoken_proof_failures FROM pending_turns WHERE id = ? AND spoken_claim_id = ?")
+    .get(key, replacement.spokenClaimId);
+  assert.equal(row?.state, "sending");
+  assert.equal(row.spoken_proof_failures, 0);
+});
+
 for (const [scenario, createdAt, claimedAt] of [
   ["changed creation time", 2, 3],
   ["changed claim time", 1, 4],

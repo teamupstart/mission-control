@@ -29,11 +29,12 @@ export function RepositoryQueryHistory({ runId, review }: { runId: string; revie
   }, [runId, after, count]);
   return <section className="wf-run-section" aria-label="Repository queries">
     <header className="wf-run-section-head"><h4>Repository queries</h4><strong>{count} recorded</strong></header>
-    {snapshot && <p>Snapshot <code>{snapshot.digest.slice(0, 12)}</code> · {snapshot.state} · {snapshot.retainedCommits} retained commits{snapshot.bounded && " · retained history boundary"}</p>}
+    {snapshot && <p>Latest submission snapshot <code>{snapshot.digest.slice(0, 12)}</code> · {snapshot.state} · {snapshot.retainedCommits} retained commits{snapshot.bounded && " · retained history boundary"}</p>}
     <p>{review.bytes} bytes · {count - review.denied - review.failed - review.cancelled} allowed · {review.denied} denied · {review.truncated} truncated · {review.failed} failed · {review.cancelled} cancelled</p>
     {error && <p role="alert">{error}</p>}
     {page?.items.map(({ id, audit }) => <details key={id}>
-      <Tooltip label="Inspect query timing and returned ranges"><summary>{audit.operation} · {audit.code ?? audit.status} · {audit.items} {audit.items === 1 ? "item" : "items"}{audit.truncated && " · truncated"}</summary></Tooltip>
+      <Tooltip label="Inspect the snapshot, query timing and returned ranges"><summary>{audit.operation} · {audit.code ?? audit.status} · {audit.items} {audit.items === 1 ? "item" : "items"}{audit.truncated && " · truncated"} · snapshot <code>{audit.snapshotDigest.slice(0, 12)}</code></summary></Tooltip>
+      <p>Snapshot <code style={{ overflowWrap: "anywhere" }}>{audit.snapshotDigest}</code></p>
       <p>{audit.bytes} bytes · {audit.durationMs} ms</p>
       <p>Query <code>{audit.inputHash.slice(0, 12)}</code>{audit.hasNextPage && " · next page available"}</p>
       {audit.handles.slice(0, 3).map(handle => <p key={handle.evidenceHandleId}><code>{repositoryCitationLabel(handle)}</code></p>)}

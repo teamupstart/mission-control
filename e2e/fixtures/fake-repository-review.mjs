@@ -38,6 +38,19 @@ async function review(mcp, prompt) {
     await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     const call = async (name, args) => JSON.parse((await request("tools/call", { name, arguments: args })).content[0].text);
+    if (prompt.includes("E2E_QUERY_SNAPSHOTS")) {
+      const read = await call("read", { path: "submitted.txt", length: 2 });
+      const evidence = [{ kind: "repository", operationId: read.operationId, evidenceHandleId: read.items[0].evidenceHandleId }];
+      if (read.items[0].text === "submitted working line") return { result: { kind: "persona_verdict", verdict: {
+        verdict: "fail", summary: "Replace the placeholder", confidence: 1, requestedChanges: [{
+          basis: "substantive", path: "submitted.txt", line: 1, category: null, title: "Replace the placeholder",
+          rationale: "The submitted file still contains the placeholder.", evidence,
+        }],
+      } } };
+      if (read.items[0].text !== "later checkout") throw Error("Unexpected resubmitted checkout");
+      return { result: { kind: "persona_verdict", verdict: { verdict: "pass", summary: "Placeholder replaced",
+        confidence: 1, approvalDetails: { reason: "Verified the replacement line.", evidence } } } };
+    }
     await call("read", { path: ".env" });
     const read = await call("read", { path: "submitted.txt" });
     const bytes = await call("read", { path: "submitted.txt", unit: "byte", length: 3 });

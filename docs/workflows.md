@@ -3157,7 +3157,8 @@ versions already exist for that revision, the API returns HTTP 409. Publishing a
 grant at the same draft revision requires a fresh request ID.
 
 Submitting starts an asynchronous capture. Once the submission is captured, later changes to
-the worktree cannot affect its review. Runs shows repository queries, denials, truncation and
-the path and exact range for each repository citation. Ranges use an exclusive upper bound.
+the worktree cannot affect its review. Runs labels each repository query with the snapshot it
+read. Expand a query to see the full digest alongside its returned paths and ranges, including
+queries from earlier rounds. The panel also shows denials and truncation. Ranges use an exclusive upper bound.
 A blocked review can be retried against its original captured checkout.
 [Repository review workloads](repository-review-workloads.md)

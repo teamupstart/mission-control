@@ -120,6 +120,7 @@ test("duplicating a read-enabled Persona requires a fresh grant on the copy", as
 const scenarios = [
   { title: "claude reviews the submitted dirty checkout and cites exact MCP ranges", provider: "claude", marker: "Inspect submitted.txt." },
   { title: "codex reviews the submitted dirty checkout and cites exact MCP ranges", provider: "codex", marker: "Inspect submitted.txt." },
+  { title: "query history labels file ranges with each round's submitted snapshot", provider: "claude", marker: "E2E_QUERY_SNAPSHOTS" },
   { title: "a fabricated repository citation retries and blocks without a verdict", provider: "claude", marker: "E2E_INVALID_REPOSITORY_CITATION" },
   { title: "MCP failure retries and blocks without a verdict", provider: "claude", marker: "E2E_REPOSITORY_MCP_FAILURE" },
   { title: "a read-enabled review retains the rejected verdict and corrects it against the same digest", provider: "codex", marker: "E2E_REVIEW_CORRECTION" },
@@ -202,6 +203,26 @@ for (const { title, provider, marker } of scenarios) {
     await expect.poll(async () => (await detail()).events.some((e: { kind: string }) => e.kind === "submission_captured"), { timeout: marker === "E2E_HISTORY_LIMIT" ? 85_000 : 20_000 }).toBe(true);
     writeFileSync(file, "later checkout\n");
     writeFileSync(join(daemon.home, "repository-review-ready"), "ready");
+    if (marker === "E2E_QUERY_SNAPSHOTS") {
+      await expect.poll(async () => (await detail()).run.status).toBe("waiting_for_session");
+      const first = (await detail()).repositoryReview.snapshot.digest as string;
+      await post(`/api/workflow-runs/${run.id}/resubmit`, { requestId: "changed-checkout" });
+      await expect.poll(async () => (await detail()).run.status).toBe("completed");
+      const latest = (await detail()).repositoryReview.snapshot.digest as string;
+      expect(latest).not.toBe(first);
+      await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
+      const history = dashboard.getByRole("region", { name: "Repository queries" });
+      await expect(history.getByText(/Latest submission snapshot/)).toContainText(latest.slice(0, 12));
+      for (const [digest, items] of [[first, 2], [latest, 1]] as const) {
+        const row = history.locator("details").filter({ has: dashboard.locator("summary").filter({ hasText: digest.slice(0, 12) }) });
+        await row.locator("summary").click();
+        await expect(row.getByText(digest, { exact: true })).toBeVisible();
+        await expect(row.getByText("submitted.txt · lines [1, 2)", { exact: true })).toBeVisible();
+        await expect(row.getByText("submitted.txt · lines [2, 3)", { exact: true })).toHaveCount(items - 1);
+      }
+      await captureState(dashboard, "query-snapshots", history);
+      return;
+    }
     if (marker === "E2E_REPOSITORY_QUOTA") {
       await expect.poll(async () => (await detail()).run.currentPhase, { timeout: 30_000 }).toBe("provider_token_exhausted");
       const result = await detail();

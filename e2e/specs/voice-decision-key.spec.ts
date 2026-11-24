@@ -324,3 +324,41 @@ test("an older poll cannot restore a provider removed in another window", async 
   await expect(row(page, "OpenAI Decisions")).toContainText("Not set");
   await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "10-cross-window-removal");
 });
+
+test("a delayed local save cannot restore a key removed by another window", async ({ dashboard: page, context, daemon }) => {
+  await turnVoiceOn(daemon);
+  await page.clock.install();
+  await openVoiceSettings(page, daemon);
+  await expect(line(page)).toHaveText(NOT_SET);
+  let release!: () => void;
+  let saved!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const committed = new Promise<void>(resolve => { saved = resolve; });
+  await page.route("**/api/voice/decision-key", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    const response = await route.fetch();
+    saved();
+    await held;
+    await route.fulfill({ response });
+  });
+  await keyField(page, "OpenAI Decisions").fill(SAVED_OPENAI);
+  await row(page, "OpenAI Decisions").getByRole("button", { name: "Save" }).click();
+  await committed;
+  try {
+    const other = await context.newPage();
+    await openVoiceSettings(other, daemon);
+    await expect(line(other)).toHaveText(using("OpenAI Decisions"));
+    await row(other, "OpenAI Decisions").getByRole("button", { name: "Remove" }).click();
+    await expect(line(other)).toHaveText(NOT_SET);
+    const polled = page.waitForResponse(response =>
+      response.url().endsWith("/api/voice/decision-key") && response.request().method() === "GET");
+    await page.clock.fastForward(5_000);
+    expect((await (await polled).json()).keys.openai.source).toBeNull();
+  } finally {
+    release();
+  }
+  await expect(keyField(page, "OpenAI Decisions")).toHaveValue("");
+  await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_000 });
+  await expect(row(page, "OpenAI Decisions").getByRole("button", { name: "Remove" })).toHaveCount(0);
+  await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "11-delayed-save-after-removal");
+});

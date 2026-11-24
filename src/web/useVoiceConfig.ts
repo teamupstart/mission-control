@@ -166,6 +166,7 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
   const [report, setReport] = useState<VoiceDecisionKeyReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const writes = useRef(0);
+  const refresh = useRef<(() => Promise<void>) | null>(null);
   const writing = useRef(false);
   const [busy, setBusy] = useState(false);
 
@@ -183,10 +184,12 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
         setReport(read);
       }
     };
+    refresh.current = tick;
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
     return () => {
       alive = false;
+      refresh.current = null;
       clearInterval(id);
     };
   }, [enabled, decisionProvider]);
@@ -199,7 +202,8 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
       const res = await request();
       writes.current++;
       if (res.ok && res.keys && res.provider !== undefined) {
-        setReport({ provider: res.provider, keys: res.keys });
+        // Another window may have changed the keys since this mutation was applied.
+        await refresh.current?.();
         setError(null);
         return true;
       }

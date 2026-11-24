@@ -1165,3 +1165,21 @@ test("a More... answered after the session ended opens no further page", async (
   await runDispatchCommand(live.fake.host, { ...SESSION, live: () => true }, "hello there");
   assert.equal(live.fake.dialogs.filter((d) => d.header === "Kind").length, 2);
 });
+
+test("when the waiting marker is not saved, the prompt box is cleared before the description dialog asks", async () => {
+  const { fake, filed } = world({
+    host: {
+      answers: (q) => q.header === "Task" ? { kind: "other", text: "tidy logging" } : q.header === "Confirm" ? { kind: "pick", label: "Start now" } : { kind: "pick", label: q.options[0]!.label },
+    },
+  });
+  // The engine refuses the marker write: the read-back never matches.
+  const realSet = fake.host.paneState.set;
+  fake.host.paneState.set = (async (key: "draftId", value: string | null) => {
+    if (value !== null) return;
+    await realSet(key, value);
+  }) as typeof realSet;
+  await runDispatchCommand(fake.host, SESSION, "");
+  assert.deepEqual(fake.prompts, ["/mission-dispatch ", ""]);
+  assert.ok(fake.dialogs.some((d) => d.header === "Task"));
+  assert.deepEqual(filed.map((f) => f.choice), ["start"]);
+});

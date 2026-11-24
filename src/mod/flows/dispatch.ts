@@ -178,6 +178,14 @@ async function requestDescription(host: FlowHost, session: FlowSession, summary:
       return { outcome: "waiting", line: DESCRIBE_NOTICE };
     }
     if (session.live && !session.live()) return ended();
+    // The marker did not save, so the "/mission-dispatch " left in the composer would start a new
+    // brief on submit, beside the dialog about to ask. Clear it; a refusal leaves nothing more to do.
+    try {
+      await host.fillPrompt("", session.live);
+    } catch {
+      // The dialog below still asks.
+    }
+    if (gone(session)) return ended();
   }
   const words = await askText(host, "Task", "What should this task do? Type it under Other.");
   if (words === undefined) return cancel(host, session, summary.draftId);

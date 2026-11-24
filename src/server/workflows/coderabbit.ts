@@ -1,4 +1,5 @@
 import type { CodeRabbitComparison, CodeRabbitConfigSnapshot, CodeRabbitTuning, WorkflowCommandView } from "@shared/workflow.ts";
+import { isDeepStrictEqual } from "node:util";
 import { checkBlockedReason, codeRabbitReviewArgv, CODERABBIT_REVIEW_COMMAND, DEFAULT_CODERABBIT_COMMAND, defaultWorkflowCommandMaxRuns, effectiveWorkflowCommandTimeoutMs, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { run, type RunResult } from "../util/exec.ts";
@@ -229,6 +230,16 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     failureStage = "comparison";
     comparison = await input.coderabbit!.comparison();
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");
+    const prior = input.coderabbit?.priorCleanReview;
+    if (prior && comparison.command && !comparison.command.includes("--fresh")
+      && isDeepStrictEqual(prior.review.comparison, comparison)) {
+      const diagnostic = `Reused complete CodeRabbit review with no findings from attempt ${prior.attemptId} at unchanged head ${comparison.head}`;
+      return { kind: "outcome", outcome: {
+        slot: "coderabbit", status: "passed", command: null, exitCode: null, output: "", truncatedBytes: 0,
+        artifacts: [], timeoutMs: null, note: diagnostic,
+        review: { ...prior.review, diagnostic, remainingRuns: Math.max(0, comparison.maxRuns - (reservation?.spent ?? 0)) },
+      } };
+    }
     failureStage = "readiness";
     const ready = await (deps.codeRabbitProbe ?? probeCodeRabbit)();
     if (ready.error || !("command" in ready)) return block(ready.error ?? "CodeRabbit is unavailable");

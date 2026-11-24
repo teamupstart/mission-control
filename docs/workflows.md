@@ -3194,6 +3194,12 @@ same submission. Later ref movement cannot rewrite a successfully pinned compari
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.
 
+A repair round can reuse the same node's latest complete review in the run when it passed
+with zero findings and the pinned comparison is identical. The pass cites the original attempt
+for downstream Personas and spends no execution allowance. A changed head, base or review
+configuration requires a fresh review, as does an explicit `--fresh` command. Reviews with
+findings, incomplete reviews and skips never supply a reusable pass.
+
 A complete gate, explicit full coverage and matching exit code pass or return findings for
 repair. The CLI reports coverage in one of two shapes: CLI 0.9.1 prints an unreviewed-file count,
 which must be zero, and later CLIs print the list of reviewed files instead. Mission Control never

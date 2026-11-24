@@ -38,7 +38,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
-const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
+const { WorkflowEngine, personaCheckEvidence } = await import("../src/server/workflows/engine.ts");
 const { createCheckScheduler } = await import("../src/server/workflows/checks.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { readWorkflowContextRaw } = await import("../src/server/workflows/context.ts");
@@ -701,7 +701,7 @@ test("installing a missing executable lets an action-required Command retry unde
 });
 
 
-test("CodeRabbit freezes comparison across an incomplete retry, counts that execution, and reviews repairs at a new head until the tenth execution", { timeout: 300_000 }, async (t) => {
+test("CodeRabbit reuses a clean comparison and spends allowance on fresh reviews and incomplete retries", { timeout: 300_000 }, async (t) => {
   const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
@@ -713,8 +713,13 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
   const store = seedSubmission(id, 20, graph);
   openDb().prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?").run(root, root, `binding-${id}`);
   const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
-  const capture = (submissionId: string) => {
-    const next = { ...context, evidence: { ...context.evidence, headSha: git("rev-parse", "HEAD"), coderabbit: yaml } };
+  const capture = (submissionId: string, description = "Original PR description") => {
+    const next = { ...context, evidence: {
+      ...context.evidence,
+      headSha: git("rev-parse", "HEAD"),
+      coderabbit: yaml,
+      transcript: [{ role: "assistant" as const, content: `Updated PR description: ${description}` }],
+    } };
     store.updateSubmissionCapture(submissionId, { context: workflowJson(next), evidence: workflowJson(next.evidence), fingerprint: submissionId, status: "running" }, Date.now());
   };
   capture(`submission-${id}`);
@@ -743,8 +748,9 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
       codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
       execute: async (request) => {
         executions++; comparisons.push(request.coderabbit!);
-        return { kind: "exited", exitCode: executions === 1 ? 1 : 2, output: "", truncatedBytes: 0,
-          review: { comparison: request.coderabbit!, status: executions === 1 ? "incomplete" : "complete", counts: { critical: 0, major: 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: ["Verify claim"], diagnostic: executions === 1 ? "Incomplete coverage" : "Complete findings" } };
+        const clean = executions === 2;
+        return { kind: "exited", exitCode: executions === 1 ? 1 : clean ? 0 : 2, output: "", truncatedBytes: 0,
+          review: { comparison: request.coderabbit!, status: executions === 1 ? "incomplete" : "complete", counts: { critical: 0, major: clean ? 0 : 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: clean ? [] : ["Verify claim"], diagnostic: executions === 1 ? "Incomplete coverage" : "Complete findings" } };
       },
     }),
   } });
@@ -759,16 +765,43 @@ test("CodeRabbit freezes comparison across an incomplete retry, counts that exec
     await waitForState("waiting_for_session");
     assert.equal(comparisons[1]!.baseTip, base, "retry must ignore moved base ref");
     assert.equal(comparisons[1]!.head, comparisons[0]!.head);
-    for (let round = 2; round <= 10; round++) {
-      writeFileSync(join(root, "file"), `repair ${round}`); git("commit", "-qam", `repair ${round}`);
+    const source = store.listAttempts(`submission-${id}`).find(a => a.nodeId === "gate" && a.state === "completed")!;
+    git("update-ref", "refs/remotes/origin/main", base);
+    for (const round of [2, 3]) {
+      const next = repairRound(store, id, round);
+      capture(next, `Clarified verification in round ${round}`);
+      assert.equal(git("rev-parse", "HEAD"), comparisons[1]!.head);
+      assert.equal(git("status", "--porcelain"), "");
+      manager.engine.activateSubmission(next);
+      await waitForState("waiting_for_session");
+      assert.equal(executions, 2, "A PR-description-only repair must not execute CodeRabbit again");
+      assert.equal(probes, 2);
+      const outcome = gateOutcome(store, next);
+      assert.equal(outcome.status, "passed");
+      assert.equal(outcome.command, null);
+      assert.match(String(outcome.note), new RegExp(source.id));
+      const [evidence] = personaCheckEvidence(graph, "join", store.listAttempts(next), store.listReceipts(next), comparisons[1]!.head);
+      assert.equal(evidence?.status, "passed");
+      assert.equal(evidence?.note, outcome.note);
+      assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2);
+    }
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    for (let round = 4; round <= 12; round++) {
+      if (round >= 6) {
+        writeFileSync(join(root, "file"), `repair ${round}`);
+        git("commit", "-qam", `repair ${round}`);
+      }
       const next = repairRound(store, id, round); capture(next); manager.engine.activateSubmission(next);
       await waitForState("waiting_for_session");
-      assert.equal(gateOutcome(store, next).status, round === 10 ? "budget_spent" : "failed");
+      assert.equal(gateOutcome(store, next).status, round === 12 ? "budget_spent" : "failed");
     }
+    assert.equal(comparisons[2]!.head, comparisons[1]!.head, "a moved base requires a fresh review at the same head");
+    assert.equal(comparisons[2]!.baseTip, comparisons[1]!.head);
+    assert.deepEqual(comparisons[3], comparisons[2], "findings cannot be bypassed by resubmitting the same comparison");
     assert.equal(executions, 10); assert.equal(probes, 10);
     assert.notEqual(comparisons.at(-1)!.head, comparisons[0]!.head, "new repairs capture their new committed head");
     assert.equal(comparisons.at(-1)!.baseTip, comparisons[0]!.head, "new submission resolves the moved local ref");
-    assert.ok(String(gateOutcome(store, `submission-${id}-r10`).warning).includes("allowance exhausted"));
+    assert.ok(String(gateOutcome(store, `submission-${id}-r12`).warning).includes("allowance exhausted"));
   } finally { await manager.stop(); }
 });
 

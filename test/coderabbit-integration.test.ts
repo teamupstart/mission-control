@@ -71,6 +71,28 @@ test("YAML true needs no catalog override and defaults to ten runs and 45 minute
  const d=deps();let called=0;d.execute=async(request)=>{called++;assert.equal(request.timeoutMs,2700000);assert.equal(request.headSha,comparison.head);assert.deepEqual(request.command,["/fake/coderabbit","review","--deep","--agent","--gate","major","--committed","--base-commit",comparison.mergeBase!]);return {kind:"exited",exitCode:0,output:"",truncatedBytes:0,review:summary};};
  const r=await runCheck(i,d);assert.equal(r.kind,"outcome");if(r.kind==="outcome"){assert.equal(r.outcome.status,"passed");assert.equal(r.outcome.review!.remainingRuns,9);}assert.equal(called,1);
 });
+test("CodeRabbit reuse requires an exact comparison and respects --fresh", async () => {
+  const clean = { ...summary, counts: { ...summary.counts, minor: 0 }, titles: [] };
+  const fresh = { ...comparison, command: ["coderabbit", "review", "--fresh"] };
+  const cases = [
+    { prior: comparison, current: { ...comparison }, probes: 0 },
+    { prior: comparison, current: { ...comparison, head: "d".repeat(40) }, probes: 1 },
+    { prior: comparison, current: { ...comparison, severity: "minor" as const }, probes: 1 },
+    { prior: fresh, current: fresh, probes: 1 },
+  ];
+  for (const { prior, current, probes } of cases) {
+    const i = input();
+    i.coderabbit!.priorCleanReview = { attemptId: "prior-clean-review", review: { ...clean, comparison: prior } };
+    i.coderabbit!.comparison = async () => current;
+    let called = 0;
+    const d = deps();
+    const probe = d.codeRabbitProbe!;
+    d.codeRabbitProbe = () => { called++; return probe(); };
+    const result = await runCheck(i, d);
+    assert.equal(result.kind, "outcome");
+    assert.equal(called, probes);
+  }
+});
 test("eight long finding titles still produce a schema-valid outcome for Persona evidence",async()=>{
  const r=await runCheck(input(),{...deps(),execute:async()=>({kind:"exited",exitCode:2,output:"",truncatedBytes:0,
   review:{...summary,counts:{...summary.counts,major:8},titles:Array.from({length:8},(_,i)=>`${i}: ${"x".repeat(246)}`)}})});

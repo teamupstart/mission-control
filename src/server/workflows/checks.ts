@@ -350,7 +350,14 @@ function runCount(runs: number): string {
  */
 export interface RunCheckInput {
     slot: WorkflowCheckSlot;
-    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; incompleteReview?: boolean; comparison: () => Promise<CodeRabbitComparison> };
+    coderabbit?: {
+      yaml?: CodeRabbitConfigSnapshot;
+      dirty: boolean;
+      retryAt?: number;
+      incompleteReview?: boolean;
+      priorCleanReview?: { attemptId: string; review: CodeRabbitReviewSummary };
+      comparison: () => Promise<CodeRabbitComparison>;
+    };
     /**
      * This slot's entry in the Global Command catalog, or null when the caller has none.
      *

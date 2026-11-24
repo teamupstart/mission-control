@@ -190,6 +190,48 @@ test("a malformed offset is ignored rather than trusted", async () => {
   }
 });
 
+for (const reconnect of [false, true]) {
+  test(`the first SDK handoff during ${reconnect ? "reconnect" : "opening"} publishes a reseeded frame with its own cursor`, async t => {
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const db = await import("../src/server/db.ts");
+    const { sessionMessages } = await import("../src/server/harness/index.ts");
+    const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+    t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+    const key = "first-sdk-during-frame-" + reconnect;
+    const current = { ...session, agentSessionId: key };
+    t.mock.method(registry, "getSession", () => current);
+    const transcript = sessionMessages(current)!;
+    const words = "check the receipt";
+    const payload = words + "\n\nWhen you have finished this, post a report.";
+    const now = Date.now();
+    const row = db.createPendingTurn({ id: key, noteKey: key, spokenWords: words, text: words, now });
+    const claim = db.claimNextPendingTurn(key, now, row, () => payload)!;
+    const from = statSync(path).size;
+    assert.equal(db.spokenTranscriptState(key), null);
+    const land = () => {
+      const receipt = reserveSpokenHandoff({ key, session: current, transcript }, claim, words, true, 0, now)!;
+      assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, receipt.id));
+      appendFileSync(path, JSON.stringify({ type: "user", uuid: receipt.id, timestamp: new Date(now).toISOString(),
+        message: { role: "user", content: payload } }) + "\n");
+    };
+    const { read } = transcript;
+    if (reconnect) {
+      const appended = read.appended.bind(read);
+      t.mock.method(read, "appended", (...args: Parameters<typeof appended>) => { land(); return appended(...args); }, { times: 1 });
+    } else {
+      const initial = read.initial.bind(read);
+      t.mock.method(read, "initial", (...args: Parameters<typeof initial>) => { land(); return initial(...args); }, { times: 1 });
+    }
+    const frame = await firstFrame(reconnect ? "?from=" + from : "");
+    assert.ok(frame.type === "init" && frame.refreshSpoken && frame.spokenCursor);
+    assert.deepEqual(frame.messages.at(-1)?.presentation, { kind: "spoken", displayText: words, received: payload });
+    assert.equal(frame.spokenReceipt, null, "an SDK reservation has no text-only receipt token");
+    const next = await firstFrame(`?from=${frame.pos}&spokenCursor=${frame.spokenCursor}`);
+    assert.deepEqual(next.type, "resume");
+  });
+}
+
 test("a byte resume after a missed text-only receipt refreshes existing words and then resumes normally", async t => {
   const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
   const db = await import("../src/server/db.ts");

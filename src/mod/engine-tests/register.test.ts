@@ -34,7 +34,9 @@ function world(on, { flag, minModApi = 1 }) {
       seen.posts.push(body)
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ reviewId: body.reviewId, taskId: body.taskId, sent: body.option ?? body.text, at: 1 }) } }
     }
-    const text = seen.reply?.(e.url) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi, ++seen.registrations) : seen.inbox)
+    const sent = e.init?.body ? JSON.parse(e.init.body) : null
+    if (sent) (seen.bodies ??= []).push({ url: e.url, body: sent })
+    const text = seen.reply?.(e.url, sent) ?? (e.url.endsWith('/api/health') ? HEALTH(seen.flag) : e.url.endsWith('/dispatch/sessions') ? registration(minModApi, ++seen.registrations) : seen.inbox)
     return { value: { status: 200, ok: true, headers: {}, text } }
   })
   on('state.get', (_, e) => ({ value: { value: seen.state[e.key], version: 1 } }))
@@ -611,4 +613,81 @@ test('a command whose pane open is refused tells the person, and the next comman
   await $.command.run(COMMAND('inbox'))
   await settle(() => seen.opened.length > before)
   expect(seen.opened.length).toBe(before + 1)
+})
+
+// ------------------------------------------------ a dispatch completed through the registered hooks
+// The engine's own dialog (`$.ui.ask`) is a `tool.call` of AskUserQuestion: the test answers it there,
+// with a label for a pick and with any other text for the dialog's Other field.
+
+const SUMMARY = (words, needs = []) => JSON.stringify({ draftId: 'd1', repoRoot: '/repo', kind: 'ship', kindLabel: 'ship', afterWork: 'None', afterWorkApplies: true, words, context: null, needs, brief: words, text: 'Repo: /repo\nKind: ship\n\nDescription:\n' + words })
+const STARTED = JSON.stringify({ choice: 'start', taskId: 'mc-9', started: true })
+
+function dispatchRoutes(seen, { needsDescription = false } = {}) {
+  seen.reply = (url, body) => url.endsWith('/dispatch/dispatch-options') ? JSON.stringify({ questions: [] })
+    : url.endsWith('/dispatch/drafts') ? SUMMARY(body.words ?? '', needsDescription ? ['description'] : [])
+    : url.endsWith('/dispatch/drafts/d1') ? SUMMARY(body.words ?? '')
+    : url.endsWith('/confirm') ? STARTED
+    : undefined
+}
+
+function answerDialogs(on, seen, answerFor) {
+  seen.asked = []
+  on('tool.call', (_, e) => {
+    if (e.tool !== 'AskUserQuestion') return undefined
+    const q = e.questions[0]
+    seen.asked.push(q.header)
+    const answer = answerFor(q)
+    // The engine reads the answer from the tool result's `answers`, keyed by the question's text.
+    return { result: { questions: e.questions, answers: { [q.question]: answer } }, text: 'answered' }
+  })
+}
+
+test('the registered command completes a dispatch: the dialog answer is a pick, a draft and a confirm are sent, and the receipt is shown', async ($, on) => {
+  const seen = dispatchWorld(on)
+  dispatchRoutes(seen)
+  const logs = []
+  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  answerDialogs(on, seen, (q) => q.header === 'Confirm' ? 'Start now' : q.options[0].label)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  await $.command.run(COMMAND('ship add retries'))
+  await settle(() => logs.some((t) => t.startsWith('Started mc-9: ')))
+  const draft = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts'))
+  expect(draft.body.words).toBe('add retries')
+  expect(draft.body.kind).toBe('ship')
+  expect(seen.asked).toEqual(['Confirm'])
+  expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
+  expect(logs.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
+  expect(seen.toasts.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
+})
+
+test('the registered tool completes a dispatch and returns the receipt, with the words and the context sent apart', async ($, on) => {
+  const seen = dispatchWorld(on)
+  dispatchRoutes(seen)
+  answerDialogs(on, seen, (q) => q.header === 'Confirm' ? 'Start now' : q.options[0].label)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  const result = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: 'add retries to the webhook client', context: 'client.ts throws on a 502', intent: 'now' })
+  expect(JSON.stringify(result)).toMatch(/Started mc-9: /)
+  const draft = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts'))
+  expect(draft.body.words).toBe('add retries to the webhook client')
+  expect(draft.body.context).toBe('client.ts throws on a 502')
+  expect(draft.body.words).not.toContain('502')
+  expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
+})
+
+test('text typed under Other reaches the draft as the description, through the real dialog adapter', async ($, on) => {
+  const seen = dispatchWorld(on)
+  dispatchRoutes(seen, { needsDescription: true })
+  // The prompt box cannot be filled, so the description is asked in a dialog; the person types it under Other.
+  on('prompt.fill', () => ({ isFilled: false }))
+  answerDialogs(on, seen, (q) => q.header === 'Task' ? 'tidy the logging module' : q.header === 'Confirm' ? 'Start now' : q.options[0].label)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await settle(() => seen.statuses.length > 0)
+  await $.command.run(COMMAND('ship x'))
+  await settle(() => seen.bodies?.some((b) => b.url.endsWith('/confirm')))
+  expect(seen.asked).toContain('Task')
+  const update = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts/d1'))
+  expect(update.body.words).toBe('tidy the logging module')
+  expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
 })

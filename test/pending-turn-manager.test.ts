@@ -810,6 +810,43 @@ test("a spoken paste retries a changed transcript boundary and sends once agains
   assert.equal(row?.transcriptBoundary, claudeTranscript.messages!.boundary!(path)?.proof);
 });
 
+test("failed spoken preparation retries SQLite settlement without sending and releases the following turn", async t => {
+  const { openDb } = await import("../src/server/db.ts");
+  const path = join(home, "spoken-preparation-settlement.jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const d = openDb();
+  let attempts = 0;
+  const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
+  t.mock.method(read, "prepareHandoffBoundaries", async () => {
+    attempts++;
+    if (attempts === 1) d.exec(`CREATE TEMP TRIGGER block_prepare_settlement BEFORE UPDATE OF state ON pending_turns
+      WHEN NEW.state = 'queued' BEGIN SELECT RAISE(ABORT, 'cannot requeue yet'); END`);
+    if (attempts === 3) d.exec(`CREATE TEMP TRIGGER block_prepare_settlement BEFORE DELETE ON pending_turns
+      WHEN OLD.spoken_words IS NOT NULL BEGIN SELECT RAISE(ABORT, 'cannot remove yet'); END`);
+    throw new Error("proof worker unavailable");
+  });
+  const f = terminalFixture("spoken-preparation-settlement", async () => ({ ok: true, pasted: true, submitVerified: true }));
+  t.after(() => { f.manager.stop(); d.exec("DROP TRIGGER IF EXISTS block_prepare_settlement"); });
+  const spoken = f.manager.submitSpoken(f.id, "first spoken instruction", f.key).pendingTurn!;
+  f.manager.submit(f.id, "next typed turn");
+  for (const attempt of [1, 3]) {
+    await until(() => attempts === attempt, "blocked preparation settlement " + attempt, 10_000);
+    assert.equal(listPendingTurns(f.key)[0]?.state, "sending");
+    assert.equal(d.prepare("SELECT spoken_proof_failures AS count FROM pending_turns WHERE id = ?").get(spoken.id)?.count, attempt - 1);
+    assert.equal(f.registry.voiceHold(f.id), true);
+    assert.deepEqual(f.injected, []);
+    d.exec("DROP TRIGGER block_prepare_settlement");
+  }
+  await until(() => f.injected.length > 0, "following typed delivery", 5_000);
+  assert.equal(attempts, 3, "bookkeeping retries did not consume proof attempts");
+  assert.deepEqual(f.injected, ["next typed turn"]);
+  assert.equal(f.registry.voiceHold(f.id), false);
+  assert.equal(listPendingTurns(f.key).some(row => row.id === spoken.id), false);
+});
+
 test("a quiet spoken delivery bounds worker failures and changed transcript revisions across restart, then releases Foreman", async t => {
   const { VoiceRouter } = await import("../src/server/voice/router.ts");
   const { closeDb, loadSpokenTurns } = await import("../src/server/db.ts");

@@ -1131,9 +1131,17 @@ export class PendingTurnManager {
     }
   }
 
-  private spokenPreparationFailed(turn: PendingTurn): void {
+  private spokenPreparationFailed(turn: PendingTurn, settlementFailures = 0): void {
     const now = this.deps.now();
-    const result = failSpokenPreparation(turn.id, turn.revision, now, SPOKEN_PROOF_RETRY);
+    let result: ReturnType<typeof failSpokenPreparation>;
+    try {
+      result = failSpokenPreparation(turn, now, SPOKEN_PROOF_RETRY);
+    } catch (error) {
+      console.warn(`[pending-turns] could not settle failed spoken preparation for ${turn.id}:`, errorMessage(error));
+      if (!this.stopped) this.retrySettlement(`preparation:${turn.id}:${turn.claimedAt}:${turn.revision}`, settlementFailures,
+        () => this.spokenPreparationFailed(turn, settlementFailures + 1));
+      return;
+    }
     if (!result) return;
     if (result.exhausted) this.registry.voiceRouter?.settleSpoken(turn.id, {
       outcome: "failed", detail: "Transcript verification failed after three attempts. Nothing was sent. Repeat the spoken message to try again.",

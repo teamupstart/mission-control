@@ -144,16 +144,19 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     const latePayload = pane.turns().find(text => text.startsWith(lateWords))!;
     await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
       "SELECT runtime_confirmed_at FROM session_spoken_turns WHERE spoken_words = ?").get(lateWords)?.runtime_confirmed_at)).toBeTruthy();
-    // The native writer flushes an older identical typed turn after the new handoff.
-    appendFileSync(path, line("buffered-older", latePayload, Date.now() - 60_000) + line("late-native-binding", latePayload));
+    // Neither an old buffered repeat nor a clock beyond the delivery window establishes
+    // the turn. A receipt with an eligible timestamp can still follow both in the file.
+    appendFileSync(path, line("buffered-older", latePayload, Date.now() - 60_000)
+      + line("future-repeat", latePayload, Date.now() + 25 * 60 * 60_000) + line("late-native-binding", latePayload));
     const repeated = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: lateWords });
-    await expect(repeated).toHaveCount(2);
+    await expect(repeated).toHaveCount(3);
     const late = repeated.last();
     await expect(late).toContainText("When you have finished this, post a report.");
     await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
     withDaemonDb(daemon, db => db.exec("DROP TRIGGER delay_native_binding"));
     await expect(late.getByText("Spoken", { exact: true })).toBeVisible();
     await expect(repeated.first().getByText("Spoken", { exact: true })).toHaveCount(0);
+    await expect(repeated.nth(1).getByText("Spoken", { exact: true })).toHaveCount(0);
     await expect(repeated.first()).toContainText(latePayload);
     await late.getByText("What the agent received", { exact: true }).click();
     await expect(late.locator(".review-received-text")).toHaveText(latePayload);

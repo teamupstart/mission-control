@@ -113,6 +113,9 @@ If writing the delivery receipt fails, the card keeps its queue status while the
 the database write. A successful retry publishes the receipt without sending the message again.
 A confirmed transport refusal requeues its outbox claim and withdraws its transcript reservation
 in one transaction. If that write fails, the daemon retries the transaction without resending.
+If transcript preparation fails before delivery, the daemon counts the attempt when it can
+commit the queue update. After three failed preparations it reports the failure, releases
+Foreman, and lets the following message proceed.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
 follow-up task.
@@ -135,7 +138,9 @@ unmatched payloads because it could not check that record.
 A terminal delivery records the native file identity and a digest of the bytes through its delivery
 offset. A worker hashes the history before the paste. The daemon checks the file revision and
 the outbox claim at handoff. A matching native turn must have a timestamp at or after handoff,
-and the saved prefix must still belong to the file. Opening or updating a conversation searches
+within the 24-hour window, and the saved prefix must still belong to the file. A record outside
+that window can precede a buffered turn inside it, so the reader checks each candidate.
+Opening or updating a conversation searches
 for an unbound receipt only when the displayed records could contain it. A later copy still
 checks the history from handoff so the first eligible turn keeps its disclosure. If the reader
 skips an oversized record, a later text match stays unlabelled. The daemon checks again when the

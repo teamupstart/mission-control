@@ -767,6 +767,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           }
           for (const m of page.messages) {
             if (m.ts > 0 && m.ts - row.deliveredAt > DELIVERY_LAG_MS) {
+              // A later native append may flush an earlier spoken turn's timestamp.
+              if (this.store.textBoundary) continue;
               closed = true;
               break;
             }

@@ -84,6 +84,29 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
   db.closeDb();
 });
 
+test("preparation settlement cannot spend a replacement spoken claim's retry budget", () => {
+  const key = "reused-preparation-claim";
+  const claim = (now: number) => {
+    const q = db.createPendingTurn({ id: key, noteKey: key, text: "same words", spokenWords: "same words", now });
+    return db.claimNextPendingTurn(key, now, q, words => words)!;
+  };
+  const original = claim(1);
+  assert.ok(db.deleteClaimedPendingTurn(original.id, original.revision));
+  const replacement = claim(2);
+  assert.equal(replacement.revision, original.revision);
+  assert.equal(db.failSpokenPreparation(original, 3, "proof failed"), null);
+  assert.equal(db.listPendingTurns(key)[0]?.state, "sending");
+  db.openDb().exec(`CREATE TEMP TRIGGER ignore_proof_failure BEFORE UPDATE OF spoken_proof_failures ON pending_turns
+    BEGIN SELECT RAISE(IGNORE); END`);
+  try {
+    assert.throws(() => db.failSpokenPreparation(replacement, 4, "proof failed"), /Could not record/);
+  } finally {
+    db.openDb().exec("DROP TRIGGER ignore_proof_failure");
+  }
+  assert.deepEqual(db.failSpokenPreparation(replacement, 5, "proof failed"), { noteKey: key, exhausted: false });
+  assert.equal(db.listPendingTurns(key)[0]?.state, "queued");
+});
+
 test("a refused spoken release fences the attempt and rolls the queue transition back if withdrawal fails", async () => {
   const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
   const key = "atomic-refused-spoken";
@@ -1274,6 +1297,25 @@ test("a rewritten transcript suffix is searched again from the confirmed spoken 
   const { withSpokenReadProofs } = await import("../src/server/delivery-ledgers.ts");
   assert.equal((await withSpokenReadProofs(conversation, typed, prepared => spokenLedger.bound(prepared, typed))).rows.size, 0);
   assert.equal(spokenLedger.bound(conversation, typed).rows.size, 0);
+});
+
+test("spoken binding skips future-dated matches and finds an eligible buffered turn on a later page", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const fake = fakeTranscript();
+  const key = "spoken-delayed-past-future-record";
+  const convo = fake.conversation(key);
+  const now = Date.now();
+  const words = "inspect the red build";
+  const claim = claimSpoken(key, words, words);
+  const row = reserveSpokenTurn(convo, words, words, false, claim, now);
+  assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+  const future = fake.append("outside-window", words, now + DELIVERY_LAG_MS + 1);
+  for (let i = 0; i < 55; i++) fake.append("output-" + i, "progress", now + DELIVERY_LAG_MS + i);
+  const actual = fake.append("buffered-spoken", words, now + DELIVERY_LAG_MS);
+  const result = spokenLedger.bound(convo, [future, actual], now + 2 * DELIVERY_LAG_MS);
+  assert.deepEqual([...result.rows.keys()], [actual.id]);
+  assert.equal(db.loadSpokenTurns(key)[0]?.messageId, actual.id);
 });
 
 test("a unique post-handoff timestamp can still identify a regenerated terminal ID", async t => {

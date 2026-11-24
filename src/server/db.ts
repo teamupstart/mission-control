@@ -15668,14 +15668,23 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
 }
 
 /** Verification failed before the runtime guard. Share one retry budget across worker and revision failures. */
-export function failSpokenPreparation(id: string, revision: number, now: number, retryDetail: string):
+export function failSpokenPreparation(turn: Pick<PendingTurn, "id" | "revision" | "createdAt" | "claimedAt">, now: number, retryDetail: string):
   { noteKey: string; exhausted: boolean } | null {
   return inTransaction(() => {
-    const row = openDb().prepare(`UPDATE pending_turns SET spoken_proof_failures = spoken_proof_failures + 1
-      WHERE id = ? AND state = 'sending' AND revision = ? AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL
-      RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision) as
+    const { id, revision, createdAt, claimedAt } = turn;
+    const d = openDb();
+    // An operator can discard a capture and repeat its id. Only settle the original claim.
+    const claim = `id = ? AND state = 'sending' AND revision = ? AND created_at = ? AND claimed_at IS ?
+      AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`;
+    const row = d.prepare(`UPDATE pending_turns SET spoken_proof_failures = spoken_proof_failures + 1
+      WHERE ${claim} RETURNING note_key AS noteKey, spoken_proof_failures AS failures`).get(id, revision, createdAt, claimedAt) as
       { noteKey: string; failures: number } | undefined;
-    if (!row) return null;
+    if (!row) {
+      if (d.prepare(`SELECT 1 FROM pending_turns WHERE ${claim}`).get(id, revision, createdAt, claimedAt)) {
+        throw new Error("Could not record the failed spoken preparation");
+      }
+      return null;
+    }
     const exhausted = row.failures >= 3;
     const settled = exhausted ? deleteClaimedPendingTurn(id, revision) : releasePendingTurn(id, revision, retryDetail, now);
     if (!settled) throw new Error("Could not settle the failed spoken preparation");

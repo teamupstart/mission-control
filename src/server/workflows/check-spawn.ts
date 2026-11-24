@@ -43,8 +43,9 @@ export interface CheckSupervisorIdentity {
 }
 
 export interface CheckSpawnRequest {
-  /** The owning workflow engine is draining for shutdown. */
+  /** The owner can cancel before launch or while the command is running. */
   signal?: AbortSignal;
+  interruptionReason?: string;
   /**
    * The attempt this check belongs to. Passed to the shim as an argument so the supervisor's
    * COMMAND LINE is unique to one attempt - the half of the start identity that a whole-second
@@ -511,7 +512,7 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       return;
     }
     if (request.signal?.aborted) {
-      abortBeforeRelease("check interrupted because Mission Control is shutting down");
+      abortBeforeRelease(request.interruptionReason ?? "check interrupted because Mission Control is shutting down");
       return;
     }
     const ready: CheckSupervisorIdentity = { pid, identity };
@@ -534,6 +535,13 @@ export async function spawnCheckProcess(request: CheckSpawnRequest): Promise<Che
       // attempt so emptiness is checked after the shim exits, not while its identity changes.
       report.destroy();
     });
+    const onAbort = () => {
+      failure ??= infrastructure(request.interruptionReason ?? "check interrupted because Mission Control is shutting down");
+      void tearDown().then(settle, settle);
+    };
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+    void settledPromise.then(() => request.signal?.removeEventListener("abort", onAbort));
+    if (request.signal?.aborted) { onAbort(); return; }
     gate.write("G");
     if (child.stdin) {
       child.stdin.on("error", () => {}); // A command may exit or be cancelled before reading its input.

@@ -125,8 +125,10 @@ export function workflowSummaryAction(input: {
 }
 
 export function versionMetadata(version: WorkflowVersion): WorkflowVersionMetadata {
-  const { graph: _graph, ...metadata } = version;
-  return metadata;
+  const { graph, ...metadata } = version;
+  const readPersonaIds = graph.nodes.flatMap(node =>
+    node.kind === "persona" && node.persona.repositoryAccess === "read" ? [node.persona.sourcePersonaId] : []);
+  return { ...metadata, readPersonaIds };
 }
 
 export function workflowSavePreflight(

@@ -28,6 +28,7 @@ export class LocalRepositoryWorkloadOwnership {
     const reply = new TailRing(WORKFLOW_EXECUTION_LIMITS.verdictJsonBytes + 64 * 1024);
     const outcome = await spawnCheckProcess({
       attemptId: id, command: [node, bundle], cwd: launch.cwd, env: launch.env, signal: launch.signal,
+      interruptionReason: "Repository reviewer was cancelled",
       timeoutMs: Math.max(1, launch.request.deadline - Date.now()),
       input: JSON.stringify({ request: launch.request, binary: launch.binary, mcp: launch.mcp }),
       maxOutputBytes: 0, capture: { push: (kind, chunk) => { if (kind === "stdout") reply.push(chunk); } },

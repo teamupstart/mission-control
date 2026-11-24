@@ -134,6 +134,7 @@ test("published version numbers and frozen snapshots within a draft revision are
   assert.throws(() => insert.run("v2", 1, 8, "one", publishedGraph, policy, defaults));
   assert.throws(() => insert.run("v3", 2, 7, "one", publishedGraph, policy, defaults));
   insert.run("v4", 2, 7, "two", publishedGraph, policy, defaults);
+  insert.run("v5", 3, 8, "one", publishedGraph, policy, defaults);
 });
 
 test("submission trigger keys and rounds cannot multiply on retry", () => {

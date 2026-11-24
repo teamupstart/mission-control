@@ -14,7 +14,7 @@ async function captureState(page: Page, state: string, target = page.getByRole("
     if (state === "frozen-outdated" && !await target.isVisible()) {
       await page.getByRole("button", { name: "Properties", exact: true }).click();
     }
-    if (state === "publish-retry") {
+    if (state === "publish-retry" || state === "discard-unreadable") {
       const drawer = page.getByRole("button", { name: "Properties", expanded: true });
       if (await drawer.isVisible()) await drawer.click();
       await target.click({ trial: true });
@@ -336,7 +336,9 @@ for (const { title, provider, marker } of scenarios) {
       const history = dashboard.getByRole("region", { name: "Repository queries" });
       await dashboard.route(/repository-queries\?after=[1-9]/, route => route.fulfill({ status: 503, body: "Unavailable" }), { times: 1 });
       await history.getByRole("button", { name: "Next queries" }).click();
-      await history.getByRole("button", { name: "Retry loading queries" }).click();
+      const retryQueries = history.getByRole("button", { name: "Retry loading queries" });
+      await captureState(dashboard, "retry-query-page", retryQueries);
+      await retryQueries.click();
       await expect(history.getByRole("alert")).toHaveCount(0);
       await expect(history.getByRole("button", { name: "Next queries" })).toHaveCount(0);
       await expect(history.getByText(/git_log · revision_out_of_range/)).toBeVisible();
@@ -372,7 +374,9 @@ for (const { title, provider, marker } of scenarios) {
       });
       await dashboard.evaluate(id => localStorage.setItem("mission.workflow.publish." + id, "{broken"), workflow.id);
       await dashboard.reload();
-      await dashboard.getByRole("button", { name: "Discard unreadable publish request" }).click();
+      const discard = dashboard.getByRole("button", { name: "Discard unreadable publish request" });
+      await captureState(dashboard, "discard-unreadable", discard);
+      await discard.click();
       const publishRequests: { requestId: string; expectedDraftRevision: number }[] = [];
       const firstResponse = Promise.withResolvers<void>();
       await dashboard.route(`**/api/workflows/${workflow.id}/publish`, async route => {
@@ -429,6 +433,13 @@ for (const { title, provider, marker } of scenarios) {
       await dashboard.reload();
       await expect(publish).toBeDisabled();
       await expect(retry).toHaveCount(0);
+      const granted = await dashboard.request.patch(`${daemon.baseURL}/api/personas/${persona.id}/repository-access`, {
+        data: { repositoryAccess: "read", expectedAccessRevision: (await changed.json()).repositoryAccessRevision },
+      });
+      expect(granted.ok()).toBe(true);
+      await publish.click();
+      await expect(dashboard.getByRole("button", { name: /^Version 4/ })).toBeVisible();
+      await expect(publish).toBeDisabled();
     }
   });
 }

@@ -148,8 +148,8 @@ export function useVoiceDevices(enabled: boolean): VoiceDevicesState {
 
 export interface VoiceDecisionKeyState {
   busy: boolean;
-  /** The provider in use and where each provider's key comes from. Null until the first read. */
-  report: VoiceDecisionKeyReport | null;
+  /** Undefined until the first read, null when the latest read failed. */
+  report: VoiceDecisionKeyReport | null | undefined;
   /** Save a key. Resolves to whether the daemon kept it; the key is never read back. */
   save(provider: VoiceKeyProvider, key: string): Promise<boolean>;
   remove(provider: VoiceKeyProvider): Promise<boolean>;
@@ -163,7 +163,7 @@ export interface VoiceDecisionKeyState {
  * window or a provider chosen there shows here too.
  */
 export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string | null | undefined): VoiceDecisionKeyState {
-  const [report, setReport] = useState<VoiceDecisionKeyReport | null>(null);
+  const [report, setReport] = useState<VoiceDecisionKeyReport | null>();
   const [error, setError] = useState<string | null>(null);
   const writes = useRef(0);
   const refresh = useRef<(() => Promise<void>) | null>(null);
@@ -179,7 +179,7 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
       const id = ++nextRead;
       const at = writes.current;
       const read = await fetchVoiceDecisionKey();
-      if (alive && read && writes.current === at && id > appliedRead) {
+      if (alive && writes.current === at && id > appliedRead) {
         appliedRead = id;
         setReport(read);
       }

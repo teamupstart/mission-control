@@ -362,3 +362,34 @@ test("a delayed local save cannot restore a key removed by another window", asyn
   await expect(row(page, "OpenAI Decisions").getByRole("button", { name: "Remove" })).toHaveCount(0);
   await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "11-delayed-save-after-removal");
 });
+
+for (const mutation of ["save", "remove"] as const) {
+  test(`a successful ${mutation} followed by a failed status read clears the stale key report`, async ({ dashboard: page, daemon }) => {
+    await turnVoiceOn(daemon);
+    await page.clock.install();
+    await openVoiceSettings(page, daemon);
+    await expect(line(page)).toHaveText(NOT_SET);
+    if (mutation === "remove") await saveKey(page, "OpenAI Decisions", SAVED_OPENAI);
+
+    let failReads = true;
+    await page.route("**/api/voice/decision-key", route => route.request().method() === "GET" && failReads
+      ? route.fulfill({ status: 503, body: "unavailable" }) : route.continue());
+    if (mutation === "save") {
+      await keyField(page, "OpenAI Decisions").fill(SAVED_OPENAI);
+      await row(page, "OpenAI Decisions").getByRole("button", { name: "Save" }).click();
+      await expect(keyField(page, "OpenAI Decisions")).toHaveValue("");
+    } else {
+      await row(page, "OpenAI Decisions").getByRole("button", { name: "Remove" }).click();
+    }
+    await expect(line(page)).toHaveText("Key status unavailable");
+    for (const provider of ["OpenAI Decisions", "Jev"]) {
+      await expect(row(page, provider)).toContainText("Status unavailable");
+      await expect(row(page, provider).getByRole("button", { name: "Remove" })).toHaveCount(0);
+    }
+    expect(existsSync(join(daemon.home, "voice", "decision-key.json"))).toBe(mutation === "save");
+    if (mutation === "remove") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "12-status-unavailable");
+    failReads = false;
+    await page.clock.fastForward(5_000);
+    await expect(line(page)).toHaveText(mutation === "save" ? using("OpenAI Decisions") : NOT_SET);
+  });
+}

@@ -226,15 +226,17 @@ export function fasterRoutingLine(provider: VoiceKeyProvider | null): string {
   return `Using ${name}. Ambiguous sentences and the roster's names and roles are sent to ${name}.`;
 }
 
-function DecisionKeyRow({ provider, source, keys }: {
+function DecisionKeyRow({ provider, keys }: {
   provider: VoiceKeyProvider;
-  source: VoiceKeySource;
   keys: VoiceDecisionKeyState;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const { busy } = keys;
   const label = VOICE_KEY_PROVIDER_LABEL[provider];
-  const from = VOICE_KEY_SOURCE_TEXT[source ?? "none"];
+  const source = keys.report?.keys[provider].source;
+  const from = source === undefined
+    ? (keys.report === null ? "Status unavailable" : "Reading…")
+    : VOICE_KEY_SOURCE_TEXT[source ?? "none"];
   const save = async (): Promise<void> => {
     const key = draft.trim();
     if (!key) return;
@@ -302,7 +304,7 @@ function FasterRoutingGroup({ config, update, keys }: {
     <div className="settings-group voice-faster-routing" data-anchor="voice/faster-routing">
       <p className="settings-group-label">Faster routing</p>
       <p className={`voice-routing-line${provider ? " is-on" : ""}`} role="status" aria-label="Decision model in use">
-        {keys.report ? fasterRoutingLine(provider) : "Reading…"}
+        {keys.report ? fasterRoutingLine(provider) : keys.report === null ? "Key status unavailable" : "Reading…"}
       </p>
       {keys.error && <p className="settings-error">{keys.error}</p>}
 
@@ -334,7 +336,7 @@ function FasterRoutingGroup({ config, update, keys }: {
       </div>
 
       {VOICE_KEY_PROVIDERS.map((id) => (
-        <DecisionKeyRow key={id} provider={id} source={keys.report?.keys[id].source ?? null} keys={keys} />
+        <DecisionKeyRow key={id} provider={id} keys={keys} />
       ))}
     </div>
   );

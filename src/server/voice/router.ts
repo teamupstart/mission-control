@@ -418,7 +418,7 @@ export class VoiceRouter {
       if (!first) return false;
       parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
-    if (parts.some(part => !this.deliveryTarget(roster, part.target))) return false;
+    if (parts.some(part => !this.checkedTarget(roster, part.target, split ? "deliver" : "single-pick"))) return false;
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       this.closeChoices(item, pickedAt);
@@ -438,8 +438,9 @@ export class VoiceRouter {
     return true;
   }
 
-  private deliveryTarget(roster: readonly SpokenName[], captured: SpokenName | null): SpokenName | undefined {
+  private checkedTarget(roster: readonly SpokenName[], captured: SpokenName | null, purpose: "deliver" | "single-pick" = "deliver"): SpokenName | undefined {
     const target = captured && roster.find(row => row.key === captured.key && row.sessionId === captured.sessionId);
+    if (purpose === "single-pick" && target && target.state !== "running" && captured?.state !== "running") return target;
     return target?.state === "running" && target.sessionId && this.deliverer.available?.(target.sessionId) !== false
       ? target : undefined;
   }
@@ -450,7 +451,7 @@ export class VoiceRouter {
     this.take(item);
     const { mode, roster } = this.state();
     if (mode === "off") return false;
-    if (item.card.parts.some(({ target }) => !this.deliveryTarget(roster, target))) {
+    if (item.card.parts.some(({ target }) => !this.checkedTarget(roster, target))) {
       item.entry.outcome = "not-running";
       item.entry.detail = "The selected session is unavailable.";
       this.publish({ ...item.card, state: "not-running", deadline: null });
@@ -464,7 +465,7 @@ export class VoiceRouter {
     for (const [index, part] of item.card.parts.entries()) {
       const state = this.state();
       if (this.delivering.get(id) !== inFlight || state.mode === "off") return true;
-      const target = this.deliveryTarget(state.roster, part.target);
+      const target = this.checkedTarget(state.roster, part.target);
       let result: DeliveryResult = "not-running";
       try {
         if (target) {

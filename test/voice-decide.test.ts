@@ -752,6 +752,19 @@ for (const stopped of ["Steve", "Alice"]) {
   });
 }
 
+test("picking one stopped resident reports its delivery outcome", async (t) => {
+  const steve: SpokenName = { ...name("Steve"), kind: "resident", key: "resident:steve", state: "not-running", sessionId: null };
+  const { router, cards, delivered, say } = routerRig(() => answered(null), [steve, name("Stevie")]);
+  t.after(() => router.reset());
+  await say("Steven, check the build", "single-stopped");
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.ok(await router.pick("single-stopped", steve.key));
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.ok(await router.sendNow("single-stopped"));
+  assert.equal(cards.at(-1)?.state, "not-running");
+  assert.deepEqual(delivered, []);
+});
+
 test("a partial job batch cannot return an actionable split", () => {
   const first = { choice: "split", confidence: 1 };
   for (const answers of [{ q1: first }, { q1: first, q3: first }, { q1: first, q2: { choice: "mention" } }, { q1: first, q2: { choice: "absent", confidence: 1 } }]) {

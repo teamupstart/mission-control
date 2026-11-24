@@ -4,8 +4,8 @@ import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
 import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type VoiceDashboardSnapshot, type VoiceKeyWriteOptions } from "./lib/api.ts";
 import { VoiceDashboardClock } from "./lib/voice-dashboard-clock.ts";
 
-// Voice settings (`GET`/`PUT /api/voice/config`). Polled while the panel is open, for the reason
-// `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
+// Voice settings (`GET`/`PUT /api/voice/config`). Poll while Settings > Voice is open so
+// the panel picks up edits made in other windows.
 // The voice STATE is not here; it is the event stream's (`MissionState.voice`).
 
 const POLL_MS = 5000;
@@ -90,12 +90,14 @@ interface PendingEdit {
 }
 
 /**
- * `enabled` is whether Settings > Voice is on screen: nothing is read or polled otherwise.
+ * Window-owned settings keep pending edits in order across navigation. Live shortcut hints
+ * use the configured and registered chords from the daemon's voice state.
+ * Nothing is read or polled with the preview off.
  *
  * The daemon orders provider selections, so a stalled write cannot delay an opt-out.
  * The other settings share one queue and retain their edit order.
  */
-export function useVoiceConfig(enabled: boolean): VoiceConfigState {
+export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
   const [pending, setPendingState] = useState<readonly PendingEdit[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -144,7 +146,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!pollWhileOpen) return;
     const reads = new AbortController();
     let snapshot: VoiceDashboardSnapshot | undefined;
     const tick = async (): Promise<void> => {
@@ -167,7 +169,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       reads.abort();
       clearInterval(id);
     };
-  }, [clock, enabled, observeProvider, setConfirmed, unconfirmedProviderEdit]);
+  }, [clock, pollWhileOpen, observeProvider, setConfirmed, unconfirmedProviderEdit]);
 
   const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;

@@ -2,7 +2,8 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceState } from "@shared/voice.ts";
+import type { HeardEntry } from "@shared/voice-routing.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceRevision, VoiceState } from "@shared/voice.ts";
 import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
@@ -446,7 +447,7 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
-export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
+export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
  * Both, because they diverge for real reasons (a hand-edited file, an install from
@@ -517,6 +518,8 @@ function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) 
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
+export const fetchRecentlyHeard = (signal: AbortSignal) =>
+  fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = (signal?: AbortSignal) => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices", { signal });
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
@@ -2530,8 +2533,11 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
-  setVoiceMuted: (muted: boolean) =>
-    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),
+  clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
+  setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
+    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
+  setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
+    post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */
   startVoiceModelDownload: () =>
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),

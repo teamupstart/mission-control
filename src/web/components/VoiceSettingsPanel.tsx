@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
+import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
   VOICE_CANCEL_WINDOW_SECONDS,
   VOICE_INPUT_DEVICE_BUILT_IN,
@@ -353,8 +355,7 @@ function FasterRoutingGroup({ state, keys }: {
 
 /**
  * Settings > Voice, behind the `voice` flag. The mode line, then who can be addressed, the input
- * device, then the behavior rows. The placement, indicators and hotkey rows arrive with the phases
- * that make them do something.
+ * device, then the behavior rows. The indicator previews and recently heard table follow the behavior rows.
  */
 export function VoiceSettingsPanel({
   state,
@@ -530,6 +531,8 @@ export function VoiceSettingsPanel({
       </div>
 
       <FasterRoutingGroup state={state} keys={keys} />
+      <VoiceIndicatorSettings />
+      <RecentlyHeard roster={voice?.roster ?? []} />
     </section>
   );
 }

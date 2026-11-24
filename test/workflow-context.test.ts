@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
+ensureNativeStateLockAddon();
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-context-"));
 process.env.MISSION_HOME = home;
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -640,8 +642,33 @@ test("an uncommitted submission with Commands pins them to a review snapshot of 
     ["?? .coderabbit.yaml", "?? docs/", "?? new.txt", "M app.txt"]);
   assert.equal(await captureBoundaryChanged(registry, binding, dirty.boundary), false);
 
-  // A graph with no Command has nothing to pin and writes no snapshot.
+  // The layered capture includes local evidence that the publication tree intentionally excludes.
   const before = git("for-each-ref", "refs/mission-control/workflow-reviews/");
+  const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+  const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+  const root = join(home, "artifact-store");
+  const service = WorkflowRepositoryArtifactService.forRoot(new WorkflowStore(), root);
+  const signal = new AbortController().signal;
+  const sealed = await captureStableWorkflowContext(async () => dirty,
+    captured => captureBoundaryChanged(registry, binding, captured.boundary), {
+      sampleBoundary: () => service.sampleBoundary(repo, signal),
+      prepare: captured => service.prepare(captured.repositoryCapture!, signal),
+      stillCurrent: candidate => service.stillCurrent(candidate, signal),
+      discard: candidate => service.discard(candidate),
+    });
+  assert.ok(sealed);
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, "pending", sealed.candidate.id, "artifact", "manifest.json"), "utf8"));
+    assert.equal(manifest.view.head, head);
+    assert.equal(manifest.view.base, head);
+    assert.equal(manifest.view.indexTree, git("rev-parse", "HEAD^{tree}"));
+    assert.equal(manifest.view.worktreeTree, dirty.context.evidence.contentTreeOid);
+    assert.notEqual(manifest.view.worktreeTree, dirty.context.evidence.publication!.treeOid);
+    assert.equal(sealed.captured.context.evidence.reviewCommit, snapshot);
+    assert.equal(git("for-each-ref", "refs/mission-control/workflow-reviews/"), before);
+  } finally { await service.discard(sealed.candidate); }
+
+  // A graph with no Command has nothing to pin and writes no snapshot.
   const withoutCommands = await readWorkflowContextRaw(registry, binding, [], [], null);
   assert.equal(withoutCommands.context.evidence.reviewCommit, null);
   assert.equal(git("for-each-ref", "refs/mission-control/workflow-reviews/"), before);

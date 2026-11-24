@@ -11,7 +11,7 @@ import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -263,6 +263,7 @@ const voiceNames = new VoiceNameRegistry(registry, {
 const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
 // The voice state reaches open windows and the shell the same way, behind its flag.
 const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const stopVoiceIndicators = onVoiceIndicatorsChanged((indicators) => registry.emitVoiceIndicators(indicators));
 // The shapers folder is read at start, and again at every shaping run: never watched.
 if (featureEnabled("task-shaping")) void announceShaperFolder();
 // The one daemon-owned native allocator. It is reconciled before Workflow check recovery,
@@ -1126,6 +1127,7 @@ async function shutdown(): Promise<void> {
   stopShapingConfig();
   registry.voiceRouter?.reset();
   stopVoiceState();
+  stopVoiceIndicators();
   stopVoiceNames();
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();

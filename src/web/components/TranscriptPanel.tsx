@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { VoiceIndicator, useVoiceComposerHint } from "./VoiceIndicators.tsx";
+import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ComposerPauseButton, ComposerPausedBand } from "./PauseControls.tsx";
 import { usePauseConsoleControls } from "../lib/pause-controls.ts";
 import type {
@@ -429,6 +430,8 @@ export function TranscriptPanel({
 }): React.JSX.Element {
   // The body below was written against these two names and still is; only the PROP changed.
   const sessionId = session.id;
+  const voiceHint = useVoiceComposerHint(sessionId);
+  const voiceHintId = useId();
   const agent = session.agent;
   const { bindings } = useKeybindings();
   const sendChord = formatChord(bindings.send);
@@ -695,6 +698,10 @@ export function TranscriptPanel({
    */
   const { view } = useSessionConversationView(sessionId);
   const terminal = view === "terminal";
+  const replyPrompt = terminal
+    ? "Send the next instruction to this process…"
+    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)";
+  const composerVoiceHint = canSend && !dialogOpen ? voiceHint : null;
   // The prompt's `~/leaf`, not the whole checkout: a worktree path is 60 characters of
   // pool bookkeeping and the strip directly above already prints it in full. `promptPath`
   // owns the whole displayed string, prefix included - see its note on why a leaf plus a
@@ -1611,12 +1618,10 @@ export function TranscriptPanel({
         {/* What pausing means for what you type, above the box it is about. */}
         {pauseControls.has("composer") && <ComposerPausedBand session={session} />}
         <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
+        {composerVoiceHint && <span className="vi-composer-hint" id={voiceHintId}>{composerVoiceHint}</span>}
         <div className="compose-row">
-          {/* Decorative, and marked as such: the box's accessible name stays its
-              placeholder, which says what typing here does. A real `<label>` reading
-              "mission (s) >" would replace that sentence with a prompt. The key is the
-              resolved Send binding, not its default, so rebinding the focus action also
-              updates this cue. */}
+          <VoiceIndicator id="composer" />
+          {/* The decorative prompt shows the resolved Send binding. */}
           <span className="pty-prompt" aria-hidden="true">
             {`mission${sendChord ? ` (${sendChord})` : ""} >`}
           </span>
@@ -1626,18 +1631,14 @@ export function TranscriptPanel({
             key={resetNonce}
             ref={inputRef}
             className={workingProgressBar ? "transcript-input has-progress-bar" : "transcript-input"}
+            aria-label={composerVoiceHint ? replyPrompt : undefined}
+            aria-describedby={composerVoiceHint ? voiceHintId : undefined}
             placeholder={
               !canSend
                 ? "No pane to send to"
                 : dialogOpen
                   ? "Waiting on a menu - pick an option above to answer it"
-                  : terminal
-                    ? // The prompt metaphor, with the keys moved out to the hint beside the
-                      // box the way a shell's own footer carries them. The two BLOCKED
-                      // placeholders above are deliberately identical in both renderings:
-                      // they are the reason you cannot type, and that reason is the same.
-                      "Send the next instruction to this process…"
-                    : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
+                  : replyPrompt
             }
             rows={terminal ? 1 : 2}
             disabled={!canSend || dialogOpen}

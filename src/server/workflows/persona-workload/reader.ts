@@ -58,6 +58,16 @@ export interface RepositoryReaderOptions {
 /** A single attempt owns its budgets, cursor key and operation/evidence identities. */
 export function createRepositoryReader(options: RepositoryReaderOptions) {
   const view = RepositoryViewDescriptorSchema.parse(options.view);
+  const statusEntries = view.statusDeletions?.length
+    ? [...view.worktree, ...view.statusDeletions.map(entry => ({ ...entry, kind: null, binary: null }))]
+    : [...view.worktree];
+  // A staged, assume-unchanged path may be absent on disk. Its index change
+  // remains visible in status without manufacturing a readable worktree file.
+  const listed = new Set(statusEntries.map(entry => entry.path));
+  for (const entry of view.index) {
+    if (!listed.has(entry.path) && entry.classifications.includes("staged") && !entry.classifications.includes("deleted"))
+      statusEntries.push({ ...entry, kind: null, binary: null });
+  }
   const budgets = RepositoryBudgetsSchema.parse(options.budgets);
   const secret = randomBytes(32);
   const started = Date.now();
@@ -347,7 +357,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const r = RepositoryOperationSchemas[operation].parse(input);
         allow(r.glob);
         let scanned = 0;
-        for (const e of view.worktree) {
+        for (const e of operation === "git_status" ? statusEntries : view.worktree) {
           if (++scanned % 64 === 0)
             await new Promise<void>((resolve) => setImmediate(resolve));
           signal.throwIfAborted();
@@ -412,8 +422,8 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const pairs = {
           base_head: [view.base, view.head],
           head_index: [view.head, view.indexTree],
-          index_worktree: [view.indexTree, view.worktreeTree],
-          base_worktree: [view.base, view.worktreeTree],
+          index_worktree: [view.indexTree, view.worktreeDiffTree ?? view.worktreeTree],
+          base_worktree: [view.base, view.worktreeDiffTree ?? view.worktreeTree],
         } as const;
         const [a, b] = pairs[r.pair];
         if (!b) throw new Refusal("unavailable");

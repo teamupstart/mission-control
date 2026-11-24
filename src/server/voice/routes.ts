@@ -15,6 +15,7 @@ import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
   VoiceConfigPatchSchema,
+  VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
   VoiceProviderIntentSchema,
@@ -23,6 +24,7 @@ import {
 import { checkToken } from "../auth.ts";
 import { featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
+import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -111,6 +113,14 @@ export function registerVoiceRoutes(
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
     const ticket = reserveProviderWrite(parsed.data);
     return ticket ? c.json({ ticket, intentReceipt: providerIntentReceipt() }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
+  });
+  app.put("/api/voice/indicators", gate, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const indicators = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
+    return indicators === null
+      ? c.json({ error: "The indicator selection is full." }, 409)
+      : c.json({ indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
   });
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });

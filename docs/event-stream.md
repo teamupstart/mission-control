@@ -169,8 +169,12 @@ folds them. See [Task shaping](task-shaping.md#settings).
 
 ## Voice
 
+While voice is enabled, `voiceIndicators` in the snapshot carries the saved indicator IDs.
+After a preference write commits, `voice_indicators` carries the full selection to connected
+windows. A window that missed the write receives the saved selection when it reconnects.
+
 `voice_state` carries `{ state }`, the whole voice state (`VoiceState` in `src/shared/voice.ts`):
-`mode`, `reasons`, `capabilities`, `hotkeyError`, `model` and `roster`. It is sent whenever the
+`mode`, `reasons`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`. It is sent whenever the
 state changes: a flag or the voice config changed, a listener's hello or a shell report arrived,
 or one of them lapsed, which a daemon timer publishes with no request, or the speech model's
 state moved. A model download publishes its progress at most every 250 ms, so a download is a

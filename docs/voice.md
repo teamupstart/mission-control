@@ -386,7 +386,15 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-Nothing draws either yet. Like every voice surface it is behind the flag: with
+The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. Click any indicator to mute or unmute. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
+
+If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
+
+While a mute or unmute request is pending, the dashboard shows its progress and disables the other mute controls in that window. If the daemon takes more than five seconds to confirm the change, the controls become available again. The indicators continue to show the daemon's latest mode, including a change that arrives after the timeout.
+
+**Recently heard** shows the latest 50 utterances, newest first, including the match, deciding rule and outcome. An exact opening name routes with or without a pause. A name mentioned later alone does not address an agent. A read that takes over five seconds shows an error and keeps the last known rows until polling succeeds. Clear empties the daemon’s in-memory history, even when the table is empty or cannot refresh. If Clear times out, the table reports that deletion is unconfirmed, resumes polling and lets you retry. Audio is never stored.
+
+With
 `voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the
 flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and saves nothing.
 
@@ -537,7 +545,11 @@ in the order they are listed:
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
 
-The state also carries `capabilities`, `hotkeyError`, `model` and `roster`. The capabilities and
+The state also carries `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+Every window receives the saved chord and current shell registration together when either changes.
+The dashboard shows a shortcut only when the shell confirms the exact configured chord,
+reports the hotkey capability and has no registration error. Until then the indicator shows its
+click action. A missing or expired confirmation yields `registeredHotkey: null`. The capabilities and
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
@@ -569,7 +581,9 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   retry. If the change times out, it reads the current configuration and provider from the daemon.
   The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
-- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`.
+- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
+  the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
+  displays the newest confirmed mode whichever arrives first.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty
   with `listener: false` when no hello is live.
 - `POST /api/voice/model/download` starts the download and answers 202 with `{ model }`. A download
@@ -584,9 +598,16 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version; a hello whose major
   version is not this daemon's (`1`) is refused with 409 `unsupported_protocol`, and the state's
   `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, hotkeyError }`,
-  sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
-  does not know are dropped rather than refused.
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, registeredHotkey, hotkeyError }`
+  receives the desktop shell's capability report. A report lapses after 15 seconds.
+  The daemon drops unrecognized capability IDs.
+
+[Phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md) introduces the shell report producer.
+[Phase 11](plans/voice-addressing-for-agents/phase-11-hotkey-and-calls.md) connects it to the native hotkey registrar.
+On successful registration, Electron must include the registrar's confirmed chord in `registeredHotkey` on each report.
+If replacing a chord fails, it reports the chord still in force and the registration error. With no registration,
+it reports `null`. The producer regression test belongs alongside the registrar and checks the outgoing report
+after a successful registration, a failed replacement, and unregistration.
 
 ### Following it
 

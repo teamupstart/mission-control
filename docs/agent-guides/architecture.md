@@ -667,5 +667,7 @@ and rechecks under the existing terminal/SDK write lock. No other process writes
 
 The [repository review foundation](../repository-review-workloads.md) owns the separate
 repository MCP bundle and isolated SDK workload adapters. It accepts an injected verified
-view lease, emits only metadata in its audit events, and has no production Workflow caller
-or database ownership. Artifact capture and durable orchestration belong to later phases.
+view lease and emits only metadata in its audit events. The daemon's Phase 2
+`WorkflowRepositoryArtifactService` seals the submitted checkout and materializes a verified
+view for a review workload. `WorkflowManager` reconciles repository artifacts during retention.
+Enabling capture for Workflow submissions and dispatching Persona reviews belong to Phase 3.

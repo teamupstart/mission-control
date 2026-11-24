@@ -46,11 +46,12 @@ test("Foreman reads the daemon's resolved transports beside its runner", async (
   // BOTH transports off ONE status read. A worker that learned only Claude's would honour a
   // saved `codexTransport` in the daemon and ignore it here, so Foreman's reviews and triage
   // would quietly run on a transport the operator did not pick while the panel said they had.
-  statusBody = { runner: { id: "codex" }, claudeTransport: "sdk", codexTransport: "sdk" };
+  statusBody = { runner: { id: "codex" }, claudeTransport: "sdk", codexTransport: "sdk", backgroundReasoningEffort: true };
   assert.deepEqual(await new ForemanClient().llmSelection(), {
     runner: "codex",
     claudeTransport: "sdk",
     codexTransport: "sdk",
+    backgroundReasoningEffort: true,
   });
 });
 
@@ -58,6 +59,7 @@ test("an older daemon degrades the Codex transport the same way Claude's degrade
   // A daemon that predates the field says nothing about it. The worker then takes its own
   // environment, and finally this build's shipped default - never a value invented here.
   statusBody = { runner: { id: "codex" }, claudeTransport: "sdk" };
+  assert.equal((await new ForemanClient().llmSelection()).backgroundReasoningEffort, false);
   assert.equal((await new ForemanClient().llmSelection()).codexTransport, "exec");
 
   process.env.MISSION_CODEX_TRANSPORT = "sdk";

@@ -189,7 +189,9 @@ of scalars, at most seven capabilities with bounded reasons, and the roster. It 
 `LINE_INPUT_EVENTS` member.
 
 `voice_card` carries `{ card }` whenever an utterance opens a card or changes its state.
-Consumers replace the card by id. A reconnect snapshot carries the open cards in `voiceCards`
+Consumers replace the card by id. While delivery is in progress the card has state `pending`,
+reason `delivering` and a null deadline. Its card actions are closed. A reconnect snapshot
+carries both open cards and in-flight deliveries in `voiceCards`
 while voice is enabled. The daemon drops them and the dashboard clears its map when voice turns
 off. Recently heard stays in daemon memory and is read separately through the voice routes.
 

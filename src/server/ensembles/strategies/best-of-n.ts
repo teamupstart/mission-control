@@ -173,6 +173,7 @@ function compile(config: BestOfNConfig, context: StrategyCompileContext): Strate
               guidanceMarkdown: persona.guidanceMarkdown,
               runner: persona.runner,
               model: persona.model,
+              ...(persona.effort && { effort: persona.effort }),
             },
       runner: config.evaluator.runner,
       model: config.evaluator.model,

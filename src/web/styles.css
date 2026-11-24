@@ -18323,6 +18323,35 @@ select.ensemble-judge-persona {
   flex-direction: column;
   gap: 10px;
 }
+.resident-cards > .resident-editor-card-identity:has(.resident-spoken-identity) {
+  gap: 0;
+  padding: 11px;
+  border-color: var(--border);
+  background: var(--panel);
+}
+.resident-editor-card-identity:has(.resident-spoken-identity) h4 {
+  margin: 0 0 2px;
+  font-size: 13px;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.resident-editor-card-identity:has(.resident-spoken-identity) .resident-section-blurb {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+}
+.resident-spoken-identity {
+  flex-flow: row wrap;
+  align-items: flex-start;
+  column-gap: 14px;
+}
+.resident-spoken-identity > .field {
+  flex: 1 1 155px;
+  min-width: 0;
+}
+.resident-spoken-identity > .resident-description {
+  flex-basis: 100%;
+}
 .resident-fields-row {
   display: grid;
   grid-template-columns: 0.8fr 1.2fr 0.8fr;
@@ -23171,8 +23200,8 @@ button.wf-carried.is-link:focus-visible {
   vertical-align: top;
 }
 .voice-roster-agent {
-  font-weight: 620;
-  color: var(--fg);
+  font-weight: 650;
+  color: color-mix(in oklab, var(--resident, var(--fg)) 88%, var(--fg));
 }
 .voice-roster-kind,
 .voice-roster-state {

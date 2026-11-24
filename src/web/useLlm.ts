@@ -101,6 +101,7 @@ export function useLlm(): LlmState {
         ...before,
         ...patch,
         models: { ...before.models, ...patch.models },
+        ...(patch.efforts && { efforts: { ...before.efforts, ...patch.efforts } }),
         runners: { ...before.runners, ...patch.runners },
       });
       const res = await api.setLlmConfig(patch);

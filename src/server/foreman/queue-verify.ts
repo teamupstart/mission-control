@@ -4,9 +4,10 @@ import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
 import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
 import { parseModelJson, runStructured, parseModelReply } from "../llm/structured.ts";
-import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
+import { FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
 // Runs ONE work-item verification in a fresh tool-less model call, mirroring
@@ -170,22 +171,6 @@ export type QueueVerifyResult =
 /** The verifier's default, unless overridden by config or FOREMAN_VERIFY_MODEL. */
 export const DEFAULT_VERIFY_MODEL = FOREMAN_MODEL_SPECS.verify.fallback;
 
-/** The verifier's model from config, then env, then the Opus default. */
-export function verifyModel(
-  cfg: { verifyModel?: string },
-  /**
-   * The provider this role RESOLVED to, supplied by the caller.
-   *
-   * Required, and not defaulted to `cfg.runner`, for the reason `model` is required on the
-   * call below: the ladder now has three rungs and its bottom one - the app-wide answer -
-   * sits behind an env layer this process cannot see. Re-deriving it here would make the
-   * worker and the settings panel able to disagree about the very pair being spawned.
-   */
-  runner: LlmRunnerId,
-): string {
-  return resolveForemanModel("verify", cfg, process.env, runner).id;
-}
-
 /**
  * Verify one work item with fresh context; never throws.
  *
@@ -196,12 +181,14 @@ export async function verifyItem(
   input: VerifyInput,
   model: string,
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
+  effort?: ThinkingLevel,
 ): Promise<QueueVerifyResult> {
   const runner = llmRunner(runnerId);
   const r = await runStructured<typeof QueueVerdictSchema>(
     (p) =>
       runner.run(p, {
         model,
+        effort,
         role: "foreman:verify",
         schema: QUEUE_VERDICT_JSON_SCHEMA,
       }),

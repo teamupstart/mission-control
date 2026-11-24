@@ -180,6 +180,7 @@ export function useForeman(): ForemanState {
         setConfig({
           ...before,
           ...patch,
+          ...(patch.efforts && { efforts: { ...before.efforts, ...patch.efforts } }),
           backlogDefaultModel: {
             ...before.backlogDefaultModel,
             ...patch.backlogDefaultModel,

@@ -24,6 +24,8 @@ export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 
+export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
@@ -172,6 +174,13 @@ export const FEATURE_FLAGS = [
     description: "Open shells and show multiplexer sessions in the Terminal app built into macOS.",
     stage: "preview",
     keywords: ["terminal", "apple", "macos", "dispatch"],
+  },
+  {
+    id: BACKGROUND_REASONING_EFFORT_FLAG_ID,
+    label: "Background reasoning effort",
+    description: "Choose the reasoning effort for each background model call in Settings > Models.",
+    stage: "preview",
+    keywords: ["background jobs", "models", "thinking", "reasoning", "foreman", "inspector"],
   },
 ] as const satisfies readonly FeatureFlagDefinition[];
 

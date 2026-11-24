@@ -87,7 +87,7 @@ export interface TopbarProps {
    */
   lostTasks?: number;
   onOpenLostTasks?: () => void;
-  launcherFocusError?: string | null;
+  fleetActionError?: string | null;
   fleetCost: FleetCost | null;
   costView: "usd" | "plan";
   onOpenCostSettings: () => void;
@@ -224,9 +224,9 @@ export function Topbar(props: TopbarProps): React.JSX.Element {
         lostTasks={props.lostTasks ?? 0}
         onOpenLostTasks={props.onOpenLostTasks ?? (() => {})}
       />
-      {props.launcherFocusError && (
+      {props.fleetActionError && (
         <span className="launch-flash is-error" role="status">
-          {props.launcherFocusError}
+          {props.fleetActionError}
         </span>
       )}
       {/* A READOUT, so it sits with the pulse rather than inside the action cluster

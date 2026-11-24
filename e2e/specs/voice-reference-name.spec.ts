@@ -152,3 +152,24 @@ test("a warned reference name is saved as typed, and the roster lists it with it
     .toHaveText(["Steve", "Resident", "Steve", "Not running", /Sounds like Stevie/]);
   await shoot(page.getByRole("tabpanel", { name: "Voice" }), "04-roster-warned-stevie");
 });
+
+test("saving with voice off preserves the stored reference name after a hidden edit", async ({ dashboard: page, daemon }) => {
+  for (const id of ["async-input", "inbox", "filed-plan-decisions", "voice"]) await setFlag(daemon, id, true);
+  const captain = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Release Captain", referenceName: "Marlowe" },
+    persona: { personaId: PERSONA_ID },
+  } });
+  await page.goto(`${daemon.baseURL}/#/residents`);
+  await page.getByRole("complementary", { name: "Resident profiles" }).getByRole("button", { name: /Release Captain/ }).first().click();
+  const editor = page.getByRole("region", { name: "Resident profile Release Captain" });
+  await referenceNameOf(editor).fill("");
+  await setFlag(daemon, "voice", false);
+  await expect(referenceNameOf(editor)).toHaveCount(0);
+  await editor.getByLabel("Description", { exact: false }).first().fill("Cuts releases");
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(editor).toContainText("Revision 2. Edits apply");
+  const profiles = await api<ResidentProfile[]>(daemon, "/api/residents/profiles");
+  const identity = profiles.find((p) => p.id === captain.id)?.settings.identity;
+  expect(identity?.description).toBe("Cuts releases");
+  expect(identity?.referenceName).toBe("Marlowe");
+});

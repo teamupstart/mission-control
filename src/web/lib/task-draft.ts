@@ -12,6 +12,7 @@ import { dependencyInputOf, dependencyInputKey as sharedDependencyInputKey } fro
 
 import type { AdvisorChoice, Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
+import { stackStartEdge } from "@shared/stacking.ts";
 import { isGrillFirstTaskKind, normalizeLabels, taskKindPersonaRefusal } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
 
@@ -251,6 +252,17 @@ function dependencyInputsEqual(a: TaskDependencyInput[], b: TaskDependencyInput[
     dependency.type === "task" || dependency.type === "session" ? dependency.mode ?? "" : "";
   const bKeys = new Map(b.map((dependency) => [dependencyInputKey(dependency), modeOf(dependency)]));
   return a.every((dependency) => bKeys.get(dependencyInputKey(dependency)) === modeOf(dependency));
+}
+
+/** An unsaved edit can use the daemon's stack release only for the dependency choices it observed. */
+export function draftStackStartEdge(
+  task: Task,
+  draft: Pick<DispatchDraft, "repoRoot" | "dependencies">,
+  byId: ReadonlyMap<string, Task>,
+) {
+  if (task.status !== "backlog" || draft.repoRoot.trim() !== task.repoRoot) return null;
+  if (!dependencyInputsEqual(draft.dependencies, task.dependencies.map(dependencyInputOf))) return null;
+  return stackStartEdge(task, byId);
 }
 
 /**

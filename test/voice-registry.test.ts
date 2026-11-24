@@ -27,7 +27,7 @@ const { VoiceStateStore } = await import("../src/server/voice/state.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const flags = await import("../src/server/feature-flags/index.ts");
 const { VOICE_CONFIG_DEFAULTS } = await import("../src/shared/voice.ts");
-const { loadFinishedTasksWithCallSign, getTask: getStoredTask } = await import("../src/server/db.ts");
+const { loadFinishedTasksWithCallSign, taskNameRetirement, upsertTask, deleteTask, getTask: getStoredTask } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -272,6 +272,50 @@ test("a stopped task's name leaves at once when another agent takes it", () => {
   sources.upsertTask(callSignTask("t-x2", "Max", { status: "done", completedAt: clock.now - 2 * HOUR, sessionId: null }));
   assert.ok(brief(names.roster()).includes("task:t-x2 Max not-running"));
   assert.ok(!brief(names.roster()).includes("task:t-x1 Max not-running"));
+});
+
+test("a resident releasing a reused name never restores the stopped task, cached or evicted", () => {
+  for (const evict of [false, true]) {
+    const { sources, names, clock } = harness();
+    const task = callSignTask("retired", "Quill", { status: "done", completedAt: clock.now });
+    sources.upsertTask(task);
+    if (evict) sources.removeTask(task.id);
+    sources.upsertProfile(profile("captain", { name: "Quill" }));
+    sources.removeProfile("captain");
+    assert.deepEqual(names.roster(), [], evict ? "evicted" : "cached");
+    sources.upsertTask({ ...task, status: "hibernated" });
+    assert.deepEqual(brief(names.roster()), ["task:retired Quill hibernated"]);
+  }
+});
+
+test("retirement survives a restart and clears when the task next runs", () => {
+  const sources = new Sources();
+  const now = Date.now();
+  const task = callSignTask("retirement-restart", "Rook", { status: "done", completedAt: now });
+  upsertTask(task);
+  const deps = {
+    now: () => now, enabled: () => true, taskStored: () => true,
+    finishedNamedTasks: loadFinishedTasksWithCallSign, retirement: taskNameRetirement,
+  };
+  const before = new VoiceNameRegistry(sources, deps);
+  before.start();
+  sources.upsertProfile(profile("captain", { name: "Rook" }));
+  sources.removeProfile("captain");
+  before.stop();
+  const after = new VoiceNameRegistry(sources, deps);
+  after.start();
+  try {
+    assert.ok(!after.roster().some((entry) => entry.taskId === task.id));
+    assert.equal(getStoredTask(task.id)?.callSign, "Rook");
+    sources.upsertTask({ ...task, status: "running" });
+    sources.upsertSession(liveSession("again", task.id));
+    sources.removeSession("again");
+    assert.ok(after.roster().some((entry) => entry.taskId === task.id));
+    assert.equal(taskNameRetirement.read(task.id), null);
+  } finally {
+    after.stop();
+    deleteTask(task.id);
+  }
 });
 
 test("a task the Registry evicts from memory keeps its name for its day, and a deleted one leaves at once", () => {

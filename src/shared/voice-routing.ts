@@ -96,7 +96,7 @@ export function addressedCommand(text: string): VoiceAddressedCommand | undefine
 function namesStartingAt(text: string, token: RegExpExecArray, next?: RegExpExecArray): [string] | [string, string] {
   const first = normalized(token[0]);
   if (!next || !/^\s+$/u.test(text.slice(token.index + token[0].length, next.index))) return [first];
-  return [first, first + " " + normalized(next[0])];
+  return [first, normalized(text.slice(token.index, next.index + next[0].length))];
 }
 
 function observedPause(words: VoiceUtterance["words"], tokens: RegExpExecArray[], addressWords: number): number | null {
@@ -182,6 +182,9 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   for (const kind of ["exact", "phonetic"] as const) {
     for (const [index, heard] of leadingNames.entries()) {
       const length = index + 1;
+      // Internal punctuation may belong to a literal roster name such as "Dr. Ada".
+      // A phonetic key would erase it and could cross a sentence boundary.
+      if (kind === "phonetic" && /\p{P} | \p{P}/u.test(heard)) continue;
       const heardKey = kind === "phonetic" ? phoneticKey(heard) : "";
       const matches = names.filter(({ name }) => {
         if (name.split(" ").length !== length) return false;

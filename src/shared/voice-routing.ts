@@ -33,6 +33,8 @@ export interface VoiceCard {
     target: SpokenName | null;
     text: string;
     outcome?: VoiceDeliveryOutcome | "cancelled";
+    /** The addressed command executed for this receipt. */
+    command?: VoiceAddressedCommand;
     detail?: string;
     /** The exact outbox row to recall, including after a two-part delivery. */
     turnId?: string;

@@ -8,15 +8,18 @@ The daemon accepts text captures from a token-authenticated listener. It resolve
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
 recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
-and Linux. The corner confirmation card names the recipient and shows the spoken words. Its bar and
+and Linux. The corner confirmation card names the recipient and shows the spoken words.
+Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now. Its bar and
 seconds count down together. On a slow connection, `≤` marks the longest time that could
 remain. You can still try Cancel, and the daemon confirms whether it arrived in time.
+When several cards share the corner, open cancel windows stay nearest the corner, ahead of delivery results.
 Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answer, the card offers a retry while the original request can still reach it. A split offers
 “Send both now” when both messages are waiting. With a mention or an already-issued stop,
 the send button names the agent who will receive the remaining message. With the cancel
 window off, delivery begins immediately. Sent and queued cards show the open question count.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
-The Sound preference controls the pending chime. During the cancel window, an unfocused
+With Sound enabled, the pending chime plays only while the card still offers Cancel.
+A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
 notifications. If you switch away while the card is counting down, the notification shows
@@ -52,7 +55,7 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. If a save times out, you can select another placement. A delayed request
+for those windows. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
 cannot replace the newer saved choice, even when that save reaffirms the current placement.
 Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
@@ -62,11 +65,13 @@ With no countdown open or message selected, an address awaiting a recipient choi
 ahead of delivery results, including messages held behind a question.
 When several messages remain, the Voice message selector lets you revisit their cards,
 including individual turns held for the same agent. A new countdown takes priority even
-when you selected another pending delivery. When the new window closes, the surface
-returns to your selection if its card is still available and eligible.
+when you selected another pending delivery. A stop receipt updates its own card and keeps
+the current countdown selected. When the new window closes, the surface returns to your
+selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
-while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
-the same launch request.
+while hidden. Returning to the card starts a fresh eight-second reading interval. Switching
+between the dashboard and either standalone route preserves the relaunch progress and feedback.
+Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect
@@ -481,7 +486,9 @@ commit the queue update. After three failed preparations it reports the failure,
 Foreman, and lets the following message proceed.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
-follow-up task.
+follow-up task. A follow-up opens a separate Dispatch draft for the finished task’s repository.
+If you exit the See the work tour during the repository lookup, the draft opens when the lookup
+finishes. An already open follow-up stays available after tour exit.
 
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation

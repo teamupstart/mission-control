@@ -58,6 +58,29 @@ test("the accessible countdown announces its initial duration without repeating 
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
 
+test("a long transcript scrolls while the recipient and countdown controls stay in view", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await page.setViewportSize({ width: 560, height: 420 });
+  const words = "Review the changes to the build. ".repeat(64) + "Start with the final change.";
+  await say(daemon, "Steve, " + words);
+  const card = page.getByRole("status").filter({ hasText: "To Steve" });
+  const recipient = card.getByText("To Steve", { exact: true });
+  const seconds = card.locator(".vc-seconds");
+  const cancel = card.getByRole("button", { name: "Cancel", exact: true });
+  const send = card.getByRole("button", { name: "Send now" });
+  const transcript = card.getByText(words, { exact: true });
+  for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
+  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await transcript.hover();
+  await page.mouse.wheel(0, 10000);
+  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
+  await captureCard(card, "long-transcript-controls");
+  await cancel.click();
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
 test("a stalled card action reports the unconfirmed request and permits a retry", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 8);
   await runningAgent(page, daemon, "Steve");
@@ -100,6 +123,73 @@ test("an in-transit Cancel can reach the daemon after the retry control returns"
   }
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible({ timeout: 3000 });
   expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
+});
+
+test("an expired pending frame stays silent while a live cancel window chimes", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 3);
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Steve", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const { config } = await (await page.request.get(daemon.baseURL + "/api/ui/config")).json();
+  expect((await page.request.put(daemon.baseURL + "/api/ui/config", { data: { alerts: { ...config.alerts, sound: true } } })).ok()).toBe(true);
+  await page.addInitScript(() => {
+    Object.defineProperty(AudioContext.prototype, "state", { get: () => "running" });
+    const start = OscillatorNode.prototype.start;
+    OscillatorNode.prototype.start = function(time) {
+      if (this.frequency.value === 660) document.documentElement.dataset.infoChimes = String(Number(document.documentElement.dataset.infoChimes ?? 0) + 1);
+      return start.call(this, time);
+    };
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        let offsetUpper = 0;
+        this.addEventListener("message", event => {
+          if (!event.isTrusted) return;
+          const frame = JSON.parse(event.data);
+          if (frame.type === "snapshot") {
+            offsetUpper = performance.now() - frame.voiceServerTime + 1;
+            document.documentElement.dataset.chimeClockReady = "true";
+          }
+          if (frame.type !== "voice_card" || frame.card.id !== "late-chime") return;
+          event.stopImmediatePropagation();
+          if (frame.card.state === "pending" && frame.card.deadline) {
+            document.documentElement.dataset.latestChimeDeadline = String(frame.card.deadline + offsetUpper);
+            window.addEventListener("release-pending-chime", () => this.dispatchEvent(new MessageEvent("message", { data: event.data })), { once: true });
+          }
+          if (frame.card.state === "not-running") document.documentElement.dataset.staleOutcome = "received";
+        });
+      }
+    };
+  });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-chime-clock-ready", "true");
+  await say(daemon, "Steve, deliver before the buffered frame", { id: "late-chime" });
+  await expect(page.locator("html")).toHaveAttribute("data-stale-outcome", "received", { timeout: 8000 });
+  await expect(page.locator("html")).toHaveAttribute("data-latest-chime-deadline", /^\d/, { timeout: 3000 });
+  await page.waitForFunction(() => performance.now() > Number(document.documentElement.dataset.latestChimeDeadline) + 100, undefined, { timeout: 5000 });
+  await page.evaluate(() => window.dispatchEvent(new Event("release-pending-chime")));
+  const late = page.getByRole("status").filter({ hasText: "deliver before the buffered frame" });
+  await expect(late).toContainText("Awaiting delivery confirmation");
+  await expect(page.locator("html")).not.toHaveAttribute("data-info-chimes", /[1-9]/);
+  await captureCard(late, "expired-frame-awaiting-without-chime");
+  await say(daemon, "Steve, open a live cancel window");
+  const live = page.getByRole("status").filter({ hasText: "open a live cancel window" });
+  await expect(page.locator("html")).toHaveAttribute("data-info-chimes", "1");
+  await live.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+test("a directly addressed stop reports the stop receipt without a message countdown", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await say(daemon, "Steve, stop", { id: "direct-stop" });
+  const receipt = page.getByRole("status").filter({ hasText: "Stop sent to Steve" });
+  await expect(receipt).toBeVisible({ timeout: 3000 });
+  await expect(receipt.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+  await captureCard(receipt, "direct-stop-receipt");
+  await say(daemon, "Steve, stop after the build");
+  const pending = page.getByRole("status").filter({ hasText: "stop after the build" });
+  await pending.getByRole("button", { name: "Send now" }).click();
+  await expect(page.getByRole("status").getByText("Sent to Steve", { exact: true })).toBeVisible();
 });
 
 test("a buffered frame caps desktop actions and disconnected card controls at one cancel window", async ({ dashboard: page, daemon }) => {

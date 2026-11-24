@@ -2122,7 +2122,10 @@ export function App(): React.JSX.Element {
       delete document.documentElement.dataset[flag];
     }
     closeComplete();
-    closeDispatch();
+    // Tour teardown closes its demo form. The operator's repository lookup and draft
+    // both belong to the follow-up that requested them.
+    setDispatchRequest(current =>
+      current?.kind === "repair-follow-up" || (current?.kind === "new" && current.followUp) ? current : null);
     setReviewSessionId(null);
     navigate(exit?.route ?? snapshot.route);
     setLayout(snapshot.layout);
@@ -2200,7 +2203,7 @@ export function App(): React.JSX.Element {
       else if (!settled) land(exit?.focus ?? "setup:settings-gear");
     };
     requestAnimationFrame(restore);
-  }, [cancelPending, closeComplete, closeDispatch, navigate, setLayout, tourTargets]);
+  }, [cancelPending, closeComplete, navigate, setLayout, tourTargets]);
 
   /**
    * Perform one palette row.
@@ -5151,9 +5154,9 @@ export function App(): React.JSX.Element {
         activeRunId={activeTourBinding?.activeRunId ?? null}
       >
       {!standalone && <ContextMenuHost ref={contextMenuRef} />}
-      <div className={standalone ? undefined : `app app-${layout}`}>
-        {standalone ? <main className="voice-standalone">{voiceCardHost}</main> : <>
+      <div className={standalone ? "voice-standalone" : `app app-${layout}`} role={standalone ? "main" : undefined}>
         {voiceCardHost}
+        {!standalone && <>
         <VoiceIndicator id="edge" />
         <Topbar
           barRef={topbarRef}

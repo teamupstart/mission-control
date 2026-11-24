@@ -837,12 +837,14 @@ test("quoted stop messages reach the queue verbatim while bare stop still interr
     await say("Steve, " + message, id);
     assert.equal((await act(id, "send-now")).status, 200);
     assert.deepEqual([cards.at(-1)?.state, queued("Steve").at(-1)], ["queued", message]);
+    assert.equal(cards.at(-1)?.parts[0]?.command, undefined);
   }
   assert.equal(interrupts.length, before);
   for (const command of ["stop", "Stop!"]) {
     const id = randomUUID();
     await say("Steve, " + command, id);
     assert.equal((await act(id, "send-now")).status, 409);
+    assert.equal(cards.at(-1)?.parts[0]?.command, "stop");
   }
   assert.deepEqual(interrupts.slice(before), ["sdk:Steve", "sdk:Steve"]);
 });

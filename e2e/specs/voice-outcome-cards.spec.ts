@@ -1,3 +1,4 @@
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
@@ -122,6 +123,44 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(1);
   await expect.poll(pendingWords).toEqual([earlier]);
   await captureCard(mixed, "mixed-split-recalled");
+});
+
+test("a held transcript scrolls inside a split with a failed sibling", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Will");
+  const question = "Which release should I check?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+  })).ok()).toBe(true);
+  // Refuse only the second part in this fixture's outbox so the daemon publishes a mixed result.
+  withDaemonDb(daemon, db => db.exec(`
+    CREATE TRIGGER refuse_split_sibling BEFORE INSERT ON pending_turns
+    WHEN NEW.id = 'voice:mixed-long#2' BEGIN SELECT RAISE(ABORT, 'Test outbox refused the sibling'); END
+  `));
+  await page.setViewportSize({ width: 560, height: 420 });
+  const words = "Review the build output. ".repeat(60) + "Start at the final check";
+  await say(daemon, "Steve, " + words + ", and Will, review the release", { id: "mixed-long" });
+  const card = page.getByRole("status");
+  await card.getByRole("button", { name: /Will/ }).click();
+  await card.getByRole("button", { name: "Send both now" }).click();
+  const mixed = card.filter({ hasText: "Held for Steve" });
+  await expect(mixed).toContainText("Failed to send to Will");
+  const recall = mixed.getByRole("button", { name: "Cancel message" });
+  const transcript = mixed.locator("q").filter({ hasText: "Start at the final check" });
+  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await transcript.hover();
+  await page.mouse.wheel(0, 10000);
+  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  for (const control of [recall, mixed.getByRole("button", { name: "Open question" }), mixed.getByText("Failed to send to Will")]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+  await captureCard(mixed, "held-scroll-with-failed-sibling");
+  const receipt = page.waitForResponse(r => r.url().endsWith("/pending-turns/voice%3Amixed-long/recall"));
+  await recall.click();
+  expect((await receipt).ok()).toBe(true);
+  await expect(mixed).toHaveCount(0);
 });
 
 test("without randomUUID a pending card can cancel and a stopped resident can relaunch", async ({ dashboard: page, daemon }) => {
@@ -284,6 +323,48 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(repo).toHaveValue(regularRepo);
   await expect(intent).toHaveValue("Keep this unrelated dispatch");
 });
+for (const exitTiming of ["before", "after"] as const) {
+  test(`a voice follow-up keeps its repository when the tour exits ${exitTiming} lookup finishes`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+    const steve = await runningAgent(page, daemon, "Steve");
+    expect((await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+    await page.goto(daemon.baseURL + "/#/settings/display");
+    const startTour = page.getByRole("button", { name: "Start See the work tour" });
+    await expect(startTour).toBeVisible();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/tasks/*/follow-up", async route => {
+      await release.promise;
+      await route.continue();
+    }, { times: 1 });
+    await say(daemon, "Steve, review the next change");
+    const lookup = page.waitForRequest(request => request.url().endsWith("/follow-up"));
+    await page.getByRole("button", { name: "Start a follow-up task" }).click();
+    await lookup;
+    try {
+      await startTour.click();
+      await expect(page.getByText("Step 1 of 14")).toBeVisible();
+      if (exitTiming === "before") {
+        await page.getByRole("button", { name: "Exit tour" }).click();
+        await expect(page.getByText("Step 1 of 14")).toHaveCount(0);
+      }
+    } finally {
+      release.resolve();
+    }
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo, { timeout: 5000 });
+    await expect(dialog.getByRole("button", { name: "Add to backlog" })).toBeVisible();
+    await expectContentClearsBorder(dialog);
+    if (exitTiming === "after") await page.getByRole("button", { name: "Exit tour" }).click();
+    const intent = dialog.getByPlaceholder("What should this agent do?");
+    await intent.fill("Review the next change", { timeout: 5000 });
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo);
+    await page.mouse.move(0, 0);
+    if (exitTiming === "after") await captureCard(dialog.locator(".modal-foot"), "tour-follow-up-actions");
+    else await captureCard(intent, "follow-up-after-tour-exit");
+  });
+}
+
 for (const opening of ["follow-up", "regular Dispatch"]) {
   test(`a delayed follow-up lookup cannot replace a newer ${opening} opening`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
@@ -363,6 +444,34 @@ test("a queued card becomes held and stays recallable past its original expiry w
   await recall.click();
   expect(await (await receipt).json()).toEqual({ ok: true, text: words });
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
+test("a dashboard countdown stays in view when newer held outcomes fill the stack", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  const will = await runningAgent(page, daemon, "Will");
+  const question = "Which release should I check?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question },
+  })).ok()).toBe(true);
+  await page.setViewportSize({ width: 560, height: 420 });
+  await say(daemon, "Steve, check the build", { id: "active-build" });
+  const pending = page.getByRole("status").filter({ hasText: "To Steve" });
+  const cancel = pending.getByRole("button", { name: "Cancel", exact: true });
+  await expect(cancel).toBeInViewport({ ratio: 1 });
+  expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  for (const topic of ["tests", "docs", "release"]) await say(daemon, "Will, review the " + topic);
+  const held = page.getByRole("status").filter({ hasText: "Held for Will" });
+  await expect(held).toHaveCount(3);
+  for (const control of [pending.getByText("To Steve", { exact: true }), pending.locator(".vc-seconds"), cancel,
+    pending.getByRole("button", { name: "Send now" })]) await expect(control).toBeInViewport({ ratio: 1, timeout: 3000 });
+  await captureCard(page.locator(".voice-card-stack"), "active-countdown-before-held-outcomes");
+  const response = page.waitForResponse(r => r.url().endsWith("/cards/active-build/cancel"));
+  await cancel.click();
+  expect((await response).ok()).toBe(true);
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  await expect(held).toHaveCount(3);
 });
 
 test("two dashboard cards held by the same question identify and recall their own spoken words", async ({ dashboard: page, daemon }) => {

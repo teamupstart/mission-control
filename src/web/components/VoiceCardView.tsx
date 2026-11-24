@@ -127,7 +127,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       case "sent":
       case "queued":
         return <div className="vc-success"><VoiceIcon name={state === "sent" ? "check" : "clock"} />
-          {state === "sent" ? <>{part.immediateStop ? "Stop sent to " : "Sent to "}{named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
+          {state === "sent" ? <>{part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to "}{named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
       case "held": {
         // The live outbox also identifies a session that resumed from hibernation.
         const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId)) ?? sessionOf(target);
@@ -139,7 +139,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
             () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
             "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn, wordsId)}</div>
-          <q id={wordsId}>{turn?.spokenWords ?? part.text}</q>
+          <q id={wordsId} className="vc-transcript">{turn?.spokenWords ?? part.text}</q>
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
           <SpokenHint name={name} action="answer">Say <q>{name}, answer: ...</q> to answer it.</SpokenHint>
@@ -196,7 +196,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         {card.questionTitle && <div className="vc-meta">{card.questionTitle}</div>}
         {card.parts.map((p, i) => split || mention ? <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"}
           detail={p.immediateStop ? p.detail ?? p.text : mention ? messageWithMentions(p.text, card.mentions!) : p.text}
-          state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}
+          state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div className="vc-transcript" key={i}>{p.text}</div>)}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
         {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
           <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />

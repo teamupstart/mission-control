@@ -137,6 +137,9 @@ export type VoiceConfirmationPlacement = (typeof VOICE_CONFIRMATION_PLACEMENTS)[
 /** The in-window indicators Phase 7 draws, each mounted while its id is listed. */
 export const VOICE_INDICATOR_IDS = ["status-line", "topbar", "floating", "edge", "composer"] as const;
 export type VoiceIndicatorId = (typeof VOICE_INDICATOR_IDS)[number];
+/** Revisions are comparable within one daemon. A reconnect snapshot identifies a restart. */
+export const VoiceRevisionSchema = z.object({ source: z.string(), revision: z.number().int().nonnegative() });
+export type VoiceRevision = z.infer<typeof VoiceRevisionSchema>;
 export const VoiceIndicatorSelectionSchema = z.object({
   id: z.enum(VOICE_INDICATOR_IDS),
   enabled: z.boolean(),
@@ -265,7 +268,7 @@ export interface VoiceState {
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
    * Absent on the off state and on snapshots from older daemons. */
-  modeVersion?: { source: string; revision: number };
+  modeVersion?: VoiceRevision;
   /** Every reason that holds, in `VOICE_UNAVAILABLE_REASONS` order. Empty unless `unavailable`. */
   reasons: VoiceUnavailableReason[];
   /** From the latest shell report, plus the daemon's own reading of `listener`. */

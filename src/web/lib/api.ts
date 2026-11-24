@@ -3,7 +3,7 @@ import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { HeardEntry } from "@shared/voice-routing.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceRevision, VoiceState } from "@shared/voice.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
   type ShapingConfigView,
@@ -2507,7 +2507,7 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch),
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
-    put<ActionResult & { indicators?: string[] }>("/api/voice/indicators", { id, enabled }, { signal }),
+    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
   setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */

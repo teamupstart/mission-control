@@ -118,3 +118,21 @@ test("a confirmed indicator save returns while its reconciliation read is still 
   assert.equal(reads, 1);
   assert.deepEqual(uiConfig().voice.indicators, newer);
 });
+
+test("a reconnected daemon can start at a lower indicator revision and discard a previous daemon's delayed reply", async (t) => {
+  applyVoiceIndicatorSelection(["status-line", "edge"], { source: "before-restart", revision: 9 });
+  let acknowledge!: (response: Response) => void;
+  const ack = new Promise<Response>(resolve => { acknowledge = resolve; });
+  const after = { source: "after-restart", revision: 1 };
+  const indicators = ["status-line", "floating"];
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    if (path === "/api/voice/indicators") return ack;
+    assert.equal(path, "/api/ui/config");
+    return Response.json({ configured: true, config: { ...uiConfig(), voice: { ...uiConfig().voice, indicators } }, voiceIndicatorVersion: after });
+  });
+  const write = updateVoiceIndicator("edge", false);
+  applyVoiceIndicatorSelection(indicators, after);
+  acknowledge(Response.json({ indicators: ["status-line"], voiceIndicatorVersion: { source: "before-restart", revision: 10 } }));
+  assert.equal(await write, "saved");
+  assert.deepEqual(uiConfig().voice.indicators, indicators);
+});

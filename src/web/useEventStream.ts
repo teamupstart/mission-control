@@ -497,7 +497,7 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which reads as off.
           setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
           setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
-          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators);
+          if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
           setSettingsStatus(hydrateSettingsStatus(msg.settingsStatus));
@@ -760,7 +760,7 @@ export function useEventStream(): MissionState {
           if (msg.state.mode === "off") setVoiceCards(new Map());
           break;
         case "voice_indicators":
-          applyVoiceIndicatorSelection(msg.indicators);
+          applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion);
           break;
         case "voice_card":
           setVoiceCards((prev) => {

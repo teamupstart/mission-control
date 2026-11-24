@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   seedHiddenDisplayItems,
   SkinIdSchema,
@@ -10,7 +11,7 @@ import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
-import { VOICE_FLAG, VOICE_INDICATORS_MAX, VOICE_UI_DEFAULTS, VoiceUiConfigSchema, type VoiceIndicatorId } from "@shared/voice.ts";
+import { VOICE_FLAG, VOICE_INDICATORS_MAX, VOICE_UI_DEFAULTS, VoiceUiConfigSchema, type VoiceIndicatorId, type VoiceRevision } from "@shared/voice.ts";
 import { rememberWindowBackground, windowBackgroundPath } from "./window-background.ts";
 
 // The dashboard's own preferences - layout, keybindings, alert delivery, rich text -
@@ -24,6 +25,19 @@ import { rememberWindowBackground, windowBackgroundPath } from "./window-backgro
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.ui;
 const indicatorListeners = new Set<(indicators: string[]) => void>();
+const indicatorSource = randomUUID();
+let lastIndicators: string | undefined;
+let indicatorRevision = 0;
+
+/** Called with the persisted selection, synchronously, when building a reply or stream frame. */
+export function voiceIndicatorVersion(indicators: string[]): VoiceRevision {
+  const key = JSON.stringify(indicators);
+  if (key !== lastIndicators) {
+    lastIndicators = key;
+    indicatorRevision++;
+  }
+  return { source: indicatorSource, revision: indicatorRevision };
+}
 
 export function onVoiceIndicatorsChanged(listener: (indicators: string[]) => void): () => void {
   indicatorListeners.add(listener);
@@ -144,7 +158,7 @@ export function getUiConfig(persistMigration = true): UiConfig {
 export function uiConfigView(): UiConfigView {
   const configured = getAppConfig(CONFIG_ENTRY) !== undefined;
   const config = getUiConfig();
-  if (featureEnabled(VOICE_FLAG)) return { configured, config };
+  if (featureEnabled(VOICE_FLAG)) return { configured, config, voiceIndicatorVersion: voiceIndicatorVersion(config.voice.indicators) };
   // Behind its flag like every voice surface: with it off the response is the one an install
   // without voice gave. The stored value is kept, and returns with the flag.
   const { voice: _withheld, ...withoutVoice } = config;

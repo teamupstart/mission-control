@@ -69,6 +69,7 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.voice), undefined);
   assert.equal("voice" in registry.snapshot(), false);
   assert.equal("voiceIndicators" in registry.snapshot(), false);
+  assert.equal("voiceIndicatorVersion" in registry.snapshot(), false);
 });
 
 test("GET returns every contract A field with its default", async () => {
@@ -79,8 +80,12 @@ test("GET returns every contract A field with its default", async () => {
 
 test("indicator edits publish the persisted selection in order and preserve unknown ids on reconnect", async (t) => {
   const selections: string[][] = [];
+  const revisions: number[] = [];
   t.after(registry.subscribe(event => {
-    if (event.type === "voice_indicators") selections.push(event.indicators);
+    if (event.type === "voice_indicators") {
+      selections.push(event.indicators);
+      revisions.push(event.voiceIndicatorVersion!.revision);
+    }
   }));
   t.after(onVoiceIndicatorsChanged(indicators => registry.emitVoiceIndicators(indicators)));
   const write = (id: string, enabled: boolean) => json("/api/voice/indicators", "PUT", { id, enabled });
@@ -88,10 +93,15 @@ test("indicator edits publish the persisted selection in order and preserve unkn
   assert.equal((await json("/api/ui/config", "PUT", { voice: initial })).status, 200);
   const updates = await Promise.all([write("edge", true), write("floating", true)]);
   assert.ok(updates.every(response => response.ok));
-  assert.equal((await write("edge", true)).status, 200);
-  assert.equal((await write("status-line", false)).status, 200);
+  const unchanged = await (await write("edge", true)).json();
+  assert.deepEqual(unchanged.voiceIndicatorVersion, registry.snapshot().voiceIndicatorVersion);
+  const removal = await (await write("status-line", false)).json();
   assert.equal((await write("unrecognized", true)).status, 400);
-  const { config } = await (await json("/api/ui/config")).json();
+  const { config, voiceIndicatorVersion } = await (await json("/api/ui/config")).json();
+  assert.deepEqual(removal.voiceIndicatorVersion, voiceIndicatorVersion);
+  assert.deepEqual(registry.snapshot().voiceIndicatorVersion, voiceIndicatorVersion);
+  assert.deepEqual(revisions, [3, 2, 1, 0].map(offset => voiceIndicatorVersion.revision - offset));
+  assert.equal(voiceIndicatorVersion.revision, revisions.at(-1));
   assert.equal(config.voice.confirmation, "toast");
   assert.deepEqual(selections[0], initial.indicators);
   assert.deepEqual(selections.at(-1), config.voice.indicators);
@@ -105,7 +115,7 @@ test("a full indicator list refuses an addition and still permits removing an in
   assert.equal((await json("/api/ui/config", "PUT", { voice: { confirmation: "pill", indicators: [...indicators, "edge"] } })).status, 200);
   assert.equal((await json("/api/voice/indicators", "PUT", { id: "topbar", enabled: true })).status, 409);
   const removed = await json("/api/voice/indicators", "PUT", { id: "edge", enabled: false });
-  assert.deepEqual(await removed.json(), { indicators });
+  assert.deepEqual(await removed.json(), { indicators, voiceIndicatorVersion: registry.snapshot().voiceIndicatorVersion });
 });
 
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {

@@ -6,7 +6,7 @@ import type { VoiceCard } from "@shared/voice-routing.ts";
 import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
-import { storedVoiceIndicators } from "./ui-config.ts";
+import { storedVoiceIndicators, voiceIndicatorVersion } from "./ui-config.ts";
 import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
@@ -1470,6 +1470,7 @@ export class Registry extends EventEmitter {
     shaping?: ShapingConfigView;
     voice?: VoiceState;
     voiceIndicators?: string[];
+    voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
     voiceCards?: VoiceCard[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
@@ -1477,6 +1478,7 @@ export class Registry extends EventEmitter {
     storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
+    const indicators = featureEnabled(VOICE_FLAG) ? storedVoiceIndicators() : undefined;
     return {
       sessionTransfers: sessionTransferPage(),
       sessions: [...this.sessions.values()].map(sessionShapingForReads),
@@ -1521,9 +1523,9 @@ export class Registry extends EventEmitter {
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(featureEnabled(VOICE_FLAG) ? {
+      ...(indicators ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
-        voiceIndicators: storedVoiceIndicators(),
+        voiceIndicators: indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
@@ -1661,7 +1663,7 @@ export class Registry extends EventEmitter {
   voiceRouter?: VoiceRouter;
 
   emitVoiceIndicators(indicators: string[]): void {
-    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", indicators });
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
   }
 
   emitVoiceCard(card: VoiceCard): void {

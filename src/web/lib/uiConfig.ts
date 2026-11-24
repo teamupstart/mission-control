@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
-import type { VoiceIndicatorId } from "@shared/voice.ts";
+import type { VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
 import { api, fetchUiConfig } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
@@ -70,12 +70,13 @@ function commit(next: UiConfig): void {
  * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
  * so the record it draws from stays whole.
  */
-function applyHydratedConfig(config: UiConfigView["config"], indicatorsAtRead: string[]): void {
+function applyHydratedConfig({ config, voiceIndicatorVersion }: UiConfigView, indicatorsAtRead: string[]): void {
   const voice = config.voice ?? current.voice;
-  if (config.voice && current.voice.indicators !== indicatorsAtRead) {
+  const overlap = current.voice.indicators !== indicatorsAtRead;
+  if (config.voice && (overlap || !acceptIndicatorVersion(voiceIndicatorVersion))) {
     // The snapshot may predate our save or include a peer's later edit.
     commit({ ...config, voice: { ...voice, indicators: current.voice.indicators } });
-    void reconcileVoiceIndicators();
+    if (overlap) void reconcileVoiceIndicators();
     return;
   }
   commit({ ...config, voice });
@@ -135,10 +136,10 @@ export async function hydrateUiConfig(): Promise<void> {
         return;
       }
     } else {
-      applyHydratedConfig(view.config, indicatorsAtRead);
+      applyHydratedConfig(view, indicatorsAtRead);
     }
   } else {
-    applyHydratedConfig(view.config, indicatorsAtRead);
+    applyHydratedConfig(view, indicatorsAtRead);
   }
   hydrated = true;
   emit();
@@ -201,9 +202,22 @@ let indicatorReadGeneration = 0;
 let indicatorRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
 const INDICATOR_REQUEST_TIMEOUT_MS = 5000;
+let latestIndicatorVersion: VoiceRevision | undefined;
+
+/** The ordered stream can establish a new daemon, including when voice is enabled after reconnect. */
+function acceptIndicatorVersion(next?: VoiceRevision, fromStream = false): boolean {
+  if (latestIndicatorVersion) {
+    if (next?.source === latestIndicatorVersion.source) {
+      if (next.revision < latestIndicatorVersion.revision) return false;
+    } else if (!fromStream) return false;
+  }
+  latestIndicatorVersion = next;
+  return true;
+}
 
 /** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
-export function applyVoiceIndicatorSelection(indicators: string[]): void {
+export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision): void {
+  if (!acceptIndicatorVersion(version, true)) return;
   indicatorReadGeneration++;
   clearTimeout(indicatorRetryTimer);
   indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
@@ -219,7 +233,9 @@ async function reconcileVoiceIndicators(): Promise<void> {
   if (generation !== indicatorReadGeneration) return;
   if (view && (!view.config.voice || current.voice.indicators === atRead)) {
     indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
-    if (view.config.voice) commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+    if (view.config.voice && acceptIndicatorVersion(view.voiceIndicatorVersion)) {
+      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+    }
     return;
   }
   indicatorRetryTimer = setTimeout(() => void reconcileVoiceIndicators(), indicatorRetryDelay);
@@ -237,11 +253,13 @@ export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolea
     return "unconfirmed";
   }
   if (!result.ok || !result.indicators) return "failed";
-  if (current.voice.indicators !== atWrite) {
+  const overlap = current.voice.indicators !== atWrite;
+  if ((!overlap || result.voiceIndicatorVersion) && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
+    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
+  }
+  if (overlap) {
     // The write is confirmed. Refresh the overlapping selection without holding the checkboxes.
     void reconcileVoiceIndicators();
-  } else {
-    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
   }
   return "saved";
 }

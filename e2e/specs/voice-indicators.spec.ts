@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
-import type { Locator, Route } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
@@ -239,34 +239,44 @@ test("a changed voice shortcut stays hidden in both windows until the shell conf
   }
 });
 
+// Delay actual events while leaving the snapshot and both HTTP endpoints connected to the daemon.
+async function holdVoiceEvents(page: Page, type: "voice_state" | "voice_indicators") {
+  type HeldEvents = Window & { releaseVoiceEvent(): string | null };
+  await page.addInitScript(eventType => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) !== "/events") return;
+        const held: string[] = [];
+        this.addEventListener("message", event => {
+          if (!event.isTrusted || JSON.parse(event.data).type !== eventType) return;
+          event.stopImmediatePropagation();
+          held.push(event.data);
+        });
+        (window as HeldEvents).releaseVoiceEvent = () => {
+          const data = held.shift();
+          if (!data) return null;
+          this.dispatchEvent(new MessageEvent("message", { data }));
+          return data;
+        };
+      }
+    };
+  }, type);
+  return () => page.evaluate(async () => {
+    const data = (window as HeldEvents).releaseVoiceEvent();
+    if (!data) return null;
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const event = JSON.parse(data);
+    return event.type === "voice_state" ? event.state.mode : event.indicators;
+  });
+}
+
 test("a mute acknowledgement offers Unmute while voice-state events are held, and an earlier event cannot undo an acknowledged unmute", async ({ page, daemon }) => {
   await enableVoice(daemon);
   const listener = await beListener(daemon);
-  type HeldVoiceEvents = Window & { releaseVoiceEvent(): string };
   try {
-    // Hold real voice_state frames before the dashboard handles them. The initial snapshot,
-    // both requests and both HTTP responses still come from the isolated daemon.
-    await page.addInitScript(() => {
-      const NativeEventSource = window.EventSource;
-      window.EventSource = class extends NativeEventSource {
-        constructor(url: string | URL, options?: EventSourceInit) {
-          super(url, options);
-          if (String(url) !== "/events") return;
-          const held: string[] = [];
-          this.addEventListener("message", event => {
-            if (!event.isTrusted || JSON.parse(event.data).type !== "voice_state") return;
-            event.stopImmediatePropagation();
-            held.push(event.data);
-          });
-          (window as HeldVoiceEvents).releaseVoiceEvent = () => {
-            const data = held.shift();
-            if (!data) return "";
-            this.dispatchEvent(new MessageEvent("message", { data }));
-            return JSON.parse(data).state.mode;
-          };
-        }
-      };
-    });
+    const release = await holdVoiceEvents(page, "voice_state");
     await page.goto(daemon.baseURL);
     const status = page.locator("button.vi-status-line");
     const requests: boolean[] = [];
@@ -293,11 +303,7 @@ test("a mute acknowledgement offers Unmute while voice-state events are held, an
     });
     // Deliver the older muted event first, then the matching listening event.
     for (const mode of ["muted", "listening"]) {
-      await expect.poll(() => page.evaluate(async () => {
-        const released = (window as HeldVoiceEvents).releaseVoiceEvent();
-        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-        return released;
-      })).toBe(mode);
+      await expect.poll(release).toBe(mode);
       await expect(status).toHaveAccessibleName("Voice: listening. Mute");
     }
   } finally { listener.stop(); }
@@ -544,6 +550,44 @@ test("startup reconciles a peer's indicator edit after a local save overtakes hy
   } finally {
     release.resolve();
   }
+});
+
+test("an older peer event cannot undo an acknowledged indicator selection", async ({ page, context, daemon }) => {
+  await enableVoice(daemon);
+  const release = await holdVoiceEvents(page, "voice_indicators");
+  const settings = daemon.baseURL + "/#/settings/voice";
+  const peer = await context.newPage();
+  await Promise.all([peer.goto(settings), page.goto(settings)]);
+  const edge = page.getByRole("checkbox", { name: "Edge light" });
+  const floating = page.getByRole("checkbox", { name: "Floating button" });
+  const peerFloating = peer.getByRole("checkbox", { name: "Floating button" });
+  await expect(page.locator("button.vi-status-line")).toBeVisible();
+  await peerFloating.check();
+  await expect(peerFloating).toBeEnabled();
+  await edge.check();
+  await expect(edge).toBeEnabled();
+  await expect(floating).toBeChecked();
+  await expect(page.locator("button.vi-edge")).toBeVisible();
+
+  await expect.poll(release).toEqual(["status-line", "floating"]);
+  expect(await edge.isChecked()).toBe(true);
+  await expect(page.locator("button.vi-edge")).toBeVisible();
+  if (process.env.MC_E2E_EVIDENCE) {
+    const root = artifactsDir("voice-window");
+    mkdirSync(root, { recursive: true });
+    await edge.blur();
+    await page.mouse.move(1, 200);
+    await expect(page.locator(".tooltip")).toHaveCount(0);
+    await page.screenshot({
+      path: join(mkdtempSync(join(root, "ordered-indicators-")), "after-older-event.png"),
+    });
+  }
+  await expect.poll(release).toEqual(["status-line", "floating", "edge"]);
+  await peerFloating.uncheck();
+  await expect.poll(release).toEqual(["status-line", "edge"]);
+  await expect(floating).not.toBeChecked();
+  await expect(page.locator("button.vi-floating")).toHaveCount(0);
+  await expect(edge).toBeChecked();
 });
 
 test("a delayed indicator acknowledgement keeps the newer two-window configuration visible", async ({ page, context, daemon }) => {

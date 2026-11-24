@@ -14,7 +14,7 @@ import {
 import { checkToken } from "../auth.ts";
 import { requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { setVoiceIndicator } from "../ui-config.ts";
+import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -69,7 +69,7 @@ export function registerVoiceRoutes(
     const indicators = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
     return indicators === null
       ? c.json({ error: "The indicator selection is full." }, 409)
-      : c.json({ indicators });
+      : c.json({ indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
   });
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });

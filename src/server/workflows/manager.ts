@@ -657,6 +657,7 @@ export class WorkflowManager {
   private readonly transferWaiters = new Set<() => void>();
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  private readonly inspectorRecoveryReads = new Map<string, ReturnType<typeof readInspectorBranchActivity>>();
   private readonly pendingInspectorRecoveryChecks = new Set<string>();
   private readonly inspectorFeedbackRefreshes = new Map<string, {
     pending: boolean;
@@ -3501,7 +3502,16 @@ export class WorkflowManager {
   ): Promise<WorkflowRuntimeMutation<WorkflowRun>> {
     let recovered = this.store.recoverStaleInspectorGrant(runId, requestId, input, now);
     if (recovered && "verifyPrUrl" in recovered) {
-      const activity = await readInspectorBranchActivity(recovered.verifyPrUrl, input.currentHeadSha);
+      const key = JSON.stringify([runId, requestId, input.grantRequestId, input.submissionId,
+        input.staleHeadSha, input.currentHeadSha, recovered.verifyPrUrl]);
+      let read = this.inspectorRecoveryReads.get(key);
+      if (!read) {
+        read = readInspectorBranchActivity(recovered.verifyPrUrl, input.currentHeadSha)
+          .finally(() => this.inspectorRecoveryReads.delete(key));
+        this.inspectorRecoveryReads.set(key, read);
+      }
+      // Only the provider read is shared. Every caller checks the current run and receipt.
+      const activity = await read;
       recovered = this.store.recoverStaleInspectorGrant(runId, requestId, input, now, activity ?? undefined);
     }
     if (!recovered || "verifyPrUrl" in recovered) return { ok: false, reason: "conflict",

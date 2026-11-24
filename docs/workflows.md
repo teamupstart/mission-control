@@ -2808,6 +2808,10 @@ operator can send `recheck-inspector` with a new `requestId` and the recovery pa
 }
 ```
 
+Concurrent copies of the same recovery request share the initial GitHub verification.
+Each caller then checks the current run inside the recovery transaction. If the read
+fails, a later request can try again.
+
 The daemon checks the named legacy grant, its first bypass receipt, the original failed head
 and findings, the mismatch block, and a current open PR observation after the submission.
 It also requires a stored observation of that same replacement head strictly between the

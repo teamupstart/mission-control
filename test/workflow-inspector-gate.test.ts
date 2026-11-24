@@ -39,7 +39,7 @@ const holdActivity = join(home, "hold-activity");
 const activityPending = join(home, "activity-pending");
 const holdRecoveryPull = join(home, "hold-recovery-pull");
 const pullPending = join(home, "recovery-pull-pending");
-const recoveryTimelineReads = join(home, "recovery-timeline-reads");
+const recoveryPrReads = join(home, "recovery-pr-reads");
 const fakeGh = join(home, "gh");
 writeFileSync(fakeGh, `#!${process.execPath}
 const fs = require("node:fs");
@@ -50,7 +50,9 @@ if (target?.includes("/activity?") && ![activityQuery + "1", activityQuery + "10
 const fixture = target?.includes("/activity?") ? ${JSON.stringify(branchActivity)}
   : target?.includes("/pulls/") || recoveryGraph ? ${JSON.stringify(recoveryPr)} : ${JSON.stringify(ghSnapshot)};
 try {
-  if (recoveryGraph && fs.existsSync(${JSON.stringify(recoveryTimelineReads)})) fs.appendFileSync(${JSON.stringify(recoveryTimelineReads)}, "read\\n");
+  if (fixture === ${JSON.stringify(recoveryPr)} && fs.existsSync(${JSON.stringify(recoveryPrReads)})) {
+    fs.appendFileSync(${JSON.stringify(recoveryPrReads)}, recoveryGraph ? "timeline\\n" : "pull\\n");
+  }
   if (fixture === ${JSON.stringify(recoveryPr)} && fs.existsSync(${JSON.stringify(holdRecoveryPull)})) {
     if (fs.readFileSync(${JSON.stringify(holdRecoveryPull)}, "utf8") === "hold second read") {
       fs.writeFileSync(${JSON.stringify(holdRecoveryPull)}, "");
@@ -3818,6 +3820,50 @@ for (const change of ["new ref update on the same SHA", "PR closes during the fi
   });
 }
 
+for (const outage of [false, true]) {
+  test(`concurrent requests share initial legacy recovery verification when GitHub ${outage ? "is unavailable" : "confirms the head"}`, async () => {
+    const seeded = await spentInspectorGrant();
+    const { manager, store, ids } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const pull = readFileSync(recoveryPr);
+      const input = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: priorRefOid, currentHeadSha: verifiedRecoveryOid };
+      const recover = () => manager.recoverStaleInspectorGrant(ids.run, "recover", input);
+      writeFileSync(recoveryPrReads, "");
+      writeFileSync(holdRecoveryPull, "");
+      const first = recover();
+      await waitFor(() => existsSync(pullPending), "the initial read did not reach GitHub");
+      if (outage) rmSync(recoveryPr);
+      const pending = [first, recover(), recover()];
+      rmSync(holdRecoveryPull);
+      const results = await Promise.all(pending);
+      await manager.settleBackgroundWork();
+      const reads = readFileSync(recoveryPrReads, "utf8").trim().split("\n");
+      assert.equal(reads.filter(read => read === "pull").length, outage ? 1 : 2);
+      if (outage) {
+        assert.ok(results.every(result => !result.ok && result.reason === "conflict"));
+        assert.deepEqual(store.listSubmissions(ids.run), submissions);
+        assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 0);
+        writeFileSync(recoveryPr, pull);
+        assert.ok((await recover()).ok);
+        await manager.settleBackgroundWork();
+      } else {
+        assert.ok(results.every(result => result.ok));
+        assert.equal(results.filter(result => result.ok && result.idempotent).length, 2);
+      }
+      assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally {
+      rmSync(holdRecoveryPull, { force: true });
+      rmSync(pullPending, { force: true });
+      await manager.stop();
+      rmSync(recoveryPrReads, { force: true });
+    }
+  });
+}
+
 test("concurrent replays share a pending recovery check and a later replay retries after an outage", async () => {
   let pause = false;
   const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
@@ -3833,7 +3879,7 @@ test("concurrent replays share a pending recovery check and a later replay retri
     const recover = await legacyRecoveryRoute(seeded);
     const submissions = store.listSubmissions(ids.run);
     const pull = readFileSync(recoveryPr);
-    writeFileSync(recoveryTimelineReads, "");
+    writeFileSync(recoveryPrReads, "");
     pause = true;
     assert.equal((await recover()).status, 200);
     await waitFor(() => existsSync(pullPending), "the pending receipt never reached its PR check");
@@ -3844,7 +3890,7 @@ test("concurrent replays share a pending recovery check and a later replay retri
     }
     rmSync(holdRecoveryPull);
     await manager.settleBackgroundWork();
-    assert.equal(readFileSync(recoveryTimelineReads, "utf8"), "read\n");
+    assert.equal(readFileSync(recoveryPrReads, "utf8").trim().split("\n").filter(read => read === "timeline").length, 1);
     assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
     assert.deepEqual(store.listSubmissions(ids.run), submissions);
 
@@ -3860,7 +3906,7 @@ test("concurrent replays share a pending recovery check and a later replay retri
     rmSync(holdRecoveryPull, { force: true });
     rmSync(pullPending, { force: true });
     await manager.stop();
-    rmSync(recoveryTimelineReads, { force: true });
+    rmSync(recoveryPrReads, { force: true });
   }
 });
 

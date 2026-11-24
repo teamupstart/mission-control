@@ -387,6 +387,54 @@ test("a delayed indicator acknowledgement keeps the newer two-window configurati
   }
 });
 
+test("a streamed and acknowledged indicator save unlocks every choice during a stalled refresh", async ({ page, daemon }) => {
+  await enableVoice(daemon);
+  await Promise.all([
+    page.waitForResponse("**/api/ui/config"),
+    page.goto(daemon.baseURL + "/#/settings/voice"),
+  ]);
+  const group = page.getByRole("group", { name: "In the window" });
+  const edge = group.getByRole("checkbox", { name: "Edge light" });
+  await expect(edge).toBeEnabled();
+  const acknowledge = Promise.withResolvers<void>();
+  const finishRefresh = Promise.withResolvers<void>();
+  const refreshStarted = Promise.withResolvers<void>();
+  await page.route("**/api/ui/config", async route => {
+    const response = await route.fetch();
+    refreshStarted.resolve();
+    await finishRefresh.promise;
+    await route.fulfill({ response });
+  });
+  await page.route("**/api/voice/indicators", async route => {
+    const response = await route.fetch();
+    await acknowledge.promise;
+    await route.fulfill({ response });
+  });
+  try {
+    await edge.check();
+    await expect(page.locator("button.vi-edge")).toBeVisible();
+    await expect(edge).toBeDisabled();
+    acknowledge.resolve();
+    await refreshStarted.promise;
+    await expect(group.getByRole("checkbox", { disabled: false })).toHaveCount(5, { timeout: 2000 });
+    const floating = group.getByRole("checkbox", { name: "Floating button" });
+    await floating.check();
+    await expect(page.locator("button.vi-floating")).toBeVisible();
+    await expect(edge).toBeEnabled();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await page.mouse.move(1, 1);
+      await floating.blur();
+      await expect(page.locator(".tooltip")).toHaveCount(0);
+      await group.screenshot({ path: join(mkdtempSync(join(root, "acknowledged-save-")), "settings.png") });
+    }
+  } finally {
+    acknowledge.resolve();
+    finishRefresh.resolve();
+  }
+});
+
 for (const failure of ["unavailable", "stalled"] as const) {
   test(`an acknowledged save recovers without a reload when the reconciliation read is ${failure}`, async ({ page, daemon }) => {
     await enableVoice(daemon);
@@ -432,12 +480,13 @@ for (const failure of ["unavailable", "stalled"] as const) {
       await expect(page.getByRole("checkbox", { name: "Floating button" })).toBeChecked();
       releaseSave.resolve();
       await firstReconciliation.promise;
+      // Observe the retry before the next streamed edit can supersede the read.
+      await expect.poll(() => reads, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
       expect((await preference("topbar")).ok()).toBe(true);
       await expect(edge).toBeEnabled();
       await expect(edge).toBeChecked();
       await expect(page.locator("button.vi-edge")).toBeVisible();
       await expect(page.getByRole("checkbox", { name: "Top-bar segment" })).toBeChecked();
-      expect(reads).toBeGreaterThanOrEqual(3);
     } finally {
       releaseSnapshot.resolve();
       releaseSave.resolve();

@@ -28,7 +28,7 @@ Object.defineProperty(globalThis, "fetch", {
   },
 });
 
-const { hydrateUiConfig, uiConfig, updateUiConfig, updateVoiceIndicator } = await import("../src/web/lib/uiConfig.ts");
+const { applyVoiceIndicatorSelection, hydrateUiConfig, uiConfig, updateUiConfig, updateVoiceIndicator } = await import("../src/web/lib/uiConfig.ts");
 
 test("a failed tour preference write does not restore over a newer preference", async () => {
   const savingPreference = updateUiConfig({ showToursOnStartup: false });
@@ -91,4 +91,30 @@ test("an older indicator response reconciles against the newer selection in the 
   acknowledge(Response.json({ indicators: ["status-line", "edge"] }));
   assert.equal(await saving, "saved");
   assert.deepEqual(uiConfig().voice.indicators, newer.indicators);
+});
+
+test("a confirmed indicator save returns while its reconciliation read is still pending", async (t) => {
+  let acknowledge!: (response: Response) => void;
+  let finishRead!: (response: Response) => void;
+  const write = new Promise<Response>(resolve => { acknowledge = resolve; });
+  const read = new Promise<Response>(resolve => { finishRead = resolve; });
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    if (path === "/api/voice/indicators") return write;
+    assert.equal(path, "/api/ui/config");
+    reads++;
+    return read;
+  });
+  const indicators = ["status-line", "edge"];
+  const saved = updateVoiceIndicator("edge", true);
+  applyVoiceIndicatorSelection(indicators);
+  acknowledge(Response.json({ indicators }));
+  const beforeRead = await Promise.race([saved, new Promise(resolve => setImmediate(resolve))]);
+  const newer = [...indicators, "topbar"];
+  finishRead(Response.json({ configured: true, config: { ...uiConfig(), voice: { ...uiConfig().voice, indicators: newer } } }));
+  await saved;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(beforeRead, "saved");
+  assert.equal(reads, 1);
+  assert.deepEqual(uiConfig().voice.indicators, newer);
 });

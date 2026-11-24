@@ -238,7 +238,8 @@ export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolea
   }
   if (!result.ok || !result.indicators) return "failed";
   if (current.voice.indicators !== atWrite) {
-    await reconcileVoiceIndicators();
+    // The write is confirmed. Refresh the overlapping selection without holding the checkboxes.
+    void reconcileVoiceIndicators();
   } else {
     commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
   }

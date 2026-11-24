@@ -1605,6 +1605,7 @@ export class WorkflowEngine {
           ...(priorCleanReview?.success && priorCleanReview.data.status === "passed" && previousReview
             ? { priorCleanReview: { attemptId: previousReview.attempt.id, review: previousReview.review } }
             : {}),
+          readRunsSpent: () => this.store.checkRunsSpent(run.id, node.slot, run.checkBudgetEpochRound ?? null),
           retryAt: this.codeRabbitRetryAt(submission.id),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({

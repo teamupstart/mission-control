@@ -701,7 +701,7 @@ test("installing a missing executable lets an action-required Command retry unde
 });
 
 
-test("CodeRabbit reuses a clean comparison and spends allowance on fresh reviews and incomplete retries", { timeout: 300_000 }, async (t) => {
+for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with an allowance of ${maxRuns}`, { timeout: 300_000 }, async (t) => {
   const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
@@ -709,7 +709,7 @@ test("CodeRabbit reuses a clean comparison and spends allowance on fresh reviews
   const base = git("rev-parse", "HEAD"); git("update-ref", "refs/remotes/origin/main", base); git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
   git("checkout", "-qb", "feature"); writeFileSync(join(root, "file"), "changed"); git("commit", "-qam", "change");
   const graph: PublishedWorkflowGraph = { ...budgetGraph, nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node) };
-  const id = "coderabbit-ten";
+  const id = `coderabbit-budget-${maxRuns}`;
   const store = seedSubmission(id, 20, graph);
   openDb().prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?").run(root, root, `binding-${id}`);
   const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
@@ -742,7 +742,8 @@ test("CodeRabbit reuses a clean comparison and spends allowance on fresh reviews
     }
   };
   const manager = new WorkflowManager(registry, store, { engine: {
-    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }), workflowCommand: (slot) => emptyWorkflowCommandView(slot),
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }),
+    workflowCommand: (slot) => ({ ...emptyWorkflowCommandView(slot), maxRuns }),
     runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
     checkDeps: () => ({
       codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
@@ -778,12 +779,22 @@ test("CodeRabbit reuses a clean comparison and spends allowance on fresh reviews
       assert.equal(probes, 2);
       const outcome = gateOutcome(store, next);
       assert.equal(outcome.status, "passed");
+      assert.equal((outcome.review as { remainingRuns: number }).remainingRuns, maxRuns - 2);
       assert.equal(outcome.command, null);
       assert.match(String(outcome.note), new RegExp(source.id));
       const [evidence] = personaCheckEvidence(graph, "join", store.listAttempts(next), store.listReceipts(next), comparisons[1]!.head);
       assert.equal(evidence?.status, "passed");
       assert.equal(evidence?.note, outcome.note);
       assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2);
+    }
+    if (maxRuns === 2) {
+      writeFileSync(join(root, "file"), "new source change");
+      git("commit", "-qam", "new source change");
+      const next = repairRound(store, id, 4); capture(next); manager.engine.activateSubmission(next);
+      await waitForState("waiting_for_session");
+      assert.equal(gateOutcome(store, next).status, "budget_spent");
+      assert.equal(executions, 2);
+      return;
     }
     git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
     for (let round = 4; round <= 12; round++) {

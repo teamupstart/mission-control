@@ -8951,8 +8951,8 @@ export class WorkflowStore {
   /**
    * Reservations a run has already spent on one Command, for a reader that is not claiming one.
    *
-   * Exists for tests and diagnostics. The engine never asks: a caller that counted and then
-   * decided would be the race `reserveCheckRun` exists to close.
+   * Used for reporting and tests. Execution decisions must use `reserveCheckRun` so
+   * concurrent callers cannot spend the same allowance.
    */
   checkRunsSpent(runId: string, slot: string, epochRound: number | null): number {
     const row = this.db.prepare(

@@ -3196,7 +3196,8 @@ in the existing commit-pinned supervised lease with `review --agent --gate <seve
 
 A repair round can reuse the same node's latest complete review in the run when it passed
 with zero findings and the pinned comparison is identical. The pass cites the original attempt
-for downstream Personas and spends no execution allowance. A changed head, base or review
+for downstream Personas and spends no execution allowance, even after the allowance is
+exhausted. A changed head, base or review
 configuration requires a fresh review, as does an explicit `--fresh` command. Reviews with
 findings, incomplete reviews and skips never supply a reusable pass.
 

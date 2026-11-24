@@ -356,6 +356,7 @@ export interface RunCheckInput {
       retryAt?: number;
       incompleteReview?: boolean;
       priorCleanReview?: { attemptId: string; review: CodeRabbitReviewSummary };
+      readRunsSpent?: () => number;
       comparison: () => Promise<CodeRabbitComparison>;
     };
     /**

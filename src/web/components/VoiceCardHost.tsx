@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState }
 import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
-import { useUiConfig } from "../lib/uiConfig.ts";
 import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
@@ -137,27 +136,29 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
   cards: ReadonlyMap<string, DashboardVoiceCard>; fadingCards: ReadonlySet<string>; actions: VoiceCardActions;
   surface?: "pill" | "popover"; sound: boolean; notifications: boolean;
 }) {
-  const { voice } = useUiConfig();
   const [, reselect] = useReducer((revision: number) => revision + 1, 0);
-  const [chosenId, setChosenId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ id: string; openWindows: Map<string, number | null> } | null>(null);
   const newestFirst = [...cards.values()].reverse();
   const now = performance.now();
   const pending = surface ? newestFirst.filter(card => card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now) : [];
   const choices = pending.length ? pending : newestFirst;
-  const selected = surface && (choices.find(card => card.id === chosenId) ?? choices.find(card => card.state === "unsure") ?? choices[0]);
+  // A manual choice applies to the windows the operator has seen. Each later window
+  // takes priority until it closes or the operator makes another explicit selection.
+  const newWindow = pending.find(card => selection?.openWindows.get(card.id) !== card.deadline);
+  const selected = surface && (newWindow ?? choices.find(card => card.id === selection?.id)
+    ?? choices.find(card => card.state === "unsure") ?? choices[0]);
   const nextDeadline = pending.length ? Math.min(...pending.map(card => voiceCardDeadline(card)!)) : null;
   useEffect(() => {
     if (nextDeadline === null) return;
     const timer = window.setTimeout(reselect, Math.max(0, Math.ceil(nextDeadline - performance.now())));
     return () => window.clearTimeout(timer);
   }, [nextDeadline]);
-  // The dashboard owns the toast until the desktop opens the selected card window in Phase 12.
-  if (surface && surface !== voice.confirmation) return null;
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
     {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
     {choices.length > 1 && selected && <label className="vc-switch">Voice message
-      <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event => setChosenId(event.target.value)}>
+      <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>
+        setSelection({ id: event.target.value, openWindows: new Map(pending.map(card => [card.id, card.deadline])) })}>
         {choices.map(card => <option key={card.id} value={card.id}>
           {card.parts.map(part => [part.target?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
         </option>)}

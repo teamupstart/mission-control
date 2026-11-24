@@ -31,6 +31,10 @@ test("three placement previews persist across reload, with a toast fallback and 
   await page.goto(daemon.baseURL + "/#/voice/popover");
   await expect(page.locator(".voice-standalone")).toHaveCount(1);
   await expect(page.locator(".app")).toHaveCount(0);
+  const pending = page.getByRole("status").filter({ hasText: "To Steve" });
+  await expect(pending.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
+  await pending.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Cancelled");
 });
 
 test("visiting either standalone voice route preserves a closed Dispatch draft and attachment", async ({ dashboard: page, daemon }) => {
@@ -170,7 +174,7 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
   test(`the ${label} route immediately restores an older cancel window ahead of a newer outcome`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
-    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 7 } } })).ok()).toBe(true);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
     expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
       identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
     } } })).ok()).toBe(true);
@@ -178,8 +182,15 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     const card = page.getByRole("status");
     await say(daemon, "Steve, inspect the older message", { id: "older" });
     await expect(card).toContainText("inspect the older message");
-    await say(daemon, "Steve, inspect the newer message");
+    await say(daemon, "Steve, inspect the newer message", { id: "newer" });
     await expect(card).toContainText("inspect the newer message");
+    const choose = page.getByRole("combobox", { name: "Voice message" });
+    await choose.selectOption("older");
+    await say(daemon, "Steve, inspect the third message", { id: "third" });
+    await expect(card).toContainText("inspect the third message", { timeout: 3000 });
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(choose).toHaveValue("older");
+    await choose.selectOption("newer");
     await card.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(card).toContainText("inspect the older message", { timeout: 2000 });
     await page.mouse.move(640, 400);
@@ -249,8 +260,16 @@ test("standalone held messages can be switched and recalled while a new countdow
   await expect(card).toContainText("another countdown");
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(choose).toHaveValue("first");
+  // Reopen a fresh dashboard against the restarted daemon so no local card can supply the picker.
+  await daemon.crash();
+  await daemon.restart();
+  await page.reload();
+  await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 7000 });
+  await expect(choose.getByRole("option", { name: /check the second release/ })).toHaveCount(1);
   for (const id of ["first", "second"]) {
     await choose.selectOption(id);
+    await expect(card).toContainText(question);
+    await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
     const recalled = page.waitForResponse(response => response.url().endsWith("/voice%3A" + id + "/recall"));
     await card.getByRole("button", { name: "Cancel message" }).click();
     expect(await (await recalled).json()).toEqual({ ok: true, text: "check the " + id + " release" });
@@ -294,12 +313,19 @@ test("a standalone relaunch keeps its feedback and retry ID while another card o
   await expect(card).toContainText("Cancelled");
   await page.clock.fastForward(9000);
   await expect(card).toContainText("Try the launch again", { timeout: 3000 });
+  await page.clock.fastForward(7000);
   await expect(relaunch).toBeEnabled();
   await captureCard(card, "standalone-relaunch-returned");
   await relaunch.click();
   await expect(card).toContainText("Relaunch requested.");
   expect(launches).toHaveLength(2);
   expect(launches[1]).toBe(launches[0]);
+  // Leave the successful feedback behind a different card without returning to it.
+  await say(daemon, "Marlowe, check a different release");
+  await expect(card).toContainText("check a different release");
+  await page.clock.fastForward(61_000);
+  await expect(card).toContainText("Awaiting delivery confirmation");
+  await expect(page.getByRole("combobox", { name: "Voice message" })).toHaveCount(0, { timeout: 3000 });
 });
 
 test("disabled voice links open Fleet and disabling voice closes an active standalone route", async ({ dashboard: page, daemon }) => {

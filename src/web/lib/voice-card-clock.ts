@@ -1,6 +1,7 @@
 import type { VoiceCard } from "@shared/voice-routing.ts";
 
 export type DashboardVoiceCard = VoiceCard & { localDeadline?: number; provisionalDeadline?: boolean };
+export type VoiceCardRetention = "reading" | "in-use" | "hidden-feedback";
 
 type Estimate = { offset: number; uncertain: boolean };
 

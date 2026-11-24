@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard, type VoiceCardRetention } from "../lib/voice-card-clock.ts";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
@@ -14,7 +14,7 @@ export interface VoiceCardActions {
   sessions: readonly Session[];
   reviews: readonly ReviewItem[];
   roster: readonly SpokenName[];
-  setVoiceCardInUse(id: string, inUse: boolean): void;
+  setVoiceCardRetention(id: string, retention: VoiceCardRetention): void;
   openQuestion(sessionId: string): void;
   followUp(taskId: string): Promise<ActionResult> | ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
@@ -77,15 +77,17 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   const [focused, setFocused] = useState(false);
   const deadline = voiceCardDeadline(card);
   const settled = voiceCardCanExpire(card);
-  const { setVoiceCardInUse } = actions;
+  const { setVoiceCardRetention } = actions;
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
     if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
-    const unreadFeedback = hidden && feedback !== "";
-    if (!settled || !(focused || busy || unreadFeedback)) return;
-    setVoiceCardInUse(card.id, true);
-    return () => setVoiceCardInUse(card.id, false);
-  }, [card, settled, focused, busy, hidden, feedback, setVoiceCardInUse]);
+  }, [card, focused, busy, feedback, hidden]);
+  const retention = busy || (focused && !hidden) ? "in-use" : hidden && feedback ? "hidden-feedback" : "reading";
+  useLayoutEffect(() => {
+    if (!settled) return;
+    setVoiceCardRetention(card.id, retention);
+  }, [card.id, settled, retention, setVoiceCardRetention]);
+  useLayoutEffect(() => () => setVoiceCardRetention(card.id, "reading"), [card.id, setVoiceCardRetention]);
   useEffect(() => {
     if (hidden || deadline === null) return;
     let timer: number | undefined;

@@ -41,16 +41,19 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. Their reserved routes are `#/voice/pill` and `#/voice/popover`. Each
+for those windows. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
+cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.
 With no countdown open or message selected, an address awaiting a recipient choice appears
 ahead of delivery results, including messages held behind a question.
 When several messages remain, the Voice message selector lets you revisit their cards,
-including individual turns held for the same agent. A new countdown takes priority, then
-the surface returns to your selection if the card is still available.
-If a countdown interrupts a relaunch, the standalone card keeps its result for you to read
-when it returns. Retrying uses the same launch request.
+including individual turns held for the same agent. A new countdown takes priority even
+when you selected another pending delivery. When the new window closes, the surface
+returns to your selection if its card is still available and eligible.
+If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
+while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
+the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect
@@ -345,6 +348,8 @@ card history exist only in memory and disappear on daemon restart or disabling v
 toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
 a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
+After a restart, each spoken turn still queued behind a blocking question gets a held card
+with its own recall control when the daemon restores its session.
 
 ## The model step
 

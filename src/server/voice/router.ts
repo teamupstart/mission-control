@@ -12,6 +12,8 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
+import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
+import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
 import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
@@ -96,7 +98,7 @@ interface PartDelivery {
 
 interface CardDelivery {
   card: VoiceCard;
-  entry: WeakRef<HeardEntry>;
+  entry?: WeakRef<HeardEntry>;
   routingDetail: string;
   results: PartDelivery[];
   ready: boolean;
@@ -768,7 +770,7 @@ export class VoiceRouter {
       });
       detail = [routingDetail, summary.join(" ")].filter(Boolean).join("\n");
     }
-    const entry = delivery.entry.deref();
+    const entry = delivery.entry?.deref();
     if (entry) Object.assign(entry, { outcome: state, detail });
     delivery.published = { ...card, state, parts: card.parts.map((part, i) => ({ ...part, ...results[i] })), ...(detail && { detail }) };
     this.publish(delivery.published);
@@ -848,6 +850,26 @@ export class VoiceRouter {
     delivery.card.openQuestions = this.openQuestionCount(delivery.card);
     this.publishDelivery(delivery);
     return true;
+  }
+
+  /** Discovery restores sessions and their durable outboxes independently of recent capture history. */
+  restoreHeldTurns(session: Session): void {
+    if (!session.pendingReviews && session.state !== "awaiting_review") return;
+    const missing = session.pendingTurns.filter(turn => turn.state === "queued" && turn.spokenWords !== undefined
+      && turn.id.startsWith(VOICE_TURN_PREFIX) && !this.outbox.has(turn.id));
+    if (!missing.length) return;
+    const { mode, roster } = this.state();
+    if (mode === "off") return;
+    const target = roster.find(row => row.sessionId === session.id);
+    if (!target) return;
+    for (const turn of missing) {
+      const card: VoiceCard = { id: turn.id.slice(VOICE_TURN_PREFIX.length), state: "held", deadline: null,
+        parts: [{ target, text: turn.spokenWords!, turnId: turn.id }], candidates: [], reason: "outbox",
+        openQuestions: this.deliverer.openQuestions?.(session.id) ?? session.pendingReviews };
+      const delivery: CardDelivery = { card, results: [{ outcome: "held" }], ready: true, routingDetail: "" };
+      this.outbox.set(turn.id, { delivery, index: 0 });
+      this.publishDelivery(delivery);
+    }
   }
 
   isHeldTurn(turnId: string): boolean {

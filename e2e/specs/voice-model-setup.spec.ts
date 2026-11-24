@@ -5,7 +5,7 @@ import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
-import { beListener, voiceToken, startModelServer, type Listener, type ModelServer } from "../fixtures/voice.ts";
+import { beListener, sendHello, voiceToken, startModelServer, type Listener, type ModelServer } from "../fixtures/voice.ts";
 
 // Voice addressing's speech model and microphone in Setup (Phase 8), end to end: the Voice family's
 // speech model row reads missing, Download shows a progress bar with its figures and Cancel and
@@ -104,6 +104,27 @@ test("the speech model downloads with visible progress, verifies, and is kept in
     expect(existsSync(join(revisionDir(daemon, models), file.path)), file.path).toBe(true);
   }
   await capture(page, "model-verified");
+});
+
+test("switching the backend updates the verified model in Voice Setup", async ({ dashboard: page, daemon, models }) => {
+  await enableVoice(daemon);
+  expect(await sendHello(daemon, { backend: "fluidaudio" })).toBe(200);
+  await openVoiceSetup(page, daemon);
+  const row = setupRow(page, MODEL_ROW);
+  await row.getByRole("button", { name: "Download" }).click();
+  await expectRowStatus(page, MODEL_ROW, "Ready");
+  await expect(row).toContainText(`voice/models/fluidaudio/${models.manifest.revision}`);
+
+  await put(daemon, "/api/voice/config", { backend: "sherpa-onnx" });
+  expect(await sendHello(daemon, { backend: "fluidaudio" })).toBe(409);
+  await expectRowStatus(page, MODEL_ROW, "Missing");
+  await row.getByRole("button", { name: "Download" }).click();
+  await expectRowStatus(page, MODEL_ROW, "Ready");
+  await expect(row).toContainText(`voice/models/sherpa-onnx/${models.manifest.revision} · checksum verified`);
+  await capture(page, "sherpa-model-verified");
+
+  await put(daemon, "/api/voice/config", { backend: "fluidaudio" });
+  await expect(row).toContainText(`voice/models/fluidaudio/${models.manifest.revision} · checksum verified`);
 });
 
 test("a file that fails its checksum reads as the error with Retry, and Retry fetches only that file", async ({ dashboard: page, daemon, models }) => {

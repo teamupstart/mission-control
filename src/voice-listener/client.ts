@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import {
   VOICE_LISTENER_ID_HEADER, VOICE_LISTENER_PROTOCOL_VERSION,
-  type VoiceListenerDirective, type VoiceListenerHello,
+  VoiceListenerDirectiveSchema, type VoiceListenerDirective, type VoiceListenerHello,
 } from "../shared/voice.ts";
 import type { VoiceUtterance } from "../shared/voice-routing.ts";
+import { loopbackDaemonUrl } from "./daemon-url.ts";
 
 /** Loopback contract I client. A process keeps the same lease ID for its lifetime. */
 export class ListenerClient {
@@ -12,10 +13,7 @@ export class ListenerClient {
   constructor(private readonly url: string, private readonly tokenFile: string,
     private readonly send: (url: string, init: RequestInit) => Promise<Response> = fetch,
     private readonly backend: VoiceListenerHello["backend"] = "sherpa-onnx") {
-    const origin = new URL(url);
-    if (origin.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)) {
-      throw new Error("Expected a loopback daemon URL");
-    }
+    loopbackDaemonUrl(url);
   }
 
   private request(path: string, body?: unknown, signal?: AbortSignal) {
@@ -35,7 +33,9 @@ export class ListenerClient {
   async poll(revision?: string, signal?: AbortSignal): Promise<VoiceListenerDirective> {
     const response = await this.request("/voice/listener/directive" + (revision ? "?revision=" + encodeURIComponent(revision) : ""), undefined, signal);
     if (!response.ok) throw new Error("Directive HTTP " + response.status);
-    return await response.json() as VoiceListenerDirective;
+    const directive = VoiceListenerDirectiveSchema.safeParse(await response.json());
+    if (!directive.success) throw new Error("Invalid voice listener directive");
+    return directive.data;
   }
 
   utterance(text: string, words: VoiceUtterance["words"], revision: string, capturedAt = Date.now(), signal?: AbortSignal) {

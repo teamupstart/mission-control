@@ -3,10 +3,14 @@ import { VOICE_HELLO_INTERVAL_MS } from "../shared/voice.ts";
 import { ListenerClient } from "./client.ts";
 import { tokenWords, type Recognition } from "./words.ts";
 
+export interface RecordingSegment { samples: Float32Array; last: boolean }
+
 /** File playback is a finite listener session. A changed directive invalidates only the segment decoded under it. */
-export async function playRecording(client: ListenerClient, segments: IterableIterator<Float32Array>,
+export async function playRecording(client: ListenerClient,
+  open: (signal: AbortSignal) => Iterator<RecordingSegment> | AsyncIterator<RecordingSegment>,
   decode: (samples: Float32Array, roster: string[]) => Promise<Recognition>): Promise<void> {
   const lifetime = new AbortController();
+  const segments = open(lifetime.signal);
   async function hello() {
     const response = await client.hello({}, lifetime.signal);
     if (!response.ok) throw new Error("Listener hello refused: " + response.status);
@@ -18,13 +22,16 @@ export async function playRecording(client: ListenerClient, segments: IterableIt
     }
   }
   async function play() {
-    for (;;) {
+    let last = false;
+    while (!last) {
       let directive = await client.poll(undefined, lifetime.signal);
       while (!directive.capture) directive = await client.poll(directive.revision, lifetime.signal);
-      const segment = segments.next();
+      const segment = await segments.next();
       if (segment.done) return;
+      last = segment.value.last;
+      lifetime.signal.throwIfAborted();
       const capturedAt = Date.now();
-      const result = await decode(segment.value, directive.roster);
+      const result = await decode(segment.value.samples, directive.roster);
       lifetime.signal.throwIfAborted();
       if (!result.text.trim()) continue;
       const response = await client.utterance(result.text, tokenWords(result), directive.revision, capturedAt, lifetime.signal);
@@ -41,6 +48,6 @@ export async function playRecording(client: ListenerClient, segments: IterableIt
     await Promise.race([heartbeat(), play()]);
   } finally {
     lifetime.abort();
-    segments.return?.();
+    await segments.return?.();
   }
 }

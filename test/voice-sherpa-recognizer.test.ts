@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -11,11 +11,13 @@ import { Hono } from "hono";
 import { ensureToken } from "../src/server/auth.ts";
 import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { voiceStateStore } from "../src/server/voice/state.ts";
+import { voiceModelManager } from "../src/server/voice/models.ts";
 import { setVoiceConfig } from "../src/server/voice/config.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "../src/server/voice/routes.ts";
 import { VOICE_REQUIRED_FLAGS } from "../src/shared/voice.ts";
+import { VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
 import { VoiceUtteranceSchema, type VoiceUtterance } from "../src/shared/voice-routing.ts";
-import { tokenPath } from "../src/shared/harness-runtime.mjs";
+import { stateDir, tokenPath } from "../src/shared/harness-runtime.mjs";
 import { voiceTestModel } from "./helpers/voice-test-model.ts";
 
 const run = promisify(execFile);
@@ -27,12 +29,21 @@ test("the published sherpa addon transcribes a recording through the listener an
     t.skip("Pinned recognizer model is absent from the offline unit-test cache");
     return;
   }
-  const dist = await mkdtemp(join(tmpdir(), "voice-listener-dist-"));
-  t.after(() => rm(dist, { recursive: true, force: true }));
-  await run(process.execPath, ["scripts/build-voice-sherpa.mjs", dist]);
+  const cwd = await mkdtemp(join(tmpdir(), "voice-listener-checkout-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await run(process.execPath, ["scripts/build-voice-sherpa.mjs", join(cwd, "dist")]);
+  const manifests = join(cwd, "models.json");
+  await writeFile(manifests, JSON.stringify({ "sherpa-onnx": VOICE_TEST_MODEL }));
+  process.env.MISSION_VOICE_MODEL_MANIFEST = manifests;
+  const installed = join(stateDir(), "voice", "models", "sherpa-onnx");
+  await mkdir(installed, { recursive: true });
+  await symlink(model, join(installed, VOICE_TEST_MODEL.revision), "dir");
   ensureToken();
   for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
   setVoiceConfig({ muted: false, backend: "sherpa-onnx", cancelWindow: { enabled: false } });
+  voiceModelManager.sync();
+  await voiceModelManager.idle();
+  assert.equal(voiceModelManager.state().status, "ready");
   voiceStateStore.useRoster(() => [{ key: "resident:steve", name: "Steve", kind: "resident", state: "running",
     sessionId: "sdk:steve", taskId: "task-steve", role: "", colorId: null, agent: "codex" }]);
   t.after(() => voiceStateStore.useRoster(null));
@@ -58,9 +69,11 @@ test("the published sherpa addon transcribes a recording through the listener an
   const addr = server.address();
   assert.ok(addr && typeof addr !== "string");
   const fixture = resolve("test/fixtures/voice/steve-check-the-build.wav");
-  const play = (file: string) => run(process.execPath, [join(dist, "voice-listener/sherpa.mjs"), "--test-model", "--input-file", file], {
-    env: { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + addr.port,
-      MISSION_VOICE_TOKEN_FILE: tokenPath(), MISSION_VOICE_MODEL_DIR: model }, timeout: 60_000,
+  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + addr.port, MISSION_VOICE_TOKEN_FILE: tokenPath() };
+  delete env.MISSION_VOICE_MODEL_MANIFEST;
+  delete env.MISSION_VOICE_BACKEND;
+  const play = (file: string) => run(process.execPath, [resolve("scripts/run-voice-listener.ts"), "--input-file", file], {
+    cwd, env, timeout: 60_000,
   });
   await play(fixture);
   assert.equal(captures.length, 1);
@@ -84,7 +97,7 @@ test("the published sherpa addon transcribes a recording through the listener an
     const wrongRate = Buffer.from(wav);
     wrongRate.writeUInt32LE(8000, 24);
     wrongRate.writeUInt32LE(16000, 28);
-    const path = join(dist, "wrong-rate.wav");
+    const path = join(cwd, "wrong-rate.wav");
     await writeFile(path, wrongRate);
     await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
     assert.equal(posts, 1);
@@ -92,7 +105,7 @@ test("the published sherpa addon transcribes a recording through the listener an
   await t.test("finishes a silent recording without posting an utterance", async () => {
     voiceStateStore.reset();
     wav.fill(0, 44);
-    const path = join(dist, "silence.wav");
+    const path = join(cwd, "silence.wav");
     await writeFile(path, wav);
     await play(path);
     assert.equal(posts, 1);

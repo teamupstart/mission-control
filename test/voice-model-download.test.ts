@@ -610,6 +610,25 @@ test("the environment overrides: a manifest file in the same shape, and only an 
   assert.equal(voiceModelBaseUrlFromEnv("not a url"), null);
 });
 
+test("an explicit launcher override verifies the alternate revision without switching Setup", async t => {
+  const root = mkdtempSync(join(tmpdir(), "voice-launch-model-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alternate = manifest("alternate");
+  const manager = new VoiceModelManager({
+    root: () => root, active: () => true, backend: () => "fluidaudio",
+    manifests: () => ({ fluidaudio: null, "sherpa-onnx": alternate }), baseUrl: () => null,
+  });
+  const directory = join(root, "sherpa-onnx", alternate.revision);
+  const signal = new AbortController().signal;
+  assert.equal(await manager.listenerModel("sherpa-onnx", signal), null);
+  placeFiles(directory);
+  assert.deepEqual(await manager.listenerModel("sherpa-onnx", signal), { backend: "sherpa-onnx", manifest: alternate, directory });
+  const first = FILES[0]!;
+  writeFileSync(join(directory, first.path), Buffer.alloc(first.body.length));
+  assert.equal(await manager.listenerModel("sherpa-onnx", signal), null, "a same-size corrupt file is refused");
+  assert.equal(await manager.listenerModel(undefined, signal), null);
+});
+
 test("the download routes start, refuse and cancel, and answer 404 with the flag off", async () => {
   const h = harness();
   h.manager.sync();

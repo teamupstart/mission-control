@@ -5,6 +5,7 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
+  VOICE_BACKENDS,
   VOICE_CAPTURE_END_HEADER,
   VOICE_CAPTURE_START_HEADER,
   VOICE_DRAINING_REVISIONS_HEADER,
@@ -66,6 +67,8 @@ function waitForDirective(store: VoiceStateStore, revision: string, signal: Abor
  * - `GET /api/voice/devices` returns `{ devices, listener }`: the input devices the live listener
  *   listed in its hello, which Voice settings offers beside the built-in microphone and the
  *   system default, and whether a listener is live at all.
+ * - `GET /api/voice/model` returns the backend, manifest and verified directory for a local
+ *   development launch. An optional backend query selects a previously installed alternate.
  * - `POST /api/voice/model/download` starts downloading the speech model (contract H) and answers
  *   202 with `{ model }`, or 409 with the reason when there is no model to download. A download
  *   already running, or a model already verified, is not started again.
@@ -111,6 +114,13 @@ export function registerVoiceRoutes(
   app.get("/api/voice/devices", gate, (c) => {
     const devices = store.listenerDevices();
     return c.json({ devices: devices ?? [], listener: devices !== null });
+  });
+  app.get("/api/voice/model", gate, async (c) => {
+    const backend = z.enum(VOICE_BACKENDS).optional().safeParse(c.req.query("backend"));
+    if (!backend.success) return c.json({ error: "Unknown voice backend" }, 400);
+    const model = await models.listenerModel(backend.data, c.req.raw.signal);
+    c.header("Cache-Control", "no-store");
+    return model ? c.json(model) : c.json({ error: "Select the backend and verify its model in Voice Setup before launching." }, 409);
   });
   app.post("/api/voice/model/download", gate, (c) => {
     const result = models.download();

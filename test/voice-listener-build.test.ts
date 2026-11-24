@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+import { VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
 
 test("ordinary native builds run both app builders without the optional listener", t => {
   const cwd = mkdtempSync(join(tmpdir(), "voice-build-"));
@@ -46,31 +51,62 @@ test("the staged sherpa addon loads in the macOS app layout and refuses file pla
   assert.match(play.stderr, /File input is available only from a development checkout/);
 });
 
+test("a failed rebuild preserves the published sherpa entry and complete versioned runtime", {
+  skip: !["linux", "darwin"].includes(process.platform) || !["arm64", "x64"].includes(process.arch),
+}, t => {
+  const cwd = mkdtempSync(join(tmpdir(), "sherpa-upgrade-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const dist = join(cwd, "dist");
+  const args = [resolve("scripts/build-voice-sherpa.mjs"), dist];
+  const built = spawnSync(process.execPath, args, { encoding: "utf8" });
+  assert.equal(built.status, 0, built.stderr);
+  const platform = `${process.platform}-${process.arch}`;
+  const { version } = createRequire(import.meta.url)(`sherpa-onnx-${platform}/package.json`);
+  const runtime = join(dist, "native", "sherpa-onnx", `${platform}-${version}`);
+  const entry = join(dist, "voice-listener", "sherpa.mjs");
+  const files = [entry, ...readdirSync(runtime).map(name => join(runtime, name))];
+  assert.ok(files.includes(join(runtime, "sherpa-onnx.node")));
+  const inodes = files.map(file => statSync(file).ino);
+  // This checkout has no JS entry source. Bundling fails after the native libraries are staged.
+  const failed = spawnSync(process.execPath, args, { cwd, encoding: "utf8" });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /Could not resolve/);
+  assert.deepEqual(files.map(file => statSync(file).ino), inodes);
+  assert.deepEqual(readdirSync(dist).sort(), ["native", "voice-listener"]);
+});
+
 for (const selection of ["automatic", "explicit"] as const) {
-  test(`the development launcher forwards the WAV to the sherpa Node entry on ${selection} selection`, t => {
+  test(`the development launcher forwards the verified model and WAV to sherpa on ${selection} selection`, async t => {
     const cwd = mkdtempSync(join(realpathSync(tmpdir()), "voice-launch-"));
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
     const directory = join(cwd, "dist", "voice-listener");
     mkdirSync(directory, { recursive: true });
     const binary = join(directory, "sherpa.mjs");
-    writeFileSync(binary, "console.log(JSON.stringify(process.argv));");
-    const args: string[] = [];
-    const env = { ...process.env };
+    writeFileSync(binary, `console.log(JSON.stringify({
+      args: process.argv, directory: process.env.MISSION_VOICE_MODEL_DIR, manifest: JSON.parse(process.env.MISSION_VOICE_LISTENER_MANIFEST)
+    }));`);
+    const verified = join(cwd, "setup", VOICE_TEST_MODEL.revision);
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url!);
+      res.end(JSON.stringify({ backend: "sherpa-onnx", directory: verified, manifest: VOICE_TEST_MODEL }));
+    });
+    t.after(() => server.close());
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const args = [resolve("scripts/run-voice-listener.ts")];
+    const env: NodeJS.ProcessEnv = { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port };
     delete env.MISSION_VOICE_BACKEND;
-    if (selection === "automatic") {
-      // Exercise the Linux default on both Linux and Apple silicon development hosts.
-      const platform = join(cwd, "linux.cjs");
-      writeFileSync(platform, 'Object.defineProperty(process, "platform", { value: "linux" });');
-      args.push("--import", platform);
-    } else {
+    if (selection === "explicit") {
       env.MISSION_VOICE_BACKEND = "fluidaudio";
+      args.push("--backend", "sherpa-onnx");
     }
-    args.push(resolve("scripts/run-voice-listener.ts"));
-    if (selection === "explicit") args.push("--backend", "sherpa-onnx");
     const recording = join(cwd, "speech fixture.wav");
-    const launch = spawnSync(process.execPath, [...args, "--input-file", recording], { cwd, env, encoding: "utf8" });
-    assert.equal(launch.status, 0, launch.stderr);
-    assert.deepEqual(JSON.parse(launch.stdout), [process.execPath, binary, "--input-file", recording]);
+    const { stdout } = await promisify(execFile)(process.execPath, [...args, "--input-file", recording], { cwd, env });
+    assert.deepEqual(requests, [selection === "explicit" ? "/api/voice/model?backend=sherpa-onnx" : "/api/voice/model"]);
+    assert.deepEqual(JSON.parse(stdout), { args: [process.execPath, binary, "--input-file", recording], directory: verified, manifest: VOICE_TEST_MODEL });
   });
 }
 

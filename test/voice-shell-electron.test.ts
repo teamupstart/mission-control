@@ -341,6 +341,17 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
     await until(() => exited(second));
   });
+  await t.test("switching a ready desktop to sherpa stops FluidAudio capture", async () => {
+    const before = pids().length;
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: ready }) + "\n\n");
+    await until(() => pids().length === before + 1);
+    const pid = pids().at(-1)!;
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: {
+      ...ready, model: { ...ready.model, backend: "sherpa-onnx", directory: "/verified-sherpa" },
+    } }) + "\n\n");
+    await until(() => exited(pid));
+    assert.equal(pids().length, before + 1);
+  });
   await t.test("malformed events stop the active child and reconnect for a fresh snapshot without another state change", async () => {
     const snapshot = JSON.stringify({type: "snapshot", voice: ready});
     const send = (data: string) => events!.write("data: " + data + "\n\n");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -38,7 +38,9 @@ test("the published sherpa addon transcribes a recording through the listener an
   t.after(() => voiceStateStore.useRoster(null));
   const app = new Hono();
   const captures: VoiceUtterance[] = [];
+  let posts = 0;
   app.use("/voice/utterances", async (c, next) => {
+    posts++;
     const payload = await c.req.raw.clone().json();
     await next();
     if ((await c.res.clone().json()).accepted) captures.push(VoiceUtteranceSchema.parse(payload));
@@ -55,11 +57,12 @@ test("the published sherpa addon transcribes a recording through the listener an
   await once(server, "listening");
   const addr = server.address();
   assert.ok(addr && typeof addr !== "string");
-  await run(process.execPath, [join(dist, "voice-listener/sherpa.mjs"), "--test-model", "--input-file",
-    resolve("test/fixtures/voice/steve-check-the-build.wav")], {
+  const fixture = resolve("test/fixtures/voice/steve-check-the-build.wav");
+  const play = (file: string) => run(process.execPath, [join(dist, "voice-listener/sherpa.mjs"), "--test-model", "--input-file", file], {
     env: { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + addr.port,
       MISSION_VOICE_TOKEN_FILE: tokenPath(), MISSION_VOICE_MODEL_DIR: model }, timeout: 60_000,
   });
+  await play(fixture);
   assert.equal(captures.length, 1);
   const capture = captures[0]!;
   assert.equal(capture.backend, "sherpa-onnx");
@@ -72,4 +75,26 @@ test("the published sherpa addon transcribes a recording through the listener an
   }
   assert.deepEqual(deliveries.map(({ target, text }) => [target, normalize(text)]), [["resident:steve", "check the build"]]);
   t.diagnostic(JSON.stringify({ transcript: capture.text, words: capture.words, deliveries }));
+
+  // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
+  const wav = await readFile(fixture);
+  assert.equal(wav.toString("ascii", 36, 40), "data");
+  await t.test("rejects an 8 kHz WAV", async () => {
+    voiceStateStore.reset(); // A new listener process claims its own lease.
+    const wrongRate = Buffer.from(wav);
+    wrongRate.writeUInt32LE(8000, 24);
+    wrongRate.writeUInt32LE(16000, 28);
+    const path = join(dist, "wrong-rate.wav");
+    await writeFile(path, wrongRate);
+    await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
+    assert.equal(posts, 1);
+  });
+  await t.test("finishes a silent recording without posting an utterance", async () => {
+    voiceStateStore.reset();
+    wav.fill(0, 44);
+    const path = join(dist, "silence.wav");
+    await writeFile(path, wav);
+    await play(path);
+    assert.equal(posts, 1);
+  });
 });

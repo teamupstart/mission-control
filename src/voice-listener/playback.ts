@@ -36,8 +36,8 @@ export async function playRecording(client: ListenerClient, segments: IterableIt
       }
     }
   }
-  await hello();
   try {
+    await hello();
     await Promise.race([heartbeat(), play()]);
   } finally {
     lifetime.abort();

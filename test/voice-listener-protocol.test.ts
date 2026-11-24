@@ -196,3 +196,27 @@ test("sherpa waits for capture, discards a stale decode and posts the next file 
   assert.deepEqual(posts.map(({ text, accepted }) => [text, accepted]), [["stale", false], ["fresh", true]]);
   assert.notEqual(posts[0]!.revision, posts[1]!.revision);
 });
+
+for (const [failure, error] of [
+  ["refused hello", "Listener hello refused: 409"],
+  ["failed post", "Utterance HTTP 503"],
+  ["rejected capture", "Daemon refused the capture"],
+] as const) {
+  test(`sherpa closes the segment iterator on ${failure}`, async t => {
+    const client = new ListenerClient("http://localhost", tokenPath(), async url => {
+      switch (new URL(url).pathname) {
+        case "/voice/listener/hello": return new Response(null, { status: failure === "refused hello" ? 409 : 200 });
+        case "/voice/listener/directive": return Response.json({ revision: "unchanged", capture: true, roster: [] });
+        case "/voice/utterances": return Response.json({ accepted: false }, { status: failure === "failed post" ? 503 : 200 });
+        default: throw new Error("Unexpected request " + url);
+      }
+    });
+    const segments = (function* () { yield Float32Array.of(1); })();
+    const close = t.mock.method(segments, "return");
+    await assert.rejects(playRecording(client, segments, async () => ({
+      text: "test", tokens: [], timestamps: [], durations: [],
+    })), { message: error });
+    assert.equal(close.mock.callCount(), 1);
+    assert.equal(segments.next().done, true);
+  });
+}

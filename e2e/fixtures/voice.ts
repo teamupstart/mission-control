@@ -82,20 +82,13 @@ export async function beListener(daemon: VoiceDaemon, hello: Partial<VoiceListen
   };
 }
 
-/** Post a text capture with adjacent word boundaries by default. */
-export async function say(daemon: VoiceDaemon, text: string, options: Partial<Omit<VoiceUtterance, "text">> = {}): Promise<Response> {
-  const backend = options.backend ?? LISTENER_HELLO.backend;
-  const listener = await beListener(daemon, { backend });
+async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Promise<Response> {
+  const listener = await beListener(daemon, { backend: utterance.backend });
   try {
     const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
     const directive = await fetch(`${daemon.baseURL}/voice/listener/directive`, { headers });
     if (!directive.ok) return directive;
     const { revision } = await directive.json() as VoiceListenerDirective;
-    const utterance: VoiceUtterance = {
-      id: crypto.randomUUID(), text, capturedAt: Date.now(), backend,
-      words: text.trim().split(/\s+/).map((word, i) => ({ text: word, startMs: 100 * i, endMs: 100 * (i + 1) })),
-      ...options,
-    };
     return await fetch(`${daemon.baseURL}/voice/utterances?revision=${encodeURIComponent(revision)}`, {
       method: "POST",
       headers,
@@ -103,6 +96,26 @@ export async function say(daemon: VoiceDaemon, text: string, options: Partial<Om
     });
   } finally {
     listener.stop();
+  }
+}
+
+const lastCapturePost = new Map<string, Promise<Response>>();
+
+/** Post in capture order so a cancel or pick cannot overtake the utterance it acts on. */
+export async function say(daemon: VoiceDaemon, text: string, options: Partial<Omit<VoiceUtterance, "text">> = {}): Promise<Response> {
+  const utterance = {
+    id: crypto.randomUUID(), text, capturedAt: Date.now(), backend: LISTENER_HELLO.backend,
+    words: text.trim().split(/\s+/).map((word, i) => ({ text: word, startMs: 100 * i, endMs: 100 * (i + 1) })),
+    ...options,
+  };
+  const post = () => postUtterance(daemon, utterance);
+  const previous = lastCapturePost.get(daemon.baseURL);
+  const current = previous ? previous.then(post, post) : post();
+  lastCapturePost.set(daemon.baseURL, current);
+  try {
+    return await current;
+  } finally {
+    if (lastCapturePost.get(daemon.baseURL) === current) lastCapturePost.delete(daemon.baseURL);
   }
 }
 

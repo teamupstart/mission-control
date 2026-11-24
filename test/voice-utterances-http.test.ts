@@ -426,12 +426,12 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.deepEqual(queued("Will").filter((text) => text === "ask Will about the build"), ["ask Will about the build"]);
 });
 
-test("a quoted candidate leaves the unsure card and queue untouched until an unquoted pick", async () => {
+test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async () => {
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const before = queued("Will");
   await say("Steven ask Will about the results", "choice");
-  for (const text of ["“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
+  for (const text of [",Will", " ?Will.", "Will,", "(Will)", "“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.rule, "no-message");
     assert.deepEqual(queued("Will"), before);
@@ -588,6 +588,42 @@ test("the downstream say fixture establishes a listener and posts contiguous or 
   const entries = await readHeard();
   assert.equal(entries[0]?.pauseMs, -30);
   assert.deepEqual(entries.map((entry) => [entry.matchedName, entry.rule]), [["Will", "exact"], ["Will", "exact"]]);
+});
+
+test("the listener posts a delayed message before a concurrently spoken cancel", async (t) => {
+  const { say: sayFixture } = await import("../e2e/fixtures/voice.ts");
+  voiceStateStore.reset();
+  const daemon = { home, baseURL: "http://localhost" };
+  let markStarted!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  const posted: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    if (new URL(url).pathname === "/voice/utterances") {
+      const { id } = JSON.parse(String(init.body));
+      posted.push(id);
+      if (id === "first") {
+        markStarted();
+        await delayed;
+      }
+    }
+    return app.request(url, init);
+  });
+
+  const message = sayFixture(daemon, "Will discard these words", { id: "first" });
+  await started;
+  const cancel = sayFixture({ ...daemon }, "cancel", { id: "second" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const inFlight = [...posted];
+  release();
+  const responses = await Promise.all([message, cancel]);
+  assert.deepEqual(inFlight, ["first"]);
+  assert.deepEqual(posted, ["first", "second"]);
+  for (const response of responses) assert.deepEqual(await response.json(), { accepted: true });
+  assert.deepEqual(cards.map(({ id, state }) => [id, state]), [["first", "pending"], ["first", "cancelled"]]);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.ok(!queued("Will").includes("discard these words"));
 });
 
 test("two weak matches followed by a bare name leave only ignored history", async () => {

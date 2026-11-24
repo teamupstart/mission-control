@@ -97,6 +97,9 @@ The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The listener posts captures in spoken order, waiting for each response before posting the next
+capture (including a cancel or pick). This lets the daemon apply a control to an action that
+has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
@@ -112,8 +115,9 @@ can address Release Captain, while “Release, Captain needs help” can address
 A unique exact first word settles the address even when the message names another agent.
 A spelling near-miss is ignored even when several names are one edit away. A bare name selects
 a candidate when exactly one option matches across open unsure cards captured by the time
-the name was spoken. Quoting the candidate name leaves the card open. An apostrophe within
-a name such as `O’Neil` is part of the name. Multiple matches
+the name was spoken. A final sentence mark is optional. `Will.` selects Will, while
+`,Will`, `Will,` and `“Will”` leave the card open. An apostrophe within a name such as
+`O’Neil` is part of the name. Multiple matches
 leave the cards open and record `ambiguous-pick` in Recently heard. If the selected candidate has
 left the roster, the card stays open and Recently heard records `candidate-unavailable`. A bare roster name with
 no matching option records `no-message`. This includes “Release Captain” when both Release

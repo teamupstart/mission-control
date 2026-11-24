@@ -229,8 +229,7 @@ side of it (“Steve and Will, check the build”, “Steve, ping Will”) leave
 message with the first agent.
 
 During the cancel window, the message stays in memory. At the deadline, or immediately with
-the window off, the daemon submits the remaining text verbatim to the running target’s operator
-queue. The card and Recently heard show `queued` when the queue accepts the message.
+the window off, the daemon submits the remaining text as a spoken turn. The card and Recently heard show the delivery outcome.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`. Only one comma separates the address from the message,
 so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
@@ -240,7 +239,7 @@ Quotes and brackets around an address must close in matching pairs. For example,
 ordinary message text. `[Will, stop` queues the word `stop`.
 The pending card keeps the session ID selected when it opened. If that session ends or another
 session takes over its roster entry, the card and Recently heard show `not-running`.
-“Steve, stop” uses the session interrupt path. A bare command may end with sentence punctuation
+“Steve, stop” bypasses the cancel window and interrupts immediately. A bare command may end with sentence punctuation
 such as `!` or `?`. Quoting the word in `Steve, "stop"` queues
 the message `"stop"`. A bare “cancel” stops the newest action that
 is still pending and was opened by the time the cancel was spoken. Quoting the word
@@ -325,7 +324,9 @@ answers, the card keeps its place in the cancel order and becomes `pending` (one
 two parts for a split, with the ordinary cancel window) or `unsure`. Picking a split requires
 both captured sessions to still match the roster. An answer that comes after the budget, or after the card was
 cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
-each captured session immediately before delivering its part, in spoken order. If a session
+each captured session immediately before delivering its part. Addressed stops interrupt as soon
+as the split is confirmed. Ordinary message parts keep their cancel window and delivery order.
+Cancelling the remaining message leaves an interrupt that already ran in the delivery history. If a session
 has left or been replaced, the other recipient can still receive their part. Recently heard
 lists each recipient and delivery result. The card carries the worse of the two outcomes.
 The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
@@ -348,6 +349,67 @@ For what each model receives, see [Voice routing in the Security guide](security
 suite points both at a closed loopback port, and its daemons never inherit `OPENAI_API_KEY` or
 `TYPESAFE_API_KEY`, so no spec reaches a real provider; a spec that drives the rung serves both
 endpoints with `startDecisionServer()`.
+
+## Spoken delivery
+
+An idle agent starts a turn. A busy agent receives the message after its current turn ends.
+Only non-spoken outbox rows offer **Steer now** and **Interrupt and deliver**.
+A blocking question holds delivery until it is answered. A hibernated task resumes its
+conversation before the daemon queues the message. Messages that arrive while that task is waking
+share the resume. Each message still has its own outbox row and receipt. Recently heard and the card show `queued` (or
+`held` for a blocking question, including after resume) until the outbox confirms the handoff.
+Replaying a capture while its outbox row exists reuses that row for the same conversation and spoken words.
+Confirmation changes the outcome to `sent`. Recalling an unsent message changes it to `cancelled`.
+An outstanding card still receives that outcome after its entry leaves Recently heard.
+If writing the delivery receipt fails, the card keeps its queue status while the daemon retries
+the database write. A successful retry publishes the receipt without sending the message again.
+A confirmed transport refusal requeues its outbox claim and withdraws its transcript reservation
+in one transaction. If that write fails, the daemon retries the transaction without resending.
+If transcript preparation fails before delivery, the daemon counts the attempt when it can
+commit the queue update. After three failed preparations it reports the failure, releases
+Foreman, and lets the following message proceed.
+A stopped agent receives nothing. The
+dashboard identifies the stopped agent and suggests relaunching a resident or starting a
+follow-up task.
+
+At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
+and “When you have finished this, post a report.” A retry uses that exact text. The conversation
+labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
+After an SDK send is acknowledged, or an uncertain send is abandoned after a crash, the daemon
+allows 24 hours for the client message ID and matching words to appear. Hourly cleanup checks live and persisted
+conversations and the custom transcript paths saved at handoff. If the harness cannot discover a
+default path, cleanup can still check the saved files. A missing saved file keeps the scan incomplete.
+Cleanup scans from the beginning because a rewritten transcript can move a receipt.
+It removes an unmatched payload only after reading the whole file. If the transcript is missing,
+unreadable, or changes during the scan, cleanup tries again on a later sweep. If a runtime exits
+mid-record, cleanup checks every complete record and reads through the unfinished line to EOF.
+It waits until that file revision is at least 24 hours old before expiring unmatched receipts.
+If a complete record exceeds the parser budget, cleanup can observe later receipts but keeps
+unmatched payloads because it could not check that record.
+
+A terminal delivery records the native file identity and a digest of the bytes through its delivery
+offset. A worker hashes the history before the paste. The daemon checks the file revision and
+the outbox claim at handoff. A matching native turn must have a timestamp at or after handoff,
+within the 24-hour window, and the saved prefix must still belong to the file. A record outside
+that window can precede a buffered turn inside it, so the reader checks each candidate.
+Opening or updating a conversation searches
+for an unbound receipt only when the displayed records could contain it. A later copy still
+checks the history from handoff so the first eligible turn keeps its disclosure. If the reader
+skips an oversized record, a later text match stays unlabelled. The daemon checks again when the
+transcript changes. An exact SDK receipt can still identify its own record. If the proof worker
+is unavailable or the record changes during verification, the dashboard shows the native transcript
+and continues streaming new turns. It retries the disclosure in the background, including for pages
+the operator scrolled back to. SDKs that accept client message IDs use that receipt.
+
+Sending a typed, delegated, or review message leaves spoken transcript scans to the prepared
+handoff, conversation reader, or cleanup. When a parser generates a different ID on a later
+read, the daemon can identify the spoken turn by matching text and time only if the match is
+unique in the file and occurs at or after the saved handoff offset.
+
+A confirmed terminal delivery has a 24-hour window to match its transcript turn. Cleanup makes
+one final binding pass and deletes the payload if it still has no match. If the transcript stays
+unavailable, cleanup keeps the unbound payload for the daemon's orphan retention period (seven
+days by default). A bound disclosure stays available in the conversation.
 
 ## Turning voice on
 
@@ -651,8 +713,8 @@ agent answers to the same name: a resident, a task that is running or hibernated
 stopped later. Schema 52 adds the nullable `tasks.retired_call_sign` column to record displacement
 without changing the configured call sign. The displaced name stays off the roster even if the other agent gives it up or the
 daemon restarts. The task keeps its configured call sign and can answer again when it resumes.
-A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so a later
-phase can say "<name> isn't running".
+A deleted task leaves at once, even one the Registry had already evicted from memory. Agents that are not running stay listed so the
+dashboard can say "<name> isn't running".
 
 When a task stopped is not always known across a daemon restart, so the 24 hours are not an
 absolute bound:

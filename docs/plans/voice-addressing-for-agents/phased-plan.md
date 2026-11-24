@@ -325,7 +325,8 @@ composes the notes once, when the turn is claimed for delivery; the `pending_tur
 `spoken_words` and `composed_at`; the delivery outcomes `sent`, `queued`, `held`, `not-running`,
 `failed`; `voiceHold(sessionId)`, which is true while a card is pending for the session, while a
 spoken turn's row exists for it in any state (the row is deleted when delivery is confirmed),
-and for at most 10 minutes after `turn_delivered` until the agent's turn ends. `composed_at`
+and after confirmed delivery until the receiving turn finishes, including across daemon restarts.
+The operator selected turn completion as the release condition, with no time limit. `composed_at`
 marks the claim, not delivery, and the hold does not read it.
 
 **G. Card component (Phase 6).** `VoiceCardView` draws one `VoiceCard`. `VoiceCardHost` shows it

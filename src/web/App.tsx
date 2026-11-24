@@ -408,6 +408,7 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
+    voiceCards,
     acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
@@ -2678,6 +2679,18 @@ export function App(): React.JSX.Element {
     },
     [],
   );
+  const previousVoiceCards = useRef(voiceCards);
+  useEffect(() => {
+    const messages: string[] = [];
+    for (const card of voiceCards.values()) {
+      if ((card.state === "not-running" || card.state === "failed") && card.detail) {
+        const previous = previousVoiceCards.current.get(card.id);
+        if (previous?.state !== card.state || previous.detail !== card.detail) messages.push(card.detail);
+      }
+    }
+    previousVoiceCards.current = voiceCards;
+    if (messages.length) showFleetActionError(messages.join(" "));
+  }, [voiceCards, showFleetActionError]);
   const openDiff = useCallback((sessionId: string, commit?: string) => {
     setSelectedId(sessionId);
     if (layout === "board") setBoardOpen(true);

@@ -1505,7 +1505,7 @@ export async function fetchTranscriptBefore(
   before: number,
   signal?: AbortSignal,
 ): Promise<
-  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean }
+  | { ok: true; messages: TranscriptMessage[]; start: number; end: number; atStart: boolean; spokenDeferred?: true }
   | { ok: false; error: string }
 > {
   try {
@@ -1517,6 +1517,7 @@ export async function fetchTranscriptBefore(
       messages?: TranscriptMessage[];
       start?: number;
       end?: number;
+      spokenDeferred?: true;
       atStart?: boolean;
       error?: string;
     };
@@ -1528,6 +1529,7 @@ export async function fetchTranscriptBefore(
       messages: data.messages,
       start: data.start,
       end: data.end,
+      ...(data.spokenDeferred && { spokenDeferred: true }),
       // A response that omits the flag is treated as "nothing older", which stops the
       // scroll-back rather than looping on an anchor the server never moved.
       atStart: data.atStart ?? true,

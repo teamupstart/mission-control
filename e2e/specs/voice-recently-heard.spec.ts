@@ -83,7 +83,7 @@ test("a spoken split selection shows each recipient without highlighting the ope
   const history = page.getByRole("region", { name: "Recently heard" });
   const original = history.getByRole("row").filter({ has: page.getByRole("cell", { name: phrase, exact: true }) });
   await expect(original.getByRole("cell", { name: "Steve", exact: true })).toBeVisible();
-  await expect(original).toContainText("Part 1 (Steve) queued. Part 2 (Will) queued.");
+  await expect(original).toContainText("Part 1 (Steve) sent. Part 2 (Will) sent.");
   await expect(original).toContainText("second name");
   await expect(history.getByRole("row").filter({ hasText: "spoken selection" })).toBeVisible();
   await expect(original.locator("mark")).toHaveCount(0, { timeout: 3000 });

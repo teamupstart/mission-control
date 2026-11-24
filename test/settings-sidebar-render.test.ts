@@ -103,6 +103,7 @@ function render(
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: opts.flags ?? FLAGS_ON }, createElement(SettingsPage, {
       category,
+      voiceConfig: { config: null, error: null, update: async () => false },
       shapingSettings: opts.shaping ?? shapingSettings(),
       ...(opts.reportMutes ? { reportMutes: opts.reportMutes } : {}),
       onNavigate: () => {},

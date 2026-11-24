@@ -5,13 +5,11 @@ import {
 import { api } from "../lib/api.ts";
 import { formatChord } from "../lib/keybindings.ts";
 import { updateVoiceIndicator, useUiConfig } from "../lib/uiConfig.ts";
-import { useVoiceConfig, type VoiceConfigState } from "../useVoiceConfig.ts";
 import { Keycap } from "./Keycap.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 export const VoiceWindow = createContext<{
   state: VoiceState;
-  settings: VoiceConfigState;
   mutePending: boolean;
   setMuted(id: VoiceIndicatorId, muted: boolean): Promise<void>;
   openSetup(): void;
@@ -20,7 +18,6 @@ export const VoiceWindow = createContext<{
 export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
   state: VoiceState | null; enabled: boolean; openSetup(): void; children: ReactNode;
 }) {
-  const { config, update, error } = useVoiceConfig(enabled);
   const { voice: { indicators } } = useUiConfig();
   const [failure, setFailure] = useState<{ id: VoiceIndicatorId; muted: boolean; message: string } | null>(null);
   const [pendingMute, setPendingMute] = useState<boolean | null>(null);
@@ -59,8 +56,8 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
     if (failure && !showFailure) setFailure(null);
   }, [failure, showFailure]);
   const value = useMemo(() => enabled && state ? {
-    state, settings: { config, update, error }, openSetup, setMuted, mutePending: pendingMute !== null,
-  } : null, [enabled, state, config, update, error, openSetup, setMuted, pendingMute]);
+    state, openSetup, setMuted, mutePending: pendingMute !== null,
+  } : null, [enabled, state, openSetup, setMuted, pendingMute]);
   return <VoiceWindow.Provider value={value}>
     {children}
     {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status">

@@ -51,6 +51,7 @@ import { markAllReportsRead } from "./lib/report-state.ts";
 import type { ReportItem } from "@shared/reports.ts";
 import { beginOperation } from "./lib/operation-context.ts";
 import { useEventStream } from "./useEventStream.ts";
+import { useVoiceConfig } from "./useVoiceConfig.ts";
 import { useAttentionDismissals } from "./useAttentionDismissals.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -449,6 +450,7 @@ export function App(): React.JSX.Element {
   );
   // Call signs and reference names are voice's names: they name an agent only while it is on.
   const spokenNames = resolveFeatureFlag(VOICE_FLAG, featureFlags);
+  const voiceConfig = useVoiceConfig(spokenNames && route.page === "settings" && route.category === "voice");
   // Muted report authors: left out of the fold and its to read figure, and never notified.
   const mutedReportAuthors = useMemo(() => mutedAuthorKeys(reportMutes), [reportMutes]);
   const alertScope = useMemo(
@@ -5301,6 +5303,7 @@ export function App(): React.JSX.Element {
           }
           settings={(
             <SettingsPage
+              voiceConfig={voiceConfig}
               featureFlagsSettings={featureFlagsSettings}
               shapingSettings={shapingSettings}
               reportMutes={reportMutes}

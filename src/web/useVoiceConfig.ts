@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice } from "@shared/voice.ts";
 import { api, fetchVoiceConfig, fetchVoiceDevices } from "./lib/api.ts";
 
-// Voice settings (`GET`/`PUT /api/voice/config`). Polled while the dashboard shows voice, for the reason
-// `useShipping` polls: coarse control-panel chrome whose only other writer is another window.
+// Voice settings (`GET`/`PUT /api/voice/config`). Poll while Settings > Voice is open so
+// the panel picks up edits made in other windows.
 // The voice STATE is not here; it is the event stream's (`MissionState.voice`).
 
 const POLL_MS = 5000;
@@ -46,7 +46,7 @@ interface PendingEdit {
  * order, every answer the panel adopts is the daemon's config as of that edit, and a refusal only
  * drops its own edit from what is drawn.
  */
-export function useVoiceConfig(enabled: boolean): VoiceConfigState {
+export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
   const [pending, setPendingState] = useState<readonly PendingEdit[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +69,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!pollWhileOpen) return;
     let alive = true;
     const tick = async (): Promise<void> => {
       // A read taken while an edit is waiting, or answered after one was made, can predate it.
@@ -84,7 +84,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       alive = false;
       clearInterval(id);
     };
-  }, [enabled, setConfirmed]);
+  }, [pollWhileOpen, setConfirmed]);
 
   const update = useCallback((patch: VoiceConfigPatch): Promise<boolean> => {
     if (!confirmedRef.current) return Promise.resolve(false);

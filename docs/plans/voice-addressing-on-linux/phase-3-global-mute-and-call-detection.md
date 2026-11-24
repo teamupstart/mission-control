@@ -1,6 +1,6 @@
 # Phase 3: Global mute and call detection
 
-The approved source is `docs/plans/voice-addressing-on-linux/plan.md`. Read the implementation index `phased-plan.md` beside this file. Repository scope is mission-control.
+The [approved source](plan.md) and [implementation index](phased-plan.md) cover the mission-control repository.
 
 ## Outcome
 

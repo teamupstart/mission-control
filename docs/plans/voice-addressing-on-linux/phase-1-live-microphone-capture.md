@@ -1,6 +1,6 @@
 # Phase 1: Live microphone capture
 
-The approved source is `docs/plans/voice-addressing-on-linux/plan.md`. Read the implementation index `phased-plan.md` beside this file. Repository scope is mission-control.
+The [approved source](plan.md) and [implementation index](phased-plan.md) cover the mission-control repository.
 
 ## Outcome
 
@@ -31,6 +31,8 @@ Qualify the capture client’s process lifetime as part of backend selection. If
 Run `node --test --import ./test/setup-state.mjs --import tsx test/voice-listener-protocol.test.ts test/voice-word-merge.test.ts test/voice-utterances-http.test.ts` and new live-source tests with injected PCM, delayed decoding and revoked directives. Hold a directive request pending with the input open and keep hello heartbeats succeeding. Advance the clock through expiry and assert the input closes while the request is still pending. Deliver its late capture-enabled response and assert the device stays closed and stale samples never reach the daemon. A subsequent fresh authorized poll may reopen it. Repeat on the physical device with a stalled poll and observe closure from the audio server. Exercise the existing model-backed Linux recognizer job. On hardware test first use, selected device loss, physical mute close/reopen, and a phrase cut by mute. Confirm OS capture state independently. Document candidate measurements, no raw recordings, and the chosen backend in docs/voice.md. No passing candidate means this phase stays open.
 
 Run the repository typecheck and lint. Run build and smoke for runtime changes, the applicable unit suite, and browser E2E for visible changes. Use Node 24 or newer and the test-state preload. Keep hardware results and screenshots in PR/workflow evidence. Record measured limitations in the technical guide. Merge when the outcome works through the stated entry point and its failure cases pass.
+
+On the reserved desktop, restart the active PipeWire or PulseAudio server mid-phrase with the real selected input open. Verify that the listener closes the failed stream and discards its buffered PCM, in-flight decode and queued utterance. Keep capture closed while the server or selected device is absent and while a fresh capture directive is withheld. Restore the device and fresh authorization, speak a different phrase, and verify exactly one stream opens and only the new phrase is delivered. Record the audio server, device and observed recovery order.
 
 ## Downstream handoff and cross-phase audit
 

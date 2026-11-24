@@ -2,6 +2,7 @@
 // listener's hello and the shell report under the token, the snapshot field and `voice_state`
 // frames, and every route answering 404 with the flag off.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { after, beforeEach, mock, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -75,9 +76,23 @@ test("GET returns every contract A field with its default", async () => {
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
 });
 
+const readProviderRevision = async () => {
+  const read = await json("/api/voice/config", "GET", undefined, { "x-voice-provider-revision": "read" });
+  return (await read.json() as { providerRevision: string }).providerRevision;
+};
+const providerIntent = (writer: string, observedRevision: string) =>
+  json("/api/voice/config/provider-intent", "POST", { writer, observedRevision });
+const choose = (provider: string, ticket: string) =>
+  json("/api/voice/config", "PUT", { decisionProvider: provider }, { "x-voice-provider-ticket": ticket });
+const reserveFor = async (writer: string, revision: string) => {
+  const res = await providerIntent(writer, revision);
+  assert.equal(res.status, 200);
+  return (await res.json() as { ticket: string }).ticket;
+};
+
 test("an earlier reserved provider write cannot undo Off, a restore, or a legacy write", async () => {
-  const reserve = async () => (await (await json("/api/voice/config/provider-intent", "POST")).json() as { ticket: string }).ticket;
-  const choose = (provider: string, ticket: string) => json("/api/voice/config", "PUT", { decisionProvider: provider }, { "x-voice-provider-ticket": ticket });
+  const writer = randomUUID();
+  const reserve = async () => reserveFor(writer, await readProviderRevision());
   const earlier = await reserve();
   const off = await reserve();
   assert.equal((await choose("off", off)).status, 200);
@@ -90,6 +105,22 @@ test("an earlier reserved provider write cannot undo Off, a restore, or a legacy
   assert.equal((await json("/api/voice/config", "PUT", { decisionProvider: "off" })).status, 200);
   assert.equal((await choose("jev", beforeLegacy)).status, 409);
   assert.equal((await choose("jev", await reserve())).status, 200);
+});
+
+test("provider choices from another window invalidate both stale reservations and stalled commits", async () => {
+  const first = randomUUID(), second = randomUUID();
+  const observed = await readProviderRevision();
+  const off = await reserveFor(second, observed);
+  const pending = await reserveFor(first, observed);
+  assert.equal((await choose("off", off)).status, 200);
+  assert.equal((await choose("jev", pending)).status, 409);
+  const stale = await providerIntent(first, observed);
+  assert.equal(stale.status, 409);
+  const { config, providerRevision } = await stale.json() as { config: typeof VOICE_CONFIG_DEFAULTS; providerRevision: string };
+  assert.equal(config.decisionProvider, "off");
+  assert.equal(providerRevision, await readProviderRevision());
+  assert.equal((await choose("jev", await reserveFor(first, providerRevision))).status, 200);
+  assert.equal((await providerIntent(first, observed)).status, 409);
 });
 
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {

@@ -294,9 +294,9 @@ async function readJson<T>(path: string): Promise<JsonRead<T>> {
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
-async function fetchJson<T>(path: string): Promise<T | null> {
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
   try {
-    const res = await actionFetch(path);
+    const res = await actionFetch(path, init);
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -498,7 +498,8 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
-export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig }>("/api/voice/config");
+export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig; providerRevision: string }>("/api/voice/config",
+  { headers: { "x-voice-provider-revision": "read" } });
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
@@ -2503,9 +2504,11 @@ export const api = {
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
-  reserveVoiceProviderWrite: () => post<ActionResult & { ticket?: string }>("/api/voice/config/provider-intent"),
+  reserveVoiceProviderWrite: (writer: string, observedRevision: string) =>
+    post<ActionResult & { ticket?: string; config?: VoiceConfig; providerRevision?: string }>(
+      "/api/voice/config/provider-intent", { writer, observedRevision }),
   setVoiceConfig: (patch: VoiceConfigPatch, ticket?: string) =>
-    put<ActionResult & { config?: VoiceConfig }>("/api/voice/config", patch,
+    put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       ticket ? { headers: { "x-voice-provider-ticket": ticket } } : undefined),
   setVoiceMuted: (muted: boolean) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }),

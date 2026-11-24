@@ -20,10 +20,24 @@ const listeners = new Set<Listener>();
 const instance = randomUUID();
 let issued = 0;
 let applied = 0;
+let lastWriter: string | undefined;
+let writerBase = 0;
+
+export function providerRevision(): string {
+  return `${instance}:${applied}`;
+}
+
+function canApply(writer: string, base: number): boolean {
+  // A window can supersede its own unacknowledged PUT. Any intervening writer or restore
+  // ends that sequence, including a write which picked the same provider again.
+  return base === applied || (writer === lastWriter && base >= writerBase && base < applied);
+}
 
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
-export function reserveProviderWrite(): string {
-  return `${instance}:${++issued}`;
+export function reserveProviderWrite(writer: string, revision: string): string | null {
+  const base = Number(revision.slice(instance.length + 1));
+  if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || !canApply(writer, base)) return null;
+  return `${instance}:${++issued}:${writer}:${base}`;
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -47,14 +61,23 @@ export function setVoiceConfig(patch: VoiceConfigPatch): VoiceConfig;
 export function setVoiceConfig(patch: VoiceConfigPatch, ticket: string | undefined): VoiceConfig | null;
 export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceConfig | null {
   let order: number | undefined;
+  let writer: string | undefined;
   if (ticket !== undefined) {
-    order = Number(ticket.slice(instance.length + 1));
+    const [epoch, number, author, revision] = ticket.split(":");
+    order = Number(number);
+    const base = Number(revision);
     if (patch.decisionProvider === undefined || !Number.isSafeInteger(order) || order <= applied ||
-        order > issued || ticket !== `${instance}:${order}`) return null;
+        order > issued || epoch !== instance || !author || !Number.isSafeInteger(base) ||
+        ticket !== `${instance}:${order}:${author}:${base}` || !canApply(author, base)) return null;
+    writer = author;
   }
   const next = applyVoiceConfigPatch(getVoiceConfig(), patch);
   setAppConfig(ENTRY, next);
-  if (patch.decisionProvider !== undefined) applied = order ?? ++issued;
+  if (patch.decisionProvider !== undefined) {
+    if (writer !== lastWriter) writerBase = applied;
+    lastWriter = writer;
+    applied = order ?? ++issued;
+  }
   notify(next);
   return next;
 }
@@ -63,6 +86,7 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
 export function reloadVoiceConfig(): VoiceConfig {
   const config = getVoiceConfig();
   applied = ++issued;
+  lastWriter = undefined;
   notify(config);
   return config;
 }

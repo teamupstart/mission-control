@@ -273,6 +273,42 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     expect([config.decisionProvider, config.cancelWindow.seconds]).toEqual(["off", 8]);
   });
 
+  test("a delayed reservation cannot undo Off in another window", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await saveKey(page, "Jev", SAVED_JEV);
+    await providerMenu(page).selectOption("openai");
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const other = await context.newPage();
+    await openVoiceSettings(other, daemon);
+    await expect(line(other)).toHaveText(using("OpenAI Decisions"));
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/config/provider-intent", async route => {
+      held.resolve();
+      await release.promise;
+      await route.continue();
+    }, { times: 1 });
+    const reservation = page.waitForResponse(r => r.url().endsWith("/api/voice/config/provider-intent"));
+    try {
+      await providerMenu(page).selectOption("jev");
+      await held.promise;
+      await providerMenu(other).selectOption("off");
+      await expect(line(other)).toHaveText(NOT_SET);
+    } finally {
+      release.resolve();
+    }
+    expect((await reservation).status()).toBe(409);
+    await expect(providerMenu(page)).toHaveValue("off");
+    await expect(line(page)).toHaveText(NOT_SET);
+    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+    expect(decisions.requests).toHaveLength(0);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "22-stale-reservation");
+    await providerMenu(page).selectOption("jev");
+    await expect(line(page)).toHaveText(using("Jev"));
+  });
+
   for (const heldAt of ["request", "response"] as const) {
     test(`Off supersedes an earlier provider selection with a stalled ${heldAt}`, async ({ dashboard: page, daemon, decisions }) => {
       await turnVoiceOn(daemon);

@@ -51,6 +51,8 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const settingsQueue = useRef(Promise.resolve());
   const latestProviderEdit = useRef(0);
   const confirmedProviderEdit = useRef(0);
+  const [writer] = useState(() => crypto.randomUUID());
+  const providerRevision = useRef("");
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
   // an edit already waiting behind the refused one cannot wipe the sentence before it is read.
@@ -68,12 +70,19 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
+    let nextRead = 0;
+    let appliedRead = 0;
     const tick = async (): Promise<void> => {
       // A read taken while an edit is waiting, or answered after one was made, can predate it.
       if (pendingRef.current.length > 0) return;
+      const id = ++nextRead;
       const at = nextEdit.current;
       const read = await fetchVoiceConfig();
-      if (alive && read && nextEdit.current === at && pendingRef.current.length === 0) setConfirmed(read.config);
+      if (alive && read && id > appliedRead && nextEdit.current === at && pendingRef.current.length === 0) {
+        appliedRead = id;
+        providerRevision.current = read.providerRevision;
+        setConfirmed(read.config);
+      }
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -91,7 +100,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const changesSettings = Object.keys(settings).length > 0;
     if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite() : undefined;
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, providerRevision.current) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
       const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
@@ -100,13 +109,16 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         setPending(pendingRef.current.filter(candidate => candidate !== edit));
         return false;
       }
-      const res = sendProvider && !order?.ticket ? { ok: false, error: order?.error, config: undefined, status: undefined }
+      const res = sendProvider && order && !order.ticket ? order
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
       const kept = res.ok && res.config !== undefined;
       const current = confirmedRef.current;
       if (res.config && current && (kept || res.status === 409)) {
         const applyProvider = sendProvider && edit.id > confirmedProviderEdit.current;
-        if (applyProvider) confirmedProviderEdit.current = edit.id;
+        if (applyProvider && res.providerRevision) {
+          confirmedProviderEdit.current = edit.id;
+          providerRevision.current = res.providerRevision;
+        }
         setConfirmed({
           ...(changesSettings && kept ? res.config : current),
           decisionProvider: applyProvider ? res.config.decisionProvider : current.decisionProvider,
@@ -126,7 +138,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const result = settingsQueue.current.then(save);
     settingsQueue.current = result.then(() => {}, () => {});
     return result;
-  }, [setConfirmed, setPending]);
+  }, [setConfirmed, setPending, writer]);
 
   const config = useMemo(
     () => (confirmed ? pending.reduce((shown, edit) => {

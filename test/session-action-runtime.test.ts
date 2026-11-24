@@ -178,6 +178,7 @@ interface HarnessOptions {
   parallelActions?: boolean;
   /** Make the pane positively reject the write, the way a guard or a busy pane does. */
   refuseInject?: boolean;
+  onInject?: (payload: string) => void;
   requireSkill?: (session: Session, id: string) => { ok: true; command: string } | { ok: false; message: string };
 }
 
@@ -267,6 +268,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       if (options.refuseInject) {
         return { ok: false, error: "pane_blocked", pasted: false, paneBlocked: true, submitVerified: false };
       }
+      options.onInject?.(payload);
       injected.push(payload);
       return { ok: true, pasted: true, submitVerified: true };
     }) as never,
@@ -1835,6 +1837,36 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
     } finally { await h.stop(); }
   });
 }
+
+test("a transcript first observed during delivery retains post-send attribution after restart", async () => {
+  const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
+  const { forgetInjections } = await import("../src/server/injections.ts");
+  const path = join(home, "transcript-created-during-publication.jsonl");
+  const turn = (uuid: string, content: string) => JSON.stringify({
+    type: "user", uuid, timestamp: new Date().toISOString(), message: { role: "user", content },
+  }) + "\n";
+  const h = await harness("publication-transcript-first-seen", {
+    pullRequest: true,
+    onInject: payload => {
+      writeFileSync(path, turn("original-ask", "Publish this change") + turn("delivered", payload));
+      h.reportIdle(path);
+    },
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR packet");
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const packet = h.store.listDeliveries(runId)[0]!.payload;
+    const throughDelivery = readFileSync(path, "utf8");
+    const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
+    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(throughDelivery) }]);
+    forgetInjections(h.sessionId);
+    writeFileSync(path, throughDelivery + turn("human-repeat", packet));
+    const intent = readWorkflowIntentSnapshot(h.registry, binding, anchors)!;
+    assert.deepEqual(intent.decisions.filter(d => d.source.kind === "transcript").map(d => d.source.id),
+      ["original-ask", "human-repeat"]);
+  } finally { await h.stop(); }
+});
 
 test("a delivered PR packet binds across an intervening human turn and preserves a later human repeat after restart", async () => {
   const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");

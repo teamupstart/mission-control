@@ -7066,7 +7066,7 @@ export class WorkflowManager {
         // Only a reservation this send made: a refused one recorded nothing, and releasing would
         // give back an earlier reservation of the same text.
         if (receipt) workflowDeliveryLedger.release(sending.noteKey, receipt.id);
-        if (attributionRefused === null) releaseInjection(session.id, sending.payload);
+        if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
         if (result.error === "inspector_feedback_superseded") {
           if (this.store.getDelivery(sending.id)?.state === "sending") {
             this.store.setDeliveryState(sending.id, "prepared", null);
@@ -7112,15 +7112,20 @@ export class WorkflowManager {
       this.markDeliveryUncertain(sending, result.error ?? "delivery_outcome_unknown");
       return;
     }
-    const transcript = sessionMessages(session);
+    const live = this.registry.getSession(sending.sessionId);
+    const transcript = live && noteKeyFor(live) === sending.noteKey ? sessionMessages(live) : null;
     const transcriptAnchor = transcript ? transcript.read.size(transcript.path) : null;
+    // A receipt can bind only from a measured offset in this file. When the transcript
+    // first appears during the send, the measured post-send anchor is the available proof.
+    const usableReceipt = receipt && transcript && receipt.transcriptOffset !== null && receipt.transcriptPath === transcript.path
+      ? receipt : null;
     const confirmed = this.store.confirmDeliverySend(
       sending.id,
       transcriptAnchor,
       result.submitVerified,
       Date.now(),
-      conversation.transcript?.path === transcript?.path ? receipt?.transcriptOffset ?? null : null,
-      receipt?.id,
+      usableReceipt?.transcriptOffset ?? null,
+      usableReceipt?.id,
     );
     if (!confirmed) return;
     // Settles the reservation above rather than adding to it: recording afresh would owe a

@@ -7220,7 +7220,18 @@ export class WorkflowStore {
 
   /** Validate every probed publication under the same write lock that spends the shared cycle. */
   claimForemanCompletions(inputs: ForemanCompletionStoreInput[]): ForemanCompletionStoreResult[] {
-    return transaction(this.db, () => inputs.map(input => this.claimForemanCompletion(input)));
+    return transaction(this.db, () => {
+      const reservations: ForemanCompletionStoreResult[] = [];
+      for (const input of inputs) {
+        const stored = this.claimForemanCompletion(input);
+        if (!stored.result.claimed) {
+          if (reservations.length) throw new Error("A sibling repository refused the shared Foreman completion");
+          return [stored];
+        }
+        reservations.push(stored);
+      }
+      return reservations;
+    });
   }
 
   /**

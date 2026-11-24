@@ -34,6 +34,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let unavailableHandshakes = 1;
   let refusals = 0;
   let reconnectSnapshot: string | undefined;
+  const heartbeatMs = 750;
+  let keepalive: "ping" | "registry" | "silent" = "ping";
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
@@ -65,6 +67,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       events = res;
       connects++;
       res.flushHeaders();
+      const ping = setInterval(() => {
+        if (keepalive === "ping") res.write("event: ping\ndata: \n\n");
+        if (keepalive === "registry") res.write('data: {"type":"session_remove","id":"fixture"}\n\n');
+      }, heartbeatMs);
+      res.once("close", () => clearInterval(ping));
       if (connects === 1) res.write('data: {"type":"snapshot"}\n\n');
       else if (reconnectSnapshot) res.write("data: " + reconnectSnapshot + "\n\n");
       return;
@@ -132,7 +139,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         let labels = [];
         let lastMenu;
         tray.popUpContextMenu = menu => { lastMenu = menu; labels = menu.items.map(item => item.label); };
-        const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice);
+        const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
         global.fixture = { tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
@@ -373,6 +380,35 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(exited(second), false);
     events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
     await until(() => exited(second));
+  });
+  await t.test("stalled streams stop capture and reconnect, even when pings arrive before the first snapshot", async () => {
+    const snapshot = JSON.stringify({type: "snapshot", voice: ready});
+    const before = pids().length;
+    const firstStream = connects;
+    events!.write("data: " + snapshot + "\n\n");
+    await until(() => pids().length === before + 1);
+    const active = pids().at(-1)!;
+    try {
+      keepalive = "registry";
+      await new Promise(resolve => setTimeout(resolve, 4 * heartbeatMs));
+      assert.equal(connects, firstStream, "ordinary registry messages keep a quiet voice stream alive");
+      keepalive = "silent";
+      await until(() => exited(active));
+      assert.equal((await read()).mode, "off");
+      keepalive = "ping";
+      await until(() => connects === firstStream + 1);
+      // This stream returns headers and pings, but withholds its snapshot. Only its successor gets one.
+      events!.write("data: " + JSON.stringify({type: "voice_state", state: ready}) + "\n\n");
+      reconnectSnapshot = snapshot;
+      await until(() => connects === firstStream + 2 && pids().length === before + 2);
+      assert.equal((await read()).mode, ready.mode);
+      const recovered = pids().at(-1)!;
+      events!.write("data: " + JSON.stringify({type: "voice_state", state: voiceStateOff()}) + "\n\n");
+      await until(() => exited(recovered));
+    } finally {
+      reconnectSnapshot = undefined;
+      keepalive = "ping";
+    }
   });
   await t.test("malformed events stop the active child and reconnect for a fresh snapshot without another state change", async () => {
     const snapshot = JSON.stringify({type: "snapshot", voice: ready});

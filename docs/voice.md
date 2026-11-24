@@ -25,8 +25,9 @@ app reads the current macOS permission and reports it to the daemon before Setup
 
 On macOS, the daemon publishes its voice port and public TLS certificate in its state directory
 when Voice is enabled. The shell and its listener verify that certificate on their voice
-connections. Losing the connection pauses capture. The shell reads the current daemon identity
-again before resuming from a fresh snapshot.
+connections. Losing the connection pauses capture. The shell reconnects if the initial snapshot
+takes over 30 seconds, or if an established stream delivers neither events nor pings for 45 seconds.
+It reads the current daemon identity again before resuming from a fresh snapshot.
 
 You can minimize the window while speaking. The menu-bar microphone means listening, and a
 struck microphone means muted or unavailable. Right-click for the status and existing app

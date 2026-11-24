@@ -1,6 +1,7 @@
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { ServerEvent } from "@shared/types.ts";
+import { EVENT_STREAM_HEARTBEAT_MS } from "@shared/daemon-protocol.ts";
 import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
 import { endedOnShutdown } from "./http-shutdown.ts";
@@ -25,8 +26,6 @@ function snapshotRepoIndexIdentity(): { repoIndexIdentity: string } {
   }
 }
 
-const HEARTBEAT_MS = 15000;
-
 interface RegistryEventStream {
   readonly aborted: boolean;
   writeSSE(message: { data: string; event?: string }): Promise<unknown>;
@@ -35,7 +34,7 @@ interface RegistryEventStream {
 
 /**
  * SSE endpoint. On connect it sends a full `snapshot`, then streams every
- * registry event as it happens. A periodic comment heartbeat keeps the
+ * registry event as it happens. A periodic ping event keeps the
  * connection alive through proxies and lets us notice a dropped client.
  */
 export function sseHandler(registry: Registry) {
@@ -87,7 +86,7 @@ export async function streamRegistryEvents(
         // Wait for an event or the heartbeat interval, whichever first.
         await new Promise<void>((resolve) => {
           wake = resolve;
-          unref(setTimeout(resolve, HEARTBEAT_MS));
+          unref(setTimeout(resolve, EVENT_STREAM_HEARTBEAT_MS));
         });
         wake = null;
         if (queue.length === 0 && !stream.aborted) {

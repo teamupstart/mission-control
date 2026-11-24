@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
+import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
 import { logMain } from "./main-log.ts";
 import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
@@ -22,7 +23,7 @@ const ShellVoiceStateSchema = z.object({
 export type ShellVoiceState = z.infer<typeof ShellVoiceStateSchema>;
 
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
-export function startShellVoice(binary: string, onState: (state: ShellVoiceState) => void) {
+export function startShellVoice(binary: string, onState: (state: ShellVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS) {
   let connection: ReturnType<typeof desktopVoiceConnection>;
   const listener = nativeVoiceListener(binary, () => {
     if (!connection) throw new Error("Voice listener has no daemon connection");
@@ -30,6 +31,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
   });
   let stream: EventSource | undefined;
   let hasSnapshot = false;
+  let streamDeadline: NodeJS.Timeout | undefined;
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
   let state: ShellVoiceState = voiceStateOff();
@@ -114,7 +116,9 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     void sync();
   }
   function disconnect() {
+    clearTimeout(streamDeadline);
     if (stream) {
+      stream.removeEventListener("ping", noteActivity);
       stream.onmessage = stream.onerror = null;
       stream.close();
       stream = undefined;
@@ -123,6 +127,10 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     connection = undefined;
     hasSnapshot = false;
     reportFailed = false;
+  }
+  function noteActivity() {
+    // Pings and incremental updates cannot extend the initial snapshot deadline.
+    if (hasSnapshot) streamDeadline?.refresh();
   }
   function requestSnapshot() {
     disconnect();
@@ -145,8 +153,12 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       : ("state" in message && message.state);
     const parsed = ShellVoiceStateSchema.safeParse(payload);
     if (!parsed.success) { requestSnapshot(); return; }
-    if (message.type === "snapshot") hasSnapshot = true;
-    if (!hasSnapshot) return;
+    if (!hasSnapshot) {
+      if (message.type !== "snapshot") return;
+      hasSnapshot = true;
+      clearTimeout(streamDeadline);
+      streamDeadline = setTimeout(requestSnapshot, 3 * heartbeatMs);
+    }
     reconnectDelay = 500;
     update(parsed.data);
   }
@@ -159,7 +171,9 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     stream = new EventSource(current.origin + "/events", {
       fetch: (_url, options) => current.request("/events", options),
     });
-    stream.onmessage = ({data}) => receive(data);
+    streamDeadline = setTimeout(requestSnapshot, 2 * heartbeatMs);
+    stream.addEventListener("ping", noteActivity);
+    stream.onmessage = ({data}) => { noteActivity(); receive(data); };
     // A replacement daemon has its own key. Re-read its local identity on every reconnect.
     stream.onerror = requestSnapshot;
   }

@@ -309,7 +309,7 @@ const server = new McpServer(
 );
 
 server.registerTool("list_workflow_runs", {
-  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
+  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires a read-only inspection or session-control grant. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
   inputSchema: ListWorkflowRunsSchema,
 }, async (input) => {
   try {
@@ -321,7 +321,7 @@ server.registerTool("list_workflow_runs", {
 });
 
 server.registerTool("get_workflow_run", {
-  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires the operator's Control other sessions opt-in on your session. Returns IDs needed by trigger_workflow_action.",
+  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires a read-only inspection or session-control grant. Returns IDs needed by trigger_workflow_action.",
   inputSchema: GetWorkflowRunSchema,
 }, async ({ runId }) => {
   try {
@@ -333,7 +333,7 @@ server.registerTool("get_workflow_run", {
 });
 
 server.registerTool("read_workflow_command_output", {
-  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires a read-only inspection or session-control grant.",
   inputSchema: ReadWorkflowCommandOutputMcpSchema,
 }, async (input) => {
   try {
@@ -393,7 +393,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires an operator grant for read-only inspection or Control other sessions on THIS session. Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {

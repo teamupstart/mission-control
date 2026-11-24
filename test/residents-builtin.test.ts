@@ -95,7 +95,10 @@ test("Bug Fix Inspector ships with a fixed 45-minute cadence and rolling $20 gua
   assert.deepEqual(execution, { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" });
   assert.deepEqual([loop.delaySeconds, loop.minDelaySeconds, loop.maxDelaySeconds], [2700, 2700, 2700]);
   assert.equal(loop.spendCapUsd, 20);
-  assert.equal(authority.controlOtherSessions, true);
+  assert.match(inspector.settings.instructions.markdown, /last successfully inspected time/);
+  assert.match(inspector.settings.instructions.markdown, /retry the oldest uncovered interval first/);
+  assert.equal(authority.inspectOtherSessions, true);
+  assert.equal(authority.controlOtherSessions, false);
   assert.equal(manager().settingsProblem(inspector.settings), null);
 });
 

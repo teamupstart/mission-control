@@ -266,6 +266,9 @@ test("Bug Fix Inspector offers optional GitHub reporting with fixed loop guardra
   }
   await expect(editor.getByLabel("Spend per 24 hours (USD)", { exact: true })).toHaveValue("20");
   await capture(editor.getByRole("region", { name: "Loop and guardrails", exact: true }), "11-inspector-cadence");
+  await expect(editor.getByRole("checkbox", { name: "Control other sessions" })).not.toBeChecked();
+  await expect(editor).toContainText("read-only inspection of other sessions and workflows");
+  await capture(editor.getByRole("region", { name: "Authority", exact: true }), "15-inspector-authority");
   await capture(editor.getByRole("region", { name: "Identity", exact: true }), "12-inspector-profile");
 });
 

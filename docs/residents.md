@@ -70,7 +70,7 @@ Mission Control installs these optional profiles. Choose **Launch** to start one
 | Resident | What it does |
 |---|---|
 | Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
-| Bug Fix Inspector | Helps improve Mission Control over time by checking recent logs, sessions, and workflows for bugs affecting users. It runs Claude Sonnet 5.5 at extra-high effort, waits 45 minutes between automatic passes, and has a $20 spend cap per rolling 24 hours. Its desktop launch requests **Control other sessions** for cross-session reads. Its instructions limit it to investigation and reporting. |
+| Bug Fix Inspector | Helps improve Mission Control over time by checking recent logs, sessions, and workflows for bugs affecting users. It runs Claude Sonnet 5.5 at extra-high effort, waits 45 minutes between automatic passes, and has a $20 spend cap per rolling 24 hours. A desktop Launch click grants read-only access to other sessions and workflows. The grant cannot steer sessions or change their workflows. It resumes inspection from a separate checkpoint for each source after an outage. |
 
 The inspector checks spend before each automatic pass. For example, if a turn starts at $19.50 and costs $1, the run records $20.50 and pauses at the next wake. Resume becomes available when enough spend leaves the rolling window.
 

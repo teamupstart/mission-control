@@ -221,6 +221,12 @@ its own. It lets the operator's **Launch** or **Restart on new profile** click i
 app give a resident run the grant above. Restart authorizes the replacement launch, never
 copies the old run's grant.
 
+Bug Fix Inspector uses the same trusted launch click with a read-only scope pinned to its profile
+revision. The Registry binds that scope to the same identity and restores it on the same terms.
+It permits cross-session reads of sessions, transcripts, workflow runs and command output.
+Delegated session actions and workflow mutations require a separate full control grant.
+The session control menu shows **Read-only** and **Off** revokes the grant.
+
 - **The click.** Inside the click, before the launch request is sent, the dashboard arms a
   single-use authorization bound to that launch's request id, the profile id and the profile
   revision. It uses the same private preload capability and trusted-click check as the session
@@ -258,8 +264,8 @@ from the standalone browser, the Residents dock and the Console band say so afte
 the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
-are available without the grant; cross-session access requires **Control other sessions** on
-the caller. The daemon checks binding session and conversation identity, filters ownership
+are available without a grant. Cross-session reads accept either read-only inspection or
+**Control other sessions**. Cross-session actions require **Control other sessions**. The daemon checks binding session and conversation identity, filters ownership
 before list pagination, and checks both ends of reattachment plus delivery packet destinations.
 Unknown or historical targets require delegation. The shared machine token alone grants no
 workflow MCP access. Existing manager checks still enforce submission/run matching, replay keys,

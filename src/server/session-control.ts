@@ -1,3 +1,4 @@
+import type { SessionGrantScope } from "@shared/residents.ts";
 import { isActiveTask } from "@shared/task-status.ts";
 import { hasBlocker } from "@shared/session.ts";
 import type { SessionAwaiting, SessionBlocker } from "@shared/types.ts";
@@ -40,9 +41,9 @@ export function sessionControlCaller(registry: Registry, credential: string | un
 }
 
 /** Delegation adds the existing operator grant to the same caller identity check. */
-export function sessionController(registry: Registry, credential: string | undefined): string | null {
+export function sessionController(registry: Registry, credential: string | undefined, required: SessionGrantScope = "control"): string | null {
   const caller = sessionControlCaller(registry, credential);
-  return caller && registry.sessionControlEnabled(caller) ? caller : null;
+  return caller && registry.sessionControlEnabled(caller, required) ? caller : null;
 }
 
 /** The list form's compact blocker: enough to correlate, without the Markdown details. */
@@ -209,7 +210,7 @@ export function registerSessionControlRoutes(
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, SessionControlReadSchema);
     if (!parsed.ok) return parsed.res;
-    const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
+    const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER), "read");
     if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
     if (!parsed.data.sessionId) {
       const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping"
@@ -231,7 +232,7 @@ export function registerSessionControlRoutes(
     if (parsed.data.transcript) {
       const result = await app.request(`http://localhost/api/sessions/${encodeURIComponent(session.id)}/transcript?turns=20`, { headers: { host: "localhost" } });
       transcript = await result.json();
-      if (!sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER))) return c.json({ error: "Session control was revoked" }, 403);
+      if (!sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER), "read")) return c.json({ error: "Session control was revoked" }, 403);
     }
     return c.json({ session, reviews, queue: registry.getQueue(session.id), ...(transcript === undefined ? {} : { transcript }) });
   });

@@ -311,6 +311,13 @@ export function ResidentDispatch({
                 </Tooltip>
               </div>
             )}
+            {profile?.settings.authority.inspectOtherSessions && (
+              <p className="field-hint resident-control-note" role="note">
+                {residentLaunchCanGrantControl()
+                  ? "Launch grants read-only access to other sessions and workflows for this run."
+                  : "Read-only inspection of other sessions and workflows requires a desktop Launch click."}
+              </p>
+            )}
             {profile?.settings.authority.controlOtherSessions && (
               <p className="field-hint resident-control-note" role="note">
                 {residentLaunchCanGrantControl()

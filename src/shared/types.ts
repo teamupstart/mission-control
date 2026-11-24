@@ -731,6 +731,7 @@ export interface Session {
   launchWorkUnitId?: string | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  sessionInspectionOnly?: boolean;
   /**
    * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
    * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the

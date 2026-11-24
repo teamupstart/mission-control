@@ -37,6 +37,8 @@ import {
   normalizeRunInstructions,
   residentLaunchInput,
   residentRoleProblem,
+  residentGrantScope,
+  type SessionGrantScope,
   residentRunControlRecorded,
   residentRepoSetProblem,
   residentRunSummary,
@@ -161,7 +163,7 @@ export interface ResidentRegistry {
   sessionControlIdentity(id: string): string | null;
   workEpisodeForSession(id: string): { episodeId: string } | null;
   taskForSession(sessionId: string, cwd: string | null): Task | undefined;
-  setSessionControlEnabled(id: string, enabled: boolean): boolean;
+  setSessionControlEnabled(id: string, enabled: boolean, scope?: SessionGrantScope): boolean;
 }
 
 /**
@@ -173,8 +175,8 @@ export interface ResidentRegistry {
  *   restored session's conversation, working directory, work episode and task all match.
  */
 type GrantWatch =
-  | { taskId: string; kind: "launch" }
-  | { taskId: string; kind: "restore"; recorded: ResidentRunControl };
+  | { taskId: string; kind: "launch"; scope: SessionGrantScope }
+  | { taskId: string; kind: "restore"; scope: SessionGrantScope; recorded: ResidentRunControl };
 
 export interface ResidentManagerDeps {
   registry: ResidentRegistry;
@@ -633,7 +635,7 @@ export class ResidentManager {
     accepted: () => void,
   ): Promise<void> {
     // Authority comes from the run's pinned revision, never the profile as it reads now.
-    if (mayConsumeControlClick && run.settings.authority.controlOtherSessions) {
+    if (mayConsumeControlClick && residentGrantScope(run.settings.authority)) {
       await this.consumeLaunchClick(run);
     }
     await this.createAndSettle(run, request, accepted);
@@ -674,10 +676,11 @@ export class ResidentManager {
     } catch (error) {
       console.error(`[residents] could not consume the Launch click for resident run ${run.id}:`, error);
     }
-    if (!authorized) return;
+    const scope = residentGrantScope(run.settings.authority);
+    if (!authorized || !scope) return;
     try {
       if (recordResidentRunControlAuthorized(run.id, this.now())) {
-        this.grantWatches.set(run.id, { taskId: run.taskId, kind: "launch" });
+        this.grantWatches.set(run.id, { taskId: run.taskId, kind: "launch", scope });
       }
     } catch (error) {
       console.error(`[residents] could not record the Launch click for resident run ${run.id}; it starts without control:`, error);
@@ -1102,14 +1105,15 @@ export class ResidentManager {
     for (const { run } of listOpenResidentRuns()) {
       if (run.launchState !== "launched") continue;
       if (this.decidedGrants.has(run.id) || this.grantWatches.has(run.id)) continue;
-      if (!residentRunControlRecorded(run.control) || !run.settings.authority.controlOtherSessions) {
+      const scope = residentGrantScope(run.settings.authority);
+      if (!residentRunControlRecorded(run.control) || !scope) {
         if (run.control.authorizedAt !== null) {
           this.decidedGrants.add(run.id);
           clearResidentRunControl(run.id);
         }
         continue;
       }
-      this.grantWatches.set(run.id, { taskId: run.taskId, kind: "restore", recorded: { ...run.control } });
+      this.grantWatches.set(run.id, { taskId: run.taskId, kind: "restore", scope, recorded: { ...run.control } });
     }
     this.applyWaitingGrants();
   }
@@ -1171,16 +1175,16 @@ export class ResidentManager {
       }
       // A grant this restore cannot apply is forgotten too: otherwise a later restart would apply
       // from a record that this one refused.
-      if (!this.deps.registry.setSessionControlEnabled(sessionId, true)) {
+      if (!this.deps.registry.setSessionControlEnabled(sessionId, true, watch.scope)) {
         clearResidentRunControl(runId);
         return;
       }
-      this.logGrant(sessionId, runId, "restore");
+      this.logGrant(sessionId, runId, "restore", watch.scope);
       return;
     }
     // A grant that could not be applied leaves the run with no record at all, so the launch
     // answers - and Dispatch and the dock say - that it started without control.
-    if (!identity || !this.deps.registry.setSessionControlEnabled(sessionId, true)) {
+    if (!identity || !this.deps.registry.setSessionControlEnabled(sessionId, true, watch.scope)) {
       clearResidentRunControl(runId);
       return;
     }
@@ -1194,13 +1198,13 @@ export class ResidentManager {
       clearResidentRunControl(runId);
       throw error;
     }
-    this.logGrant(sessionId, runId, "launch_click");
+    this.logGrant(sessionId, runId, "launch_click", watch.scope);
   }
 
   /** The grant's audit line. Best effort: the grant and its record already agree without it. */
-  private logGrant(sessionId: string, runId: string, source: "launch_click" | "restore"): void {
+  private logGrant(sessionId: string, runId: string, source: "launch_click" | "restore", scope: SessionGrantScope): void {
     try {
-      logEvent(sessionId, this.now(), "session_control_grant", { enabled: true, residentRun: runId, source });
+      logEvent(sessionId, this.now(), "session_control_grant", { enabled: true, residentRun: runId, source, scope });
     } catch (error) {
       console.error(`[residents] could not log the session-control grant for resident run ${runId}:`, error);
     }

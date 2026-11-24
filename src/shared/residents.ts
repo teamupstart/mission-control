@@ -239,8 +239,18 @@ export type ResidentBoardSection = z.infer<typeof ResidentBoardSectionSchema>;
  */
 export const ResidentAuthoritySectionSchema = z.object({
   controlOtherSessions: z.boolean().default(false),
+  inspectOtherSessions: z.boolean().optional(),
+}).refine(value => !(value.controlOtherSessions && value.inspectOtherSessions), {
+  message: "Choose either inspection or control of other sessions",
 });
 export type ResidentAuthoritySection = z.infer<typeof ResidentAuthoritySectionSchema>;
+
+export type SessionGrantScope = "read" | "control";
+
+export function residentGrantScope(authority: ResidentAuthoritySection): SessionGrantScope | null {
+  if (authority.inspectOtherSessions) return "read";
+  return authority.controlOtherSessions ? "control" : null;
+}
 
 /** How many MCP servers one profile may select. */
 export const RESIDENT_MCP_SELECTION_MAX = 32;
@@ -852,7 +862,7 @@ export function residentLaunchSummary(
     settings.execution.model ?? "default model",
     settings.execution.effort ? `${settings.execution.effort} effort` : "default effort",
     residentMcpSummary(settings.mcp, mcpLabels, settings.execution.agent),
-    settings.authority.controlOtherSessions ? "control: on" : "control: off",
+    settings.authority.inspectOtherSessions ? "inspection: read-only" : settings.authority.controlOtherSessions ? "control: on" : "control: off",
   ];
   return parts.join(" · ");
 }

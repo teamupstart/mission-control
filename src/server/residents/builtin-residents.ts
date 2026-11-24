@@ -40,8 +40,7 @@ const BUILTIN_RESIDENT_SETTINGS: Record<string, BuiltinResidentSettings> = {
     mcp: { nativeSources: "pinned" },
     execution: { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" },
     loop: { delaySeconds: 2700, minDelaySeconds: 2700, maxDelaySeconds: 2700, spendCapUsd: 20 },
-    // The read_sessions and cross-session workflow reads share the desktop launch grant.
-    authority: { controlOtherSessions: true },
+    authority: { inspectOtherSessions: true },
   },
   "agent-shepherd": {
     // Preserve this shipped profile’s existing server set when reconciling an upgrade.

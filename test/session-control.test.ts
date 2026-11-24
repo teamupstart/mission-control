@@ -128,6 +128,16 @@ function fixture(
   return { registry, caller, target, other, credential, messages, interrupts, modes, models, efforts, answers, stops, events, refuseStops, sdk, reviews, pending, request, grant, act, headers, agentHeaders, clicks };
 }
 
+test("read-only grant permits session inspection but refuses mutations and can be revoked", async () => {
+  const f = fixture();
+  f.registry.setSessionControlEnabled(f.caller.id, true, "read");
+  assert.equal((await f.request("/mcp/session-control/read", { sessionId: f.target.id })).status, 200);
+  assert.equal((await f.act({ action: "message", text: "must not send" })).status, 403);
+  assert.deepEqual(f.messages, []);
+  await f.grant(false);
+  assert.equal((await f.request("/mcp/session-control/read", {})).status, 403);
+});
+
 test("a headerless local caller cannot enable its own session-control grant", async () => {
   const f = fixture();
   const response = await f.request(`/api/sessions/${f.caller.id}/session-control`, { enabled: true }, f.headers, "PUT");

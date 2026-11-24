@@ -1972,11 +1972,11 @@ async function runReportBug(prompt) {
   ].join("\n\n"));
 }
 
-function reportFixtureBug(title, details) {
+function reportFixtureBug(title, details, expectedTarget) {
   return withMissionMcp(async (request) => {
     const called = await request("tools/call", {
       name: "report_product_issue",
-      arguments: { type: "bug", title, details },
+      arguments: { type: "bug", title, details, expectedTarget },
     });
     const text = called.result?.content?.map((part) => part.text).join("\n") ?? JSON.stringify(called.error ?? called);
     return `report_product_issue answered: ${text}`;
@@ -2331,7 +2331,8 @@ rl.on("line", (line) => {
       && appendedSystemPrompt.includes("report_product_issue")) {
       const finding = /^Fixture finding: (.+)$/m.exec(appendedSystemPrompt);
       if (finding) {
-        beginHeldTurn(reportFixtureBug(finding[1], "Foreman recorded completion twice, but neither attempt submitted the bound workflow."));
+        const searchedRepo = /^Fixture searched repository: (.+)$/m.exec(appendedSystemPrompt);
+        beginHeldTurn(reportFixtureBug(finding[1], "Foreman recorded completion twice, but neither attempt submitted the bound workflow.", searchedRepo?.[1]));
         return;
       }
     }

@@ -1332,7 +1332,11 @@ server.registerTool(
       "asked you to report it. Mission Control shows the exact public content in the dashboard " +
       "and BLOCKS until the human selects Submit public issue or dismisses it. Optional screenshot " +
       "upload ids must come from Mission Control and require GitHub CLI 2.99.0 or newer.",
-    inputSchema: ProductIssueDraftSchema.shape,
+    inputSchema: {
+      ...ProductIssueDraftSchema.shape,
+      expectedTarget: z.string().min(1).max(140).optional()
+        .describe("GitHub owner/repository already checked for duplicates. A mismatch stops the report before approval."),
+    },
   },
   async (draft, extra) => {
     try {

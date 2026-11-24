@@ -292,12 +292,29 @@ test("Bug Fix Inspector offers optional GitHub reporting with fixed loop guardra
   expect(refused.status()).toBe(404);
 });
 
+test("the inspector asks for a fresh duplicate search when the searched repository differs from the preview", async ({ dashboard, daemon }) => {
+  await inspectorPreview(daemon, true);
+  writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
+  const launch = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
+    data: { repoRoot: null, instructions: "Fixture finding: Missing workflow submission\nFixture searched repository: acme/previous-tracker", requestId: "inspector-stale-target" },
+  });
+  expect(launch.ok(), await launch.text()).toBe(true);
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail).toContainText("search the current destination for duplicates", { timeout: 30_000 });
+  await expect(detail.getByRole("button", { name: "to review" })).toHaveCount(0);
+  await capture(detail, "16-inspector-tracker-changed");
+  expect(recordsIn<{ argv: string[] }>(daemon.recordDir, file => file.startsWith("gh-"))
+    .filter(({ argv }) => argv[0] === "issue" && argv[1] === "create")).toHaveLength(0);
+});
+
 test("a launched Bug Fix Inspector receives a GitHub issue URL only after approval of its finding", async ({ dashboard, daemon }) => {
   await inspectorPreview(daemon, true);
   const finding = "Finished task leaves its bound workflow unsubmitted";
   writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
   const launch = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
-    data: { repoRoot: null, instructions: `Fixture finding: ${finding}`, requestId: "inspector-report" },
+    data: { repoRoot: null, instructions: `Fixture finding: ${finding}\nFixture searched repository: acme/public-issues`, requestId: "inspector-report" },
   });
   expect(launch.ok(), await launch.text()).toBe(true);
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);

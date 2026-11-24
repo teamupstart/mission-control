@@ -97,6 +97,10 @@ test("Bug Fix Inspector ships with a fixed 45-minute cadence and rolling $20 gua
   assert.equal(loop.spendCapUsd, 20);
   assert.match(inspector.settings.instructions.markdown, /last successfully inspected time/);
   assert.match(inspector.settings.instructions.markdown, /retry the oldest uncovered interval first/);
+  assert.match(inspector.settings.instructions.markdown, /only live sessions and returns at most the latest 20 transcript turns/);
+  assert.match(inspector.settings.instructions.markdown, /record the source, time range and reason as unavailable/);
+  assert.match(inspector.settings.instructions.markdown, /stop retrying it, and continue/);
+  assert.match(inspector.settings.instructions.markdown, /`expectedTarget` set to the exact owner\/repository you searched/);
   assert.equal(authority.inspectOtherSessions, true);
   assert.equal(authority.controlOtherSessions, false);
   assert.equal(manager().settingsProblem(inspector.settings), null);

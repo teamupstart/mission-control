@@ -112,3 +112,29 @@ for (const asyncCapable of [false, true]) {
     }
   });
 }
+
+test("after restart a settled voice filing returns a conflict to legacy polls and its receipt to compatible polls", async () => {
+  const ask = reviews.create(sessionId, "input", "Which revision?", "Choose one.", null, { snoozable: true });
+  const call = reviews.wait(ask.id, 1000, undefined, true);
+  assert.ok(reviews.convertToFiled(ask.id));
+  const receipt = (await call)?.converted;
+  assert.deepEqual(receipt, { receipt: asyncInputReceipt(ask) });
+  reviews.resolve(ask.id, "answer", "revision two");
+
+  const { Registry } = await import("../src/server/registry.ts");
+  const { ReviewManager } = await import("../src/server/reviews.ts");
+  const { buildApp } = await import("../src/server/routes.ts");
+  const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
+  const { QueueManager } = await import("../src/server/queue.ts");
+  const restored = new Registry();
+  assert.equal(restored.getReview(ask.id), undefined);
+  const daemon = buildApp({ registry: restored, reviews: new ReviewManager(restored),
+    tasks: new TaskManager(restored), queues: new QueueManager(restored) });
+  const poll = (query: string) => daemon.request(`/mcp/reviews/${ask.id}/wait${query}`, { headers: { "x-harness-token": token } });
+  const legacy = await poll("");
+  assert.equal(legacy.status, 409);
+  assert.match((await legacy.json()).error, /already filed by voice/);
+  const compatible = await poll("?convertible=1");
+  assert.equal(compatible.status, 200);
+  assert.deepEqual((await compatible.json()).converted, receipt);
+});

@@ -907,14 +907,12 @@ export class ReviewManager {
    */
   wait(id: string, timeoutMs: number, signal?: AbortSignal, convertible = false): Promise<ReviewWaitResponse | null> {
     const current = this.registry.getReview(id);
-    if (!convertible && current?.filedByVoiceAt != null) return Promise.reject(new VoiceFiledCallRefusal(id));
-    if (convertible) {
-      // A settled ask can be absent from the registry after restart. Its answer already
-      // belongs to the outbox, so the retry still returns the original filing receipt.
-      const review = current ?? loadReview(id);
-      if (review?.waitMode === "message" && review.filedByVoiceAt != null) {
-        return Promise.resolve(convertedResponse(review));
-      }
+    // Settled asks can be absent from the registry after restart. Their voice filing
+    // still owns both the receipt and the route by which the human answer is delivered.
+    const review = current ?? loadReview(id);
+    if (review?.waitMode === "message" && review.filedByVoiceAt != null) {
+      if (!convertible) return Promise.reject(new VoiceFiledCallRefusal(id));
+      return Promise.resolve(convertedResponse(review));
     }
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);

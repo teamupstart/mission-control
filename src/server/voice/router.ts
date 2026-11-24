@@ -317,7 +317,8 @@ export class VoiceRouter {
             candidates: [...new Set([target, ...decision.splits.map(s => s.target)])] };
           entry.matchedName = target.name;
           this.closeChoices(item);
-          item.card = { ...item.card, parts: [{ ...item.card.parts[0]!, target }], candidates: decision.candidates.map(agentRow) };
+          item.card = { ...item.card, reason: decision.reason,
+            parts: [{ ...item.card.parts[0]!, target }], candidates: decision.candidates.map(agentRow) };
           if (item.resolvingVisible) {
             this.publish(item.card);
             if (this.open.get(id) !== item) return;

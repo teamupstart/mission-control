@@ -1100,14 +1100,18 @@ test("the resolving event and reconnect snapshot agree while the second model ca
   try {
     const latest = cards.at(-1)!;
     assert.equal(latest.state, "resolving");
+    assert.equal(latest.reason, "second-name");
     assert.equal(latest.parts[0]?.target?.name, "Steve");
     assert.deepEqual(latest.candidates.map(c => c.title), ["Steve", "Alice"]);
     assert.deepEqual(router.activeCards(), [latest]);
     assert.equal(original.parts[0]?.target, null);
   } finally {
-    chooseSplit(answered("split"));
+    chooseSplit(answered(null));
     await router.resolution("visible");
   }
+  assert.equal(cards.at(-1)?.state, "unsure");
+  assert.equal(cards.at(-1)?.reason, "second-name");
+  assert.deepEqual(router.activeCards(), [cards.at(-1)]);
 });
 
 test("a split consumes comma-adjacent wrappers around the second address", async (t) => {
@@ -1118,5 +1122,17 @@ test("a split consumes comma-adjacent wrappers around the second address", async
     await say(`Steve, check the build,${address} review the PR`, id);
     assert.ok(await router.sendNow(id));
     assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", id], ["Alice", "review the PR", id + "#2"]], address);
+  }
+});
+
+test("a manual split preserves a detached closing quote from the first command", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  for (const first of ['type "hello "', "type 'hello '", "type 'don't stop '"]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${first} Alice, review the PR`, id);
+    assert.ok(await router.pick(id, "task:Alice"));
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
   }
 });

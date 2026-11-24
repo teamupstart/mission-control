@@ -160,6 +160,24 @@ function tokensIn(span: string, offset: number): Token[] {
     .filter(({ raw }) => normalized(raw));
 }
 
+/** Straight quotes can close the first command or open a quoted second address. */
+function closingMessageQuotes(body: string, offset: number): Set<number> {
+  const closers = new Set<number>();
+  let open = "";
+  for (const { 0: mark, index } of body.matchAll(/\\[\s\S]|["']/gu)) {
+    if (mark.length !== 1) continue; // Escaped character.
+    if (mark === "'" && /[\p{L}\p{N}]/u.test(body[index - 1] ?? "") &&
+        (!open || /[\p{L}\p{N}]/u.test(body[index + 1] ?? ""))) continue; // Possessive or contraction.
+    if (mark === open) {
+      closers.add(offset + index);
+      open = "";
+    } else if (!open) {
+      open = mark;
+    }
+  }
+  return closers;
+}
+
 // A comma can fall inside a quoted address (“Will,”) or before a quoted message (Will,"go").
 function messageAfterAddress(text: string, start: number, end: number): { body: string; offset: number; wrappersClosed: boolean } {
   const rest = text.slice(end).trimStart();
@@ -275,6 +293,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   // target stays fixed whichever it is: the model is asked split or mention, never who.
   const splitCandidates = new Set([target]);
   const splits: VoiceSplitPoint[] = [];
+  const closingQuotes = closingMessageQuotes(body, offset);
   for (let i = count; i < tokens.length; i++) {
     const at = tokens[i]!;
     const laterNames = namesStartingAt(text, at, tokens[i + 1]);
@@ -285,7 +304,12 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       if (!matches.length) continue;
       const preceding = text.slice(offset, at.index);
       const wrappers = preceding.match(/(?:^|[,\s])([\p{Ps}\p{Pi}"'\s]+)$/u)?.[1] ?? "";
-      const addressStart = at.index - wrappers.length;
+      const wrapperStart = at.index - wrappers.length;
+      let addressStart = wrapperStart;
+      for (const mark of wrappers.matchAll(/["']/gu)) {
+        const index = wrapperStart + mark.index;
+        if (closingQuotes.has(index)) addressStart = index + 1;
+      }
       const head = splitHead(text.slice(offset, addressStart));
       const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
       const tail = second.body.trim();

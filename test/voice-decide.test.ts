@@ -581,17 +581,17 @@ for (const choice of ["split", null]) {
     let finish!: (result: VoiceDecisionResult) => void;
     const { router, cards, delivered } = routerRig(() => new Promise(resolve => { finish = resolve; }));
     t.after(() => router.reset());
-    const accept = (id: string, text: string, capturedAt = 100) => router.accept(VoiceUtteranceSchema.parse({
+    const accept = (id: string, text: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
       id, text, capturedAt, backend: "fluidaudio",
     }));
     await accept("older", SPLIT.text, 101);
     const original = router.pendingVoiceActions[0];
-    assert.equal(original?.openedAt, 100);
-    await accept("newer", "Will, check the queue");
+    assert.equal(original?.openedAt, 101);
+    await accept("newer", "Will, check the queue", 102);
     finish(answered(choice));
     await router.resolution("older");
     assert.equal(cards.at(-1)?.state, choice ? "pending" : "unsure");
-    await accept("cancel", "cancel");
+    await accept("cancel", "cancel", 103);
     assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["newer", "cancelled"]);
     assert.equal(router.pendingVoiceActions[0], original);
     assert.equal(await router.sendNow("newer"), false);

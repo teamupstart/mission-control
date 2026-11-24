@@ -97,7 +97,7 @@ test("only the selected live recognizer can open or cancel a card after switchin
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["pending", "pending"], ["pending", "cancelled"]]);
 });
 
-test("future captures beyond clock tolerance are dropped and a tolerated capture can be cancelled immediately", async (t) => {
+test("future captures beyond clock tolerance are dropped and a cancel on the same listener clock can act immediately", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const unsure = capture("Steven ask Will about the build", "clock");
@@ -107,8 +107,27 @@ test("future captures beyond clock tolerance are dropped and a tolerated capture
   assert.equal(cards.length, 0);
   assert.deepEqual(await (await postAt(now + 1000)).json(), { accepted: true });
   await resolved(unsure.id);
-  await say("cancel");
+  await post("/voice/utterances", { ...capture("cancel"), capturedAt: now + 1000 }, token);
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["clock", "unsure"], ["clock", "cancelled"]]);
+});
+
+test("a listener clock ahead of the daemon preserves out-of-order cancel and pick eligibility", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const postAt = (id: string, text: string, offset: number) =>
+    post("/voice/utterances", { ...capture(text, id), capturedAt: now + offset }, token);
+  await postAt("older", "Will discard this", 100);
+  await postAt("newer", "Will keep this", 500);
+  assert.equal(cards.at(-1)?.deadline, now + 1000);
+  await postAt("delayed-cancel", "cancel", 300);
+  assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["older", "cancelled"]);
+  await postAt("unsure", "Steven ask Will about the build", 700);
+  await resolved("unsure");
+  await postAt("delayed-pick", "Will", 600);
+  assert.deepEqual(registry.snapshot().voiceCards?.map((card) => [card.id, card.state]), [["newer", "pending"], ["unsure", "unsure"]]);
+  assert.deepEqual((await readHeard()).map((entry) => [entry.id, entry.time - now]), [
+    ["unsure", 700], ["delayed-pick", 600], ["newer", 500], ["delayed-cancel", 300], ["older", 100],
+  ]);
 });
 
 test("capture IDs must address a single card action URL segment", async () => {
@@ -286,13 +305,16 @@ test("extra message punctuation is queued verbatim and cannot turn stop into an 
 
 test("space before an address's closing quote preserves bare and quoted stop behavior", async () => {
   const before = interrupts.length;
-  await say("“Will, ” stop", "address-quote");
-  assert.equal((await act("address-quote", "send-now")).status, 200);
-  assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  for (const text of ["“Will, ” stop", "“ Will ” , stop"]) {
+    const id = randomUUID();
+    await say(text, id);
+    assert.equal((await act(id, "send-now")).status, 200);
+  }
+  assert.deepEqual(interrupts.slice(before), ["sdk:Will", "sdk:Will"]);
   await say("“Will, ” “stop”", "message-quote");
   assert.equal((await act("message-quote", "send-now")).status, 200);
   assert.deepEqual([cards.at(-1)?.state, queued("Will").at(-1)], ["queued", "“stop”"]);
-  assert.equal(interrupts.length, before + 1);
+  assert.equal(interrupts.length, before + 2);
 });
 
 test("a later mention of Steve opens a pending card for Will and queues the entire message to Will alone", async () => {

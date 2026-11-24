@@ -85,6 +85,8 @@ export class VoiceStateStore {
   private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
+  // A capture-on response already delivered to this lease owner can still be in use.
+  private captureGrant?: { owner: string; pauseRevision?: string };
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
@@ -162,14 +164,30 @@ export class VoiceStateStore {
   directiveFor(instance?: string, state = this.state()): VoiceListenerDirective {
     const speak = this.manager?.speak(instance);
     const base = this.directive(state);
-    return speak ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
+    return speak && ("stop" in speak || !this.capturePausePending)
+      ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
   }
 
   drainingRevisions() { return [...this.releases.keys()]; }
 
-  captureServed(revision: string) {
+  get capturePausePending() { return this.ownsCapture(this.captureGrant?.owner); }
+
+  acknowledgeDirective(owner: string | undefined, revision: string | undefined) {
+    if (revision && this.ownsCapture(owner) && this.captureGrant?.owner === owner && this.captureGrant?.pauseRevision === revision) {
+      this.captureGrant = undefined;
+      if (this.manager?.held) this.publish();
+    }
+  }
+
+  directiveServed(owner: string | undefined, directive: VoiceListenerDirective) {
+    if (!owner || !this.ownsCapture(owner)) return;
+    if (!directive.capture) {
+      if (this.captureGrant?.owner === owner) this.captureGrant.pauseRevision = directive.revision;
+      return;
+    }
+    this.captureGrant = { owner };
     const last = this.lastDirective;
-    if (!last?.directive.capture || last.directive.revision !== revision || last.issuedAt !== undefined) return;
+    if (!last?.directive.capture || last.directive.revision !== directive.revision || last.issuedAt !== undefined) return;
     last.issuedAt = (this.deps.wallNow ?? Date.now)();
     this.manager?.captureGranted(last.issuedAt);
   }
@@ -329,6 +347,7 @@ export class VoiceStateStore {
     }
     // A denied helper exits immediately. Keep its permission reading but release its capture.
     const nextOwnerId = hello.microphone === "denied" ? null : id;
+    if (!ownerId || ownerId !== nextOwnerId) this.captureGrant = undefined;
     if (!ownerId || ownerId !== nextOwnerId || live?.hello.backend !== hello.backend) {
       this.lastDirective = undefined;
       this.releases.clear();
@@ -430,6 +449,7 @@ export class VoiceStateStore {
     this.releases.clear();
     this.latestRelease = undefined;
     this.lastDirective = undefined;
+    this.captureGrant = undefined;
     this.hello = null;
     this.refused = null;
     this.report = null;

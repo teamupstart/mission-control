@@ -66,6 +66,11 @@ function player(owner: string = listenerId, server = app) {
     instance, urls, request, hello, report, supervisor,
     async announce() { assert.equal((await report("started")).status, 200); },
     async poll(header: string | null = instance) { return (await request("/voice/listener/directive", undefined, header)).json(); },
+    async pickup() {
+      const first = await (await request("/voice/listener/directive")).json();
+      if (first.speak || first.capture) return first;
+      return (await request("/voice/listener/directive?revision=" + first.revision)).json();
+    },
     event(id: string, type: "ended" | "started") {
       return request("/voice/speech/jobs/" + id + "/events", { type, ...(type === "ended" && { outcome: "finished" }) });
     },
@@ -138,7 +143,7 @@ test("timers request a stop, only the capture owner logs playback-time utterance
   assert.equal(job.state, "timed-out");
   assert.equal((await holder.poll()).capture, true);
   const second = await audition();
-  assert.equal((await holder.poll()).speak.id, second);
+  assert.equal((await holder.pickup()).speak.id, second);
   await holder.event(second, "ended");
   assert.equal((await holder.poll()).capture, true);
   assert.deepEqual(await (await holder.request("/voice/utterances", { ...capture("Steve delayed"), capturedAt: at })).json(), { accepted: false });
@@ -189,6 +194,32 @@ test("a playback hold grants directive access only to the lease owner or job hol
   assert.equal((await peer.poll()).speak, null);
   await holder.event(id, "ended");
   assert.equal((await peer.poll()).capture, true);
+});
+
+test("only the capture owner's acknowledgement of the paused directive enables playback", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const grant = await holder.poll();
+  assert.equal(grant.capture, true);
+  const id = await audition();
+  const pause = await (await holder.request("/voice/listener/directive?revision=" + grant.revision)).json();
+  assert.equal(pause.capture, false);
+  assert.equal(pause.speak, null);
+  assert.deepEqual(entries(), [{ jobId: id, instance: holder.instance, purpose: "audition" }]);
+  assert.equal((await holder.event(id, "started")).status, 409);
+  assert.equal((await peer.request("/voice/listener/directive?revision=" + pause.revision)).status, 409);
+  assert.equal((await holder.poll()).speak, null);
+  const allowed = await (await holder.request("/voice/listener/directive?revision=" + pause.revision)).json();
+  assert.equal(allowed.capture, false);
+  assert.equal(allowed.speak.id, id);
+  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.equal((await holder.event(id, "ended")).status, 200);
+  assert.equal((await holder.poll()).capture, true);
+  const second = await audition();
+  assert.equal((await holder.poll()).speak, null);
+  await holder.request("/api/voice/speech/stop", { id: second });
+  assert.deepEqual((await holder.poll()).speak, { id: second, stop: true });
+  assert.equal((await holder.event(second, "ended")).status, 200);
 });
 
 test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
@@ -419,7 +450,7 @@ test("handoff waits for staged files and their directories to sync, including on
     stages.length = 0;
     const id = await audition();
     assert.deepEqual(stages, ["staged file", "publish marker", "state home", "staged file", "publish hold", "voice directory", "state home"]);
-    assert.equal((await p.poll()).speak.id, id);
+    assert.equal((await p.pickup()).speak.id, id);
     assert.equal((await p.event(id, "ended")).status, 200);
   } finally {
     syncHook.mock.restore(); syncBuiltinESMExports();
@@ -468,6 +499,7 @@ test("a linked state home permits fresh capture and recovers playback in its con
   assert.equal((await holder.poll()).capture, true);
   await holder.announce(); await holder.hello();
   const id = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
+  assert.equal((await holder.pickup()).speak.id, id);
   assert.equal((await holder.event(id, "started")).status, 200);
   assert.equal(JSON.parse(readFileSync(join(backing, "voice", "speech-holds.json"), "utf8"))[0].jobId, id);
   state.reset(); await holder.hello();
@@ -633,7 +665,7 @@ test("a delayed signed start cannot revive a launch after exit, including across
   const next = player();
   await next.announce(); await next.hello();
   const nextJob = await audition();
-  assert.equal((await next.poll()).speak.id, nextJob);
+  assert.equal((await next.pickup()).speak.id, nextJob);
   assert.equal((await next.event(nextJob, "ended")).status, 200);
 });
 
@@ -1613,7 +1645,10 @@ test("holder confirmation records the same deadline outcome before or after the 
     for (const [elapsed, runTimer] of [[limit - 1, false], [limit, false], [limit + 1, false], [limit, true]] as const) {
       await holder.hello();
       const id = await audition();
-      if (started) await holder.event(id, "started");
+      if (started) {
+        assert.equal((await holder.pickup()).speak.id, id);
+        assert.equal((await holder.event(id, "started")).status, 200);
+      }
       assert.equal((await holder.poll()).capture, false);
       if (runTimer) t.mock.timers.tick(elapsed);
       else t.mock.timers.setTime(Date.now() + elapsed);
@@ -2034,8 +2069,11 @@ test("only the holder can fetch prepared audio, until stopping, completion or th
   registerVoiceRoutes(server, s);
   const holder = player(listenerId, server), other = player(crypto.randomUUID(), server);
   await holder.announce(); await holder.hello();
+  assert.equal((await holder.poll()).capture, true);
   const id = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
   const path = "/voice/speech/jobs/" + id + "/audio";
+  assert.equal((await holder.request(path)).status, 404);
+  assert.equal((await holder.pickup()).speak.id, id);
   assert.equal(await (await holder.request(path)).text(), "RIFF");
   assert.equal((await other.request(path)).status, 404);
   assert.equal((await server.request(path + "?instance=" + holder.instance, { headers: { "x-harness-token": token } })).status, 404);

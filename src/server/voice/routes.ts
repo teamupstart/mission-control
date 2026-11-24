@@ -312,6 +312,7 @@ export function registerVoiceRoutes(
   });
   app.get("/voice/speech/jobs/:id/audio", gate, c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    if (store.capturePausePending) return c.notFound();
     const wav = store.speech.audio(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER));
     if (!wav) return c.notFound();
     return c.body(wav, 200, { "Content-Type": "audio/wav", "Cache-Control": "no-store" });
@@ -326,9 +327,10 @@ export function registerVoiceRoutes(
     if (disabled && (parsed.data.type !== "ended" || !store.disabledSpeech()?.held)) return disabled;
     const event = parsed.data;
     const result = store.speech.event(c.req.param("id"), c.req.header(VOICE_INSTANCE_HEADER), event.type,
-      event.type === "ended" ? event.outcome : undefined);
+      event.type === "ended" ? event.outcome : undefined, store.capturePausePending);
     if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
     if (result === "stopping") return c.json({ ok: false, speak: { id: c.req.param("id"), stop: true } }, 409);
+    if (result === "capture_active") return c.json({ ok: false, error: "capture_active" }, 409);
     const ok = result === "accepted";
     return c.json({ ok }, ok ? 200 : 409);
   });
@@ -339,6 +341,7 @@ export function registerVoiceRoutes(
     const refusal = directiveRefusal(c);
     if (refusal) return refusal;
     const instance = c.req.header(VOICE_INSTANCE_HEADER);
+    store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"));
     const current = store.directiveFor(instance);
     const signal = c.req.raw.signal;
     if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal, instance);
@@ -357,7 +360,7 @@ export function registerVoiceRoutes(
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
       c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
     }
-    if (next.capture && !c.req.raw.signal.aborted) store.captureServed(next.revision);
+    if (!c.req.raw.signal.aborted) store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next);
     return c.json(next);
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {

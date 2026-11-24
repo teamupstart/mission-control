@@ -305,12 +305,14 @@ export class VoiceSpeechManager {
     for (const { job } of this.items()) if (job.cardId === id) this.stop(job.id);
   }
 
-  event(id: string, instance: string | undefined, type: "started" | "ended", outcome: "finished" | "stopped" | "failed" = "finished") {
+  event(id: string, instance: string | undefined, type: "started" | "ended", outcome: "finished" | "stopped" | "failed" = "finished",
+    capturePausePending = false) {
     const item = this.jobs.get(id);
     if (!instance || item?.job.holder !== instance) return "not_holder";
     this.checkPlaybackDeadline(item);
     if (type === "ended") return this.finish(item, item.onStop ?? outcome) ? "accepted" : "hold_unavailable";
     if (item.job.state === "stopping") return "stopping";
+    if (capturePausePending) return "capture_active";
     if (item.job.state === "ready") {
       item.job.state = "speaking";
       this.armPlayback(item, item.job.durationMs === null ? VOICE_SPEECH_SYSTEM_LIMIT_MS : item.job.durationMs + VOICE_SPEECH_END_MARGIN_MS);

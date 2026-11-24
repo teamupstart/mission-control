@@ -27,6 +27,7 @@ test("Ask aloud follows the player, and Stop and the time limit wait for silence
       await speaker.say("Steven ask Will about the deployment");
       await expect(asking).toBeVisible();
       await expect.poll(() => speaker.playing).toBe(true);
+      expect(speaker.capturing).toBe(false);
       await expect(asking).toContainText("Steve or Will?");
       await expect(asking).toContainText(heldHint);
       if (completion === "finish") {

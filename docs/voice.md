@@ -1068,7 +1068,11 @@ starts the next waiting job. Cancelling active preparation aborts its request an
 stops the synthesizer before another job starts. Capture is held only after audio
 is ready for handoff.
 
-All listeners pause capture before the daemon offers the job. The directive
+If the current owner received a capture grant, its first playback-time poll
+returns `capture: false` and `speak: null`. After closing microphone input,
+it sends that directive's revision in the next poll. Only then does the daemon
+offer the holder playback and serve its audio. With no active capture grant
+the holder can receive the job immediately. Stop bypasses this wait. The directive
 poll checks the capture lease or playback holder both on arrival and after
 waiting for a change. A non-owner polling during a hold receives 409 with
 `capture: false` and `speak: null`, without the roster or revision. Only the job's holder

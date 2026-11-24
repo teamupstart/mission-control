@@ -340,6 +340,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
   };
   let current: string | null = null;
   let playing = false;
+  let capturing = false;
   const event = async (type: "started" | "ended", outcome?: "finished" | "stopped") => {
     if (!current) throw new Error("Fixture has no speech job.");
     const id = current;
@@ -352,6 +353,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
     throw new Error("Speech report refused.");
   };
   const start = async () => {
+    if (capturing) throw new Error("Playback offered before capture paused.");
     const accepted = await event("started");
     if (accepted) playing = true;
     return accepted;
@@ -374,6 +376,8 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
       }
       if (!response.ok) throw new Error("Directive status " + response.status);
       const directive = await response.json() as VoiceListenerDirective;
+      capturing = directive.capture;
+      if (capturing && playing) throw new Error("Capture resumed during playback.");
       revision = directive.revision;
       const speak = directive.speak;
       if (!speak) continue;
@@ -393,7 +397,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
   let failure: unknown;
   const following = follow().catch(error => { if (!controller.signal.aborted) failure = error; });
   return {
-    poll, start, end, get playing() { return playing; },
+    poll, start, end, get playing() { return playing; }, get capturing() { return capturing; },
     async say(text: string) {
       const { revision } = await poll();
       return post("/voice/utterances?revision=" + encodeURIComponent(revision), {

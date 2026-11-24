@@ -259,7 +259,8 @@ A full review runs at `xhigh` reasoning effort wherever the provider offers that
 resolved model, and at the provider's default where it does not. It is the one thorough read a
 pull request gets: the first round is asked for every finding that clears the bar, and later
 rounds only check the repair. Follow-up replies keep the provider's default effort. The
-timings above were measured at default effort, so a review now takes longer than they show.
+timings above were measured at default effort, so a review now takes longer than they show,
+and the review timeout is 1200 seconds to allow for it.
 
 ### Whether a finding reached GitHub
 

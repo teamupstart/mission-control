@@ -105,6 +105,8 @@ function worse(a: VoiceDeliveryOutcome, b: VoiceDeliveryOutcome): VoiceDeliveryO
  * one split question per later name, the first target fixed and never asked about.
  */
 export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtterance): VoiceQuestion[] {
+  // Two roster entries for the same spoken name share one boundary.
+  if (new Set(decision.splits.map(split => split.at)).size > MAX_SPLIT_QUESTIONS) return [];
   if (decision.reason === "ambiguous-name") {
     if (decision.match === "exact") return [];
     return [{ kind: "who", text: utterance.text, candidates: decision.candidates.map(choiceOf) }];
@@ -112,7 +114,6 @@ export function voiceQuestionsFor(decision: NeedsModel, utterance: VoiceUtteranc
   // An earlier split can settle the sentence before a name shared by several agents.
   const ambiguous = decision.splits.findIndex(split => split.ambiguousTarget);
   const decidable = ambiguous < 0 ? decision.splits : decision.splits.slice(0, ambiguous);
-  if (decidable.length > MAX_SPLIT_QUESTIONS) return [];
   return decidable.map((split) => ({
     kind: "split", text: utterance.text, first: choiceOf(decision.target), second: choiceOf(split.target),
     nameOffset: split.at,

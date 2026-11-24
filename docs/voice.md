@@ -115,8 +115,9 @@ for the whole of it, process start included. It asks only what is left in doubt:
   with only the joining “and” or “then” dropped. “Steve, ask Alice about the build” is a mention:
   the whole text goes to Steve and nothing to Alice. Each possible split is considered in spoken
   order, including repeated uses of the same name. The first split determines the two messages.
-  A “not sure” before that split leaves the card unsure. More than eight split questions go
-  straight to manual selection, with every possible boundary available.
+  A “not sure” before that split leaves the card unsure. A sentence with more than eight possible
+  split positions goes straight to manual selection, with every position available. A name shared
+  by two agents counts once at each place it occurs in the sentence.
   On an unsure card, picking the first agent keeps the whole message with that agent. Picking a
   later occurrence confirms the split there, even when both messages go to the same agent.
   If several rows share a name, their details distinguish keeping the message whole from splitting

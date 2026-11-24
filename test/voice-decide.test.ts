@@ -858,6 +858,27 @@ test("an over-limit sentence keeps all manual split points without asking a mode
   assert.equal(cards.at(-1)?.candidates.length, 12);
 });
 
+test("the split limit counts spoken positions across a duplicate name before asking any model question", async (t) => {
+  const ruby = name("Ruby");
+  const roster = [name("Steve"), name("Stevie"), name("Alice"), ruby, { ...ruby, key: "other-ruby", sessionId: "s:other-ruby" }];
+  for (const [first, count] of [["Steve", 8], ["Steve", 9], ["Steven", 9]] as const) {
+    const { router, say, asked, cards } = routerRig(() => answered("split"), roster);
+    t.after(() => router.reset());
+    await say(`${first}, check the build, and Alice, ask Ruby about ${"Alice and ".repeat(count - 3)}Alice today`, "card");
+    if (count === 8) {
+      assert.deepEqual(asked.map(batch => batch.map(q => q.kind)), [["split"]]);
+      assert.equal(cards.at(-1)?.state, "pending");
+    } else {
+      assert.equal(asked.length, 0);
+      if (first === "Steven") assert.ok(await router.pick("card", "task:Steve"));
+      const card = cards.at(-1)!;
+      assert.equal(card.state, "unsure");
+      assert.equal(card.candidates.length, count + 2); // The first agent and two targets at Ruby's position.
+      assert.equal(await router.sendNow("card"), false);
+    }
+  }
+});
+
 test("excluded duplicate-name candidates cannot change a Codex split to a mixed roster", async (t) => {
   const ruby = name("Ruby");
   const { router, say, cards } = routerRig((_q, opts) => {

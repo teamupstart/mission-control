@@ -191,6 +191,7 @@ function repairRound(
   store: InstanceType<typeof WorkflowStore>,
   id: string,
   round: number,
+  now = 10 * round,
 ): string {
   const submissionId = `submission-${id}-r${round}`;
   store.createRepairSubmission({
@@ -201,14 +202,14 @@ function repairRound(
     triggerKey: `manual:${id}:round-${round}`,
     context: {},
     evidence: {},
-    now: 10 * round,
+    now,
   });
   store.updateSubmissionCapture(submissionId, {
     context: workflowJson(context),
     evidence: workflowJson(context.evidence),
     fingerprint: `fingerprint-${id}-r${round}`,
     status: "running",
-  }, 10 * round + 1);
+  }, now + 1);
   return submissionId;
 }
 
@@ -708,7 +709,16 @@ for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with a
   writeFileSync(join(root, "file"), "base"); git("add", "."); git("commit", "-qm", "base");
   const base = git("rev-parse", "HEAD"); git("update-ref", "refs/remotes/origin/main", base); git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
   git("checkout", "-qb", "feature"); writeFileSync(join(root, "file"), "changed"); git("commit", "-qam", "change");
-  const graph: PublishedWorkflowGraph = { ...budgetGraph, nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node) };
+  const graph: PublishedWorkflowGraph = {
+    ...budgetGraph,
+    nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+    // Match No-Mistakes: the Persona starts after the CodeRabbit outcome is available.
+    edges: [
+      ...budgetGraph.edges.filter((edge) => edge.id !== "s-p1"),
+      { id: "gate-review-pass", source: "gate", sourcePort: "pass", target: "p1", targetPort: "activate" },
+      { id: "gate-review-fail", source: "gate", sourcePort: "fail", target: "p1", targetPort: "activate" },
+    ],
+  };
   const id = `coderabbit-budget-${maxRuns}`;
   const store = seedSubmission(id, 20, graph);
   openDb().prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?").run(root, root, `binding-${id}`);
@@ -769,7 +779,7 @@ for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with a
     const source = store.listAttempts(`submission-${id}`).find(a => a.nodeId === "gate" && a.state === "completed")!;
     git("update-ref", "refs/remotes/origin/main", base);
     for (const round of [2, 3]) {
-      const next = repairRound(store, id, round);
+      const next = repairRound(store, id, round, Date.now());
       capture(next, `Clarified verification in round ${round}`);
       assert.equal(git("rev-parse", "HEAD"), comparisons[1]!.head);
       assert.equal(git("status", "--porcelain"), "");
@@ -782,10 +792,26 @@ for (const maxRuns of [10, 2]) test(`CodeRabbit reuses a clean comparison with a
       assert.equal((outcome.review as { remainingRuns: number }).remainingRuns, maxRuns - 2);
       assert.equal(outcome.command, null);
       assert.match(String(outcome.note), new RegExp(source.id));
-      const [evidence] = personaCheckEvidence(graph, "join", store.listAttempts(next), store.listReceipts(next), comparisons[1]!.head);
+      const attempts = store.listAttempts(next);
+      const [evidence] = personaCheckEvidence(graph, "p1", attempts, store.listReceipts(next), comparisons[1]!.head);
       assert.equal(evidence?.status, "passed");
       assert.equal(evidence?.note, outcome.note);
       assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 2);
+      const submittedAt = store.getSubmission(next)!.createdAt;
+      const codeRabbitFinishedAt = attempts.find((attempt) => attempt.nodeId === "gate")?.finishedAt;
+      const persona = attempts.find((attempt) => attempt.nodeId === "p1");
+      assert.equal(persona?.state, "completed");
+      assert.ok(codeRabbitFinishedAt && persona.startedAt && persona.finishedAt);
+      assert.ok(submittedAt <= codeRabbitFinishedAt && codeRabbitFinishedAt <= persona.startedAt);
+      assert.ok(persona.startedAt <= persona.finishedAt);
+      t.diagnostic(JSON.stringify({
+        round,
+        head: comparisons[1]!.head,
+        submittedAt: new Date(submittedAt).toISOString(),
+        codeRabbit: { outcome: outcome.status, reusedAttemptId: source.id, finishedAt: new Date(codeRabbitFinishedAt).toISOString(), newExecutions: executions - 2 },
+        persona: { runner: "scripted fixture", startedAt: new Date(persona.startedAt).toISOString(), finishedAt: new Date(persona.finishedAt).toISOString() },
+        submissionToPersonaCompletionMs: persona.finishedAt - submittedAt,
+      }));
     }
     if (maxRuns === 2) {
       writeFileSync(join(root, "file"), "new source change");

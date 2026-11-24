@@ -129,6 +129,11 @@ export async function openTerminalEnvironmentHandoff(
     socket.setTimeout(5_000, () => socket.destroy());
     socket.on("readable", () => {
       const presented: Buffer | null = socket.read(ticket.length);
+      // A queued socket callback can run before the expiry timer after an event-loop delay.
+      if (Date.now() >= deadline) {
+        void dispose();
+        return;
+      }
       if (!presented) return;
       if (disposed || presented.length !== ticket.length || !timingSafeEqual(presented, ticket)) {
         socket.destroy();

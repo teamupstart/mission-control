@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
@@ -266,6 +267,28 @@ test("terminal handoff enforces SDK isolation before either launch command execu
     });
     assert.equal(existsSync(marker), false);
   });
+});
+
+test("the handoff refuses a valid ticket at its deadline even before the expiry timer runs", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "terminal-deadline-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const start = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: start });
+  const handoff = await openTerminalEnvironmentHandoff({ cwd: dir, stateHome: dir }, { extraEnv: {}, missing: [] });
+  t.after(handoff.dispose);
+  const reader = createConnection(handoff.path);
+  t.after(() => reader.destroy());
+  await once(reader, "connect");
+  const ticket = handoff.authorize([])[1]!.split("=")[1]!;
+  let received = 0;
+  reader.on("data", (chunk: Buffer) => { received += chunk.length; });
+  const closed = once(reader, "close");
+  // Move only the wall clock: the pane is connected and the real cleanup timer is still pending.
+  t.mock.timers.setTime(start + RESUME_START_MS);
+  reader.write(Buffer.from(ticket, "hex"));
+  await closed;
+  assert.equal(received, 0);
+  assert.equal(existsSync(dirname(handoff.path)), false);
 });
 
 test("startup reclaims a crashed handoff owner and leaves live, foreign and unexpected entries alone", { timeout: 15_000 }, async (t) => {

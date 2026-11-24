@@ -64,10 +64,10 @@ function splitHead(text: string): string {
     /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and then|and|then|also|plus)\s*,?$|,$/iu, "",
   );
   if (punctuated !== raw) return punctuated.trimEnd();
-  const conjunction = /\s+and(?:\s+then)?$/iu.exec(raw);
+  const conjunction = /\s+(?:and\s+then|and|then)$/iu.exec(raw);
   if (!conjunction) return raw;
   const preceding = raw.slice(0, conjunction.index);
-  // A request to spell a word or quote a literal makes “and” part of that request.
+  // A request to spell or quote the joining word keeps it in the first message.
   const namesLiteral = /\b(?:spell|say|type|quote|repeat|pronounce|define|write|print|word|term|literal|keyword|token|conjunction)$/iu;
   return namesLiteral.test(preceding) ? raw : preceding;
 }
@@ -284,7 +284,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       const matches = names.filter(({ name }) => name === heard);
       if (!matches.length) continue;
       const preceding = text.slice(offset, at.index);
-      const wrappers = preceding.match(/(?:^|\s)([\p{Ps}\p{Pi}"'\s]+)$/u)?.[1] ?? "";
+      const wrappers = preceding.match(/(?:^|[,\s])([\p{Ps}\p{Pi}"'\s]+)$/u)?.[1] ?? "";
       const addressStart = at.index - wrappers.length;
       const head = splitHead(text.slice(offset, addressStart));
       const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);

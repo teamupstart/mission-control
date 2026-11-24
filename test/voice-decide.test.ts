@@ -1046,11 +1046,12 @@ test("a pick older than the retained choice history abstains while a fresh pick 
   assert.equal(router.activeCards()[0]?.state, "pending");
 });
 
-test("a confirmed split separates an unpunctuated and from an instruction while keeping literal and", async (t) => {
+test("a confirmed split removes an unpunctuated conjunction while preserving a literal word", async (t) => {
   const { router, say, delivered } = routerRig(() => answered("split"));
   t.after(() => router.reset());
   for (const [spoken, expected] of [
     ["check the build and", "check the build"], ["check the build and then", "check the build"],
+    ["check the build then", "check the build"], ["spell then", "spell then"],
     ["spell and", "spell and"], ["explain the word and", "explain the word and"],
   ]) {
     const id = String(delivered.length);
@@ -1091,5 +1092,16 @@ test("the resolving event and reconnect snapshot agree while the second model ca
   } finally {
     chooseSplit(answered("split"));
     await router.resolution("visible");
+  }
+});
+
+test("a split consumes comma-adjacent wrappers around the second address", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered("split"));
+  t.after(() => router.reset());
+  for (const address of ["“Alice,”", "“ Alice,”", "「 “ Alice,” 」"]) {
+    const id = String(delivered.length);
+    await say(`Steve, check the build,${address} review the PR`, id);
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", "check the build", id], ["Alice", "review the PR", id + "#2"]], address);
   }
 });

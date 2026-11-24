@@ -89,7 +89,25 @@ test("answer, correct, cancel and submit through a question card or its countdow
   await expect(footer).toHaveCount(0);
   await expect(a).toBeChecked();
   await say(daemon, "Steve, option B");
-  await say(daemon, "no, A");
+  // Deliver the click only after the new selection and countdown reach the DOM.
+  const heldClick = page.waitForEvent("request", r => r.url().endsWith("/send-now"));
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/voice/cards/*/send-now", async route => {
+    await release.promise;
+    await route.continue();
+  }, { times: 1 });
+  try {
+    await footer.getByRole("button", { name: "Submit now" }).click();
+    await heldClick;
+    await say(daemon, "no, A");
+    await expect(footer).toContainText("Changed to A · SQLite");
+    const stale = page.waitForResponse(r => r.url().endsWith("/send-now"));
+    release.resolve();
+    expect((await stale).status()).toBe(409);
+    expect((await read(id)).status).toBe("pending");
+  } finally {
+    release.resolve();
+  }
   await expect(footer).toContainText("Changed to A · SQLite");
   await expect(a).toBeChecked();
   await captureCard(row, "answer-switched");
@@ -316,3 +334,38 @@ for (const scenario of [
     expect(cancelRequests).toBe(2);
   });
 }
+
+test("a standalone question picker can retry once a dashboard is available", async ({ page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "Which benchmark first?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { kind: "input", env: {}, cwd: steve.cwd, title, body: title },
+  });
+  expect(filed.ok(), await filed.text()).toBe(true);
+  const { id } = await filed.json();
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "popover" } })).ok()).toBe(true);
+  await page.goto(daemon.baseURL + "/#/voice/popover");
+  await say(daemon, "Steve, answer");
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  const choose = picker.getByRole("button", { name: title, exact: false });
+  await choose.click();
+  await expect(picker).toContainText("Focus a dashboard, then choose this question again.");
+  await expect(choose).toBeEnabled();
+  await captureCard(picker, "inspector-11-standalone-picker-retry");
+
+  const dashboard = await page.context().newPage();
+  // Headless pages may both claim focus. Report the state after a standalone click.
+  await dashboard.addInitScript(() => Object.defineProperty(document, "hasFocus", { value: () => false }));
+  const blurred = dashboard.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && !r.request().postDataJSON().focused);
+  await dashboard.goto(daemon.baseURL + "/#/fleet");
+  await blurred;
+  await choose.click();
+  const modal = dashboard.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(modal);
+  await expect(modal.getByRole("heading", { name: title })).toBeVisible();
+  await expect(modal.getByRole("textbox")).toBeEmpty();
+  await expect(picker).toHaveCount(0);
+  expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
+});

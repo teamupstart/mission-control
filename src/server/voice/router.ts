@@ -382,8 +382,9 @@ export class VoiceRouter {
       const review = this.questions!.pending().find(q => q.id === latest.answer!.reviewId);
       entry.outcome = "control";
       entry.rule = "switch-answer";
-      if (review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[spokenIndex(correction[1]!)]) {
-        return this.prepareAnswer(latest, review, correction[1]!, false, true).then(() => true);
+      const index = spokenIndex(correction[1]!);
+      if (review && Date.now() < latest.answer.deadline && review.decisions?.[0]?.options[index]) {
+        return this.prepareAnswer(latest, review, "option " + (index + 1), false, utterance.id).then(() => true);
       }
       return true;
     }
@@ -445,10 +446,11 @@ export class VoiceRouter {
     this.publish({ ...item.card, state: "cancelled", reason: "question-notice", detail, deadline: null });
   }
 
-  private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean, switched = false): Promise<void> {
-    const id = item.card.id;
+  private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean, revisionId?: string): Promise<void> {
+    const previousId = item.card.id;
+    const id = revisionId ?? previousId;
     const signal = this.lifetime.signal;
-    if (!switched) {
+    if (!revisionId) {
       // Reserve the capture's place while an option question is at the model.
       item.card = { ...item.card, state: "resolving", candidates: [] };
       item.modelStep = new AbortController();
@@ -457,16 +459,16 @@ export class VoiceRouter {
     }
     const target = item.card.parts[0]?.target ?? null;
     const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);
-    if (signal.aborted || this.open.get(id) !== item || this.state().mode === "off") return;
+    if (signal.aborted || this.open.get(previousId) !== item || this.state().mode === "off") return;
     if (!this.questions!.pending().some(q => q.id === review.id)) {
       this.take(item);
       this.questionNotice(item, "That question is already settled.");
       return;
     }
-    if (!result) {
-      if (switched) return;
+    if (!result || result === "matcher-failed") {
+      if (revisionId) return;
       this.take(item);
-      this.questionNotice(item, "No matching option.");
+      this.questionNotice(item, result === "matcher-failed" ? "Could not match an option. Try again." : "No matching option.");
       return;
     }
     for (const other of this.open.values()) {
@@ -478,8 +480,18 @@ export class VoiceRouter {
     const window = this.window();
     const windowMs = window.enabled ? window.seconds * 1000 : 0;
     const deadline = Date.now() + windowMs;
-    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched };
-    item.card = { ...item.card, state: "pending", reason: "voice-answer", deadline, windowMs,
+    if (revisionId) {
+      // Replace the action in place so delayed buttons cannot act on the new answer,
+      // while spoken Cancel still follows the original capture order.
+      this.open.delete(previousId);
+      this.open.set(id, item);
+      const action = this.pendingVoiceActions.find(a => a.kind === "card" && a.id === previousId)!;
+      action.id = id;
+      action.cancel = () => this.cancel(id);
+      if (item.companion) this.questions!.removeCompanion(previousId);
+    }
+    item.answer = { ...result, id, reviewId: review.id, deadline, windowMs, switched: !!revisionId };
+    item.card = { ...item.card, id, state: "pending", reason: "voice-answer", deadline, windowMs,
       parts: [{ target, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
@@ -675,6 +687,12 @@ export class VoiceRouter {
       const { target, words, choiceCommand } = item.questionPick;
       const pending = this.questions!.pending().filter(q => q.sessionId === target.sessionId);
       const review = pending.find(q => q.id === candidateId);
+      const dashboard = this.openCards.dashboard;
+      if (review && !words && !dashboard) {
+        item.card = { ...item.card, detail: "Focus a dashboard, then choose this question again." };
+        this.publish(item.card);
+        return true;
+      }
       this.take(item, time);
       delete item.questionPick;
       if (!review) this.questionNotice(item, "That question is already settled.");
@@ -682,10 +700,9 @@ export class VoiceRouter {
         this.publish({ ...item.card, state: "cancelled", deadline: null });
         item.time = time ?? this.now();
         await this.prepareQuestionReply(item, review, words, choiceCommand, this.openCards.target(pending, item.time.openedAt));
-      } else {
-        const dashboard = this.openCards.dashboard;
-        if (dashboard) this.questions!.open(dashboard, review);
-        this.questionNotice(item, dashboard ? "Opened question." : "Open the dashboard to answer this question.");
+      } else if (dashboard) {
+        this.questions!.open(dashboard, review);
+        this.questionNotice(item, "Opened question.");
       }
       return true;
     }

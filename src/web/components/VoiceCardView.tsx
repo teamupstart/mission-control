@@ -174,7 +174,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
             pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidateId: c.id }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
         })}
-        <div className="vc-row"><span className="vc-grow vc-hint">{card.candidates[0]?.kind === "question" ? "Say the ordinal, or click a question." : "Say the name again, or click a row."} <q>Cancel</q> drops it.</span>{cancel}</div></>;
+        <div className="vc-row"><span className="vc-grow vc-hint">{card.candidates[0]?.kind === "question" ? (card.detail ?? "Say the ordinal, or click a question.") : "Say the name again, or click a row."} <q>Cancel</q> drops it.</span>{cancel}</div></>;
       break;
     case "pending": {
       const mention = !!card.mentions?.length;

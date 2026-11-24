@@ -10,6 +10,8 @@ test("the deadline resolves through the human click path, correction restarts it
   await say("Steve, option B", "answer");
   t.mock.timers.tick(500);
   await say("no, A");
+  assert.equal((await act("answer", "send-now")).status, 409);
+  assert.equal(answers()[0]?.text, "SQLite");
   t.mock.timers.tick(501);
   assert.equal(registry.getReview(q.id)?.status, "pending");
   t.mock.timers.tick(500);
@@ -49,9 +51,33 @@ test("a closed stream loses its open cards after the disconnect grace period", a
   await put("/api/voice/open-cards", { windowId: "dashboard", focused: true, cards: [{ kind: "question", id: q.id, focused: true }] });
   close();
   assert.equal(windows.dashboard, undefined);
-  assert.equal(windows.target([q])?.id, q.id);
+  assert.equal(windows.target([q]), undefined);
+  await say("reply, option B");
+  assert.deepEqual(answers(), []);
   t.mock.timers.tick(10_000);
   assert.equal(windows.target([q]), undefined);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
   await say("Steve, check the build");
   assert.deepEqual(answers(), []);
+});
+
+test("a reload after a backward clock adjustment restores focus and rejects older reports", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const windows = registry.voiceRouter!.openCards;
+  const close = windows.connect("previous");
+  const closeOlder = windows.connect("delayed");
+  const report = (windowId: string, stamp: number) => windows.report({ windowId, focused: true, cards: [] }, stamp);
+  assert.ok(report("previous", now * 1000));
+  close();
+  t.mock.timers.tick(10_001);
+  t.mock.timers.setTime(now - 60_000);
+  t.after(windows.connect("reloaded"));
+  t.after(windows.connect("other-reload"));
+  assert.ok(report("reloaded", Date.now() * 1000 + 30));
+  assert.ok(report("other-reload", Date.now() * 1000 + 10));
+  assert.equal(windows.dashboard, "reloaded");
+  assert.ok(report("delayed", (now - 1) * 1000));
+  assert.equal(windows.dashboard, "reloaded");
+  closeOlder();
 });

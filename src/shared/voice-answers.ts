@@ -3,6 +3,13 @@ import type { PlanDecisionAnswer } from "./types.ts";
 
 export const VOICE_FOCUS_TIME_HEADER = "x-voice-focus-at-us";
 
+/** A document or daemon keeps its monotonic time origin across a wall clock adjustment.
+ * Reuse a calibration within the millisecond resolution of Date.now(). */
+export function voiceFocusClockSkewMs(previous = 0): number {
+  const skew = Math.floor(performance.timeOrigin + performance.now()) - Date.now();
+  return Math.abs(skew - previous) <= 1 ? previous : skew;
+}
+
 export const OpenCardsSchema = z.object({
   windowId: z.string().min(1).max(128),
   focused: z.boolean(),

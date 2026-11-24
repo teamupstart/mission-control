@@ -1,5 +1,5 @@
 import { createContext, useEffect } from "react";
-import { VOICE_FOCUS_TIME_HEADER, type OpenCardsReport, type VoiceAnswer } from "@shared/voice-answers.ts";
+import { VOICE_FOCUS_TIME_HEADER, voiceFocusClockSkewMs, type OpenCardsReport, type VoiceAnswer } from "@shared/voice-answers.ts";
 
 export const VoiceAnswersContext = createContext<ReadonlyMap<string, VoiceAnswer> | null>(null);
 
@@ -10,6 +10,9 @@ export function useVoiceOpenCards(windowId?: string): void {
     if (!windowId) return;
     const controller = new AbortController();
     let focused: boolean | undefined;
+    // The daemon calibrates each stream at connection. A surviving page can reconnect
+    // with an older time origin, so anchor this stream's observations to the current era.
+    const timeOrigin = performance.timeOrigin - voiceFocusClockSkewMs();
     let focusAtUs = 0;
     let sending = false;
     let last = "";
@@ -19,7 +22,7 @@ export function useVoiceOpenCards(windowId?: string): void {
       const hasFocus = document.hasFocus() && !document.hidden;
       if (focused !== hasFocus) {
         focused = hasFocus;
-        focusAtUs = Math.max(focusAtUs + 1, Math.round((performance.timeOrigin + performance.now()) * 1000));
+        focusAtUs = Math.max(focusAtUs + 1, Math.round((timeOrigin + performance.now()) * 1000));
       }
       if (sending) return;
       clearTimeout(retry);

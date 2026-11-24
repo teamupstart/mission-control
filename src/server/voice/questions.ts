@@ -1,5 +1,5 @@
 import type { OpenCardsReport, VoiceAnswer } from "@shared/voice-answers.ts";
-import { optionLetter } from "@shared/voice-answers.ts";
+import { optionLetter, voiceFocusClockSkewMs } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceDecider } from "./decide.ts";
@@ -14,39 +14,54 @@ export interface VoiceQuestions {
 
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
-  private readonly streams = new Map<string, symbol>();
+  private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number }>();
+  private clockSkewMs = 0;
   private changedAt = 0;
   private latestFocusUs = 0;
-  private readonly reports = new Map<string, { report: OpenCardsReport; focusAtUs: number }>();
+  private readonly reports = new Map<string, { report: OpenCardsReport; focusAtUs: number; clockOffsetUs: number }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
   connect(windowId: string): () => void {
-    const token = Symbol();
+    // The first observation in this stream happens after the dashboard gets its ID.
+    // Freeze the causal lower bound here so HTTP arrival order cannot move it.
+    const previous = this.reports.get(windowId);
+    this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
+    const token = { floorUs: this.latestFocusUs, clockOffsetUs: previous?.clockOffsetUs ?? this.clockSkewMs * 1000 };
+    const beforeConnect = this.current;
     this.streams.set(windowId, token);
-    if (this.reports.has(windowId)) this.changed();
+    if (previous) {
+      if (this.current !== beforeConnect) this.changedAt = Date.now();
+      this.changed();
+    }
     return () => {
       if (this.streams.get(windowId) !== token) return;
+      const beforeDisconnect = this.current;
       this.streams.delete(windowId);
+      if (this.current !== beforeDisconnect) this.changedAt = Date.now();
       // Keep the report for reconnection, but its footer cannot show a live countdown.
       if (this.reports.has(windowId)) this.changed();
       setTimeout(() => {
         if (this.streams.has(windowId)) return;
-        const current = this.current;
-        if (this.reports.delete(windowId)) {
-          if (this.current !== current) this.changedAt = Date.now();
-          this.changed();
-        }
+        if (this.reports.delete(windowId)) this.changed();
       }, 10_000).unref();
     };
   }
 
-  report(report: OpenCardsReport, focusAtUs = Math.max(Date.now() * 1000, this.latestFocusUs + 1)): boolean {
-    if (!this.streams.has(report.windowId)) return false;
+  report(report: OpenCardsReport, observedAtUs?: number): boolean {
+    const stream = this.streams.get(report.windowId);
+    if (!stream) return false;
+    // A new stream cannot have observed focus before it existed. Keep later reports
+    // on the same translated clock even if a browser's time has coarser precision.
+    if (observedAtUs !== undefined && !this.reports.has(report.windowId) && observedAtUs + stream.clockOffsetUs < stream.floorUs) {
+      stream.clockOffsetUs = stream.floorUs + 1 - observedAtUs;
+    }
+    const focusAtUs = observedAtUs === undefined ? Math.max(Date.now() * 1000, this.latestFocusUs + 1)
+      : observedAtUs + stream.clockOffsetUs;
     // A focus transition is dated by the observing dashboard, before HTTP delivery.
     if (focusAtUs < (this.reports.get(report.windowId)?.focusAtUs ?? 0)) return true;
     const previous = this.current;
-    this.reports.set(report.windowId, { report, focusAtUs });
+    this.reports.set(report.windowId, { report, focusAtUs, clockOffsetUs: stream.clockOffsetUs });
     if (report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
     if (this.current !== previous) this.changedAt = Date.now();
     this.changed();
@@ -56,24 +71,24 @@ export class VoiceOpenCards {
   private get current(): OpenCardsReport | undefined {
     let current: OpenCardsReport | undefined;
     for (const { report, focusAtUs } of this.reports.values()) {
-      if (!report.focused || focusAtUs !== this.latestFocusUs) continue;
+      if (!report.focused || focusAtUs !== this.latestFocusUs || !this.streams.has(report.windowId)) continue;
       if (current) return undefined; // Indistinguishable focus transitions cannot target a reply.
       current = report;
     }
     return current;
   }
 
-  private get connectedDashboard(): OpenCardsReport | undefined {
-    const report = this.current;
-    return report && this.streams.has(report.windowId) ? report : undefined;
-  }
-
   get dashboard(): string | undefined {
-    return this.connectedDashboard?.windowId;
+    const focused = this.current;
+    if (focused) return focused.windowId;
+    // A click in the standalone companion can blur the dashboard before the pick arrives.
+    // A sole live dashboard can still open a review. Only foreground cards receive replies.
+    const live = [...this.reports.keys()].filter(id => this.streams.has(id));
+    return live.length === 1 ? live[0] : undefined;
   }
 
   showing(reviewId: string): boolean {
-    return this.connectedDashboard?.cards.some(card => card.id === reviewId) ?? false;
+    return this.current?.cards.some(card => card.id === reviewId) ?? false;
   }
 
   target(questions: ReviewItem[], capturedAt = Infinity): ReviewItem | undefined {
@@ -86,6 +101,11 @@ export class VoiceOpenCards {
 
   clear(): void {
     this.latestFocusUs = 0;
+    this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
+    for (const stream of this.streams.values()) {
+      stream.floorUs = 0;
+      stream.clockOffsetUs = this.clockSkewMs * 1000;
+    }
     this.reports.clear();
   }
 }
@@ -104,8 +124,12 @@ export function spokenIndex(words: string): number {
 /** These commands request a particular option and cannot supply a written answer. */
 export function requestedChoice(words: string): number | "recommended" | undefined {
   if (/^go with your recommendation[.!?]*$/iu.test(words)) return "recommended";
-  if (!/^option\s+/iu.test(words)) return undefined;
-  return spokenIndex(words);
+  const selector = /^option\s+(.+?)\s*[.!?]*$/iu.exec(words)?.[1];
+  if (!selector) return undefined;
+  const index = spokenIndex(selector);
+  if (index >= 0) return index;
+  if (/^(?:zero|0+(?:th)?)$/iu.test(selector)) return -1;
+  return undefined;
 }
 
 export async function matchAnswer(review: ReviewItem, words: string, allowText: boolean,
@@ -127,14 +151,14 @@ export async function matchAnswer(review: ReviewItem, words: string, allowText: 
     if (!option) return null;
   } else {
     const index = spokenIndex(words);
-    option = options[index];
-    const exact = options.filter(o => o.label.toLowerCase() === normalized);
-    if (!option && exact.length === 1) option = exact[0];
+    const exact = options.filter(o => o.label.trim().toLowerCase() === normalized);
+    option = exact.length === 1 ? exact[0] : options[index];
     if (!option && index >= 0) return null;
     if (!option && options.length) {
       const result = await decider.ask([{ kind: "option", text: words, prompt: decision.question,
         options: options.map(o => ({ ...o, detail: o.detail ?? "" })) }], { agents: target ? [target.agent] : [], signal }).catch(() => null);
-      option = options.find(o => o.id === result?.answers[0]?.choice);
+      if (!result || result.failed) return "matcher-failed" as const;
+      option = options.find(o => o.id === result.answers[0]?.choice);
     }
   }
   if (!option && !(allowText && decision.allowOther)) return null;

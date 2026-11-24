@@ -998,7 +998,8 @@ With a question card open in the focused dashboard, say “Steve, option B” or
 “Reply, neither yet” fills the text field of the focused question, including a question from an
 agent without a spoken name. If several cards from one agent are open, focus the one you mean.
 Choice-only cards show an option example in the footer. Cards that accept text also show how to dictate it.
-Letters, ordinals and exact option labels match directly. Other wording uses the option matcher.
+A bare answer matches a unique option label first. “Option two” always selects the second option.
+Other wording uses the option matcher. If the lookup fails, the card asks you to try again and the question stays pending.
 Asking for an unavailable option or a recommendation without a single recommended choice
 shows “No matching option.” The Other field stays as you left it and no countdown starts.
 
@@ -1009,7 +1010,8 @@ question, an explicit answer shows a notice and sends nothing. If an explicit an
 none of a closed question’s options, the dashboard shows “No matching option.” The question
 stays pending and the agent receives no message. With several pending questions
 and no target card, choose a question by clicking its row or saying its ordinal. “Steve, answer”
-opens the question picker without supplying an answer. Ordinary addressed speech, such as
+opens the question picker without supplying an answer. If the standalone picker asks you to
+focus a dashboard, choose the question again there. Ordinary addressed speech, such as
 “Steve, check the build”, goes to the agent as a message even while the question is open.
 
 The selected option or written reply appears on the card for the configured cancel window.

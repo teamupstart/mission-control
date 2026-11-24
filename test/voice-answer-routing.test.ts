@@ -376,3 +376,66 @@ test("delayed focus and blur reports cannot steal or clear the newer dashboard's
   await say("reply, option B");
   assert.deepEqual(answers().map(a => a.reviewId), [second.id]);
 });
+
+test("an option mentioned in a sentence is a message, while an unavailable selector is a command", async () => {
+  const q = question();
+  for (const open of [false, true]) {
+    await show(open ? [q.id] : []);
+    const id = "sentence-" + open;
+    await say("Steve, option B looks risky", id);
+    assert.deepEqual(answers(), []);
+    assert.equal((await act(id, "send-now")).status, 200);
+    await say("Steve, option 99");
+    assert.equal(cards.at(-1)?.detail, "No matching option.");
+    assert.deepEqual(answers(), []);
+  }
+  assert.deepEqual(queued("Steve"), ["option B looks risky", "option B looks risky"]);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
+test("bare numeric answers prefer an exact label and explicit option numbers are positional", async () => {
+  const q = reviews.create("sdk:Steve", "input", "How many?", "How many?", [
+    { id: "count", question: "How many?", options: [{ id: "two", label: "2" }, { id: "four", label: "4" }] },
+  ]);
+  await say("Steve, answer: 2");
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["two"]);
+  await say("cancel");
+  await say("Steve, option 2", "position");
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["four"]);
+  assert.equal((await act("position", "send-now")).status, 200);
+  assert.deepEqual(registry.getReview(q.id)?.selections?.[0]?.selected, ["four"]);
+});
+
+test("a matcher failure leaves Other untouched and the question available to retry", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const q = question();
+  await show([q.id]);
+  const matcher = t.mock.method(model, "decide", () => { throw new Error("provider failed"); });
+  for (const attempt of ["exception", "exhausted ladder"]) {
+    if (attempt === "exhausted ladder") matcher.mock.mockImplementation(() =>
+      ({ rung: "none" as const, answers: [{ choice: null, confidence: 0 }], detail: "job on claude timed out", failed: true }));
+    await say("reply, the one that already runs");
+    assert.match(cards.at(-1)?.detail ?? "", /try again/i);
+    assert.deepEqual(answers(), []);
+    assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 0);
+    t.mock.timers.tick(1001);
+    assert.equal(registry.getReview(q.id)?.status, "pending");
+  }
+  await say("reply, Postgres");
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
+});
+
+test("a standalone pick survives a missing dashboard and can open its question on a blurred dashboard", async t => {
+  const q = question();
+  const opened: string[][] = [];
+  t.after(registry.subscribe(e => { if (e.type === "voice_open_question") opened.push([e.windowId, e.reviewId]); }));
+  await say("Steve, answer", "choose");
+  assert.equal((await act("choose", "pick", { id: q.id })).status, 200);
+  assert.match(cards.at(-1)?.detail ?? "", /Focus a dashboard/);
+  assert.deepEqual(registry.voiceRouter!.activeCards().find(c => c.id === "choose")?.candidates.map(c => c.id), [q.id]);
+  t.after(registry.voiceRouter!.openCards.connect("dashboard"));
+  await put("/api/voice/open-cards", { windowId: "dashboard", focused: false, cards: [] });
+  assert.equal((await act("choose", "pick", { id: q.id })).status, 200);
+  assert.deepEqual(opened, [["dashboard", q.id]]);
+  assert.deepEqual(answers(), []);
+});

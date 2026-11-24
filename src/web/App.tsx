@@ -5130,7 +5130,7 @@ export function App(): React.JSX.Element {
         return result.state === "failed" || result.state === "refused" ? { ok: false, error: result.error } : { ok: true };
       },
     }} /></VoiceHintsContext.Provider>;
-  if (route.page === "voice-card") return <main className="voice-standalone">{voiceCardHost}</main>;
+  const standalone = route.page === "voice-card";
 
   return (
     <OverlayHost value={overlays}>
@@ -5139,7 +5139,7 @@ export function App(): React.JSX.Element {
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
-      <VoiceWindowProvider enabled={spokenNames} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
+      <VoiceWindowProvider enabled={spokenNames && !standalone} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
       <VoiceAnswersContext.Provider value={voiceHints ? voiceAnswers : null}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
@@ -5150,8 +5150,9 @@ export function App(): React.JSX.Element {
         activeTaskId={activeTourBinding?.activeTaskId ?? null}
         activeRunId={activeTourBinding?.activeRunId ?? null}
       >
-      <ContextMenuHost ref={contextMenuRef} />
-      <div className={`app app-${layout}`}>
+      {!standalone && <ContextMenuHost ref={contextMenuRef} />}
+      <div className={standalone ? undefined : `app app-${layout}`}>
+        {standalone ? <main className="voice-standalone">{voiceCardHost}</main> : <>
         {voiceCardHost}
         <VoiceIndicator id="edge" />
         <Topbar
@@ -5880,40 +5881,6 @@ export function App(): React.JSX.Element {
                 />
               )}
 
-              <DispatchLayer
-                opening={dispatchOpening}
-                repairFollowUpId={dispatchRequest?.kind === "repair-follow-up" ? dispatchRequest.followUp.id : undefined}
-                tasks={tasks}
-                sessions={sessions}
-                personas={personas}
-                workflowSummaries={workflowSummaries}
-                foremanEnabled={foreman.config?.enabled ?? false}
-                harnessesRevision={harnessesRevision}
-                stackingDefault={settingsStatus?.shipping.stacking}
-                pipelinesRevision={
-                  settingsStatus?.pipelines.observedRepoKeys
-                    ? JSON.stringify({
-                        repos: settingsStatus.pipelines.observedRepoKeys,
-                        launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
-                      })
-                    : `count:${settingsStatus?.pipelines.observing ?? 0}`
-                }
-                onClose={closeDispatchOpening}
-                onOpenSchedule={onOpenSchedule}
-                onOpenLaunchFix={fix => {
-                  if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
-                  openLaunchFix(fix);
-                }}
-                onOpenEnvironmentFix={check => {
-                  if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
-                  openEnvironmentFix(check);
-                }}
-                onEnsembleLaunched={openEnsembleRun}
-                residentProfiles={residentProfiles}
-                onEditResidentProfile={(profileId) =>
-                  navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
-              />
-
               <ProductIssueLayer open={feedbackOpen} onClose={closeFeedback} />
 
               {reportOpen && (
@@ -6051,6 +6018,41 @@ export function App(): React.JSX.Element {
         />
         <VoiceIndicator id="floating" />
         <VoiceIndicator id="status-line" />
+        </>}
+        <DispatchLayer
+          opening={dispatchOpening}
+          suspended={standalone}
+          repairFollowUpId={dispatchRequest?.kind === "repair-follow-up" ? dispatchRequest.followUp.id : undefined}
+          tasks={tasks}
+          sessions={sessions}
+          personas={personas}
+          workflowSummaries={workflowSummaries}
+          foremanEnabled={foreman.config?.enabled ?? false}
+          harnessesRevision={harnessesRevision}
+          stackingDefault={settingsStatus?.shipping.stacking}
+          pipelinesRevision={
+            settingsStatus?.pipelines.observedRepoKeys
+              ? JSON.stringify({
+                  repos: settingsStatus.pipelines.observedRepoKeys,
+                  launchRuntime: settingsStatus.pipelines.launchRuntime ?? null,
+                })
+              : `count:${settingsStatus?.pipelines.observing ?? 0}`
+          }
+          onClose={closeDispatchOpening}
+          onOpenSchedule={onOpenSchedule}
+          onOpenLaunchFix={fix => {
+            if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+            openLaunchFix(fix);
+          }}
+          onOpenEnvironmentFix={check => {
+            if (followUpRequest?.followUp) requestDispatch({ kind: "repair-follow-up", followUp: followUpRequest.followUp });
+            openEnvironmentFix(check);
+          }}
+          onEnsembleLaunched={openEnsembleRun}
+          residentProfiles={residentProfiles}
+          onEditResidentProfile={(profileId) =>
+            navigate(profileId ? { page: "residents", profileId } : { page: "residents" })}
+        />
       </div>
       </TourTargetHost>
       </ResidentRestartPromptContext.Provider>

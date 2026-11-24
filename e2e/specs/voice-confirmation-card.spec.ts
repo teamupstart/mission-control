@@ -41,6 +41,23 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
 });
 
+test("the accessible countdown announces its initial duration without repeating the visual ticks", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 8);
+  await runningAgent(page, daemon, "Steve");
+  await say(daemon, "Steve, read the timer");
+  const card = page.getByRole("status").filter({ hasText: "read the timer" });
+  const seconds = card.locator(".vc-seconds");
+  await expect(seconds).toBeVisible();
+  const initial = await seconds.innerText();
+  const announcement = await card.ariaSnapshot();
+  expect(announcement).toMatch(/opened with (up to )?\d+ seconds? to cancel or send now/i);
+  expect(announcement).not.toMatch(/\b\d+s\b/);
+  await expect(seconds).not.toHaveText(initial);
+  expect(await card.ariaSnapshot()).toBe(announcement);
+  await card.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
 test("a stalled card action reports the unconfirmed request and permits a retry", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 8);
   await runningAgent(page, daemon, "Steve");
@@ -381,15 +398,21 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
   } })).ok()).toBe(true);
   await page.addInitScript(() => {
     document.hasFocus = () => false;
-    const closed: string[] = [];
+    const open = new Set<{ tag: string }>();
+    const reportOpen = () => {
+      document.documentElement.dataset.openNotices = JSON.stringify([...open].map(note => note.tag));
+    };
     Object.defineProperty(window, "Notification", { value: class {
       static permission = "granted";
-      constructor(_title: string, readonly options: NotificationOptions) {
-        document.documentElement.dataset.openNotice = options.tag;
+      readonly tag: string;
+      constructor(_title: string, options: NotificationOptions) {
+        this.tag = options.tag!;
+        open.add(this);
+        reportOpen();
       }
       close() {
-        closed.push(this.options.tag!);
-        document.documentElement.dataset.closedNotices = closed.join(",");
+        open.delete(this);
+        reportOpen();
       }
     } });
   });
@@ -397,14 +420,14 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
   await runningAgent(page, daemon, "Steve");
   const notices = page.locator("html");
   await say(daemon, "Steve, drop this", { id: "early-close" });
-  await expect(notices).toHaveAttribute("data-open-notice", "voice-early-close");
+  await expect(notices).toHaveAttribute("data-open-notices", JSON.stringify(["voice-early-close"]));
   await page.getByRole("status").filter({ hasText: "drop this" }).getByRole("button", { name: "Cancel" }).click();
-  await expect(notices).toHaveAttribute("data-closed-notices", "voice-early-close");
+  await expect(notices).toHaveAttribute("data-open-notices", "[]");
   await say(daemon, "Steve, deliver this", { id: "disconnected" });
-  await expect(notices).toHaveAttribute("data-open-notice", "voice-disconnected");
+  await expect(notices).toHaveAttribute("data-open-notices", JSON.stringify(["voice-disconnected"]));
   await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
   await expect.poll(() => withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns").all().map(r => r.spoken_words))).toEqual(["deliver this"]);
-  await expect(notices).toHaveAttribute("data-closed-notices", "voice-early-close,voice-disconnected", { timeout: 2000 });
+  await expect(notices).toHaveAttribute("data-open-notices", "[]", { timeout: 2000 });
   const card = page.getByRole("status").filter({ hasText: "deliver this" });
   await expect(card).toContainText("Awaiting delivery confirmation", { timeout: 2000 });
   await expect(card.getByRole("button")).toHaveCount(0);

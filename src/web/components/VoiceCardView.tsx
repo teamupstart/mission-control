@@ -55,6 +55,17 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
   });
 }
 
+/** The live region announces the available time once when this window becomes visible. */
+function CountdownAnnouncement({ card, deadline }: { card: DashboardVoiceCard; deadline: number }) {
+  const [message] = useState(() => {
+    const seconds = voiceCountdownSeconds(deadline - performance.now(), card.windowMs);
+    if (!seconds) return "";
+    const amount = (card.provisionalDeadline ? "up to " : "") + seconds + (seconds === 1 ? " second" : " seconds");
+    return "This card opened with " + amount + " to cancel or send now.";
+  });
+  return <span className="sr-only">{message}</span>;
+}
+
 export function VoiceCardView({ card, actions, operation, hidden = false, fading = false }: {
   card: DashboardVoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string, retryAfterMs?: number): Promise<void> };
@@ -181,6 +192,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
         {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
+          <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
             {cancel}{button(sendLabel, sendHint, () => act("send-now"), "btn-send")}</div></>}</>;

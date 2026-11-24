@@ -71,6 +71,12 @@ After applying the directive, pass the opaque revision back as `?revision=...` t
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
 `pauseMs` is optional and unused. This daemon sends null.
 
+When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
+`x-voice-release-revision` (the held capture revision) and `x-voice-release-at` (epoch
+milliseconds). A helper applying that exact held revision closes its input immediately and
+uses key-up as the boundary for the unfinished phrase. It can finish decoding and posting
+the held audio with the original revision. An ordinary capture stop discards unfinished work.
+
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
 steady background noise can continue between utterances. Parakeet transcribes each segment
@@ -83,8 +89,8 @@ labels. The rest of the decoder transcript, including its punctuation, passes th
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
 Only text, relative word timings and capture metadata reach the daemon. Samples and pending
-utterances stay in memory. A changed directive ends the current capture segment, discards
-buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
+utterances stay in memory. Except for a matching push-to-talk release, a changed directive
+discards buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
 If a hardware change stops the engine, the helper refreshes its directive and opens a new
 input if capture is still enabled. Losing an explicitly selected UID produces an input error.
 A failed directive poll closes the microphone and exits. The helper writes no recordings or
@@ -103,7 +109,10 @@ Use a fresh ID per capture and epoch milliseconds for `capturedAt`.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
-The response is `{ accepted }`. Only listening and push-to-talk accept captures.
+The response is `{ accepted }`. Listening and push-to-talk accept captures. During the
+auto-mute immediately following key-up, the daemon also accepts the same owner's held
+revision for segments captured by the release timestamp. A new directive, including manual
+mute, revokes that exception.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.

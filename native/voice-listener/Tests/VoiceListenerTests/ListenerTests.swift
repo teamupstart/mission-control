@@ -142,6 +142,33 @@ final class ListenerTests: XCTestCase {
         XCTAssertFalse(result.words.isEmpty)
     }
 
+    func testKeyReleaseTranscribesTheFinalPhraseWithoutWaitingForSilence() async throws {
+        let (models, corpus) = try fixtureDirectories()
+        let audio = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let end = try XCTUnwrap(audio.lastIndex { abs($0) > 0.004 }) + 1
+        let held = Array(audio.prefix(end))
+        let capture = try SpeechSegmenter()
+        let release = 1000 + Int64((end + 15) / 16)
+        XCTAssertTrue(capture.consume(held, now: release).isEmpty)
+        let final = try XCTUnwrap(capture.finish(at: release))
+        XCTAssertEqual(final.samples.suffix(100), held.suffix(100))
+        XCTAssertNil(capture.finish(at: release))
+        let recognizer = try await Recognizer(directory: models)
+        let result = try await recognizer.transcribe(final, boosting: nil)
+        XCTAssertEqual(result?.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
+        XCTAssertFalse(try XCTUnwrap(result).words.isEmpty)
+    }
+
+    func testKeyReleaseClipsAtTheBoundaryAndCannotFlushDiscardedSpeech() {
+        var gate = SpeechGate()
+        XCTAssertNil(gate.finish(tail: [], at: 1000))
+        let frame = Array(repeating: Float(0.5), count: 320)
+        XCTAssertNil(gate.feed(frame, active: true, now: 1020))
+        XCTAssertEqual(gate.finish(tail: [0.1, 0.2], at: 1010)?.samples, Array(frame.prefix(160)))
+        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, now: 31_000))
+        XCTAssertNil(gate.finish(tail: [], at: 31_000))
+    }
+
     func testMissingCTCDisablesPrimingAndStillTranscribes() async throws {
         let (models, corpus) = try fixtureDirectories()
         let files = FileManager.default

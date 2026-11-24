@@ -6,7 +6,8 @@ import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
   VOICE_LISTENER_ID_HEADER,
-  type VoiceListenerDirective,
+  VOICE_RELEASE_REVISION_HEADER,
+  VOICE_RELEASE_TIME_HEADER,
   VoiceConfigPatchSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
@@ -92,14 +93,13 @@ export function registerVoiceRoutes(
     const id = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
     const current = store.directive();
-    if (c.req.query("revision") !== current.revision) return c.json(current);
     const signal = c.req.raw.signal;
-    const next = await new Promise<VoiceListenerDirective>((resolve) => {
+    if (c.req.query("revision") === current.revision) await new Promise<void>((resolve) => {
       const finish = () => {
         unsubscribe();
         clearTimeout(timeout);
         signal.removeEventListener("abort", finish);
-        resolve(store.directive());
+        resolve();
       };
       const unsubscribe = store.onChange((state) => {
         if (store.directive(state).revision !== current.revision) finish();
@@ -108,7 +108,14 @@ export function registerVoiceRoutes(
       signal.addEventListener("abort", finish, { once: true });
       if (signal.aborted) finish();
     });
-    return store.ownsCapture(id) ? c.json(next) : c.json({ error: "not_listener_owner" }, 409);
+    if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
+    const next = store.directive();
+    const release = store.releasedCapture(next);
+    if (release) {
+      c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
+      c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
+    }
+    return c.json(next);
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
@@ -142,9 +149,12 @@ export function registerVoiceUtteranceRoutes(
     if (!parsed.ok) return parsed.res;
     // Capture may have stopped and resumed while the request was in flight or its body was being read.
     const directive = voiceStateStore.directive();
-    if (!directive.capture || !voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER)) ||
-      c.req.query("revision") !== directive.revision) return c.json({ accepted: false });
-    return c.json({ accepted: await router.accept(parsed.data) });
+    if (!voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) return c.json({ accepted: false });
+    const revision = c.req.query("revision");
+    const release = voiceStateStore.releasedCapture(directive);
+    const heldBeforeRelease = release !== undefined && revision === release.revision && parsed.data.capturedAt <= release.at;
+    if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
+    return c.json({ accepted: await router.accept(parsed.data, heldBeforeRelease) });
   });
   app.get("/api/voice/heard", gate, (c) => {
     c.header("Cache-Control", "no-store");

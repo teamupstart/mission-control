@@ -419,6 +419,9 @@ export function voiceStateOff(): VoiceState {
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 3;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
+/** Response headers on the capture-off directive for an explicit push-to-talk key release. */
+export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
+export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-at";
 export const VoiceListenerIdSchema = z.uuid();
 
 /** The values macOS reports for a media permission, which a Linux listener can also name. */

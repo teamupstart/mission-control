@@ -15,6 +15,7 @@ struct Device: Encodable {
 final class Segment {
     let label: String
     init(_ label: String) { self.label = label }
+    func through(_ release: Int64) -> Segment? { self }
     deinit { observe("released " + label) }
 }
 
@@ -59,11 +60,17 @@ final class Segment {
         }
     }
 
-    func stop() {
+    @discardableResult func stop(releasedAt: Int64? = nil) -> Segment? {
         disruption?.cancel()
         isRunning = false
         observe("stopped \(opening)")
         source.finish()
+        if releasedAt != nil {
+            Recognizer.pendingDecode?.resume()
+            Recognizer.pendingDecode = nil
+            return Segment("final phrase")
+        }
+        return nil
     }
 
     deinit { observe("released microphone \(opening)") }

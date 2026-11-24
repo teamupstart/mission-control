@@ -64,6 +64,13 @@ struct Device: Encodable {
 struct Segment {
     let samples: [Float]
     let capturedAt: Int64
+
+    func through(_ release: Int64) -> Segment? {
+        guard release > capturedAt else { return nil }
+        let durationMs = Int64((samples.count + 15) / 16)
+        if release >= capturedAt + durationMs { return self }
+        return Segment(samples: Array(samples.prefix(Int(release - capturedAt) * 16)), capturedAt: capturedAt)
+    }
 }
 
 // Keep an onset lead-in and bound the audio retained between speech boundaries.
@@ -75,6 +82,16 @@ struct SpeechGate {
     private var quiet = 0
     private var start: Int64 = 0
     private var discarding = false
+
+    // Key-up is an explicit end of speech. Silence alone or a discarded prefix
+    // cannot become a command, even when the operator releases the key.
+    mutating func finish(tail: [Float], at release: Int64) -> Segment? {
+        defer { self = SpeechGate() }
+        guard !discarding, !samples.isEmpty else { return nil }
+        let segment = Segment(samples: samples + tail, capturedAt: start).through(release)
+        guard let segment, segment.samples.count <= Self.maxSegmentSamples else { return nil }
+        return segment
+    }
 
     mutating func feed(_ frame: [Float], active: Bool, now: Int64) -> Segment? {
         guard !frame.isEmpty else { return nil }
@@ -127,6 +144,11 @@ final class SpeechSegmenter {
 
     deinit { fvad_free(detector) }
 
+    func finish(at release: Int64) -> Segment? {
+        defer { pending.removeAll() }
+        return gate.finish(tail: pending, at: release)
+    }
+
     func consume(_ samples: [Float], now: Int64) -> [Segment] {
         var result: [Segment] = []
         var offset = 0
@@ -143,7 +165,7 @@ final class SpeechSegmenter {
             // our own 800 ms boundary immediately when the signal is already quiet.
             let voiced = fvad_process(detector, pcm, pcm.count) == 1
             let active = voiced && pending.reduce(0) { $0 + $1 * $1 } > Float(pending.count) * 0.000016
-            let end = now - Int64((samples.count - offset) / 16)
+            let end = now - Int64((samples.count - offset + 15) / 16)
             if let segment = gate.feed(pending, active: active, now: end) { result.append(segment) }
             pending.removeAll(keepingCapacity: true)
         }
@@ -157,6 +179,8 @@ final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
     private let segmenter: SpeechSegmenter
+
+    func finish(at release: Int64) -> Segment? { segmenter.finish(at: release) }
 
     init(source: AVAudioFormat) throws {
         guard source.sampleRate > 0, source.channelCount > 0,
@@ -187,6 +211,8 @@ final class Microphone {
     private let engine: AVAudioEngine
     var isRunning: Bool { engine.isRunning }
     private var configurationObserver: NSObjectProtocol?
+    private let tapLock = NSLock()
+    private var segmenter: InputSegmenter?
     private let continuation: AsyncStream<Segment>.Continuation
     let segments: AsyncStream<Segment>
 
@@ -213,11 +239,9 @@ final class Microphone {
         let input = engine.inputNode
         let source = input.outputFormat(forBus: 0)
         guard !input.isVoiceProcessingEnabled else { throw CaptureError.format }
-        let segmenter = try InputSegmenter(source: source)
-        input.installTap(onBus: 0, bufferSize: 1024, format: source) { [continuation] buffer, _ in
-            for segment in segmenter.consume(buffer, now: Int64(Date().timeIntervalSince1970 * 1000)) {
-                continuation.yield(segment)
-            }
+        segmenter = try InputSegmenter(source: source)
+        input.installTap(onBus: 0, bufferSize: 1024, format: source) { [weak self] buffer, _ in
+            self?.consume(buffer)
         }
         configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
                                                                       object: engine, queue: nil) { [weak self] _ in
@@ -229,13 +253,27 @@ final class Microphone {
         catch { stop(); throw error }
     }
 
-    func stop() {
+    private func consume(_ buffer: AVAudioPCMBuffer) {
+        tapLock.withLock {
+            guard let segmenter else { return }
+            for segment in segmenter.consume(buffer, now: Int64(Date().timeIntervalSince1970 * 1000)) {
+                continuation.yield(segment)
+            }
+        }
+    }
+
+    @discardableResult func stop(releasedAt: Int64? = nil) -> Segment? {
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
         }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
-        continuation.finish()
+        return tapLock.withLock {
+            let final = releasedAt.flatMap { segmenter?.finish(at: $0) }
+            segmenter = nil
+            continuation.finish()
+            return final
+        }
     }
 }

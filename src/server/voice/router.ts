@@ -66,9 +66,9 @@ export class VoiceRouter {
     return latest;
   }
 
-  async accept(utterance: VoiceUtterance): Promise<boolean> {
+  async accept(utterance: VoiceUtterance, heldBeforeRelease = false): Promise<boolean> {
     const { mode, roster, backend } = this.state();
-    if (!voiceCaptures(mode) || backend !== utterance.backend) return false;
+    if (!(voiceCaptures(mode) || (mode === "auto-muted" && heldBeforeRelease)) || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
     const receivedAt = Date.now();
     if (capturedAt > receivedAt + MAX_CAPTURE_CLOCK_SKEW_MS) return false;

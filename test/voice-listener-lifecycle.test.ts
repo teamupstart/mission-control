@@ -140,6 +140,21 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     assert.deepEqual(posted, [{ text: "fresh", revision: "resumed" }]);
   });
 
+  it("key release closes the microphone and drains the in-flight, queued and final speech on the held revision", async (t) => {
+    const { events, posted, nextPoll, apply } = await launch(t);
+    await until(() => events.includes("decode in-flight"), "recognition in progress");
+    const off = await nextPoll("first");
+    off.setHeader("x-voice-release-revision", "first");
+    off.setHeader("x-voice-release-at", String(Date.now()));
+    apply(off, "released", false);
+    await nextPoll("released");
+    await until(() => posted.length === 3, "all held speech to drain after closing");
+    assert.ok(events.includes("stopped 1"));
+    assert.ok(events.indexOf("stopped 1") < events.indexOf("decode final phrase"));
+    assert.deepEqual(events.filter(e => e.startsWith("opened ")), ["opened 1"]);
+    assert.deepEqual(posted, ["in-flight", "buffered", "final phrase"].map(text => ({ text, revision: "first" })));
+  });
+
   it("primes the recognizer with the replacement roster while capture stays enabled", async (t) => {
     const first = ["Steve", "Atlas"];
     const replacement = ["Atlas", "Luna"];

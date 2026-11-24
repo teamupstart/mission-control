@@ -119,6 +119,46 @@ test("only one listener can capture or deliver, and its heartbeat lease transfer
   assert.equal((await readHeard()).length, 2);
 });
 
+test("only pre-release speech from the held revision can finish during call auto-mute", async (t) => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const press = (pushToTalk: boolean) => post("/voice/shell-report", { callActive: true, pushToTalk }, token);
+  const poll = () => app.request("/voice/listener/directive", {
+    headers: { "x-harness-token": token, "x-voice-listener-id": listenerId },
+  });
+  const submit = async (revision: string, capturedAt: number, id: string) =>
+    (await post(utterancePath(revision), { ...capture("Steve finish this", id), capturedAt }, token)).json();
+  await press(true);
+  const held = voiceStateStore.directive();
+  assert.equal(held.capture, true);
+  t.mock.timers.tick(100);
+  await press(false);
+  const off = await poll();
+  assert.equal(off.headers.get("x-voice-release-revision"), held.revision);
+  assert.equal(off.headers.get("x-voice-release-at"), String(now + 100));
+  const released = await off.json();
+  assert.equal(released.capture, false);
+  assert.equal(voiceStateStore.state().mode, "auto-muted");
+  await press(false); // A duplicate key-up heartbeat must preserve the drain.
+  assert.deepEqual(await submit(held.revision, now, "in-flight"), { accepted: true });
+  assert.deepEqual(await submit(held.revision, now + 99, "tail"), { accepted: true });
+  assert.deepEqual(await submit(held.revision, now + 101, "too-late"), { accepted: false });
+  assert.deepEqual(await submit(released.revision, now, "capture-off"), { accepted: false });
+  assert.deepEqual(cards.map(card => card.id), ["in-flight", "tail"]);
+
+  await post("/api/voice/mute", { muted: true });
+  assert.equal((await poll()).headers.get("x-voice-release-revision"), null);
+  assert.deepEqual(await submit(held.revision, now, "after-mute"), { accepted: false });
+  await post("/api/voice/mute", { muted: false });
+  assert.deepEqual(await submit(held.revision, now, "after-unmute"), { accepted: false });
+  await press(true);
+  const next = voiceStateStore.directive();
+  await post("/api/voice/mute", { muted: true }); // An actual mute while held also discards.
+  await press(false);
+  assert.equal((await poll()).headers.get("x-voice-release-revision"), null);
+  assert.deepEqual(await submit(next.revision, now, "muted-while-held"), { accepted: false });
+});
+
 test("only the selected live recognizer can open or cancel a card after switching backends", async (t) => {
   const configure = (backend: string) => app.request("/api/voice/config", { method: "PUT",
     headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ backend }) });

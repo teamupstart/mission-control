@@ -67,7 +67,8 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { directive: VoiceListenerDirective; recipients: string };
+  private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean };
+  private release?: { revision: string; at: number };
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
@@ -89,17 +90,24 @@ export class VoiceStateStore {
 
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
-    const capture = voiceCaptures(state.mode) && this.liveHello()?.hello.microphone === "granted";
+    const granted = this.liveHello()?.hello.microphone === "granted";
+    const capture = voiceCaptures(state.mode) && granted;
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
     const inputDevice = this.deps.config().inputDevice;
     const last = this.lastDirective;
-    if (last && last.directive.capture === capture && last.directive.inputDevice === inputDevice &&
+    if (last && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
       last.recipients === recipients) return last.directive;
     const directive = { capture, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
-    this.lastDirective = { directive, recipients };
+    this.release = undefined;
+    this.lastDirective = { directive, recipients, mode: state.mode, granted };
     return directive;
+  }
+
+  /** Only the current capture-off revision can finish the immediately preceding held capture. */
+  releasedCapture(directive: VoiceListenerDirective) {
+    return this.lastDirective?.directive === directive ? this.release : undefined;
   }
 
   /**
@@ -223,8 +231,14 @@ export class VoiceStateStore {
   /** Take the shell's report. The latest one wins whole. */
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
+    const held = !report.pushToTalk && this.report?.report.pushToTalk && this.state().mode === "push-to-talk"
+      ? this.directive() : null;
     this.report = { at, report };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
+    if (held?.capture && this.state().mode === "auto-muted") {
+      this.directive();
+      this.release = { revision: held.revision, at };
+    }
     this.publish();
   }
 
@@ -251,6 +265,7 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.release = undefined;
     this.lastDirective = undefined;
     this.hello = null;
     this.refused = null;

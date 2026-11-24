@@ -303,9 +303,9 @@ type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
  * against the seed instead of "" is what keeps Clear greyed out on a form nobody has
  * touched yet.
  */
-function isEmptyDispatchDraft(d: DispatchDraft): boolean {
+function isEmptyDispatchDraft(d: DispatchDraft, seedRepo = readLastDispatchRepo()): boolean {
   return (
-    d.repoRoot.trim() === readLastDispatchRepo() &&
+    d.repoRoot.trim() === seedRepo &&
     d.extraRepoRoots.length === 0 &&
     !d.intent.trim() &&
     !d.title.trim() &&
@@ -1034,10 +1034,10 @@ function DispatchDraftOwner({
    */
   const onEnsembleClear = useCallback(() => {
     revokeAttachments(draftRef.current.attachments);
-    setDraft(freshDispatchDraft());
+    setDraft(freshDispatchDraft(seedRepo));
     setGuidedPass(null);
     setEnsembleDraft(freshEnsembleDraft());
-  }, []);
+  }, [seedRepo]);
 
   /**
    * An Ensemble was accepted. Like a Single dispatch it clears the compose draft and revokes
@@ -1209,6 +1209,7 @@ function DispatchDraftOwner({
       onDraftChange={setDraft}
       provisionalWorkflowRef={draftProvisionalWorkflow}
       onAttachmentsChange={onAttachmentsChange}
+      seedRepo={seedRepo}
       onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
@@ -1224,12 +1225,13 @@ function DispatchDraftOwner({
   );
 }
 
-export function DispatchLayer(props: React.ComponentProps<typeof DispatchDraftOwner>) {
+export function DispatchLayer({ repairFollowUpId, ...props }: React.ComponentProps<typeof DispatchDraftOwner> & { repairFollowUpId?: string }) {
   const followUp = props.opening?.kind === "new" ? props.opening.followUp : undefined;
+  const retainedId = followUp?.id ?? repairFollowUpId;
   // Keep the regular owner's drafts and guided progress mounted underneath the temporary form.
   return <>
     <DispatchDraftOwner {...props} opening={followUp ? null : props.opening} />
-    {followUp && <DispatchDraftOwner key={followUp.id} {...props} />}
+    {retainedId && <DispatchDraftOwner key={retainedId} {...props} opening={followUp ? props.opening : null} />}
   </>;
 }
 
@@ -1256,6 +1258,7 @@ function DispatchModal({
   onDraftChange,
   provisionalWorkflowRef,
   onAttachmentsChange,
+  seedRepo,
   onRevert,
   onClose,
   onSubmitted,
@@ -1286,6 +1289,7 @@ function DispatchModal({
   provisionalWorkflowRef?: MutableRefObject<ProvisionalWorkflow | null>;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
+  seedRepo?: string;
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft, savedPinTask?: Task) => void;
@@ -3979,7 +3983,7 @@ function DispatchModal({
             onClick={mode.kind === "ensemble" ? mode.onEnsembleClear : clearDraft}
             disabled={
               busy ||
-              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft))
+              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft, seedRepo))
             }
           >
             {editing ? "Revert" : "Clear"}

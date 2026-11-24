@@ -210,6 +210,7 @@ export function dispatchModeProblem(mode: DispatchMode): string | null {
  * `edit` names its row by id, because the row itself is live and is read back per render.
  */
 export type DispatchRequest =
+  | { kind: "repair-follow-up"; followUp: NonNullable<Extract<DispatchOpening, { kind: "new" }>["followUp"]> }
   | Extract<DispatchOpening, { kind: "new" }>
   | { kind: "edit"; taskId: string }
   | { kind: "ensemble"; strategyId: EnsembleStrategyId }
@@ -247,6 +248,7 @@ export function resolveDispatchOpening(
 ): DispatchResolution {
   if (request === null) return { opening: null, problem: null };
   switch (request.kind) {
+    case "repair-follow-up": return { opening: null, problem: null };
     case "edit":
       return world.editTask && world.editTask.id === request.taskId
         ? { opening: { kind: "edit", task: world.editTask }, problem: null }

@@ -6,6 +6,7 @@ import {
   VoiceConfigSchema,
   type VoiceConfig,
   type VoiceConfigPatch,
+  type VoiceProviderIntent,
 } from "@shared/voice.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 
@@ -19,6 +20,7 @@ type Listener = (config: VoiceConfig) => void;
 const listeners = new Set<Listener>();
 const instance = randomUUID();
 let issued = 0;
+let receiptNonce = randomUUID();
 let latestIntentAt = performance.now();
 let applied = 0;
 let lastOptOut = 0;
@@ -30,14 +32,20 @@ export function providerRevision(): string {
   return `${instance}:${applied}`;
 }
 
+export function providerIntentReceipt(): string {
+  return `${instance}:${issued}:${receiptNonce}`;
+}
+
 function issueProviderOrder(): number {
   latestIntentAt = performance.now();
+  receiptNonce = randomUUID();
   return ++issued;
 }
 
 /** A gesture may retry only across an interval with no intervening selection. */
 export function providerIntentWindow() {
-  return { token: `${instance}:${issued}:${applied}`, quietForMs: performance.now() - latestIntentAt, pendingSelection: issued > applied };
+  return { token: `${instance}:${issued}:${applied}`, receipt: providerIntentReceipt(),
+    quietForMs: performance.now() - latestIntentAt, pendingSelection: issued > applied };
 }
 
 function canApply(writer: string, base: number): boolean {
@@ -47,15 +55,21 @@ function canApply(writer: string, base: number): boolean {
 }
 
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
-export function reserveProviderWrite(writer: string, revision: string, optOut: boolean, edit = 0, unchangedSince?: string): string | null {
-  if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token) return null;
-  if (reservation && reservation.order > applied && !unchangedSince && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
+export function reserveProviderWrite(intent: VoiceProviderIntent): string | null {
+  const { writer, observedRevision: revision, optOut = false, edit = 0, unchangedSince, observedIntent } = intent;
+  const observedLatest = observedIntent === providerIntentReceipt();
+  if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token && !(optOut && observedLatest)) return null;
+  if (reservation && reservation.order > applied && !unchangedSince && !observedLatest && (edit > 0 || reservation.edit > 0 || reservation.optOut)) {
     // A delayed gesture can cross an uncommitted selection without changing the
     // applied revision. Only this window's own edit sequence establishes order here.
     if (writer !== reservation.writer || edit <= reservation.edit || reservation.otherWriterOrder > applied) return null;
   }
-  const base = Number(revision.slice(instance.length + 1));
-  if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || !canApply(writer, base)) return null;
+  let base = Number(revision.slice(instance.length + 1));
+  if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || base < 0 || base > applied) return null;
+  if (!canApply(writer, base)) {
+    if (!optOut || !unchangedSince || !observedLatest) return null;
+    base = applied;
+  }
   const order = issueProviderOrder();
   reservation = reservation?.writer === writer
     ? { ...reservation, order, edit: Math.max(reservation.edit, edit), optOut }

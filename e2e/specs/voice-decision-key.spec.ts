@@ -543,6 +543,44 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     }
   });
 
+  test("a later Off can supersede a pending Jev even when its reservation response is slow", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await saveKey(page, "Jev", SAVED_JEV);
+    await providerMenu(page).selectOption("openai");
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const other = await context.newPage();
+    await other.clock.install();
+    await openVoiceSettings(other, daemon);
+    await expect(providerMenu(other)).toHaveValue("openai");
+    const jev = await holdProviderPut(page);
+    const responded = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await other.route("**/api/voice/config/provider-intent", async route => {
+      const response = await route.fetch();
+      responded.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    }, { times: 1 });
+    try {
+      await providerMenu(page).selectOption("jev");
+      await jev.held;
+      await providerMenu(other).selectOption("off");
+      await responded.promise;
+      await other.clock.fastForward(60_000);
+      release.resolve();
+      await expect(line(other)).toHaveText(NOT_SET, { timeout: 1_500 });
+    } finally {
+      release.resolve();
+      jev.release();
+    }
+    await expect(providerMenu(page)).toHaveValue("off");
+    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("job on codex answered: split");
+    expect(decisions.requests).toHaveLength(0);
+    await capture(panel(other).locator('[data-anchor="voice/faster-routing"]'), "35-later-off-slow-response");
+  });
+
   test("a later ticketed Off takes effect after an older Jev write commits", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

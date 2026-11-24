@@ -2,7 +2,7 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceState } from "@shared/voice.ts";
+import type { VoiceConfig, VoiceConfigPatch, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceState } from "@shared/voice.ts";
 import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
   SHAPING_WRITE_ORDER_HEADER,
@@ -498,13 +498,13 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
-export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig; providerRevision: string }>("/api/voice/config",
+export const fetchVoiceConfig = () => fetchJson<{ config: VoiceConfig; providerRevision: string; intentReceipt?: string }>("/api/voice/config",
   { headers: { "x-voice-provider-revision": "read" } });
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
 export const fetchVoiceDecisionKey = () =>
-  fetchJson<VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; providerRevision: string }>("/api/voice/decision-key",
+  fetchJson<VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"]; providerRevision: string; intentReceipt?: string }>("/api/voice/decision-key",
     { headers: { "x-voice-provider-revision": "read" } });
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
@@ -2506,9 +2506,9 @@ export const api = {
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
-  reserveVoiceProviderWrite: (writer: string, observedRevision: string, optOut: boolean, edit: number, unchangedSince?: string) =>
-    post<ActionResult & { ticket?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; quietForMs: number; pendingSelection: boolean } }>(
-      "/api/voice/config/provider-intent", { writer, observedRevision, optOut, edit, unchangedSince }),
+  reserveVoiceProviderWrite: (intent: VoiceProviderIntent) =>
+    post<ActionResult & { ticket?: string; intentReceipt?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; receipt: string; quietForMs: number; pendingSelection: boolean } }>(
+      "/api/voice/config/provider-intent", intent),
   setVoiceConfig: (patch: VoiceConfigPatch, ticket?: string) =>
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       ticket ? { headers: { "x-voice-provider-ticket": ticket } } : undefined),

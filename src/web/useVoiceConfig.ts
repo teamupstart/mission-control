@@ -9,6 +9,21 @@ import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices } from 
 
 const POLL_MS = 5000;
 
+// A receipt contains only a daemon instance, sequence and random nonce. Sharing
+// it before sending the PUT lets another window prove what preceded its click.
+const RECEIPT_KEY = "mission.voice.providerIntentReceipt";
+function observedIntentReceipt(): string | undefined {
+  try { return localStorage.getItem(RECEIPT_KEY) ?? undefined; } catch { return undefined; }
+}
+
+function rememberIntentReceipt(receipt?: string): void {
+  if (!receipt) return;
+  const [daemon, order] = receipt.split(":");
+  const [previous, lastOrder] = observedIntentReceipt()?.split(":") ?? [];
+  if (daemon === previous && Number(order) <= Number(lastOrder)) return;
+  try { localStorage.setItem(RECEIPT_KEY, receipt); } catch { /* Storage may be unavailable. */ }
+}
+
 function whyItFailed(error: string | undefined): string {
   const flat = (error ?? "").replace(/\s+/g, " ").trim();
   if (!flat) return "That change didn't stick - the daemon refused it.";
@@ -105,7 +120,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       const read = await fetchVoiceConfig();
       if (alive && read && id > appliedRead && nextEdit.current === at && pendingRef.current.length === 0) {
         appliedRead = id;
-        observeProvider(read.providerRevision, read.config.decisionProvider);
+        if (observeProvider(read.providerRevision, read.config.decisionProvider)) rememberIntentReceipt(read.intentReceipt);
         setConfirmed({ ...read.config, decisionProvider: latestProvider.current!.selection });
       }
     };
@@ -128,9 +143,12 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const selectedAt = performance.now();
     const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
     const optOut = decisionProvider === "off";
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observed, optOut, edit.id) : undefined;
+    const intent = { writer, observedRevision: observed, optOut, edit: edit.id,
+      observedIntent: changesProvider ? observedIntentReceipt() : undefined };
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite(intent) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
+      rememberIntentReceipt(order?.intentReceipt);
       const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
       const superseded = () => changesProvider && edit.id !== latestProviderEdit.current;
       if (!sendProvider && !changesSettings) {
@@ -139,15 +157,15 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       let res = sendProvider && order && !order.ticket ? order
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
-      // Compare elapsed durations, so the browser and daemon need no shared clock.
-      // If the daemon was idle longer than the entire trip since the click, its
-      // last intent predates this click. An opt-in must also have observed the
-      // current selection, even when the outstanding write has yet to commit.
+      // A receipt captured at click time establishes order independently of
+      // latency. Without one, the daemon's idle interval must cover the whole trip.
       const window = order?.intentWindow;
       const canRetry = optOut || (window?.pendingSelection && res.providerRevision === observed);
       if (canRetry && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
-          window && window.quietForMs > performance.now() - selectedAt) {
-        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, optOut, edit.id, window.token);
+          window && ((intent.observedIntent !== undefined && window.receipt === intent.observedIntent) ||
+            window.quietForMs > performance.now() - selectedAt)) {
+        const retry = await api.reserveVoiceProviderWrite({ ...intent, observedRevision: res.providerRevision, unchangedSince: window.token });
+        rememberIntentReceipt(retry.intentReceipt);
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }
       const unconfirmed = sendProvider && (!res.config || !res.providerRevision) &&
@@ -272,7 +290,10 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       const read = await fetchVoiceDecisionKey();
       if (alive && writes.current === at && id > appliedRead) {
         appliedRead = id;
-        if (read && !observeProvider(read.providerRevision, read.selection)) return;
+        if (read) {
+          if (!observeProvider(read.providerRevision, read.selection)) return;
+          rememberIntentReceipt(read.intentReceipt);
+        }
         setStatus({ revision: read?.providerRevision ?? providerRevision, report: read });
       }
     };

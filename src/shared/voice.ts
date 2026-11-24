@@ -118,6 +118,16 @@ export const VoiceConfigPatchSchema = z.object({
 }).partial().strict().refine((patch) => Object.keys(patch).length > 0, { message: "empty voice config update" });
 export type VoiceConfigPatch = z.infer<typeof VoiceConfigPatchSchema>;
 
+export const VoiceProviderIntentSchema = z.object({
+  writer: z.uuid(),
+  observedRevision: z.string().min(1).max(80),
+  optOut: z.boolean().optional(),
+  edit: z.int().positive().optional(),
+  observedIntent: z.string().min(1).max(128).optional(),
+  unchangedSince: z.string().min(1).max(80).optional(),
+}).strict();
+export type VoiceProviderIntent = z.infer<typeof VoiceProviderIntentSchema>;
+
 /** Apply a patch over a config: fields replace, and `cancelWindow` merges per key. */
 export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPatch): VoiceConfig {
   return VoiceConfigSchema.parse({

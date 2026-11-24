@@ -184,6 +184,25 @@ test("an uncommitted provider ticket blocks a cross-window Off reservation again
   assert.equal((await choose("jev", (await jev.json()).ticket)).status, 200);
 });
 
+test("a receipt proves the preceding pending intent and expires at the next selection", async () => {
+  const observedRevision = await readProviderRevision();
+  const reserve = (writer: string, optOut: boolean, observedIntent?: string) => json("/api/voice/config/provider-intent", "POST", {
+    writer, observedRevision, edit: 1, optOut, observedIntent,
+  });
+  const { intentReceipt, ticket: jev } = await (await reserve(randomUUID(), false)).json();
+  assert.ok(intentReceipt);
+  const b = randomUUID();
+  assert.equal((await reserve(b, true, "unknown-receipt")).status, 409);
+  const later = await reserve(b, true, intentReceipt);
+  assert.equal(later.status, 200);
+  const off = await later.json();
+  assert.notEqual(off.intentReceipt, intentReceipt);
+  assert.equal((await reserve(randomUUID(), false, intentReceipt)).status, 409);
+  assert.equal((await choose("off", off.ticket)).status, 200);
+  assert.equal((await choose("jev", jev)).status, 409);
+  assert.equal((await reserve(randomUUID(), false, off.intentReceipt)).status, 409);
+});
+
 test("a window can supersede only its own earlier pending Off", async () => {
   const a = randomUUID(), b = randomUUID(), revision = await readProviderRevision();
   const reserve = (writer: string, edit: number, optOut: boolean, unchangedSince?: string) => json("/api/voice/config/provider-intent", "POST", {

@@ -16,12 +16,13 @@ import {
   VoiceConfigPatchSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
+  VoiceProviderIntentSchema,
   VoiceShellReportSchema,
 } from "@shared/voice.ts";
 import { checkToken } from "../auth.ts";
 import { featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { getVoiceConfig, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
+import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 
@@ -79,19 +80,14 @@ export function registerVoiceRoutes(
   });
   app.get("/api/voice/config", gate, (c) => c.json({
     config: getVoiceConfig(),
-    ...(c.req.header("x-voice-provider-revision") === "read" && { providerRevision: providerRevision() }),
+    ...(c.req.header("x-voice-provider-revision") === "read" && { providerRevision: providerRevision(), intentReceipt: providerIntentReceipt() }),
   }));
-  const providerIntent = z.object({
-    writer: z.uuid(), observedRevision: z.string().min(1).max(80), optOut: z.boolean().optional(),
-    edit: z.int().positive().optional(), unchangedSince: z.string().min(1).max(80).optional(),
-  });
   app.post("/api/voice/config/provider-intent", gate, limitBody, async (c) => {
-    const parsed = await parseBody(c, providerIntent, { strict: true });
+    const parsed = await parseBody(c, VoiceProviderIntentSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
-    const { writer, observedRevision, optOut, edit, unchangedSince } = parsed.data;
-    const ticket = reserveProviderWrite(writer, observedRevision, optOut === true, edit, unchangedSince);
-    return ticket ? c.json({ ticket }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
+    const ticket = reserveProviderWrite(parsed.data);
+    return ticket ? c.json({ ticket, intentReceipt: providerIntentReceipt() }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
   });
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
@@ -128,7 +124,7 @@ export function registerVoiceRoutes(
       ...report,
       ...(saved === null && { savedKeysUnavailable: true }),
       ...(c.req.header("x-voice-provider-revision") === "read" && {
-        selection: config.decisionProvider, providerRevision: providerRevision(),
+        selection: config.decisionProvider, providerRevision: providerRevision(), intentReceipt: providerIntentReceipt(),
       }),
     });
   });

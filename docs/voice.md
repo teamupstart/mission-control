@@ -540,6 +540,8 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   A window with a stale view can retry Off when the daemon's last provider intent
   predates the click. An intervening reservation also invalidates that retry.
   An uncommitted reservation also counts when ordering clicks from different windows.
+  Dashboard windows share the daemon's latest reservation receipt before submitting a write.
+  A click carrying that receipt follows the reservation even if its response arrives much later.
   This protects a pending Off from a delayed opt-in and a pending provider from a delayed Off.
   A later opt-in can still switch providers if its window observed the current selection.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.

@@ -49,6 +49,11 @@ try {
   const contents = fs.readFileSync(fixture, "utf8");
   const response = target === activityQuery + "1" ? JSON.stringify(JSON.parse(contents).slice(0, 1)) : contents;
   if (fixture === ${JSON.stringify(branchActivity)} && fs.existsSync(${JSON.stringify(holdActivity)})) {
+    if (fs.readFileSync(${JSON.stringify(holdActivity)}, "utf8") === "hold second read") {
+      fs.writeFileSync(${JSON.stringify(holdActivity)}, "");
+      process.stdout.write(response);
+      return;
+    }
     fs.writeFileSync(${JSON.stringify(activityPending)}, "");
     const timer = setInterval(() => {
       if (fs.existsSync(${JSON.stringify(holdActivity)})) return;
@@ -3630,14 +3635,14 @@ test("a GitHub-only push during commit resolution cannot spend the recovered rou
   } finally { await manager.stop(); }
 });
 
-for (const change of ["new ref update on the same SHA", "unavailable final PR read"] as const) {
+for (const change of ["new ref update on the same SHA", "PR closes during the final activity read", "unavailable final PR read"] as const) {
   test(`legacy replacement selection waits for live confirmation: ${change}`, async () => {
     let applyChange = false;
     const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
       if (head === "historical" && applyChange) {
         applyChange = false;
         if (change === "unavailable final PR read") rmSync(recoveryPr);
-        else writeFileSync(holdActivity, "");
+        else writeFileSync(holdActivity, change === "PR closes during the final activity read" ? "hold second read" : "");
       }
       return head;
     } });
@@ -3649,18 +3654,22 @@ for (const change of ["new ref update on the same SHA", "unavailable final PR re
       const recover = await legacyRecoveryRoute(seeded);
       applyChange = true;
       assert.equal((await recover()).status, 200);
-      if (change === "new ref update on the same SHA") {
+      if (change !== "unavailable final PR read") {
         await waitFor(() => existsSync(activityPending), "the final ref read did not start");
-        // The first tip response is in flight; GitHub returns the same PR head
-        // after a push away and back, but the second ref update ID will differ.
-        const [previous, ...rest] = JSON.parse(readFileSync(branchActivity, "utf8"));
-        writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 1 }, ...rest]));
+        if (change === "PR closes during the final activity read") {
+          writeFileSync(recoveryPr, JSON.stringify({ ...JSON.parse(pull.toString()), state: "closed" }));
+        } else {
+          // The first tip response is in flight; the PR returns to the same head.
+          const [previous, ...rest] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 1 }, ...rest]));
+        }
         rmSync(holdActivity);
       }
       await manager.settleBackgroundWork();
       assert.equal(applyChange, false);
       assert.deepEqual(store.listSubmissions(ids.run), submissions);
-      if (change === "new ref update on the same SHA") {
+      if (change !== "unavailable final PR read") {
+        assert.equal(getInspectorPr(key)?.observedState, "OPEN");
         assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
       } else {
         assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");

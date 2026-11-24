@@ -302,24 +302,25 @@ const recoveryTip = z.object({
   ref: z.string().startsWith("refs/heads/"), activityId: z.number().int().positive(), changedAt: z.number(),
 });
 
-/** Bracket the final open-PR read with the receipt's ref update before spending the round. */
+/** Require two matching ref/PR snapshots, ending on the open PR and its current head. */
 export async function recheckInspectorRecoveryTip(prUrl: string, head: string, receipt: unknown): Promise<boolean | null> {
   const pr = parsePrUrl(prUrl);
   const saved = recoveryTip.safeParse(receipt);
   if (!pr || !saved.success || saved.data.prKey !== pr.key || saved.data.headSha !== head) return false;
   const { repository, ref, activityId, changedAt } = saved.data;
-  const matchesTip = async () => {
+  // The second ref read catches a return to the SHA during the first PR read.
+  // Closing the PR doesn't move its ref, so each pair ends with the PR itself.
+  for (let sample = 0; sample < 2; sample++) {
     const tip = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
+    const pull = await readRecoveryPull(pr);
+    if (!pull) return null;
+    if (pull.state !== "open" || pull.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
+        || `refs/heads/${pull.head.ref}` !== ref || pull.head.sha !== head) return false;
     if (!tip.success) return null;
     const [latest] = tip.data;
-    return latest.ref === ref && latest.after === head && latest.id === activityId && latest.changedAt === changedAt;
-  };
-  const before = await matchesTip();
-  const pull = await readRecoveryPull(pr);
-  if (!pull) return null;
-  if (pull.state !== "open" || pull.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
-      || `refs/heads/${pull.head.ref}` !== ref || pull.head.sha !== head) return false;
-  return before === true ? matchesTip() : before;
+    if (latest.ref !== ref || latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt) return false;
+  }
+  return true;
 }
 
 export async function readInspectorBranchActivity(prUrl: string, expectedHead: string): Promise<InspectorBranchActivity | null> {

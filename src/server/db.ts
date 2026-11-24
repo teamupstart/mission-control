@@ -13370,8 +13370,14 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
 }
 
 export function moveSpokenTurns(fromKey: string, toKey: string): number {
+  if (fromKey === toKey) return 0;
   const d = openDb();
   const move = () => {
+    // A native key can already owe the same fingerprint. Merge before deleting the
+    // provisional key so a crash cannot separate its reservations from their release.
+    d.prepare(`INSERT OR IGNORE INTO session_spoken_releases (note_key, fingerprint)
+      SELECT ?, fingerprint FROM session_spoken_releases WHERE note_key = ?`).run(toKey, fromKey);
+    if (d.prepare("DELETE FROM session_spoken_releases WHERE note_key = ?").run(fromKey).changes) checkSpokenReleases = true;
     const moved = d.prepare("UPDATE session_other_sends SET note_key = ? WHERE note_key = ? AND spoken_boundary IS NOT NULL").run(toKey, fromKey);
     if (moved.changes) {
       otherSendChanges.add(fromKey);

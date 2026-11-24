@@ -54,10 +54,10 @@ function captureBoundary(path: string, offset?: number) {
     if (!proof || !coversPrefix(current)) return null;
     if (current.ctimeNs !== original.ctimeNs || current.size !== original.size) {
       // Growth can coincide with an in-place edit. Verify the original bytes twice on
-      // the same descriptor, even if more output arrives during the second pass.
+      // the same descriptor. The confirming pass must belong to a single revision.
       if (prefixDigest(fd) !== proof) return null;
       const final = statSync(path, { bigint: true });
-      if (!coversPrefix(final) || (final.ctimeNs !== current.ctimeNs && final.size <= current.size)) return null;
+      if (!coversPrefix(final) || fileVersion(final) !== fileVersion(current)) return null;
       current = final;
     }
     return { boundary: { offset: end, proof }, version: fileVersion(current) };
@@ -95,8 +95,7 @@ function fixedBoundaries(path: string, offsets: number[]): PreparedTranscriptBou
       const checked = hashPrefixes();
       if (!checked || ends.some(offset => proofs.get(offset)!.proof !== checked.get(offset)!.proof)) return null;
       const after = statSync(path, { bigint: true });
-      if (fileId(after) !== identity || after.size < end ||
-          (fileVersion(after) !== fileVersion(final) && after.size <= final.size)) return null;
+      if (fileVersion(after) !== fileVersion(final) || fileId(after) !== identity) return null;
       final = after;
     }
     return { proofs, eof: null, version: fileVersion(final), fileId: identity, size: Number(final.size) };

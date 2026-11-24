@@ -193,14 +193,14 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
   assert.deepEqual(boundIds(), []);
 });
 
-test("terminal handoff verifies its captured prefix while native output continues to append", async t => {
+test("terminal handoff accepts an intervening append and rejects a prefix rewritten during final verification", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
   const dir = mkdtempSync(join(tmpdir(), "spoken-active-boundary-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const read = claudeTranscript.messages!;
   const prefix = JSON.stringify({ padding: "x".repeat(128 * 1024) }) + "\n";
-  for (const mode of ["append", "edit-and-grow", "rotate"] as const) {
+  for (const mode of ["append", "edit-and-grow", "second-pass-edit", "rotate"] as const) {
     const key = "hash-during-" + mode;
     const path = join(dir, key);
     writeFileSync(path, prefix);
@@ -213,11 +213,11 @@ test("terminal handoff verifies its captured prefix while native output continue
     let writes = 0;
     const reads = t.mock.method(fs, "readSync", (fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
       const count = nativeRead(fd, buffer, offset, length, position);
-      if (position === 0) {
+      if (position === 0 && (!writes || (mode === "second-pass-edit" && writes === 1))) {
         if (mode === "rotate" && !writes) {
           writeFileSync(path + ".next", prefix);
           renameSync(path + ".next", path);
-        } else if (mode === "edit-and-grow" && !writes) {
+        } else if ((mode === "edit-and-grow" && !writes) || (mode === "second-pass-edit" && writes === 1)) {
           writeFileSync(path, prefix.replace("xxx", "yyy"));
         }
         appendFileSync(path, "{}\n");
@@ -242,6 +242,40 @@ test("terminal handoff verifies its captured prefix while native output continue
     spokenLedger.forgetCaches();
     const actual = spokenLedger.bound(conversation, read.after(path, 0).messages).rows.get("actual");
     assert.equal(actual?.received, mode === "append" ? received : undefined, mode);
+  }
+});
+
+test("handoff and fixed-offset proof batches retry a final-pass rewrite and growth before certifying the new revision", async t => {
+  const { captureHandoffBoundaries, transcriptBoundary, transcriptSnapshot } = await import("../src/server/transcript-boundary.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-proof-revision-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const prefix = "x".repeat(130_000);
+  for (const handoff of [true, false]) {
+    const path = join(dir, "transcript-" + handoff);
+    writeFileSync(path, prefix);
+    const original = transcriptBoundary(path, prefix.length);
+    const read = fs.readSync;
+    let passes = 0;
+    const mock = t.mock.method(fs, "readSync", (fd: number, buf: Buffer, offset: number, length: number, pos: number) => {
+      const n = read(fd, buf, offset, length, pos);
+      if (pos === 0 && ++passes <= 2) {
+        if (passes === 2) writeFileSync(path, "y" + prefix.slice(1) + "a");
+        appendFileSync(path, "a");
+      }
+      return n;
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.equal(captureHandoffBoundaries(path, [prefix.length], handoff), null);
+      assert.equal(passes, 2);
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+    const stable = captureHandoffBoundaries(path, [prefix.length], handoff);
+    assert.equal(stable?.version, transcriptSnapshot(path)?.version);
+    assert.notEqual(stable?.proofs.get(prefix.length)?.proof, original?.proof);
+    assert.deepEqual(stable?.proofs.get(prefix.length), transcriptBoundary(path, prefix.length));
   }
 });
 
@@ -681,6 +715,44 @@ test("marking an uncertain terminal paste sent preserves its original sender cla
     assert.equal(rival.bound(conversation, [late]).rows.has(late.id), mode === "already-flushed", mode);
     assert.equal(spokenLedger.bound(conversation, [late]).rows.size, 0);
     t.diagnostic(mode + ": later sender credited=" + (mode === "already-flushed") + ", spoken disclosures=0");
+  }
+});
+
+test("a pending spoken release follows competing reservations to the native conversation before any post-restart ledger read", async () => {
+  const { reserveSpokenTurn, spokenLedger, followSpokenConversationKey } = await import("../src/server/delivery-ledgers.ts");
+  const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+  for (const duplicate of [false, true]) {
+    const fake = fakeTranscript();
+    const key = "sdk:provisional-release-" + duplicate;
+    const native = "native-release-" + duplicate;
+    const source = fake.conversation(key);
+    const now = Date.now();
+    const text = "same received payload " + duplicate;
+    const first = claimSpoken(key, "first", text);
+    const retained = reserveSpokenTurn(source, "first", text, false, first, now);
+    assert.ok(db.retireDeliveredPendingTurn(first.id, first.revision, now, retained.id));
+    const second = claimSpoken(key, "second", text);
+    reserveSpokenTurn(source, "second", text, false, second, now);
+    assert.ok(db.loadSpokenTurns(key).every(row => row.contested));
+    const uncertain = db.markPendingTurnUncertain(second.id, second.revision, "lost receipt", now)!;
+    assert.ok(db.retryPendingTurn(second.id, uncertain.revision, now));
+    db.closeDb();
+    forgetDeliveryBindingState();
+    const debts = () => db.openDb().prepare("SELECT note_key FROM session_spoken_releases WHERE fingerprint = ? ORDER BY note_key")
+      .all(retained.fingerprint).map(row => row.note_key);
+    // Migration must tolerate a native reminder which was independently committed earlier.
+    if (duplicate) db.openDb().prepare("INSERT INTO session_spoken_releases VALUES (?, ?)").run(native, retained.fingerprint);
+    assert.throws(() => db.inTransaction(() => {
+      db.moveSpokenTurns(key, native);
+      throw new Error("rollback first native binding");
+    }), /rollback/);
+    assert.deepEqual(debts(), duplicate ? [native, key] : [key]);
+    followSpokenConversationKey(key, key, native);
+    assert.deepEqual(debts(), [native]);
+    const message = fake.append("native-first", text, now + 1);
+    const found = spokenLedger.bound(fake.conversation(native), [message]);
+    assert.equal(found.rows.get(message.id)?.id, retained.id);
+    assert.deepEqual(debts(), []);
   }
 });
 

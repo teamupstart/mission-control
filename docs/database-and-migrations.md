@@ -288,7 +288,8 @@ three-attempt limit. The outbox records the count across restart. Between attemp
 message is queued and can be recalled. After the third failure, the daemon releases the pending
 hold and tells the operator they can repeat the message.
 If the writer appends during the read, a second matching hash through that same offset
-confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
+confirms the prefix when the file revision stays stable throughout that second read. A change
+during confirmation requires a fresh capture. A replaced file or changed prefix invalidates a text-derived disclosure.
 The live dashboard and backward history pages verify visible text-bound receipts in a worker.
 Each page requests its distinct handoff offsets and its fixed end. If the file grows during
 verification, matching proofs on either side of a reread validate the original page while the
@@ -297,7 +298,8 @@ A visible match can require a search from handoff through older pages. The daemo
 those pages and rechecks the file revision before binding. An unrelated append needs no disclosure proof.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
 The same transaction records the conversation and fingerprint in `session_spoken_releases`.
-The next ledger read rechecks competing deliveries and acknowledges that release atomically,
+The first native binding moves pending releases and reservations in one transaction, combining
+duplicate fingerprints at the destination. The next ledger read rechecks competing deliveries and acknowledges that release atomically,
 including after restart. Marking an uncertain terminal turn sent atomically drops its payload
 and transfers the fingerprint, original handoff time, offset and prefix proof to
 `session_other_sends`. The sender claim follows the conversation's first native binding and

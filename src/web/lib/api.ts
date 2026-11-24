@@ -2506,9 +2506,9 @@ export const api = {
   setFeatureFlags: (intent: FeatureFlagIntent, options?: { signal?: AbortSignal }) =>
     put<ActionResult & { config?: FeatureFlagsConfig }>("/api/feature-flags", intent, options),
   // --- Voice, behind its preview flag (404 while it is off) ---
-  reserveVoiceProviderWrite: (writer: string, observedRevision: string) =>
-    post<ActionResult & { ticket?: string; config?: VoiceConfig; providerRevision?: string }>(
-      "/api/voice/config/provider-intent", { writer, observedRevision }),
+  reserveVoiceProviderWrite: (writer: string, observedRevision: string, unchangedSince?: string) =>
+    post<ActionResult & { ticket?: string; config?: VoiceConfig; providerRevision?: string; intentWindow?: { token: string; quietForMs: number } }>(
+      "/api/voice/config/provider-intent", { writer, observedRevision, unchangedSince }),
   setVoiceConfig: (patch: VoiceConfigPatch, ticket?: string) =>
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       ticket ? { headers: { "x-voice-provider-ticket": ticket } } : undefined),

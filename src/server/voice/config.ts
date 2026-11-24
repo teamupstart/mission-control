@@ -19,12 +19,23 @@ type Listener = (config: VoiceConfig) => void;
 const listeners = new Set<Listener>();
 const instance = randomUUID();
 let issued = 0;
+let latestIntentAt = performance.now();
 let applied = 0;
 let lastWriter: string | undefined;
 let writerBase = 0;
 
 export function providerRevision(): string {
   return `${instance}:${applied}`;
+}
+
+function issueProviderOrder(): number {
+  latestIntentAt = performance.now();
+  return ++issued;
+}
+
+/** A stale opt-out may retry only across an interval with no intervening selection. */
+export function providerIntentWindow(): { token: string; quietForMs: number } {
+  return { token: `${instance}:${issued}`, quietForMs: performance.now() - latestIntentAt };
 }
 
 function canApply(writer: string, base: number): boolean {
@@ -34,10 +45,11 @@ function canApply(writer: string, base: number): boolean {
 }
 
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
-export function reserveProviderWrite(writer: string, revision: string): string | null {
+export function reserveProviderWrite(writer: string, revision: string, unchangedSince?: string): string | null {
+  if (unchangedSince !== undefined && unchangedSince !== `${instance}:${issued}`) return null;
   const base = Number(revision.slice(instance.length + 1));
   if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || !canApply(writer, base)) return null;
-  return `${instance}:${++issued}:${writer}:${base}`;
+  return `${instance}:${issueProviderOrder()}:${writer}:${base}`;
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -79,7 +91,7 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
   if (patch.decisionProvider !== undefined) {
     if (writer !== lastWriter) writerBase = applied;
     lastWriter = writer;
-    applied = order ?? ++issued;
+    applied = order ?? issueProviderOrder();
   }
   notify(next);
   return next;
@@ -88,7 +100,7 @@ export function setVoiceConfig(patch: VoiceConfigPatch, ticket?: string): VoiceC
 /** A settings restore rewrote the row: tell the listeners what it holds now. */
 export function reloadVoiceConfig(): VoiceConfig {
   const config = getVoiceConfig();
-  applied = ++issued;
+  applied = issueProviderOrder();
   lastWriter = undefined;
   notify(config);
   return config;

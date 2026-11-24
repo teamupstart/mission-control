@@ -319,6 +319,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     const at = tokens[i]!;
     const laterNames = namesStartingAt(text, at, tokens[i + 1]);
     const atStart = splits.length;
+    let addressLength = 1;
     for (let length = laterNames.length; length > 0; length--) {
       const end = tokens[i + length - 1]!;
       const heard = laterNames[length - 1];
@@ -332,7 +333,13 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
         const index = wrapperStart + mark.index;
         if (closingQuotes.has(index)) addressStart = index + 1;
       }
-      const head = splitHead(text.slice(offset, addressStart));
+      const beforeName = text.slice(offset, addressStart).trimEnd();
+      const head = splitHead(beforeName);
+      // A separator or joining phrase introduces the whole call sign. With no
+      // such boundary, "check the release Captain" can still address Captain.
+      if (head !== beforeName || /[\p{Sentence_Terminal};:]$/u.test(beforeName)) {
+        addressLength = Math.max(addressLength, length);
+      }
       const second = messageAfterAddress(text, addressStart, end.index + end.raw.length);
       const tail = second.body.trim();
       const content = /[\p{L}\p{N}\p{S}]|\p{Emoji}\uFE0F|[#*]\u20E3/u;
@@ -342,7 +349,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
       if (!content.test(head)) {
         // No command precedes this call sign. Its own words cannot supply that command
         // for a split starting inside the name.
-        i += length - 1;
+        addressLength = Math.max(addressLength, length);
         break;
       }
       const commands = [addressedCommand(head, wrappersClosed), addressedCommand(second.body, second.wrappersClosed)];
@@ -356,6 +363,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     if (splits.length > atStart + 1) {
       for (let j = atStart; j < splits.length; j++) splits[j]!.ambiguousTarget = true;
     }
+    i += addressLength - 1;
   }
   if (candidates.length > 1) return { kind: "needs-model", reason: "ambiguous-name", match, splits, candidates, text: body, pauseMs, ...(command && { command }) };
   if (splits.length) {

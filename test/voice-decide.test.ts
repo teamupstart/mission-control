@@ -945,6 +945,18 @@ test("the second word of a call sign cannot create a missing first message", asy
   assert.deepEqual(delivered.slice(-2), [["Steve", "Release Captain is busy", "later"], ["Alice", "review the PR", "later#2"]]);
 });
 
+test("a joined two-word address only offers split targets starting at its first word", async (t) => {
+  const roster = ["Steve", "Release Captain", "Captain", "Release"].map(n => name(n));
+  const { router, say, delivered, cards } = routerRig(() => answered(null), roster);
+  t.after(() => router.reset());
+  await say("Steve, check the build, and Release Captain, review the PR", "joined");
+  assert.deepEqual(cards.at(-1)?.candidates.map(c => c.title), ["Steve", "Release Captain", "Release"]);
+  assert.equal(await router.pick("joined", "task:Captain"), false);
+  assert.ok(await router.pick("joined", "task:Release Captain"));
+  assert.ok(await router.sendNow("joined"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "joined"], ["Release Captain", "review the PR", "joined#2"]]);
+});
+
 test("manual split choices preserve overlapping one- and two-word names", async (t) => {
   for (const [second, firstText, secondText] of [
     ["Captain", "check the release", "review the PR"],

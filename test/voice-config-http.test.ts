@@ -137,6 +137,24 @@ test("a ticketed Off supersedes an older commit and yields to a newer commit fro
   }
 });
 
+test("a stale Off retry cannot reserve past an intervening uncommitted selection", async () => {
+  const first = randomUUID(), second = randomUUID();
+  const old = await readProviderRevision();
+  assert.equal((await choose("jev", await reserveFor(second, old))).status, 200);
+  const conflict = await providerIntent(first, old);
+  assert.equal(conflict.status, 409);
+  const { providerRevision, intentWindow } = await conflict.json() as {
+    providerRevision: string; intentWindow: { token: string; quietForMs: number };
+  };
+  assert.ok(intentWindow.quietForMs >= 0);
+  const next = await reserveFor(second, providerRevision);
+  const retry = await json("/api/voice/config/provider-intent", "POST", {
+    writer: first, observedRevision: providerRevision, unchangedSince: intentWindow.token,
+  });
+  assert.equal(retry.status, 409);
+  assert.equal((await choose("openai", next)).status, 200);
+});
+
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {
   let response = await json("/api/voice/config", "PUT", { cancelWindow: { seconds: 8 }, whenUnsure: "ask", planFormsByVoice: false });
   assert.equal(response.status, 200);

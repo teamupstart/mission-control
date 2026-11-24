@@ -125,6 +125,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const edit: PendingEdit = { id: ++nextEdit.current, patch };
     if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
+    const selectedAt = performance.now();
     const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observedProviderRevision ?? latestProvider.current?.revision ?? "") : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
@@ -136,10 +137,13 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       }
       let res = sendProvider && order && !order.ticket ? order
         : await api.setVoiceConfig(sendProvider ? patch : settings, sendProvider ? order?.ticket : undefined);
-      // Retry an opt-out blocked by a stale read before a ticket was issued. Once the
-      // selection has a place in the write order, a newer writer wins the conflict.
-      if (decisionProvider === "off" && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision) {
-        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision);
+      // Compare elapsed durations, so the browser and daemon need no shared clock.
+      // If the daemon was idle longer than the entire trip since the click, its
+      // last intent predates this opt-out. Bind the retry to that same interval.
+      const window = order?.intentWindow;
+      if (decisionProvider === "off" && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
+          window && window.quietForMs > performance.now() - selectedAt) {
+        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, window.token);
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }
       const unconfirmed = sendProvider && (!res.config || !res.providerRevision) &&

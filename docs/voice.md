@@ -101,6 +101,7 @@ actually submitted to the operator queue follows the queue’s normal durable de
 ## Spoken delivery
 
 An idle agent starts a turn. A busy agent receives the message after its current turn ends.
+Only non-spoken outbox rows offer **Steer now** and **Interrupt and deliver**.
 A blocking question holds delivery until it is answered. A hibernated task resumes its
 conversation before the daemon queues the message. Recently heard and the card show `queued` (or
 `held` for a blocking question, including after resume) until the outbox confirms the handoff.

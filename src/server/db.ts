@@ -15366,14 +15366,14 @@ export function claimNextPendingTurn(
   }
 }
 
-/** An explicit operator action may change only text that has not left the outbox. */
+/** Only queued, non-spoken rows accept an explicit steer or interrupt. */
 export function expeditePendingTurn(
   noteKey: string, id: string, revision: number, action: "steer" | "interrupt", now: number,
 ): PendingTurn | null {
   const d = openDb();
   const changed = d.prepare(`UPDATE pending_turns SET delivery_mode = ?, deadline_at = ?,
     interrupt_attempted_at = NULL, last_error = NULL, updated_at = ?, revision = revision + 1
-    WHERE note_key = ? AND id = ? AND revision = ? AND state = 'queued'`)
+    WHERE note_key = ? AND id = ? AND revision = ? AND state = 'queued' AND spoken_words IS NULL`)
     .run(action === "steer" ? "steer" : "interrupt-after-wait", now, now, noteKey, id, revision).changes;
   if (changed !== 1) return null;
   return rowToPendingTurn(d.prepare("SELECT * FROM pending_turns WHERE id = ?").get(id) as unknown as PendingTurnRow);

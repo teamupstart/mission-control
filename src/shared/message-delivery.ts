@@ -42,6 +42,11 @@ export function idleOnlyTurn(turn: Pick<PendingTurn, "id">): boolean {
 /** What a message may do to a turn that is already running. */
 export type MessageDeliveryAction = "steer" | "interrupt";
 
+/** Addressed speech waits for its own turn; the separate spoken stop command interrupts directly. */
+export function canExpediteTurn(turn: Pick<PendingTurn, "spokenWords">): boolean {
+  return turn.spokenWords === undefined;
+}
+
 export function canSteerMessage(session: Pick<Session, "agent" | "runtime">): boolean {
   return capabilitiesFor(session.agent).steering?.runtimes.includes(session.runtime) ?? false;
 }
@@ -70,11 +75,12 @@ export function deliverySchedule(
   session: Pick<Session, "agent" | "runtime">,
   turn: PendingTurn,
 ): { at: number; action: MessageDeliveryAction }[] {
+  if (!canExpediteTurn(turn)) return [];
   const expedited = expeditedDelivery(turn);
   if (expedited) {
     return supportsDeliveryAction(session, expedited) ? [{ at: turn.deadlineAt!, action: expedited }] : [];
   }
-  if (idleOnlyTurn(turn) || turn.spokenWords !== undefined) return [];
+  if (idleOnlyTurn(turn)) return [];
   return ([["steer", MESSAGE_STEER_AFTER_MS], ["interrupt", MESSAGE_INTERRUPT_AFTER_MS]] as const)
     .filter(([action]) => supportsDeliveryAction(session, action))
     .map(([action, delay]) => ({ at: turn.createdAt + delay, action }));

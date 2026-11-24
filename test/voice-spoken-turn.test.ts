@@ -7,6 +7,7 @@ import * as db from "../src/server/db.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "../src/shared/voice-delivery.ts";
 import { claimHumanEcho, expectHumanEcho } from "../src/server/injections.ts";
 import type { TurnDelivered } from "../src/server/registry.ts";
+import { deliverySchedule } from "../src/shared/message-delivery.ts";
 import { fakeTranscript } from "./helpers/fake-transcript.ts";
 
 function claimSpoken(key: string, words: string, text: string) {
@@ -16,6 +17,22 @@ function claimSpoken(key: string, words: string, text: string) {
   assert.ok(reservationId);
   return { ...claimed, reservationId };
 }
+
+test("spoken rows wait for idle even with a persisted steer or interrupt override", () => {
+  const session = { agent: "codex", runtime: "sdk" } as const;
+  const key = "spoken-expedite";
+  for (const action of ["steer", "interrupt"] as const) {
+    const turn = db.createPendingTurn({ noteKey: key, id: key + action, text: "inspect", spokenWords: "inspect", now: 1 });
+    const mode = action === "steer" ? "steer" : "interrupt-after-wait";
+    // An earlier daemon could have persisted the override before restart.
+    db.openDb().prepare("UPDATE pending_turns SET delivery_mode = ?, deadline_at = 2 WHERE id = ?").run(mode, turn.id);
+    const restored = db.listPendingTurns(key).find(row => row.id === turn.id)!;
+    assert.deepEqual(deliverySchedule(session, restored), []);
+    assert.equal(db.expeditePendingTurn(key, turn.id, turn.revision, action, 3), null);
+    assert.equal(db.claimNextPendingTurn(key, 4, turn, words => words)?.spokenWords, "inspect");
+    assert.ok(db.retireDeliveredPendingTurn(turn.id, turn.revision + 1, 5));
+  }
+});
 
 test("upgrade from 51 leaves typed rows untouched, and spoken composition survives restart and retry", () => {
   const key = "conversation";

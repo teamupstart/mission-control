@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -17,7 +17,8 @@ const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("./helpers/task-manager-fixture.ts");
 const { recordTaskWorktreeObservation, getTaskWorktreeRetention } = await import("../src/server/db.ts");
 const { taskResourceGeneration, RETENTION_WINDOW_MS } = await import("../src/server/task-worktree-retention.ts");
-const { discardTerminalReceipt } = await import("../src/server/terminal/dispatch-observation.ts");
+const { LAUNCH_PID_FILE } = await import("../src/server/terminal/launch-process.ts");
+const { discardTerminalReceipt, WRAPPER_EXIT_FILE } = await import("../src/server/terminal/dispatch-observation.ts");
 
 // A separate process really loses its open exit descriptor and deadline timer. No credentials,
 // environment patch or terminal argv are persisted with the task.
@@ -32,7 +33,7 @@ const launch = `
   process.stdin.resume();
 `;
 
-for (const mode of ["crash", "shutdown", "wrapper-exit", "live-wrapper", "replacement", "superseded"] as const) {
+for (const mode of ["crash", "shutdown", "wrapper-exit", "live-wrapper", "replacement", "partial-revocation", "unmarked-claim", "unrelated-claim", "superseded"] as const) {
   test(`restart after ${mode} uses the timed-out launch's own proof and preserves checkout retention`, { timeout: 15000 }, async (t) => {
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", launch]);
     const closed = once(child, "close");
@@ -64,6 +65,18 @@ for (const mode of ["crash", "shutdown", "wrapper-exit", "live-wrapper", "replac
       rmSync(home, { recursive: true }); mkdirSync(home, { mode: 0o700 });
       writeFileSync(join(home, "terminal-wrapper.exit"), "");
     }
+    if (mode === "partial-revocation" || mode === "unmarked-claim" || mode === "unrelated-claim") {
+      // The dying daemon removed the exit path partway through recursive removal.
+      const exit = join(home, WRAPPER_EXIT_FILE);
+      const claim = join(home, LAUNCH_PID_FILE);
+      if (mode !== "unmarked-claim") writeFileSync(exit, "n");
+      if (mode === "unrelated-claim") {
+        // The receipt still has two links, but the surviving PID claim names another inode.
+        linkSync(exit, join(home, "other-link"));
+        writeFileSync(claim, "n");
+      } else linkSync(exit, claim);
+      unlinkSync(exit);
+    }
     if (!running) t.mock.timers.enable({ apis: ["setTimeout"] });
     const restarted = new Registry();
     const manager = new TaskManager(restarted);
@@ -87,7 +100,7 @@ for (const mode of ["crash", "shutdown", "wrapper-exit", "live-wrapper", "replac
       await manager.stop();
       return;
     }
-    if (mode === "replacement") {
+    if (mode === "replacement" || mode === "unmarked-claim" || mode === "unrelated-claim") {
       assert.equal(launchFailureOutcome(recovered), "kept", "a missing home or replacement inode is not proof");
       assert.ok(existsSync(home));
     } else {

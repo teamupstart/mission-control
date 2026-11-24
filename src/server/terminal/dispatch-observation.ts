@@ -38,6 +38,11 @@ function receiptName(home: string, file: Stats): string {
   return basename(home) + "." + file.dev + "." + file.ino;
 }
 
+function exitMarker(fd: number, file: Stats): string | null {
+  const byte = Buffer.alloc(1);
+  return file.size === 1 && readSync(fd, byte, 0, 1, 0) === 1 ? byte.toString("latin1") : null;
+}
+
 /** The exclusive link is the daemon's claim against the wrapper's exclusive PID creation.
  * Its identity survives a crash between claiming, marking the outcome and removing the home. */
 function revokeUnstartedWrapper(home: string, expected: Stats): boolean {
@@ -58,14 +63,23 @@ function revokeUnstartedWrapper(home: string, expected: Stats): boolean {
   } finally { closeSync(fd); }
 }
 
+/** A crash during recursive removal can leave just the receipt and the daemon's marked PID claim. */
+function finishInterruptedRevocation(home: string, receiptFd: number): boolean {
+  const receipt = fstatSync(receiptFd);
+  if (receipt.nlink !== 2 || exitMarker(receiptFd, receipt) !== "n" || !privateDirectory(home)) return false;
+  if (lstatSync(join(home, WRAPPER_EXIT_FILE), { throwIfNoEntry: false })) return false;
+  const claim = lstatSync(join(home, LAUNCH_PID_FILE), { throwIfNoEntry: false });
+  if (!claim || !sameFile(receipt, claim)) return false;
+  rmSync(home, { recursive: true, force: true });
+  return true;
+}
+
 function observe(home: string, fd: number, readOwner: typeof readTerminalWrapperProcess, pinned: boolean) {
   const identity = fstatSync(fd);
   const outcome = () => {
     const file = fstatSync(fd);
     if (file.nlink !== (pinned ? 1 : 0)) return null;
-    const byte = Buffer.alloc(1);
-    if (file.size !== 1 || readSync(fd, byte, 0, 1, 0) !== 1) return false;
-    const marker = byte.toString("latin1");
+    const marker = exitMarker(fd, file);
     return marker === "x" || marker === "n";
   };
   return {
@@ -137,6 +151,7 @@ export async function restoredTerminalInactive(pending: PendingTerminalLaunch, s
         if (observation.revokeUnstarted()) return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+        if (finishInterruptedRevocation(home, fd)) return true;
       }
       return await observation.waitForExit(stillOwned);
     } finally { observation.close(); }

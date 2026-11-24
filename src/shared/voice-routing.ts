@@ -59,12 +59,9 @@ export interface VoiceSplitPoint {
 function splitHead(text: string): string {
   // A comma may separate independent commands, or introduce one joining phrase.
   // Everything before that boundary belongs to the first message, including punctuation.
-  const end = text.trimEnd();
-  const comma = end.endsWith(",");
-  const head = comma ? end.slice(0, -1).trimEnd() : end;
-  const joiner = /(?:^|,\s*|\s+)(?:and then|and|then|also|plus)$/iu.exec(head);
-  if (joiner && (!comma || joiner[0].startsWith(","))) return head.slice(0, joiner.index).trim();
-  return head.trim();
+  return text.trimEnd().replace(
+    /(?:^|,\s*|(?<=[\p{Sentence_Terminal};:…])\s+)(?:and then|and|then|also|plus)\s*,?$|,$/iu, "",
+  ).trim();
 }
 
 export type VoiceAddressedCommand = "stop";
@@ -194,6 +191,8 @@ function messageAfterAddress(text: string, start: number, end: number): { body: 
 export function routeUtterance(utterance: VoiceUtterance, context: {
   roster: readonly SpokenName[];
   unsureCards?: readonly VoiceCard[];
+  /** Candidates from a past card state at the time the speech was captured. */
+  priorPickNames?: readonly string[];
 }): Decision {
   const { text, words } = utterance;
   // Keep offsets into the original capture. Name matching ignores boundary punctuation,
@@ -207,6 +206,9 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
   const controlPhrase = barePhrase(text);
   if (controlPhrase === "cancel") return { kind: "control", command: "cancel" };
   const pickName = phrase !== null ? controlPhrase : null;
+  if (pickName && context.priorPickNames?.some(name => normalized(name) === pickName)) {
+    return { kind: "ignored", reason: "ambiguous-pick" };
+  }
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
     .filter((candidate) => normalized(candidate.title) === pickName)
     .map((candidate) => ({ card, candidateId: candidate.id })));

@@ -987,3 +987,61 @@ test("speech captured during initial resolution cannot confirm newly offered cho
     assert.equal(router.activeCards()[0]?.state, "pending");
   }
 });
+
+for (const later of ["resolving", "unsure", "pending", "cancelled"] as const) {
+  test(`the same captured name cannot select the older card after the newer card becomes ${later}`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 100 });
+    let finish!: (result: VoiceDecisionResult) => void;
+    const pending = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+    let calls = 0;
+    const { router, say, delivered } = routerRig(() => ++calls === 1 ? answered(null) : pending);
+    t.after(() => router.reset());
+    await say(SPLIT.text, "older");
+    const capture = (id: string, text: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+      id, text, backend: "fluidaudio", capturedAt,
+    }));
+    t.mock.timers.setTime(200);
+    await capture("newer", SPLIT.text, 200);
+    t.mock.timers.setTime(300);
+    if (later === "cancelled") router.cancel("newer");
+    if (later !== "resolving") {
+      finish(answered(later === "pending" ? "mention" : null));
+      await router.resolution("newer");
+    }
+    await capture("late-name", "Alice", 250);
+    finish(answered(null));
+    await router.resolution("newer");
+    assert.equal(router.heard.list().find(e => e.id === "late-name")?.rule, "ambiguous-pick");
+    assert.equal(await router.sendNow("older"), false);
+    assert.deepEqual(delivered, []);
+  });
+}
+
+test("a comma-free split preserves the literal word before the next name", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  for (const first of ["explain C plus plus", "explain the word then", "define also", "spell and"]) {
+    const id = String(delivered.length);
+    await say(`Steve, ${first} Alice, review the PR`, id);
+    assert.ok(await router.pick(id, "task:Alice"));
+    assert.ok(await router.sendNow(id));
+    assert.deepEqual(delivered.slice(-2), [["Steve", first, id], ["Alice", "review the PR", id + "#2"]]);
+  }
+});
+
+test("a pick older than the retained choice history abstains while a fresh pick works", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, say } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  await say(SPLIT.text, "open");
+  for (let i = 0; i <= 50; i++) {
+    t.mock.timers.setTime(200 + 2 * i);
+    await say("Will, check the issue with Steve about the queue", "other-" + i);
+    t.mock.timers.setTime(201 + 2 * i);
+    assert.ok(router.cancel("other-" + i));
+  }
+  await router.accept(VoiceUtteranceSchema.parse({ id: "old", text: "Alice", backend: "fluidaudio", capturedAt: 150 }));
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  await say("Alice", "fresh");
+  assert.equal(router.activeCards()[0]?.state, "pending");
+});

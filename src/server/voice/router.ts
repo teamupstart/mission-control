@@ -151,6 +151,9 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
+  // Earlier choice rows can block a delayed spoken pick, but can never be picked again.
+  private readonly priorChoices: { from: number; until: number; names: string[] }[] = [];
+  private picksKnownFrom = 0;
   private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
@@ -191,18 +194,33 @@ export class VoiceRouter {
     }
   }
 
+  private closeChoices(item: OpenCard, at = Date.now()): void {
+    if (item.card.state !== "resolving" && item.card.state !== "unsure") return;
+    const from = item.choicesOfferedAt ?? item.entry.time;
+    const until = Math.max(from, at);
+    item.choicesOfferedAt = until;
+    if (until === from) return;
+    this.priorChoices.push({ from, until, names: [...new Set(item.card.candidates.map(c => c.title))] });
+    if (this.priorChoices.length > HISTORY_LIMIT) {
+      this.picksKnownFrom = Math.max(this.picksKnownFrom, this.priorChoices.shift()!.until);
+    }
+  }
+
   async accept(utterance: VoiceUtterance): Promise<boolean> {
     const { mode, roster, backend } = this.state();
     if ((mode !== "listening" && mode !== "push-to-talk") || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
     if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
-    const unsureCards = Array.from(this.open.values())
+    const unsureCards = capturedAt < this.picksKnownFrom ? [] : Array.from(this.open.values())
       .filter(({ card, entry, choicesOfferedAt }) => (card.state === "unsure" || card.state === "resolving") &&
         entry.time <= capturedAt && (choicesOfferedAt === undefined || choicesOfferedAt <= capturedAt))
       .map(({ card }) => card);
+    const priorPickNames = this.priorChoices
+      .filter(window => window.from <= capturedAt && capturedAt < window.until)
+      .flatMap(window => window.names);
     // Bind every potential part to the roster session present when the utterance arrived.
-    const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards });
+    const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards, priorPickNames });
     // An unsure card reserves its delivery slot so it can still be picked at capacity.
     if ((decision.kind === "addressed" || decision.kind === "needs-model") &&
         this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return false;
@@ -299,6 +317,7 @@ export class VoiceRouter {
             candidates: [...new Set([target, ...decision.splits.map(s => s.target)])] };
           entry.matchedName = target.name;
           item.card.parts[0]!.target = target;
+          this.closeChoices(item);
           item.card.candidates = decision.candidates.map(agentRow);
           result = await ask(decision);
           if (this.open.get(id) !== item) return;
@@ -308,6 +327,7 @@ export class VoiceRouter {
       }
       delete item.modelStep;
       clearTimeout(item.timer);
+      this.closeChoices(item);
       const resolved = resolveVoiceDecision(decision, result);
       const verdict = resolved.state === "unsure" ? "not sure" : resolved.reason;
       entry.detail = `${result.detail}: ${verdict}`;
@@ -336,7 +356,6 @@ export class VoiceRouter {
     this.open.set(card.id, item);
     entry.outcome = card.state;
     if (card.state === "unsure") {
-      item.choicesOfferedAt = Date.now();
       const unsure = Array.from(this.open.values()).filter((item) => item.card.state === "unsure");
       if (unsure.length > MAX_UNSURE_CARDS) {
         const oldest = unsure.reduce((first, next) => next.entry.time < first.entry.time ? next : first);
@@ -357,6 +376,7 @@ export class VoiceRouter {
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
   private take(item: OpenCard): void {
+    this.closeChoices(item);
     clearTimeout(item.timer);
     this.open.delete(item.card.id);
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
@@ -392,8 +412,8 @@ export class VoiceRouter {
     if (parts.some(part => !selectedSession(roster, part.target))) return false;
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
+      this.closeChoices(item, Math.max(Date.now(), pickedAt));
       setSplitPicks(item, card, target, item.remainingSplits, "boundary:");
-      item.choicesOfferedAt = Math.max(Date.now(), pickedAt);
       delete item.remainingSplits;
       item.card = card;
       delete item.pickTargets;
@@ -469,6 +489,8 @@ export class VoiceRouter {
     this.delivering.clear();
     this.pendingVoiceActions.length = 0;
     this.heard.clear();
+    this.priorChoices.length = 0;
+    this.picksKnownFrom = 0;
   }
 
   reset(): void {

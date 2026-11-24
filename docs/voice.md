@@ -87,7 +87,10 @@ The router allows up to 50 open or delivering cards in total. At capacity a capt
 would open a new card returns `{ accepted: false }` and can be retried when a slot opens.
 Existing cards keep their deadlines, and the operator can still pick or cancel them.
 Picking a candidate opens the ordinary cancel window. A spoken pick has its own capture
-timestamp and can select only choices the daemon had offered by then. For a pick through the card API, the daemon records the host time when it applies
+timestamp and can select only choices the daemon had offered by then. A matching name on another
+card that was resolving at capture time keeps the pick ambiguous, even if that card has since
+settled or closed. The daemon retains the last 50 choice transitions and ignores spoken picks
+older than the history it can verify. For a pick through the card API, the daemon records the host time when it applies
 the pick. A cancel spoken before that instant leaves the picked card pending even if its POST
 arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,

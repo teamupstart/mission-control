@@ -1037,7 +1037,8 @@ If that write fails, the end or exit report returns HTTP 503, the Stop directive
 remains active, and the sender can retry. An accepted signed exit is final for
 that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).
 If the daemon crashes between recording an exit and clearing the ledger, it
-applies the recorded exit at startup. Capture stays held until the reconciled
+verifies the original supervisor's signature for that launch before applying the
+recorded exit at startup. Capture stays held until the reconciled
 ledger has been saved and every other possible player has confirmed silence.
 
 The supervisor authenticates both reports to `POST /voice/listener/supervised`.
@@ -1052,8 +1053,11 @@ child. The listener receives the instance and ordinary listener credentials.
 
 The body is `{ instance, state }`. Alongside the harness token, the supervisor
 sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of
-the UTF-8 string `mission-voice-supervised/v2\n<state>\n<instance>` (LF
-separators, no trailing newline). Invalid signatures return 403. The original
+the UTF-8 string `mission-voice-confined/v1\nstarted\n<instance>` for a start
+or `mission-voice-supervised/v2\nexited\n<instance>` for an exit (LF
+separators, no trailing newline). The start binds the launcher's promise to
+start this child with the daemon's recovery files protected by the OS.
+Legacy unrestricted starts and invalid signatures return 403. The original
 signer can retire a recorded instance even if a restarted daemon trusts another
 key for new launches. A restarted launcher loads its provisioned identity,
 reads the original process record, confirms the recorded child is gone, and

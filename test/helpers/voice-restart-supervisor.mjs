@@ -9,17 +9,21 @@ try {
 } catch (error) {
   if (error.code !== "EBADF") throw error;
 }
-process.on("message", request => {
+process.on("message", async request => {
   if (request.state === "started") {
-    const instance = signer.newInstance();
-    process.send({ instance, env: signer.daemonEnv, proof: signer.proof(instance, "started") });
+    // The HTTP test runs the fake player independently of these two restartable parents.
+    // Pause at announcement so the fixture can model a parent dying at this boundary.
+    await signer.launch(request.home, process.execPath, [], {}, (instance, proof) => {
+      process.send({ instance, env: signer.daemonEnv, proof });
+      return new Promise(() => {});
+    });
   } else {
     try {
       process.kill(request.pid, 0);
       process.send({ proof: null });
     } catch (error) {
       if (error.code !== "ESRCH") throw error;
-      process.send({ proof: signer.proof(request.instance, "exited") });
+      process.send({ proof: signer.exitProof(request.instance) });
     }
   }
 });

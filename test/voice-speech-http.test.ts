@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
+import { text } from "node:stream/consumers";
 import test, { afterEach } from "node:test";
 import { mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -403,6 +404,32 @@ test("restart applies only recorded exits and keeps every hold while the reconci
   assert.equal((await live.poll()).capture, true);
 });
 
+test("recovery requires the original issuer's signed exit for the exact persisted launch", async () => {
+  const holder = player(), peer = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  assert.equal((await holder.event(id, "started")).status, 200);
+  await peer.announce();
+  assert.equal((await peer.report("exited")).status, 200);
+  const file = (instance: string) => join(home, "voice/supervised-exits", announcementName(instance) + ".json");
+  const peerExit = JSON.parse(readFileSync(file(peer.instance), "utf8"));
+  for (const record of [true, peerExit, { ...peerExit, instance: holder.instance },
+    { instance: holder.instance, proof: holder.supervisor.proof("started") }]) {
+    writeFileSync(file(holder.instance), JSON.stringify(record));
+    store.reset(); await holder.hello();
+    const pending = await holder.poll();
+    assert.equal(pending.capture, false);
+    assert.deepEqual(pending.speak, { id, stop: true });
+    assert.equal((await peer.poll()).capture, false);
+  }
+  const stale = readFileSync(ledger, "utf8");
+  assert.equal((await holder.report("exited")).status, 200);
+  writeFileSync(ledger, stale);
+  store.reset(); await peer.hello();
+  assert.deepEqual(entries(), []);
+  assert.equal((await peer.poll()).capture, true);
+});
+
 test("repairing an unreadable launch receipt requests silence from the recovered instance", async () => {
   const p = player();
   await p.announce(); await p.hello();
@@ -543,6 +570,7 @@ test("the daemon verifies supervisor reports with public material and binds laun
   try {
     Object.assign(process.env, other.daemonEnv);
     store.reset(); await holder.hello();
+    assert.equal((await holder.report("started", unannounced, other.proof(unannounced, "started", true))).status, 403);
     assert.equal((await holder.report("exited", holder.instance, otherProof)).status, 403);
     assert.equal((await holder.poll()).capture, false);
     assert.equal((await holder.report("started")).status, 403);
@@ -567,7 +595,7 @@ test("a restarted launcher can confirm the original player's exit using its prov
   };
   const first = boot();
   const announced = once(first, "message");
-  first.send({ state: "started" });
+  first.send({ state: "started", home });
   const [start] = await announced;
   Object.assign(process.env, start.env);
   assert.equal((await p.report("started", start.instance, start.proof)).status, 200);
@@ -604,6 +632,60 @@ test("a same-account signing file is rejected even when owner-only", () => {
   const fd = openSync(file, "r");
   assert.throws(() => createVoiceSupervisor("shell", fd), /Unprotected supervisor credential/);
   rmSync(file);
+});
+
+test("a supervised same-account child cannot read or change the daemon's recovery files", async t => {
+  const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  Object.assign(process.env, signer.daemonEnv);
+  t.after(() => Object.assign(process.env, fixtureSupervisorEnv));
+  const peer = player();
+  const check = `
+    const fs = require("node:fs");
+    process.stdin.once("data", () => {
+      const [ledger, exit, model] = process.argv.slice(1);
+      fs.writeFileSync(require("node:path").join(process.env.TMPDIR, "buffer"), "scratch");
+      const denied = fn => {
+        try { fn(); return false; }
+        catch (err) { return ["EPERM", "EACCES", "EROFS", "ENOENT"].includes(err.code); }
+      };
+      console.log(JSON.stringify({
+        read: denied(() => fs.readFileSync(ledger)), write: denied(() => fs.writeFileSync(ledger, "[]")),
+        exit: denied(() => fs.writeFileSync(exit, "true")), model: fs.readFileSync(model, "utf8"),
+      }));
+    });`;
+  const model = join(home, "voice/models/fixture-readonly");
+  mkdirSync(join(home, "voice/models"), { recursive: true });
+  writeFileSync(model, "sample");
+  t.after(() => rmSync(model, { force: true }));
+  const exit = join(home, "voice/supervised-exits", "fixture.json");
+  mkdirSync(join(home, "voice/supervised-exits"), { recursive: true });
+  const { instance, child } = await signer.launch(home, process.execPath, ["-e", check, ledger, exit, model], {},
+    async (subject, proof) => { assert.equal((await peer.report("started", subject, proof)).status, 200); });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  const completed = once(child, "close").catch(error => {
+    if (process.platform === "linux" && error.code === "ENOENT") return ["no-bwrap"];
+    throw error;
+  });
+  const output = text(child.stdout), errors = text(child.stderr);
+  await peer.hello(instance);
+  const id = await audition();
+  child.stdin.on("error", () => {}); // A host that disallows namespaces can refuse the child before stdin opens.
+  child.stdin.end("check");
+  const [code] = await completed;
+  const stderr = await errors;
+  if (process.platform === "linux" && (code === "no-bwrap" || (code !== 0 && /bwrap:.*(?:namespace|permitted|userns)/iu.test(stderr)))) {
+    assert.equal(await output, ""); // The host refused confinement and the listener never ran.
+    t.diagnostic("Host refused a confined process. Verified the launcher never falls back to an unrestricted child.");
+  } else {
+    assert.equal(code, 0, stderr);
+    assert.deepEqual(JSON.parse(await output), { read: true, write: true, exit: true, model: "sample" });
+  }
+  assert.deepEqual(entries(), [{ jobId: id, instance, purpose: "audition" }]);
+  assert.throws(() => readFileSync(exit), { code: "ENOENT" });
+  store.reset(); await peer.hello(instance);
+  assert.equal((await peer.poll(instance)).capture, false);
+  assert.equal((await peer.report("exited", instance, signer.exitProof(instance))).status, 200);
+  assert.equal((await peer.poll(instance)).capture, true);
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {

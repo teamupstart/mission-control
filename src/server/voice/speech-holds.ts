@@ -3,12 +3,14 @@ import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
+import { supervisorIssuer } from "./supervisor-auth.ts";
 
 // A period represents the supervised directory itself if even its listing is unreadable.
 export const SUPERVISOR_DIRECTORY = ".";
 const supervisor = z.string().min(1).refine(name => !name.includes("/") && !name.includes("\\") && !name.includes("\0"));
 const launchSchema = z.union([SpeechInstanceSchema, z.object({ supervisor }).strict()]);
 type Launch = z.infer<typeof launchSchema>;
+const exitRecord = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
 const entry = z.union([
   z.object({ jobId: z.string().uuid(), instance: SpeechInstanceSchema, purpose: z.enum(["ask", "audition"]) }).strict(),
   z.object({ jobId: z.string().uuid(), supervisor, lastCandidate: z.string().regex(/^announced-[a-f0-9]{64}$/u).optional() }).strict(),
@@ -57,7 +59,12 @@ export class SpeechHolds {
   /** An exit is final for this per-launch nonce. Unreadable proof cannot establish silence. */
   exitRecorded(name: string): boolean | undefined {
     const path = join(this.directory, "supervised-exits", name + ".json");
-    try { return readFileSync(path, "utf8") === "true" ? true : undefined; }
+    try {
+      const { instance, proof } = exitRecord.parse(JSON.parse(readFileSync(path, "utf8")));
+      // The receipt identifies the original issuer even after the configured verifier rotates.
+      return announcementName(instance) === name && supervisorIssuer(instance, "exited", proof)
+        ? true : undefined;
+    }
     catch (error) { return missing(error, path) ? false : undefined; }
   }
 
@@ -166,7 +173,7 @@ export class SpeechHolds {
   }
 
   /** Keep the supervisor's process record separate from the daemon's receipt for each launch. */
-  recordAnnouncement(instance: string, state: "started" | "exited", holds: Hold[]): "accepted" | "already_exited" | "unavailable" {
+  recordAnnouncement(instance: string, state: "started" | "exited", holds: Hold[], proof: string): "accepted" | "already_exited" | "unavailable" {
     const name = announcementName(instance);
     const path = join(this.directory, "supervised", name + ".json");
     try {
@@ -174,7 +181,7 @@ export class SpeechHolds {
         const exited = this.exitRecorded(name);
         if (exited !== false) return exited ? "already_exited" : "unavailable";
       } else {
-        if (!this.write(join(this.directory, "supervised-exits", name + ".json"), true)) return "unavailable";
+        if (!this.write(join(this.directory, "supervised-exits", name + ".json"), { instance, proof })) return "unavailable";
         try { unlinkSync(path); }
         catch (error) { if (!missing(error, path)) return "unavailable"; }
       }
@@ -216,7 +223,7 @@ export class SpeechHolds {
     return this.write(this.path, holds);
   }
 
-  private write(path: string, value: Hold[] | Launch[] | { instance: string } | true): boolean {
+  private write(path: string, value: Hold[] | Launch[] | { instance: string; proof?: string } | true): boolean {
     const temp = path + "." + randomUUID();
     try {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

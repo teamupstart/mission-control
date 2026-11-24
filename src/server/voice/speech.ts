@@ -131,8 +131,8 @@ export class VoiceSpeechManager {
     if (!exists) this.recoverHold(hold);
   }
   supervised(instance: string, state: SupervisorReportState, proof?: string): "accepted" | "unauthorized" | "already_exited" | "unavailable" | "hold_unavailable" {
-    if (!verifySupervisorReport(instance, state, proof, () => this.knowsLaunch(instance))) return "unauthorized";
-    const report = this.ledger.recordAnnouncement(instance, state, this.holds());
+    if (!proof || !verifySupervisorReport(instance, state, proof, () => this.knowsLaunch(instance))) return "unauthorized";
+    const report = this.ledger.recordAnnouncement(instance, state, this.holds(), proof);
     if (report !== "accepted") {
       this.announced.delete(instance);
       this.deps.changed();

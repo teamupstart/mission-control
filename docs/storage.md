@@ -207,10 +207,22 @@ that verifier to its launch nonce. Ordinary files owned by the listener's OS
 account, including legacy keys in the Mission Control state home, cannot be
 used as credential descriptors.
 
+Use the supervisor's `launch(stateHome, executable, args, env, announce)` for
+speech-capable children. It supplies a fresh instance and signed start to the
+announcement callback. After that callback succeeds it starts the executable
+under the OS filesystem sandbox. The child can read the voice models and write
+to its own temporary directory. It cannot read the other voice records or
+write the daemon's ledger, launch inventory, receipts or exit evidence.
+The macOS launcher uses `/usr/bin/sandbox-exec`. The Linux launcher requires
+`/usr/bin/bwrap` and user namespaces. If confinement fails the player cannot
+run. The supervisor uses the instance it announced to report the child's exit
+or a confirmed failure to spawn. It retains that instance until the daemon
+accepts the exit. A capture-only listener can keep its existing launch path.
+
 #### Voice launch receipts
 
 Under `voice/supervised/`, the daemon writes one owner-only `announced-<digest>.json` per accepted start, by atomic rename. Its content is the private instance ID and its filename uses the SHA-256 digest of that ID. An authenticated exit removes only that instance’s file. These launch records survive the daemon and let it find possible players even before a launcher reconnects. The supervisor owns its separate process record in the same directory.
 
 The daemon maintains an owner-only `voice/supervised-instances.json` by atomic replacement. It lists outstanding private instance IDs and can retain an unresolved record name during recovery. Keeping the inventory outside `voice/supervised/` lets the daemon ask every possible holder to stop if the directory disappears while the speech ledger is unreadable. A signed exit can clear its exact ledger hold even when the inventory is missing or unreadable. The exit marker also applies if the inventory is restored. Any separate hold for unknown launches still requires a complete inventory.
 
-Each signed exit records an owner-only `true` marker under `voice/supervised-exits/`, keyed by the launch receipt's digest. It persists across restarts so a delayed start or stale process record cannot add an exited listener back to the inventory. Launch instances are single-use. Markers stay for the lifetime of the state home because signed start retries have no expiry.
+Each accepted exit stores the instance and its supervisor's Ed25519 exit signature under `voice/supervised-exits/`, keyed by the launch receipt's digest. Recovery checks both the digest and the original issuer's signature before applying an exit. An older unsigned boolean marker requires a fresh signed exit. Records stay for the lifetime of the state home because signed start retries have no expiry and each launch instance is single-use.

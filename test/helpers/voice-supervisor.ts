@@ -1,8 +1,18 @@
-import { generateKeyPairSync } from "node:crypto";
-import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER, type SupervisorReportState } from "../../src/server/voice/supervisor-auth.ts";
+import { createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { VOICE_SUPERVISOR_PROOF_HEADER, type SupervisorReportState } from "../../src/server/voice/supervisor-auth.ts";
 
 export function newFixtureSupervisor(name: "shell" | "dev") {
-  return createVoiceSupervisor(name, generateKeyPairSync("ed25519").privateKey);
+  // HTTP fixtures stand in for both the protected launcher and the listener, without OS audio or a child.
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const issuer = createPublicKey(privateKey).export({ type: "spki", format: "der" });
+  return {
+    daemonEnv: { [name === "shell" ? "MISSION_VOICE_SHELL_PUBLIC_KEY" : "MISSION_VOICE_DEV_PUBLIC_KEY"]: issuer.toString("base64") },
+    newInstance: () => [name, issuer.toString("hex"), randomBytes(32).toString("hex")].join("_"),
+    proof: (instance: string, state: SupervisorReportState, legacyStart = false) => {
+      const protocol = state === "started" && !legacyStart ? "mission-voice-confined/v1" : "mission-voice-supervised/v2";
+      return sign(null, Buffer.from([protocol, state, instance].join("\n")), privateKey).toString("hex");
+    },
+  };
 }
 const supervisors = { shell: newFixtureSupervisor("shell"), dev: newFixtureSupervisor("dev") };
 export const fixtureSupervisorEnv = { ...supervisors.shell.daemonEnv, ...supervisors.dev.daemonEnv };

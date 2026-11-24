@@ -3442,6 +3442,22 @@ async function legacyRecoveryRoute({ registry, manager, ids }: Awaited<ReturnTyp
   });
 }
 
+// The fake gh has already captured the first response when it creates activityPending.
+async function duringActivityRead(start: () => Response | Promise<Response>, change: () => void) {
+  writeFileSync(holdActivity, "");
+  const pending = start();
+  let response: Response;
+  try {
+    await waitFor(() => existsSync(activityPending), "the branch activity read never reached the fixture");
+    change();
+  } finally {
+    rmSync(holdActivity, { force: true });
+    rmSync(activityPending, { force: true });
+    response = await pending;
+  }
+  return response;
+}
+
 test("legacy recovery rechecks the durable head after a concurrent change during branch activity verification", async () => {
   const seeded = await spentInspectorGrant();
   const { key, ids, manager, store, now } = seeded;
@@ -3450,28 +3466,18 @@ test("legacy recovery rechecks the durable head after a concurrent change during
     const before = store.getRun(ids.run);
     const submissions = store.listSubmissions(ids.run);
     const recover = await legacyRecoveryRoute(seeded);
-    writeFileSync(holdActivity, "");
-    const pending = recover();
-    let response: Response;
-    try {
-      await waitFor(() => existsSync(activityPending), "the branch activity read never reached the fixture");
+    const response = await duringActivityRead(recover, () => {
       updateInspectorPr(key, {
         observedState: "OPEN", observedHeadSha: "newer-repair", observedAt: now + 1013,
       }, now + 1013);
-    } finally {
-      rmSync(holdActivity, { force: true });
-      response = await pending;
-    }
+    });
     assert.equal(response.status, 409);
     await manager.settleBackgroundWork();
     assert.equal(getInspectorPr(key)?.observedHeadSha, "newer-repair");
     assert.deepEqual(store.getRun(ids.run), before);
     assert.deepEqual(store.listSubmissions(ids.run), submissions);
     assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
-  } finally {
-    rmSync(activityPending, { force: true });
-    await manager.stop();
-  }
+  } finally { await manager.stop(); }
 });
 
 test("legacy recovery rechecks the open PR and its source after GitHub snapshots branch activity", async () => {
@@ -3487,20 +3493,43 @@ test("legacy recovery rechecks the open PR and its source after GitHub snapshots
       { ...pull, head: { ...pull.head, sha: "newer" } }, { ...pull, head: { ...pull.head, ref: "another-branch" } },
       { ...pull, head: { ...pull.head, repo: { full_name: "another/fork" } } }]) {
       writeFileSync(recoveryPr, JSON.stringify(pull));
-      writeFileSync(holdActivity, "");
-      const pending = recover();
-      let response: Response;
-      try {
-        await waitFor(() => existsSync(activityPending), "the activity snapshot was never taken");
+      const response = await duringActivityRead(recover, () => {
         if (changed) writeFileSync(recoveryPr, JSON.stringify(changed));
         else rmSync(recoveryPr);
-      } finally {
-        rmSync(holdActivity, { force: true });
-        response = await pending;
-        rmSync(activityPending, { force: true });
-      }
+      });
       assert.equal(response.status, 409);
       await manager.settleBackgroundWork();
+      assert.equal(getInspectorPr(key)?.observedHeadSha, "current");
+      assert.deepEqual(store.getRun(ids.run), before);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+  } finally { await manager.stop(); }
+});
+
+test("legacy recovery rejects a changed latest ref update even when the PR returns to the verified head", async () => {
+  const seeded = await spentInspectorGrant();
+  const { store, manager, ids, key, now } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    const [activity] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    const pull = readFileSync(recoveryPr, "utf8");
+    // Include a second update in the same timestamp bucket. A time comparison
+    // alone cannot distinguish it from the activity that preceded the grant.
+    for (const latest of [null, { ...activity, id: activity.id + 1 },
+      { ...activity, id: activity.id + 2, timestamp: new Date(now + 1014).toISOString() },
+      { ...activity, timestamp: new Date(now + 7).toISOString() }]) {
+      writeFileSync(branchActivity, JSON.stringify([activity]));
+      const response = await duringActivityRead(recover, () => {
+        if (latest) writeFileSync(branchActivity, JSON.stringify([latest]));
+        else rmSync(branchActivity);
+      });
+      assert.equal(response.status, 409);
+      await manager.settleBackgroundWork();
+      assert.equal(readFileSync(recoveryPr, "utf8"), pull);
       assert.equal(getInspectorPr(key)?.observedHeadSha, "current");
       assert.deepEqual(store.getRun(ids.run), before);
       assert.deepEqual(store.listSubmissions(ids.run), submissions);

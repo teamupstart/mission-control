@@ -263,18 +263,28 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
     const ref = `refs/heads/${source.ref}`;
     // No activity_type filter: force pushes, merges and branch recreation also move the tip.
     const query = new URLSearchParams({ ref, direction: "desc", per_page: "1" });
-    const rows = z.tuple([z.object({
+    const endpoint = `repos/${repository}/activity?${query}`;
+    const activityRow = z.tuple([z.object({
       id: z.number().int().positive(), ref: z.literal(ref), after: z.literal(expectedHead),
       timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(),
-    })]).safeParse(await read(`repos/${repository}/activity?${query}`));
-    if (!rows.success) return null;
-    const [activity] = rows.data;
-    const timestamp = activity.timestamp ?? activity.pushed_at;
-    if (!timestamp || (activity.pushed_at && activity.timestamp && activity.pushed_at !== activity.timestamp)) return null;
-    // GitHub can snapshot the activity before a push or a PR closure reaches the ledger.
+    })]);
+    const readActivity = async () => {
+      const rows = activityRow.safeParse(await read(endpoint));
+      if (!rows.success) return null;
+      const [activity] = rows.data;
+      const timestamp = activity.timestamp ?? activity.pushed_at;
+      if (!timestamp || (activity.pushed_at && activity.timestamp && activity.pushed_at !== activity.timestamp)) return null;
+      return { activityId: activity.id, changedAt: Date.parse(timestamp) };
+    };
+    const activity = await readActivity();
+    if (!activity) return null;
+    // The PR may close or change source while GitHub is serving the activity snapshot.
     const current = await readSource();
     if (!current || current.repo.full_name.toLowerCase() !== repository.toLowerCase() || current.ref !== source.ref) return null;
-    return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: activity.id, changedAt: Date.parse(timestamp) };
+    // A push away and back yields the same PR head but a different latest ref update.
+    const latest = await readActivity();
+    if (!latest || latest.activityId !== activity.activityId || latest.changedAt !== activity.changedAt) return null;
+    return { prKey: pr.key, repository, ref, headSha: expectedHead, ...latest };
   } catch {
     return null;
   }

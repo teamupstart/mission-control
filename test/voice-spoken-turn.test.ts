@@ -12,8 +12,9 @@ import { fakeTranscript } from "./helpers/fake-transcript.ts";
 function claimSpoken(key: string, words: string, text: string) {
   const queued = db.createPendingTurn({ id: key + "-outbox", noteKey: key, spokenWords: words, text: words, now: Date.now() });
   const claimed = db.claimNextPendingTurn(key, Date.now(), queued, () => text)!;
-  assert.ok(db.recordSpokenHandoff(claimed.id, claimed.revision, 0));
-  return claimed;
+  const reservationId = db.recordSpokenHandoff(claimed.id, claimed.revision, 0);
+  assert.ok(reservationId);
+  return { ...claimed, reservationId };
 }
 
 test("upgrade from 51 leaves typed rows untouched, and spoken composition survives restart and retry", () => {
@@ -25,6 +26,7 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
     ALTER TABLE pending_turns DROP COLUMN composed_at;
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_key;
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_generation;
+    ALTER TABLE pending_turns DROP COLUMN spoken_reservation_id;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold;
     PRAGMA user_version = 51;
   `);
@@ -70,7 +72,7 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   const attempt = claimSpoken(conversation.key, spokenWords, received);
   const reserve = () => spokenLedger.reserve(conversation, received, base => ({
     ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
-  }), now);
+  }), now, attempt.reservationId);
   const refused = reserve();
   spokenLedger.release(conversation.key, refused.id);
   const spoken = reserve();
@@ -81,7 +83,7 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   db.closeDb();
   assert.deepEqual(spokenLedger.rows(conversation.key), [{ ...spoken, contested: true }]);
   delegatedLedger.release(conversation.key, rival.id);
-  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now));
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, attempt.reservationId));
   const turn = transcript.append("spoken-turn", received, now + 1);
   const duplicate = transcript.append("later-turn", received, now + 2);
   const bound = spokenLedger.bound(conversation, [turn, duplicate]);
@@ -102,7 +104,7 @@ test("a spoken reservation with no transcript binds its native receipt, even bes
   const received = spokenMessageText(spokenWords, { openQuestions: null, unseenReports: null });
   const now = Date.now();
   const earlier = transcript.append("typed-before", received, now);
-  const row = reserveSpokenTurn({ key, transcript: null }, spokenWords, received, true, { id: "first", revision: 1 });
+  const row = reserveSpokenTurn({ key, transcript: null }, spokenWords, received, true, claimSpoken(key, spokenWords, received));
   assert.equal(row.transcriptOffset, null);
   const actual = transcript.append(row.id, received, now);
   const later = transcript.append("typed-after", received, now);
@@ -123,7 +125,8 @@ test("a separate Codex client receipt follows the first native conversation key,
   const synthetic = "sdk:cold-codex";
   const key = "codex-native";
   const received = "check the build\n\nWhen you have finished this, post a report.";
-  const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true, { id: "codex", revision: 1 });
+  const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true,
+    claimSpoken(synthetic, "check the build", received));
   const messages = parseCodexMessages([{
     type: "event_msg", timestamp: new Date().toISOString(),
     payload: { type: "item_completed", item: { type: "UserMessage", id: "item-1", client_id: row.id, content: [{ text: received }] } },
@@ -154,8 +157,8 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
     const attempt = claimSpoken(key, text, text);
     spokenLedger.reserve({ key, transcript: null }, text, base => ({
       ...base, spokenWords: text, received: text, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
-    }), reservedAt);
-    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, native.ts));
+    }), reservedAt, attempt.reservationId);
+    assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, native.ts, attempt.reservationId));
     const located = { key, transcript: { read: transcript.conversation(key).transcript!.read, path } };
     assert.deepEqual([...spokenLedger.bound(located, [native, repeat]).rows.keys()], expected);
   }
@@ -237,7 +240,7 @@ test("settled text-only attempts cannot claim later typed messages across retrie
     const attempt = claimSpoken(key, words, words);
     reserveSpokenTurn(conversation, words, words, false, attempt);
     if (action === "confirmed") {
-      assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, Date.now()));
+      assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, Date.now(), attempt.reservationId));
     } else {
       db.recoverSendingPendingTurns(Date.now());
       const [uncertain] = db.listPendingTurns(key);
@@ -278,6 +281,33 @@ test("upgrade preserves anchored legacy disclosures and leaves unproven legacy r
   const anchored = transcript.append("anchored", text, now + 1);
   const bound = spokenLedger.bound(transcript.conversation(key), [typed, anchored]);
   assert.deepEqual([...bound.rows.keys()], [anchored.id]);
+});
+
+test("replaying a discarded capture confirms only its new handoff even when outbox ID and revision repeat", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const transcript = fakeTranscript();
+  const key = "recreated-capture";
+  const conversation = transcript.conversation(key);
+  const words = "inspect the build";
+  const abandoned = claimSpoken(key, words, words);
+  const first = reserveSpokenTurn(conversation, words, words, false, abandoned);
+  db.closeDb();
+  db.recoverSendingPendingTurns(Date.now());
+  assert.equal(db.clearPendingTurns(key), 1);
+  const typed = transcript.append("typed-in-between", words, Date.now());
+  const replay = claimSpoken(key, words, words);
+  assert.equal(replay.id, abandoned.id);
+  assert.equal(replay.revision, abandoned.revision);
+  const second = reserveSpokenTurn(conversation, words, words, false, replay);
+  assert.notEqual(second.id, first.id);
+  const delivered = transcript.append("actual-replay", words, Date.now());
+  assert.equal(db.retireDeliveredPendingTurn(abandoned.id, abandoned.revision, Date.now(), first.id), false);
+  assert.ok(db.retireDeliveredPendingTurn(replay.id, replay.revision, Date.now(), second.id));
+  db.closeDb();
+  spokenLedger.forgetCaches();
+  const bound = spokenLedger.bound(conversation, [typed, delivered]);
+  assert.deepEqual([...bound.rows.keys()], [delivered.id]);
+  assert.equal(bound.rows.get(delivered.id)?.id, second.id);
 });
 
 test("busy spoken message takes the live ask list on idle, matches its composed echo and records one human Goal", async t => {

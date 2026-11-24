@@ -333,7 +333,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Record a delivery BEFORE it is attempted. `build` adds the table's own columns to the
    * shared ones; the target transcript's size now is where its turn can first appear.
    */
-  reserve(conversation: DeliveryConversation, text: string, build: (base: BindableDelivery) => Row, now = Date.now()): Row {
+  reserve(conversation: DeliveryConversation, text: string, build: (base: BindableDelivery) => Row, now = Date.now(),
+    id: string = randomUUID()): Row {
     // Loaded before the insert, or a cold cache would read this row back and then push it again.
     const rows = this.rows(conversation.key);
     const fingerprint = injectionFingerprint(text);
@@ -341,7 +342,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // review delivery's words must not be taken for that delivery's echo.
     announceSend(conversation, fingerprint);
     const row = build({
-      id: randomUUID(),
+      id,
       noteKey: conversation.key,
       fingerprint,
       deliveredAt: now,

@@ -3850,6 +3850,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "composed_at", "INTEGER");
   addColumn(d, "pending_turns", "spoken_handoff_key", "TEXT");
   addColumn(d, "pending_turns", "spoken_handoff_generation", "INTEGER");
+  addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
@@ -13316,7 +13317,7 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
             delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
             message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision
        FROM session_spoken_turns WHERE note_key = ? AND (message_id IS NOT NULL OR runtime_confirmed_at IS NOT NULL
-         OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.revision = outbox_revision
+         OR EXISTS (SELECT 1 FROM pending_turns p WHERE p.id = outbox_turn_id AND p.spoken_reservation_id = session_spoken_turns.id
            AND p.state = 'sending' AND p.spoken_handoff_generation IS NOT NULL))
        ORDER BY rowid`,
   ).all(noteKey) as unknown as Array<Omit<SpokenTurnRow, "contested"> & { contested: number }>;
@@ -15333,7 +15334,7 @@ export function claimNextPendingTurn(
         `UPDATE pending_turns
             SET state = 'sending', revision = revision + 1, updated_at = ?,
                 claimed_at = ?, last_error = NULL, text = ?, composed_at = ?,
-                spoken_handoff_key = NULL, spoken_handoff_generation = NULL
+                spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_reservation_id = NULL
           WHERE id = ? AND state = 'queued' AND revision = ?`,
       )
       .run(now, now, row.text, row.composed_at, row.id, row.revision).changes;
@@ -15472,11 +15473,13 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
   );
 }
 
-/** Stamp the actual receiving cycle before the runtime can take the spoken turn. */
-export function recordSpokenHandoff(id: string, revision: number, generation: number): boolean {
-  return openDb().prepare(`UPDATE pending_turns SET spoken_handoff_key = note_key, spoken_handoff_generation = ?
-    WHERE id = ? AND revision = ? AND state = 'sending' AND spoken_words IS NOT NULL`)
-    .run(generation, id, revision).changes === 1;
+/** Stamp the receiving cycle and mint one reservation for this write, even if a capture ID is reused. */
+export function recordSpokenHandoff(id: string, revision: number, generation: number): string | null {
+  const reservationId = randomUUID();
+  const updated = openDb().prepare(`UPDATE pending_turns SET spoken_handoff_key = note_key, spoken_handoff_generation = ?,
+    spoken_reservation_id = ? WHERE id = ? AND revision = ? AND state = 'sending'
+    AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`).run(generation, reservationId, id, revision);
+  return updated.changes === 1 ? reservationId : null;
 }
 
 /**
@@ -15486,8 +15489,8 @@ export function recordSpokenHandoff(id: string, revision: number, generation: nu
  * nothing at startup would revisit. A row a session-end notice moved to `not_delivered` first is
  * settled too, since delivery is the fact. Returns whether the turn was retired.
  */
-export function retireDeliveredPendingTurn(id: string, revision: number, deliveredAt: number): boolean {
-  return settleDeliveredPendingTurn(id, revision, deliveredAt, "sending");
+export function retireDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, reservationId: string | null = null): boolean {
+  return settleDeliveredPendingTurn(id, revision, deliveredAt, "sending", reservationId);
 }
 
 /** Marking an uncertain turn sent confirms the same delivery after a restart. */
@@ -15495,19 +15498,20 @@ export function resolveUncertainPendingTurn(id: string, revision: number, resolv
   return settleDeliveredPendingTurn(id, revision, resolvedAt, "uncertain");
 }
 
-function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, state: "sending" | "uncertain"): boolean {
+function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: number, state: "sending" | "uncertain",
+  reservationId: string | null = null): boolean {
   const d = openDb();
   const nested = d.isTransaction;
   d.exec(nested ? "SAVEPOINT retire_delivered_turn" : "BEGIN IMMEDIATE");
   try {
     const retired = d.prepare(`DELETE FROM pending_turns WHERE id = ? AND state = ? AND revision = ?
+      AND (state = 'uncertain' OR spoken_reservation_id IS ?)
       RETURNING COALESCE(spoken_handoff_key, note_key) AS receivingKey,
                 spoken_words IS NOT NULL AS spoken, spoken_handoff_generation AS generation`)
-      .get(id, state, revision) as { receivingKey: string; spoken: number; generation: number | null } | undefined;
+      .get(id, state, revision, reservationId) as { receivingKey: string; spoken: number; generation: number | null } | undefined;
     if (retired?.spoken && retired.generation !== null) {
-      if (state === "sending") {
-        d.prepare(`UPDATE session_spoken_turns SET runtime_confirmed_at = ?
-          WHERE outbox_turn_id = ? AND outbox_revision = ?`).run(deliveredAt, id, revision);
+      if (reservationId !== null) {
+        d.prepare("UPDATE session_spoken_turns SET runtime_confirmed_at = ? WHERE id = ?").run(deliveredAt, reservationId);
       }
       // If the receiving cycle completed before acknowledgement (or during a retire retry),
       // its generation already advanced. Never put a hold on the following turn.

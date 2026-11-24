@@ -134,7 +134,7 @@ interface PendingTurnDeps {
   /** How long an after-work turn whose ownership could not be read waits before it is checked again. */
   afterWorkRecheckMs: number;
   /** Retire a delivered turn with its after-work prompt row (`retireDeliveredPendingTurn`). */
-  retireDelivered: (id: string, revision: number, deliveredAt: number) => boolean;
+  retireDelivered: typeof retireDeliveredPendingTurn;
 }
 
 /**
@@ -165,6 +165,7 @@ interface PickupCandidate {
   turn: PendingTurn;
   boundaryAt: number;
   generation: number;
+  spokenReservationId: string | null;
   injectionSucceeded: boolean;
   pickupObserved: boolean;
   pickupObservedAt: number | null;
@@ -248,10 +249,11 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
  * attempt may reserve a transcript occurrence. A crash before the guard leaves no reservation. */
 function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, sdkInput?: SdkTurn): boolean {
   if (send.kind !== "spoken" || send.reservationId !== null) return true;
-  if (!recordSpokenHandoff(turn.id, turn.revision, generation)) return false;
+  const reservationId = recordSpokenHandoff(turn.id, turn.revision, generation);
+  if (!reservationId) return false;
   const conversation = { key: turn.noteKey, transcript: sessionMessages(session) };
   const row = reserveSpokenTurn(conversation, send.words, turn.text,
-    sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, turn);
+    sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, { id: turn.id, revision: turn.revision, reservationId });
   send.reservationId = row.id;
   if (sdkInput && row.messageId) sdkInput.clientMessageId = row.messageId;
   return true;
@@ -1326,7 +1328,8 @@ export class PendingTurnManager {
             completedGeneration: this.registry.getSession(session.id)?.workCycle?.generation,
           });
         }
-        this.retireDelivered(turn);
+        const reservationId = outboxSend.kind === "spoken" ? outboxSend.reservationId : null;
+        if (!this.retireDelivered(turn, reservationId) && reservationId !== null) return;
         // Accepted into the running turn is not read: the agent takes it at its next step
         // and only then writes it to the transcript the log is drawn from. Keep it on
         // screen until then, unless the turn has already ended and cannot hold it.
@@ -1429,6 +1432,7 @@ export class PendingTurnManager {
           turn,
           boundaryAt: this.deps.now(),
           generation,
+          spokenReservationId: outboxSend.kind === "spoken" ? outboxSend.reservationId : null,
           injectionSucceeded: false,
           pickupObserved: false,
           pickupObservedAt: null,
@@ -1763,7 +1767,7 @@ export class PendingTurnManager {
       activityObservedAt: candidate.pickupObservedAt,
     });
     this.pickup.delete(turn.noteKey);
-    this.retireDelivered(turn);
+    if (!this.retireDelivered(turn, candidate.spokenReservationId) && candidate.spokenReservationId !== null) return;
     this.journalDelivered(sessionId, turn, candidate.generation);
     this.registry.refreshPendingTurns(turn.noteKey);
   }
@@ -1777,18 +1781,19 @@ export class PendingTurnManager {
    * operator, never resending it. Marking that sent settles the prompt row too
    * (`resolveUncertainPendingTurn`).
    */
-  private retireDelivered(turn: PendingTurn, failures = 0): void {
+  private retireDelivered(turn: PendingTurn, reservationId: string | null, failures = 0): boolean {
     this.retireRetries.delete(turn.id);
     try {
-      this.deps.retireDelivered(turn.id, turn.revision, this.deps.now());
+      return this.deps.retireDelivered(turn.id, turn.revision, this.deps.now(), reservationId);
     } catch (error) {
       console.warn(`[pending-turns] could not retire delivered turn ${turn.id}; trying again:`, error);
-      if (this.stopped) return;
+      if (this.stopped) return false;
       const delay = Math.min(RETIRE_RETRY_MAX_MS, RETIRE_RETRY_BASE_MS * 2 ** failures);
       this.retireRetries.set(turn.id, unref(setTimeout(() => {
-        this.retireDelivered(turn, failures + 1);
+        this.retireDelivered(turn, reservationId, failures + 1);
         this.registry.refreshPendingTurns(turn.noteKey);
       }, delay)));
+      return true;
     }
   }
 

@@ -228,7 +228,10 @@ spoken outbox rows. The first claim fixes the delivery text. At handoff the daem
 and generation on the outbox row. Confirming delivery and retiring the row atomically set `session_work_cycles.spoken_hold` if that generation is still current. Completing
 the work cycle clears the hold in the same write that advances its generation.
 Once the SDK acceptance guard or terminal pre-paste guard stamps the claimed revision, the
-daemon records that outbox turn ID and revision in `session_spoken_turns` before the write.
+daemon mints a handoff UUID on the outbox row. That UUID identifies the reservation in
+`session_spoken_turns` and travels with the runtime receipt. If a discarded capture is
+replayed with the same outbox ID and revision, it receives a new UUID. A late receipt from the
+first handoff cannot retire the new row or confirm its reservation.
 A restart before the guard leaves no transcript reservation. After the guard, the ledger can
 bind the spoken words even after the pending row retires. For databases from earlier builds
 of this phase, an existing native binding or client message ID preserves the disclosure.

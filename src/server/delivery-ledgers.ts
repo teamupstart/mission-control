@@ -102,11 +102,11 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
 
 /** On runtimes that accept a native user-message id, reserve that identity before the write. */
 export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWords: string, received: string,
-  clientMessageIds: boolean, attempt: Pick<PendingTurn, "id" | "revision"> & { reservationId: string }) {
+  clientMessageIds: boolean, attempt: Pick<PendingTurn, "id" | "revision"> & { reservationId: string }, now = Date.now()) {
   return spokenLedger.reserve(conversation, received, base => ({
     ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
     messageId: clientMessageIds ? base.id : null,
-  }), Date.now(), attempt.reservationId);
+  }), now, attempt.reservationId);
 }
 
 export function followSpokenConversationKey(sessionId: string, fromKey: string, toKey: string): void {

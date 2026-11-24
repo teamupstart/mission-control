@@ -66,7 +66,8 @@ function applyTerminalHook(input: {
 }
 
 for (const [sawStart, priorGeneration] of [[true, 1], [false, 1], [false, 0]] as const) {
-test(`a first native Stop closes a stamped spoken handoff ${sawStart ? "with" : "without"} a preceding start hook at generation ${priorGeneration}`, async () => {
+test(`a first native Stop closes a stamped spoken handoff ${sawStart ? "with" : "without"} a preceding start hook at generation ${priorGeneration}`, async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: 5 });
   const db = await import("../src/server/db.ts");
   const registry = new Registry();
   const id = `terminal-spoken-before-binding-${sawStart}-${priorGeneration}`;
@@ -100,6 +101,28 @@ test(`a first native Stop closes a stamped spoken handoff ${sawStart ? "with" : 
   assert.equal(db.workCycleFor(native)?.active, false);
 });
 }
+
+test("a delayed Stop between claim and handoff cannot release the receiving turn before or after its receipt", async t => {
+  const db = await import("../src/server/db.ts");
+  t.mock.timers.enable({ apis: ["Date"], now: 20 });
+  for (const receiptFirst of [false, true]) {
+    const key = "handoff-boundary-" + receiptFirst;
+    const turn = db.createPendingTurn({ id: key, noteKey: key, spokenWords: "inspect", text: "inspect", now: 1 });
+    const claim = db.claimNextPendingTurn(key, 10, turn, words => words)!;
+    const reservation = db.recordSpokenHandoff(turn.id, claim.revision, 0);
+    assert.ok(reservation);
+    const receive = () => assert.ok(db.retireDeliveredPendingTurn(turn.id, claim.revision, 22, reservation));
+    if (receiptFirst) receive();
+    db.closeDb();
+    db.completeWorkCycle(key, 15, 23);
+    assert.equal(db.workCycleFor(key)?.generation ?? 0, 0);
+    if (!receiptFirst) receive();
+    assert.equal(db.hasDeliveredSpokenHold(key), true);
+    db.completeWorkCycle(key, 25, 25);
+    assert.equal(db.workCycleFor(key)?.generation, 1);
+    assert.equal(db.hasDeliveredSpokenHold(key), false);
+  }
+});
 
 test("Claude and Codex terminal turns share one durable generation contract", () => {
   for (const [index, agent] of (["claude", "codex"] as const).entries()) {

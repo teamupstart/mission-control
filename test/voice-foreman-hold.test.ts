@@ -122,7 +122,7 @@ test("settling an uncertain spoken handoff after restart holds only its original
     const key = "uncertain-spoken-" + finished;
     const row = db.createPendingTurn({ id: key, noteKey: key, text: "inspect", spokenWords: "inspect", now: 1 });
     const claim = db.claimNextPendingTurn(key, 2, row, words => words)!;
-    assert.ok(db.recordSpokenHandoff(row.id, claim.revision, 0));
+    assert.ok(db.recordSpokenHandoff(row.id, claim.revision, 0, 2));
     db.markWorkCycleActive(key, 3);
     if (finished) {
       db.completeWorkCycle(key, 4, 4);
@@ -163,7 +163,7 @@ test("a confirmed spoken hold follows the first native binding and stays with th
   registry.registerSdkSession({ id, agent: "claude", name: "First bind", cwd: "/tmp" });
   const row = db.createPendingTurn({ id: "first-bind", noteKey: id, text: "inspect", spokenWords: "inspect", now: 1 });
   const claim = db.claimNextPendingTurn(id, 2, row, words => words)!;
-  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0);
+  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0, 2);
   assert.ok(reservation);
   assert.ok(db.retireDeliveredPendingTurn(row.id, claim.revision, 3, reservation));
   assert.equal(registry.voiceHold(id), true);
@@ -184,7 +184,7 @@ test("a late confirmation uses the native receiving cycle even if the outbox has
   db.completeWorkCycle(native, 2, 2);
   const row = db.createPendingTurn({ id: "in-flight-bind", noteKey: provisional, text: "inspect", spokenWords: "inspect", now: 3 });
   const claim = db.claimNextPendingTurn(provisional, 4, row, words => words)!;
-  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0);
+  const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0, 4);
   assert.ok(reservation);
   db.workCycleForBoundSession(provisional, native);
   assert.ok(db.rekeyPendingTurns(provisional, native, 5));

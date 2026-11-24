@@ -64,6 +64,31 @@ test("an SDK refusal after queue acceptance leaves the card and Recently heard q
   assert.equal((await readHeard())[0]?.outcome, "cancelled");
 });
 
+test("clearing the outbox cancels only committed removals and preserves the other spoken receipt", async () => {
+  const session = "sdk:Steve";
+  registry.applyDriverEvent(session, { kind: "state", state: "working", activity: null });
+  for (const id of ["clear-me", "keep-me"]) {
+    await say("Steve, inspect the build", id);
+    await act(id, "send-now");
+  }
+  const [clear, keep] = registry.getSession(session)!.pendingTurns;
+  const key = clear!.noteKey;
+  const d = openDb();
+  d.exec("CREATE TEMP TRIGGER refuse_clear BEFORE DELETE ON pending_turns BEGIN SELECT RAISE(ABORT, 'refused clear'); END");
+  try {
+    assert.throws(() => registry.clearPendingTurns(key, [keep!.id]), /refused clear/);
+    assert.ok((await readHeard()).every(entry => entry.outcome === "queued"));
+  } finally {
+    d.exec("DROP TRIGGER refuse_clear");
+  }
+  assert.ok(registry.clearPendingTurns(key, [keep!.id]));
+  registry.turnDelivered({ sessionId: session, turnId: clear!.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
+  assert.deepEqual((await readHeard()).map(({ id, outcome }) => [id, outcome]), [["keep-me", "queued"], ["clear-me", "cancelled"]]);
+  assert.deepEqual(cards.filter(card => card.state === "cancelled").map(card => card.id), ["clear-me"]);
+  registry.turnDelivered({ sessionId: session, turnId: keep!.id, deliveredAt: Date.now(), spoken: { generation: 0 } });
+  assert.equal((await readHeard())[0]?.outcome, "sent");
+});
+
 for (const recovered of [false, true]) {
   test(recovered
     ? "a failed spoken retirement recovered as uncertain never publishes sent on the stale retry"

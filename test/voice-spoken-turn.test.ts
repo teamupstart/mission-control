@@ -39,12 +39,15 @@ test("upgrade from 51 leaves typed rows untouched, and spoken composition surviv
   const words = "check the build";
   const typed = db.createPendingTurn({ id: "typed", noteKey: key, text: words, now: 1 });
   db.openDb().exec(`
+    DROP INDEX idx_pending_spoken_handoff;
     ALTER TABLE pending_turns DROP COLUMN spoken_words;
     ALTER TABLE pending_turns DROP COLUMN composed_at;
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_key;
     ALTER TABLE pending_turns DROP COLUMN spoken_handoff_generation;
+    ALTER TABLE pending_turns DROP COLUMN spoken_handoff_at;
     ALTER TABLE pending_turns DROP COLUMN spoken_reservation_id;
     ALTER TABLE session_work_cycles DROP COLUMN spoken_hold;
+    ALTER TABLE session_work_cycles DROP COLUMN spoken_hold_since;
     PRAGMA user_version = 51;
   `);
   db.closeDb();
@@ -264,7 +267,7 @@ test("settled text-only attempts cannot claim later typed messages across retrie
       const [uncertain] = db.listPendingTurns(key);
       assert.equal(uncertain?.state, "uncertain");
       if (action === "mark-sent") assert.ok(db.resolveUncertainPendingTurn(attempt.id, uncertain.revision));
-      else if (action === "discard") assert.equal(db.clearPendingTurns(key), 1);
+      else if (action === "discard") assert.equal(db.clearPendingTurns(key).count, 1);
       else {
         const queued = db.retryPendingTurn(attempt.id, uncertain.revision, Date.now())!;
         const retried = db.claimNextPendingTurn(key, Date.now(), queued)!;
@@ -290,7 +293,7 @@ test("abandoning an uncertain native-ID attempt preserves its exact-match disclo
   const conversation = transcript.conversation(key);
   const reservation = reserveSpokenTurn(conversation, words, words, true, attempt);
   db.recoverSendingPendingTurns(Date.now());
-  assert.equal(db.clearPendingTurns(key), 1);
+  assert.equal(db.clearPendingTurns(key).count, 1);
   db.closeDb();
   spokenLedger.forgetCaches();
   const actual = transcript.append(reservation.id, words, Date.now());
@@ -344,7 +347,7 @@ test("replaying a discarded capture confirms only its new handoff even when outb
   const first = reserveSpokenTurn(conversation, words, words, false, abandoned);
   db.closeDb();
   db.recoverSendingPendingTurns(Date.now());
-  assert.equal(db.clearPendingTurns(key), 1);
+  assert.equal(db.clearPendingTurns(key).count, 1);
   const typed = transcript.append("typed-in-between", words, Date.now());
   const replay = claimSpoken(key, words, words);
   assert.equal(replay.id, abandoned.id);

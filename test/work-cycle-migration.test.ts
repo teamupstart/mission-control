@@ -42,7 +42,7 @@ test("an upgraded database gains the dedicated current-state table", () => {
   }>;
   assert.deepEqual(
     columns.map((column) => column.name),
-    ["logical_key", "generation", "active", "completed_at", "updated_at", "spoken_hold"],
+    ["logical_key", "generation", "active", "completed_at", "updated_at", "spoken_hold", "spoken_hold_since"],
   );
   assert.equal(columns.find(column => column.name === "spoken_hold")?.dflt_value, "0");
   assert.equal(workCycleFor("never-observed"), null);

@@ -3850,11 +3850,14 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "composed_at", "INTEGER");
   addColumn(d, "pending_turns", "spoken_handoff_key", "TEXT");
   addColumn(d, "pending_turns", "spoken_handoff_generation", "INTEGER");
+  addColumn(d, "pending_turns", "spoken_handoff_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
   addColumn(d, "session_work_cycles", "spoken_hold", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_work_cycles", "spoken_hold_since", "INTEGER");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
   addColumn(d, "task_session_closures", "retired_at", "INTEGER");
@@ -6431,12 +6434,13 @@ export function workCycleForBoundSession(sessionId: string, logicalKey: string):
       if (!held && !movedHandoff) return;
       // The first event on the native key can be Stop. Move the active bit along with
       // the handoff so that event can complete it before a late receipt arrives.
-      d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold)
-        SELECT ?, updated_at, 1, spoken_hold FROM session_work_cycles WHERE logical_key = ? AND active = 1
+      d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold, spoken_hold_since)
+        SELECT ?, updated_at, 1, spoken_hold, spoken_hold_since FROM session_work_cycles WHERE logical_key = ? AND active = 1
         ON CONFLICT(logical_key) DO UPDATE SET active = 1,
           updated_at = MAX(updated_at, excluded.updated_at),
+          spoken_hold_since = COALESCE(MAX(spoken_hold_since, excluded.spoken_hold_since), excluded.spoken_hold_since, spoken_hold_since),
           spoken_hold = MAX(spoken_hold, excluded.spoken_hold)`).run(logicalKey, sessionId);
-      d.prepare("UPDATE session_work_cycles SET active = 0, spoken_hold = 0 WHERE logical_key = ?").run(sessionId);
+      d.prepare("UPDATE session_work_cycles SET active = 0, spoken_hold = 0, spoken_hold_since = NULL WHERE logical_key = ?").run(sessionId);
     };
     if (d.isTransaction) bind();
     else inTransaction(bind);
@@ -6494,15 +6498,20 @@ export function completeWorkCycle(
 ): WorkCycleSummary | null {
   openDb()
     .prepare(
-      `INSERT INTO session_work_cycles (logical_key, generation, active, completed_at, updated_at)
-        SELECT $key, 1, 0, $completedAt, $updatedAt
-         WHERE EXISTS (SELECT 1 FROM session_work_cycles WHERE logical_key = $key AND active = 1)
-            OR EXISTS (SELECT 1 FROM pending_turns WHERE spoken_handoff_key = $key
-                 AND state IN ('sending', 'uncertain') AND claimed_at <= $completedAt
-                 AND spoken_handoff_generation = COALESCE(
-                   (SELECT generation FROM session_work_cycles WHERE logical_key = $key), 0))
+      `WITH cycle AS (SELECT * FROM session_work_cycles WHERE logical_key = $key),
+            handoff AS (
+              SELECT MAX(COALESCE(p.spoken_handoff_at, s.delivered_at)) AS at
+              FROM pending_turns p LEFT JOIN session_spoken_turns s ON s.id = p.spoken_reservation_id
+              WHERE p.spoken_handoff_key = $key AND p.state IN ('sending', 'uncertain')
+                AND p.spoken_handoff_generation = COALESCE((SELECT generation FROM cycle), 0)
+            )
+        INSERT INTO session_work_cycles (logical_key, generation, active, completed_at, updated_at)
+        SELECT $key, 1, 0, $completedAt, $updatedAt FROM handoff
+         WHERE (at IS NOT NULL OR EXISTS (SELECT 1 FROM cycle WHERE active = 1))
+           AND (at IS NULL OR at <= $completedAt)
+           AND NOT EXISTS (SELECT 1 FROM cycle WHERE spoken_hold_since > $completedAt)
         ON CONFLICT(logical_key) DO UPDATE SET generation = generation + 1, active = 0,
-          spoken_hold = 0, completed_at = excluded.completed_at, updated_at = excluded.updated_at`,
+          spoken_hold = 0, spoken_hold_since = NULL, completed_at = excluded.completed_at, updated_at = excluded.updated_at`,
     )
     .run({ key: logicalKey, completedAt, updatedAt });
   return workCycleFor(logicalKey);
@@ -15349,7 +15358,7 @@ export function claimNextPendingTurn(
         `UPDATE pending_turns
             SET state = 'sending', revision = revision + 1, updated_at = ?,
                 claimed_at = ?, last_error = NULL, text = ?, composed_at = ?,
-                spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_reservation_id = NULL
+                spoken_handoff_key = NULL, spoken_handoff_generation = NULL, spoken_handoff_at = NULL, spoken_reservation_id = NULL
           WHERE id = ? AND state = 'queued' AND revision = ?`,
       )
       .run(now, now, row.text, row.composed_at, row.id, row.revision).changes;
@@ -15487,11 +15496,11 @@ export function deleteClaimedPendingTurn(id: string, revision: number): boolean 
 }
 
 /** Stamp the receiving cycle and mint one reservation for this write, even if a capture ID is reused. */
-export function recordSpokenHandoff(id: string, revision: number, generation: number): string | null {
+export function recordSpokenHandoff(id: string, revision: number, generation: number, now = Date.now()): string | null {
   const reservationId = randomUUID();
   const updated = openDb().prepare(`UPDATE pending_turns SET spoken_handoff_key = note_key, spoken_handoff_generation = ?,
-    spoken_reservation_id = ? WHERE id = ? AND revision = ? AND state = 'sending'
-    AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`).run(generation, reservationId, id, revision);
+    spoken_handoff_at = ?, spoken_reservation_id = ? WHERE id = ? AND revision = ? AND state = 'sending'
+    AND spoken_words IS NOT NULL AND spoken_reservation_id IS NULL`).run(generation, now, reservationId, id, revision);
   return updated.changes === 1 ? reservationId : null;
 }
 
@@ -15521,9 +15530,10 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
       AND (state = 'uncertain' OR spoken_reservation_id IS ?)
       RETURNING COALESCE(spoken_handoff_key, note_key) AS receivingKey,
                 spoken_words IS NOT NULL AS spoken, spoken_handoff_generation AS generation,
+                COALESCE(spoken_handoff_at, (SELECT delivered_at FROM session_spoken_turns WHERE id = spoken_reservation_id)) AS handoffAt,
                 spoken_reservation_id AS reservationId`)
       .get(id, state, revision, reservationId) as {
-        receivingKey: string; spoken: number; generation: number | null; reservationId: string | null;
+        receivingKey: string; spoken: number; generation: number | null; reservationId: string | null; handoffAt: number | null;
       } | undefined;
     if (retired && state === "uncertain") discardUnconfirmedSpokenReservation(d, retired.reservationId);
     if (retired?.spoken && retired.generation !== null) {
@@ -15532,11 +15542,12 @@ function settleDeliveredPendingTurn(id: string, revision: number, deliveredAt: n
       }
       // If the receiving cycle completed before acknowledgement (or during a retire retry),
       // its generation already advanced. Never put a hold on the following turn.
-      d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold)
-        VALUES (?, ?, 1, 1)
-        ON CONFLICT(logical_key) DO UPDATE SET spoken_hold = 1, active = 1
+      d.prepare(`INSERT INTO session_work_cycles (logical_key, updated_at, active, spoken_hold, spoken_hold_since)
+        VALUES (?, ?, 1, 1, ?)
+        ON CONFLICT(logical_key) DO UPDATE SET spoken_hold = 1, active = 1,
+          spoken_hold_since = COALESCE(MAX(spoken_hold_since, excluded.spoken_hold_since), excluded.spoken_hold_since, spoken_hold_since)
         WHERE session_work_cycles.generation = ?`)
-        .run(retired.receivingKey, deliveredAt, retired.generation);
+        .run(retired.receivingKey, deliveredAt, retired.handoffAt, retired.generation);
     }
     if (retired && id.startsWith(AFTER_WORK_SKILLS_TURN_PREFIX)) {
       d.prepare(`UPDATE task_skill_prompts SET state = 'delivered', reason = NULL, delivered_at = ?
@@ -15575,14 +15586,15 @@ export function dropQueuedPendingTurns(noteKey: string): number {
   );
 }
 
-export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): number {
+export function clearPendingTurns(noteKey: string, preserveIds: readonly string[] = []): { count: number; spokenIds: string[] } {
   const d = openDb();
   const clear = () => {
     const preserve = preserveIds.length ? `AND id NOT IN (${preserveIds.map(() => "?").join(", ")})` : "";
     const rows = d.prepare(`DELETE FROM pending_turns WHERE note_key = ? ${preserve}
-      RETURNING spoken_reservation_id AS reservationId`).all(noteKey, ...preserveIds) as { reservationId: string | null }[];
+      RETURNING id, spoken_words IS NOT NULL AS spoken, spoken_reservation_id AS reservationId`)
+      .all(noteKey, ...preserveIds) as { id: string; spoken: number; reservationId: string | null }[];
     for (const row of rows) discardUnconfirmedSpokenReservation(d, row.reservationId);
-    return rows.length;
+    return { count: rows.length, spokenIds: rows.filter(row => row.spoken).map(row => row.id) };
   };
   return d.isTransaction ? clear() : inTransaction(clear);
 }

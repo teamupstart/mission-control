@@ -11397,9 +11397,11 @@ export class Registry extends EventEmitter {
   clearPendingTurns(key: string, preserveIds: readonly string[] = []): boolean {
     // A steer the discarded conversation accepted will never be read by the new one.
     this.forgetSteers(key);
-    const changed = clearPendingTurnsDb(key, preserveIds) > 0;
-    if (changed) this.syncSessionsForPendingTurns(key);
-    return changed;
+    const removed = clearPendingTurnsDb(key, preserveIds);
+    if (removed.count === 0) return false;
+    for (const id of removed.spokenIds) this.voiceRouter?.settleSpoken(id, "cancelled");
+    this.syncSessionsForPendingTurns(key);
+    return true;
   }
 
   /**

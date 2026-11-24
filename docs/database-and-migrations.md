@@ -225,7 +225,9 @@ process with a parent watchdog and verifies that the helper leaves no timer behi
 
 Schema 54 records the original words, composition time, and receiving work-cycle generation on
 spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
-and generation on the outbox row. Confirming delivery and retiring the row atomically set `session_work_cycles.spoken_hold` if that generation is still current. Completing
+and generation on the outbox row, alongside the time the transport reached its write guard.
+Confirming delivery and retiring the row atomically carry this time into `session_work_cycles.spoken_hold_since`
+and set `spoken_hold` if that generation is still current. A delayed Stop timestamped before the guard leaves the receiving turn active. Completing
 the work cycle clears the hold in the same write that advances its generation.
 Once the SDK acceptance guard or terminal pre-paste guard stamps the claimed revision, the
 daemon mints a handoff UUID on the outbox row. That UUID identifies the reservation in

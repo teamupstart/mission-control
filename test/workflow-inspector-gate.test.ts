@@ -3973,6 +3973,50 @@ for (const partial of [
   });
 }
 
+for (const other of ["PR number", "base repository", "activity ref"] as const) {
+  test(`final recovery ignores a successful response for a different ${other} and retries the same receipt`, async () => {
+    let substitute = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (substitute && head === priorRefOid) {
+        substitute = false;
+        if (other === "activity ref") {
+          const [tip, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+          writeFileSync(branchActivity, JSON.stringify([{ ...tip, ref: "refs/heads/other", after: laterRefOid }, ...history]));
+        } else {
+          const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+          if (other === "PR number") pull.number += 1;
+          else pull.base.repo.full_name = "owner/other";
+          pull.state = "closed";
+          pull.head.sha = laterRefOid;
+          writeFileSync(recoveryPr, JSON.stringify(pull));
+        }
+      }
+      return head;
+    } });
+    const { manager, store, ids, registry, key, now } = seeded;
+    try {
+      await strandLegacyGrant(seeded, verifiedRecoveryOid);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      const path = other === "activity ref" ? branchActivity : recoveryPr;
+      const valid = readFileSync(path);
+      substitute = true;
+      assert.equal((await recover()).status, 200);
+      await manager.settleBackgroundWork();
+      assert.equal(substitute, false);
+      assert.equal(phaseOf(seeded), "waiting_for_new_head/inspector_findings");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+
+      writeFileSync(path, valid);
+      registry.inspectionUpdated(key, verifiedRecoveryOid, "OPEN", now + 1014);
+      await manager.settleBackgroundWork();
+      assert.equal(store.latestSubmission(ids.run)?.prHeadSha, verifiedRecoveryOid);
+      assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+      assert.equal(eventCount(seeded, "inspector_stale_grant_recovered"), 1);
+    } finally { await manager.stop(); }
+  });
+}
+
 for (const source of ["PR snapshot", "ref activity"] as const) {
   test(`successful ${source} reads with invalid head OIDs keep the receipt available for a valid retry`, async () => {
     let invalidOid: string | undefined;

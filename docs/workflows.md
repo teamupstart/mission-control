@@ -2846,7 +2846,9 @@ PR's closed or merged state still blocks when the errors affect only source or t
 fields. On an open PR, a different valid head OID also blocks when the errors leave
 that field intact. Missing or malformed head OIDs leave recovery pending, including
 when the GitHub CLI exits successfully. Confirming a match requires a successful read
-with complete source and timeline evidence.
+with complete source and timeline evidence. A response for another PR or an activity
+row for another ref supplies no evidence about the pinned identity. Recovery can retry
+with the same receipt.
 An unavailable read leaves the round available for the next
 evaluation. The insertion transaction also checks for a conversation transfer hold.
 Subsequent changes on GitHub are subject to the submission's ordinary exact-head review.

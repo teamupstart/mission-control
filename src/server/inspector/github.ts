@@ -350,16 +350,17 @@ async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl
   const response = recoveryPullSnapshot.safeParse(result.body);
   if (!response.success) return null;
   const base = response.data.data.repository;
-  const matchesIdentity = base.nameWithOwner.toLowerCase() === `${pr.owner}/${pr.repo}`.toLowerCase() && base.pullRequest.number === pr.number;
+  if (base.nameWithOwner.toLowerCase() !== `${pr.owner}/${pr.repo}`.toLowerCase()
+      || base.pullRequest.number !== pr.number) return null;
   const errors = response.data.errors;
   const partial = result.code !== 0 || Boolean(errors?.length);
   if (partial) {
     // gh writes partial GraphQL data to stdout and exits 1 for field errors.
     const sourceOrTimelineErrors = errors?.length && errors.every(({ path }) => path?.[0] === "repository"
       && path[1] === "pullRequest" && ["headRefName", "headRefOid", "headRepository", "timelineItems"].includes(String(path[2])));
-    if (!matchesIdentity || !sourceOrTimelineErrors) return null;
+    if (!sourceOrTimelineErrors) return null;
   }
-  if (!matchesIdentity || base.pullRequest.state !== "OPEN") return false;
+  if (base.pullRequest.state !== "OPEN") return false;
   // An identified PR can disprove the receipt even if its timeline or fork is unavailable.
   const oid = recoveryHeadOid.safeParse(base.pullRequest.headRefOid);
   if (!oid.success || errors?.some(({ path }) => path?.[2] === "headRefOid")) return null;
@@ -377,10 +378,8 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
   const { repository, ref, activityId, changedAt } = saved.data;
   for (let sample = 0; sample < 2; sample++) {
     const tip = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
-    if (tip.success) {
-      const [latest] = tip.data;
-      if (latest.ref !== ref || latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt) return false;
-    }
+    const latest = tip.success && tip.data[0].ref === ref ? tip.data[0] : null;
+    if (latest && (latest.after !== head || latest.id !== activityId || latest.changedAt !== changedAt)) return false;
     const pull = await readRecoveryTimeline(pr, changedAt, head);
     if (pull === false) return false;
     if (!pull) return null;
@@ -388,7 +387,7 @@ export async function recheckInspectorRecoveryTip(prUrl: string, head: string, r
         || `refs/heads/${pull.headRefName}` !== ref || pull.timelineItems.pageInfo.hasNextPage) return false;
     const [event] = pull.timelineItems.nodes;
     if (event?.id !== saved.data.verifiedForcePushId || (event && event.__typename !== "HeadRefForcePushedEvent")) return false;
-    if (!tip.success) return null;
+    if (!latest) return null;
   }
   return true;
 }

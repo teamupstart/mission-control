@@ -47,7 +47,8 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
+for those windows. If a save times out, you can select another placement. A delayed request
+cannot replace the newer saved choice. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.

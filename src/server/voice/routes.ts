@@ -12,6 +12,7 @@ import {
 } from "@shared/voice-decide.ts";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { createMiddleware } from "hono/factory";
 import {
   VOICE_FLAG,
   VOICE_BACKENDS,
@@ -29,13 +30,15 @@ import {
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
   VoiceProviderIntentSchema,
+  VoiceRevisionSchema,
   VoiceShellReportSchema,
+  type VoiceRevision,
 } from "@shared/voice.ts";
 import { getTask } from "../db.ts";
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { getUiConfig, setUiConfig, setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
+import { setUiConfig, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -154,10 +157,24 @@ export function registerVoiceRoutes(
     if (!task) return c.json({ error: "The finished task could not be found." }, 404);
     return c.json({ repoRoot: task.repoRoot });
   });
-  app.put("/api/voice/confirmation", gate, limitBody, async (c) => {
-    const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }));
+  // Older callers omit the version. Capture theirs before even the body limiter can wait for bytes.
+  const observePlacement = createMiddleware<{ Variables: { placementVersion: VoiceRevision } }>(async (c, next) => {
+    c.set("placementVersion", voiceIndicatorVersion(storedVoiceUi()));
+    await next();
+  });
+  app.put("/api/voice/confirmation", gate, observePlacement, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }).extend({
+      expectedVersion: VoiceRevisionSchema.optional(),
+    }));
     if (!parsed.ok) return parsed.res;
-    const { voice } = setUiConfig({ voice: { ...getUiConfig().voice, ...parsed.data } });
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    const current = storedVoiceUi();
+    const version = voiceIndicatorVersion(current);
+    const expected = parsed.data.expectedVersion ?? c.get("placementVersion");
+    if (expected.source !== version.source || expected.revision !== version.revision) {
+      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version }, 409);
+    }
+    const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
     return c.json({ ok: true, ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
   });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {

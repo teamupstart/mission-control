@@ -65,6 +65,8 @@ export interface DeliveryStore<Row extends BindableDelivery> {
   maxCachedConversations?: number;
   /** Native IDs in a rewritten transcript may now identify different words. */
   requireExactFingerprint?: boolean;
+  /** A recorded offset belongs only to the transcript sampled for that send. */
+  acceptsTranscript?(row: Row, transcript: SessionMessages): boolean;
   /** Verified text-binding boundary, false for a mismatch, null when cleanup must retry the read. */
   textBoundary?(row: Row, transcript: SessionMessages): TranscriptBoundary | false | null;
   /** Conversations whose rows an outbox transaction removed outside this ledger. */
@@ -590,6 +592,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       }
     }
     const pending = rows.filter(row => row.messageId === null && !row.contested &&
+      (!this.store.acceptsTranscript || this.store.acceptsTranscript(row, transcript)) &&
       (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !options.candidate || options.candidate(row)) &&
       (options.pagedRow === undefined || row.id === options.pagedRow));
     return !pending.length || this.bindPending(pending, transcript, now, options.strict ?? false, options.pagedRow !== undefined, version, options.beforeBind);
@@ -981,7 +984,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const key = turnKey(fingerprint, m.ts);
       const entry = key ? keyed.get(key) : undefined;
       const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
-      if (row && conversation.transcript && (this.store.textBoundary && conversation.preparedSpokenFallbacks
+      if (row && conversation.transcript && (!this.store.acceptsTranscript || this.store.acceptsTranscript(row, conversation.transcript))
+        && (this.store.textBoundary && conversation.preparedSpokenFallbacks
         ? conversation.preparedSpokenFallbacks.has(row.id) : this.uniqueAtTimestamp(row, conversation.transcript))
           && this.boundTextIntact(row, conversation.transcript)) result.rows.set(m.id, row);
       else if (couldBe(fingerprint, m)) result.ambiguous.add(m.id);

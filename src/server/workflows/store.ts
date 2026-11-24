@@ -2879,8 +2879,8 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
-  /** Latest completed publication whose accepted checkout still matched the repository probe. */
-  unchangedPublicationRunId?: string;
+  /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
+  publicationComparison?: { runId: string; unchanged: boolean };
   /** Resolved by the manager before the claim is offered. A claim never creates a binding. */
   binding: WorkflowBinding;
   completionKind: "drain" | "prompted";
@@ -7218,6 +7218,11 @@ export class WorkflowStore {
     });
   }
 
+  /** Validate every probed publication under the same write lock that spends the shared cycle. */
+  claimForemanCompletions(inputs: ForemanCompletionStoreInput[]): ForemanCompletionStoreResult[] {
+    return transaction(this.db, () => inputs.map(input => this.claimForemanCompletion(input)));
+  }
+
   /**
    * Claim one Foreman proof and retire its matching once-only guard atomically.
    * The manager selects the already-bound workflow; this transaction never creates a binding.
@@ -7311,19 +7316,22 @@ export class WorkflowStore {
       let created = false;
       let previousFingerprint: string | undefined;
 
-      if (input.completionKind === "prompted" && input.unchangedPublicationRunId) {
-        const published = this.latestRunForBinding(binding.id);
-        if (run || published?.id !== input.unchangedPublicationRunId || published.status !== "completed") {
+      const comparison = input.publicationComparison;
+      if (comparison) {
+        const latest = this.latestRunForBinding(binding.id);
+        if (run || latest?.id !== comparison.runId || latest.status !== "completed") {
           throw new Error("Workflow publication changed during completion comparison");
         }
+      }
+      if (comparison?.unchanged) {
         // One follow-through per repository. Clearing the pin and consuming the shared
         // generation commit together. An identical retry is answered by duplicateEvent.
         const spent = this.db.prepare(
           `UPDATE workflow_runs SET publication_handoff_generation = NULL
             WHERE id = ? AND ${publicationHandoffDueSql}`,
-        ).run(published.id, input.expectedWorkCycle!.generation);
+        ).run(comparison.runId, input.expectedWorkCycle!.generation);
         if (!spent.changes) throw new Error("Workflow publication handoff is no longer current");
-        run = published;
+        run = this.mustRun(comparison.runId);
         state = "already_claimed";
       } else if (!run) {
         const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
@@ -9186,10 +9194,10 @@ export class WorkflowStore {
     sessionId: string,
     noteKey: string,
     limit = 200,
-  ): Array<{ payload: string; transcriptAnchor: number; beforeSend?: true }> {
+  ): Array<{ payload: string; transcriptAnchor: number; beforeSend?: true; receiptId?: string }> {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
-      `SELECT d.payload, d.session_id,
+      `SELECT d.payload, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
               COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
                        json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
               json_type(e.payload_json, '$.transcriptStart') = 'integer' AS before_send
@@ -9206,13 +9214,14 @@ export class WorkflowStore {
         ORDER BY d.delivered_at DESC, d.id DESC
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
-      session_id: string;
+      receipt_id: string | null;
       payload: string;
       transcript_anchor: number;
       before_send: number | null;
     }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
+      ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
       ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
   }
@@ -9450,6 +9459,7 @@ export class WorkflowStore {
     submitVerified: boolean,
     now = Date.now(),
     transcriptStart: number | null = null,
+    receiptId?: string,
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
       const delivery = this.getDelivery(id);
@@ -9520,6 +9530,7 @@ export class WorkflowStore {
         deliveryId: delivery.id,
         transcriptAnchor,
         transcriptStart,
+        ...(receiptId ? { receiptId } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);

@@ -229,7 +229,9 @@ review twice.
 After a Workflow completes its Pull Request action and reaches End, the author's final
 publication, CI, or evidence turn can settle idle again. For each repository, Foreman claims
 that generation against the completed run when its reviewed checkout and human instruction
-revisions still match. The run keeps its evidence. This handoff can be claimed once, for
+revisions still match. Foreman commits all repository claims for the turn together. If another
+run supersedes a probed publication, the generation stays available and every repository keeps
+its prior state. The completed run keeps its evidence. This handoff can be claimed once, for
 the generation current at completion or its immediate successor. Later independent cycles,
 changed work, and new instructions can
 start a fresh review, and the operator can choose **Run again** on the same work.

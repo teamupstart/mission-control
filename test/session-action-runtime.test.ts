@@ -1738,7 +1738,8 @@ for (const next of ["unchanged", "edited tree", "human instruction", "changed si
   });
 }
 
-for (const change of ["session awaits CI", "repository binding becomes manual", "newer run is active", "newer run is cancelled"] as const) {
+for (const change of ["session awaits CI", "repository binding becomes manual", "newer run is active", "newer run is cancelled",
+  "sibling rerun supersedes matching checkout", "sibling rerun supersedes changed checkout"] as const) {
   test(`pending publication probe refuses the idle handoff when the ${change}`, async () => {
     let finishProbe: ((probe: WorkflowEvidenceProbe) => void) | undefined;
     const h = await harness(`pending-probe-${change.replaceAll(" ", "-")}`, {
@@ -1746,9 +1747,26 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
       readEvidenceProbe: () => new Promise(resolve => { finishProbe = resolve; }),
     });
     try {
+      const sibling = "/second-publication-checkout";
+      const siblingRace = change.startsWith("sibling rerun");
+      if (siblingRace) {
+        // Publish the sibling first. A later primary edit makes the primary the lead
+        // in the pending claim, so a non-atomic fan-out would spend its generation.
+        const base = h.full("base");
+        const task = mkTask({
+          id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
+          branch: "feature", baseSha: base, provider: "git",
+          extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
+            worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
+        });
+        h.registry.upsertTask(task);
+        h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
+        h.registry.recordWorktreeHeads(new Map([["/repo", base], [sibling, h.full("changed")]]));
+        h.repository.root = sibling;
+      }
       const runId = await runToAction(h, true);
       await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action");
-      h.adoptPr();
+      h.adoptPr({ repositoryRoot: h.repository.root });
       h.runActionTurn();
       await h.manager.sweepSessionActions(SETTLED());
       await waitFor(() => h.store.getRun(runId)?.status === "completed", "publication did not complete");
@@ -1760,6 +1778,12 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
       assert.ok(contentTreeOid);
       h.runActionTurn();
       const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      const lead = h.store.activeBindingForNote(logicalKey)!;
+      if (siblingRace) {
+        assert.equal(h.store.getBinding(bindingId)?.repoRoot, sibling);
+        h.registry.recordWorktreeHeads(new Map([["/repo", h.full("primary-edit")]]));
+        assert.equal(h.store.latestRunForBinding(lead.id), null);
+      }
       const consumedBefore = h.registry.getQueue(h.sessionId)!.promptedConsumedGeneration;
       assert.ok(consumedBefore !== null && consumedBefore < generation);
       const pending = h.manager.claimCompletion(h.sessionId, {
@@ -1796,8 +1820,12 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
         const before = snapshot();
         verifyNewerRun = () => assert.deepEqual(snapshot(), before);
       }
-      finishProbe!({ headSha, contentTreeOid, workingTreeStatus, diffFingerprint });
+      finishProbe!({
+        headSha, workingTreeStatus, diffFingerprint,
+        contentTreeOid: change === "sibling rerun supersedes changed checkout" ? h.full("other-tree") : contentTreeOid,
+      });
       await assert.rejects(pending, refusal);
+      if (siblingRace) assert.equal(h.store.latestRunForBinding(lead.id), null, "lead reservation rolled back");
       assert.equal(h.registry.getQueue(h.sessionId)!.promptedConsumedGeneration, consumedBefore);
       assert.ok(h.store.publicationHandoffDue(runId, generation), "the refused claim must leave the handoff available");
       const actualRunIds = h.store.listRuns().filter(run => run.bindingId === bindingId).map(run => run.id);
@@ -1808,7 +1836,7 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
   });
 }
 
-test("a delivered PR packet is excluded from frozen decisions while a later human repeat remains", async () => {
+test("a delivered PR packet binds across an intervening human turn and preserves a later human repeat after restart", async () => {
   const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
   const h = await harness("publication-packet-attribution", { pullRequest: true });
   try {
@@ -1825,11 +1853,27 @@ test("a delivered PR packet is excluded from frozen decisions while a later huma
     const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
     const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
     const packet = h.store.listDeliveries(runId)[0]!.payload;
-    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(original), beforeSend: true }]);
-    writeFileSync(path, original + turn("workflow-packet", packet, start + 1) + turn("human-repeat", packet, start + 2));
-    const intent = readWorkflowIntentSnapshot(h.registry, binding, anchors)!;
-    assert.deepEqual(intent.decisions.filter(d => d.source.kind === "transcript").map(d => d.source.id),
-      ["initial-ask", "human-repeat"]);
+    const receiptId = anchors[0]?.receiptId;
+    assert.ok(receiptId);
+    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(original), beforeSend: true, receiptId }]);
+    const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+    const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
+    const { forgetInjections } = await import("../src/server/injections.ts");
+    forgetInjections(h.sessionId);
+    forgetDeliveryBindingState();
+    writeFileSync(path, original + turn("intervening-human", "Keep the fix scoped", start + 1)
+      + turn("workflow-packet", packet, start + 2) + turn("human-repeat", packet, start + 3));
+    const decisions = () => readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id);
+    const otherPath = join(home, "other-publication-transcript.jsonl");
+    writeFileSync(otherPath, original + turn("other-human", packet, start + 1));
+    h.reportIdle(otherPath);
+    assert.deepEqual(decisions(), ["initial-ask", "other-human"], "the receipt belongs to the sampled transcript");
+    h.reportIdle(path);
+    assert.deepEqual(decisions(), ["initial-ask", "intervening-human", "human-repeat"]);
+    forgetDeliveryBindingState();
+    assert.equal(workflowDeliveryLedger.rows(binding.noteKey).find(row => row.id === receiptId)?.messageId, "workflow-packet");
+    assert.deepEqual(decisions(), ["initial-ask", "intervening-human", "human-repeat"]);
   } finally { await h.stop(); }
 });
 

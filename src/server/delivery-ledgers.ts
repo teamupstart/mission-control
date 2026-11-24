@@ -23,6 +23,8 @@ import {
   loadSpokenTurns,
   moveSpokenTurns,
   observeSpokenClientReceipt,
+  openDb,
+  type BindableDelivery,
   recordSpokenHandoff,
   processSpokenReleases,
   spokenTranscriptLocators,
@@ -69,6 +71,39 @@ export const delegatedLedger = new DeliveryLedger<DelegatedTurnRow>({
   bind: (row, id, ts) => bindDelegatedTurn(row.id, id, ts),
   // The label a row would show: two rows with the same one cannot be credited to the wrong sender.
   sender: (row) => `${row.controllerId}\0${row.controllerName}`,
+});
+
+/** Each workflow send attempt can bind one native turn, including a delayed echo after restart. */
+type WorkflowDeliveryTurn = BindableDelivery & { deliveryId: string; transcriptPath: string | null };
+export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
+  label: "a workflow packet",
+  acceptsTranscript: (row, transcript) => row.transcriptPath === transcript.path,
+  requireExactFingerprint: true,
+  maxCachedConversations: 200,
+  load: key => {
+    const rows = openDb().prepare(
+      `SELECT id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey, fingerprint, delivered_at AS deliveredAt,
+              transcript_offset AS transcriptOffset, contested, message_id AS messageId, message_ts AS messageTs
+         FROM workflow_delivery_turns WHERE note_key = ? ORDER BY rowid`,
+    ).all(key) as unknown as (Omit<WorkflowDeliveryTurn, "contested"> & { contested: number })[];
+    return rows.map(row => ({ ...row, contested: Boolean(row.contested) }));
+  },
+  insert: row => {
+    openDb().prepare(
+      `INSERT INTO workflow_delivery_turns
+         (id, delivery_id, transcript_path, note_key, fingerprint, delivered_at, transcript_offset, contested)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, row.deliveryId, row.transcriptPath, row.noteKey, row.fingerprint, row.deliveredAt, row.transcriptOffset, Number(row.contested));
+  },
+  remove: id => { openDb().prepare("DELETE FROM workflow_delivery_turns WHERE id = ?").run(id); },
+  contest: (id, contested) => {
+    openDb().prepare("UPDATE workflow_delivery_turns SET contested = ? WHERE id = ? AND message_id IS NULL")
+      .run(Number(contested), id);
+  },
+  bind: (row, id, ts) => Boolean(openDb().prepare(
+    "UPDATE workflow_delivery_turns SET message_id = ?, message_ts = ? WHERE id = ? AND message_id IS NULL",
+  ).run(id, ts, row.id).changes),
+  sender: () => "workflow",
 });
 
 const reviewForgetHooks: Array<() => void> = [];
@@ -428,7 +463,7 @@ export async function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key:
   return removed;
 }
 
-registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger], () => {
+registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger, workflowDeliveryLedger], () => {
   try {
     processSpokenReleases(rows => {
       for (const { noteKey, fingerprint } of rows) {

@@ -44,6 +44,7 @@ import {
 export { workflowIntentFingerprint };
 import { computeSessionDiff, computeStackedDiff } from "../diff.ts";
 import { resolveStackDiffBase, type StackDiffBase } from "../stacking/diff-base.ts";
+import { workflowDeliveryLedger } from "../delivery-ledgers.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
@@ -442,6 +443,7 @@ export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
   transcriptAnchor: number;
   beforeSend?: true;
+  receiptId?: string;
 }
 
 interface WorkflowTranscriptTurnIdentity {
@@ -505,13 +507,12 @@ function deliveredWorkflowTurnIdentities(
 ): WorkflowTranscriptTurnIdentity[] {
   const identities: WorkflowTranscriptTurnIdentity[] = [];
   for (const delivery of deliveries) {
-    if (!delivery.payload.trim()) continue;
+    if (delivery.receiptId || !delivery.payload.trim()) continue;
     const payloadFingerprint = injectionFingerprint(delivery.payload);
-    // A verified write may return before the harness appends the packet. New deliveries
-    // record their starting offset so that only the first user turn can own the send.
-    // Older deliveries recorded the end offset and retain their original backward lookup.
+    // Before native turn receipts, verified writes recorded a starting or ending byte offset.
     const match = delivery.beforeSend
-      ? located.read.after(located.path, delivery.transcriptAnchor, 12).messages.find(message => message.role === "user")
+      ? located.read.after(located.path, delivery.transcriptAnchor, 12).messages.find(message =>
+        message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint)
       : located.read.before(located.path, delivery.transcriptAnchor, 12).messages.findLast(message =>
         message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint);
     if (match && injectionFingerprint(match.text) === payloadFingerprint) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
@@ -1238,7 +1239,15 @@ function contextTranscriptFor(
     transcriptMessages,
     located ? deliveredWorkflowTurnIdentities(located, deliveredWorkflowAnchors) : [],
   );
-  return attributed.filter((message) => message.origin !== "workflow");
+  const receipts = new Set(deliveredWorkflowAnchors.flatMap(delivery => delivery.receiptId ?? []));
+  const workflowTurns = new Set<string>();
+  if (receipts.size && located) {
+    const bound = workflowDeliveryLedger.bound({ key: noteKeyFor(session), transcript: located }, transcriptMessages);
+    for (const [messageId, receipt] of bound.rows) {
+      if (receipts.has(receipt.id)) workflowTurns.add(messageId);
+    }
+  }
+  return attributed.filter(message => message.origin !== "workflow" && !workflowTurns.has(message.id));
 }
 
 /**

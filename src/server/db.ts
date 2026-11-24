@@ -329,7 +329,8 @@ let db: DatabaseSync | undefined;
 // 54: content-addressed repository artifacts, durable cleanup intent and submission claims.
 //     Historical submissions acquire no claim. Readiness is checked on first activation.
 // 55: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 55;
+// 56: native transcript turn receipts for workflow packet sends. Historical sends keep their offsets.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 56;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -1849,6 +1850,21 @@ function createSchemaObjects(d: DatabaseSync): void {
       ON workflow_deliveries(run_id, created_at);
     -- The two node_attempt_id indexes are created by migrate() beside their ALTER, for the
     -- reason spelled out on workflow_submissions above.
+
+    CREATE TABLE IF NOT EXISTS workflow_delivery_turns (
+      id                TEXT PRIMARY KEY,
+      delivery_id       TEXT NOT NULL REFERENCES workflow_deliveries(id) ON DELETE CASCADE,
+      transcript_path   TEXT,
+      note_key          TEXT NOT NULL,
+      fingerprint       TEXT NOT NULL,
+      delivered_at      INTEGER NOT NULL,
+      transcript_offset INTEGER,
+      contested         INTEGER NOT NULL,
+      message_id        TEXT,
+      message_ts        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_key ON workflow_delivery_turns(note_key);
+    CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_delivery ON workflow_delivery_turns(delivery_id);
 
     CREATE TABLE IF NOT EXISTS workflow_llm_calls (
       id               TEXT PRIMARY KEY,

@@ -1117,10 +1117,11 @@ to account for players whose receipts may have disappeared. A fresh state home
 with no launch history can capture immediately.
 
 The daemon acknowledges silence only after it persists the updated hold ledger.
-It opens recovery directories relative to the state home and holds their
-descriptors while reading, publishing, removing and syncing records. A linked
-parent directory makes the transition unavailable until the records can be
-accessed through their owned directories.
+The configured state home may be a symbolic link. The daemon opens its target,
+then opens recovery directories relative to that descriptor. It holds each
+descriptor while reading, publishing, removing and syncing records. A linked
+directory beneath the state home makes the transition unavailable until the
+records can be accessed through their owned directories.
 If that write fails, the end or exit report returns HTTP 503, the Stop directive
 remains active, and the sender can retry. An accepted signed exit is final for
 that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).

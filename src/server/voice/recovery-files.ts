@@ -31,7 +31,9 @@ function withRecordParent<T>(home: string, path: string, create: boolean,
   const name = parts.pop()!;
   if (create) mkdirSync(home, { recursive: true, mode: 0o700 });
   const native = nativePlanFiles();
-  const directories = [openSync(home, directoryFlags)];
+  // The operator may configure a symlink as the state home. Pin its target in one
+  // open, then reject links at every step below that directory descriptor.
+  const directories = [openSync(home, constants.O_RDONLY | constants.O_DIRECTORY)];
   try {
     for (const part of parts) {
       const parent = directories.at(-1)!;
@@ -50,6 +52,7 @@ function syncVoiceParents(directories: number[]) {
 
 export function readVoiceRecord(home: string, path: string) {
   return withRecordParent(home, path, false, (parent, name) => {
+    // openPlanEntry adds O_NONBLOCK so even a FIFO can be inspected before reading.
     const fd = nativePlanFiles().openPlanEntry(parent, name, constants.O_RDONLY);
     try {
       if (!fstatSync(fd).isFile()) throw new Error("Invalid voice recovery file.");

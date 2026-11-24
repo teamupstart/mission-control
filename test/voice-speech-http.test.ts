@@ -452,6 +452,47 @@ test("a signed exit returns 503 and holds capture until a retry removes the laun
   assert.equal((await holder.poll()).capture, true);
 });
 
+test("a linked state home permits fresh capture and recovers playback in its configured target", async t => {
+  const backing = mkdtempSync(join(home, "linked-home-target-"));
+  const alias = join(home, "configured-home");
+  symlinkSync(backing, alias, "dir");
+  t.after(() => rmSync(alias));
+  const state = new VoiceStateStore({ now: () => performance.now(), enabled: () => true, config: () => VOICE_CONFIG_DEFAULTS,
+    speechDirectory: join(alias, "voice") });
+  t.after(() => state.reset());
+  const server = new Hono();
+  registerVoiceRoutes(server, state);
+  const holder = player(listenerId, server);
+  await holder.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION,
+    backend: "fluidaudio", devices: [], modelLoaded: true, microphone: "granted" });
+  assert.equal((await holder.poll()).capture, true);
+  await holder.announce(); await holder.hello();
+  const id = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
+  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.equal(JSON.parse(readFileSync(join(backing, "voice", "speech-holds.json"), "utf8"))[0].jobId, id);
+  state.reset(); await holder.hello();
+  const recovery = await holder.poll();
+  assert.equal(recovery.capture, false);
+  assert.deepEqual(recovery.speak, { id, stop: true });
+  assert.equal((await holder.event(id, "ended")).status, 200);
+  assert.equal((await holder.poll()).capture, true);
+});
+
+test("a FIFO ledger with no writer returns an unknown recovery hold", () => {
+  mkdirSync(join(home, "voice"), { recursive: true });
+  const pipe = spawnSync("mkfifo", [ledger]);
+  assert.equal(pipe.status, 0, pipe.stderr?.toString());
+  // Bound the read in a separate process so a blocking open fails this regression promptly.
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { SpeechHolds } from "./src/server/voice/speech-holds.ts";
+    const state = new SpeechHolds(process.argv[1]).load();
+    console.log(JSON.stringify(state.holds.map(hold => hold.supervisor)));
+  `, join(home, "voice")], { encoding: "utf8", timeout: 15000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), ["."]);
+});
+
 test("linked recovery parents refuse signed retirement and keep capture held until a durable retry", async () => {
   const holder = player();
   await holder.announce(); await holder.hello();

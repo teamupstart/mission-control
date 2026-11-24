@@ -110,7 +110,7 @@ Raise the design choices in this diff that add to it:
 - **A breach of the repository's own contract documents.** That is a defect in that
   repository, not a matter of taste.
 
-Describe the cost, not the principle. "A fourth harness now needs edits in five files"
+Describe the cost, not the principle. "A fourth backend now needs edits in five files"
 beats "this violates open/closed."
 
 ### Correctness

@@ -209,9 +209,9 @@ function isClaimed(message: TranscriptMessage, claimed: Set<string>): boolean {
 }
 
 /** Bind what has landed for every ledger, so no ledger mistakes another's turn for its own. */
-function bindAll(conversation: DeliveryConversation, now: number): void {
+function bindAll(conversation: DeliveryConversation, now: number, requireReadable = false): void {
   if (!conversation.transcript) return;
-  for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now);
+  for (const ledger of ledgers) ledger.bindLanded(conversation.key, conversation.transcript, now, requireReadable);
 }
 
 /** What `withdrawOtherSend` needs to take one send back. */
@@ -316,20 +316,22 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   ) {}
 
   rows(noteKey: string): Row[] {
-    for (const key of this.store.takeInvalidatedKeys?.() ?? []) {
-      for (const row of this.cache.get(key) ?? []) {
-        this.scanned.delete(row.id);
-        this.expired.delete(row.id);
-        this.twins.delete(row.id);
-      }
-      this.cache.delete(key);
-    }
+    for (const key of this.store.takeInvalidatedKeys?.() ?? []) this.forgetConversation(key);
     let rows = this.cache.get(noteKey);
     if (!rows) {
       rows = this.store.load(noteKey);
       this.cache.set(noteKey, rows);
     }
     return rows;
+  }
+
+  private forgetConversation(key: string): void {
+    for (const row of this.cache.get(key) ?? []) {
+      this.scanned.delete(row.id);
+      this.expired.delete(row.id);
+      this.twins.delete(row.id);
+    }
+    this.cache.delete(key);
   }
 
   /** Drop every cache, so the next read comes from the table. */
@@ -428,9 +430,17 @@ export class DeliveryLedger<Row extends BindableDelivery> {
   }
 
   /** Bind this ledger's landed deliveries in a conversation, against every ledger's claims. */
-  bindLanded(noteKey: string, transcript: SessionMessages, now: number): void {
+  bindLanded(noteKey: string, transcript: SessionMessages, now: number, requireReadable = false): void {
     const rows = this.rows(noteKey);
-    if (rows.some((row) => row.messageId === null && !row.contested && (row.transcriptOffset !== null || this.store.newTranscriptAfter))) this.bindPending(rows, transcript, now);
+    if (rows.some((row) => row.messageId === null && !row.contested && (row.transcriptOffset !== null || this.store.newTranscriptAfter))) {
+      this.bindPending(rows, transcript, now, requireReadable);
+    }
+  }
+
+  /** Recheck persisted rows before deletion, even if an earlier best-effort read found nothing. */
+  reconcileBeforePrune(noteKey: string, transcript: SessionMessages, now: number): void {
+    this.forgetConversation(noteKey);
+    bindAll({ key: noteKey, transcript }, now, true);
   }
 
   private contest(row: Row, contested = true): void {
@@ -474,7 +484,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
    * Walk the transcript forward from each unbound row's offset, in reservation order, and bind
    * the row to the first user turn with its words that no earlier row has claimed.
    */
-  private bindPending(rows: Row[], transcript: SessionMessages, now: number): void {
+  private bindPending(rows: Row[], transcript: SessionMessages, now: number, requireReadable = false): void {
     // Claimed by id only: one walk reads ids consistently, and a timestamp two identical turns
     // can share would stop the second of them from ever being claimed. Every ledger's claims
     // count, so a turn another table already bound is never bound again here.
@@ -487,7 +497,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       let closed = false;
       try {
         for (;;) {
-          const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS);
+          const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS, requireReadable);
           for (const m of page.messages) {
             if (m.ts > 0 && m.ts - row.deliveredAt > DELIVERY_LAG_MS) {
               closed = true;
@@ -503,6 +513,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           from = page.end;
         }
       } catch (err) {
+        if (requireReadable) throw err;
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;
       }
@@ -515,6 +526,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       try {
         if (!this.store.bind(row.id, found.id, found.ts)) continue;
       } catch (err) {
+        if (requireReadable) throw err;
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;
       }

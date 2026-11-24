@@ -3858,6 +3858,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_spoken_turns", "runtime_confirmed_at", "INTEGER");
   addColumn(d, "session_spoken_turns", "abandoned_at", "INTEGER");
   d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_abandoned ON session_spoken_turns(abandoned_at) WHERE abandoned_at IS NOT NULL");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_spoken_unbound_confirmed ON session_spoken_turns(runtime_confirmed_at) WHERE message_id IS NULL AND runtime_confirmed_at IS NOT NULL");
   addColumn(d, "session_work_cycles", "spoken_hold", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_cycles", "spoken_hold_since", "INTEGER");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
@@ -13369,14 +13370,17 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
 }
 
 export function expiredSpokenReservations(cutoff: number) {
-  return openDb().prepare(`SELECT DISTINCT note_key AS noteKey FROM session_spoken_turns WHERE abandoned_at <= ?`)
-    .all(cutoff) as { noteKey: string }[];
+  return openDb().prepare(`SELECT DISTINCT note_key AS noteKey FROM session_spoken_turns
+    WHERE abandoned_at <= ? OR (message_id IS NULL AND runtime_confirmed_at <= ?)`)
+    .all(cutoff, cutoff) as { noteKey: string }[];
 }
 
-export function deleteExpiredSpokenReservations(noteKey: string, cutoff: number): number {
+export function deleteExpiredSpokenReservations(noteKey: string, sdkCutoff: number | null, textCutoff: number | null): number {
   const removed = openDb().prepare(`DELETE FROM session_spoken_turns
-    WHERE note_key = ? AND abandoned_at <= ? AND message_ts IS NULL AND runtime_confirmed_at IS NULL`)
-    .run(noteKey, cutoff);
+    WHERE note_key = ? AND message_ts IS NULL AND (
+      (abandoned_at <= ? AND runtime_confirmed_at IS NULL) OR
+      (runtime_confirmed_at <= ? AND message_id IS NULL))`)
+    .run(noteKey, sdkCutoff, textCutoff);
   if (removed.changes) discardedSpokenKeys.add(noteKey);
   return Number(removed.changes);
 }

@@ -124,6 +124,11 @@ conversations. It scans from the beginning because a rewritten transcript can mo
 It removes an unmatched payload only after reading the whole file. If the transcript is missing,
 unreadable, or changes during the scan, cleanup tries again on a later sweep.
 
+A confirmed terminal delivery has a 24-hour window to match its transcript turn. Cleanup makes
+one final binding pass and deletes the payload if it still has no match. If the transcript stays
+unavailable, cleanup keeps the unbound payload for the daemon's orphan retention period (seven
+days by default). A bound disclosure stays available in the conversation.
+
 ## Turning voice on
 
 Switch **Voice addressing** on in **Settings > Feature flags**. Voice also needs three other

@@ -187,8 +187,8 @@ export function startGoalRefiner(registry: Registry): () => void {
           console.error("[goal] review-message delivery prune failed:", err instanceof Error ? err.message : String(err));
         }
         try {
-          const spoken = registry.pruneAbandonedSpokenTurns(now);
-          if (spoken > 0) console.log(`[voice] pruned ${spoken} abandoned spoken reservation(s)`);
+          const spoken = registry.pruneExpiredSpokenTurns(now, now - GOAL_PRUNE_AGE_MS);
+          if (spoken > 0) console.log(`[voice] pruned ${spoken} expired spoken reservation(s)`);
         } catch (err) {
           console.error("[voice] spoken reservation prune failed:", err instanceof Error ? err.message : String(err));
         }

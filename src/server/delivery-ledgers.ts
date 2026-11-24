@@ -139,37 +139,43 @@ export function reserveSpokenHandoff(conversation: DeliveryConversation, turn: P
   }
 }
 
-/** Give each abandoned SDK attempt one final transcript walk, including conversations nobody has opened. */
-export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: string) => DeliveryConversation["transcript"]): number {
-  const cutoff = now - DELIVERY_LAG_MS;
-  const candidates = expiredSpokenReservations(cutoff);
-  let removed = 0;
-  for (const { noteKey } of candidates) {
-    const transcript = transcriptFor(noteKey);
-    if (!transcript) continue;
-    const snapshot = transcript.read.snapshot?.(transcript.path);
-    if (!snapshot) continue;
+function reconcileSpokenTurns(noteKey: string, transcript: NonNullable<DeliveryConversation["transcript"]>,
+  now: number): "complete" | "unavailable" | "retry" {
+  const snapshot = transcript.read.snapshot?.(transcript.path);
+  if (!snapshot) return "unavailable";
+  try {
+    spokenLedger.reconcileBeforePrune(noteKey, transcript, now);
     // A rewritten native transcript can put a client UUID before the offset recorded at handoff.
     let from = 0;
     for (;;) {
-      let page;
-      try {
-        page = transcript.read.after(transcript.path, from, 50, true);
-      } catch (error) {
-        console.warn("[voice] Could not reconcile abandoned spoken receipts:", error instanceof Error ? error.message : String(error));
-        break;
-      }
+      const page = transcript.read.after(transcript.path, from, 50, true);
       spokenLedger.bound({ key: noteKey, transcript }, page.messages, now);
-      if (page.start !== from) break;
+      if (page.start !== from) return "retry";
       if (page.atEnd) {
         // Only a complete walk of the same file revision establishes absence.
-        if (page.end === snapshot.size && transcript.read.snapshot?.(transcript.path)?.version === snapshot.version) {
-          removed += deleteExpiredSpokenReservations(noteKey, cutoff);
-        }
-        break;
+        return page.end === snapshot.size && transcript.read.snapshot?.(transcript.path)?.version === snapshot.version ? "complete" : "retry";
       }
-      if (page.end <= from || page.end >= snapshot.size) break;
+      if (page.end <= from || page.end >= snapshot.size) return "retry";
       from = page.end;
+    }
+  } catch (error) {
+    console.warn("[voice] Could not reconcile spoken receipts:", error instanceof Error ? error.message : String(error));
+    return error instanceof Error && "path" in error && error.path === transcript.path ? "unavailable" : "retry";
+  }
+}
+
+/** Final binding pass for abandoned SDK receipts and confirmed text-only turns whose window has closed. */
+export function pruneExpiredSpokenTurns(now: number, transcriptFor: (key: string) => DeliveryConversation["transcript"],
+  unavailableBefore?: number): number {
+  const cutoff = now - DELIVERY_LAG_MS;
+  let removed = 0;
+  for (const { noteKey } of expiredSpokenReservations(cutoff)) {
+    const transcript = transcriptFor(noteKey);
+    const scan = transcript ? reconcileSpokenTurns(noteKey, transcript, now) : "unavailable";
+    if (scan === "complete") removed += deleteExpiredSpokenReservations(noteKey, cutoff, cutoff);
+    else if (scan === "unavailable" && unavailableBefore !== undefined) {
+      // Only confirmed, unbound text expires without a readable file. Exact SDK receipts can still arrive.
+      removed += deleteExpiredSpokenReservations(noteKey, null, Math.min(cutoff, unavailableBefore));
     }
   }
   return removed;

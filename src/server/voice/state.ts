@@ -29,11 +29,13 @@ import {
 import type { SpokenName } from "@shared/voice-names.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
 import { getVoiceConfig, onVoiceConfigChanged } from "./config.ts";
+import { voiceHostTimeUs } from "./host-clock.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 
 /** What the store reads. The defaults are the daemon's; a test hands in its own. */
 export interface VoiceStateDeps {
   now(): number;
+  hostNowUs?(): number;
   enabled(id: FeatureFlagId): boolean;
   config(): VoiceConfig;
   /** The speech model's state (contract H's manager). Absent, the model reads as nothing known. */
@@ -249,7 +251,10 @@ export class VoiceStateStore {
     const at = this.deps.now();
     const order = report.reportedAtHostUs;
     if (this.lastReportHostUs >= 0 && (order === undefined || order <= this.lastReportHostUs)) return;
-    if (order !== undefined) this.lastReportHostUs = order;
+    if (order !== undefined) {
+      if (order > (this.deps.hostNowUs ?? voiceHostTimeUs)()) return;
+      this.lastReportHostUs = order;
+    }
     const pushToTalk = report.pushToTalk && order !== undefined;
     const lastChange = this.report?.keyChangedHostUs ?? null;
     const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;

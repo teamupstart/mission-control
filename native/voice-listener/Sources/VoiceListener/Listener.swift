@@ -19,6 +19,8 @@ struct Hello: Encodable {
 }
 
 final class Daemon: NSObject, URLSessionTaskDelegate {
+    typealias Response = (data: Data, http: HTTPURLResponse)
+    struct Acknowledgement: Decodable { let accepted: Bool }
     let base: URL
     let token: String
     let directory: URL
@@ -44,7 +46,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    func request(_ route: String, revision: String? = nil, capture: (startUs: Int64, endMs: Int64)? = nil, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
+    func request(_ route: String, revision: String? = nil, capture: (startUs: Int64, endMs: Int64)? = nil, body: Data? = nil) async throws -> Response {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
@@ -68,18 +70,18 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         return (data, http)
     }
 
-    func postUtterance(revision: String, capture: (startUs: Int64, endMs: Int64), body: Data) async throws -> HTTPURLResponse {
+    func postUtterance(revision: String, capture: (startUs: Int64, endMs: Int64), body: Data) async throws -> Response {
         try await Self.postWithHeldRetries(revision: revision) {
-            try await self.request("voice/utterances", revision: revision, capture: capture, body: body).1
+            try await self.request("voice/utterances", revision: revision, capture: capture, body: body)
         }
     }
 
     static func postWithHeldRetries(revision: String, budget: Duration = .seconds(55),
-                                    send: @escaping @Sendable () async throws -> HTTPURLResponse) async throws -> HTTPURLResponse {
+                                    send: @escaping @Sendable () async throws -> Response) async throws -> Response {
         // Allow two normal 25-second long polls. Bound even a stalled request
         // and pace an alternate daemon that answers immediately.
         let deadline = ContinuousClock.now + budget
-        return try await withThrowingTaskGroup(of: HTTPURLResponse.self) { group in
+        return try await withThrowingTaskGroup(of: Response.self) { group in
             group.addTask {
                 try await Task.sleep(until: deadline, clock: .continuous)
                 throw URLError(.timedOut)
@@ -88,7 +90,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 for attempt in 1...3 {
                     try Task.checkCancellation()
                     let response = try await send()
-                    if response.value(forHTTPHeaderField: "x-voice-held-revision") != revision { return response }
+                    if response.http.value(forHTTPHeaderField: "x-voice-held-revision") != revision { return response }
                     if attempt < 3 { try await Task.sleep(for: .milliseconds(250)) }
                 }
                 throw URLError(.timedOut)
@@ -136,7 +138,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     var recognizer: Recognizer?
     private var current: Capture?
     private var draining: [Capture] = []
-    private var directivePoll: Task<(Data, HTTPURLResponse), Error>?
+    private var directivePoll: Task<Daemon.Response, Error>?
     private var pendingHello: Task<Void, Error>?
 
     func hello() async throws {
@@ -255,13 +257,20 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                     // Key-up may have arrived during this very decode.
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }
                                     guard let words else { return }
-                                    let http = try await daemon.postUtterance(revision: next.revision,
+                                    let (data, http) = try await daemon.postUtterance(revision: next.revision,
                                         capture: (segment.startedAtHostUs, segment.endedAt), body: JSONEncoder().encode(words))
+                                    try Task.checkCancellation()
                                     // The POST can also beat the key-up directive back to the helper.
-                                    guard http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
-                                          let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),
-                                          segment.endedAt > cutoff else { return }
-                                    daemonCutoff = cutoff
+                                    if http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
+                                       let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),
+                                       segment.endedAt > cutoff {
+                                        daemonCutoff = cutoff
+                                        continue
+                                    }
+                                    if try !JSONDecoder().decode(Daemon.Acknowledgement.self, from: data).accepted {
+                                        fputs("Voice daemon declined an utterance.\n", stderr)
+                                    }
+                                    return
                                 }
                             } catch {
                                 if Task.isCancelled { return }

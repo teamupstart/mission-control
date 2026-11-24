@@ -28,7 +28,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostAccepted = true, firstPostCutoff = 0, firstPostHeld = false, repeatedHeld = false, slowLoad = false, held = false, microphone = "granted" } = {}) {
     const events: string[] = [];
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
@@ -68,8 +68,12 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
           res.setHeader("x-voice-release-host-ms", String(firstPostCutoff));
         }
         if (posted.length === 0) res.statusCode = firstPostStatus;
+        const accepted = (posted.length > 0 || firstPostAccepted) &&
+          !res.hasHeader("x-voice-held-revision") && !res.hasHeader("x-voice-release-revision");
         posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
         captureBounds.push({ start: req.headers["x-voice-capture-start-host-us"], end: req.headers["x-voice-capture-end-host-ms"] });
+        res.end(JSON.stringify({ accepted }));
+        return;
       }
       res.end("{}");
     });
@@ -322,6 +326,13 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     assert.match([...instanceIds][0] ?? "", /^[0-9a-f-]{36}$/i);
     assert.deepEqual(events.filter(e => /^(opened|stopped|released microphone) /.test(e)), ["opened 1"]);
     assert.equal(child.exitCode, null);
+  });
+
+  it("reports a terminal utterance rejection without its text and continues capturing", async t => {
+    const { events, diagnostics, posted } = await launch(t, { inputDevice: "two-utterances", firstPostAccepted: false });
+    await until(() => events.includes("released second"), "second utterance to finish");
+    assert.deepEqual(posted.map(p => p.text), ["first", "second"]);
+    assert.deepEqual(diagnostics, ["Voice daemon declined an utterance."]);
   });
 
   it("posts the next utterance on the same active microphone after the daemon rejects the first POST", async (t) => {

@@ -100,7 +100,7 @@ The shell timestamps every snapshot, including idle heartbeats, at observation t
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
 monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
 across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
-older and duplicate snapshots before applying state or renewing its 15-second lifetime.
+older, duplicate and future-dated snapshots before applying state or renewing its 15-second lifetime.
 Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.
 A fresh snapshot still renews that lifetime and updates call state, permissions and capabilities
 when it repeats a key event older than the daemon’s last key transition.
@@ -155,7 +155,8 @@ when it detects speech and carries that timestamp through clipping and transcrip
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
-The response is `{ accepted }`. While listening, the daemon can route a capture immediately.
+The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
+transcript, and the listener continues with later speech. While listening, the daemon can route a capture immediately.
 A POST made while push-to-talk is held waits for the shell's key-up timestamp before
 anything reaches Recently heard, a card or the queue. If the same key is still held after
 25 seconds, the daemon returns `accepted: false` and its revision in `x-voice-held-revision`.

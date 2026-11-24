@@ -130,7 +130,7 @@ test("only one listener can capture or deliver, and its heartbeat lease transfer
 });
 
 test("only pre-release speech from the held revision can finish during call auto-mute", async (t) => {
-  const now = Date.now();
+  const now = Math.floor(voiceHostTimeUs() / 1000) - 1000;
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const press = (pushToTalk: boolean, keyUpMs?: number | string) =>
     orderedShellReport({ callActive: true, pushToTalk, pushToTalkReleasedAtHostUs: typeof keyUpMs === "number" ? keyUpMs * 1000 : keyUpMs }, token);
@@ -224,13 +224,14 @@ test("only the selected live recognizer can open or cancel a card after switchin
 test("a held POST times out without routing and can retry the same ID after key-up", async t => {
   // Keep the heartbeat clock live while advancing only the HTTP wait timer.
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  await orderedShellReport({ callActive: true, pushToTalk: true, pushToTalkPressedAtHostUs: (Date.now() - 10) * 1000 }, token);
+  const startUs = voiceHostTimeUs() - 10_000;
+  await post("/voice/shell-report", { reportedAtHostUs: startUs, callActive: true, pushToTalk: true }, token);
   const held = voiceStateStore.directive().revision;
   const words = capture("Steve check the build");
   const send = () => app.request(utterancePath(held), { method: "POST", headers: {
     host: "localhost", "content-type": "application/json", "x-harness-token": token,
-    "x-voice-listener-id": listenerId, "x-voice-capture-end-host-ms": String(words.capturedAt),
-    "x-voice-capture-start-host-us": String((words.capturedAt - 1) * 1000),
+    "x-voice-listener-id": listenerId, "x-voice-capture-end-host-ms": String(Math.ceil(startUs / 1000) + 1),
+    "x-voice-capture-start-host-us": String(startUs),
   }, body: JSON.stringify(words) });
   const waiting = send();
   await new Promise<void>(resolve => setImmediate(resolve));
@@ -239,13 +240,14 @@ test("a held POST times out without routing and can retry the same ID after key-
   assert.equal(retry.headers.get("x-voice-held-revision"), held);
   assert.deepEqual(await retry.json(), { accepted: false });
   assert.deepEqual(await readHeard(), []);
-  await orderedShellReport({ callActive: true, pushToTalk: false, pushToTalkReleasedAtHostUs: Date.now() * 1000 }, token);
+  const releasedUs = voiceHostTimeUs();
+  await post("/voice/shell-report", { reportedAtHostUs: releasedUs, callActive: true, pushToTalk: false, pushToTalkReleasedAtHostUs: releasedUs }, token);
   assert.deepEqual(await (await send()).json(), { accepted: true });
   assert.deepEqual((await readHeard()).map(entry => entry.id), [words.id]);
 });
 
 test("a replayed key-up cannot stop a later hold and a heartbeat does not move its start", async (t) => {
-  const now = Date.now();
+  const now = Math.floor(voiceHostTimeUs() / 1000) - 1000;
   t.mock.timers.enable({ apis: ["Date"], now });
   const press = (pushToTalk: boolean, keyUpMs?: number) =>
     orderedShellReport({ callActive: true, pushToTalk, pushToTalkReleasedAtHostUs: keyUpMs === undefined ? undefined : keyUpMs * 1000 }, token);
@@ -273,7 +275,7 @@ test("a replayed key-up cannot stop a later hold and a heartbeat does not move i
 });
 
 test("a newer dated press supersedes a hold before the delayed key-up arrives", async (t) => {
-  const now = Date.now();
+  const now = Math.floor(voiceHostTimeUs() / 1000) - 1000;
   t.mock.timers.enable({ apis: ["Date"], now });
   const down = (stamp?: number) => orderedShellReport({ callActive: true, pushToTalk: true, pushToTalkPressedAtHostUs: stamp === undefined ? undefined : stamp * 1000 }, token);
   const up = (stamp: number) => orderedShellReport({ callActive: true, pushToTalk: false, pushToTalkReleasedAtHostUs: stamp * 1000 }, token);
@@ -296,6 +298,14 @@ test("a newer dated press supersedes a hold before the delayed key-up arrives", 
   assert.deepEqual(voiceStateStore.releasedCapture(second.revision), { revision: second.revision, pressedAtUs: (now + 30) * 1000, at: now + 50 });
   await down(now + 30);
   assert.equal(voiceStateStore.directive().capture, false, "replaying the completed press cannot reopen the microphone");
+});
+
+test("a future shell observation cannot change call state or block the next valid observation", async () => {
+  const report = async (reportedAtHostUs: number, callActive: boolean) =>
+    (await (await post("/voice/shell-report", { reportedAtHostUs, callActive }, token)).json()).state;
+  assert.equal((await report(voiceHostTimeUs(), true)).mode, "auto-muted");
+  assert.equal((await report(Date.now() * 1000, false)).mode, "auto-muted");
+  assert.equal((await report(voiceHostTimeUs(), false)).mode, "listening");
 });
 
 test("an unordered shell report cannot reopen capture or release a key after an ordered call snapshot", async () => {
@@ -469,7 +479,7 @@ test("a new press and an old release within the same millisecond keep their even
 });
 
 test("a rapid second press preserves the first release, until a privacy or recipient change", async t => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  t.mock.timers.enable({ apis: ["Date"], now: Math.floor(voiceHostTimeUs() / 1000) - 1000 });
   const press = (down: boolean) => orderedShellReport({
     callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAtHostUs: Date.now() * 1000 }),
   }, token);
@@ -573,7 +583,7 @@ test("capture IDs must address a single card action URL segment", async () => {
 });
 
 test("turning voice off while a held utterance waits returns the disabled route response", async () => {
-  await orderedShellReport({ callActive: true, pushToTalk: true }, token);
+  await post("/voice/shell-report", { reportedAtHostUs: voiceHostTimeUs(), callActive: true, pushToTalk: true }, token);
   const count = queued("Steve").length;
   const waiting = say("Steve check the build", "disabled-during-post");
   await new Promise<void>(resolve => setImmediate(resolve));
@@ -595,7 +605,7 @@ test("turning voice off clears pending actions and gates every contract D route"
 });
 
 test("a delayed capture from before mute cannot reach Recently heard, cards or the queue after unmute", async () => {
-  await orderedShellReport({ callActive: false, pushToTalk: false }, token);
+  await post("/voice/shell-report", { reportedAtHostUs: voiceHostTimeUs(), callActive: false, pushToTalk: false }, token);
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const beforeMute = voiceStateStore.directive();

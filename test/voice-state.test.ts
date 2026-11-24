@@ -97,6 +97,7 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
   const timers: Array<{ fn: () => void; at: number }> = [];
   const store = new VoiceStateStore({
     now: () => now,
+    hostNowUs: () => now * 1000,
     enabled: (id) => flags.has(id),
     config: () => config,
     setTimer: (fn, ms) => {

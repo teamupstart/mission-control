@@ -456,8 +456,7 @@ export class VoiceRouter {
     const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !!target && (!!answer || choiceCommand);
-    const replyWindow = reply && this.openCards.dashboard;
-    if (!explicit && !(replyWindow && pending.length)) return false;
+    if (!explicit && !(reply && pending.length && this.openCards.replyWindows.length)) return false;
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit && answer ? answer[1]!.trim() : body;
     const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, sequence: ++this.answerSequence },
@@ -517,21 +516,22 @@ export class VoiceRouter {
   private async routeAnswerContent(item: OpenCard, candidates: ReviewItem[], words: string, choiceCommand: boolean,
     target: SpokenName | null, picked?: ReviewItem): Promise<void> {
     const fixed = picked ?? (target && candidates.length === 1 ? candidates[0] : undefined);
-    const windowId = this.openCards.dashboard;
+    const windows = this.openCards.replyWindows;
     // A single named or picked question has a destination even with every dashboard
     // closed. Its Other field still needs a confirmed open card to accept dictation.
-    if (fixed && (!windowId || choiceCommand || !fixed.decisions?.[0]?.allowOther)) {
+    if (fixed && (!windows.length || choiceCommand || !fixed.decisions?.[0]?.allowOther)) {
       await this.prepareQuestionReply(item, fixed, words, choiceCommand);
       return;
     }
-    if (!windowId) {
+    if (!windows.length) {
       if (target) this.offerQuestions(item, candidates, target, words, choiceCommand);
       return;
     }
     const drawn = this.openCards.target(candidates, !!target);
+    const awaitingFirstReport = !this.openCards.dashboard;
     const calibratingTarget = this.openCards.calibrating ? drawn?.id : undefined;
     this.reserveAnswer(item);
-    const confirmed = await this.openCards.confirmFocus(windowId, this.questions!.confirmFocus, this.confirmationSignal(item.modelStep!.signal));
+    const windowId = await this.openCards.confirmReplyWindow(windows, this.questions!.confirmFocus, this.confirmationSignal(item.modelStep!.signal));
     if (this.open.get(item.card.id) !== item) return;
     const pendingIds = new Set(this.questions!.pending().map(q => q.id));
     const pending = candidates.filter(q => pendingIds.has(q.id));
@@ -541,7 +541,7 @@ export class VoiceRouter {
     // Picking sets a new time for cancellation priority. Only the original
     // speech can establish whether the operator dictated into an open card.
     const timing = this.questionCaptureTiming(item.answerCapture!);
-    const open = confirmed && focused && timing === "eligible" && this.openCards.footerOwner(focused.id) === windowId &&
+    const open = windowId && focused && timing === "eligible" && this.openCards.footerOwner(focused.id) === windowId &&
       (!calibratingTarget || calibratingTarget === focused.id) ? focused : undefined;
     const review = fixed ?? open;
     if (review && pendingIds.has(review.id)) {
@@ -552,7 +552,8 @@ export class VoiceRouter {
     if (target) {
       if (pending.length && !fixed) this.offerQuestions(item, pending, target, words, choiceCommand);
       else this.questionNotice(item, "That question is already settled.");
-    } else if ((!confirmed && drawn) || (focused && timing === "uncertain") || (calibratingTarget && focused?.id !== calibratingTarget)) {
+    } else if ((!windowId && drawn) || (awaitingFirstReport && (!windowId || (focused && timing !== "eligible"))) ||
+      (focused && timing === "uncertain") || (calibratingTarget && focused?.id !== calibratingTarget)) {
       this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
     }
   }

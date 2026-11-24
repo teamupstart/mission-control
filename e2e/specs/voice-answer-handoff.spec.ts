@@ -287,6 +287,36 @@ for (const [name, phrase] of [["reply", "reply, tomorrow"], ["named answer", "St
   });
 }
 
+test("a reloaded dashboard can answer before its first card report reaches the daemon", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const id = await file(page, daemon, steve.cwd, "Which benchmark?");
+  const observation = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  await page.route("**/api/voice/open-cards", async route => {
+    const headers = route.request().headers();
+    if (!headers["x-voice-confirm-focus"]) {
+      if (headers["x-voice-cards-observed-at-ms"] && route.request().postDataJSON().cards.some((c: { id: string }) => c.id === id)) {
+        observation.resolve(Number(headers["x-voice-cards-observed-at-ms"]));
+      }
+      await release.promise;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await page.reload();
+    await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+    const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+    await expectContentClearsBorder(inbox);
+    const latest = await observation.promise;
+    await expect.poll(async () => Number((await page.request.head(daemon.baseURL + "/api/voice/config")).headers()["x-voice-monotonic-time-ms"])).toBeGreaterThan(latest + 1);
+    await say(daemon, "reply, tomorrow");
+    await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
+    await inbox.getByRole("button", { name: "Submit now" }).click();
+    await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tomorrow");
+  } finally { release.resolve(); }
+});
+
 test("a focused multi-decision form blocks replies to its single-decision neighbor", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const steve = await runningAgent(page, daemon, "Steve");
@@ -323,7 +353,10 @@ test("choosing a question in an older picker keeps the newer dictated answer", a
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
   await expectContentClearsBorder(inbox);
   const field = inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+  const focused = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    !r.request().headers()["x-voice-calibrating"] && r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.id === id && c.focused));
   await field.focus();
+  await focused;
   await say(daemon, "reply, SQLite");
   await expect(field).toHaveValue("SQLite");
   await page.keyboard.press("Escape");

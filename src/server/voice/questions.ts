@@ -149,6 +149,17 @@ export class VoiceOpenCards {
     return await this.confirmReport(windowId, request, signal) && this.current?.windowId === windowId;
   }
 
+  get replyWindows(): string[] {
+    const dashboard = this.dashboard;
+    return this.reportingWindows().filter(id => !this.reports.has(id) || (dashboard ? id === dashboard : !!this.reports.get(id)?.report));
+  }
+
+  async confirmReplyWindow(windows: string[], request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<string | undefined> {
+    const replies = await Promise.all(windows.map(async id => await this.confirmReport(id, request, signal) ? id : undefined));
+    const focused = this.current?.windowId;
+    return focused && replies.includes(focused) ? focused : undefined;
+  }
+
   private reportingWindows(): string[] {
     return [...this.streams].filter(([id, stream]) => !stream.resume && (stream.browser || this.reports.has(id))).map(([id]) => id);
   }

@@ -47,6 +47,7 @@ test("multiple questions require a focus or an explicit pick, bare answer opens 
   assert.deepEqual(answers(), []);
   assert.deepEqual(cards.at(-1)?.candidates.map(c => [c.kind, c.id]), [["question", first.id], ["question", second.id]]);
   await say("the second");
+  await registry.voiceRouter!.resolution("pick");
   assert.equal(answers()[0]?.reviewId, second.id);
   assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
   await say("cancel");
@@ -882,6 +883,46 @@ test("only a fresh confirmation from the requested live dashboard can arm a repl
   await report("voice-question-test", requests[1]!);
   await pending;
   assert.equal(answers()[0]?.id, "next-reply");
+});
+
+test("a reply before the first dashboard report requires a fresh card visible at speech capture", async t => {
+  const q = question();
+  const router = registry.voiceRouter!;
+  const now = Date.now();
+  const start = performance.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  t.mock.method(performance, "now", () => start + Date.now() - now);
+  const requests = new Map<string, number>();
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") requests.set(event.windowId, event.sequence);
+    else publish(event);
+  });
+  for (const eligible of [true, false]) {
+    const id = "new-dashboard-" + eligible;
+    const leave = router.openCards.connect(id, true);
+    try {
+      t.mock.timers.tick(100);
+      const at = Date.now();
+      const reply = router.accept({ id: "first-report-" + eligible, text: "reply, tomorrow", capturedAt: at, backend: "fluidaudio", words: [] });
+      assert.ok(requests.get(id));
+      assert.deepEqual(answers(), []);
+      t.mock.timers.tick(100);
+      const stamp = start + (at - now) + (eligible ? -50 : 50);
+      await put("/api/voice/open-cards", { windowId: id, focused: true, cards: [{ kind: "question", id: q.id, focused: true }] }, {
+        "x-voice-confirm-focus": String(requests.get(id)), "x-voice-cards-observed-at-ms": String(Math.floor(stamp)),
+      });
+      await reply;
+      if (eligible) {
+        assert.equal(answers()[0]?.reviewId, q.id);
+        assert.equal(answers()[0]?.text, "tomorrow");
+        await say("cancel");
+      } else {
+        assert.deepEqual(answers(), []);
+        assert.match(cards.at(-1)?.detail ?? "", /again/i);
+      }
+    } finally { leave(); }
+  }
 });
 
 test("exact option labels normalize trailing punctuation on both sides and still require uniqueness", async t => {

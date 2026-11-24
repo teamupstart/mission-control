@@ -30,8 +30,8 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     const session = sessions.find(s => s.id === id)!;
     expect(session.runtime).toBe("terminal");
     const path = session.transcriptPath!;
-    const line = (uuid: string, content: string) => JSON.stringify({ type: "user", uuid,
-      timestamp: new Date().toISOString(), message: { role: "user", content } }) + "\n";
+    const line = (uuid: string, content: string, ts = Date.now()) => JSON.stringify({ type: "user", uuid,
+      timestamp: new Date(ts).toISOString(), message: { role: "user", content } }) + "\n";
     writeFileSync(path, line("before", "Before the spoken instruction"));
     await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session.name }).first().click();
     await expect(dashboard.getByText("Before the spoken instruction", { exact: true })).toBeVisible();
@@ -122,14 +122,21 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     const latePayload = pane.turns().find(text => text.startsWith(lateWords))!;
     await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
       "SELECT runtime_confirmed_at FROM session_spoken_turns WHERE spoken_words = ?").get(lateWords)?.runtime_confirmed_at)).toBeTruthy();
-    appendFileSync(path, line("late-native-binding", latePayload));
-    const late = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: lateWords });
+    // The native writer flushes an older identical typed turn after the new handoff.
+    appendFileSync(path, line("buffered-older", latePayload, Date.now() - 60_000) + line("late-native-binding", latePayload));
+    const repeated = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: lateWords });
+    await expect(repeated).toHaveCount(2);
+    const late = repeated.last();
     await expect(late).toContainText("When you have finished this, post a report.");
     await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
     withDaemonDb(daemon, db => db.exec("DROP TRIGGER delay_native_binding"));
     await expect(late.getByText("Spoken", { exact: true })).toBeVisible();
+    await expect(repeated.first().getByText("Spoken", { exact: true })).toHaveCount(0);
+    await expect(repeated.first()).toContainText(latePayload);
     await late.getByText("What the agent received", { exact: true }).click();
     await expect(late.locator(".review-received-text")).toHaveText(latePayload);
+    await repeated.first().screenshot({ path: test.info().outputPath("buffered-typed-turn.png") });
+    await late.screenshot({ path: test.info().outputPath("matching-spoken-turn.png") });
     if (process.env.MC_E2E_EVIDENCE === "1") {
       const dir = artifactsDir("voice-spoken-late-binding");
       mkdirSync(dir, { recursive: true });

@@ -15751,6 +15751,13 @@ export function recoverSendingPendingTurns(now: number): number {
       WHERE state = 'uncertain' AND spoken_words IS NOT NULL AND spoken_handoff_generation IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM session_spoken_turns s WHERE s.id = pending_turns.spoken_reservation_id
           AND s.outbox_turn_id = pending_turns.id)`).run();
+    // Early text-only binding trusted append order. An older timestamp proves that
+    // a buffered record predates handoff. Reopen its receipt for the real native turn.
+    const reopened = d.prepare(`UPDATE session_spoken_turns SET message_id = NULL, message_ts = NULL,
+        text_receipt_order = ${nextSpokenAttributionOrder}
+      WHERE message_id <> id AND message_ts < delivered_at AND runtime_confirmed_at IS NOT NULL
+      RETURNING note_key`).all() as { note_key: string }[];
+    for (const row of reopened) discardedSpokenKeys.add(row.note_key);
     // Earlier builds could leave unbindable rows behind after their outbox attempts were removed.
     const removed = d.prepare(`DELETE FROM session_spoken_turns
       WHERE message_id IS NULL AND runtime_confirmed_at IS NULL AND NOT EXISTS (

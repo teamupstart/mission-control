@@ -22,6 +22,7 @@ const {
   clearPendingTurns,
   markPendingTurnUncertain,
 } = await import("../src/server/db.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -754,6 +755,30 @@ test("a verified terminal submit waits for fresh activity and idle before draini
   assert.deepEqual(f.injected, ["first terminal turn", "second terminal turn"]);
   assert.deepEqual(f.registry.getSession(f.id)?.pendingTurns, []);
   f.manager.stop();
+});
+
+test("a spoken paste retries a changed transcript boundary and sends once against the fresh file", async t => {
+  const name = "spoken-boundary-retry";
+  const path = join(home, name + ".jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  let attempts = 0;
+  const f = terminalFixture(name, async () => ({ ok: true, pasted: true, submitVerified: true }), 15, async () => {
+    if (++attempts === 1) appendFileSync(path, "{}\n");
+  });
+  t.after(() => f.manager.stop());
+  const receipt = f.manager.submitSpoken(f.id, "check the build", name);
+  assert.equal(receipt.ok, true);
+  await until(() => listPendingTurns(f.key)[0]?.lastError?.includes("transcript changed") === true, "safe retry");
+  assert.deepEqual(f.injected, []);
+  await until(() => listPendingTurns(f.key).length === 0, "confirmed spoken paste", 10_000);
+  assert.equal(attempts, 2);
+  assert.equal(f.injected.length, 1);
+  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  const [row] = loadSpokenTurns(f.key);
+  assert.equal(row?.transcriptBoundary, claudeTranscript.messages!.boundary!(path)?.proof);
 });
 
 test("a terminal refusal before paste returns to queued", async () => {
@@ -3119,7 +3144,6 @@ for (const mode of ["steer", "interrupt"] as const) test(`coalescing preserves t
 // ---- async-input answer cards: a marked row records its own delivery -----------------------
 
 const { openDb } = await import("../src/server/db.ts");
-const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { parseReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
 const deliveriesFor = (key: string) => openDb().prepare(
   "SELECT id, review_ids AS reviewIds, confirmed_at AS confirmedAt FROM session_review_deliveries WHERE note_key = ?",

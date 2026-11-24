@@ -243,6 +243,70 @@ test("terminal handoff verifies its captured prefix while native output continue
   }
 });
 
+test("terminal proof preparation leaves the daemon responsive and rechecks the file and outbox claim at paste", async t => {
+  const { prepareSpokenTranscript, reserveSpokenHandoff, SpokenTranscriptChanged } = await import("../src/server/delivery-ledgers.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-worker-proof-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const key = "off-thread-handoff";
+  const path = join(dir, "terminal.jsonl");
+  writeFileSync(path, Buffer.alloc(8 * 1024 * 1024, 32));
+  const transcript = { path, read: claudeTranscript.messages! };
+  const conversation = { key, transcript };
+  const words = "check the archive";
+  const queued = db.createPendingTurn({ id: key, noteKey: key, spokenWords: words, text: words, now: 1 });
+  const turn = db.claimNextPendingTurn(key, 2, queued, s => s)!;
+  const expected = transcript.read.boundary!(path);
+  const reads = t.mock.method(fs, "readSync", () => assert.fail("handoff read transcript history on the daemon thread"));
+  syncBuiltinESMExports();
+  try {
+    let daemonResponded = false;
+    setImmediate(() => { daemonResponded = true; });
+    const prepared = await prepareSpokenTranscript(key, transcript);
+    assert.equal(daemonResponded, true);
+    assert.deepEqual(prepared.capture?.eof, expected);
+    assert.deepEqual(db.loadSpokenTurns(key), []);
+    appendFileSync(path, "\n");
+    assert.throws(() => reserveSpokenHandoff(conversation, turn, words, false, 0, 3, prepared), SpokenTranscriptChanged);
+    assert.deepEqual(db.loadSpokenTurns(key), []);
+    const current = await prepareSpokenTranscript(key, transcript);
+    assert.ok(db.releasePendingTurn(turn.id, turn.revision, "refused", 4));
+    assert.equal(reserveSpokenHandoff(conversation, turn, words, false, 0, 5, current), null);
+    const next = db.claimNextPendingTurn(key, 6, db.listPendingTurns(key)[0]!, s => s)!;
+    const row = reserveSpokenHandoff(conversation, next, words, false, 0, 7, current);
+    assert.equal(row?.transcriptBoundary, current.capture?.eof?.proof);
+    assert.equal(row?.transcriptOffset, statSync(path).size);
+    assert.deepEqual(db.loadSpokenTurns(key).map(r => r.id), [row!.id]);
+  } finally {
+    reads.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("a buffered older terminal turn flushed past the saved offset cannot claim the spoken delivery", async () => {
+  const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const now = Date.now();
+  const transcript = fakeTranscript();
+  transcript.append("prefix", "older history", now - 10);
+  const conversation = transcript.conversation("buffered-terminal-record");
+  const words = "check the logs";
+  const received = spokenMessageText(words, { openQuestions: null, unseenReports: null });
+  const attempt = claimSpoken(conversation.key, words, received);
+  const row = reserveSpokenTurn(conversation, words, received, false, attempt, now);
+  assert.ok(row.transcriptOffset);
+  assert.ok(db.retireDeliveredPendingTurn(attempt.id, attempt.revision, now, row.id));
+  const older = transcript.append("buffered-native", received, now - 1);
+  assert.equal(spokenLedger.bound(conversation, [older]).rows.size, 0);
+  const actual = transcript.append("actual-native", received, now);
+  assert.deepEqual([...spokenLedger.bound(conversation, [older, actual]).rows.keys()], [actual.id]);
+  assert.equal(db.loadSpokenTurns(conversation.key)[0]?.messageId, actual.id);
+  // A previous daemon may already have recorded the buffered turn as the receipt.
+  db.openDb().prepare("UPDATE session_spoken_turns SET message_id = ?, message_ts = ? WHERE id = ?").run(older.id, older.ts, row.id);
+  db.closeDb();
+  db.recoverSendingPendingTurns(now + 1);
+  assert.deepEqual([...spokenLedger.bound(conversation, [older, actual]).rows.keys()], [actual.id]);
+});
+
 test("a confirmed terminal send binds only in the file and history captured at handoff", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
@@ -967,7 +1031,7 @@ test("after eviction cleanup searches later handoffs in the same conversation be
 test("cleanup reopens an evicted terminal's native transcript before expiring its unread disclosure", async t => {
   const { Registry } = await import("../src/server/registry.ts");
   const { claudeTranscript, resolveTranscriptPath } = await import("../src/server/harness/claude/transcript.ts");
-  const { reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
   const dir = mkdtempSync(join(tmpdir(), "spoken-archived-terminal-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -985,7 +1049,8 @@ test("cleanup reopens an evicted terminal's native transcript before expiring it
     const q = db.createPendingTurn({ id: key + "-queued", noteKey: key, spokenWords: words, text: words, now });
     const turn = db.claimNextPendingTurn(key, now, q, () => payload)!;
     const conversation = { key, transcript, session: { agent: "claude" as const, cwd, transcriptPath: null } };
-    const row = reserveSpokenHandoff(conversation, turn, words, false, 0, now)!;
+    const prepared = transcript ? await prepareSpokenTranscript(key, transcript) : undefined;
+    const row = reserveSpokenHandoff(conversation, turn, words, false, 0, now, prepared)!;
     assert.ok(db.retireDeliveredPendingTurn(turn.id, turn.revision, now, row.id));
     appendFileSync(path, JSON.stringify({ type: "user", uuid: "native-" + key, timestamp: new Date(now + 1000).toISOString(),
       message: { role: "user", content: payload } }) + "\n");

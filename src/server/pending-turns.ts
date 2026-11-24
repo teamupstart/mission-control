@@ -8,7 +8,10 @@ import {
 import { canMessage } from "@shared/pane.ts";
 import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
-import { followSpokenConversationKey, reserveSpokenHandoff, spokenLedger } from "./delivery-ledgers.ts";
+import {
+  followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger,
+  SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, type PreparedSpokenTranscript,
+} from "./delivery-ledgers.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
 import type { ReviewContinuationKind } from "./reviews.ts";
@@ -246,15 +249,21 @@ function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
 
 /** Both transports run this guard immediately before the write. Only a current, stamped
  * attempt may reserve a transcript occurrence. A crash before the guard leaves no reservation. */
-function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, now: number, sdkInput?: SdkTurn): boolean {
-  if (send.kind !== "spoken" || send.reservationId !== null) return true;
+function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, now: number,
+  prepared?: PreparedSpokenTranscript, sdkInput?: SdkTurn): string | null {
+  if (send.kind !== "spoken" || send.reservationId !== null) return null;
   const conversation = { key: turn.noteKey, transcript: sessionMessages(session), session };
-  const row = reserveSpokenHandoff(conversation, turn, send.words,
-    sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, generation, now);
-  if (!row) return false;
-  send.reservationId = row.id;
-  if (sdkInput && row.messageId) sdkInput.clientMessageId = row.messageId;
-  return true;
+  try {
+    const row = reserveSpokenHandoff(conversation, turn, send.words,
+      sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, generation, now, prepared);
+    if (!row) return "The spoken turn is no longer claimed for delivery.";
+    send.reservationId = row.id;
+    if (sdkInput && row.messageId) sdkInput.clientMessageId = row.messageId;
+    return null;
+  } catch (error) {
+    if (error instanceof SpokenTranscriptChanged) return error.message;
+    throw error;
+  }
 }
 
 /** Positive evidence that nothing landed: give the record back. */
@@ -855,6 +864,7 @@ export class PendingTurnManager {
   private canDrain(session: Session): boolean {
     const drainBoundary = this.terminalDrainBoundaries.get(noteKeyFor(session));
     return (
+      !this.stopped &&
       drainBoundary?.sessionId !== session.id &&
       session.stateConfirmed &&
       session.state === "idle" &&
@@ -1067,8 +1077,21 @@ export class PendingTurnManager {
           return;
         }
       }
-      if (session.runtime === "sdk") await this.deliverSdk(session, turn, next.action === "steer");
-      else await this.deliverTerminal(session, turn);
+      let prepared: PreparedSpokenTranscript | undefined;
+      if (turn.spokenWords !== undefined && !(session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds)) {
+        const transcript = sessionMessages(session);
+        if (transcript) {
+          try {
+            prepared = await prepareSpokenTranscript(key, transcript);
+          } catch (error) {
+            releasePendingTurn(turn.id, turn.revision, errorMessage(error), this.deps.now());
+            this.registry.refreshPendingTurns(key);
+            return;
+          }
+        }
+      }
+      if (session.runtime === "sdk") await this.deliverSdk(session, turn, next.action === "steer", prepared);
+      else await this.deliverTerminal(session, turn, prepared);
     } finally {
       this.draining.delete(key);
       // Steering may leave state unchanged, and a fast terminal turn may finish before
@@ -1086,10 +1109,11 @@ export class PendingTurnManager {
         // The row is still queued: a refusal, or a stage that did not finish the message.
         // Arm the escalation that is still ahead of it rather than waiting for an event a
         // silent turn will never produce. Nothing here re-tries a due stage, so a refusal
-        // that keeps refusing cannot become a loop. The one exception is an after-work turn
-        // held back because its launch could not be checked: nothing else would ever wake it,
-        // so it is checked again on the recheck interval until the read answers.
-        if (recheckAfterWork) {
+        // that keeps refusing cannot become a loop. A changed transcript revision or an
+        // unverified after-work launch needs another check even if the session stays quiet.
+        if (current.pendingTurns.some(row => row.id === retiredId && row.state === "queued" && row.lastError === SPOKEN_TRANSCRIPT_CHANGED)) {
+          this.armDrain(key, this.deps.now() + 1_000);
+        } else if (recheckAfterWork) {
           this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
         } else {
           const escalation = this.nextEscalationAt(current);
@@ -1204,7 +1228,7 @@ export class PendingTurnManager {
     }
   }
 
-  private async deliverSdk(session: Session, turn: PendingTurn, steer = false): Promise<void> {
+  private async deliverSdk(session: Session, turn: PendingTurn, steer: boolean, prepared?: PreparedSpokenTranscript): Promise<void> {
     // Whose words these are, said BEFORE the send, because the prompt hook can report them back
     // while the send is still in flight (see `reserveInjection`). First of all, so one refused
     // for its attribution leaves nothing else to undo. The operator's own words are always the
@@ -1238,14 +1262,14 @@ export class PendingTurnManager {
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
       const input: SdkTurn = { text: turn.text };
+      let spokenRefusal: string | null = null;
       const accepted = await send(session.id, input, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
         if (!blocker) {
           const current = this.registry.getSession(session.id)!;
           generation = current.workCycle?.generation ?? 0;
-          if (!handoffSpokenTurn(outboxSend, current, turn, generation, this.deps.now(), input)) {
-            return "The spoken turn is no longer claimed for delivery.";
-          }
+          spokenRefusal = handoffSpokenTurn(outboxSend, current, turn, generation, this.deps.now(), prepared, input);
+          if (spokenRefusal) return spokenRefusal;
           handoff.acceptanceBoundaryCrossed = true;
           // Registered at the acceptance guard, which runs inside the supervisor's serialized
           // boundary immediately before the driver is handed the turn. Earlier, the row could
@@ -1287,7 +1311,7 @@ export class PendingTurnManager {
         releasePendingTurn(
           turn.id,
           turn.revision,
-          "The agent became busy before delivery.",
+          spokenRefusal ?? "The agent became busy before delivery.",
           this.deps.now(),
         );
         this.dropIfRefused(turn);
@@ -1391,7 +1415,7 @@ export class PendingTurnManager {
     }
   }
 
-  private async deliverTerminal(session: Session, turn: PendingTurn): Promise<void> {
+  private async deliverTerminal(session: Session, turn: PendingTurn, prepared?: PreparedSpokenTranscript): Promise<void> {
     // Whose words these are, said first and withdrawn as `deliverSdk` does.
     const author = daemonAuthorOf(turn);
     const announced = this.announceTurn(session, turn, author);
@@ -1419,9 +1443,8 @@ export class PendingTurnManager {
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
         const generation = current.workCycle?.generation ?? 0;
-        if (!handoffSpokenTurn(outboxSend, current, turn, generation, this.deps.now())) {
-          return "The spoken turn is no longer claimed for delivery.";
-        }
+        const refusal = handoffSpokenTurn(outboxSend, current, turn, generation, this.deps.now(), prepared);
+        if (refusal) return refusal;
         boundaryCrossed = true;
         // The write is next: a review message's echo belongs to the cycle as it stands now.
         if (outboxSend.kind === "review") stampReviewDeliveryHandoff(outboxSend.noteKey, outboxSend.id, current.workCycle);

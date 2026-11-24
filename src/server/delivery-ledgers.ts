@@ -29,7 +29,7 @@ import {
   type SpokenTranscriptLocator,
   type SpokenTurnRow,
 } from "./db.ts";
-import type { TranscriptSession } from "./harness/types.ts";
+import type { PreparedTranscriptBoundaries, TranscriptSession } from "./harness/types.ts";
 import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
@@ -154,16 +154,50 @@ export function followSpokenConversationKey(sessionId: string, fromKey: string, 
   if (fromKey === sessionId && fromKey !== toKey && moveSpokenTurns(fromKey, toKey)) spokenLedger.forgetCaches();
 }
 
+export type PreparedSpokenTranscript = { path: string; capture: PreparedTranscriptBoundaries | null };
+export const SPOKEN_TRANSCRIPT_CHANGED = "The transcript changed while preparing the spoken message.";
+export class SpokenTranscriptChanged extends Error {
+  constructor() { super(SPOKEN_TRANSCRIPT_CHANGED); }
+}
+
+export async function prepareSpokenTranscript(key: string, transcript: NonNullable<DeliveryConversation["transcript"]>): Promise<PreparedSpokenTranscript> {
+  // Reserving can also settle an older pending delivery. Its prefix must not be read on
+  // the daemon thread inside the write transaction either.
+  const offsets = spokenLedger.rows(key).filter(row => row.messageId === null && !row.contested && row.transcriptBoundary !== null)
+    .map(row => row.transcriptOffset ?? 0);
+  const capture = transcript.read.prepareHandoffBoundaries
+    ? await transcript.read.prepareHandoffBoundaries(transcript.path, offsets)
+    : { version: transcript.read.snapshot?.(transcript.path)?.version ?? null, eof: null, proofs: new Map() };
+  return { path: transcript.path, capture };
+}
+
 /** At the transport guard, the receiving cycle and its corresponding ledger reservation commit together. */
 export function reserveSpokenHandoff(conversation: SpokenConversation, turn: PendingTurn, words: string,
-  clientMessageIds: boolean, generation: number, now: number): SpokenTurnRow | null {
+  clientMessageIds: boolean, generation: number, now: number, prepared?: PreparedSpokenTranscript): SpokenTurnRow | null {
+  const transcript = conversation.transcript;
+  const capture = prepared?.capture;
+  const checkRevision = () => {
+    if (clientMessageIds) return;
+    if (transcript?.path !== prepared?.path || (transcript &&
+        (!capture || (transcript.read.snapshot?.(transcript.path)?.version ?? null) !== capture.version))) {
+      throw new SpokenTranscriptChanged();
+    }
+  };
+  checkRevision();
+  const atHandoff = !clientMessageIds && transcript && capture ? { ...conversation, transcript: {
+    path: transcript.path, read: { ...transcript.read,
+      boundary: (_path: string, offset?: number) => offset === undefined ? capture.eof : capture.proofs.get(offset) ?? null,
+    },
+  } } : conversation;
   // Process invalidations from prior outbox transactions before the ledger is read inside this one.
   spokenLedger.rows(conversation.key);
   try {
     return inTransaction(() => {
       const reservationId = recordSpokenHandoff(turn.id, turn.revision, generation, now);
       if (!reservationId) return null;
-      return reserveSpokenTurn(conversation, words, turn.text, clientMessageIds, { ...turn, reservationId }, now);
+      const row = reserveSpokenTurn(atHandoff, words, turn.text, clientMessageIds, { ...turn, reservationId }, now);
+      checkRevision();
+      return row;
     });
   } catch (error) {
     // Binding can also have updated the other ledgers' contests before the insert or commit failed.

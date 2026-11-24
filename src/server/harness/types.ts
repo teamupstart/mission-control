@@ -205,6 +205,13 @@ export interface TranscriptBoundary {
   proof: string;
 }
 
+/** Proofs from one file revision, prepared off the daemon thread before a spoken write. */
+export interface PreparedTranscriptBoundaries {
+  version: string | null;
+  eof: TranscriptBoundary | null;
+  proofs: Map<number, TranscriptBoundary>;
+}
+
 /**
  * A contiguous run of turns, and the exact byte range they were read from.
  *
@@ -310,6 +317,7 @@ export interface TranscriptMessages {
   snapshot?(path: string): { size: number; version: string } | null;
   /** Identity of the file and its bytes through an offset, stable across later appends. */
   boundary?(path: string, offset?: number): TranscriptBoundary | null;
+  prepareHandoffBoundaries?(path: string, offsets: number[]): Promise<PreparedTranscriptBoundaries | null>;
   /** Recent history through the captured EOF (default: current EOF). Throws if unreadable. */
   initial(path: string, through?: number): TranscriptInitialRead;
   /**

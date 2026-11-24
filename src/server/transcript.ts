@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync, statSync, type BigIntStats } from "node:fs";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type {
   TranscriptForwardPage,
-  TranscriptBoundary,
   TranscriptInitialRead,
   TranscriptMessages,
   TranscriptPage,
@@ -11,6 +8,8 @@ import type {
   TranscriptStreamRead,
   TranscriptWindow,
 } from "./harness/types.ts";
+import { prepareHandoffBoundaries, transcriptBoundary, transcriptSnapshot } from "./transcript-boundary.ts";
+import { statSync } from "node:fs";
 import { completeLines, readRange, readTailLines } from "./util/file-tail.ts";
 
 // Reading a line-per-record (JSONL) transcript, with NO knowledge of what a record
@@ -622,52 +621,6 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     return { messages: parseMany(text.split("\n")), pos: pos + lastNl + 1 };
   };
 
-  const snapshot = (path: string) => {
-    try {
-      const s = statSync(path, { bigint: true });
-      return { size: Number(s.size), version: [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join(":") };
-    } catch {
-      return null;
-    }
-  };
-  return { window, since, size: transcriptSize, snapshot, boundary: transcriptBoundary, initial, before, after, appended, narration };
-}
-
-/** The offset and prefix come from one open file. A replacement inode or a rewritten prefix invalidates it. */
-function transcriptBoundary(path: string, offset?: number): TranscriptBoundary | null {
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, "r");
-    const original = fstatSync(fd, { bigint: true });
-    const end = offset ?? Number(original.size);
-    if (!Number.isSafeInteger(end) || end < 0 || end > original.size) return null;
-    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, end));
-    const prefixDigest = (file: number) => {
-      const hash = createHash("sha256").update([original.dev, original.ino, original.birthtimeNs, end].join(":") + "\n");
-      for (let pos = 0; pos < end;) {
-        const n = readSync(file, chunk, 0, Math.min(end - pos, chunk.length), pos);
-        if (!n) return null;
-        hash.update(chunk.subarray(0, n));
-        pos += n;
-      }
-      return hash.digest("hex");
-    };
-    const coversPrefix = (s: BigIntStats) => original.dev === s.dev && original.ino === s.ino
-      && original.birthtimeNs === s.birthtimeNs && s.size >= end;
-    const proof = prefixDigest(fd);
-    const current = statSync(path, { bigint: true });
-    if (!proof || !coversPrefix(current)) return null;
-    if (current.ctimeNs !== original.ctimeNs || current.size !== original.size) {
-      // Growth can coincide with an in-place edit. Verify the original bytes twice on
-      // the same descriptor, even if more output arrives during the second pass.
-      if (prefixDigest(fd) !== proof) return null;
-      const final = statSync(path, { bigint: true });
-      if (!coversPrefix(final) || (final.ctimeNs !== current.ctimeNs && final.size <= current.size)) return null;
-    }
-    return { offset: end, proof };
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
+  return { window, since, size: transcriptSize, snapshot: transcriptSnapshot, boundary: transcriptBoundary,
+    prepareHandoffBoundaries, initial, before, after, appended, narration };
 }

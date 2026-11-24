@@ -125,8 +125,9 @@ It removes an unmatched payload only after reading the whole file. If the transc
 unreadable, or changes during the scan, cleanup tries again on a later sweep.
 
 A terminal delivery records the native file identity and a digest of the bytes through its delivery
-offset. Matching words can establish a disclosure only while that boundary still belongs to the
-file. An SDK delivery uses its native client message ID.
+offset. A worker hashes the history before the paste. The daemon checks the file revision and
+the outbox claim at handoff. A matching native turn must have a timestamp at or after handoff,
+and the saved prefix must still belong to the file. SDKs that accept client message IDs use that receipt.
 
 A confirmed terminal delivery has a 24-hour window to match its transcript turn. Cleanup makes
 one final binding pass and deletes the payload if it still has no match. If the transcript stays

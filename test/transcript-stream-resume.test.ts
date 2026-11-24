@@ -195,7 +195,7 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   const db = await import("../src/server/db.ts");
   const { noteKeyFor } = await import("../src/server/registry.ts");
   const { sessionMessages } = await import("../src/server/harness/index.ts");
-  const { reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff } = await import("../src/server/delivery-ledgers.ts");
   applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
   t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
   const key = noteKeyFor(session);
@@ -204,7 +204,9 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   const now = Date.now();
   const queued = db.createPendingTurn({ id: "stream-receipt", noteKey: key, spokenWords: words, text: words, now });
   const claim = db.claimNextPendingTurn(key, now, queued, () => payload)!;
-  const reservation = reserveSpokenHandoff({ key, session, transcript: sessionMessages(session) }, claim, words, false, 0, now)!;
+  const transcript = sessionMessages(session)!;
+  const prepared = await prepareSpokenTranscript(key, transcript);
+  const reservation = reserveSpokenHandoff({ key, session, transcript }, claim, words, false, 0, now, prepared)!;
   appendFileSync(path, JSON.stringify({ type: "user", uuid: "early-user", timestamp: new Date(now).toISOString(),
     message: { role: "user", content: payload } }) + "\n");
   const early = await firstFrame();

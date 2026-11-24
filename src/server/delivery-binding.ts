@@ -579,7 +579,8 @@ export class DeliveryLedger<Row extends BindableDelivery> {
               break;
             }
             if (m.role !== "user" || !m.text || injectionFingerprint(m.text) !== row.fingerprint) continue;
-            if (row.transcriptOffset === null && m.ts < row.deliveredAt) continue;
+            // A buffered terminal record can be appended past the offset long after it was authored.
+            if ((this.store.textBoundary || row.transcriptOffset === null) && m.ts < row.deliveredAt) continue;
             if (isClaimed(m, claimed)) continue;
             found = m;
             break;

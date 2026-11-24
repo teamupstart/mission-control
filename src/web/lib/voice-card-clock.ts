@@ -41,6 +41,11 @@ export function voiceCardDeadline(card: DashboardVoiceCard): number | null {
   return card.localDeadline ?? card.deadline - performance.timeOrigin;
 }
 
+/** Both confirmation surfaces display at most the configured cancel window. */
+export function voiceCountdownSeconds(remainingMs: number, windowMs?: number): number {
+  return Math.ceil(Math.max(0, Math.min(remainingMs, windowMs ?? remainingMs)) / 1000);
+}
+
 /** Release the buttons early enough to retry without withdrawing an in-transit request. */
 export function voiceCardRetryDelay(deadline: number | null): number {
   return deadline === null ? 2000 : Math.min(2000, Math.max(1, (deadline - performance.now()) / 2));

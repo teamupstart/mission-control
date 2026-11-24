@@ -19,6 +19,13 @@ export const VoiceUtteranceSchema = z.object({
 export type VoiceUtterance = z.infer<typeof VoiceUtteranceSchema>;
 
 export type VoiceDeliveryOutcome = "sent" | "queued" | "held" | "not-running" | "failed";
+export interface VoiceCardNotice {
+  id: string;
+  title: string;
+  body: string;
+  deadline: number;
+  scope?: "single" | "both" | "remaining";
+}
 export interface VoiceCard {
   id: string;
   state: "pending" | "resolving" | "unsure" | "cancelled" | VoiceDeliveryOutcome;

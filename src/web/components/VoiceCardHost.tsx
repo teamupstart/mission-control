@@ -15,29 +15,36 @@ function Card({ card, actions, notify, sound, notifications }: {
     announced.current = card.deadline;
     if (sound) playChime("info");
   }, [card, notify, sound]);
+  const { id: cardId, deadline, state } = card;
+  const waiting = card.parts.filter(part => !part.immediateStop);
+  const stops = card.parts.filter(part => part.immediateStop);
+  const scope = waiting.length > 1 ? "both" : stops.length ? "remaining" : "single";
+  const recipient = waiting.length > 1 ? "Two messages" : "To " + (waiting[0]?.target?.name ?? "agent");
+  const body = [
+    ...waiting.map(part => waiting.length > 1 ? part.target?.name + ": " + part.text : part.text),
+    ...stops.map(part => "Stop requested for " + (part.target?.name ?? "agent") + " separately."),
+  ].join("\n");
   useEffect(() => {
-    if (!notify || !card.deadline || card.state !== "pending") return;
+    if (!notify || !deadline || state !== "pending" || !waiting.length) return;
     if (!notifications || document.hasFocus() || typeof Notification === "undefined" || Notification.permission !== "granted") return;
     try {
-      const recipient = card.parts.length === 1 ? "To " + card.parts[0]?.target?.name : "Two messages";
-      const seconds = Math.ceil(Math.max(0, card.deadline - Date.now()) / 1000);
+      const seconds = Math.ceil(Math.max(0, deadline - Date.now()) / 1000);
       if (seconds === 0) return;
       const title = recipient + " · sending in " + seconds + "s";
-      const body = card.parts.map(p => card.parts.length === 1 ? p.text : p.target?.name + ": " + p.text).join("\n");
       const shell = window.missionDesktop;
       if (shell?.showVoiceCardNotice) {
         const id = newRequestId();
         let active = true;
-        void shell.showVoiceCardNotice({ id, title, body, deadline: card.deadline }).then(choice => {
-          if (active && choice) void api.voiceCardAction(card.id, choice);
+        void shell.showVoiceCardNotice({ id, title, body, deadline, scope }).then(choice => {
+          if (active && choice) void api.voiceCardAction(cardId, choice);
         }).catch(() => {});
         return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
       }
-      const note = new Notification(title, { body, tag: "voice-" + card.id, silent: true });
+      const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
       note.onclick = () => { window.focus(); note.close(); };
       return () => note.close();
     } catch { /* A browser may require a service worker for system notifications. */ }
-  }, [card, notify, notifications]);
+  }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications]);
   return <VoiceCardView card={card} actions={actions} />;
 }
 

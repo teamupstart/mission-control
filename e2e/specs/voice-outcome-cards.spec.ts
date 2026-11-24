@@ -59,6 +59,7 @@ test("cancelling a split shows the executed stop and cancels only the remaining 
   const card = page.getByRole("status").filter({ hasText: "Steve" });
   await card.filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
   await expect(card).toContainText("the remaining message");
+  await expect(card).toContainText("stop sent", { timeout: 3000 });
   await expect(card.getByRole("button", { name: "Send to Steve now" })).toBeVisible();
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(card).toContainText("Steve · Cancelled");

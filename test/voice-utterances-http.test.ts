@@ -980,6 +980,11 @@ test("cancelling a split keeps the immediate interrupt and drops only the ordina
   await say("Steve, inspect the build, and Will, stop", "split-cancel");
   await resolved("split-cancel");
   assert.deepEqual(interrupts.slice(before), ["sdk:Will"]);
+  const pending = cards.at(-1)!;
+  assert.equal(pending.state, "pending");
+  assert.deepEqual(pending.parts.map(part => part.outcome), [undefined, "sent"]);
+  assert.equal(pending.deadline, cards.find(card => card.id === "split-cancel" && card.deadline !== null)?.deadline);
+  assert.deepEqual(registry.snapshot().voiceCards, [pending]);
   const firstCancelFrame = cards.length;
   assert.equal((await act("split-cancel", "cancel")).status, 200);
   assert.equal(queued("Steve").length, 0);
@@ -1016,6 +1021,11 @@ test("Recently heard names both deliveries when the second part of a split fails
   t.mock.method(sdk, "interrupt", async () => null);
   await say("Steve, check the queue, and Will, stop", "partial");
   await resolved("partial");
+  const pending = cards.at(-1)!;
+  assert.equal(pending.state, "pending");
+  assert.deepEqual(pending.parts.map(part => part.outcome), [undefined, "failed"]);
+  assert.match(pending.parts[1]!.detail!, /no live embedded driver/);
+  assert.deepEqual(registry.snapshot().voiceCards, [pending]);
   assert.equal((await act("partial", "send-now")).status, 200);
   assert.equal(queued("Steve").at(-1), "check the queue");
   const entry = (await readHeard())[0]!;

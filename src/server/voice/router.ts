@@ -76,7 +76,7 @@ interface OpenCard {
   resolvingVisible?: boolean;
   remainingSplits?: VoiceSplitPoint[];
   commands?: VoiceSplitPoint["commands"];
-  splitStops?: { delivery: CardDelivery; done: Promise<void[]> };
+  splitStops?: { delivery: CardDelivery; done: Promise<void> };
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -453,7 +453,12 @@ export class VoiceRouter {
         const { signal } = this.lifetime;
         const stops = card.parts.flatMap((_, index) => item.commands?.[index] === "stop"
           ? [this.deliverPart(delivery, index, "stop", () => !signal.aborted)] : []);
-        item.splitStops = { delivery, done: Promise.all(stops) };
+        const done = Promise.all(stops).then(() => {
+          if (this.open.get(card.id) !== item) return;
+          item.card = { ...card, parts: delivery.card.parts.map((part, index) => ({ ...part, ...delivery.results[index] })) };
+          this.publish(item.card);
+        });
+        item.splitStops = { delivery, done };
       }
       if (card.parts.every((_, index) => item.commands?.[index] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;

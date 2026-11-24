@@ -45,8 +45,9 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true,
       onOpenSettings: () => () => {},
-      showVoiceCardNotice: ({ title, body }: { title: string; body: string }) => {
+      showVoiceCardNotice: ({ title, body, scope }: { title: string; body: string; scope: string }) => {
         document.title = title + " | " + body;
+        document.documentElement.dataset.noticeScope = scope;
         return new Promise(resolve => window.addEventListener("fixture-native-action", event => resolve((event as CustomEvent).detail), { once: true }));
       },
       dismissVoiceCardNotice() {},
@@ -64,5 +65,17 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
     expect((await action).ok()).toBe(true);
     await expect(page.getByRole("status").filter({ hasText: choice === "cancel" ? "Cancelled" : "Sent to Steve" })).toBeVisible();
   }
+  await runningAgent(page, daemon, "Will");
+  await say(daemon, "Steve, inspect the build, and Will, stop", { id: "native-split" });
+  await page.getByRole("status").filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
+  await expect(page).toHaveTitle(/To Steve · sending in \d+s \| inspect the build Stop requested for Will separately\./, { timeout: 3000 });
+  await expect(page.locator("html")).toHaveAttribute("data-notice-scope", "remaining");
+  const pendingSplit = page.getByRole("status").filter({ hasText: "Two messages" });
+  await expect(pendingSplit).toContainText("stop sent");
+  await captureCard(pendingSplit, "pending-split-stop-sent");
+  const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/native-split/cancel"));
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("fixture-native-action", { detail: "cancel" })));
+  expect((await cancelled).ok()).toBe(true);
+  await expect(page.getByRole("status").filter({ hasText: "Steve · Cancelled" })).toContainText("Stop sent to Will");
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns").all().map(r => r.spoken_words))).toEqual(["inspect native-send-now"]);
 });

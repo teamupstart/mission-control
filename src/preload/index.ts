@@ -7,6 +7,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateApplyOutcome, UpdateSnapshot } from "../shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
+import type { VoiceCardNotice } from "../shared/voice-routing.ts";
 import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "../shared/session-control-authorization.ts";
 
 interface ProductIssueAuthorizationInput {
@@ -37,7 +38,7 @@ window.addEventListener("keydown", (event) => {
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
-  showVoiceCardNotice: (input: { id: string; title: string; body: string; deadline: number }) => ipcRenderer.invoke("mission:voice-card-notice", input),
+  showVoiceCardNotice: (input: VoiceCardNotice) => ipcRenderer.invoke("mission:voice-card-notice", input),
   dismissVoiceCardNotice: (id: string) => ipcRenderer.send("mission:voice-card-dismiss", id),
   ...(process.platform === "darwin" && {
     fixVoiceMicrophone: (): Promise<"checked" | "unavailable"> => ipcRenderer.invoke("mission:voice-microphone"),

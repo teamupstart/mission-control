@@ -15,7 +15,9 @@ window off, delivery begins immediately. Sent and queued cards show the open que
 The Sound preference controls the pending chime. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
-notifications.
+notifications. A split card shows an immediate stop’s result as soon as it arrives. The
+desktop notification identifies that stop separately and counts down only the waiting
+delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 
 A settled card stays visible while one of its controls has focus or its action is in
 progress. Once both end, the card gives you another eight seconds to read the result or retry.

@@ -17,16 +17,18 @@ function notificationFixture({ focused = false, supported = true } = {}) {
     show() { this.shown = true; }
     close() { this.closed = true; }
   }
-  type Handler = (event: { sender: unknown }, input: unknown) => unknown;
+  type Handler = (event: { sender: unknown; senderFrame: unknown }, input: unknown) => unknown;
   const handlers = new Map<string, Handler>();
   const register = (channel: string, handler: Handler) => handlers.set(channel, handler);
-  const owner = { webContents: {}, isFocused: () => focused, show() {} };
+  const owner = { webContents: { mainFrame: {} }, isFocused: () => focused, show() {} };
   registerVoiceCardNotifications({ on: register, handle: register }, () => owner, NativeNotice);
   const input = { id: crypto.randomUUID(), title: "To Steve · sending in 4s", body: "check the build", deadline: Date.now() + 4000 };
   return {
-    input, notices,
-    show: (payload: unknown = input, sender = owner.webContents) => handlers.get("mission:voice-card-notice")!({ sender }, payload),
-    dismiss: (sender = owner.webContents) => handlers.get("mission:voice-card-dismiss")!({ sender }, input.id),
+    input, notices, contents: owner.webContents,
+    show: (payload: unknown = input, sender: unknown = owner.webContents, senderFrame: unknown = owner.webContents.mainFrame) =>
+      handlers.get("mission:voice-card-notice")!({ sender, senderFrame }, payload),
+    dismiss: (sender: unknown = owner.webContents, senderFrame: unknown = owner.webContents.mainFrame) =>
+      handlers.get("mission:voice-card-dismiss")!({ sender, senderFrame }, input.id),
   };
 }
 
@@ -79,6 +81,29 @@ test("a focused owner, unsupported notifications and a malformed request create 
   const fixture = notificationFixture();
   assert.equal(fixture.show({ ...fixture.input, id: "invalid" }), null);
   assert.equal(fixture.notices.length, 0);
+});
+
+test("a subframe in the owner cannot create or dismiss notifications", async () => {
+  const fixture = notificationFixture();
+  const childFrame = {};
+  assert.equal(fixture.show(fixture.input, fixture.contents, childFrame), null);
+  assert.equal(fixture.notices.length, 0);
+  const result = fixture.show();
+  fixture.dismiss(fixture.contents, childFrame);
+  assert.equal(fixture.notices[0]?.closed, false);
+  fixture.dismiss();
+  assert.equal(await result, null);
+  assert.equal(fixture.notices[0]?.closed, true);
+});
+
+test("native actions name whether both deliveries or just the remaining message is pending", async () => {
+  for (const [scope, cancel, send] of [["both", "Cancel both", "Send both now"], ["remaining", "Cancel remaining", "Send remaining now"]]) {
+    const fixture = notificationFixture();
+    const result = fixture.show({ ...fixture.input, scope });
+    assert.deepEqual(fixture.notices[0]?.options.actions?.map(action => action.text), [cancel, send]);
+    fixture.notices[0]!.emit("action", {}, 0);
+    assert.equal(await result, "cancel");
+  }
 });
 
 test("the handler rejects late native clicks even before the expiry timer runs", async t => {

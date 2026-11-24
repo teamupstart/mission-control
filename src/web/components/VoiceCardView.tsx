@@ -163,7 +163,8 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
       body = <><div className="vc-row"><Icon name="mic" /><span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
         {card.deadline !== null && <span className="vc-seconds" aria-hidden="true">{Math.ceil(Math.min(remaining, card.windowMs ?? remaining) / 1000)}s</span>}</div>
         {card.parts.map((p, i) => split || mention ? <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"}
-          detail={mention ? messageWithMentions(p.text, card.mentions!) : p.text} state={p.immediateStop ? "stopping" : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}
+          detail={p.immediateStop ? p.detail ?? p.text : mention ? messageWithMentions(p.text, card.mentions!) : p.text}
+          state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
         {card.deadline === null ? <span className="vc-meta">Sending…</span> : <>
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>

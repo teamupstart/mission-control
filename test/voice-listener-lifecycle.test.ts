@@ -28,7 +28,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, slowLoad = false } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, slowLoad = false } = {}) {
     const events: string[] = [];
     const hellos: { modelLoaded: boolean; version: string }[] = [];
     const instanceIds = new Set<string | undefined>();
@@ -55,6 +55,10 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
         hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version });
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
+        if (posted.length === 0 && firstPostCutoff) {
+          res.setHeader("x-voice-release-revision", "first");
+          res.setHeader("x-voice-release-at", String(firstPostCutoff));
+        }
         if (posted.length === 0) res.statusCode = firstPostStatus;
         posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
       }
@@ -164,6 +168,25 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     apply(await nextPoll("first"), "roster-change", true, replacement);
     await until(() => primings().length >= 2, "updated recognizer priming");
     assert.deepEqual(primings(), [first, replacement]);
+  });
+
+  it("re-decodes a segment straddling key-up when the directive arrives during recognition", async (t) => {
+    const { events, posted, nextPoll, apply } = await launch(t);
+    await until(() => events.includes("decode in-flight"), "recognition before release");
+    const off = await nextPoll("first");
+    off.setHeader("x-voice-release-revision", "first");
+    off.setHeader("x-voice-release-at", "1000");
+    apply(off, "released", false);
+    await until(() => posted.length === 3, "clipped in-flight result, queue and tail");
+    assert.ok(events.includes("decode in-flight-clipped"));
+    assert.deepEqual(posted.map(p => p.text), ["in-flight-clipped", "buffered", "final phrase"]);
+  });
+
+  it("re-decodes the clipped prefix if the POST reaches the daemon before the key-up directive arrives", async (t) => {
+    const { events, posted } = await launch(t, { inputDevice: "two-utterances", firstPostCutoff: 1000 });
+    await until(() => posted.length === 3, "server refusal followed by clipped result and next segment");
+    assert.ok(events.includes("decode first-clipped"));
+    assert.deepEqual(posted.map(p => p.text), ["first", "first-clipped", "second"]);
   });
 
   it("delivers the next segment on the same active microphone after a transcription failure", async (t) => {

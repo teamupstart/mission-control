@@ -64,11 +64,11 @@ struct Device: Encodable {
 struct Segment {
     let samples: [Float]
     let capturedAt: Int64
+    var endedAt: Int64 { capturedAt + Int64((samples.count + 15) / 16) }
 
     func through(_ release: Int64) -> Segment? {
         guard release > capturedAt else { return nil }
-        let durationMs = Int64((samples.count + 15) / 16)
-        if release >= capturedAt + durationMs { return self }
+        if release >= endedAt { return self }
         return Segment(samples: Array(samples.prefix(Int(release - capturedAt) * 16)), capturedAt: capturedAt)
     }
 }
@@ -197,6 +197,7 @@ final class InputSegmenter {
     private let segmenter: SpeechSegmenter
     private var anchor: AVAudioTime?
     private var converterDelay: TimeInterval = 0
+    private(set) var deliveredThrough: Int64?
 
     func finish(at release: Int64) -> Segment? { segmenter.finish(at: release) }
 
@@ -209,7 +210,7 @@ final class InputSegmenter {
         segmenter = try SpeechSegmenter()
     }
 
-    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock()) -> [Segment] {
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock(), cutoff: Int64? = nil) -> [Segment] {
         if when.isHostTimeValid && when.isSampleTimeValid { anchor = when }
         let time = when.isHostTimeValid ? when : anchor.flatMap { when.extrapolateTime(fromAnchor: $0) }
         guard let time, time.isHostTimeValid else { return [] }
@@ -223,13 +224,20 @@ final class InputSegmenter {
             return buffer
         }
         guard status != .error, let channel = converted.floatChannelData?[0] else { return [] }
-        let samples = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
         // The tap timestamp names the first input frame. Some input can remain
         // buffered in the resampler across callbacks; date the emitted PCM itself.
-        let outputDuration = Double(samples.count) / mono.sampleRate
-        let end = clock.unixSeconds(at: time.hostTime) - converterDelay + outputDuration
+        let outputDuration = Double(converted.frameLength) / mono.sampleRate
+        let start = clock.unixSeconds(at: time.hostTime) - converterDelay
+        let end = start + outputDuration
         converterDelay += Double(buffer.frameLength) / buffer.format.sampleRate - outputDuration
-        return segmenter.consume(samples, now: Int64((end * 1000).rounded()))
+        deliveredThrough = Int64((end * 1000).rounded(.down))
+        var count = Int(converted.frameLength)
+        if let cutoff {
+            count = Int(max(0, min(Double(count), ((Double(cutoff) / 1000 - start) * mono.sampleRate).rounded())))
+        }
+        let samples = Array(UnsafeBufferPointer(start: channel, count: count))
+        let sampleEnd = start + Double(count) / mono.sampleRate
+        return segmenter.consume(samples, now: Int64((sampleEnd * 1000).rounded()))
     }
 }
 
@@ -239,6 +247,9 @@ final class Microphone {
     private var configurationObserver: NSObjectProtocol?
     private let tapLock = NSLock()
     private var segmenter: InputSegmenter?
+    private var cutoff: Int64?
+    private var onBoundary: (@MainActor () -> Void)?
+    private var releaseTimeout: Task<Void, Never>?
     private let continuation: AsyncStream<Segment>.Continuation
     let segments: AsyncStream<Segment>
 
@@ -279,16 +290,38 @@ final class Microphone {
         catch { stop(); throw error }
     }
 
-    private func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
-        tapLock.withLock {
-            guard let segmenter else { return }
-            for segment in segmenter.consume(buffer, at: when) {
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock()) {
+        let finish = tapLock.withLock { () -> (@MainActor () -> Void)? in
+            guard let segmenter else { return nil }
+            for segment in segmenter.consume(buffer, at: when, clock: clock, cutoff: cutoff) {
                 continuation.yield(segment)
             }
+            guard let cutoff, let end = segmenter.deliveredThrough, end >= cutoff else { return nil }
+            defer { onBoundary = nil }
+            return onBoundary
+        }
+        if let finish { Task { @MainActor in finish() } }
+    }
+
+    @MainActor func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) {
+        let ready = tapLock.withLock {
+            cutoff = release
+            if let end = segmenter?.deliveredThrough, end >= release { return true }
+            onBoundary = finish
+            return false
+        }
+        if ready { finish(); return }
+        // A disconnected or stalled input must still close. Normal capture ends
+        // on the callback containing key-up; only samples through key-up are used.
+        releaseTimeout = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            if !Task.isCancelled { finish() }
         }
     }
 
     @discardableResult func stop(releasedAt: Int64? = nil) -> Segment? {
+        releaseTimeout?.cancel()
+        releaseTimeout = nil
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
@@ -296,6 +329,7 @@ final class Microphone {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         return tapLock.withLock {
+            onBoundary = nil
             let final = releasedAt.flatMap { segmenter?.finish(at: $0) }
             segmenter = nil
             continuation.finish()

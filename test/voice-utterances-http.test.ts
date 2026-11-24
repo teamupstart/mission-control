@@ -126,8 +126,11 @@ test("only pre-release speech from the held revision can finish during call auto
   const poll = () => app.request("/voice/listener/directive", {
     headers: { "x-harness-token": token, "x-voice-listener-id": listenerId },
   });
-  const submit = async (revision: string, capturedAt: number, id: string) =>
-    (await post(utterancePath(revision), { ...capture("Steve finish this", id), capturedAt }, token)).json();
+  const submit = async (revision: string, capturedAt: number, id: string, end: number | null = capturedAt) =>
+    (await app.request(utterancePath(revision), { method: "POST", headers: {
+      host: "localhost", "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      ...(end === null ? {} : { "x-voice-capture-ended-at": String(end) }),
+    }, body: JSON.stringify({ ...capture("Steve finish this", id), capturedAt }) })).json();
   await press(true);
   const held = voiceStateStore.directive();
   assert.equal(held.capture, true);
@@ -140,6 +143,8 @@ test("only pre-release speech from the held revision can finish during call auto
   assert.equal(released.capture, false);
   assert.equal(voiceStateStore.state().mode, "auto-muted");
   await press(false); // A duplicate key-up heartbeat must preserve the drain.
+  assert.deepEqual(await submit(held.revision, now, "no-end", null), { accepted: false });
+  assert.deepEqual(await submit(held.revision, now, "in-flight", now + 101), { accepted: false });
   assert.deepEqual(await submit(held.revision, now, "in-flight"), { accepted: true });
   assert.deepEqual(await submit(held.revision, now + 99, "tail"), { accepted: true });
   assert.deepEqual(await submit(held.revision, now + 101, "too-late"), { accepted: false });

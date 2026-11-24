@@ -2,6 +2,14 @@ import AVFoundation
 import XCTest
 @testable import VoiceListener
 
+// The test drives tap callbacks explicitly so it can release between two buffers.
+private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
+    private var started = false
+    override var isRunning: Bool { started }
+    override func start() throws { started = true }
+    override func stop() { started = false }
+}
+
 final class ListenerTests: XCTestCase {
     func testStereoDeviceConversionSilenceAndFreshSegmentAfterMute() throws {
         let stereo = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
@@ -201,6 +209,46 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(final.samples.suffix(320), held.suffix(320))
         let recognizer = try await Recognizer(directory: models)
         let result = try await recognizer.transcribe(final, boosting: nil)
+        XCTAssertEqual(result?.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
+    }
+
+    @MainActor func testKeyUpBeforeFinalTapCallbackCollectsTheLastWord() async throws {
+        let (models, corpus) = try fixtureDirectories()
+        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let last = try XCTUnwrap(speech.lastIndex { abs($0) > 0.004 }) + 1
+        let held = Array(speech.prefix((last + 15) / 16 * 16))
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let engine = TapFixtureEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+        XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+        engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+        XCTAssertEqual(engine.inputNode.outputFormat(forBus: 0), format)
+        let input = try Microphone(selection: "system-default", devices: [], engine: engine)
+        let clock = CaptureClock(hostTime: 0, unixTime: 100)
+        func callback(_ pcm: [Float], start: Int) throws {
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
+            frame.frameLength = frame.frameCapacity
+            for i in pcm.indices { frame.floatChannelData![0][i] = pcm[i] }
+            let time = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 16_000))
+            input.consume(frame, at: time, clock: clock)
+        }
+        let split = held.count - 1600
+        try callback(Array(held[..<split]), start: 0)
+        let release = Int64(100_000 + held.count / 16)
+        var final: Segment?
+        let closed = expectation(description: "the callback through key-up releases the input")
+        input.whenCaptured(through: release) {
+            final = input.stop(releasedAt: release)
+            closed.fulfill()
+        }
+        XCTAssertTrue(input.isRunning)
+        try callback(Array(held[split...]) + Array(repeating: 0.7, count: 1600), start: split)
+        await fulfillment(of: [closed], timeout: 1)
+        XCTAssertFalse(input.isRunning)
+        let command = try XCTUnwrap(final)
+        XCTAssertEqual(command.samples.suffix(1600), held.suffix(1600))
+        let recognizer = try await Recognizer(directory: models)
+        let result = try await recognizer.transcribe(command, boosting: nil)
         XCTAssertEqual(result?.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
     }
 

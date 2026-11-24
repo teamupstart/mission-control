@@ -73,8 +73,10 @@ directive after 25 seconds. A heartbeat with identical capture settings leaves t
 
 When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
 `x-voice-release-revision` (the held capture revision) and `x-voice-release-at` (epoch
-milliseconds). A helper applying that exact held revision closes its input immediately and
-uses key-up as the boundary for the unfinished phrase. It can finish decoding and posting
+milliseconds). A helper applying that exact held revision uses key-up as the boundary for
+the unfinished phrase. If its input tap still owes samples through that time, the helper
+collects the pre-release portion of the last callback before closing. A stalled input
+closes after 250 ms. Manual mute stops the input immediately. The helper can finish decoding and posting
 the held audio with the original revision. An ordinary capture stop discards unfinished work.
 The native helper dates the samples from the input tap's audio timestamp on the shared host
 clock, so a delayed callback still includes speech recorded before key-up.
@@ -115,7 +117,10 @@ underscores or tildes. The card action routes reserve the complete segments `.` 
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 The response is `{ accepted }`. Listening and push-to-talk accept captures. During the
 auto-mute immediately following key-up, the daemon also accepts the same owner's held
-revision for segments captured by the release timestamp. A new directive, including manual
+revision for segments ending by the release timestamp. A listener sends the segment's
+exclusive end in Unix milliseconds in `x-voice-capture-ended-at`. If a POST races key-up
+and extends past it, the daemon returns `accepted: false` and the release headers. The
+helper transcribes the clipped PCM again before retrying. A new directive, including manual
 mute, revokes that exception.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.

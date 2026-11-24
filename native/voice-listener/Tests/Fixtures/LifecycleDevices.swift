@@ -14,8 +14,11 @@ struct Device: Encodable {
 
 final class Segment {
     let label: String
-    init(_ label: String) { self.label = label }
-    func through(_ release: Int64) -> Segment? { self }
+    let endedAt: Int64
+    init(_ label: String, endedAt: Int64 = 1) { self.label = label; self.endedAt = endedAt }
+    func through(_ release: Int64) -> Segment? {
+        endedAt > release ? Segment(label + "-clipped", endedAt: release) : self
+    }
     deinit { observe("released " + label) }
 }
 
@@ -48,10 +51,10 @@ final class Segment {
             source.yield(Segment("undecodable"))
             source.yield(Segment("next"))
         } else if selection == "two-utterances" {
-            source.yield(Segment("first"))
+            source.yield(Segment("first", endedAt: 2000))
             source.yield(Segment("second"))
         } else if opening == 1 {
-            source.yield(Segment("in-flight"))
+            source.yield(Segment("in-flight", endedAt: 2000))
             source.yield(Segment("buffered"))
         } else {
             source.yield(Segment("fresh"))
@@ -59,6 +62,8 @@ final class Segment {
             Recognizer.pendingDecode = nil
         }
     }
+
+    func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) { finish() }
 
     @discardableResult func stop(releasedAt: Int64? = nil) -> Segment? {
         disruption?.cancel()

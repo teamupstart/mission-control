@@ -5,6 +5,7 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
+  VOICE_CAPTURE_END_HEADER,
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
@@ -152,7 +153,16 @@ export function registerVoiceUtteranceRoutes(
     if (!voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) return c.json({ accepted: false });
     const revision = c.req.query("revision");
     const release = voiceStateStore.releasedCapture(directive);
-    const heldBeforeRelease = release !== undefined && revision === release.revision && parsed.data.capturedAt <= release.at;
+    const heldBeforeRelease = release !== undefined && revision === release.revision;
+    if (heldBeforeRelease) {
+      const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
+      const end = endHeader ? Number(endHeader) : NaN;
+      if (!Number.isSafeInteger(end) || end < parsed.data.capturedAt || end > release.at) {
+        c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
+        c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
+        return c.json({ accepted: false });
+      }
+    }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
     return c.json({ accepted: await router.accept(parsed.data, heldBeforeRelease) });
   });

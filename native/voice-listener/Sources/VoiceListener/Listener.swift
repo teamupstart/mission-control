@@ -44,12 +44,13 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    func request(_ route: String, revision: String? = nil, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
+    func request(_ route: String, revision: String? = nil, endedAt: Int64? = nil, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
+        if let endedAt { req.setValue(String(endedAt), forHTTPHeaderField: "x-voice-capture-ended-at") }
         if let body {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -134,15 +135,18 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             let (data, http) = try response.get()
             let next = try JSONDecoder().decode(Directive.self, from: data)
             let capture = next.capture && permission() == "granted"
-            if next.revision != revision || (capture ? mic?.isRunning != true : mic != nil) {
+            if next.revision != revision || (capture ? mic?.isRunning != true : mic != nil && releasedAt == nil) {
                 if !next.capture, permission() == "granted", let revision,
                    http.value(forHTTPHeaderField: "x-voice-release-revision") == revision,
                    let time = http.value(forHTTPHeaderField: "x-voice-release-at").flatMap(Int64.init) {
-                    // Stop the input now. Draining the finished stream preserves an
-                    // in-flight decode as well as the final, not-yet-silent phrase.
                     releasedAt = time
-                    finalSegment = mic?.stop(releasedAt: time)
-                    mic = nil
+                    if let input = mic {
+                        input.whenCaptured(through: time) { [weak self, weak input] in
+                            guard let self, let input, self.mic === input else { return }
+                            self.finalSegment = input.stop(releasedAt: time)
+                            self.mic = nil
+                        }
+                    }
                 } else {
                     close()
                 }
@@ -157,16 +161,25 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         let boosting = try? await recognizer.prime(next.roster)
                         @MainActor func deliver(_ buffered: Segment) async {
                             do {
-                                try Task.checkCancellation()
-                                let segment: Segment
-                                if let releasedAt {
-                                    guard let clipped = buffered.through(releasedAt) else { return }
-                                    segment = clipped
-                                } else { segment = buffered }
-                                let words = try await recognizer.transcribe(segment, boosting: boosting)
-                                try Task.checkCancellation()
-                                if let words {
-                                    _ = try await daemon.request("voice/utterances", revision: next.revision, body: JSONEncoder().encode(words))
+                                var segment = buffered
+                                var daemonCutoff: Int64?
+                                while !Task.isCancelled {
+                                    if let cutoff = daemonCutoff ?? releasedAt, segment.endedAt > cutoff {
+                                        guard let clipped = segment.through(cutoff) else { return }
+                                        segment = clipped
+                                    }
+                                    let words = try await recognizer.transcribe(segment, boosting: boosting)
+                                    try Task.checkCancellation()
+                                    // Key-up may have arrived during this very decode.
+                                    if let releasedAt, segment.endedAt > releasedAt { continue }
+                                    guard let words else { return }
+                                    let (_, http) = try await daemon.request("voice/utterances", revision: next.revision,
+                                        endedAt: segment.endedAt, body: JSONEncoder().encode(words))
+                                    // The POST can also beat the key-up directive back to the helper.
+                                    guard http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
+                                          let cutoff = http.value(forHTTPHeaderField: "x-voice-release-at").flatMap(Int64.init),
+                                          segment.endedAt > cutoff else { return }
+                                    daemonCutoff = cutoff
                                 }
                             } catch {
                                 if Task.isCancelled { return }

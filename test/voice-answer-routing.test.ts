@@ -741,3 +741,54 @@ test("only a fresh confirmation from the requested live dashboard can arm a repl
   await pending;
   assert.equal(answers()[0]?.id, "next-reply");
 });
+
+test("exact option labels normalize trailing punctuation on both sides and still require uniqueness", async t => {
+  const title = "Start the build?";
+  const ask = t.mock.method(model, "decide", () => ({ rung: "none", answers: [{ choice: null, confidence: 0 }], detail: "" }));
+  for (const duplicate of [false, true]) {
+    const options = [{ id: "run", label: "Run now?" }, { id: "later", label: duplicate ? "Run now!" : "Wait." }];
+    const q = reviews.create("sdk:Steve", "input", title, title, [{ id: "q", question: title, allowOther: true, options }]);
+    await show([q.id]);
+    await say("reply, RUN NOW!");
+    if (duplicate) {
+      assert.equal(ask.mock.callCount(), 1);
+      assert.deepEqual(answers()[0]?.selections?.[0]?.selected, []);
+    } else {
+      assert.equal(ask.mock.callCount(), 0);
+      assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["run"]);
+      assert.equal(answers()[0]?.selections?.[0]?.other, null);
+    }
+    await say("cancel");
+    reviews.resolve(q.id, "dismiss", null);
+  }
+});
+
+test("named choice and Other dictation use the focus confirmed for that utterance", async t => {
+  const first = question();
+  const second = question("Which cache?");
+  await show([first.id, second.id], first.id);
+  let sequence = 0;
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") sequence = event.sequence;
+    else publish(event);
+  });
+  const speak = (id: string, text: string) => registry.voiceRouter!.accept({ id, text, capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+  const confirm = (ids: string[], focused?: string) => put("/api/voice/open-cards", {
+    windowId: "voice-question-test", focused: true, cards: ids.map(id => ({ kind: "question", id, focused: id === focused })),
+  }, { "x-voice-confirm-focus": String(sequence), "x-voice-cards-observed-at-ms": "0" });
+  const choice = speak("named-switch", "Steve, option B");
+  assert.ok(sequence > 0);
+  assert.deepEqual(answers(), []);
+  await confirm([first.id, second.id], second.id);
+  await choice;
+  assert.equal(answers()[0]?.reviewId, second.id);
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
+  await say("cancel");
+  reviews.resolve(first.id, "dismiss", null);
+  const dictation = speak("named-closed", "Steve, answer: a different database");
+  await confirm([]);
+  await dictation;
+  assert.deepEqual(answers(), []);
+  assert.equal(cards.at(-1)?.detail, "No matching option.");
+});

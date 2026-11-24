@@ -236,6 +236,10 @@ export function requestedChoice(words: string): number | "recommended" | undefin
   return selector ? spokenIndex(selector) : undefined;
 }
 
+function normalizedLabel(text: string): string {
+  return text.trim().toLowerCase().replace(/[.!?]+$/u, "").trimEnd();
+}
+
 export async function matchAnswer(review: ReviewItem, words: string, allowText: boolean,
   decider: VoiceDecider, target: SpokenName | null, signal: AbortSignal) {
   const decisions = review.decisions ?? [];
@@ -243,7 +247,7 @@ export async function matchAnswer(review: ReviewItem, words: string, allowText: 
   const decision = decisions[0];
   if (!decision) return allowText ? { selections: null, text: words, label: "written reply" } : null;
   const options = decision.options;
-  const normalized = words.trim().toLowerCase().replace(/[.!?]+$/u, "");
+  const normalized = normalizedLabel(words);
   const choice = requestedChoice(words);
   let option;
   if (choice === "recommended") {
@@ -255,7 +259,7 @@ export async function matchAnswer(review: ReviewItem, words: string, allowText: 
     if (!option) return null;
   } else {
     const index = spokenIndex(words);
-    const exact = options.filter(o => o.label.trim().toLowerCase() === normalized);
+    const exact = options.filter(o => normalizedLabel(o.label) === normalized);
     option = exact.length === 1 ? exact[0] : index === undefined ? undefined : options[index];
     if (!option && index !== undefined) return null;
     if (!option && options.length) {

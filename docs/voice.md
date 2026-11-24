@@ -1028,19 +1028,29 @@ remains active, and the sender can retry. An accepted signed exit is final for
 that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).
 
 The supervisor authenticates both reports to `POST /voice/listener/supervised`.
-Before starting a child it chooses an instance of the form `shell_<nonce>` or
-`dev_<nonce>`, using 32 random bytes encoded in lowercase hexadecimal for each
-new process. It passes only the instance and ordinary listener credentials to
-the child. The report body remains `{ instance, state }`. In addition to the
-harness token, the supervisor sends `x-mission-voice-supervisor-proof`, the
-lowercase hex HMAC-SHA256 of the UTF-8 string
-`mission-voice-supervised/v1\n<state>\n<instance>` (LF separators, no trailing
-newline), using its own persistent 32-byte key. The instance prefix selects the
-verification key. A supervisor signs an exit only after observing process exit.
-Missing keys and invalid proofs return 403 and leave capture and the ledger as
-they were. The same proof works when a confirmed exit must be retried after
-the daemon restarts.
+The launcher keeps its Ed25519 signing key in its own process. At daemon startup
+it supplies the base64 DER SubjectPublicKeyInfo through
+`MISSION_VOICE_SHELL_PUBLIC_KEY` or `MISSION_VOICE_DEV_PUBLIC_KEY`. Only an
+instance signed by the configured launcher can be announced. The instance is
+`<shell|dev>_<hex DER public key>_<hex nonce>`, with 32 fresh random bytes per
+child. The listener receives the instance and ordinary listener credentials.
 
-The daemon acknowledges a signed start after it records the instance on disk. A signed exit removes that launch record. A storage error returns 503 so the supervisor can retry.
+The body is `{ instance, state }`. Alongside the harness token, the supervisor
+sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of
+the UTF-8 string `mission-voice-supervised/v2\n<state>\n<instance>` (LF
+separators, no trailing newline). Invalid signatures return 403. The original
+signer can retire a recorded instance even if a restarted daemon trusts another
+key for new launches. It signs an exit only after observing the child's exit.
 
-Deleting an unidentified process record leaves capture paused. Once recovery identifies the listener, it requests a stop and waits for that listener’s end report or its supervisor’s signed exit. If the whole process-record directory disappears, the daemon uses its separately stored launch inventory. If both sources are unavailable, capture stays paused and supervisor updates return 503 until the inventory can be recovered.
+The daemon acknowledges a start after recording the launch. If the inventory is
+missing or unreadable during recovery, new starts receive 503 and can be retried
+after it is restored. A signed exit can still clear that launch's exact hold.
+The supervisor retries an exit on 503 if the daemon could not persist the exit,
+remove its receipt or save the remaining holds.
+
+An unreadable process slot can later name a replacement child. Recovery asks
+that child to stop and keeps the original unidentified hold. A placeholder for
+an immutable receipt can be matched by its launch digest. A mutable slot such
+as `shell.json` requires independent evidence of the original player, such as
+the original ledger recovered at restart. If recovery also lost the inventory,
+a separate hold remains until all possible launches can be accounted for.

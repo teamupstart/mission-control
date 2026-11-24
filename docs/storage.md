@@ -185,13 +185,11 @@ launch inventory and supervisor records all disappear, this marker distinguishes
 the used state home from a first boot. Capture stays off while the daemon cannot
 identify which listeners need to confirm silence.
 
-Each voice supervisor provisions its own random 32-byte binary signing key in
-`voice/supervisor-keys/shell.key` or `voice/supervisor-keys/dev.key` before
-its first announcement. Use an owner-only directory (0700) and file (0600).
-Reuse the key across launches and restarts so exits can be confirmed for
-older processes. The daemon reads the key to verify supervisor reports.
-The launcher keeps it out of child environments, arguments and HTTP payloads.
-These files are local runtime credentials outside the settings backup.
+The voice supervisor holds its Ed25519 private key in launcher memory. The
+daemon receives the public verification key at startup. The private listener
+instance includes the launcher's public key and a per-child nonce, so a
+recorded launch remains bound to the same signer across daemon restarts.
+The daemon ignores legacy on-disk signing keys.
 
 Under `voice/supervised/`, the daemon writes one owner-only `announced-<digest>.json` per accepted start, by atomic rename. Its content is the private instance ID and its filename uses the SHA-256 digest of that ID. An authenticated exit removes only that instance’s file. These launch records survive the daemon and let it find possible players even before a launcher reconnects. The supervisor owns its separate process record in the same directory.
 

@@ -1,5 +1,5 @@
-import { fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
-import { VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
+import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
+import { createVoiceSupervisor, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { announcementName } from "../src/server/voice/speech-holds.ts";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
@@ -11,6 +11,8 @@ import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { registerVoiceRoutes } from "../src/server/voice/routes.ts";
 import { VOICE_CONFIG_DEFAULTS, VOICE_LISTENER_PROTOCOL_VERSION, VOICE_MODEL_STATE_NONE } from "../src/shared/voice.ts";
 import { VOICE_INSTANCE_HEADER, VOICE_SPEECH_DEFAULT_NEURAL } from "../src/shared/voice-speech.ts";
+
+Object.assign(process.env, fixtureSupervisorEnv);
 
 const ledger = join(home, "voice/speech-holds.json");
 const supervised = join(home, "voice/supervised");
@@ -29,8 +31,8 @@ const audition = async () => (await (await post("/api/voice/speech/audition")).j
 const toggle = (enabled: boolean) => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled });
 
 /** A fake process owns capture and speech through separate headers. Its successor may own neither. */
-function player(owner: string = listenerId, server = app, directory = join(home, "voice")) {
-  const supervisor = fixtureVoiceSupervisor(directory, owner === listenerId ? "shell" : "dev");
+function player(owner: string = listenerId, server = app) {
+  const supervisor = fixtureVoiceSupervisor(owner === listenerId ? "shell" : "dev");
   const { instance } = supervisor;
   const base = { host: "localhost", "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": owner };
   const urls: string[] = [];
@@ -406,14 +408,15 @@ test("a disappeared launch receipt can be cleared by the exact signed exit", asy
 });
 
 for (const proof of ["ended", "exited"] as const) {
-  test(`a repaired shell process record keeps capture off through a peer report until ${proof} proof`, async () => {
-    const holder = player(), peer = player(crypto.randomUUID());
+  test(`a replacement in an unreadable shell slot cannot retire the original hold with ${proof} proof`, async () => {
+    const holder = player(), replacement = player(), peer = player(crypto.randomUUID());
     await holder.announce();
     await holder.hello();
     const id = await audition();
     assert.equal((await holder.event(id, "started")).status, 200);
 
-    // The inventory identifies which process record to recover, but only that record can name its holder.
+    const originalLedger = readFileSync(ledger, "utf8");
+    // The surviving inventory names a mutable slot. It cannot identify the original occupant.
     const [receipt] = readdirSync(supervised);
     rmSync(join(supervised, receipt!));
     writeFileSync(inventory, JSON.stringify([{ supervisor: "shell" }]));
@@ -426,13 +429,14 @@ for (const proof of ["ended", "exited"] as const) {
     assert.equal(unknown.capture, false);
     assert.equal(unknown.speak, null);
 
-    writeFileSync(processRecord, JSON.stringify({ instance: holder.instance, pid: 123, startedAt: Date.now() }));
-    await peer.announce();
-    const recovered = await holder.poll();
+    writeFileSync(processRecord, JSON.stringify({ instance: replacement.instance, pid: 123, startedAt: Date.now() }));
+    await replacement.announce();
+    const recovered = await replacement.poll();
     assert.equal(recovered.capture, false);
     assert.equal(recovered.speak.stop, true);
     const stopId = recovered.speak.id;
-    assert.deepEqual(entries(), [{ jobId: stopId, instance: holder.instance, purpose: "ask" }]);
+    assert.equal(entries().length, 2);
+    assert.equal(entries().some((h: { supervisor?: string }) => h.supervisor === "shell"), true);
     const other = await peer.poll();
     assert.equal(other.capture, false);
     assert.equal(other.speak, null);
@@ -440,8 +444,18 @@ for (const proof of ["ended", "exited"] as const) {
     assert.equal((await peer.report("exited")).status, 200);
     assert.equal((await holder.poll()).capture, false);
 
-    const confirmed = proof === "ended" ? await holder.event(stopId, "ended") : await holder.report("exited");
+    const confirmed = proof === "ended" ? await replacement.event(stopId, "ended") : await replacement.report("exited");
     assert.equal(confirmed.status, 200);
+    assert.equal((await holder.poll()).capture, false);
+    store.reset(); await holder.hello();
+    assert.equal((await holder.poll()).capture, false);
+    await peer.report("exited");
+    assert.equal((await replacement.poll()).speak, null);
+    assert.equal(entries()[0].supervisor, "shell");
+    writeFileSync(ledger, originalLedger); // Recover the original job's independent identity.
+    store.reset(); await holder.hello();
+    assert.deepEqual((await holder.poll()).speak, { id, stop: true });
+    assert.equal((await holder.report("exited")).status, 200);
     assert.deepEqual(entries(), []);
     assert.equal((await holder.poll()).capture, true);
   });
@@ -473,6 +487,29 @@ test("only the launching supervisor can attest exit, including after daemon rest
   assert.equal((await holder.report("exited")).status, 200);
   assert.deepEqual(entries(), []);
   assert.equal((await holder.poll()).capture, true);
+});
+
+test("the daemon verifies supervisor reports with public material and binds launches to the original signing key", async () => {
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.ok(!readdirSync(join(home, "voice")).includes("supervisor-keys"));
+  const other = createVoiceSupervisor("shell");
+  const unannounced = other.newInstance();
+  assert.equal((await holder.report("started", unannounced, other.proof(unannounced, "started"))).status, 403);
+  assert.equal((await holder.report("exited", unannounced, other.proof(unannounced, "exited"))).status, 403);
+  const otherProof = other.proof(holder.instance, "exited");
+  assert.equal((await holder.report("exited", holder.instance, otherProof)).status, 403);
+  try {
+    Object.assign(process.env, other.daemonEnv);
+    store.reset(); await holder.hello();
+    assert.equal((await holder.report("exited", holder.instance, otherProof)).status, 403);
+    assert.equal((await holder.poll()).capture, false);
+    assert.equal((await holder.report("started")).status, 403);
+    assert.equal((await holder.report("exited")).status, 200);
+    assert.equal((await holder.poll()).capture, true);
+  } finally { Object.assign(process.env, fixtureSupervisorEnv); }
 });
 
 test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep capture off until the holder ends", async t => {
@@ -605,7 +642,6 @@ test("loss of all three recovery records during playback cannot make a used stat
   store.reset();
   await peer.hello();
   assert.equal((await peer.poll()).capture, false);
-  renameSync(join(saved, "supervisor-keys"), join(home, "voice/supervisor-keys"));
   assert.equal((await peer.report("started")).status, 503);
   assert.equal((await holder.poll()).capture, false);
   store.reset();
@@ -803,8 +839,8 @@ test("deleting an unreadable supervisor record leaves its hold intact through pe
   assert.equal(recovered.speak.stop, true);
   assert.equal((await peer.event(recovered.speak.id, "ended")).status, 409);
   assert.equal((await unknown.event(recovered.speak.id, "ended")).status, 200);
-  assert.deepEqual(entries(), []);
-  assert.equal((await p.poll()).capture, true);
+  assert.equal(entries()[0].supervisor, "unreadable");
+  assert.equal((await p.poll()).capture, false);
 });
 
 test("a missing supervisor directory keeps every outstanding launch held until its own silence proof", async () => {
@@ -847,7 +883,7 @@ test("only the holder can fetch prepared audio, until stopping or completion", a
     } });
   const server = new Hono();
   registerVoiceRoutes(server, s);
-  const holder = player(listenerId, server, directory), other = player(crypto.randomUUID(), server, directory);
+  const holder = player(listenerId, server), other = player(crypto.randomUUID(), server);
   await holder.announce(); await holder.hello();
   const id = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
   const path = "/voice/speech/jobs/" + id + "/audio";

@@ -316,7 +316,7 @@ export async function enableVoice(daemon: VoiceDaemon): Promise<void> {
 
 /** A supervised player that follows the same long poll as a real listener. */
 export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boolean; holdPlayback?: boolean; ignoreStop?: boolean } = {}) {
-  const supervisor = fixtureVoiceSupervisor(join(daemon.home, "voice"), "dev");
+  const supervisor = fixtureVoiceSupervisor("dev");
   const { instance } = supervisor;
   const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon),
     [VOICE_LISTENER_ID_HEADER]: crypto.randomUUID(), [VOICE_INSTANCE_HEADER]: instance };

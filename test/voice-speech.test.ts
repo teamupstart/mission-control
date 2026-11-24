@@ -1,4 +1,4 @@
-import { fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
+import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,8 @@ import test from "node:test";
 import { askAloudPossible, askSentence, resolveSpeechVoice, VOICE_SPEECH_DEFAULT_NEURAL } from "../src/shared/voice-speech.ts";
 import { VOICE_CONFIG_DEFAULTS, voiceStateOff } from "../src/shared/voice.ts";
 import { VoiceSpeechManager } from "../src/server/voice/speech.ts";
+
+Object.assign(process.env, fixtureSupervisorEnv);
 
 test("two or three names form a question", () => {
   assert.deepEqual([1, 2, 3, 4].map(n => askSentence(["A", "B", "C", "D"].slice(0, n))), [null, "A or B?", "A, B or C?", null]);
@@ -37,7 +39,7 @@ test("preparing, queued, failed and expired jobs preserve handoff order", async 
   const home = mkdtempSync(join(tmpdir(), "speech-queue-"));
   const directory = join(home, "voice");
   t.after(() => rmSync(home, { recursive: true, force: true }));
-  const { instance, proof } = fixtureVoiceSupervisor(directory);
+  const { instance, proof } = fixtureVoiceSupervisor();
   let complete!: () => void;
   let reject!: () => void;
   const timers = new Map<() => void, number>();

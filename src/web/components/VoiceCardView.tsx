@@ -151,8 +151,9 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   }
 
   const job = actions.speechJob;
-  const asking = job?.cardId === card.id && (job.state === "ready" || job.state === "speaking");
-  const waitingForSilence = asking || (job?.cardId === card.id && job.state === "stopping");
+  const playing = job?.state === "ready" || job?.state === "speaking";
+  const asking = playing && job.cardId === card.id;
+  const waitingForSilence = playing || job?.state === "stopping";
   let body: ReactNode;
   switch (card.state) {
     case "resolving": body = <b>Working out who this is for</b>; break;

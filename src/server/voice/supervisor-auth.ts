@@ -1,29 +1,37 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 
 export const VOICE_SUPERVISOR_PROOF_HEADER = "x-mission-voice-supervisor-proof";
 export type SupervisorReportState = "started" | "exited";
+const verifierEnv = { shell: "MISSION_VOICE_SHELL_PUBLIC_KEY", dev: "MISSION_VOICE_DEV_PUBLIC_KEY" } as const;
 
-export function signSupervisorReport(key: Buffer, instance: string, state: SupervisorReportState): string {
-  return createHmac("sha256", key).update(`mission-voice-supervised/v1\n${state}\n${instance}`).digest("hex");
+function payload(instance: string, state: SupervisorReportState) {
+  return Buffer.from(["mission-voice-supervised/v2", state, instance].join("\n"));
 }
 
-/** The instance's namespace binds it to the same supervisor even across a daemon restart. */
-export function verifySupervisorReport(directory: string, instance: string, state: SupervisorReportState, proof?: string): boolean {
-  const match = /^(shell|dev)_([a-f0-9]{64})$/u.exec(instance);
-  if (!match || !proof || !/^[a-f0-9]{64}$/u.test(proof)) return false;
-  let fd: number | undefined;
+/** The launcher keeps this signer in its own process. Only the public verifier goes to the daemon. */
+export function createVoiceSupervisor(name: keyof typeof verifierEnv) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const der = publicKey.export({ type: "spki", format: "der" });
+  const prefix = name + "_" + der.toString("hex") + "_";
+  return {
+    daemonEnv: { [verifierEnv[name]]: der.toString("base64") },
+    newInstance: () => prefix + randomBytes(32).toString("hex"),
+    proof: (instance: string, state: SupervisorReportState) => sign(null, payload(instance, state), privateKey).toString("hex"),
+  };
+}
+
+export function verifySupervisorReport(instance: string, state: SupervisorReportState, proof: string | undefined, knownLaunch: () => boolean): boolean {
+  const match = /^(shell|dev)_([a-f0-9]{88})_[a-f0-9]{64}$/u.exec(instance);
+  if (!match || !proof || !/^[a-f0-9]{128}$/u.test(proof)) return false;
+  const encoded = process.env[match[1] === "shell" ? verifierEnv.shell : verifierEnv.dev];
   try {
-    fd = openSync(join(directory, "supervisor-keys", match[1] + ".key"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.size !== 32) return false;
-    const key = readFileSync(fd);
-    if (key.length !== 32) return false;
-    return timingSafeEqual(Buffer.from(signSupervisorReport(key, instance, state), "hex"), Buffer.from(proof, "hex"));
+    const der = Buffer.from(match[2]!, "hex");
+    const key = createPublicKey({ format: "der", type: "spki", key: der });
+    if (key.asymmetricKeyType !== "ed25519" || !verify(null, payload(instance, state), key, Buffer.from(proof, "hex"))) return false;
+    // The issuer is part of the persisted instance. It can retire its own recorded child
+    // after a daemon restart even when new starts now require a different launcher's key.
+    return der.toString("base64") === encoded || (state === "exited" && knownLaunch());
   } catch {
     return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
   }
 }

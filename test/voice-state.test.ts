@@ -1,6 +1,4 @@
-import { fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
-import { stateDir } from "../src/shared/harness-runtime.mjs";
-import { join } from "node:path";
+import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 // Voice state (contract B): the pure mode rule, the reasons, and the daemon's store with a fake
 // clock - a hello and a shell report lapsing, a refused protocol version, and capabilities.
 import assert from "node:assert/strict";
@@ -26,6 +24,8 @@ import {
 } from "../src/shared/voice.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { voiceMicrophoneSetupStatus } from "../src/shared/voice-models.ts";
+
+Object.assign(process.env, fixtureSupervisorEnv);
 
 const base: VoiceModeInputs = {
   enabled: true, reasons: [], muted: false, callActive: false, autoMuteDuringCalls: true, pushToTalk: false,
@@ -405,7 +405,7 @@ test("canonicalVoiceState ignores key order and nothing else", () => {
 
 test("speech output belongs to the daemon and needs a supervised, capable listener and a ready voice", () => {
   const h = harness();
-  const { instance, proof } = fixtureVoiceSupervisor(join(stateDir(), "voice"));
+  const { instance, proof } = fixtureVoiceSupervisor();
   const speech = { audio: true, systemVoices: [{ id: "speaker", name: "Speaker", language: "en-US", quality: "premium" as const }] };
   const capability = () => h.store.state().capabilities["speech-output"];
   h.store.acceptShellReport({ ...REPORT, capabilities: { "speech-output": { available: true, reason: null } } });

@@ -98,8 +98,11 @@ export class VoiceSpeechManager {
   }
   get held() { return this.items().some(i => i.hold); }
   canRetireLaunch(instance: string) {
-    return this.announced.has(instance) || this.ledger.knowsLaunch(instance) ||
-      this.items().some(item => item.hold && (item.job.holder === instance || "supervisor" in item.hold));
+    return this.knowsLaunch(instance) || this.holds().some(hold => "supervisor" in hold);
+  }
+  private knowsLaunch(instance: string) {
+    return this.announced.has(instance) || this.ledger.knowsLaunch(instance) || this.holds().some(hold =>
+      "instance" in hold ? hold.instance === instance : hold.supervisor === announcementName(instance));
   }
   get listenerFailure() {
     if (this.unknown) return "the record of unfinished speech could not be read";
@@ -127,7 +130,7 @@ export class VoiceSpeechManager {
     if (!exists) this.recoverHold(hold);
   }
   supervised(instance: string, state: SupervisorReportState, proof?: string): "accepted" | "unauthorized" | "already_exited" | "unavailable" | "hold_unavailable" {
-    if (!verifySupervisorReport(this.deps.directory, instance, state, proof)) return "unauthorized";
+    if (!verifySupervisorReport(instance, state, proof, () => this.knowsLaunch(instance))) return "unauthorized";
     const report = this.ledger.recordAnnouncement(instance, state, this.holds());
     if (report !== "accepted") {
       this.announced.delete(instance);
@@ -147,8 +150,19 @@ export class VoiceSpeechManager {
           // A signed report matches its exact launch receipt even if the receipt has disappeared.
           const recorded = hold.supervisor === announcementName(instance) ? instance : this.ledger.supervisorRecord(hold.supervisor);
           if (!recorded) continue;
-          if (!this.ledger.exitRecorded(announcementName(recorded))) {
+          const receipt = announcementName(recorded);
+          if (hold.lastCandidate === receipt) continue;
+          if (!this.ledger.exitRecorded(receipt)) {
             this.recoverDiscovered({ jobId: randomUUID(), instance: recorded, purpose: "ask" });
+          }
+          if (hold.supervisor !== receipt) {
+            // Stop a possible replacement as well. Its silence cannot discharge the original slot.
+            hold.lastCandidate = receipt;
+            if (!this.save()) {
+              delete hold.lastCandidate;
+              return "hold_unavailable";
+            }
+            continue;
           }
         }
         if (!this.finish(item, "failed")) return "hold_unavailable";

@@ -1,6 +1,9 @@
+import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { beSpeaker, say } from "../fixtures/voice.ts";
+
+test.use({ daemonEnv: fixtureSupervisorEnv });
 
 test("Ask aloud follows the player, and Stop and the time limit wait for silence", async ({ dashboard: page, daemon }) => {
   test.setTimeout(120_000);
@@ -73,4 +76,29 @@ test("a saved Ask aloud choice with a capture-only listener shows the usual cand
   await expect(card.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
   await card.getByRole("button", { name: /Will/ }).click();
   await expect(page.getByRole("status").filter({ hasText: "Two messages" })).toBeVisible();
+});
+
+test("an unrelated audition changes the unsure card hint until silence without adding asking controls", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  for (const name of ["Steve", "Will"]) await runningAgent(page, daemon, name);
+  const speaker = await beSpeaker(daemon, { holdPlayback: true, ignoreStop: true });
+  try {
+    await speaker.say("Steven ask Will about the deployment");
+    const card = page.getByRole("status").filter({ hasText: "Who is this for?" });
+    const usual = "Say the name again, or click a row.";
+    const paused = "Pick a row now, or speak once playback ends.";
+    await expect(card).toContainText(usual);
+    const response = await page.request.post(daemon.baseURL + "/api/voice/speech/audition");
+    expect(response.ok()).toBe(true);
+    await expect.poll(() => speaker.playing).toBe(true);
+    await expect(card).toContainText(paused);
+    await expect(card.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
+    await expect(card.getByRole("button", { name: /Will/ })).toBeEnabled();
+    await captureCard(card, "unsure-during-audition");
+    await page.request.post(daemon.baseURL + "/api/voice/speech/stop", { data: await response.json() });
+    await expect.poll(async () => (await speaker.poll()).speak).toHaveProperty("stop", true);
+    await expect(card).toContainText(paused);
+    await speaker.end("stopped");
+    await expect(card).toContainText(usual);
+  } finally { await speaker.exit(); }
 });

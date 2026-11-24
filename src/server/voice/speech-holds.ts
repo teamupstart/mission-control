@@ -11,7 +11,7 @@ const launchSchema = z.union([SpeechInstanceSchema, z.object({ supervisor }).str
 type Launch = z.infer<typeof launchSchema>;
 const entry = z.union([
   z.object({ jobId: z.string().uuid(), instance: SpeechInstanceSchema, purpose: z.enum(["ask", "audition"]) }).strict(),
-  z.object({ jobId: z.string().uuid(), supervisor }).strict(),
+  z.object({ jobId: z.string().uuid(), supervisor, lastCandidate: z.string().regex(/^announced-[a-f0-9]{64}$/u).optional() }).strict(),
 ]);
 export type Hold = z.infer<typeof entry>;
 function missing(error: unknown, path: string) {
@@ -127,7 +127,10 @@ export class SpeechHolds {
   private processRecords(): Launch[] {
     const directory = join(this.directory, "supervised");
     try {
-      return readdirSync(directory).filter(file => file.endsWith(".json")).map(file => ({ supervisor: file.slice(0, -5) }));
+      return readdirSync(directory).filter(file => file.endsWith(".json")).map(file => {
+        const name = file.slice(0, -5);
+        return this.supervisorRecord(name) ?? { supervisor: name };
+      });
     } catch (error) {
       if (missing(error, directory)) return [];
       throw error;
@@ -142,7 +145,11 @@ export class SpeechHolds {
       } else {
         const instance = this.supervisorRecord(launch.supervisor);
         if (instance) active.set(announcementName(instance), instance);
-        else if (!active.has(launch.supervisor)) active.set(launch.supervisor, launch);
+        // An unresolved slot in the inventory may already have been reused. Its current
+        // occupant is a possible player, but only an immutable receipt identifies the original.
+        if ((!instance || launch.supervisor !== announcementName(instance)) && !active.has(launch.supervisor)) {
+          active.set(launch.supervisor, launch);
+        }
       }
     }
     for (const name of active.keys()) {

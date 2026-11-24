@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { expect, test as base } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -820,7 +820,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(line(page)).toHaveText(using("OpenAI Decisions"));
 
     const commit = Promise.withResolvers<void>();
-    const readStarted = Promise.withResolvers<string | null>();
+    const readStarted = Promise.withResolvers<{ provider: string; route: Route }>();
     const releaseRead = Promise.withResolvers<void>();
     const confirmedRead = Promise.withResolvers<void>();
     const releaseConfirmedRead = Promise.withResolvers<void>();
@@ -837,27 +837,28 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
         await route.fulfill({ response: old });
         return;
       }
-      readStarted.resolve(provider);
+      readStarted.resolve({ provider, route });
       await releaseRead.promise;
-      await route.fulfill({ response: old, headers: { ...old.headers(), "x-e2e-old-provider": "yes" } });
+      await route.fulfill({ response: old });
     });
     const saved = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
-    const oldReport = page.waitForResponse(r => r.headers()["x-e2e-old-provider"] === "yes");
     try {
       await providerMenu(page).selectOption({ label: "Off" });
       await page.clock.fastForward(5_000);
-      expect(await readStarted.promise).toBe("openai");
+      const old = await readStarted.promise;
+      expect(old.provider).toBe("openai");
+      const cancelled = page.waitForEvent("requestfailed", request => request === old.route.request());
       await expect(line(page)).toHaveText(using("OpenAI Decisions"));
       commit.resolve();
       expect((await saved).ok()).toBe(true);
       await confirmedRead.promise;
       await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_500 });
+      await cancelled;
       await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "18-off-before-status");
     } finally {
       commit.resolve();
       releaseRead.resolve();
       releaseConfirmedRead.resolve();
-      await (await oldReport).finished();
     }
     await page.clock.runFor(50);
     await expect(providerMenu(page)).toHaveValue("off");
@@ -1065,6 +1066,58 @@ test("a delayed config poll shows the newer cancel window when it reaches the da
     await capture(panel(page).locator('[data-anchor="voice/cancel-window"]'), "40-delayed-config-read");
   } finally {
     release.resolve();
+  }
+});
+
+test("stalled key-status reads expire and leaving Voice cancels the remaining polls", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
+  await openVoiceSettings(page, daemon);
+  await expect(line(page)).toHaveText(NOT_SET);
+  const held: Route[] = [];
+  const cancelled = new Set<Route>();
+  await page.route("**/api/voice/decision-key", route => { held.push(route); });
+  page.on("requestfailed", request => {
+    const route = held.find(r => r.request() === request);
+    if (route) cancelled.add(route);
+  });
+  try {
+    for (let i = 1; i <= 4; i++) {
+      await page.clock.fastForward(5_000);
+      await expect.poll(() => held.length).toBe(i);
+    }
+    await expect(line(page)).toHaveText("Key status unavailable", { timeout: 2_000 });
+    await expect.poll(() => cancelled.size).toBeGreaterThan(0);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "41-expired-status-poll");
+    await page.goto(`${daemon.baseURL}/#/settings/models`);
+    await expect(panel(page)).toHaveCount(0);
+    await expect.poll(() => cancelled.size).toBe(held.length);
+  } finally {
+    await Promise.all(held.map(route => route.abort().catch(() => undefined)));
+  }
+});
+
+test("saving and removing a key cancel earlier polls before refreshing the rows", async ({ dashboard: page, daemon }) => {
+  await turnVoiceOn(daemon);
+  await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
+  await openVoiceSettings(page, daemon);
+  await expect(line(page)).toHaveText(NOT_SET);
+  for (const action of ["Save", "Remove"] as const) {
+    const held = Promise.withResolvers<Route>();
+    await page.route("**/api/voice/decision-key", route => held.resolve(route), { times: 1 });
+    await page.clock.fastForward(5_000);
+    const poll = await held.promise;
+    const cancelled = page.waitForEvent("requestfailed", request => request === poll.request());
+    try {
+      if (action === "Save") await keyField(page, "Jev").fill(SAVED_JEV);
+      await row(page, "Jev").getByRole("button", { name: action }).click();
+      await expect(line(page)).toHaveText(action === "Save" ? using("Jev") : NOT_SET);
+      await cancelled;
+    } finally {
+      await poll.abort().catch(() => undefined);
+    }
   }
 });
 

@@ -509,9 +509,9 @@ export const fetchVoiceConfig = () => fetchJson<VoiceDashboardSnapshot & { confi
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
 export const fetchVoiceDevices = () => fetchJson<{ devices: VoiceInputDevice[]; listener: boolean }>("/api/voice/devices");
 /** The decision provider in use and each provider's key source; never a key. Null while voice is off. */
-export const fetchVoiceDecisionKey = () =>
+export const fetchVoiceDecisionKey = (signal?: AbortSignal) =>
   fetchJson<VoiceDashboardSnapshot & VoiceDecisionKeyReport & { selection: VoiceConfig["decisionProvider"] }>("/api/voice/decision-key",
-    { headers: { "x-voice-provider-revision": "read" } });
+    { signal, headers: { "x-voice-provider-revision": "read" } });
 
 /** Settings > Storage: the storage aggregate plus the database backup config. */
 export const fetchStorage = () => fetchJson<StorageView>("/api/storage");

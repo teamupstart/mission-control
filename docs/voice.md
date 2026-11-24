@@ -353,6 +353,8 @@ with `source` one of `settings`, `environment` or null. An unreadable store adds
 Dashboard reads of both config and key status carry the provider selection revision and the
 order in which the daemon read the snapshot. A delayed poll can still show a new cancel-window
 length, and an older result cannot make an already removed key appear saved again.
+Key-status reads expire after 15 seconds. Saving or removing a key cancels earlier polls
+and refreshes the rows. Leaving Voice settings cancels outstanding reads.
 `PUT /api/voice/decision-key` accepts
 `{ provider, key }`. `DELETE /api/voice/decision-key?provider=openai` removes the saved OpenAI
 Decisions key. Both operations return the updated report.

@@ -8,6 +8,7 @@ import { api, fetchVoiceConfig, fetchVoiceDecisionKey, fetchVoiceDevices, type V
 // The voice STATE is not here; it is the event stream's (`MissionState.voice`).
 
 const POLL_MS = 5000;
+const KEY_STATUS_TIMEOUT_MS = 3 * POLL_MS;
 
 // A receipt contains only a daemon instance, sequence and random nonce. Sharing
 // it before sending the PUT lets another window prove what preceded its click.
@@ -305,7 +306,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
 
   useEffect(() => {
     if (!enabled) return;
-    let alive = true;
+    let reads = new AbortController();
     let nextRead = 0;
     let appliedRead = 0;
     let failedRead = 0;
@@ -313,8 +314,11 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
     const tick = async (): Promise<void> => {
       const id = ++nextRead;
       const at = writes.current;
-      const read = await fetchVoiceDecisionKey();
-      if (!alive || writes.current !== at) return;
+      const group = reads.signal;
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(), KEY_STATUS_TIMEOUT_MS);
+      const read = await fetchVoiceDecisionKey(AbortSignal.any([group, deadline.signal])).finally(() => clearTimeout(timer));
+      if (group.aborted || writes.current !== at) return;
       if (read) {
         // Requests may reach the daemon out of order even when they share a provider revision.
         if (id < failedRead || isOlderSnapshot(read, snapshot)) return;
@@ -329,11 +333,16 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, 
       appliedRead = Math.max(id, appliedRead);
       setStatus({ revision: read?.providerRevision ?? providerRevision, report: read });
     };
-    refresh.current = tick;
+    refresh.current = () => {
+      // A completed mutation needs a fresh snapshot. Free the connections held by its earlier polls.
+      reads.abort();
+      reads = new AbortController();
+      return tick();
+    };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
     return () => {
-      alive = false;
+      reads.abort();
       refresh.current = null;
       clearInterval(id);
     };

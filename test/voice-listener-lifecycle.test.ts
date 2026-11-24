@@ -28,7 +28,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, slowLoad = false } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, slowLoad = false } = {}) {
     const events: string[] = [];
     const hellos: { modelLoaded: boolean; version: string }[] = [];
     const instanceIds = new Set<string | undefined>();
@@ -55,6 +55,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
         hellos.push({ modelLoaded: hello.modelLoaded, version: hello.version });
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
+        if (posted.length === 0 && firstPostHeld) res.setHeader("x-voice-held-revision", "first");
         if (posted.length === 0 && firstPostCutoff) {
           res.setHeader("x-voice-release-revision", "first");
           res.setHeader("x-voice-release-at", String(firstPostCutoff));
@@ -187,6 +188,13 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     await until(() => posted.length === 3, "server refusal followed by clipped result and next segment");
     assert.ok(events.includes("decode first-clipped"));
     assert.deepEqual(posted.map(p => p.text), ["first", "first-clipped", "second"]);
+  });
+
+  it("retries a held POST before later speech without decoding it a second time", async (t) => {
+    const { posted, events } = await launch(t, { inputDevice: "two-utterances", firstPostHeld: true });
+    await until(() => posted.length === 3, "retry and subsequent delivery");
+    assert.deepEqual(posted.map(p => p.text), ["first", "first", "second"]);
+    assert.deepEqual(events.filter(e => e.startsWith("decode ")), ["decode first", "decode second"]);
   });
 
   it("delivers the next segment on the same active microphone after a transcription failure", async (t) => {

@@ -119,10 +119,14 @@ converts its timestamps to host time at capture.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
-The response is `{ accepted }`. Listening and push-to-talk accept captures. During the
-auto-mute immediately following key-up, the daemon also accepts the same owner's held
-revision for segments ending by the release timestamp. A listener sends the segment's
-exclusive end in Unix milliseconds in `x-voice-capture-ended-at`. If a POST races key-up
+The response is `{ accepted }`. While listening, the daemon can route a capture immediately.
+A POST made while push-to-talk is held waits for the shell's key-up timestamp before
+anything reaches Recently heard, a card or the queue. If the same key is still held after
+25 seconds, the daemon returns `accepted: false` and its revision in `x-voice-held-revision`.
+The listener retries the same POST and utterance ID. During auto-mute following key-up,
+the daemon accepts the same owner's held revision for segments ending by the release
+timestamp. The listener clips on 16 kHz sample boundaries and rounds the exclusive end up
+to Unix milliseconds for `x-voice-capture-ended-at`. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. A new directive, including manual
 mute, revokes that exception.

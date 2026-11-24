@@ -62,16 +62,12 @@ beforeEach(async () => {
 afterEach(() => { registry.voiceRouter!.reset(); });
 after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
 
-test("token and schema gates, muted drop, and push-to-talk acceptance", async () => {
+test("token and schema gates and muted drop", async () => {
   assert.equal((await post(utterancePath(), capture("Steve hello"))).status, 401);
   assert.equal((await post(utterancePath(), { ...capture("Steve hello"), words: [{ text: "x", startMs: 3, endMs: 1 }] }, token)).status, 400);
   await post("/api/voice/mute", { muted: true });
   assert.deepEqual(await (await say("Steve muted words")).json(), { accepted: false });
   assert.deepEqual(await readHeard(), []);
-  await post("/api/voice/mute", { muted: false });
-  await post("/voice/shell-report", { callActive: true, pushToTalk: true }, token);
-  assert.equal(voiceStateStore.state().mode, "push-to-talk");
-  assert.deepEqual(await (await say("Steve push to talk")).json(), { accepted: true });
 });
 
 test("only one listener can capture or deliver, and its heartbeat lease transfers after lapse", async (t) => {
@@ -138,7 +134,18 @@ test("only pre-release speech from the held revision can finish during call auto
   t.mock.timers.tick(100);
   const keyUp = Date.now();
   t.mock.timers.tick(450); // The shell report was in transit after the operator released the key.
+  await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ cancelWindow: { enabled: false } }) });
+  const initialQueue = queued("Steve").length;
+  const crossing = submit(held.revision, now, "crossing", keyUp + 10);
+  const inside = submit(held.revision, now, "inside", keyUp);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(queued("Steve").length, initialQueue);
+  assert.deepEqual(await readHeard(), []);
   await press(false, keyUp);
+  assert.deepEqual(await crossing, { accepted: false });
+  assert.deepEqual(await inside, { accepted: true });
+  assert.equal(queued("Steve").length, initialQueue + 1);
   const off = await poll();
   assert.equal(off.headers.get("x-voice-release-revision"), held.revision);
   assert.equal(off.headers.get("x-voice-release-at"), String(now + 100));
@@ -152,7 +159,7 @@ test("only pre-release speech from the held revision can finish during call auto
   assert.deepEqual(await submit(held.revision, now + 99, "tail"), { accepted: true });
   assert.deepEqual(await submit(held.revision, now + 101, "too-late"), { accepted: false });
   assert.deepEqual(await submit(released.revision, now, "capture-off"), { accepted: false });
-  assert.deepEqual(cards.map(card => card.id), ["in-flight", "tail"]);
+  assert.deepEqual(cards.map(card => card.id), ["inside", "in-flight", "tail"]);
 
   await post("/api/voice/mute", { muted: true });
   assert.equal((await poll()).headers.get("x-voice-release-revision"), null);
@@ -194,6 +201,28 @@ test("only the selected live recognizer can open or cancel a card after switchin
   assert.deepEqual((await readHeard()).map((entry) => entry.id), ["pending"]);
   assert.deepEqual(await (await sayWithSherpa("cancel", "retry")).json(), { accepted: true });
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["pending", "pending"], ["pending", "cancelled"]]);
+});
+
+test("a held POST times out without routing and can retry the same ID after key-up", async t => {
+  // Keep the heartbeat clock live while advancing only the HTTP wait timer.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await post("/voice/shell-report", { callActive: true, pushToTalk: true }, token);
+  const held = voiceStateStore.directive().revision;
+  const words = capture("Steve check the build");
+  const send = () => app.request(utterancePath(held), { method: "POST", headers: {
+    host: "localhost", "content-type": "application/json", "x-harness-token": token,
+    "x-voice-listener-id": listenerId, "x-voice-capture-ended-at": String(words.capturedAt),
+  }, body: JSON.stringify(words) });
+  const waiting = send();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.tick(25_000);
+  const retry = await waiting;
+  assert.equal(retry.headers.get("x-voice-held-revision"), held);
+  assert.deepEqual(await retry.json(), { accepted: false });
+  assert.deepEqual(await readHeard(), []);
+  await post("/voice/shell-report", { callActive: true, pushToTalk: false, pushToTalkReleasedAt: Date.now() }, token);
+  assert.deepEqual(await (await send()).json(), { accepted: true });
+  assert.deepEqual((await readHeard()).map(entry => entry.id), [words.id]);
 });
 
 test("a delayed capture cannot follow a spoken name to a different recipient", async (t) => {

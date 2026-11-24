@@ -6,6 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import {
   VOICE_FLAG,
   VOICE_CAPTURE_END_HEADER,
+  VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
@@ -32,6 +33,23 @@ const limitBody = bodyLimit({
   maxSize: VOICE_BODY_MAX_BYTES,
   onError: (c) => c.json({ error: "request_too_large", reason: "The request body is too large." }, 413),
 });
+
+function waitForDirective(store: VoiceStateStore, revision: string, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      unsubscribe();
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const unsubscribe = store.onChange((state) => {
+      if (store.directive(state).revision !== revision) finish();
+    });
+    const timeout = setTimeout(finish, 25_000);
+    signal.addEventListener("abort", finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
 
 /**
  * Voice's routes (contracts A, B, D and I), every one behind the `voice` flag: with it off each answers
@@ -95,20 +113,7 @@ export function registerVoiceRoutes(
     if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
     const current = store.directive();
     const signal = c.req.raw.signal;
-    if (c.req.query("revision") === current.revision) await new Promise<void>((resolve) => {
-      const finish = () => {
-        unsubscribe();
-        clearTimeout(timeout);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const unsubscribe = store.onChange((state) => {
-        if (store.directive(state).revision !== current.revision) finish();
-      });
-      const timeout = setTimeout(finish, 25_000);
-      signal.addEventListener("abort", finish, { once: true });
-      if (signal.aborted) finish();
-    });
+    if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal);
     if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
     const next = store.directive();
     const release = store.releasedCapture(next);
@@ -149,9 +154,22 @@ export function registerVoiceUtteranceRoutes(
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     // Capture may have stopped and resumed while the request was in flight or its body was being read.
-    const directive = voiceStateStore.directive();
-    if (!voiceStateStore.ownsCapture(c.req.header(VOICE_LISTENER_ID_HEADER))) return c.json({ accepted: false });
+    const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+    const state = voiceStateStore.state();
+    let directive = voiceStateStore.directive(state);
     const revision = c.req.query("revision");
+    if (state.mode === "push-to-talk" && directive.capture && revision === directive.revision) {
+      // The physical key may already be up. Sending to the router here would make
+      // delivery irreversible before the shell has confirmed the audio boundary.
+      await waitForDirective(voiceStateStore, revision, c.req.raw.signal);
+      if (c.req.raw.signal.aborted || !voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+      directive = voiceStateStore.directive();
+      if (directive.revision === revision) {
+        c.header(VOICE_HELD_REVISION_HEADER, revision);
+        return c.json({ accepted: false });
+      }
+    }
     const release = voiceStateStore.releasedCapture(directive);
     const heldBeforeRelease = release !== undefined && revision === release.revision;
     if (heldBeforeRelease) {

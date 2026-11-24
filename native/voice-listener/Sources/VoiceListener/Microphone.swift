@@ -62,14 +62,23 @@ struct Device: Encodable {
 }
 
 struct Segment {
+    static let sampleNs: Int64 = 62_500 // one mono PCM sample at 16 kHz
     let samples: [Float]
-    let capturedAt: Int64
-    var endedAt: Int64 { capturedAt + Int64((samples.count + 15) / 16) }
+    let startNs: Int64
+    var capturedAt: Int64 { startNs / 1_000_000 }
+    var endedAt: Int64 { (startNs + Int64(samples.count) * Self.sampleNs + 999_999) / 1_000_000 }
+
+    static func completeSamples(_ count: Int, startingAt startNs: Int64, through releaseMs: Int64) -> Int {
+        guard releaseMs > startNs / 1_000_000 else { return 0 }
+        if releaseMs >= (startNs + Int64(count) * sampleNs + 999_999) / 1_000_000 { return count }
+        return Int((releaseMs * 1_000_000 - startNs) / sampleNs)
+    }
 
     func through(_ release: Int64) -> Segment? {
-        guard release > capturedAt else { return nil }
-        if release >= endedAt { return self }
-        return Segment(samples: Array(samples.prefix(Int(release - capturedAt) * 16)), capturedAt: capturedAt)
+        let count = Self.completeSamples(samples.count, startingAt: startNs, through: release)
+        guard count > 0 else { return nil }
+        if count == samples.count { return self }
+        return Segment(samples: Array(samples.prefix(count)), startNs: startNs)
     }
 }
 
@@ -80,7 +89,7 @@ struct SpeechGate {
     private var lead: [Float] = []
     private var samples: [Float] = []
     private var quiet = 0
-    private var start: Int64 = 0
+    private var startNs: Int64 = 0
     private var discarding = false
 
     // Key-up is an explicit end of speech. Silence alone or a discarded prefix
@@ -88,19 +97,19 @@ struct SpeechGate {
     mutating func finish(tail: [Float], at release: Int64) -> Segment? {
         defer { self = SpeechGate() }
         guard !discarding, !samples.isEmpty else { return nil }
-        let segment = Segment(samples: samples + tail, capturedAt: start).through(release)
+        let segment = Segment(samples: samples + tail, startNs: startNs).through(release)
         guard let segment, segment.samples.count <= Self.maxSegmentSamples else { return nil }
         return segment
     }
 
-    mutating func feed(_ frame: [Float], active: Bool, now: Int64) -> Segment? {
+    mutating func feed(_ frame: [Float], active: Bool, endNs: Int64) -> Segment? {
         guard !frame.isEmpty else { return nil }
         if samples.isEmpty && !discarding {
             if !active {
                 lead = Array((lead + frame).suffix(2400))
                 return nil
             }
-            start = now - Int64((lead.count + frame.count) / 16)
+            startNs = endNs - Int64(lead.count + frame.count) * Segment.sampleNs
             samples = lead
             lead.removeAll()
         }
@@ -114,7 +123,7 @@ struct SpeechGate {
             samples.append(contentsOf: frame.prefix(count))
             if ended {
                 defer { samples.removeAll() }
-                return Segment(samples: samples, capturedAt: start)
+                return Segment(samples: samples, startNs: startNs)
             }
             if samples.count < Self.maxSegmentSamples { return nil }
         }
@@ -149,7 +158,7 @@ final class SpeechSegmenter {
         return gate.finish(tail: pending, at: release)
     }
 
-    func consume(_ samples: [Float], now: Int64) -> [Segment] {
+    func consume(_ samples: [Float], endNs: Int64) -> [Segment] {
         var result: [Segment] = []
         var offset = 0
         while offset < samples.count {
@@ -165,8 +174,8 @@ final class SpeechSegmenter {
             // our own 800 ms boundary immediately when the signal is already quiet.
             let voiced = fvad_process(detector, pcm, pcm.count) == 1
             let active = voiced && pending.reduce(0) { $0 + $1 * $1 } > Float(pending.count) * 0.000016
-            let end = now - Int64((samples.count - offset + 15) / 16)
-            if let segment = gate.feed(pending, active: active, now: end) { result.append(segment) }
+            let frameEnd = endNs - Int64(samples.count - offset) * Segment.sampleNs
+            if let segment = gate.feed(pending, active: active, endNs: frameEnd) { result.append(segment) }
             pending.removeAll(keepingCapacity: true)
         }
         return result
@@ -184,8 +193,9 @@ struct CaptureClock {
         self.unixTime = unixTime
     }
 
-    func unixSeconds(at time: UInt64) -> TimeInterval {
-        unixTime + (AVAudioTime.seconds(forHostTime: time) - AVAudioTime.seconds(forHostTime: hostTime))
+    func unixNanoseconds(at time: UInt64) -> Int64 {
+        let offset = AVAudioTime.seconds(forHostTime: time) - AVAudioTime.seconds(forHostTime: hostTime)
+        return Int64((unixTime * 1e9).rounded()) + Int64((offset * 1e9).rounded())
     }
 }
 
@@ -227,17 +237,16 @@ final class InputSegmenter {
         // The tap timestamp names the first input frame. Some input can remain
         // buffered in the resampler across callbacks; date the emitted PCM itself.
         let outputDuration = Double(converted.frameLength) / mono.sampleRate
-        let start = clock.unixSeconds(at: time.hostTime) - converterDelay
-        let end = start + outputDuration
+        let startNs = clock.unixNanoseconds(at: time.hostTime) - Int64((converterDelay * 1e9).rounded())
+        let endNs = startNs + Int64(converted.frameLength) * Segment.sampleNs
         converterDelay += Double(buffer.frameLength) / buffer.format.sampleRate - outputDuration
-        deliveredThrough = Int64((end * 1000).rounded(.down))
+        deliveredThrough = endNs / 1_000_000
         var count = Int(converted.frameLength)
         if let cutoff {
-            count = Int(max(0, min(Double(count), ((Double(cutoff) / 1000 - start) * mono.sampleRate).rounded())))
+            count = Segment.completeSamples(count, startingAt: startNs, through: cutoff)
         }
         let samples = Array(UnsafeBufferPointer(start: channel, count: count))
-        let sampleEnd = start + Double(count) / mono.sampleRate
-        return segmenter.consume(samples, now: Int64((sampleEnd * 1000).rounded()))
+        return segmenter.consume(samples, endNs: startNs + Int64(count) * Segment.sampleNs)
     }
 }
 

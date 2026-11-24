@@ -82,7 +82,7 @@ final class ListenerTests: XCTestCase {
         var now: Int64 = 0
         func feed(_ frame: [Float]) -> Segment? {
             now += 20
-            return gate.feed(frame, active: frame[0] != 0, now: now)
+            return gate.feed(frame, active: frame[0] != 0, endNs: now * 1_000_000)
         }
         for _ in 0..<1500 { XCTAssertTrue(feed(speech) == nil) } // 30 seconds
         for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) } // 780 ms is still inside the utterance.
@@ -103,11 +103,11 @@ final class ListenerTests: XCTestCase {
         let silence = Array(repeating: Float(0), count: 12_801)
         for extra in [0, 1] {
             var gate = SpeechGate()
-            XCTAssertTrue(gate.feed(Array(repeating: 0.1, count: limit - 12_800 + extra), active: true, now: 29_200) == nil)
-            let segment = gate.feed(silence, active: false, now: 30_000)
+            XCTAssertTrue(gate.feed(Array(repeating: 0.1, count: limit - 12_800 + extra), active: true, endNs: 29_200 * 1_000_000) == nil)
+            let segment = gate.feed(silence, active: false, endNs: 30_000 * 1_000_000)
             XCTAssertEqual(segment?.samples.count, extra == 0 ? limit : nil)
-            XCTAssertTrue(gate.feed([0.2], active: true, now: 31_000) == nil)
-            XCTAssertNotNil(gate.feed(silence, active: false, now: 31_800), "This frame already supplied a full silence boundary")
+            XCTAssertTrue(gate.feed([0.2], active: true, endNs: 31_000 * 1_000_000) == nil)
+            XCTAssertNotNil(gate.feed(silence, active: false, endNs: 31_800 * 1_000_000), "This frame already supplied a full silence boundary")
         }
     }
 
@@ -144,7 +144,7 @@ final class ListenerTests: XCTestCase {
                     + 0.006 * (Float(random) / Float(UInt32.max) - 0.5)
                 return noise + (speech.indices.contains(i - onset) ? speech[i - onset] : 0)
             }
-            segments += detector.consume(frame, now: Int64(end / 16))
+            segments += detector.consume(frame, endNs: Int64(end) * Segment.sampleNs)
         }
         let commands = segments.filter { $0.capturedAt > 31_000 }
         XCTAssertEqual(commands.count, 1)
@@ -163,7 +163,7 @@ final class ListenerTests: XCTestCase {
         let held = Array(audio.prefix(end))
         let capture = try SpeechSegmenter()
         let release = 1000 + Int64((end + 15) / 16)
-        XCTAssertTrue(capture.consume(held, now: release).isEmpty)
+        XCTAssertTrue(capture.consume(held, endNs: 1_000_000_000 + Int64(held.count) * Segment.sampleNs).isEmpty)
         let final = try XCTUnwrap(capture.finish(at: release))
         XCTAssertEqual(final.samples.suffix(100), held.suffix(100))
         XCTAssertNil(capture.finish(at: release))
@@ -177,10 +177,23 @@ final class ListenerTests: XCTestCase {
         var gate = SpeechGate()
         XCTAssertNil(gate.finish(tail: [], at: 1000))
         let frame = Array(repeating: Float(0.5), count: 320)
-        XCTAssertNil(gate.feed(frame, active: true, now: 1020))
+        XCTAssertNil(gate.feed(frame, active: true, endNs: 1020 * 1_000_000))
         XCTAssertEqual(gate.finish(tail: [0.1, 0.2], at: 1010)?.samples, Array(frame.prefix(160)))
-        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, now: 31_000))
+        XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, endNs: 31_000 * 1_000_000))
         XCTAssertNil(gate.finish(tail: [], at: 31_000))
+    }
+
+    func testFractionalMillisecondStartClipsOnlyCompleteSamplesBeforeRelease() throws {
+        // 0.49 ms into a millisecond leaves room for eight complete 16 kHz samples.
+        var gate = SpeechGate()
+        let frame = (0..<320).map(Float.init)
+        let startNs: Int64 = 1_000_490_000
+        XCTAssertNil(gate.feed(frame, active: true, endNs: startNs + Int64(frame.count) * Segment.sampleNs))
+        let clipped = try XCTUnwrap(gate.finish(tail: [], at: 1001))
+        XCTAssertEqual(clipped.samples, Array(frame.prefix(8)))
+        XCTAssertEqual(clipped.startNs, startNs)
+        XCTAssertEqual(clipped.capturedAt, 1000)
+        XCTAssertEqual(clipped.endedAt, 1001)
     }
 
     func testDelayedTapUsesCaptureTimeToKeepTheLastWordAndExcludeAudioAfterKeyUp() async throws {
@@ -265,7 +278,7 @@ final class ListenerTests: XCTestCase {
         XCTAssertNil(recognizer.ctc)
         let boosting = try await recognizer.prime(["Steve"])
         XCTAssertNil(boosting)
-        let segment = Segment(samples: try samples(from: corpus.appending(path: "Steve-0.wav")), capturedAt: 1000)
+        let segment = Segment(samples: try samples(from: corpus.appending(path: "Steve-0.wav")), startNs: 1_000_000_000)
         let utterance = try await recognizer.transcribe(segment, boosting: boosting)
         let result = try XCTUnwrap(utterance)
         XCTAssertEqual(result.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
@@ -288,7 +301,7 @@ final class ListenerTests: XCTestCase {
                 var samples = try self.samples(from: url)
                 samples += Array(repeating: 0, count: 16_000)
                 let detector = try SpeechSegmenter()
-                let segments = detector.consume(samples, now: 1000 + Int64(samples.count / 16))
+                let segments = detector.consume(samples, endNs: 1_000_000_000 + Int64(samples.count) * Segment.sampleNs)
                 XCTAssertEqual(segments.count, 1, clip.id)
                 let segment = try XCTUnwrap(segments.first)
                 let utterance = try await recognizer.transcribe(segment, boosting: boosting)

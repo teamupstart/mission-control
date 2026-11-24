@@ -47,7 +47,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     func request(_ route: String, revision: String? = nil, endedAt: Int64? = nil, body: Data? = nil) async throws -> (Data, HTTPURLResponse) {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
-        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil ? 30 : 5)
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || endedAt != nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
         if let endedAt { req.setValue(String(endedAt), forHTTPHeaderField: "x-voice-capture-ended-at") }
@@ -63,6 +63,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
         return (data, http)
+    }
+
+    func postUtterance(revision: String, endedAt: Int64, body: Data) async throws -> HTTPURLResponse {
+        while true {
+            try Task.checkCancellation()
+            let (_, http) = try await request("voice/utterances", revision: revision, endedAt: endedAt, body: body)
+            // A held POST waits up to 25 seconds for key-up. Retry the identical
+            // text and id if the daemon still lacks a confirmed release boundary.
+            if http.value(forHTTPHeaderField: "x-voice-held-revision") != revision { return http }
+        }
     }
 }
 
@@ -173,7 +183,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                     // Key-up may have arrived during this very decode.
                                     if let releasedAt, segment.endedAt > releasedAt { continue }
                                     guard let words else { return }
-                                    let (_, http) = try await daemon.request("voice/utterances", revision: next.revision,
+                                    let http = try await daemon.postUtterance(revision: next.revision,
                                         endedAt: segment.endedAt, body: JSONEncoder().encode(words))
                                     // The POST can also beat the key-up directive back to the helper.
                                     guard http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,

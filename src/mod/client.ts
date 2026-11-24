@@ -59,6 +59,16 @@ export async function checkHealth(host: Fetcher): Promise<DaemonResult<null>> {
   return verdict === "compatible" ? { kind: "ok", value: null } : { kind: "off" };
 }
 
+/**
+ * Whether a daemon reply is the "flag is off" answer: while the headless-mode flag is off the whole
+ * `/dispatch/*` group answers 404 `{ feature: "headless-mode" }`. The one definition of that contract,
+ * used by every daemon call the mod makes (this file's and the flows'), so a missing route is never
+ * read as the flag being off.
+ */
+export function isFlagOffAnswer(status: number, body: unknown): boolean {
+  return status === 404 && body !== null && typeof body === "object" && (body as { feature?: unknown }).feature === "headless-mode";
+}
+
 /** The daemon's refusal text (`{ error }`), so a stale plan or a settled question can be told to the person. */
 function refusalMessage(text: string): { message?: string; featureOff?: true } {
   try {
@@ -87,20 +97,18 @@ async function call<T>(
   } catch {
     return { kind: "down" };
   }
-  // While the flag is off the whole group answers 404 `{ feature: "headless-mode" }`.
-  // A 404 that carries the daemon's own `error` is a refusal (no such review), not the flag.
-  if (reply.status === 404) {
-    const refusal = refusalMessage(reply.text);
-    return refusal.message && !refusal.featureOff ? { kind: "error", status: 404, message: refusal.message } : { kind: "off" };
-  }
-  if (reply.status === 401) return { kind: "unauthorized" };
-  if (reply.status !== 200) return { kind: "error", status: reply.status, ...messageOf(reply.text) };
   let body: unknown;
   try {
     body = JSON.parse(reply.text);
   } catch {
-    return { kind: "error", status: reply.status };
+    body = undefined;
   }
+  // Any other 404 (a route that is not there, a session the daemon forgot) is an error, not the flag being
+  // off; the daemon's own refusal text, when it sent one, travels with it.
+  if (reply.status === 404) return isFlagOffAnswer(reply.status, body) ? { kind: "off" } : { kind: "error", status: 404, ...messageOf(reply.text) };
+  if (reply.status === 401) return { kind: "unauthorized" };
+  if (reply.status !== 200) return { kind: "error", status: reply.status, ...messageOf(reply.text) };
+  if (body === undefined) return { kind: "error", status: reply.status };
   const value = parse(body);
   return value === null ? { kind: "error", status: reply.status } : { kind: "ok", value };
 }

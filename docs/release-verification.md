@@ -729,3 +729,8 @@ not qualify a signed install, stable/alpha update or recovery.
 R2 still requires the retained R1 baseline and later newly produced renamed signed targets that
 include Phase 5. Missing signed inputs remain outstanding release qualification; producer and
 protection policy are unchanged.
+
+The app verifier reads the parent bundle's microphone usage string and extracts entitlements
+from its actual code signature. Verification requires a nonempty description and boolean
+`com.apple.security.device.audio-input` set to true. Electron child processes retain their
+existing entitlement set. See the [hardened microphone probe](voice-spike-findings.md#s4-hardened-microphone-permission).

@@ -43535,3 +43535,61 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .topbar[data-rung~="5"]:has(.vi-topbar) .glyph-btn { min-width: 26px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg:has(.pulse-n) .pulse-dot,
 .topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn .kb-hint { display: none; }
+
+/* Conversation Idle rail preview. The count stays visible when its section is collapsed. */
+.idle-rail-total {
+  margin-inline-start: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.idle-rail-total + .session-rail-fold {
+  margin-inline-start: 0;
+}
+.idle-rail-section + .idle-rail-section {
+  border-block-start: 1px solid var(--border-soft);
+}
+.idle-rail-section.fleet-section-free { --idle-section-tone: var(--idle); }
+.idle-rail-section.fleet-section-stalled { --idle-section-tone: var(--stalled); }
+.idle-rail-section.fleet-section-held { --idle-section-tone: var(--held); }
+.idle-rail-section.fleet-section-blocked { --idle-section-tone: var(--danger); }
+.idle-rail-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 0;
+  background: none;
+  color: var(--idle-section-tone, var(--muted));
+  font: 700 10px/1.25 var(--font-label);
+  letter-spacing: 0.05em;
+  text-align: start;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.idle-rail-section-toggle::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-inline-end: 1px solid currentColor;
+  border-block-end: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+.idle-rail-section-toggle[aria-expanded="true"]::before {
+  transform: translateY(-1px) rotate(45deg);
+}
+.idle-rail-section-toggle strong {
+  margin-inline-start: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.idle-rail-section-toggle:hover {
+  background: var(--panel);
+}
+.idle-rail-section-toggle:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}

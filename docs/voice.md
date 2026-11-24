@@ -15,6 +15,34 @@ snapshot has no `voice` field, and neither the Settings category, the Setup fami
 sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
 names no agent until the flag is on again.
 
+## Listening from the desktop app
+
+Enable Voice addressing and its required previews in Settings. In Setup, download the speech
+model and choose **Ask macOS** to grant the microphone. The app also asks automatically when
+the verified model and listener are available. If the request fails while permission is still
+undetermined, the app retries with backoff. After a denial, **Open System Settings** opens
+the microphone privacy pane. Allow Mission Control, then choose **Check again**. The desktop
+app reads the current macOS permission and reports it to the daemon before Setup refreshes.
+
+On macOS, the daemon publishes its voice port and public TLS certificate in its state directory
+when Voice is enabled. The shell and its listener verify that certificate on their voice
+connections. Losing the connection pauses capture. The shell reconnects if the initial snapshot
+takes over 30 seconds, or if an established stream delivers neither events nor pings for 45 seconds.
+After losing an enabled connection, the tray shows the struck microphone and **Voice: reconnecting**.
+The shell reads the current daemon identity again before resuming from a fresh snapshot.
+Turning Voice off restores the usual tray.
+
+You can minimize the window while speaking. The menu-bar microphone means listening, and a
+struck microphone means muted or unavailable. Right-click for the status and existing app
+commands. Left-click to mute or unmute. While a change awaits confirmation, further clicks
+are ignored. If confirmation fails, the menu opens with the last reported status and the action
+to retry. The handset and microphone with waves represent the
+call and push-to-talk modes when the daemon reports them. The need-you count stays beside the
+icon in every mode. In `daemon.log`, the desktop app records the model revision at launch,
+the child PID and exit status or signal at close, and the attempt number and delay for each
+retry. A failed launch includes the OS error code. The first failed shell report in an
+outage records its HTTP status when available.
+
 ## Running the listener on a development Mac
 
 Build the helper with `npm run build:voice-listener`. Start the daemon, enable the four previews, download
@@ -28,9 +56,12 @@ Any launcher can run `dist/native/voice-listener` directly with these three vari
 
 | Variable | Value |
 | --- | --- |
-| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin |
+| `MISSION_VOICE_DAEMON_URL` | The daemon's loopback HTTP origin for standalone development |
 | `MISSION_VOICE_TOKEN_FILE` | Path to its token, sent as `x-harness-token` |
 | `MISSION_VOICE_MODEL_DIR` | The model revision directory containing the two model repositories |
+
+The desktop shell supplies an HTTPS origin and its pinned DER certificate in
+`MISSION_VOICE_DAEMON_CERT` (base64). The managed listener requires both for its requests.
 
 The development launcher fills missing values from the local daemon configuration and the
 FluidAudio model manifest. When macOS reports `not-determined` at startup, the helper

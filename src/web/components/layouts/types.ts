@@ -1,3 +1,4 @@
+import type { IdleRailSections } from "../../lib/idle-rail-sections.ts";
 import type { Stall } from "@shared/stall.ts";
 import type { ReportItem } from "@shared/reports.ts";
 import type { ReportEntryControls } from "../../lib/sessionReports.ts";
@@ -42,6 +43,7 @@ export interface WorkflowDisclosureHandle {
 export interface SessionViewProps {
   /** The visible, sorted sessions - already filtered; layouts render exactly these. */
   sessions: Session[];
+  idleRailSections?: IdleRailSections;
   /** Driverless startup rows. Board-only, inert, and excluded from every session total. */
   restoringSessions?: RestoringSession[];
   /**

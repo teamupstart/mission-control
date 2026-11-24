@@ -370,7 +370,13 @@ async function reconcileSpokenTurns(noteKey: string, transcript: SpokenTranscrip
       spokenLedger.bound({ key: noteKey, transcript: null }, page.messages, now);
       if (!spokenLedger.flushClientObservations(noteKey)) return "retry";
       if (page.atEnd) {
-        if (page.end !== snapshot.size) return "retry";
+        if (page.end !== snapshot.size) {
+          // A runtime can exit mid-record. Only a strict read through the actual EOF
+          // can establish that all complete records were checked. Give the writer the
+          // existing delivery window to finish its last record before expiring a receipt.
+          if (page.partialTailEnd !== snapshot.size || snapshot.changedAt === undefined ||
+              snapshot.changedAt > now - DELIVERY_LAG_MS) return "retry";
+        }
         if (!textPending) {
           sdkScans.delete(cacheKey);
           if (sdkScans.size >= 32) sdkScans.delete(sdkScans.keys().next().value!);

@@ -1253,6 +1253,51 @@ test("cleanup recovers an SDK receipt moved before its handoff offset by transcr
   }
 });
 
+test("cleanup expires unmatched spoken receipts after a stable partial JSONL tail and protects recent writes", async t => {
+  const { pruneExpiredSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "spoken-partial-tail-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const key = "stable-partial";
+  const path = join(dir, "turns.jsonl");
+  const read = claudeTranscript.messages!;
+  const source = { path, read };
+  const written = Date.now();
+  const sent = written - 2 * DELIVERY_LAG_MS;
+  writeFileSync(path, "");
+  const reserve = (words: string, sdk: boolean) => {
+    const q = db.createPendingTurn({ id: words, noteKey: key, text: words, spokenWords: words, now: sent });
+    const claim = db.claimNextPendingTurn(key, sent, q, text => text)!;
+    const reservationId = db.recordSpokenHandoff(claim.id, claim.revision, 0, sent)!;
+    const row = reserveSpokenTurn({ key, transcript: source }, words, words, sdk, { ...claim, reservationId }, sent);
+    assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, sent, row.id));
+    return row;
+  };
+  const sdk = reserve("sdk-missing", true);
+  const terminal = reserve("terminal-missing", false);
+  const observed = reserve("sdk-present", true);
+  const incomplete = reserve("sdk-being-written", true);
+  const record = (id: string, words: string) => JSON.stringify({ type: "user", uuid: id,
+    timestamp: new Date(sent).toISOString(), message: { role: "user", content: words } });
+  const complete = record(observed.id, observed.received) + "\n";
+  const partial = record(incomplete.id, incomplete.received);
+  writeFileSync(path, complete + partial.slice(0, -1));
+  const lookup = (k: string) => k === key ? [source] : [];
+  // The receipts predate the cutoff, but the writer could still finish its latest record.
+  assert.equal(await pruneExpiredSpokenTurns(written + 1000, lookup), 0);
+  assert.equal(db.loadSpokenTurns(key).find(r => r.id === observed.id)?.messageTs, sent);
+  appendFileSync(path, partial.slice(-1) + "\n" + '{"type":');
+  assert.equal(await pruneExpiredSpokenTurns(written + 2000, lookup), 0);
+  assert.equal(db.loadSpokenTurns(key).find(r => r.id === incomplete.id)?.messageTs, sent);
+  // The runtime exited partway through the last line. The complete records keep their
+  // disclosures even after both missing payloads expire without a final newline.
+  assert.equal(await pruneExpiredSpokenTurns(written + 2 * DELIVERY_LAG_MS, lookup), 2);
+  const stored = db.loadSpokenTurns(key);
+  assert.ok(stored.every(row => row.id !== sdk.id && row.id !== terminal.id));
+  assert.deepEqual(stored.map(r => r.id).sort(), [observed.id, incomplete.id].sort());
+});
+
 test("cleanup distinguishes a verified empty transcript from a failed read at byte zero", async t => {
   const { reserveSpokenTurn, pruneExpiredSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");

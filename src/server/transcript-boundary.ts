@@ -14,7 +14,7 @@ function fileId(s: BigIntStats): string {
 export function transcriptSnapshot(path: string) {
   try {
     const s = statSync(path, { bigint: true });
-    return { size: Number(s.size), version: fileVersion(s), fileId: fileId(s) };
+    return { size: Number(s.size), version: fileVersion(s), fileId: fileId(s), changedAt: Number(s.ctimeMs) };
   } catch {
     return null;
   }

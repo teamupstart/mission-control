@@ -278,6 +278,8 @@ export interface TranscriptForwardPage {
    * collector against a record that may never be completed.
    */
   atEnd: boolean;
+  /** Strict native read reached this byte at EOF beyond the final newline. */
+  partialTailEnd?: number;
 }
 
 /** A live stream's opening history: turns, where to resume, and where to page back from. */
@@ -318,7 +320,7 @@ export interface TranscriptMessages {
    */
   size(path: string): number | null;
   /** Identify one file revision for a scan that needs to prove a receipt is absent. */
-  snapshot?(path: string): { size: number; version: string; fileId?: string } | null;
+  snapshot?(path: string): { size: number; version: string; fileId?: string; changedAt?: number } | null;
   /** Identity of the file and its bytes through an offset, stable across later appends. */
   boundary?(path: string, offset?: number): TranscriptBoundary | null;
   /** Batch native prefix proofs off-thread. A dashboard read only needs its supplied offsets. */

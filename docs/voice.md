@@ -122,7 +122,9 @@ After an SDK send is acknowledged, or an uncertain send is abandoned after a cra
 allows 24 hours for the client message ID and matching words to appear. Hourly cleanup checks live and persisted
 conversations. It scans from the beginning because a rewritten transcript can move a receipt.
 It removes an unmatched payload only after reading the whole file. If the transcript is missing,
-unreadable, or changes during the scan, cleanup tries again on a later sweep.
+unreadable, or changes during the scan, cleanup tries again on a later sweep. If a runtime exits
+mid-record, cleanup checks every complete record and reads through the unfinished line to EOF.
+It waits until that file revision is at least 24 hours old before expiring unmatched receipts.
 
 A terminal delivery records the native file identity and a digest of the bytes through its delivery
 offset. A worker hashes the history before the paste. The daemon checks the file revision and

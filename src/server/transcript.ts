@@ -89,18 +89,20 @@ function previousRecordStart(path: string, end: number): number | null {
  * Null means "no complete record here", not "unreadable". Both answers end a forward walk,
  * and a trailing line a writer has not finished is the ordinary cause of the first.
  */
-function nextRecordEnd(path: string, from: number, size: number): number | null {
+function nextRecordEnd(path: string, from: number, size: number, requireReadable = false): number | null {
   try {
     let cursor = Math.max(0, from);
     while (cursor < size) {
       const end = Math.min(size, cursor + BOUNDARY_SCAN_BYTES);
       const buf = readRange(path, cursor, end);
+      if (requireReadable && buf.length !== end - cursor) throw new Error("Short transcript boundary read");
       const nl = buf.indexOf(NL);
       if (nl >= 0) return cursor + nl + 1;
       cursor = end;
     }
     return null;
-  } catch {
+  } catch (error) {
+    if (requireReadable) throw error;
     return null;
   }
 }
@@ -573,6 +575,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     const read = (bytes: number): TranscriptMessage[] => {
       const far = Math.min(size, start + bytes);
       const buf = readRange(path, start, far);
+      if (requireReadable && buf.length !== far - start) throw new Error("Short transcript page read");
       reachedEof = far >= size;
       // Parse only up to the last newline. The far edge is the MOVING one here, so a
       // trailing partial line is either the next page's or a record still being written;
@@ -597,9 +600,9 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       // so step over it in fixed-size reads and return an empty page that still advances.
       // An empty page is not an empty conversation - a long stretch of tool output fills
       // one routinely - so only EOF or an unreadable file may end the walk.
-      if (reachedEof) return { messages: [], start, end: start, atEnd: true };
-      const boundary = nextRecordEnd(path, start, size);
-      if (boundary === null) return { messages: [], start, end: start, atEnd: true };
+      const boundary = reachedEof ? null : nextRecordEnd(path, start, size, requireReadable);
+      if (boundary === null) return { messages: [], start, end: start, atEnd: true,
+        ...(requireReadable && { partialTailEnd: size }) };
       return { messages: [], start, end: boundary, atEnd: false };
     }
     const repaired = repairTrailingBatch(path, size, finish, messages);
@@ -608,6 +611,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
       start,
       end: repaired.end,
       atEnd: reachedEof || repaired.end >= size,
+      ...(requireReadable && reachedEof && repaired.end < size ? { partialTailEnd: size } : {}),
     };
   };
 

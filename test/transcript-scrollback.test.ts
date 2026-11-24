@@ -1,6 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptMessage } from "../src/shared/types.ts";
@@ -655,6 +656,30 @@ test("a trailing partial record is not a turn, and does not stall the walk", () 
   const resumed = claude.after(path, page.end);
   assert.deepEqual(spoken(resumed.messages), ["LATER"]);
   assert.equal(resumed.atEnd, true);
+});
+
+test("strict forward reads distinguish a verified partial tail from a short or failed read", t => {
+  const path = join(dir, "incomplete-strict.jsonl");
+  for (const size of [30, 17 * 1024 * 1024]) {
+    writeFileSync(path, Buffer.alloc(size, 120));
+    const page = claude.after(path, 0, 1, true);
+    assert.equal(page.end, 0);
+    assert.equal(page.atEnd, true);
+    assert.equal(page.partialTailEnd, size);
+    const read = fs.readSync;
+    // For the oversized line, fail only in the scan beyond the parser's 16 MiB budget.
+    const fault = t.mock.method(fs, "readSync", (...args: unknown[]) => {
+      if (Number(args[4]) >= (size > 30 ? 16 * 1024 * 1024 : 0)) return 0;
+      return Reflect.apply(read, fs, args);
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => claude.after(path, 0, 1, true), /Short transcript/);
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
 });
 
 test("an anchor at or past EOF ends the walk instead of throwing", () => {

@@ -18,6 +18,11 @@ interface WorkflowPublishResponse extends WorkflowWriteResponse {
   idempotent: boolean;
 }
 
+interface PublishIntent {
+  expectedDraftRevision: number;
+  requestId: string;
+}
+
 type WorkflowEditableSnapshot = Pick<
   WorkflowDefinition,
   "name" | "description" | "draft" | "completionPolicy" | "bindingDefaults"
@@ -157,6 +162,7 @@ export interface WorkflowDraftState {
   saveNow: () => Promise<boolean>;
   reload: () => Promise<void>;
   publish: () => Promise<WorkflowVersion | null>;
+  publishRetryRevision: number | null;
   duplicate: (name: string) => Promise<WorkflowSummary | null>;
   /** A built-in's maximum repair rounds, its one in-place setting. `null` restores the shipped value. */
   saveRoundLimit: (maxRepairRounds: number | null) => Promise<boolean>;
@@ -202,7 +208,8 @@ export function useWorkflowDraft(
   const savedFingerprintRef = useRef(savedFingerprint);
   const conflictRef = useRef(currentConflict);
   const versionRefreshRef = useRef<string | null>(null);
-  const pendingPublish = useRef<{ workflowId: string; revision: number; requestId: string } | null>(null);
+  const [publishRetries, setPublishRetries] = useState<Record<string, PublishIntent | undefined>>({});
+  const publishRetry = workflowId ? publishRetries[workflowId] : undefined;
   const inFlight = useRef<Promise<boolean> | null>(null);
   // History contains editable fields only. The CAS revision is server metadata and must
   // stay current after autosave, otherwise the first Undo after a successful save would
@@ -398,35 +405,36 @@ export function useWorkflowDraft(
   const publish = useCallback(async (): Promise<WorkflowVersion | null> => {
     const current = workflowRef.current;
     if (!current || dirty || saving || currentConflict) return null;
-    let intent = pendingPublish.current;
-    if (!intent || intent.workflowId !== current.id || intent.revision !== current.draftRevision) {
-      intent = { workflowId: current.id, revision: current.draftRevision, requestId: crypto.randomUUID() };
-      pendingPublish.current = intent;
-    }
+    // A streamed draft advance does not reveal whether the previous publish committed.
+    const intent = publishRetry ?? { expectedDraftRevision: current.draftRevision, requestId: crypto.randomUUID() };
+    let retry: PublishIntent | undefined;
     setError(null);
     try {
       const response = await workflowRequest<WorkflowPublishResponse>(`/api/workflows/${current.id}/publish`, {
         method: "POST",
-        body: JSON.stringify({ expectedDraftRevision: current.draftRevision, requestId: intent.requestId }),
+        body: JSON.stringify(intent),
       });
-      if (pendingPublish.current === intent) pendingPublish.current = null;
-      setWorkflow(response.workflow);
-      workflowRef.current = response.workflow;
-      const publishedFingerprint = editableFingerprint(response.workflow);
-      setSavedFingerprint(publishedFingerprint);
-      savedFingerprintRef.current = publishedFingerprint;
+      if (workflowIdRef.current !== current.id) return response.version;
+      const local = workflowRef.current;
+      if (local && local.draftRevision <= response.workflow.draftRevision && editableFingerprint(local) === savedFingerprintRef.current) {
+        setWorkflow(response.workflow);
+        workflowRef.current = response.workflow;
+        const publishedFingerprint = editableFingerprint(response.workflow);
+        setSavedFingerprint(publishedFingerprint);
+        savedFingerprintRef.current = publishedFingerprint;
+      }
       setVersions((items) => items.some((item) => item.id === response.version.id)
         ? items
         : [versionMetadata(response.version), ...items]);
       return response.version;
     } catch (caught) {
-      if (pendingPublish.current === intent && caught instanceof WorkflowApiError && caught.status < 500) {
-        pendingPublish.current = null;
-      }
-      setError(caught instanceof Error ? caught.message : "Could not publish workflow");
+      if (!(caught instanceof WorkflowApiError && caught.status < 500)) retry = intent;
+      if (workflowIdRef.current === current.id) setError(caught instanceof Error ? caught.message : "Could not publish workflow");
       return null;
+    } finally {
+      setPublishRetries(previous => previous[current.id] === retry ? previous : { ...previous, [current.id]: retry });
     }
-  }, [currentConflict, dirty, saving]);
+  }, [currentConflict, dirty, publishRetry, saving]);
 
   const duplicate = useCallback(async (name: string): Promise<WorkflowSummary | null> => {
     const current = workflowRef.current;
@@ -522,6 +530,7 @@ export function useWorkflowDraft(
     saveNow,
     reload,
     publish,
+    publishRetryRevision: publishRetry?.expectedDraftRevision ?? null,
     duplicate,
     saveRoundLimit,
     savingRoundLimit,
@@ -536,5 +545,5 @@ export function useWorkflowDraft(
     canRedo: future.current.length > 0,
     undo: () => restoreHistory("undo"),
     redo: () => restoreHistory("redo"),
-  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
+  }), [currentConflict, currentWorkflow, dirty, duplicate, error, historyVersion, loading, publish, publishRetry, reload, restoreHistory, saveNow, saveRoundLimit, saving, savingRoundLimit, update, versions, versionsStale, workflowId]);
 }

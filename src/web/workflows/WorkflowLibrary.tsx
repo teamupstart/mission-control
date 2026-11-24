@@ -331,6 +331,7 @@ export function WorkflowLibrary({
   const accessChanged = workflow?.draft.nodes.some(node => node.kind === "persona"
     && frozenReadIds.has(node.personaId) !== (personas.find(persona => persona.id === node.personaId)?.repositoryAccess === "read"));
   const alreadyPublished = Boolean(workflow && currentVersion?.sourceDraftRevision === workflow.draftRevision && !accessChanged);
+  const retryingPublish = draft.publishRetryRevision !== null;
   // The same rule the daemon enforces in `deleteWorkflowCas`, and BOTH halves of it for the
   // same reason the store checks both: `currentVersionId` is the pointer, the version list is
   // the truth. The pointer is what makes this correct on first paint - it arrives with the
@@ -1097,8 +1098,14 @@ export function WorkflowLibrary({
                     })}>Restore</button>
                   </Tooltip>
                 )}
-                <Tooltip label={workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
-                  <button className="btn" disabled={transitioning || workflowPublishBlocked({ dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict), valid: Boolean(validation?.valid), alreadyPublished, archived: workflow.archivedAt !== null, builtin: workflow.builtin })} ref={tourPublishRef} onClick={() => void draft.publish()}>Publish</button>
+                <Tooltip label={retryingPublish ? "Retry the original publish request" : workflow.builtin ? "Built-in workflows ship already published" : validation?.valid === false ? "Fix the validation errors before publishing" : alreadyPublished ? "This draft is already published" : "Publish this draft as a new immutable version"}>
+                  <button className="btn" ref={tourPublishRef} disabled={transitioning || workflowPublishBlocked({
+                    dirty: draft.dirty, saving: draft.saving, conflicted: Boolean(draft.conflict),
+                    valid: retryingPublish || Boolean(validation?.valid), alreadyPublished: alreadyPublished && !retryingPublish,
+                    archived: workflow.archivedAt !== null, builtin: workflow.builtin,
+                  })} onClick={() => void runTransition(async () => { await draft.publish(); })}>
+                    {retryingPublish ? `Retry publish (revision ${draft.publishRetryRevision})` : "Publish"}
+                  </button>
                 </Tooltip>
               </div>
             </header>

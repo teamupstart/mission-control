@@ -14,6 +14,11 @@ async function captureState(page: Page, state: string, target = page.getByRole("
     if (state === "frozen-outdated" && !await target.isVisible()) {
       await page.getByRole("button", { name: "Properties", exact: true }).click();
     }
+    if (state === "publish-retry") {
+      const drawer = page.getByRole("button", { name: "Properties", expanded: true });
+      if (await drawer.isVisible()) await drawer.click();
+      await target.click({ trial: true });
+    }
     await target.scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(directory, `${state}-${width}.png`) });
   }
@@ -286,10 +291,13 @@ for (const { title, provider, marker } of scenarios) {
       const frozen = dashboard.getByText("Read-only repository access", { exact: true });
       await expect(frozen).toBeVisible();
       await captureState(dashboard, "frozen-outdated", frozen);
-      const publishRequests: string[] = [];
+      const publishRequests: { requestId: string; expectedDraftRevision: number }[] = [];
       await dashboard.route(`**/api/workflows/${workflow.id}/publish`, async route => {
-        publishRequests.push(route.request().postDataJSON().requestId);
+        publishRequests.push(route.request().postDataJSON());
         if (publishRequests.length === 1) {
+          // The daemon commits the version, but the browser never receives its receipt.
+          const committed = await route.fetch();
+          expect(committed.ok()).toBe(true);
           await route.fulfill({ status: 503, json: { error: "Publish response unavailable" } });
         } else {
           await route.continue();
@@ -297,16 +305,33 @@ for (const { title, provider, marker } of scenarios) {
       });
       const publish = dashboard.getByRole("button", { name: "Publish", exact: true });
       await publish.click();
-      await expect(dashboard.getByText("Publish response unavailable")).toBeVisible();
-      await publish.click();
       const second = dashboard.getByRole("button", { name: /^Version 2/ });
       await expect(second).toBeVisible();
-      expect(publishRequests[0]).toBeTruthy();
+      const retry = dashboard.getByRole("button", { name: "Retry publish (revision 1)", exact: true });
+      await expect(retry).toBeEnabled();
+      const workflowUrl = `${daemon.baseURL}/api/workflows/${workflow.id}`;
+      const advanced = await dashboard.request.patch(workflowUrl, {
+        data: { expectedDraftRevision: 1, name: "Advanced review draft" },
+      });
+      expect(advanced.ok()).toBe(true);
+      await expect(dashboard.getByRole("heading", { name: "Advanced review draft" })).toBeVisible();
+      await expect(dashboard.getByText("Draft revision 2", { exact: true })).toBeVisible();
+      await captureState(dashboard, "publish-retry", retry);
+      const replayResponse = dashboard.waitForResponse(response => response.url() === workflowUrl + "/publish");
+      await retry.click();
+      const replay = await (await replayResponse).json();
+      expect(replay).toMatchObject({ idempotent: true, version: { version: 2, sourceDraftRevision: 1 } });
+      expect(publishRequests[0]).toMatchObject({ expectedDraftRevision: 1, requestId: expect.any(String) });
       expect(publishRequests).toEqual([publishRequests[0], publishRequests[0]]);
       await second.click();
       const source = dashboard.getByText(/Repository reviewer · revision/);
       if (!await dashboard.getByText("No repository access", { exact: true }).isVisible()) await source.click();
       await expect(dashboard.getByText("No repository access", { exact: true })).toBeVisible();
+      await publish.click();
+      await expect(dashboard.getByRole("button", { name: /^Version 3/ })).toBeVisible();
+      expect(publishRequests[2]).toMatchObject({ expectedDraftRevision: 2, requestId: expect.any(String) });
+      expect(publishRequests[2]!.requestId).not.toBe(publishRequests[0]!.requestId);
+      await expect(publish).toBeDisabled();
     }
   });
 }

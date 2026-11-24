@@ -3148,9 +3148,10 @@ access**, including copies saved during an edit conflict. Grant read access to t
 it needs the checkout. A built-in
 Persona stores its local access override separately from its shipped guidance. Version History
 shows the permission frozen at publication and identifies older snapshots as outdated.
-The editor retries an interrupted publish with the same request ID. The daemon returns
-the version it originally selected, even if another editor has since changed the draft
-or published a different grant. A separate publish gets a new request ID. Clients that omit
+After a lost publish response, **Retry publish** shows the original draft revision and sends
+the same request ID. The daemon returns the version it originally selected, even if another
+editor has since changed the draft or published a different grant. After the retry succeeds,
+choose **Publish** to publish a changed draft or grant with a new request ID. Clients that omit
 the ID can publish a draft revision once or retrieve its sole published version. If multiple
 versions already exist for that revision, the API returns HTTP 409. Publishing a changed
 grant at the same draft revision requires a fresh request ID.

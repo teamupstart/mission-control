@@ -377,7 +377,7 @@ export function VoiceSettingsPanel({
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
   const inputs = voiceInputChoices(devices.devices, inputDevice);
-  const keys = useVoiceDecisionKey(true, state.keyReportVersion);
+  const keys = useVoiceDecisionKey(true, state.keyReportVersion, state.observeProvider);
   return (
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />

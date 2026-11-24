@@ -24,6 +24,7 @@ export interface VoiceConfigState {
   /** The provider the daemon currently acknowledges, independent of edits still queued. */
   confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   keyReportVersion: string;
+  observeProvider: (revision: string, selection: VoiceConfig["decisionProvider"]) => boolean;
   pendingDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
    * Show an edit immediately and resolve to whether the daemon kept it.
@@ -54,7 +55,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const latestProviderEdit = useRef(0);
   const confirmedProviderEdit = useRef(0);
   const [writer] = useState(() => crypto.randomUUID());
-  const providerRevision = useRef("");
+  const [provider, setProvider] = useState<{ revision: string; selection: VoiceConfig["decisionProvider"] }>();
+  const latestProvider = useRef(provider);
+  const previousDaemons = useRef(new Set<string>());
   const [unconfirmedProviderEdit, setUnconfirmedProviderEdit] = useState<number | null>(null);
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
@@ -70,6 +73,25 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     setPendingState(next);
   }, []);
 
+  // Config reads, key reports and write acknowledgments all carry the daemon's
+  // selection revision. Their HTTP responses may arrive in any order.
+  const observeProvider = useCallback((revision: string, selection: VoiceConfig["decisionProvider"]): boolean => {
+    const prior = latestProvider.current;
+    if (prior?.revision !== revision) {
+      const [daemon = "", order] = revision.split(":");
+      if (previousDaemons.current.has(daemon)) return false;
+      if (prior) {
+        const [previous = "", lastOrder] = prior.revision.split(":");
+        if (daemon === previous && Number(order) < Number(lastOrder)) return false;
+        if (daemon !== previous) previousDaemons.current.add(previous);
+      }
+      latestProvider.current = { revision, selection };
+      setProvider(latestProvider.current);
+    }
+    setUnconfirmedProviderEdit(null);
+    return true;
+  }, []);
+
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
@@ -83,9 +105,8 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       const read = await fetchVoiceConfig();
       if (alive && read && id > appliedRead && nextEdit.current === at && pendingRef.current.length === 0) {
         appliedRead = id;
-        providerRevision.current = read.providerRevision;
-        setUnconfirmedProviderEdit(null);
-        setConfirmed(read.config);
+        observeProvider(read.providerRevision, read.config.decisionProvider);
+        setConfirmed({ ...read.config, decisionProvider: latestProvider.current!.selection });
       }
     };
     void tick();
@@ -94,7 +115,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       alive = false;
       clearInterval(id);
     };
-  }, [enabled, setConfirmed, unconfirmedProviderEdit]);
+  }, [enabled, observeProvider, setConfirmed, unconfirmedProviderEdit]);
 
   const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;
@@ -104,7 +125,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const edit: PendingEdit = { id: ++nextEdit.current, patch };
     if (changesProvider) latestProviderEdit.current = edit.id;
     setPending([...pendingRef.current, edit]);
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observedProviderRevision ?? providerRevision.current) : undefined;
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observedProviderRevision ?? latestProvider.current?.revision ?? "") : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
       const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
@@ -131,15 +152,13 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         confirmedProviderEdit.current = edit.id;
         setUnconfirmedProviderEdit(edit.id);
       } else if (res.config && current && (kept || res.status === 409)) {
-        const applyProvider = sendProvider && edit.id > confirmedProviderEdit.current;
-        if (applyProvider && res.providerRevision) {
+        if (sendProvider && edit.id > confirmedProviderEdit.current && res.providerRevision) {
           confirmedProviderEdit.current = edit.id;
-          providerRevision.current = res.providerRevision;
-          setUnconfirmedProviderEdit(null);
+          observeProvider(res.providerRevision, res.config.decisionProvider);
         }
         setConfirmed({
           ...(changesSettings && kept ? res.config : current),
-          decisionProvider: applyProvider ? res.config.decisionProvider : current.decisionProvider,
+          decisionProvider: latestProvider.current ? latestProvider.current.selection : current.decisionProvider,
         });
       }
       setPending(pendingRef.current.filter((candidate) => candidate !== edit));
@@ -156,7 +175,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const result = settingsQueue.current.then(save);
     settingsQueue.current = result.then(() => {}, () => {});
     return result;
-  }, [setConfirmed, setPending, writer]);
+  }, [observeProvider, setConfirmed, setPending, writer]);
 
   const config = useMemo(
     () => (confirmed ? pending.reduce((shown, edit) => {
@@ -168,8 +187,9 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   );
 
   return {
-    config, confirmedDecisionProvider: unconfirmedProviderEdit === null ? confirmed?.decisionProvider : undefined,
-    keyReportVersion: unconfirmedProviderEdit === null ? providerRevision.current : `unconfirmed:${unconfirmedProviderEdit}`,
+    config, confirmedDecisionProvider: unconfirmedProviderEdit === null ? provider?.selection : undefined,
+    keyReportVersion: unconfirmedProviderEdit === null ? provider?.revision ?? "" : `unconfirmed:${unconfirmedProviderEdit}`,
+    observeProvider,
     pendingDecisionProvider: pending.find(edit => edit.id === latestProviderEdit.current)?.patch.decisionProvider, update, error,
   };
 }
@@ -222,7 +242,7 @@ export interface VoiceDecisionKeyState {
  * the chosen provider changes, and on the same poll as the config, so a key saved in another
  * window or a provider chosen there shows here too.
  */
-export function useVoiceDecisionKey(enabled: boolean, providerRevision: string): VoiceDecisionKeyState {
+export function useVoiceDecisionKey(enabled: boolean, providerRevision: string, observeProvider: VoiceConfigState["observeProvider"]): VoiceDecisionKeyState {
   const [status, setStatus] = useState<{
     revision: string;
     report: Awaited<ReturnType<typeof fetchVoiceDecisionKey>>;
@@ -244,7 +264,8 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string):
       const read = await fetchVoiceDecisionKey();
       if (alive && writes.current === at && id > appliedRead) {
         appliedRead = id;
-        setStatus({ revision: providerRevision, report: read });
+        if (read && !observeProvider(read.providerRevision, read.selection)) return;
+        setStatus({ revision: read?.providerRevision ?? providerRevision, report: read });
       }
     };
     refresh.current = tick;
@@ -255,7 +276,7 @@ export function useVoiceDecisionKey(enabled: boolean, providerRevision: string):
       refresh.current = null;
       clearInterval(id);
     };
-  }, [enabled, providerRevision]);
+  }, [enabled, providerRevision, observeProvider]);
 
   const mutate = useCallback(async (request: () => ReturnType<typeof api.saveVoiceDecisionKey>): Promise<KeyWriteOutcome> => {
     if (writing.current) return "refused";

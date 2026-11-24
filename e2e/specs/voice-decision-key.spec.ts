@@ -387,6 +387,51 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await expect(line(page)).toHaveText(NOT_SET);
   });
 
+  test("a delayed Off acknowledgment preserves a newer observed Jev routing report", async ({ dashboard: page, context, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await page.clock.install();
+    await openVoiceSettings(page, daemon);
+    await saveKey(page, "Jev", SAVED_JEV);
+    await expect(line(page)).toHaveText(using("Jev"));
+    const committed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/config", async route => {
+      if (route.request().method() !== "PUT") return route.continue();
+      const response = await route.fetch();
+      committed.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    const ack = page.waitForResponse(r => r.url().endsWith("/api/voice/config") && r.request().method() === "PUT");
+    const resumeReads = Promise.withResolvers<void>();
+    try {
+      await providerMenu(page).selectOption("off");
+      await committed.promise;
+      const other = await context.newPage();
+      await openVoiceSettings(other, daemon);
+      await expect(providerMenu(other)).toHaveValue("off");
+      await providerMenu(other).selectOption("jev");
+      await expect(line(other)).toHaveText(using("Jev"));
+      await page.clock.fastForward(5_000);
+      await expect(line(page)).toHaveText(using("Jev"));
+      await page.route("**/api/voice/decision-key", async route => {
+        await resumeReads.promise;
+        await route.continue();
+      });
+      release.resolve();
+      expect((await ack).ok()).toBe(true);
+      await expect(providerMenu(page)).toHaveValue("jev", { timeout: 1_500 });
+      await expect(line(page)).toHaveText(using("Jev"));
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("Jev answered: split");
+      expect(decisions.requests).toHaveLength(1);
+      await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "29-delayed-off-ack");
+    } finally {
+      release.resolve();
+      resumeReads.resolve();
+    }
+  });
+
   test("a later ticketed Off takes effect after an older Jev write commits", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

@@ -17,6 +17,7 @@
 // `routing-tuning.json` (the spike's cases, recast) is the tuning set. `routing-holdout.json` was
 // written before any tuning run and is the only pass evidence.
 
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -48,6 +49,8 @@ interface Row {
   ms: number;
   error: string | null;
   runner: string;
+  /** Digest of the input corpus file. Historical rows have no recorded identity. */
+  corpusSha256?: string;
   /** Occurrence identified in the split prompt. Historical runs omitted it. */
   nameOffset?: number;
   /** Absent on results written before transport was recorded. */
@@ -91,7 +94,10 @@ function readRows(path: string): Row[] {
   return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Row);
 }
 
-function checkRun(rows: Pick<Row, "id" | "runner" | "transport">[]): void {
+function checkRun(rows: Pick<Row, "id" | "runner" | "transport" | "corpusSha256">[]): void {
+  if (new Set(rows.map(row => row.corpusSha256)).size > 1) {
+    throw new Error("Mixed corpora: choose a separate label for each corpus.");
+  }
   if (new Set(rows.map((r) => r.id)).size !== rows.length) {
     throw new Error("Repeated case IDs: choose a fresh run label or summarize a single pass.");
   }
@@ -130,6 +136,7 @@ function summarize(label: string): void {
     n: rows.length,
     runner: [...new Set(rows.map((r) => r.runner))],
     transport: rows[0]?.transport ?? "unrecorded",
+    corpusSha256: rows[0]?.corpusSha256 ?? "unrecorded",
     errors: rows.filter((r) => r.error !== null).length,
     overDeadline: rows.filter((r) => r.ms >= DEADLINE_MS).length,
     p50Ms: quantile(latencies, 0.5),
@@ -174,13 +181,15 @@ async function runCorpus(): Promise<void> {
   const { voiceQuestionChoices } = await import("../../src/shared/voice-decide.ts");
   const casesPath = flag("--cases") ?? "scripts/voice-spike/routing-holdout.json";
   const label = flag("--label") ?? `${runner}-${casesPath.includes("tuning") ? "tuning" : "holdout"}`;
-  const corpus = JSON.parse(readFileSync(casesPath, "utf8")) as Corpus;
+  const input = readFileSync(casesPath);
+  const corpusSha256 = createHash("sha256").update(input).digest("hex");
+  const corpus = JSON.parse(input.toString("utf8")) as Corpus;
   const start = Number(flag("--start") ?? 0);
   const limit = Number(flag("--limit") ?? corpus.cases.length);
   mkdirSync(OUT, { recursive: true });
   const dest = join(OUT, `retest-${label}.jsonl`);
   const selectedCases = corpus.cases.slice(start, start + limit);
-  checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selectedCases.map(({ id }) => ({ id, runner, transport }))]);
+  checkRun([...(existsSync(dest) ? readRows(dest) : []), ...selectedCases.map(({ id }) => ({ id, runner, transport, corpusSha256 }))]);
   const questions = selectedCases.map(row => toQuestion(corpus, row));
   for (const [index, question] of questions.entries()) {
     const row = selectedCases[index]!;
@@ -199,7 +208,7 @@ async function runCorpus(): Promise<void> {
     }
     const member = choice !== null && voiceQuestionChoices(question).includes(choice);
     const result: Row = { id: row.id, category: row.category, expected: row.expected, choice, confidence, member,
-      ms: Math.round(performance.now() - began), error, runner, transport,
+      ms: Math.round(performance.now() - began), error, runner, transport, corpusSha256,
       ...(question.kind === "split" && { nameOffset: question.nameOffset }) };
     appendFileSync(dest, `${JSON.stringify(result)}\n`);
     console.log(JSON.stringify(result));

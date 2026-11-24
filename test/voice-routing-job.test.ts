@@ -58,6 +58,13 @@ const { setLlmConfig } = await import("../src/server/llm/config.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
+function retest(...args: string[]) {
+  return spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"),
+    join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts"), ...args], {
+    cwd: home, encoding: "utf8", env: { ...process.env, TSX_TSCONFIG_PATH: join(import.meta.dirname, "../tsconfig.json") },
+  });
+}
+
 test("offline retest summaries distinguish transport-specific results from historical rows", () => {
   const out = join(home, ".tmp", "voice-spike");
   mkdirSync(out, { recursive: true });
@@ -65,8 +72,7 @@ test("offline retest summaries distinguish transport-specific results from histo
     const rows = transports.map((transport, index) => ({ id: String(index), runner: "claude", transport,
       category: "split", expected: "split", choice: "split", confidence: 1, member: true, ms: 200, error: null }));
     writeFileSync(join(out, "retest-fixture.jsonl"), rows.map(row => JSON.stringify(row)).join("\n"));
-    return spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"),
-      join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts"), "--summarize", "fixture"], { cwd: home, encoding: "utf8" });
+    return retest("--summarize", "fixture");
   };
   for (const mixed of [["sdk", "print"], ["sdk", undefined]]) {
     const result = summarize(mixed);
@@ -76,7 +82,9 @@ test("offline retest summaries distinguish transport-specific results from histo
   for (const transport of ["sdk", "print", undefined]) {
     const result = summarize([transport, transport]);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).transport, transport ?? "unrecorded");
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.transport, transport ?? "unrecorded");
+    assert.equal(summary.corpusSha256, "unrecorded");
   }
 });
 
@@ -91,10 +99,7 @@ test("the retest sends the specified occurrence of a repeated name through the j
   const text = "Steve, Alice is busy. Alice, review the PR";
   const nameOffset = text.lastIndexOf("Alice");
   const cases = record("split-cases.json");
-  const run = (label: string) => spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"),
-    join(import.meta.dirname, "../scripts/voice-spike/routing-retest.ts"), "--yes", "--transport", "print",
-    "--cases", cases, "--label", label], { cwd: home, encoding: "utf8",
-      env: { ...process.env, TSX_TSCONFIG_PATH: join(import.meta.dirname, "../tsconfig.json") } });
+  const run = (label: string) => retest("--yes", "--transport", "print", "--cases", cases, "--label", label);
   const corpus = { roster: { Steve: "build", Alice: "review" }, cards: {}, cases: [{ id: "repeat", category: "split",
     question: { kind: "split", first: "Steve", second: "Alice", nameOffset, text }, expected: "split" }] };
   writeFileSync(cases, JSON.stringify(corpus));
@@ -111,6 +116,32 @@ test("the retest sends the specified occurrence of a repeated name through the j
   assert.equal(invalid.status, 1);
   assert.match(invalid.stderr, /Case bad-offset: nameOffset/);
   assert.equal(existsSync(join(home, ".tmp/voice-spike/retest-invalid.jsonl")), false);
+});
+
+test("a retest label cannot append or summarize results from different corpora", () => {
+  const run = (kind: string, label: string, start = "0") => retest("--yes", "--transport", "print", "--label", label,
+    "--cases", join(import.meta.dirname, `../scripts/voice-spike/routing-${kind}.json`), "--start", start, "--limit", "1");
+  const log = (label: string) => join(home, ".tmp/voice-spike", `retest-${label}.jsonl`);
+  assert.equal(run("tuning", "one-corpus").status, 0);
+  assert.equal(run("tuning", "one-corpus", "1").status, 0);
+  const prior = readFileSync(log("one-corpus"), "utf8");
+  const append = run("holdout", "one-corpus");
+  assert.equal(append.status, 1);
+  assert.match(append.stderr, /mixed corpora/i);
+  assert.equal(readFileSync(log("one-corpus"), "utf8"), prior);
+  assert.equal(run("holdout", "other-corpus").status, 0);
+  const held = readFileSync(log("other-corpus"), "utf8");
+  const identity = JSON.parse(held).corpusSha256;
+  assert.match(identity, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.parse(retest("--summarize", "other-corpus").stdout).corpusSha256, identity);
+  writeFileSync(log("pooled"), prior + held);
+  const pooled = retest("--summarize", "pooled");
+  assert.equal(pooled.status, 1);
+  assert.match(pooled.stderr, /mixed corpora/i);
+  const legacy = JSON.parse(held);
+  delete legacy.corpusSha256;
+  writeFileSync(log("pooled"), prior + JSON.stringify(legacy) + "\n");
+  assert.match(retest("--summarize", "pooled").stderr, /mixed corpora/i);
 });
 
 test("on Codex: reasoning effort none, the system prompt ahead of the questions, the strict schema and Luna", async () => {

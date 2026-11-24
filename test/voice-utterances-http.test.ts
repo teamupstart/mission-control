@@ -128,8 +128,8 @@ test("only one listener can capture or deliver, and its heartbeat lease transfer
 test("only pre-release speech from the held revision can finish during call auto-mute", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
-  const press = (pushToTalk: boolean, pushToTalkReleasedAtHostMs?: number | string) =>
-    orderedShellReport({ callActive: true, pushToTalk, pushToTalkReleasedAtHostMs }, token);
+  const press = (pushToTalk: boolean, keyUpMs?: number | string) =>
+    orderedShellReport({ callActive: true, pushToTalk, pushToTalkReleasedAtHostUs: typeof keyUpMs === "number" ? keyUpMs * 1000 : keyUpMs }, token);
   const poll = () => app.request("/voice/listener/directive", {
     headers: { "x-harness-token": token, "x-voice-listener-id": listenerId },
   });
@@ -233,7 +233,7 @@ test("a held POST times out without routing and can retry the same ID after key-
   assert.equal(retry.headers.get("x-voice-held-revision"), held);
   assert.deepEqual(await retry.json(), { accepted: false });
   assert.deepEqual(await readHeard(), []);
-  await orderedShellReport({ callActive: true, pushToTalk: false, pushToTalkReleasedAtHostMs: Date.now() }, token);
+  await orderedShellReport({ callActive: true, pushToTalk: false, pushToTalkReleasedAtHostUs: Date.now() * 1000 }, token);
   assert.deepEqual(await (await send()).json(), { accepted: true });
   assert.deepEqual((await readHeard()).map(entry => entry.id), [words.id]);
 });
@@ -241,8 +241,8 @@ test("a held POST times out without routing and can retry the same ID after key-
 test("a replayed key-up cannot stop a later hold and a heartbeat does not move its start", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date"], now });
-  const press = (pushToTalk: boolean, pushToTalkReleasedAtHostMs?: number) =>
-    orderedShellReport({ callActive: true, pushToTalk, pushToTalkReleasedAtHostMs }, token);
+  const press = (pushToTalk: boolean, keyUpMs?: number) =>
+    orderedShellReport({ callActive: true, pushToTalk, pushToTalkReleasedAtHostUs: keyUpMs === undefined ? undefined : keyUpMs * 1000 }, token);
   await press(true);
   t.mock.timers.setTime(now + 20);
   await press(false, now + 20);
@@ -260,7 +260,7 @@ test("a replayed key-up cannot stop a later hold and a heartbeat does not move i
   assert.deepEqual(voiceStateStore.releasedCapture(current.revision), { revision: current.revision, pressedAt: now + 40, at: now + 60 });
 
   // Both events of a quick tap can have occurred before the daemon receives key-down.
-  await orderedShellReport({ callActive: true, pushToTalk: true, pushToTalkPressedAtHostMs: now + 70 }, token);
+  await orderedShellReport({ callActive: true, pushToTalk: true, pushToTalkPressedAtHostUs: (now + 70) * 1000 }, token);
   const quick = voiceStateStore.directive();
   assert.equal((await (await press(false, now + 75)).json()).state.mode, "auto-muted");
   assert.deepEqual(voiceStateStore.releasedCapture(quick.revision), { revision: quick.revision, pressedAt: now + 70, at: now + 75 });
@@ -269,8 +269,8 @@ test("a replayed key-up cannot stop a later hold and a heartbeat does not move i
 test("a newer dated press supersedes a hold before the delayed key-up arrives", async (t) => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date"], now });
-  const down = (stamp?: number) => orderedShellReport({ callActive: true, pushToTalk: true, pushToTalkPressedAtHostMs: stamp }, token);
-  const up = (stamp: number) => orderedShellReport({ callActive: true, pushToTalk: false, pushToTalkReleasedAtHostMs: stamp }, token);
+  const down = (stamp?: number) => orderedShellReport({ callActive: true, pushToTalk: true, pushToTalkPressedAtHostUs: stamp === undefined ? undefined : stamp * 1000 }, token);
+  const up = (stamp: number) => orderedShellReport({ callActive: true, pushToTalk: false, pushToTalkReleasedAtHostUs: stamp * 1000 }, token);
   await down(now);
   const first = voiceStateStore.directive();
   t.mock.timers.setTime(now + 60);
@@ -297,14 +297,14 @@ test("ordered shell reports ignore a delayed idle heartbeat and release on host 
   t.mock.timers.enable({ apis: ["Date"], now });
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   const poll = () => app.request("/voice/listener/directive", { headers: { "x-harness-token": token, "x-voice-listener-id": listenerId } });
-  assert.ok((await report({ reportedAtHostUs: 500_000, pushToTalk: true, pushToTalkPressedAtHostMs: 490 })).ok);
+  assert.ok((await report({ reportedAtHostUs: 500_000, pushToTalk: true, pushToTalkPressedAtHostUs: 490_000 })).ok);
   const held = voiceStateStore.directive();
   assert.equal(held.capture, true);
   await report({ reportedAtHostUs: 499_999, pushToTalk: false });
   await report({ reportedAtHostUs: 500_000, pushToTalk: false });
   assert.deepEqual(voiceStateStore.directive(), held);
   t.mock.timers.setTime(now + 60_000);
-  await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostMs: 700, pushToTalkReleasedAt: now + 9900 });
+  await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 700_000, pushToTalkReleasedAt: now + 9900 });
   const off = await poll();
   assert.equal(off.headers.get("x-voice-release-host-ms"), "700");
   assert.equal(off.headers.get("x-voice-release-at"), null);
@@ -335,7 +335,7 @@ test("a fresh snapshot with a stale key event renews call state and applies perm
   assert.equal((await report({ reportedAtHostUs: 300_000, pushToTalk: false })).mode, "auto-muted");
 
   // The shell recovered the physical key-up after its first idle report.
-  const idle = { pushToTalk: false, pushToTalkReleasedAtHostMs: 250 };
+  const idle = { pushToTalk: false, pushToTalkReleasedAtHostUs: 250_000 };
   elapsed += 10_000;
   await report({ ...idle, reportedAtHostUs: 10_300_000 });
   elapsed += 6000;
@@ -346,9 +346,25 @@ test("a fresh snapshot with a stale key event renews call state and applies perm
   assert.equal(voiceStateStore.releasedCapture(held), undefined, "a discarded hold cannot be revived");
 });
 
+test("a new press and an old release within the same millisecond keep their event order", async () => {
+  const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
+  await report({ reportedAtHostUs: 450_000, pushToTalk: true, pushToTalkPressedAtHostUs: 449_000 });
+  const first = voiceStateStore.directive().revision;
+  await report({ reportedAtHostUs: 500_200, pushToTalk: false, pushToTalkReleasedAtHostUs: 500_100 });
+  assert.equal(voiceStateStore.releasedCapture(first)?.at, 500);
+  await report({ reportedAtHostUs: 500_800, pushToTalk: true, pushToTalkPressedAtHostUs: 500_700 });
+  const second = voiceStateStore.directive();
+  assert.equal(second.capture, true);
+  assert.notEqual(second.revision, first);
+  await report({ reportedAtHostUs: 502_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 500_100 });
+  assert.deepEqual(voiceStateStore.directive(), second);
+  await report({ reportedAtHostUs: 504_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 503_999 });
+  assert.equal(voiceStateStore.releasedCapture(second.revision)?.at, 503);
+});
+
 test("a rapid second press preserves the first release, until a privacy or recipient change", async () => {
   const press = (down: boolean) => orderedShellReport({
-    callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAtHostMs: Date.now() }),
+    callActive: true, pushToTalk: down, ...(!down && { pushToTalkReleasedAtHostUs: Date.now() * 1000 }),
   }, token);
   const submit = async (revision: string, at: number) => (await app.request(utterancePath(revision), {
     method: "POST", headers: { "content-type": "application/json", "x-harness-token": token,

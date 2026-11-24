@@ -83,7 +83,7 @@ When releasing push-to-talk returns a call to auto-mute, the capture-off respons
 host milliseconds). A helper applying that exact held revision uses key-up as the boundary for
 the unfinished phrase. If its input tap still owes samples through that time, the helper
 collects the pre-release portion of the last callback before closing. A stalled input
-closes after 250 ms. Manual mute stops the input immediately. The helper can finish decoding and posting
+closes after 250 ms and delivers only phrases completed before the stall. Manual mute stops the input immediately. The helper can finish decoding and posting
 the held audio with the original revision. A second key press can record while the helper
 finishes decoding previous holds in spoken order. The daemon lists up to eight authorized
 released revisions in `x-voice-draining-revisions`. A poll that missed an intervening key-up
@@ -101,10 +101,11 @@ A fresh snapshot still renews that lifetime and updates call state, permissions 
 when it repeats a key event older than the daemon’s last key transition.
 
 On macOS use the Core Audio host clock (`mach_absolute_time` converted with its timebase).
-Key events use the same origin and round down to whole milliseconds. During a hold send
-`pushToTalk: true` and the original `pushToTalkPressedAtHostMs` when available. Otherwise
+Key events use the same microsecond clock. The daemon orders them at that precision and
+rounds down to whole milliseconds only for the release boundary sent to the listener. During a hold send
+`pushToTalk: true` and the original `pushToTalkPressedAtHostUs` when available. Otherwise
 the first ordered down snapshot dates the press. A later press starts a fresh revision.
-On release send `pushToTalk: false` and `pushToTalkReleasedAtHostMs`, retaining the last
+On release send `pushToTalk: false` and `pushToTalkReleasedAtHostUs`, retaining the last
 release stamp on subsequent idle snapshots so a reordered heartbeat can confirm it.
 A missing, invalid or future release stamp closes capture and discards the tail. Reports
 without ordering metadata still carry shell capabilities and call state but cannot authorize
@@ -577,7 +578,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`3`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostMs?, pushToTalkReleasedAtHostMs?, hotkeyError }`,
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
   does not know are dropped rather than refused.
 

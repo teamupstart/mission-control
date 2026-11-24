@@ -477,9 +477,9 @@ export const VoiceShellReportSchema = z.object({
   pushToTalkReleasedAt: z.number().int().nonnegative().optional().catch(undefined),
   /** Monotonic host time when the shell sampled this snapshot, strictly increasing across reports. */
   reportedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
-  /** Core Audio host clock, rounded down to milliseconds at the physical key event. */
-  pushToTalkPressedAtHostMs: z.number().int().nonnegative().optional().catch(undefined),
-  pushToTalkReleasedAtHostMs: z.number().int().nonnegative().optional().catch(undefined),
+  /** Physical key event on the same monotonic microsecond clock as the snapshot. */
+  pushToTalkPressedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  pushToTalkReleasedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),

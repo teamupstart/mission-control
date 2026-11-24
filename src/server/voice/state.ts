@@ -59,7 +59,7 @@ export class VoiceStateStore {
   private hello: { at: number; ownerId: string | null; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
-  private report: { at: number; keyChangedAt: number | null; report: VoiceShellReport } | null = null;
+  private report: { at: number; keyChangedHostUs: number | null; report: VoiceShellReport } | null = null;
   private lastReportHostUs = -1;
   /**
    * The last microphone permission each source reported, kept past its lapse: whether macOS
@@ -98,7 +98,7 @@ export class VoiceStateStore {
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
     const inputDevice = this.deps.config().inputDevice;
-    const press = state.mode === "push-to-talk" ? this.report?.keyChangedAt ?? null : null;
+    const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
     const last = this.lastDirective;
     if (last && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
       last.recipients === recipients && last.press === press) return last.directive;
@@ -251,12 +251,11 @@ export class VoiceStateStore {
       if (order <= this.lastReportHostUs) return;
       this.lastReportHostUs = order;
     }
-    const snapshotMs = order === undefined ? null : Math.floor(order / 1000);
-    const pushToTalk = report.pushToTalk && snapshotMs !== null;
-    const lastChange = this.report?.keyChangedAt ?? null;
+    const pushToTalk = report.pushToTalk && order !== undefined;
+    const lastChange = this.report?.keyChangedHostUs ?? null;
     const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;
-    const stamp = pushToTalk ? report.pushToTalkPressedAtHostMs : report.pushToTalkReleasedAtHostMs;
-    const eventAt = stamp !== undefined && snapshotMs !== null && stamp <= snapshotMs ? stamp : undefined;
+    const stamp = pushToTalk ? report.pushToTalkPressedAtHostUs : report.pushToTalkReleasedAtHostUs;
+    const eventAt = stamp !== undefined && order !== undefined && stamp <= order ? stamp : undefined;
     const staleKey = eventAt !== undefined && lastChange !== null && (eventAt < lastChange ||
       (eventAt === lastChange && pushToTalk && !this.report?.report.pushToTalk));
     // Snapshot order was already checked. A recovered old key event cannot undo
@@ -264,16 +263,17 @@ export class VoiceStateStore {
     const down = staleKey ? heldSince !== null : pushToTalk;
     const held = !down && heldSince !== null && this.state().mode === "push-to-talk"
       ? this.directive() : null;
-    let keyChangedAt = lastChange;
-    if (!staleKey && eventAt !== undefined) keyChangedAt = eventAt;
-    else if (down !== (heldSince !== null)) keyChangedAt = snapshotMs;
-    this.report = { at, keyChangedAt, report: { ...report, pushToTalk: down } };
+    let keyChangedHostUs = lastChange;
+    if (!staleKey && eventAt !== undefined) keyChangedHostUs = eventAt;
+    else if (down !== (heldSince !== null)) keyChangedHostUs = order ?? null;
+    this.report = { at, keyChangedHostUs, report: { ...report, pushToTalk: down } };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
     if (held?.capture && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.
       if (this.releases.size >= 8) this.releases.delete(this.releases.keys().next().value!);
-      this.releases.set(held.revision, { pressedAt: heldSince, at: eventAt });
+      // Only the wire cutoff rounds down. Event ordering keeps the full host timestamp.
+      this.releases.set(held.revision, { pressedAt: Math.floor(heldSince / 1000), at: Math.floor(eventAt / 1000) });
       this.latestRelease = held.revision;
     }
     this.publish();

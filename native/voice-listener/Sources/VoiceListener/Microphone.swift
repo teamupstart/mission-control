@@ -469,7 +469,12 @@ final class Microphone {
             onBoundary = nil
             defer { heldSpeech = nil; segmenter = nil; continuation.finish() }
             guard let releasedAt else { return [] }
-            let final = segmenter?.finish(at: releasedAt)
+            // The timeout closes a stalled input before its final callback.
+            // Only a tap that covered key-up can certify unfinished speech.
+            var final: Segment?
+            if let segmenter, let end = segmenter.deliveredThrough, end >= releasedAt {
+                final = segmenter.finish(at: releasedAt)
+            }
             if heldSpeech == nil { return final.map { [$0] } ?? [] }
             if let final { heldSpeech?.append(final) }
             if let captured = heldSpeech?.finish(at: releasedAt) { return captured }

@@ -426,6 +426,29 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    @MainActor func testStalledReleaseClosesCaptureAndDeliversOnlyCompletedPhrases() async throws {
+        let (input, length) = try captureFourPhrases(held: true) { XCTFail("Unexpected queue overflow") }
+        let (_, corpus) = try fixtureDirectories()
+        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let start = 4 * length
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(speech.count / 2)))
+        frame.frameLength = frame.frameCapacity
+        frame.floatChannelData![0].update(from: speech, count: Int(frame.frameLength))
+        input.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 16_000)))
+        let release = Int64((start + Int(frame.frameLength)) / 16 + 100)
+        let closed = expectation(description: "stalled input closed at timeout")
+        var phrases: [Segment] = []
+        input.whenCaptured(through: release) {
+            phrases = input.stop(releasedAt: release)
+            closed.fulfill()
+        }
+        await fulfillment(of: [closed], timeout: 2)
+        XCTAssertFalse(input.isRunning)
+        XCTAssertEqual(phrases.count, 4)
+        XCTAssertTrue(phrases.allSatisfy { $0.endedAt <= Int64((start + 15) / 16) })
+    }
+
     func testBackloggedMicrophoneKeepsOldestPhrasesAndReportsDrops() async throws {
         var warnings = 0
         let (input, length) = try captureFourPhrases(held: false) { warnings += 1 }

@@ -79,6 +79,16 @@ test("the published sherpa addon transcribes a recording through the listener an
   // The fixture is mono 16-bit PCM with a 44-byte RIFF header.
   const wav = await readFile(fixture);
   assert.equal(wav.toString("ascii", 36, 40), "data");
+  await t.test("finishes a zero-frame WAV without claiming the listener lease", async () => {
+    const header = Buffer.from(wav.subarray(0, 44));
+    header.writeUInt32LE(header.length - 8, 4);
+    header.writeUInt32LE(0, 40);
+    const path = join(cwd, "empty.wav");
+    await writeFile(path, header);
+    await play(path);
+    assert.equal(hellos, 0);
+    assert.equal(posts, 0);
+  });
   await t.test("refuses non-finite float PCM samples before hello", async () => {
     const float = Buffer.from(wav.subarray(0, 48)); // One mono float32 sample after the header.
     float.writeUInt32LE(float.length - 8, 4);

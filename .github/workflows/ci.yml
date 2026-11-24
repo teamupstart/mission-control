@@ -184,7 +184,9 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .tmp/voice-recognizer-model
-          key: voice-recognizer-${{ steps.model.outputs.digest }}
+          # Bump the generation to retire a damaged immutable cache for these model pins.
+          key: voice-recognizer-${{ steps.model.outputs.digest }}-v1
+          restore-keys: voice-recognizer-${{ steps.model.outputs.digest }}
       - run: node --test --import ./test/setup-state.mjs --import tsx test/voice-sherpa-recognizer.test.ts
 
   # The gates that DO care which Node runs them. >=24 is required (node:sqlite is used

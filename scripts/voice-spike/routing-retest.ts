@@ -22,7 +22,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, existsSync, rmSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { acquireHelperLock, realHelperLockOperations, releaseHelperLock } from "../update-lock.mjs";
-import type { VoiceQuestion } from "../../src/shared/voice-decide.ts";
+import { VOICE_MODEL_STAGE_DEADLINE_MS, type VoiceQuestion } from "../../src/shared/voice-decide.ts";
 import type { ClaudeTransport, CodexTransport } from "../../src/shared/llm.ts";
 
 interface CorpusCase {
@@ -63,7 +63,6 @@ interface Row {
 }
 
 const OUT = resolve(".tmp/voice-spike");
-const DEADLINE_MS = 5_000;
 const FLOORS = [0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 1];
 const CATEGORIES = ["plain", "phonetic", "split", "mention", "option"];
 const NOT_SURE = "not sure";
@@ -136,7 +135,7 @@ function summarize(label: string): void {
     const per = CATEGORIES.map((category) => {
       const cat = rows.filter((r) => r.category === category);
       const acc = cat.filter((r) => accepted(r, floor));
-      return { category, n: cat.length, accepted: acc.length, acceptedBeforeDeadline: acc.filter((r) => r.ms < DEADLINE_MS).length, wrong: acc.filter((r) => r.choice !== r.expected).length };
+      return { category, n: cat.length, accepted: acc.length, acceptedBeforeDeadline: acc.filter((r) => r.ms < VOICE_MODEL_STAGE_DEADLINE_MS).length, wrong: acc.filter((r) => r.choice !== r.expected).length };
     });
     const acc = rows.filter((r) => accepted(r, floor));
     return {
@@ -159,7 +158,7 @@ function summarize(label: string): void {
     corpusSha256: rows[0]?.corpusSha256 ?? "unrecorded",
     promptSchemaSha256: rows[0]?.promptSchemaSha256 ?? "unrecorded",
     errors: rows.filter((r) => r.error !== null).length,
-    overDeadline: rows.filter((r) => r.ms >= DEADLINE_MS).length,
+    overDeadline: rows.filter((r) => r.ms >= VOICE_MODEL_STAGE_DEADLINE_MS).length,
     p50Ms: quantile(latencies, 0.5),
     p95Ms: quantile(latencies, 0.95),
     maxMs: quantile(latencies, 1),
@@ -245,7 +244,7 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
     }
     const member = choice !== null && voiceQuestionChoices(question).includes(choice);
     const result: Row = { id: row.id, category: row.category, expected: row.expected, choice, confidence, member,
-      ms: Math.round(performance.now() - began), error, ...runIdentity,
+      ms: performance.now() - began, error, ...runIdentity,
       ...(question.kind === "split" && { nameOffset: question.nameOffset }) };
     appendFileSync(dest, `${JSON.stringify(result)}\n`);
     console.log(JSON.stringify(result));

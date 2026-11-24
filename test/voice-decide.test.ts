@@ -945,6 +945,16 @@ test("the second word of a call sign cannot create a missing first message", asy
   assert.deepEqual(delivered.slice(-2), [["Steve", "Release Captain is busy", "later"], ["Alice", "review the PR", "later#2"]]);
 });
 
+test("Release Captain is the only model question after the explicit joiner when Captain is also on the roster", async (t) => {
+  const roster = ["Steve", "Release Captain", "Captain"].map(n => name(n));
+  const { router, say, delivered, asked } = routerRig(() => answered("split"), roster);
+  t.after(() => router.reset());
+  await say("Steve, check the build, and Release Captain, review the PR", "joined");
+  assert.deepEqual(asked[0]?.map(q => q.kind === "split" && q.second.label), ["Release Captain"]);
+  assert.ok(await router.sendNow("joined"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "joined"], ["Release Captain", "review the PR", "joined#2"]]);
+});
+
 test("a joined two-word address only offers split targets starting at its first word", async (t) => {
   const roster = ["Steve", "Release Captain", "Captain", "Release"].map(n => name(n));
   const { router, say, delivered, cards } = routerRig(() => answered(null), roster);

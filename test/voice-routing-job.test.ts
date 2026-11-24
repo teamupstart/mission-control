@@ -150,6 +150,31 @@ test("a retest label cannot append or summarize results from different corpora",
   assert.match(retest("--summarize", "pooled").stderr, /mixed corpora/i);
 });
 
+test("the retest measures the unrounded deadline for recorded calls", () => {
+  const clock = record("retest-clock.mjs");
+  writeFileSync(clock, `import { existsSync } from "node:fs";
+    performance.now = () => existsSync(process.env.VOICE_JOB_RECORD + "/claude-argv") ? Number(process.env.FIXTURE_MS) : 0;`);
+  const corpus = join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json");
+  const start = JSON.parse(readFileSync(corpus, "utf8")).cases.findIndex((row: { category: string }) => row.category === "split");
+  assert.ok(start >= 0);
+  for (const ms of [4999.6, 5000]) {
+    const label = `deadline-${ms}`;
+    const records = record(label);
+    mkdirSync(records);
+    const run = spawnSync(process.execPath, ["--import", clock, ...retestArgs, "--yes", "--transport", "print",
+      "--label", label, "--cases", corpus, "--start", String(start), "--limit", "1"], {
+      cwd: home, encoding: "utf8", env: { ...retestEnv, FIXTURE_MS: String(ms), VOICE_JOB_RECORD: records },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const row = JSON.parse(readFileSync(record(`.tmp/voice-spike/retest-${label}.jsonl`), "utf8"));
+    assert.equal(row.ms, ms);
+    const summary = JSON.parse(retest("--summarize", label).stdout);
+    assert.equal(summary.overDeadline, ms < 5000 ? 0 : 1);
+    const split = summary.byFloor[0].perCategory.find((c: { category: string }) => c.category === "split");
+    assert.equal(split.acceptedBeforeDeadline, ms < 5000 ? 1 : 0);
+  }
+});
+
 test("invalid retest ranges fail before a previous label can be summarized or extended", () => {
   const label = "invalid-ranges";
   const args = ["--yes", "--transport", "print", "--label", label, "--cases", join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json")];

@@ -61,6 +61,7 @@ export class VoiceStateStore {
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; keyChangedHostUs: number | null; report: VoiceShellReport } | null = null;
   private lastReportHostUs = -1;
+  private lastPhysicalKeyHostUs = -1;
   /**
    * The last microphone permission each source reported, kept past its lapse: whether macOS
    * allows the microphone does not change because a listener stopped, and the Setup row reads it.
@@ -256,19 +257,24 @@ export class VoiceStateStore {
     const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;
     const stamp = pushToTalk ? report.pushToTalkPressedAtHostUs : report.pushToTalkReleasedAtHostUs;
     const eventAt = stamp !== undefined && order !== undefined && stamp <= order ? stamp : undefined;
-    const staleKey = eventAt !== undefined && lastChange !== null && (eventAt < lastChange ||
-      (eventAt === lastChange && pushToTalk && !this.report?.report.pushToTalk));
+    const latestKey = Math.max(lastChange ?? -1, this.lastPhysicalKeyHostUs);
+    const staleKey = eventAt !== undefined && (eventAt < latestKey ||
+      (eventAt === latestKey && pushToTalk && !this.report?.report.pushToTalk));
     // Snapshot order was already checked. A recovered old key event cannot undo
     // a newer transition, but the call, permission and lease readings are fresh.
-    const down = staleKey ? heldSince !== null : pushToTalk;
+    // A snapshot can date a hold after the physical key is already up. Only a
+    // known physical event proves that an earlier key-up belongs to an old hold.
+    const ambiguousRelease = staleKey && !pushToTalk && heldSince !== null && eventAt > this.lastPhysicalKeyHostUs;
+    const down = staleKey ? heldSince !== null && !ambiguousRelease : pushToTalk;
     const held = !down && heldSince !== null && this.state().mode === "push-to-talk"
       ? this.directive() : null;
     let keyChangedHostUs = lastChange;
     if (!staleKey && eventAt !== undefined) keyChangedHostUs = eventAt;
     else if (down !== (heldSince !== null)) keyChangedHostUs = order ?? null;
+    if (eventAt !== undefined && (!staleKey || ambiguousRelease)) this.lastPhysicalKeyHostUs = eventAt;
     this.report = { at, keyChangedHostUs, report: { ...report, pushToTalk: down } };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
-    if (held?.capture && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
+    if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.
       if (this.releases.size >= 8) this.releases.delete(this.releases.keys().next().value!);
@@ -303,6 +309,7 @@ export class VoiceStateStore {
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
     this.lastReportHostUs = -1;
+    this.lastPhysicalKeyHostUs = -1;
     this.releases.clear();
     this.latestRelease = undefined;
     this.lastDirective = undefined;

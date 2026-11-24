@@ -107,6 +107,8 @@ rounds down to whole milliseconds only for the release boundary sent to the list
 the first ordered down snapshot dates the press. A later press starts a fresh revision.
 On release send `pushToTalk: false` and `pushToTalkReleasedAtHostUs`, retaining the last
 release stamp on subsequent idle snapshots so a reordered heartbeat can confirm it.
+If key-up predates an inferred press and cannot be identified as a replay of an older
+physical event, the daemon closes capture and discards the hold.
 A missing, invalid or future release stamp closes capture and discards the tail. Reports
 without ordering metadata still carry shell capabilities and call state but cannot authorize
 a hold. Legacy Unix key timestamps are accepted as input and have no delivery authority.

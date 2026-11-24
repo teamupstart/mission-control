@@ -346,6 +346,20 @@ test("a fresh snapshot with a stale key event renews call state and applies perm
   assert.equal(voiceStateStore.releasedCapture(held), undefined, "a discarded hold cannot be revived");
 });
 
+test("a newer idle report closes an inferred hold when key-up predates its first snapshot", async () => {
+  const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
+  await report({ reportedAtHostUs: 300_000, pushToTalk: true });
+  const held = voiceStateStore.directive();
+  assert.equal(held.capture, true);
+  await report({ reportedAtHostUs: 350_000, pushToTalk: true });
+  for (const order of [400_000, 500_000]) {
+    await report({ reportedAtHostUs: order, pushToTalk: false, pushToTalkReleasedAtHostUs: 250_000 });
+    assert.equal(voiceStateStore.state().mode, "auto-muted");
+    assert.equal(voiceStateStore.directive().capture, false);
+    assert.equal(voiceStateStore.releasedCapture(held.revision), undefined);
+  }
+});
+
 test("a new press and an old release within the same millisecond keep their event order", async () => {
   const report = (body: object) => post("/voice/shell-report", { callActive: true, ...body }, token);
   await report({ reportedAtHostUs: 450_000, pushToTalk: true, pushToTalkPressedAtHostUs: 449_000 });

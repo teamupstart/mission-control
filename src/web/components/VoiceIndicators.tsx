@@ -12,15 +12,14 @@ import { Tooltip } from "./Tooltip.tsx";
 export const VoiceWindow = createContext<{
   state: VoiceState;
   mutePending: boolean;
-  setMuted(id: VoiceIndicatorId, muted: boolean): Promise<void>;
+  setMuted(muted: boolean): Promise<void>;
   openSetup(): void;
 } | null>(null);
 
 export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, openSetup, children }: {
   state: VoiceState | null; enabled: boolean; acknowledgeVoiceMode(ack: VoiceState): void; openSetup(): void; children: ReactNode;
 }) {
-  const { voice: { indicators } } = useUiConfig();
-  const [failure, setFailure] = useState<{ id: VoiceIndicatorId; muted: boolean; message: string } | null>(null);
+  const [failure, setFailure] = useState<{ muted: boolean; message: string } | null>(null);
   const [pendingMute, setPendingMute] = useState<boolean | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -30,7 +29,7 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
       activeRequest.current = null;
     };
   }, [enabled]);
-  const setMuted = useCallback(async (id: VoiceIndicatorId, muted: boolean) => {
+  const setMuted = useCallback(async (muted: boolean) => {
     if (activeRequest.current) return;
     const request = new AbortController();
     activeRequest.current = request;
@@ -46,11 +45,11 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
       const message = deadline.aborted
         ? "Voice mute change timed out. The result is unconfirmed. Check the indicator and retry if needed."
         : result.error ?? "Could not change voice mute.";
-      setFailure({ id, muted, message });
+      setFailure({ muted, message });
     }
   }, [acknowledgeVoiceMode]);
   const mode = state?.mode;
-  const showFailure = failure && enabled && mode && mode !== "off" && indicators.includes(failure.id)
+  const showFailure = failure && enabled && mode && mode !== "off"
     && (mode === "unavailable" || (mode === "muted") !== failure.muted);
   // Retire the alert when any window achieves the requested state. A later unmute must
   // not resurrect an old mute failure.
@@ -146,7 +145,7 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
   const chord = ui.keybindingHints && state.mode !== "unavailable" ? confirmedVoiceHotkey(state) : null;
   const activate = () => {
     if (state.mode === "unavailable") openSetup();
-    else void setMuted(id, state.mode !== "muted");
+    else void setMuted(state.mode !== "muted");
   };
   return <VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined} onClick={activate}
     pending={voice.mutePending && state.mode !== "unavailable"} />;

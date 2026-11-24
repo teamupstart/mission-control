@@ -428,6 +428,53 @@ test("a failed mute keeps the indicator listening until a peer retries, then the
   }
 });
 
+for (const outcome of ["refusal", "timeout"] as const) {
+  test(`the window shows a mute ${outcome} after a peer removes the initiating indicator`, async ({ dashboard: page, context, daemon }) => {
+    await enableVoice(daemon);
+    const listener = await beListener(daemon);
+    try {
+      const peer = await context.newPage();
+      await peer.goto(daemon.baseURL + "/#/settings/voice");
+      if (outcome === "refusal") await peer.getByRole("checkbox", { name: "Floating button" }).check();
+      const floating = page.locator("button.vi-floating");
+      await expect(floating).toHaveCount(outcome === "refusal" ? 1 : 0);
+      const status = page.locator("button.vi-status-line");
+      await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+      const held = Promise.withResolvers<Route>();
+      await page.route("**/api/voice/mute", route => held.resolve(route), { times: 1 });
+      await status.click();
+      const request = await held.promise;
+      await peer.getByRole("checkbox", { name: "Status line" }).uncheck();
+      await expect(status).toHaveCount(0);
+      await expect(page.getByRole("status").filter({ hasText: "Muting voice…" })).toBeVisible();
+      if (outcome === "refusal") {
+        await expect(floating).toBeDisabled();
+        await request.fulfill({ status: 503, json: { error: "Listener could not mute." } });
+      }
+      const alert = page.getByRole("alert").filter({ hasText: outcome === "refusal" ? "Listener could not mute." : "The result is unconfirmed." });
+      await expect(alert).toBeVisible({ timeout: 8000 });
+      await expect(peer.getByRole("button", { name: "Dismiss voice error" })).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE) {
+        const root = artifactsDir("voice-window");
+        mkdirSync(root, { recursive: true });
+        await page.setViewportSize({ width: 720, height: 480 });
+        await page.screenshot({ path: join(mkdtempSync(join(root, "removed-indicator-")), outcome + ".png") });
+      }
+      if (outcome === "refusal") {
+        await expect(floating).toBeEnabled();
+        await floating.click();
+        await expect(floating).toHaveAccessibleName("Voice: muted. Unmute");
+      } else {
+        await expect(page.locator("button.vi")).toHaveCount(0);
+        await page.getByRole("button", { name: "Dismiss voice error" }).click();
+      }
+      await expect(alert).toHaveCount(0);
+    } finally {
+      listener.stop();
+    }
+  });
+}
+
 test("two windows selecting different indicators preserve both choices in the daemon", async ({ dashboard: page, context, daemon }) => {
   await enableVoice(daemon);
   const peer = await context.newPage();

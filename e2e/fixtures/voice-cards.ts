@@ -13,6 +13,17 @@ export async function setupCards(page: Page, daemon: DaemonHandle, seconds = 30)
   expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "toast" } })).ok()).toBe(true);
 }
 
+export async function allowStreamDisconnect(page: Page) {
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        window.addEventListener("disconnect-fixture-stream", () => this.close(), { once: true });
+      }
+    };
+  });
+}
+
 export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: string) {
   const created = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
     repoRoot: daemon.repo, intent: "Inspect the build", title: callSign + " on builds", callSign,

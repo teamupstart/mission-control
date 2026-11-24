@@ -1,5 +1,5 @@
 import { expect, test } from "../fixtures/test.ts";
-import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { allowStreamDisconnect, captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say } from "../fixtures/voice.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -65,6 +65,20 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
     expect((await action).ok()).toBe(true);
     await expect(page.getByRole("status").filter({ hasText: choice === "cancel" ? "Cancelled" : "Sent to Steve" })).toBeVisible();
   }
+  await say(daemon, "Steve, keep this pending", { id: "native-retry" });
+  await expect(page).toHaveTitle(/To Steve · sending in \d+s \| keep this pending/);
+  await page.route("**/cards/native-retry/cancel", route => route.fulfill({
+    status: 503, json: { error: "The daemon could not confirm the request" },
+  }), { times: 1 });
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("fixture-native-action", { detail: "cancel" })));
+  const retry = page.getByRole("status").filter({ hasText: "keep this pending" });
+  await expect(retry).toContainText("Desktop Cancel was not confirmed", { timeout: 3000 });
+  await expect(retry).toContainText("The daemon could not confirm the request");
+  await captureCard(retry, "native-cancel-unconfirmed");
+  const retried = page.waitForResponse(response => response.url().endsWith("/cards/native-retry/cancel"));
+  await retry.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await retried).ok()).toBe(true);
+  await expect(retry).toHaveCount(0);
   await runningAgent(page, daemon, "Will");
   await say(daemon, "Steve, inspect the build, and Will, stop", { id: "native-split" });
   await page.getByRole("status").filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
@@ -82,6 +96,7 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
 
 test("a browser notice closes at the deadline even if the stream disconnects", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 5);
+  await allowStreamDisconnect(page);
   const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
   expect((await page.request.put(daemon.baseURL + "/api/ui/config", { data: {
     alerts: { ...config.alerts, notifications: true, sound: false },
@@ -99,12 +114,6 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
         document.documentElement.dataset.closedNotices = closed.join(",");
       }
     } });
-    window.EventSource = class extends EventSource {
-      constructor(url: string | URL, init?: EventSourceInit) {
-        super(url, init);
-        window.addEventListener("disconnect-fixture-stream", () => this.close(), { once: true });
-      }
-    };
   });
   await page.reload();
   await runningAgent(page, daemon, "Steve");

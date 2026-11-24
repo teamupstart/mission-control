@@ -10,6 +10,7 @@ const target: SpokenName = { name: "Steve", key: "resident:build", kind: "reside
 const actions = {
   sessions: [], roster: [target], reviews: [], setVoiceCardInUse() {}, openQuestion() {}, relaunch: async () => ({ ok: true }), followUp: () => ({ ok: true }),
 };
+const operation = { busy: false, feedback: "", run: async () => {} };
 const copy = {
   pending: "Send now", resolving: "Working out who this is for", unsure: "Who is this for?",
   sent: "Sent to", queued: "current turn", held: "Held for", "not-running": "Relaunch Steve",
@@ -20,7 +21,7 @@ for (const state of Object.keys(copy) as VoiceCard["state"][]) {
     const allocate = t.mock.method(crypto, "randomUUID", () => { throw new Error("Request id allocated during render"); });
     const card: VoiceCard = { id: "one", state, reason: "exact", deadline: Date.now() + 4000,
       parts: [{ target, text: "check CI" }], candidates: [{ kind: "agent", title: target.name, detail: target.role, id: target.key }], openQuestions: 3 };
-    const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions }));
+    const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions, operation }));
     assert.ok(html.includes(copy[state]));
     assert.equal(allocate.mock.callCount(), 0);
     assert.match(html, /role="status"/);
@@ -33,7 +34,7 @@ test("a failed immediate stop shows its reason alongside the pending message con
   const card: VoiceCard = { id: "mixed", state: "pending", reason: "split", deadline: Date.now() + 4000,
     parts: [{ target, text: "check CI" }, { target: { ...target, name: "Will" }, text: "stop",
       immediateStop: true, outcome: "failed", detail: "The interrupt was refused." }], candidates: [], openQuestions: 0 };
-  const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions }));
+  const html = renderToStaticMarkup(createElement(VoiceCardView, { card, actions, operation }));
   assert.match(html, /stop failed/);
   assert.match(html, /The interrupt was refused\./);
   assert.match(html, /Send to Steve now/);

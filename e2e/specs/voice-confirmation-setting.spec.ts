@@ -1,6 +1,6 @@
 import { expect, test } from "../fixtures/test.ts";
 import { enableVoice, say, voiceToken } from "../fixtures/voice.ts";
-import { captureCard } from "../fixtures/voice-cards.ts";
+import { allowStreamDisconnect, captureCard, setupCards } from "../fixtures/voice-cards.ts";
 
 test("three placement previews persist across reload, with a toast fallback and reserved card-only routes", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
@@ -33,6 +33,33 @@ test("three placement previews persist across reload, with a toast fallback and 
 });
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
+  test(`the ${label} route switches at the displayed deadline while disconnected`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await allowStreamDisconnect(page);
+    expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);
+    expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+      identity: { name: "Steve", description: "Builds and releases" }, persona: { personaId: "builtin:code-risk-reviewer" },
+    } } })).ok()).toBe(true);
+    await page.goto("about:blank");
+    await page.goto(daemon.baseURL + "/#/voice/" + placement);
+    const card = page.getByRole("status");
+    await say(daemon, "Steve, inspect the long window", { id: "long-window" });
+    await expect(card).toContainText("inspect the long window");
+    await page.clock.install();
+    await page.clock.pauseAt(new Date(Date.now() + 500));
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 3 } } })).ok()).toBe(true);
+    await say(daemon, "Steve, inspect the short window");
+    await expect(card).toContainText("inspect the short window");
+    await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+    // Advance only one countdown tick past the short deadline, before unrelated dashboard polling.
+    await page.clock.setSystemTime(new Date(Date.now() + 5000));
+    await page.clock.runFor(101);
+    await expect(card).toContainText("inspect the long window", { timeout: 1500 });
+    const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/long-window/cancel"));
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect((await cancelled).ok()).toBe(true);
+  });
+
   test(`the ${label} route immediately restores an older cancel window ahead of a newer outcome`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: placement } })).ok()).toBe(true);

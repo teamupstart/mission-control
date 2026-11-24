@@ -1,14 +1,29 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { VoiceCard } from "@shared/voice-routing.ts";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { useUiConfig } from "../lib/uiConfig.ts";
-import { api } from "../lib/api.ts";
+import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, notify, sound, notifications }: {
+function Card({ card, actions, notify, sound, notifications, onDeadline }: {
   card: VoiceCard; actions: VoiceCardActions; notify: boolean; sound: boolean; notifications: boolean;
+  onDeadline?: () => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const run = useCallback(async (perform: () => Promise<ActionResult>, success = "", failure = "") => {
+    setBusy(true);
+    setFeedback("");
+    try {
+      const result = await perform();
+      setFeedback(result.ok ? success : failure + (result.error ?? "The card changed before that action completed."));
+    } catch {
+      setFeedback(failure + "Mission Control could not complete that action.");
+    } finally {
+      setBusy(false);
+    }
+  }, []);
   const announced = useRef<number | null>(null);
   useEffect(() => {
     if (!notify || !card.deadline || card.state !== "pending" || announced.current === card.deadline) return;
@@ -36,7 +51,9 @@ function Card({ card, actions, notify, sound, notifications }: {
         const id = newRequestId();
         let active = true;
         void shell.showVoiceCardNotice({ id, title, body, deadline, scope }).then(choice => {
-          if (active && choice) void api.voiceCardAction(cardId, choice);
+          if (!active || !choice) return;
+          const label = choice === "cancel" ? "Cancel" : "Send now";
+          void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
         }).catch(() => {});
         return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
       }
@@ -53,8 +70,8 @@ function Card({ card, actions, notify, sound, notifications }: {
       note.onclick = () => { window.focus(); close(); };
       return close;
     } catch { /* A browser may require a service worker for system notifications. */ }
-  }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications]);
-  return <VoiceCardView card={card} actions={actions} />;
+  }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
+  return <VoiceCardView card={card} actions={actions} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
 }
 
 export function VoiceCardHost({ cards, actions, surface, sound, notifications }: {
@@ -62,6 +79,7 @@ export function VoiceCardHost({ cards, actions, surface, sound, notifications }:
   surface?: "pill" | "popover"; sound: boolean; notifications: boolean;
 }) {
   const { voice } = useUiConfig();
+  const [, reselect] = useReducer((revision: number) => revision + 1, 0);
   // The dashboard owns the toast until the desktop opens the selected card window in Phase 12.
   if (surface && surface !== voice.confirmation) return null;
   const newestFirst = [...cards.values()].reverse();
@@ -73,6 +91,6 @@ export function VoiceCardHost({ cards, actions, surface, sound, notifications }:
   }
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
     {visible.map(card => <Card key={card.id} card={card} actions={actions}
-      notify={!surface} sound={sound} notifications={notifications} />)}
+      notify={!surface} sound={sound} notifications={notifications} onDeadline={surface ? reselect : undefined} />)}
   </div>;
 }

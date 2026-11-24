@@ -54,13 +54,16 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
   });
 }
 
-export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: VoiceCardActions }) {
+export function VoiceCardView({ card, actions, operation, onDeadline }: {
+  card: VoiceCard; actions: VoiceCardActions;
+  operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string): Promise<void> };
+  onDeadline?: () => void;
+}) {
   const [now, setNow] = useState(Date.now);
   const launchIds = useRef(new Map<string, string>());
-  const [busy, setBusy] = useState(false);
+  const { busy, feedback, run } = operation;
   const article = useRef<HTMLElement>(null);
   const [focused, setFocused] = useState(false);
-  const [feedback, setFeedback] = useState("");
   const settled = voiceCardCanExpire(card);
   const { setVoiceCardInUse } = actions;
   useLayoutEffect(() => {
@@ -78,22 +81,11 @@ export function VoiceCardView({ card, actions }: { card: VoiceCard; actions: Voi
       const time = Date.now();
       setNow(time);
       if (time < deadline) timer = window.setTimeout(tick, Math.min(100, deadline - time));
+      else onDeadline?.();
     };
     tick();
     return () => window.clearTimeout(timer);
-  }, [card.deadline]);
-  const run = async (perform: () => Promise<ActionResult>, success = "") => {
-    setBusy(true);
-    setFeedback("");
-    try {
-      const result = await perform();
-      setFeedback(result.ok ? success : result.error ?? "The card changed before that action completed.");
-    } catch {
-      setFeedback("Mission Control could not complete that action.");
-    } finally {
-      setBusy(false);
-    }
-  };
+  }, [card.deadline, onDeadline]);
   const button = (label: string, hint: string, click: () => void, style = "", disabled = false) =>
     <Tooltip label={hint}><button type="button" className={`btn ${style}`} disabled={busy || disabled} onClick={click}>{label}</button></Tooltip>;
   const act = (action: "cancel" | "send-now") => {

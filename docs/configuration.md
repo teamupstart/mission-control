@@ -244,6 +244,12 @@ for the operator to fix.
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
+## Enterprise package catalog
+
+The daemon reads `enterprise-packages.json` in `MISSION_HOME` for the
+[Enterprise package recommendations preview](enterprise-packages.md). The file replaces the
+bundled recommendations for Claude Code, Codex and Pi. **Re-check** applies edits immediately.
+
 ## Task shaping references
 
 A [remote shaper](task-shaping.md#remote-shapers)'s header values hold references, never

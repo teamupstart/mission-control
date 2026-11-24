@@ -1,3 +1,4 @@
+import { ENTERPRISE_PACKAGES_FLAG } from "./enterprise-packages.ts";
 import type { FeatureFlagDefinition } from "./feature-flags.ts";
 import { INBOX_FLAG } from "./inbox.ts";
 import { VOICE_FLAG } from "./voice.ts";
@@ -27,6 +28,13 @@ export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;
 export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
 
 export const FEATURE_FLAGS = [
+  {
+    id: ENTERPRISE_PACKAGES_FLAG,
+    label: "Enterprise package recommendations",
+    description: "Show your organization’s recommended packages and installation guides under each coding agent in Setup.",
+    stage: "preview",
+    keywords: ["setup", "packages", "harness", "enterprise"],
+  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",

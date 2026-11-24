@@ -3,7 +3,11 @@ import { mcpTrustStatus } from "./mcp-trust.ts";
 import { codeRabbitAuthReading, codeRabbitVersionReading, CODERABBIT_MANAGED_ENV, type CodeRabbitVersionReading } from "../workflows/coderabbit.ts";
 import { shellCommand } from "../terminal/shell.ts";
 import { scrubCheckEnv } from "../workflows/check-env.ts";
-import { readToken } from "../../shared/harness-runtime.mjs";
+import { join } from "node:path";
+import { ENTERPRISE_PACKAGES_FLAG } from "@shared/enterprise-packages.ts";
+import { readEnterprisePackages } from "./enterprise-packages.ts";
+import { expandPiAgentDir } from "./pi-package.ts";
+import { stateDir, readToken } from "../../shared/harness-runtime.mjs";
 import { cleanupAgentSubprocessEnv } from "../agent-subprocess-env.ts";
 import { canInstallPiExtension } from "../environment/pi-extension.ts";
 import type { AgentType } from "@shared/types.ts";
@@ -656,6 +660,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    piAgentDir: expandPiAgentDir(process.env.PI_CODING_AGENT_DIR, environment.homeDir),
     mcpTrust: mcpTrustStatus,
     runtime: servingRuntime,
     canInstallPiExtension,
@@ -745,11 +750,14 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   const dependencyIds = availableSetupDependencyIds(deps.conductorIntegration?.() ?? conductorIntegrationEnabled())
     .filter((id) => setupFamilyFlagOn(SETUP_DEPENDENCY_INFO[id].family, flagEnabled))
     .filter((id) => id !== MACOS_TERMINAL_ID || showMacosTerminal);
-  const [probed, environment, repositories] = await Promise.all([
+  const [probed, environment, repositories, catalog] = await Promise.all([
     // A fresh object per check: per-check readings shared between rows key on it.
     Promise.all(dependencyIds.map((id) => runProbe(id, scoped))),
     deps.environmentChecks(deps.environment),
     indexedRepositoriesRow(deps),
+    flagEnabled(ENTERPRISE_PACKAGES_FLAG)
+      ? readEnterprisePackages(deps.environment, join(stateDir(), "enterprise-packages.json"), deps.piAgentDir)
+      : undefined,
   ]);
   const probeById = new Map(dependencyIds.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
@@ -768,7 +776,10 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
       const info = SETUP_DEPENDENCY_INFO[id];
       const probe = probeById.get(id);
       if (probe && info.family === family) {
+        const agent = DEPENDENCY_AGENT[id];
+        const recommendations = agent && catalog?.byHarness[agent];
         rows.push({
+          ...(recommendations && { recommendations }),
           rowId: { source: "dependency", id },
           label: info.label,
           family: info.family,
@@ -789,6 +800,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    ...(catalog?.error && { packageCatalogError: catalog.error }),
     ...(deps.runtime ? { runtime: deps.runtime() } : {}),
     piCliReady: probeById.get("pi-cli")?.status.state === "satisfied",
     piExtensionInstallAvailable: (deps.canInstallPiExtension?.() ?? false) && environment.find((check) => check.id === "pi-extension")?.ready !== true,

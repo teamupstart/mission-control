@@ -10,6 +10,7 @@ Mission Control's product reference is organized by feature below.
 - [Product overview](overview.md)
 - [Sessions and conversations](sessions.md)
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
+- [Enterprise package recommendations](enterprise-packages.md) covers the per-harness JSON catalog and optional [Pi telemetry installation](pi-telemetry.md).
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
 - [Task shaping](task-shaping.md): shapers that supply context for a task, registered and dry-run through the API, behind the `task-shaping` preview.
 - [Voice addressing](voice.md) covers spoken names, preview settings, routing a text capture to the operator queue, cancelling a pending message, and the in-memory Recently heard list.

@@ -1,3 +1,4 @@
+import { ENTERPRISE_PACKAGES_FLAG, type RecommendedPackageView } from "./enterprise-packages.ts";
 import { MACOS_TERMINAL_ID } from "./terminal.ts";
 import { z } from "zod";
 import {
@@ -689,6 +690,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
 export const SETUP_FLAG_INPUTS: readonly FeatureFlagId[] = [...new Set<FeatureFlagId>([
   ...Object.values(SETUP_FAMILY_INFO).flatMap((family) => (family.flag ? [family.flag] : [])),
   ...Object.values(SETUP_DEPENDENCY_INFO).flatMap((info) => (info.remedy.kind === "feature-flags" ? info.remedy.flags : [])),
+  ENTERPRISE_PACKAGES_FLAG,
 ])];
 
 /**
@@ -700,7 +702,7 @@ export function setupFlagsKey(flagOn: (flag: FeatureFlagId) => boolean): string 
 
 /**
  * The flags a Setup reading is stamped with (`SetupChecksView.flagsKey`): `setupFlagsKey` while a
- * family that follows a flag is on, and nothing otherwise. Only then does any reading depend on
+ * gated family or the enterprise package preview is on, and nothing otherwise. Only then does any reading depend on
  * these flags, and with every such family off the response stays the one an install without
  * them gave. The dashboard computes the live stamp the same way and re-reads on a mismatch.
  */
@@ -709,7 +711,7 @@ export function setupReadingFlags(flagOn: (flag: FeatureFlagId) => boolean): str
     const flag = SETUP_FAMILY_INFO[family].flag;
     return flag !== undefined && flagOn(flag);
   });
-  return gated ? setupFlagsKey(flagOn) : undefined;
+  return gated || flagOn(ENTERPRISE_PACKAGES_FLAG) ? setupFlagsKey(flagOn) : undefined;
 }
 
 /**
@@ -773,6 +775,7 @@ export const DEFAULT_SETUP_BANNER_DISMISSAL: SetupBannerDismissal = {
 };
 
 export interface SetupRowView {
+  recommendations?: RecommendedPackageView[];
   rowId: SetupRowId;
   label: string;
   family: SetupFamilyId;
@@ -784,6 +787,7 @@ export interface SetupRowView {
 }
 
 export interface SetupChecksView {
+  packageCatalogError?: string;
   /** Absent on older daemons. Never infer a bundled runtime from the connected UI. */
   runtime?: SetupRuntimeView;
   /** Positive readiness from Setup's Pi CLI probe; consumers do not reconstruct it from rows. */
@@ -804,8 +808,8 @@ export interface SetupChecksView {
    */
   home: string;
   /**
-   * The flags this reading was taken under (`setupReadingFlags`): present only while a family
-   * that follows a flag (Voice) is on. The dashboard re-reads when the live stamp differs,
+   * The flags this reading was taken under (`setupReadingFlags`): present only while a gated family
+   * or the enterprise package preview is on. The dashboard re-reads when the live stamp differs,
    * including a switch made between this read and its first snapshot.
    */
   flagsKey?: string;

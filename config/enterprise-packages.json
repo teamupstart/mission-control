@@ -1,0 +1,15 @@
+{
+  "packages": [
+    {
+      "harness": "pi",
+      "label": "Pi OpenTelemetry extension",
+      "source": "npm:@upstart/pi-router-otel@0.1.1-alpha.8",
+      "description": "Adds Upstart routing and telemetry to Pi. Requires Upstart CodeArtifact access for install.",
+      "guide": "https://github.com/teamupstart/mission-control/blob/main/docs/pi-telemetry.md",
+      "piExtension": {
+        "entry": "dist/extensions/otel/src/index.ts",
+        "conflicts": ["pi-otel"]
+      }
+    }
+  ]
+}

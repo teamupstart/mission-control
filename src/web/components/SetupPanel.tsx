@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { ENTERPRISE_PACKAGES_FLAG, type RecommendedPackageView } from "@shared/enterprise-packages.ts";
 import { ENVIRONMENT_CHECK_IDS } from "@shared/environment-checks.ts";
 import {
   ENVIRONMENT_ROW_METADATA,
@@ -25,7 +26,7 @@ import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { formatBytes } from "@shared/format-bytes.ts";
 import type { VoiceModelState, VoiceState } from "@shared/voice.ts";
 import { voiceModelSetupStatus } from "@shared/voice-models.ts";
-import { FeatureFlagsContext } from "../useFeatureFlag.ts";
+import { FeatureFlagsContext, useFeatureFlag } from "../useFeatureFlag.ts";
 import {
   MULTIPLEXER_IDS,
   resolveEmulatorBackend,
@@ -967,6 +968,31 @@ export function ExternalSessionsSetting({ terminals }: { terminals: TerminalsCon
   );
 }
 
+function PackageRecommendations({ packages, home }: { packages: RecommendedPackageView[]; home: string }): React.JSX.Element {
+  return (
+    <section aria-label="Recommended packages">
+      <h4>Recommended packages</h4>
+      {packages.map(({ label, source, description, guide, status }) => (
+        <article className="setup-row" aria-label={label} key={source}>
+          <div className="setup-row-main">
+            <div className="setup-row-title">
+              <strong>{label}</strong>
+              {status && <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>}
+            </div>
+            <code>{source}</code>
+            <p className="setup-impact">{description}</p>
+            {status && "why" in status && <p className="setup-why">{status.why}</p>}
+            {status && "evidence" in status && status.evidence && <Evidence evidence={status.evidence} home={home} />}
+            <Tooltip label={`Open the installation guide for ${label} in a new tab`}>
+              <a className="setup-link" href={guide} target="_blank" rel="noreferrer">Installation guide for {label}</a>
+            </Tooltip>
+          </div>
+        </article>
+      ))}
+    </section>
+  );
+}
+
 function SetupRow({
   row,
   home,
@@ -979,6 +1005,7 @@ function SetupRow({
   aside?: React.JSX.Element | null;
   onRepaired(): void;
 }): React.JSX.Element {
+  const packagesEnabled = useFeatureFlag(ENTERPRISE_PACKAGES_FLAG);
   const status = row.status;
   const satisfied = status.state === "satisfied";
   const liveLabel = liveStatusLabel(row, useContext(SetupVoiceContext));
@@ -1022,6 +1049,7 @@ function SetupRow({
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
+      {packagesEnabled && row.recommendations && <PackageRecommendations packages={row.recommendations} home={home} />}
       {row.guide && (
         <div className="setup-guide">
           <Tooltip label={row.guide.label}>
@@ -1421,6 +1449,9 @@ export function SetupPanel({
             <h3 id={`setup-family-${active}-title`}>{info.label}</h3>
             <p>{info.description}</p>
           </header>
+          {active === "agents" && flagOn(ENTERPRISE_PACKAGES_FLAG) && state.view?.packageCatalogError && (
+            <p className="settings-error" role="alert">{state.view.packageCatalogError}</p>
+          )}
           {active === "runtime" && (
             <div className="setup-row" aria-label="Serving runtime">
               <div className="setup-row-main">

@@ -35,6 +35,9 @@ existing dashboard API. See [Recurring missions](recurring-missions.md#creating-
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
+**Enterprise package recommendations** (`enterprise-packages`) lists packages under each coding
+agent in Setup. Organizations can deploy their own [JSON catalog](enterprise-packages.md).
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one

@@ -744,7 +744,7 @@ test("voice-previews names which flags are on and off, and its Fix turns on exac
 });
 
 test("the Voice family is probed and listed only while the voice flag is on", async () => {
-  const off = await setupChecksView(deps({ flagEnabled: (id) => id !== "voice" }));
+  const off = await setupChecksView(deps({ flagEnabled: (id) => id !== "voice" && id !== "enterprise-packages" }));
   assert.equal(off.rows.some((row) => row.family === "voice"), false);
   // With the Voice family off the reading carries no flags stamp, so the response is unchanged.
   assert.equal("flagsKey" in off, false);
@@ -755,7 +755,7 @@ test("the Voice family is probed and listed only while the voice flag is on", as
   }));
   // With it on, the reading names the flags it was taken under, as the dashboard computes them.
   assert.equal(on.flagsKey, setupReadingFlags((id) => id === "voice"));
-  assert.equal(on.flagsKey, "1000");
+  assert.equal(on.flagsKey, "10000");
   const rows = on.rows.filter((candidate) => candidate.family === "voice");
   assert.deepEqual(rows.map((row) => row.rowId), [
     { source: "dependency", id: "voice-previews" },
@@ -834,6 +834,6 @@ test("a reading uses the flags as they were when it started, even if one switche
     },
   }));
   assert.equal(on.rows.some((row) => row.family === "voice"), true);
-  assert.equal(on.flagsKey, "1000");
+  assert.equal(on.flagsKey, "10000");
   assert.equal(on.rows.find((row) => row.family === "voice")?.status.state, "needs-setup");
 });

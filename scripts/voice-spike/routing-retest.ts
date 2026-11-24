@@ -202,19 +202,23 @@ async function run(): Promise<void> {
 
 async function runCorpus(runner: "claude" | "codex", casesPath: string, label: string): Promise<void> {
   const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
-  const { llmJobModel } = await import("../../src/server/llm/config.ts");
+  const { codexTransportChoice, llmJobModel } = await import("../../src/server/llm/config.ts");
   const { buildVoiceRoutingPrompt, VOICE_ROUTING_SYSTEM_PROMPT, voiceRoutingSchema } = await import("../../src/server/voice/decide-prompt.ts");
-  const { DEFAULT_CLAUDE_TRANSPORT, DEFAULT_CODEX_TRANSPORT } = await import("../../src/shared/llm.ts");
+  const { DEFAULT_CLAUDE_TRANSPORT } = await import("../../src/shared/llm.ts");
   const requested = flag("--transport");
-  let transport: ClaudeTransport | CodexTransport = DEFAULT_CODEX_TRANSPORT;
+  let transport: ClaudeTransport | CodexTransport;
   if (runner === "claude") {
     const selected = requested ?? DEFAULT_CLAUDE_TRANSPORT;
     if (selected !== "sdk" && selected !== "print") throw new Error("Use --transport sdk or print with Claude.");
     const { configureClaudeRunnerTransport } = await import("../../src/server/llm/claude.ts");
     configureClaudeRunnerTransport(() => selected);
     transport = selected;
-  } else if (requested !== undefined) {
-    throw new Error("--transport selects a Claude transport. Omit it for Codex.");
+  } else {
+    if (requested !== undefined) throw new Error("--transport selects a Claude transport. Omit it for Codex.");
+    const selected = codexTransportChoice();
+    const { configureCodexRunnerTransport } = await import("../../src/server/llm/codex.ts");
+    configureCodexRunnerTransport(() => selected);
+    transport = selected;
   }
   const { voiceQuestionChoices } = await import("../../src/shared/voice-decide.ts");
   const input = readFileSync(casesPath);

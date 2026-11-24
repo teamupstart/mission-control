@@ -156,8 +156,11 @@ node --import tsx scripts/voice-spike/routing-retest.ts --yes --cases scripts/vo
 node --import tsx scripts/voice-spike/routing-retest.ts --summarize holdout-claude
 ```
 
-`--runner codex` runs Luna instead, `--transport print` measures `claude -p`, and `--start` and
-`--limit` select cases. Results append to `.tmp/voice-spike/retest-<label>.jsonl`.
+`--runner codex` runs Luna using the Codex transport selected for the run. Set
+`MISSION_CODEX_TRANSPORT` to `sdk` or `exec` to select it in the disposable state home.
+Each row records that transport. Resuming with a different transport requires a fresh label.
+`--transport print` measures `claude -p`. Use `--start` and `--limit` to select cases.
+Results append to `.tmp/voice-spike/retest-<label>.jsonl`.
 Each row records the SHA-256 digests of the corpus file and the prompts and response schemas
 generated for that corpus. Use a fresh label when either digest changes or the old rows lack it.
 One process owns a label until its run finishes. Resume the next slice after it exits.

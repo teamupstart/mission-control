@@ -202,6 +202,31 @@ test("invalid retest ranges fail before a previous label can be summarized or ex
   }
 });
 
+test("the Codex retest records its actual transport and refuses to mix launch paths", () => {
+  const corpus = record("codex-transport-cases.json");
+  const text = "Steve, check the build, and Alice, review the PR";
+  writeFileSync(corpus, JSON.stringify({ roster: { Steve: "build", Alice: "review" }, cards: {}, cases: ["first", "next"].map(id => ({
+    id, category: "split", expected: "split", question: { kind: "split", text, first: "Steve", second: "Alice", nameOffset: text.indexOf("Alice") },
+  })) }));
+  const run = (transport: string, label: string, start = "0") => spawnSync(process.execPath, [...retestArgs,
+    "--yes", "--runner", "codex", "--cases", corpus,
+    "--start", start, "--limit", "1", "--label", label], {
+    cwd: home, encoding: "utf8", env: { ...retestEnv, MISSION_CODEX_TRANSPORT: transport },
+  });
+  for (const [transport, arg] of [["sdk", "--experimental-json"], ["exec", "--json"]] as const) {
+    const label = "codex-" + transport;
+    const result = run(transport, label);
+    assert.equal(result.status, 0, result.stderr);
+    const row = JSON.parse(readFileSync(join(home, ".tmp/voice-spike", `retest-${label}.jsonl`), "utf8"));
+    assert.equal(row.transport, transport);
+    assert.equal(row.error, null);
+    assert.ok(readFileSync(record("codex-argv"), "utf8").split("\n").includes(arg));
+  }
+  const resumed = run("exec", "codex-sdk", "1");
+  assert.equal(resumed.status, 1);
+  assert.match(resumed.stderr, /mixed transports/i);
+});
+
 test("a retest records the model sent to the runner and rejects mixed or unrecorded model IDs", () => {
   const label = "model-revision";
   const run = (start: string) => retest("--yes", "--transport", "print", "--label", label,

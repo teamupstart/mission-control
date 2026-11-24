@@ -227,8 +227,12 @@ Schema 54 records the original words, composition time, and receiving work-cycle
 spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
 and generation on the outbox row. Confirming delivery and retiring the row atomically set `session_work_cycles.spoken_hold` if that generation is still current. Completing
 the work cycle clears the hold in the same write that advances its generation.
-The `session_spoken_turns` ledger binds the spoken words to the native transcript turn, so its
-disclosure survives retirement of the pending row and daemon restarts.
+Once the SDK acceptance guard or terminal pre-paste guard stamps the claimed revision, the
+daemon records that outbox turn ID and revision in `session_spoken_turns` before the write.
+A restart before the guard leaves no transcript reservation. After the guard, the ledger can
+bind the spoken words even after the pending row retires. For databases from earlier builds
+of this phase, an existing native binding or client message ID preserves the disclosure.
+A legacy reservation with only a text match lacks proof that its attempt reached handoff.
 
 When the native transcript is missing at handoff, the Claude and Codex SDKs receive the
 reservation UUID as a user-message identifier. The transcript reader uses that identifier

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -55,7 +55,9 @@ test("spoken ledger reloads the exact payload and binds its native turn once a c
   const spokenWords = "inspect the build";
   const received = spokenMessageText(spokenWords, { openQuestions: null, unseenReports: null });
   const now = Date.now();
-  const reserve = () => spokenLedger.reserve(conversation, received, base => ({ ...base, spokenWords, received }), now);
+  const reserve = () => spokenLedger.reserve(conversation, received, base => ({
+    ...base, spokenWords, received, outboxTurnId: "ledger-test", outboxRevision: 1,
+  }), now);
   const refused = reserve();
   spokenLedger.release(conversation.key, refused.id);
   const spoken = reserve();
@@ -86,7 +88,7 @@ test("a spoken reservation with no transcript binds its native receipt, even bes
   const received = spokenMessageText(spokenWords, { openQuestions: null, unseenReports: null });
   const now = Date.now();
   const earlier = transcript.append("typed-before", received, now);
-  const row = reserveSpokenTurn({ key, transcript: null }, spokenWords, received, true);
+  const row = reserveSpokenTurn({ key, transcript: null }, spokenWords, received, true, { id: "first", revision: 1 });
   assert.equal(row.transcriptOffset, null);
   const actual = transcript.append(row.id, received, now);
   const later = transcript.append("typed-after", received, now);
@@ -107,7 +109,7 @@ test("a separate Codex client receipt follows the first native conversation key,
   const synthetic = "sdk:cold-codex";
   const key = "codex-native";
   const received = "check the build\n\nWhen you have finished this, post a report.";
-  const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true);
+  const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true, { id: "codex", revision: 1 });
   const messages = parseCodexMessages([{
     type: "event_msg", timestamp: new Date().toISOString(),
     payload: { type: "item_completed", item: { type: "UserMessage", id: "item-1", client_id: row.id, content: [{ text: received }] } },
@@ -135,10 +137,97 @@ test("a terminal transcript created after reservation supplies a boundary; an ol
   for (const [key, reservedAt, expected] of [
     ["before-file", Math.floor(created) - 1, [native.id]], ["after-file", Math.ceil(created) + 1, []],
   ] as const) {
-    spokenLedger.reserve({ key, transcript: null }, text, base => ({ ...base, spokenWords: text, received: text }), reservedAt);
+    spokenLedger.reserve({ key, transcript: null }, text, base => ({
+      ...base, spokenWords: text, received: text, outboxTurnId: key, outboxRevision: 1,
+    }), reservedAt);
     const located = { key, transcript: { read: transcript.conversation(key).transcript!.read, path } };
     assert.deepEqual([...spokenLedger.bound(located, [native, repeat]).rows.keys()], expected);
   }
+});
+
+for (const handedOff of [false, true]) {
+  test(handedOff
+    ? "restart after the handoff guard preserves the spoken occurrence after the outbox retires"
+    : "restart before the handoff guard and discard leave an identical typed occurrence undecorated", async t => {
+    const { Registry } = await import("../src/server/registry.ts");
+    const { PendingTurnManager } = await import("../src/server/pending-turns.ts");
+    const { sessionMessages } = await import("../src/server/harness/index.ts");
+    const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+    const { spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const { unexpectedActiveSdkDelivery } = await import("./helpers/pending-turn-sender.ts");
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+    const cwd = mkdtempSync(join(tmpdir(), "voice-handoff-"));
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const key = `handoff-${handedOff}`;
+    const id = `sdk:${key}`;
+    const path = join(cwd, "native.jsonl");
+    writeFileSync(path, "");
+    const registry = new Registry();
+    registry.registerSdkSession({ id, agent: "claude", name: key, cwd, agentSessionId: key });
+    registry.applyDriverEvent(id, { kind: "bound", agentSessionId: key, transcriptPath: path, modelId: null, pid: null });
+    registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+    const transcript = sessionMessages(registry.getSession(id)!)!;
+    assert.equal(transcript.read.size(path), 0);
+    let payload: string | undefined;
+    const manager = new PendingTurnManager(registry, {
+      ...unexpectedActiveSdkDelivery,
+      sendWhenIdle: async (_, input, beforeSend) => {
+        if (handedOff) assert.equal(beforeSend?.(), null);
+        payload = input.text;
+        return new Promise<never>(() => {}); // The old process never observes a response.
+      },
+    }, { idleSettleMs: 0 });
+    manager.start();
+    t.after(() => manager.stop());
+    const queued = manager.submitSpoken(id, "check the build", key).pendingTurn!;
+    await t.waitFor(() => assert.ok(payload));
+    manager.stop();
+    forgetDeliveryBindingState();
+    db.closeDb();
+    db.recoverSendingPendingTurns(Date.now());
+    const [uncertain] = db.listPendingTurns(key);
+    assert.equal(uncertain?.state, "uncertain");
+    if (handedOff) {
+      assert.ok(db.resolveUncertainPendingTurn(queued.id, uncertain.revision));
+      const [reservation] = db.loadSpokenTurns(key);
+      assert.equal(reservation?.outboxTurnId, queued.id);
+      assert.equal(reservation.outboxRevision, uncertain.revision - 1);
+    } else {
+      const editable = db.retryPendingTurn(queued.id, uncertain.revision, Date.now())!;
+      assert.ok(db.recallPendingTurn(key, queued.id, editable.revision));
+    }
+    for (const uuid of ["first", "repeat"]) {
+      appendFileSync(path, JSON.stringify({ type: "user", uuid, timestamp: new Date().toISOString(),
+        message: { role: "user", content: payload } }) + "\n");
+    }
+    const { messages } = transcript.read.after(path, 0);
+    assert.equal(messages.length, 2);
+    const bound = spokenLedger.bound({ key, transcript }, messages);
+    assert.deepEqual([...bound.rows.keys()], handedOff ? ["first"] : []);
+  });
+}
+
+test("upgrade preserves anchored legacy disclosures and leaves unproven legacy reservations unbound", async () => {
+  const { spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const { injectionFingerprint } = await import("../src/server/injections.ts");
+  const key = "legacy-attempt";
+  const text = "check the build";
+  const now = Date.now();
+  db.openDb().exec(`ALTER TABLE session_spoken_turns DROP COLUMN outbox_turn_id;
+    ALTER TABLE session_spoken_turns DROP COLUMN outbox_revision;`);
+  const insert = db.openDb().prepare(`INSERT INTO session_spoken_turns
+    (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, message_id)
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?)`);
+  for (const nativeId of ["anchored", null]) {
+    insert.run(nativeId ?? "orphan", key, injectionFingerprint(text), text, text, now, nativeId);
+  }
+  db.closeDb();
+  const transcript = fakeTranscript();
+  const typed = transcript.append("typed", text, now);
+  const anchored = transcript.append("anchored", text, now + 1);
+  const bound = spokenLedger.bound(transcript.conversation(key), [typed, anchored]);
+  assert.deepEqual([...bound.rows.keys()], [anchored.id]);
 });
 
 test("busy spoken message takes the live ask list on idle, matches its composed echo and records one human Goal", async t => {

@@ -3850,6 +3850,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "pending_turns", "composed_at", "INTEGER");
   addColumn(d, "pending_turns", "spoken_handoff_key", "TEXT");
   addColumn(d, "pending_turns", "spoken_handoff_generation", "INTEGER");
+  addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
+  addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
   addColumn(d, "session_work_cycles", "spoken_hold", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "pending_turns", "deadline_at", "INTEGER");
   addColumn(d, "pending_turns", "interrupt_attempted_at", "INTEGER");
@@ -13291,23 +13293,28 @@ export interface BindableDelivery {
 export interface SpokenTurnRow extends BindableDelivery {
   spokenWords: string;
   received: string;
+  outboxTurnId: string | null;
+  outboxRevision: number | null;
 }
 
 export function insertSpokenTurn(row: SpokenTurnRow): void {
   openDb().prepare(
     `INSERT INTO session_spoken_turns
-       (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, contested, message_id, message_ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, note_key, fingerprint, spoken_words, received, delivered_at, transcript_offset, contested, message_id, message_ts,
+        outbox_turn_id, outbox_revision)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.noteKey, row.fingerprint, row.spokenWords, row.received,
-    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs);
+    row.deliveredAt, row.transcriptOffset, Number(row.contested), row.messageId, row.messageTs, row.outboxTurnId, row.outboxRevision);
 }
 
 export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
+  // Older reservations have no attempt identity. Keep their native bindings and client receipts,
+  // but a text match alone cannot prove that an unbound legacy attempt reached its guard.
   const rows = openDb().prepare(
     `SELECT id, note_key AS noteKey, fingerprint, spoken_words AS spokenWords, received,
             delivered_at AS deliveredAt, transcript_offset AS transcriptOffset, contested,
-            message_id AS messageId, message_ts AS messageTs
-       FROM session_spoken_turns WHERE note_key = ? ORDER BY rowid`,
+            message_id AS messageId, message_ts AS messageTs, outbox_turn_id AS outboxTurnId, outbox_revision AS outboxRevision
+       FROM session_spoken_turns WHERE note_key = ? AND (outbox_turn_id IS NOT NULL OR message_id IS NOT NULL) ORDER BY rowid`,
   ).all(noteKey) as unknown as Array<Omit<SpokenTurnRow, "contested"> & { contested: number }>;
   return rows.map(row => ({ ...row, contested: row.contested === 1 }));
 }

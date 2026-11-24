@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import type { PendingTurn } from "@shared/types.ts";
 import {
   bindDelegatedTurn,
   bindReviewDelivery,
@@ -100,9 +101,10 @@ export const spokenLedger = new DeliveryLedger<SpokenTurnRow>({
 });
 
 /** On runtimes that accept a native user-message id, reserve that identity before the write. */
-export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWords: string, received: string, clientMessageIds: boolean) {
+export function reserveSpokenTurn(conversation: DeliveryConversation, spokenWords: string, received: string,
+  clientMessageIds: boolean, attempt: Pick<PendingTurn, "id" | "revision">) {
   return spokenLedger.reserve(conversation, received, base => ({
-    ...base, spokenWords, received,
+    ...base, spokenWords, received, outboxTurnId: attempt.id, outboxRevision: attempt.revision,
     messageId: clientMessageIds && base.transcriptOffset === null ? base.id : null,
   }));
 }

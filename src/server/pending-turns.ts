@@ -230,28 +230,38 @@ function daemonAuthorOf(turn: PendingTurn): TurnOrigin | null {
  */
 type OutboxSend =
   | { kind: "review"; noteKey: string; id: string }
-  | { kind: "spoken"; id: string; clientMessageId: string | null }
+  | { kind: "spoken"; words: string; reservationId: string | null }
   | { kind: "other"; handle: OtherSendHandle };
 
 function recordOutboxSend(session: Session, turn: PendingTurn): OutboxSend {
-  const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
   if (turn.spokenWords !== undefined) {
-    const spokenWords = turn.spokenWords;
-    const row = reserveSpokenTurn(conversation, spokenWords, turn.text,
-      session.runtime === "sdk" && sdkFor(session.agent)?.clientMessageIds === true);
-    return { kind: "spoken", id: row.id, clientMessageId: row.messageId };
+    return { kind: "spoken", words: turn.spokenWords, reservationId: null };
   }
+  const conversation = { key: noteKeyFor(session), transcript: sessionMessages(session) };
   // Only a row the daemon queued about a review: an operator's message that happens to begin
   // with the marker line is the operator's, and is noted like any other send.
   const id = isReviewMessageTurn(turn) ? reserveReviewDelivery(conversation, turn.text, session.workCycle) : null;
   return id ? { kind: "review", noteKey: conversation.key, id } : { kind: "other", handle: noteOtherSend(conversation, turn.text) };
 }
 
+/** Both transports run this guard immediately before the write. Only a current, stamped
+ * attempt may reserve a transcript occurrence. A crash before the guard leaves no reservation. */
+function handoffSpokenTurn(send: OutboxSend, session: Session, turn: PendingTurn, generation: number, sdkInput?: SdkTurn): boolean {
+  if (send.kind !== "spoken" || send.reservationId !== null) return true;
+  if (!recordSpokenHandoff(turn.id, turn.revision, generation)) return false;
+  const conversation = { key: turn.noteKey, transcript: sessionMessages(session) };
+  const row = reserveSpokenTurn(conversation, send.words, turn.text,
+    sdkInput !== undefined && sdkFor(session.agent)?.clientMessageIds === true, turn);
+  send.reservationId = row.id;
+  if (sdkInput && row.messageId) sdkInput.clientMessageId = row.messageId;
+  return true;
+}
+
 /** Positive evidence that nothing landed: give the record back. */
 function withdrawOutboxSend(send: OutboxSend, turn: PendingTurn): void {
   if (send.kind === "review") releaseReviewDelivery(send.noteKey, send.id);
-  else if (send.kind === "spoken") spokenLedger.release(turn.noteKey, send.id);
-  else withdrawOtherSend(send.handle);
+  else if (send.kind === "other") withdrawOtherSend(send.handle);
+  else if (send.reservationId !== null) spokenLedger.release(turn.noteKey, send.reservationId);
 }
 
 /**
@@ -1224,12 +1234,13 @@ export class PendingTurnManager {
     let generation = session.workCycle?.generation ?? 0;
     try {
       const send = steer ? this.sdk.send.bind(this.sdk) : this.sdk.sendWhenIdle.bind(this.sdk);
-      const input = { text: turn.text, ...(outboxSend.kind === "spoken" && outboxSend.clientMessageId && { clientMessageId: outboxSend.clientMessageId }) };
+      const input: SdkTurn = { text: turn.text };
       const accepted = await send(session.id, input, () => {
         const blocker = this.acceptanceBlocker(handoff, steer);
         if (!blocker) {
-          generation = this.registry.getSession(session.id)?.workCycle?.generation ?? 0;
-          if (turn.spokenWords !== undefined && !recordSpokenHandoff(turn.id, turn.revision, generation)) {
+          const current = this.registry.getSession(session.id)!;
+          generation = current.workCycle?.generation ?? 0;
+          if (!handoffSpokenTurn(outboxSend, current, turn, generation, input)) {
             return "The spoken turn is no longer claimed for delivery.";
           }
           handoff.acceptanceBoundaryCrossed = true;
@@ -1402,7 +1413,7 @@ export class PendingTurnManager {
       if (resourceBlocker) return resourceBlocker;
       if (!boundaryCrossed) {
         const generation = current.workCycle?.generation ?? 0;
-        if (turn.spokenWords !== undefined && !recordSpokenHandoff(turn.id, turn.revision, generation)) {
+        if (!handoffSpokenTurn(outboxSend, current, turn, generation)) {
           return "The spoken turn is no longer claimed for delivery.";
         }
         boundaryCrossed = true;

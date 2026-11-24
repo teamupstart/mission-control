@@ -171,6 +171,21 @@ test("reserving Off protects the still-current revision before its PUT arrives",
   assert.equal(retry.status, 409);
 });
 
+test("a window can supersede only its own earlier pending Off", async () => {
+  const a = randomUUID(), b = randomUUID(), revision = await readProviderRevision();
+  const reserve = (writer: string, edit: number, optOut: boolean) => json("/api/voice/config/provider-intent", "POST", {
+    writer, observedRevision: revision, edit, optOut,
+  });
+  assert.equal((await reserve(a, 2, true)).status, 200);
+  assert.equal((await reserve(a, 1, false)).status, 409);
+  assert.equal((await reserve(a, 3, false)).status, 200);
+  assert.equal((await reserve(b, 1, true)).status, 200);
+  const own = await reserve(a, 4, true);
+  assert.equal(own.status, 200);
+  assert.equal((await reserve(a, 5, false)).status, 409);
+  assert.equal((await choose("off", (await own.json()).ticket)).status, 200);
+});
+
 test("newer explicit provider tickets win across windows unless an intervening Off invalidated their view", async () => {
   const a = randomUUID(), b = randomUUID();
   for (const newerFirst of [false, true]) {

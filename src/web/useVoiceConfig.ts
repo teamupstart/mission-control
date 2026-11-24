@@ -128,7 +128,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
     const selectedAt = performance.now();
     const observed = observedProviderRevision ?? latestProvider.current?.revision ?? "";
     const optOut = decisionProvider === "off";
-    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observed, optOut) : undefined;
+    const reservation = changesProvider ? api.reserveVoiceProviderWrite(writer, observed, optOut, edit.id) : undefined;
     const save = async (): Promise<boolean> => {
       const order = await reservation;
       const sendProvider = changesProvider && edit.id === latestProviderEdit.current;
@@ -147,7 +147,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       const canRetry = optOut || (window?.pendingOff && res.providerRevision === observed);
       if (canRetry && !order?.ticket && !superseded() && res.status === 409 && res.providerRevision &&
           window && window.quietForMs > performance.now() - selectedAt) {
-        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, optOut, window.token);
+        const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision, optOut, edit.id, window.token);
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }
       const unconfirmed = sendProvider && (!res.config || !res.providerRevision) &&

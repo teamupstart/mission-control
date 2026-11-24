@@ -354,6 +354,41 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "23-stale-window-opts-out");
   });
 
+  test("Jev supersedes the same window's Off when both selections precede either reservation", async ({ dashboard: page, daemon, decisions }) => {
+    await turnVoiceOn(daemon);
+    await codexAgents(daemon);
+    await openVoiceSettings(page, daemon);
+    await saveKey(page, "Jev", SAVED_JEV);
+    await providerMenu(page).selectOption("openai");
+    await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+    const requests = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const release = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    let count = 0;
+    await page.route("**/api/voice/config/provider-intent", async route => {
+      const index = count++;
+      if (index < 2) {
+        requests[index]!.resolve();
+        await release[index]!.promise;
+      }
+      await route.continue();
+    });
+    try {
+      await providerMenu(page).selectOption("off");
+      await requests[0]!.promise;
+      await providerMenu(page).selectOption("jev");
+      await requests[1]!.promise;
+      const first = page.waitForResponse(r => r.url().endsWith("/provider-intent"));
+      release[0]!.resolve();
+      expect((await first).status()).toBe(200);
+    } finally {
+      for (const gate of release) gate.resolve();
+    }
+    await expect(line(page)).toHaveText(using("Jev"), { timeout: 1_500 });
+    expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe("Jev answered: split");
+    expect(decisions.requests).toHaveLength(1);
+    await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "33-same-window-supersedes");
+  });
+
   test("an earlier Jev reservation arriving after another window reserved Off cannot send speech", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

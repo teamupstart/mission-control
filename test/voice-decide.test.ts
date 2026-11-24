@@ -573,6 +573,7 @@ test("a roster pick after an uncertain mention never redirects Steve's whole mes
   assert.deepEqual(delivered, [["Steve", "ask Alice about the build", "one"]]);
   t.mock.timers.setTime(101);
   await say("Steve, ask Alice about the build", "two");
+  t.mock.timers.setTime(102);
   await say("Alice");
   assert.equal(await router.sendNow("two"), true);
   assert.deepEqual(delivered.slice(1), [["Steve", "ask", "two"], ["Alice", "about the build", "two#2"]]);
@@ -1224,7 +1225,10 @@ test("a spoken boundary choice waits for the model's follow-up rows", async (t) 
   await router.resolution("model");
   await capture("early", "Alice", 150);
   assert.equal(router.activeCards()[0]?.state, "unsure");
-  await capture("current", "Alice", 200);
+  t.mock.timers.setTime(201);
+  await capture("tied", "Alice", 200);
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  await capture("current", "Alice", 201);
   assert.ok(await router.sendNow("model"));
   assert.deepEqual(delivered, [["Steve", "check the build", "model"], ["Alice", "review the PR", "model#2"]]);
 });
@@ -1282,7 +1286,11 @@ test("speech captured during initial resolution cannot confirm newly offered cho
     await router.resolution("initial");
     await capture("early", target, 150);
     assert.equal(router.activeCards()[0]?.state, "unsure");
-    await capture("current", target, 200);
+    t.mock.timers.setTime(201);
+    await capture("tied", target, 200);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    assert.equal(router.heard.list().find(e => e.id === "tied")?.rule, "ambiguous-pick");
+    await capture("current", target, 201);
     assert.equal(router.activeCards()[0]?.state, "pending");
   }
 });

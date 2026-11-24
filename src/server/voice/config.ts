@@ -22,7 +22,7 @@ let issued = 0;
 let latestIntentAt = performance.now();
 let applied = 0;
 let lastOptOut = 0;
-let reservedOptOut = 0;
+let reservedOff: { order: number; writer: string; edit: number; otherWriterOrder: number } | undefined;
 let lastWriter: string | undefined;
 let writerBase = 0;
 
@@ -37,7 +37,7 @@ function issueProviderOrder(): number {
 
 /** A gesture may retry only across an interval with no intervening selection. */
 export function providerIntentWindow() {
-  return { token: `${instance}:${issued}:${applied}`, quietForMs: performance.now() - latestIntentAt, pendingOff: reservedOptOut > applied };
+  return { token: `${instance}:${issued}:${applied}`, quietForMs: performance.now() - latestIntentAt, pendingOff: (reservedOff?.order ?? 0) > applied };
 }
 
 function canApply(writer: string, base: number): boolean {
@@ -47,13 +47,21 @@ function canApply(writer: string, base: number): boolean {
 }
 
 /** Reserve the order of a dashboard selection before its config write can be delayed. */
-export function reserveProviderWrite(writer: string, revision: string, optOut: boolean, unchangedSince?: string): string | null {
+export function reserveProviderWrite(writer: string, revision: string, optOut: boolean, edit = 0, unchangedSince?: string): string | null {
   if (unchangedSince !== undefined && unchangedSince !== providerIntentWindow().token) return null;
-  if (!optOut && reservedOptOut > applied && !unchangedSince) return null;
+  if (!optOut && reservedOff && reservedOff.order > applied && !unchangedSince) {
+    // Clicks within one window already have an order, even when both requests
+    // were held in transit. This exception cannot supersede another window's Off.
+    if (writer !== reservedOff.writer || edit <= reservedOff.edit || reservedOff.otherWriterOrder > applied) return null;
+  }
   const base = Number(revision.slice(instance.length + 1));
   if (revision !== `${instance}:${base}` || !Number.isSafeInteger(base) || !canApply(writer, base)) return null;
   const order = issueProviderOrder();
-  if (optOut) reservedOptOut = order;
+  if (optOut) {
+    reservedOff = reservedOff?.writer === writer
+      ? { ...reservedOff, order, edit: Math.max(reservedOff.edit, edit) }
+      : { order, writer, edit, otherWriterOrder: reservedOff?.order ?? 0 };
+  }
   return `${instance}:${order}:${writer}:${base}${optOut ? ":off" : ""}`;
 }
 

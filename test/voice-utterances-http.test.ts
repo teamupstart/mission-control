@@ -501,6 +501,7 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
     await say("Steven ask Will about it", method);
     await resolved(method);
     assert.equal((await act(method, "pick", { id: "unknown" })).status, 409);
+    t.mock.timers.setTime(Date.now() + 1);
     if (method === "spoken") await say("Will");
     else assert.equal((await act(method, "pick", { id: "task:Will" })).status, 200);
     assert.equal(cards.at(-1)?.state, "pending");
@@ -509,9 +510,12 @@ test("unsure waits indefinitely, cancels without sending, and accepts a spoken o
   }
 });
 
-test("a spoken pick finds the only matching unsure card, even when it is older", async () => {
+test("a spoken pick finds the only matching unsure card, even when it is older", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await say("Steven ask Will about the build", "older");
   await say("Steven ask Bill about the release", "newer");
+  await resolved("newer");
+  t.mock.timers.setTime(Date.now() + 1);
   await say("Steve");
   assert.deepEqual(cards.map((card) => [card.id, card.state]), [["older", "unsure"], ["newer", "unsure"]]);
   assert.equal((await readHeard())[0]?.rule, "ambiguous-pick");
@@ -528,13 +532,15 @@ test("a spoken pick finds the only matching unsure card, even when it is older",
   assert.equal(queued("Will").at(-1), "about the build");
 });
 
-test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async () => {
+test("a candidate with leading or nonterminal boundary punctuation leaves the card open until a bare pick", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const willBefore = queued("Will");
   const steveBefore = queued("Steve");
   await say("Steven ask Will about the results", "choice");
   await resolved("choice");
+  t.mock.timers.setTime(Date.now() + 1);
   for (const text of [",Will", " ?Will.", "Will,", "(Will)", "“Will”", '"Will"!', "'Will'", "“ Will ”", '" Will "!', "「 “ Will ” 」"]) {
     await say(text);
     assert.equal((await readHeard())[0]?.rule, "no-message");
@@ -612,6 +618,8 @@ test("a replacement session receives neither a pending message nor a pending int
   t.after(() => voiceStateStore.useRoster(() => roster));
   await say("Will, stop", "stop-original");
   await say("Steven ask Will about the deployment", "picked-message");
+  await resolved("picked-message");
+  t.mock.timers.tick(1);
   await say("Will.");
   const firstQueue = queued("Steve");
   const replacementQueue = queued("Bill");
@@ -712,7 +720,10 @@ test("a manual split pick leaves the card open when its running roster row has n
 });
 
 test("a spoken pick for a departed candidate records why the unsure card stays open", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await say("Steven ask Will about the release", "choose");
+  await resolved("choose");
+  t.mock.timers.setTime(Date.now() + 1);
   voiceStateStore.useRoster(() => roster.filter((target) => target.name !== "Will"));
   t.after(() => voiceStateStore.useRoster(() => roster));
   await say("Will", "departed");
@@ -849,6 +860,7 @@ test("at capacity the router rejects new cards but preserves deadlines, picks, c
   assert.deepEqual(registry.snapshot().voiceCards, snapshot);
   assert.equal(registry.voiceRouter!.pendingVoiceActions.length, 50);
   assert.ok(!(await readHeard()).some(({ id }) => id === "overflow"));
+  t.mock.timers.tick(1);
   assert.deepEqual(await (await say("Will")).json(), { accepted: true });
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["choice", "pending"]);
   await say("cancel");

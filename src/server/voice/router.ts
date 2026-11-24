@@ -151,7 +151,7 @@ export class VoiceRouter {
   private readonly open = new Map<string, OpenCard>();
   // Earlier choice rows can block a delayed spoken pick, but can never be picked again.
   private readonly priorChoices: {
-    cardId: string; from: number; until: number; reason: string; choices: { id: string; title: string }[];
+    cardId: string; from: number; until: number; state: "resolving" | "unsure"; reason: string; choices: { id: string; title: string }[];
   }[] = [];
   private picksKnownFrom = 0;
   private readonly delivering = new Map<string, VoiceCard>();
@@ -199,8 +199,8 @@ export class VoiceRouter {
     const from = item.choicesOfferedAt ?? item.entry.time;
     const until = Math.max(from, at, Date.now());
     item.choicesOfferedAt = until;
-    const { id: cardId, reason, candidates } = item.card;
-    this.priorChoices.push({ cardId, from, until, reason, choices: candidates.map(({ id, title }) => ({ id, title })) });
+    const { id: cardId, state, reason, candidates } = item.card;
+    this.priorChoices.push({ cardId, from, until, state, reason, choices: candidates.map(({ id, title }) => ({ id, title })) });
     if (this.priorChoices.length > HISTORY_LIMIT) {
       this.picksKnownFrom = Math.max(this.picksKnownFrom, this.priorChoices.shift()!.until + 1);
     }
@@ -221,7 +221,8 @@ export class VoiceRouter {
       .flatMap(window => {
         // At a millisecond tie, count an unchanged action once. A row with the same
         // name can now confirm a different recipient or split.
-        const current = window.until === capturedAt && unsureCards.find(card => card.id === window.cardId && card.reason === window.reason);
+        const current = window.until === capturedAt && unsureCards.find(card =>
+          card.id === window.cardId && card.state === window.state && card.reason === window.reason);
         if (!current) return window.choices.map(choice => choice.title);
         const titlesById = new Map(current.candidates.map(row => [row.id, row.title]));
         return window.choices.filter(choice => titlesById.get(choice.id) !== choice.title).map(choice => choice.title);

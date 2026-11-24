@@ -82,13 +82,15 @@ export function registerVoiceRoutes(
     ...(c.req.header("x-voice-provider-revision") === "read" && { providerRevision: providerRevision() }),
   }));
   const providerIntent = z.object({
-    writer: z.uuid(), observedRevision: z.string().min(1).max(80), optOut: z.boolean().optional(), unchangedSince: z.string().min(1).max(80).optional(),
+    writer: z.uuid(), observedRevision: z.string().min(1).max(80), optOut: z.boolean().optional(),
+    edit: z.int().positive().optional(), unchangedSince: z.string().min(1).max(80).optional(),
   });
   app.post("/api/voice/config/provider-intent", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, providerIntent, { strict: true });
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
-    const ticket = reserveProviderWrite(parsed.data.writer, parsed.data.observedRevision, parsed.data.optOut === true, parsed.data.unchangedSince);
+    const { writer, observedRevision, optOut, edit, unchangedSince } = parsed.data;
+    const ticket = reserveProviderWrite(writer, observedRevision, optOut === true, edit, unchangedSince);
     return ticket ? c.json({ ticket }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
   });
   app.put("/api/voice/config", gate, limitBody, async (c) => {

@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { askSentence, type VoiceSpeechState } from "@shared/voice-speech.ts";
-import { voiceCardDeadline, voiceCardRetryDelay, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { agentKeepsWorking } from "@shared/async-input.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
+import { askSentence, type VoiceSpeechState } from "@shared/voice-speech.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { AgentName, SpokenHint } from "./AgentName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -181,7 +181,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       const sendHint = split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
         : "Deliver this message before the countdown ends";
       body = <><div className="vc-row"><Icon name="mic" /><span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
-        {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{Math.ceil(Math.min(remaining, card.windowMs ?? remaining) / 1000)}s</span>}</div>
+        {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, card.windowMs)}s</span>}</div>
         {card.parts.map((p, i) => split || mention ? <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"}
           detail={p.immediateStop ? p.detail ?? p.text : mention ? messageWithMentions(p.text, card.mentions!) : p.text}
           state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div key={i}>{p.text}</div>)}

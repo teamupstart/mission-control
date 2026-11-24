@@ -555,6 +555,45 @@ test("a queued footer submit rechecks both the live window and the exact pending
   assert.equal(registry.getReview(q.id)?.status, "pending");
 });
 
+test("a companion submit must hear from every live dashboard before resolving the pending answer", async t => {
+  const q = question();
+  const router = registry.voiceRouter!;
+  await show([]);
+  // The second browser already has its stream, but its first report is in flight.
+  t.after(router.openCards.connect("other", true));
+  t.after(router.openCards.connect("native-notifications"));
+  const report = (windowId: string, focused: boolean, open: boolean, seq?: number) => put("/api/voice/open-cards", {
+    windowId, focused, cards: open ? [{ kind: "question", id: q.id, focused }] : [],
+  }, seq ? { "x-voice-confirm-focus": String(seq) } : {});
+  await say("Steve, option B", "companion-click");
+  const requests = new Map<string, number>();
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") requests.set(event.windowId, event.sequence);
+    else publish(event);
+  });
+  const submit = () => router.sendNow("companion-click", { companion: true });
+  const delayed = submit();
+  assert.deepEqual([...requests.keys()].sort(), ["other", "voice-question-test"]);
+  await report("voice-question-test", false, false, requests.get("voice-question-test"));
+  await report("other", true, true, requests.get("other"));
+  assert.equal(await delayed, false);
+  assert.equal(answers()[0]?.footerWindowId, "other");
+  await report("other", false, false);
+  const corrected = submit();
+  await say("no, A", "later-choice");
+  await report("voice-question-test", false, false, requests.get("voice-question-test"));
+  await report("other", false, false, requests.get("other"));
+  assert.equal(await corrected, false);
+  assert.equal(answers()[0]?.id, "later-choice");
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  const fresh = router.sendNow("later-choice", { companion: true });
+  await report("voice-question-test", false, false, requests.get("voice-question-test"));
+  await report("other", true, false, requests.get("other"));
+  assert.equal(await fresh, true);
+  assert.equal(registry.getReview(q.id)?.status, "answered");
+});
+
 test("a late report from a timed-out request cannot reinstate a closed card on the same focus transition", async t => {
   const q = question();
   const windowId = "late-report";

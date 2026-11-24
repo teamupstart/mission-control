@@ -487,10 +487,10 @@ export class VoiceRouter {
     return this.openCards.captureTiming(time.openedAt, monotonic);
   }
 
-  private confirmQuestionFocus(windowId: string, signal?: AbortSignal): Promise<boolean> {
+  private confirmationSignal(signal?: AbortSignal): AbortSignal {
     const signals = [this.lifetime.signal, AbortSignal.timeout(3000)];
     if (signal) signals.push(signal);
-    return this.openCards.confirmFocus(windowId, this.questions!.confirmFocus, AbortSignal.any(signals));
+    return AbortSignal.any(signals);
   }
 
   private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
@@ -529,7 +529,7 @@ export class VoiceRouter {
     const drawn = this.openCards.target(candidates, !!target);
     const calibratingTarget = this.openCards.calibrating ? drawn?.id : undefined;
     this.reserveAnswer(item);
-    const confirmed = await this.confirmQuestionFocus(windowId, item.modelStep!.signal);
+    const confirmed = await this.openCards.confirmFocus(windowId, this.questions!.confirmFocus, this.confirmationSignal(item.modelStep!.signal));
     if (this.open.get(item.card.id) !== item) return;
     const pendingIds = new Set(this.questions!.pending().map(q => q.id));
     const pending = candidates.filter(q => pendingIds.has(q.id));
@@ -964,13 +964,17 @@ export class VoiceRouter {
   async sendNow(id: string, source?: { companion: boolean; windowId?: string }): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
-    if (source?.companion && (!item.answer || item.answer.footerWindowId)) return false;
-    if (source && !source.companion && item.answer) {
-      const { windowId } = source;
-      if (!windowId || windowId !== item.answer.footerWindowId) return false;
-      // The click may overtake a close or blur report. The existing countdown
-      // and its Cancel action stay live while the dashboard confirms the footer.
-      if (!await this.confirmQuestionFocus(windowId) || this.open.get(id) !== item || item.answer.footerWindowId !== windowId) return false;
+    if (source?.companion && !item.answer) return false;
+    if (source && item.answer) {
+      const owner = source.companion ? undefined : source.windowId;
+      if ((!source.companion && !owner) || item.answer.footerWindowId !== owner) return false;
+      // Either submit control can overtake a handoff. Keep Cancel and expiry live
+      // while the windows confirm which surface still owns this exact action.
+      const request = this.questions!.confirmFocus;
+      const signal = this.confirmationSignal();
+      const confirmed = owner ? await this.openCards.confirmFocus(owner, request, signal)
+        : await this.openCards.confirmCompanion(item.answer.reviewId, request, signal);
+      if (!confirmed || this.open.get(id) !== item || item.answer.footerWindowId !== owner) return false;
     }
     this.take(item);
     if (this.state().mode === "off") return false;

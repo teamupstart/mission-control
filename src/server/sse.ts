@@ -41,7 +41,10 @@ export function sseHandler(registry: Registry) {
   return (c: Context) =>
     streamSSE(c, endedOnShutdown(async (stream) => {
       const windowId = crypto.randomUUID();
-      const disconnect = registry.voiceRouter?.openCards.connect(windowId);
+      // A dashboard can open its inbox before its first card report arrives.
+      // Native event consumers share this endpoint and cannot confirm dashboard DOM.
+      const browserStream = c.req.header("sec-fetch-site") === "same-origin" && c.req.header("sec-fetch-mode") === "cors";
+      const disconnect = registry.voiceRouter?.openCards.connect(windowId, browserStream);
       try { await streamRegistryEvents(registry, stream, windowId); }
       finally { disconnect?.(); }
     }));

@@ -384,18 +384,24 @@ test("a companion identifies its destination and hands its calibrated countdown 
   }
 });
 
-test("a footer submit that overtakes the card’s close report leaves the answer pending", async ({ dashboard: page, daemon }) => {
+for (const closing of [true, false]) {
+test(closing ? "a footer submit that overtakes the card’s close report leaves the answer pending"
+  : "a companion submit that overtakes the card’s open report leaves the answer pending", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 30);
   const steve = await runningAgent(page, daemon, "Steve");
   const id = await file(page, daemon, steve.cwd, "When should the build start?");
-  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const openInbox = () => page.locator("button.pulse-seg", { hasText: "to answer" }).click();
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
-  await expectContentClearsBorder(inbox);
+  const companion = page.getByRole("status").filter({ hasText: "Voice answer" });
+  if (closing) {
+    await openInbox();
+    await expectContentClearsBorder(inbox);
+  }
   await say(daemon, "Steve, answer: tomorrow");
-  const submit = inbox.getByRole("button", { name: "Submit now" });
+  const submit = (closing ? inbox : companion).getByRole("button", { name: "Submit now" });
   await expect(submit).toBeEnabled();
   const clicked = Promise.withResolvers<void>();
-  const closed = Promise.withResolvers<void>();
+  const transition = Promise.withResolvers<void>();
   const send = Promise.withResolvers<void>();
   const releaseReport = Promise.withResolvers<void>();
   await page.route("**/api/voice/cards/*/send-now*", async route => {
@@ -404,8 +410,8 @@ test("a footer submit that overtakes the card’s close report leaves the answer
     await route.continue();
   });
   await page.route("**/api/voice/open-cards", async route => {
-    if (!route.request().postDataJSON().cards.length && !route.request().headers()["x-voice-confirm-focus"]) {
-      closed.resolve();
+    if (Boolean(route.request().postDataJSON().cards.length) !== closing && !route.request().headers()["x-voice-confirm-focus"]) {
+      transition.resolve();
       await releaseReport.promise;
     }
     await route.continue().catch(() => {});
@@ -413,20 +419,26 @@ test("a footer submit that overtakes the card’s close report leaves the answer
   try {
     await submit.click();
     await clicked.promise;
-    await page.keyboard.press("Escape");
-    await closed.promise;
+    if (closing) await page.keyboard.press("Escape");
+    else {
+      await openInbox();
+      await expectContentClearsBorder(inbox);
+    }
+    await transition.promise;
     const rejected = page.waitForResponse(r => r.url().includes("/send-now"));
     send.resolve();
     expect((await rejected).status()).toBe(409);
-    const companion = page.getByRole("status").filter({ hasText: "Voice answer" });
-    await expect(companion).toContainText("tomorrow");
-    await companion.getByRole("button", { name: "Cancel" }).click();
+    const owner = closing ? companion : inbox;
+    if (closing) await expect(companion).toContainText("tomorrow");
+    else await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
+    await owner.getByRole("button", { name: "Cancel", exact: true }).click();
     expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
   } finally {
     send.resolve();
     releaseReport.resolve();
   }
 });
+}
 
 test("switching the same stream to the standalone surface withdraws the footer and restores the companion", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 30);
@@ -454,4 +466,8 @@ test("switching the same stream to the standalone surface withdraws the footer a
   const picker = page.getByRole("status").filter({ hasText: "Which question?" });
   await picker.getByRole("button", { name: title, exact: false }).click();
   await expect(picker).toContainText("Focus a dashboard");
+  await picker.getByRole("button", { name: "Cancel", exact: true }).click();
+  await say(daemon, "Steve, answer: tonight");
+  await companion.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tonight");
 });

@@ -91,12 +91,13 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       else retry = setTimeout(report, 500);
     };
     void report();
-    if (!dashboard) return () => { controller.abort(); clearTimeout(retry); };
     const observer = new MutationObserver(() => void report());
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true,
-      attributeFilter: ["data-overlay-top", "data-voice-question", "inert", "hidden"] });
     const events = ["focus", "blur", "focusin", "focusout", "visibilitychange"];
-    for (const event of events) window.addEventListener(event, report, true);
+    if (dashboard) {
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ["data-overlay-top", "data-voice-question", "inert", "hidden"] });
+      for (const event of events) window.addEventListener(event, report, true);
+    }
     const confirm = (event: Event) => {
       const { windowId: requestedWindow, sequence } = (event as CustomEvent<{ windowId: string; sequence: number }>).detail;
       if (windowId !== requestedWindow || sequence <= confirmation) return;

@@ -28,7 +28,7 @@ const FOCUS_CLOCK_ROUNDING_US = 2_000;
 
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
-  private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number }>();
+  private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number; browser: boolean }>();
   private clockSkewMs = 0;
   private changedAt = 0;
   private observedAt?: VoiceTimeBounds;
@@ -41,12 +41,12 @@ export class VoiceOpenCards {
 
   constructor(private readonly changed: () => void = () => {}) {}
 
-  connect(windowId: string): () => void {
+  connect(windowId: string, browser = false): () => void {
     // The first observation in this stream happens after the dashboard gets its ID.
     // Freeze the causal lower bound here so HTTP arrival order cannot move it.
     const previous = this.reports.get(windowId);
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
-    const token = { floorUs: this.latestFocusUs, clockOffsetUs: previous?.clockOffsetUs ?? this.clockSkewMs * 1000, connectedAt: performance.now() };
+    const token = { floorUs: this.latestFocusUs, clockOffsetUs: previous?.clockOffsetUs ?? this.clockSkewMs * 1000, connectedAt: performance.now(), browser };
     this.streams.set(windowId, token);
     if (previous) this.reportChanged();
     return () => {
@@ -94,7 +94,7 @@ export class VoiceOpenCards {
       observation?.earliest !== last?.observation?.earliest || !!calibrating !== !!last?.calibrating);
     if (!calibrating && timing.confirmed && timing.confirmed <= this.confirmationSequence) {
       for (const [sequence, request] of this.confirmations) {
-        if (request.windowId === report.windowId && sequence <= timing.confirmed) request.finish(this.current === report);
+        if (request.windowId === report.windowId && sequence <= timing.confirmed) request.finish(true);
       }
     }
     return true;
@@ -111,8 +111,8 @@ export class VoiceOpenCards {
     this.changed();
   }
 
-  /** Only a report read from the DOM after this request can confirm a spoken reply. */
-  confirmFocus(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
+  /** Only a report read from the DOM after this request can confirm the surface. */
+  private confirmReport(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
     if (signal.aborted || !this.streams.has(windowId)) return Promise.resolve(false);
     const sequence = ++this.confirmationSequence;
     return new Promise(resolve => {
@@ -126,6 +126,24 @@ export class VoiceOpenCards {
       signal.addEventListener("abort", stop, { once: true });
       request(windowId, sequence);
     });
+  }
+
+  async confirmFocus(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
+    return await this.confirmReport(windowId, request, signal) && this.current?.windowId === windowId;
+  }
+
+  private reportingWindows(): string[] {
+    return [...this.streams].filter(([id, stream]) => stream.browser || this.reports.has(id)).map(([id]) => id);
+  }
+
+  async confirmCompanion(reviewId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
+    const confirmed = new Set<string>();
+    await Promise.all(this.reportingWindows().map(async windowId => {
+      if (await this.confirmReport(windowId, request, signal)) confirmed.add(windowId);
+    }));
+    // A dashboard may have connected or disappeared during confirmation. Every
+    // window still capable of taking the footer must have replied for this click.
+    return !signal.aborted && !this.footerOwner(reviewId) && this.reportingWindows().every(id => confirmed.has(id));
   }
 
   get calibrating(): boolean {

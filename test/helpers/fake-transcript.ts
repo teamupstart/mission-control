@@ -13,6 +13,7 @@ export function fakeTranscript() {
   const turns: TranscriptMessage[] = [];
   let sizeFails: boolean | "missing" = false;
   const read = {
+    snapshot: () => sizeFails ? null : { size: turns.length * TURN_BYTES, version: String(turns.length) },
     size: () => {
       if (sizeFails === "missing") return null;
       if (sizeFails) throw new Error("transcript size unreadable");

@@ -27,7 +27,7 @@ import {
   type ReviewDeliveryRow,
   type SpokenTurnRow,
 } from "./db.ts";
-import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, onSend, registerDeliveryLedgers, transcriptSize, type DeliveryConversation } from "./delivery-binding.ts";
+import { DELIVERY_LAG_MS, DeliveryLedger, forgetDeliveryBindingState, onSend, registerDeliveryLedgers, type DeliveryConversation } from "./delivery-binding.ts";
 import { settleSteerEchoesBeforeSend } from "./review-steer-echo.ts";
 
 export {
@@ -144,12 +144,13 @@ export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: stri
   const cutoff = now - DELIVERY_LAG_MS;
   const candidates = expiredSpokenReservations(cutoff);
   let removed = 0;
-  for (const { noteKey, offset, lastOffset } of candidates) {
+  for (const { noteKey } of candidates) {
     const transcript = transcriptFor(noteKey);
     if (!transcript) continue;
-    const size = transcriptSize(transcript);
-    if (size === null || size < lastOffset) continue;
-    let from = offset;
+    const snapshot = transcript.read.snapshot?.(transcript.path);
+    if (!snapshot) continue;
+    // A rewritten native transcript can put a client UUID before the offset recorded at handoff.
+    let from = 0;
     for (;;) {
       let page;
       try {
@@ -161,13 +162,13 @@ export function pruneAbandonedSpokenTurns(now: number, transcriptFor: (key: stri
       spokenLedger.bound({ key: noteKey, transcript }, page.messages, now);
       if (page.start !== from) break;
       if (page.atEnd) {
-        // A reader can also return an empty terminal page on I/O failure or an incomplete line.
-        if (page.end === size && transcriptSize(transcript) === size) {
+        // Only a complete walk of the same file revision establishes absence.
+        if (page.end === snapshot.size && transcript.read.snapshot?.(transcript.path)?.version === snapshot.version) {
           removed += deleteExpiredSpokenReservations(noteKey, cutoff);
         }
         break;
       }
-      if (page.end <= from || page.end >= size) break;
+      if (page.end <= from || page.end >= snapshot.size) break;
       from = page.end;
     }
   }

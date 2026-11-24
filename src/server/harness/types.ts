@@ -300,6 +300,8 @@ export interface TranscriptMessages {
    * item is delivered. Null when the file is missing.
    */
   size(path: string): number | null;
+  /** Identify one file revision for a scan that needs to prove a receipt is absent. */
+  snapshot?(path: string): { size: number; version: string } | null;
   /** Recent history for a live stream, plus the offset to resume from. Throws if unreadable. */
   initial(path: string): TranscriptInitialRead;
   /**

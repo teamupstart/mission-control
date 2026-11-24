@@ -622,5 +622,13 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     return { messages: parseMany(text.split("\n")), pos: pos + lastNl + 1 };
   };
 
-  return { window, since, size: transcriptSize, initial, before, after, appended, narration };
+  const snapshot = (path: string) => {
+    try {
+      const s = statSync(path, { bigint: true });
+      return { size: Number(s.size), version: [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join(":") };
+    } catch {
+      return null;
+    }
+  };
+  return { window, since, size: transcriptSize, snapshot, initial, before, after, appended, narration };
 }

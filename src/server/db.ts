@@ -13369,9 +13369,8 @@ export function observeSpokenClientReceipt(id: string, messageTs: number): void 
 }
 
 export function expiredSpokenReservations(cutoff: number) {
-  return openDb().prepare(`SELECT note_key AS noteKey, MIN(COALESCE(transcript_offset, 0)) AS offset,
-    MAX(COALESCE(transcript_offset, 0)) AS lastOffset FROM session_spoken_turns WHERE abandoned_at <= ? GROUP BY note_key`)
-    .all(cutoff) as { noteKey: string; offset: number; lastOffset: number }[];
+  return openDb().prepare(`SELECT DISTINCT note_key AS noteKey FROM session_spoken_turns WHERE abandoned_at <= ?`)
+    .all(cutoff) as { noteKey: string }[];
 }
 
 export function deleteExpiredSpokenReservations(noteKey: string, cutoff: number): number {

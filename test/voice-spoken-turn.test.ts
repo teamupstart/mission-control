@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -400,6 +400,49 @@ test("cleanup retains spoken payloads through missing, unreadable and incomplete
   assert.equal(spokenLedger.bound(conversation, [message]).rows.get(message.id)?.received, words);
 });
 
+test("cleanup recovers an SDK receipt moved before its handoff offset by transcript replacement", async t => {
+  const { pruneAbandonedSpokenTurns, reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "replaced-spoken-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const words = "inspect the build";
+  const now = Date.now();
+  const expiry = now + DELIVERY_LAG_MS + 60_000;
+  const line = (uuid: string) => JSON.stringify({ type: "user", uuid, timestamp: new Date(now).toISOString(),
+    message: { role: "user", content: words } }) + "\n";
+  for (const when of ["before", "during"]) {
+    const key = "replaced-" + when;
+    const path = join(dir, key + ".jsonl");
+    const typed = line("0".repeat(36));
+    writeFileSync(path, typed + typed);
+    const read = claudeTranscript.messages!;
+    const row = reserveSpokenTurn({ key, transcript: { path, read } }, words, words, true, claimSpoken(key, words, words), now);
+    assert.equal(row.transcriptOffset, Buffer.byteLength(typed + typed));
+    db.recoverSendingPendingTurns(now);
+    db.clearPendingTurns(key);
+    writeFileSync(path, typed + typed + typed);
+    const replacement = path + ".replacement";
+    writeFileSync(replacement, line(row.id) + typed + typed);
+    assert.equal(statSync(replacement).size, statSync(path).size);
+    if (when === "before") renameSync(replacement, path);
+    const lookup = (candidate: string) => candidate === key ? { path, read } : null;
+    const after = read.after.bind(read);
+    const scan = t.mock.method(read, "after", (...args: Parameters<typeof read.after>) => {
+      const page = after(...args);
+      if (when === "during") renameSync(replacement, path);
+      return page;
+    });
+    assert.equal(pruneAbandonedSpokenTurns(expiry, lookup), 0, when);
+    scan.mock.restore();
+    if (when === "during") {
+      assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, null);
+      assert.equal(pruneAbandonedSpokenTurns(expiry, lookup), 0);
+    }
+    assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now, when);
+  }
+});
+
 test("cleanup distinguishes a verified empty transcript from a failed read at byte zero", async t => {
   const { reserveSpokenTurn, pruneAbandonedSpokenTurns } = await import("../src/server/delivery-ledgers.ts");
   const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
@@ -413,7 +456,7 @@ test("cleanup distinguishes a verified empty transcript from a failed read at by
   db.recoverSendingPendingTurns(Date.now());
   db.clearPendingTurns(key);
   const now = Date.now() + DELIVERY_LAG_MS + 10;
-  const read = { ...claudeTranscript.messages!, size: () => 0 };
+  const read = { ...claudeTranscript.messages!, snapshot: () => ({ size: 0, version: "stable" }) };
   const lookup = (k: string) => k === key ? { path, read } : null;
   // The size probes report zero while the actual native reader cannot open the path.
   assert.equal(pruneAbandonedSpokenTurns(now, lookup), 0);

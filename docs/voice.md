@@ -24,7 +24,8 @@ Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an emp
 The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
-For smaller positive clock differences it uses receipt time for ordering and Recently heard.
+Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The daemon starts each delivery deadline when it opens the pending card.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority

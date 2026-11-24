@@ -1773,9 +1773,12 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
   });
 }
 
-for (const timing of ["during the sibling probe", "immediately before the claim", "during the sibling reservation", "budget expires"] as const) {
+for (const timing of ["during the sibling probe", "immediately before the claim", "during the sibling reservation", "budget expires", "slow async probe"] as const) {
   const budgetCase = timing === "budget expires";
-  test(budgetCase ? "a shared checkout verification budget expires into fresh reviews" : `a checkout edited ${timing} earns a fresh review`, async t => {
+  const slowProbe = timing === "slow async probe";
+  const name = slowProbe ? "a slow asynchronous probe preserves the remaining synchronous budget for unchanged publications"
+    : budgetCase ? "a shared checkout verification budget expires into fresh reviews" : `a checkout edited ${timing} earns a fresh review`;
+  test(name, async t => {
     const sibling = "/second-probed-publication";
     let releaseSibling!: () => void;
     const held = new Promise<void>(resolve => { releaseSibling = resolve; });
@@ -1789,7 +1792,7 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
         if (simulatedTime !== null) {
           assert.ok(deadline !== undefined && deadline > simulatedTime);
           deadlines.push(deadline);
-          simulatedTime = Math.min(simulatedTime + 110, deadline);
+          simulatedTime = Math.min(simulatedTime + (slowProbe ? 20 : 110), deadline);
           if (simulatedTime === deadline) return null;
         }
         if (editDuringClaim && cwd === sibling) primaryEdited = true;
@@ -1828,7 +1831,7 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
         await waitFor(() => h.store.getRun(id)?.status === "completed", "publication did not complete for " + root);
       }
       const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
-      if (budgetCase) {
+      if (budgetCase || slowProbe) {
         simulatedTime = 0;
         t.mock.method(performance, "now", () => simulatedTime!);
       }
@@ -1847,6 +1850,7 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
       const consumedBefore = h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration;
       const result = claim();
       await waitFor(() => probes.includes(sibling) && probes.includes("/repo"), "both checkouts must be probed");
+      if (slowProbe) simulatedTime! += 4_000;
       if (timing === "during the sibling probe") primaryEdited = true;
       editDuringClaim = timing === "during the sibling reservation";
       releaseSibling();
@@ -1858,7 +1862,11 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
       }
       const claimed = editDuringClaim ? await claim() : await result;
       assert.ok(claimed.claimed);
-      assert.notEqual(claimed.runId, primaryId);
+      if (slowProbe) {
+        assert.equal(claimed.runId, primaryId);
+        assert.equal(h.store.publicationHandoffTree(primaryId, generation), null);
+        assert.deepEqual(deadlines, [500, 500, 4500, 4500, 4500, 4500]);
+      } else assert.notEqual(claimed.runId, primaryId);
       if (budgetCase) {
         assert.deepEqual(deadlines, [500, 500, 500, 500, 500], "each synchronous read shares the remaining budget");
         assert.notEqual(h.store.latestRunForBinding(siblingBinding.id)?.id, siblingId);
@@ -1873,7 +1881,7 @@ for (const timing of ["during the sibling probe", "immediately before the claim"
 
 for (const change of ["session awaits CI", "repository binding becomes manual", "newer run is active", "newer run is cancelled",
   "sibling rerun supersedes matching checkout", "sibling rerun supersedes changed checkout",
-  "unprobed binding gains its first run"] as const) {
+  "unprobed binding gains its first run", "sibling worktree is reassigned"] as const) {
   test(`pending publication probe refuses the idle handoff when the ${change}`, async () => {
     let finishProbe: ((probe: WorkflowEvidenceProbe) => void) | undefined;
     const h = await harness(`pending-probe-${change.replaceAll(" ", "-")}`, {
@@ -1883,7 +1891,8 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
     try {
       const sibling = "/second-publication-checkout";
       const unprobedRace = change === "unprobed binding gains its first run";
-      const siblingRace = change.startsWith("sibling rerun") || unprobedRace;
+      const moved = change === "sibling worktree is reassigned";
+      const siblingRace = change.startsWith("sibling rerun") || unprobedRace || moved;
       if (siblingRace) {
         // Publish the sibling first. A later primary edit makes the primary the lead
         // in the pending claim, so a non-atomic fan-out would spend its generation.
@@ -1939,6 +1948,10 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
       } else if (change === "repository binding becomes manual") {
         refusal = /repository ownership changed during publication comparison/;
         assert.equal(h.store.updateBinding(bindingId, { triggerMode: "manual" })?.triggerMode, "manual");
+      } else if (moved) {
+        const task = h.registry.getTask(h.sessionId)!;
+        h.registry.upsertTask({ ...task, extraRepos: task.extraRepos.map(repo => ({ ...repo, worktreePath: sibling + "-new" })) });
+        refusal = /repository ownership changed.*rebind the workflow/;
       } else if (unprobedRace) {
         const { FIXTURE_RUN_INTENT } = await import("./helpers/workflow-run-intent.ts");
         const manual = { triggerSource: "manual" as const, triggerKey: "unprobed-rerun", now: Date.now() };

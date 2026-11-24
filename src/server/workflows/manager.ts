@@ -1,4 +1,5 @@
 import { publicationCheckoutRevision, PUBLICATION_REVISION_BUDGET_MS } from "./publication-revision.ts";
+import { canonicalWorktreePath } from "../worktrees/path.ts";
 import { readUnchangedRepository } from "./unchanged-repository.ts";
 import { hibernationHoldsConversation } from "@shared/hibernation.ts";
 import { PAUSED_SESSION_REASON } from "@shared/pause.ts";
@@ -1467,7 +1468,7 @@ export class WorkflowManager {
    * session that completes with no review anywhere is the failure this phase exists to
    * prevent.
    */
-  private repoRunTargets(session: Session, anchor: WorkflowBinding): WorkflowBinding[] {
+  private repoRunTargets(session: Session, anchor: WorkflowBinding, verifySiblingWorktrees = false): WorkflowBinding[] {
     // A sibling binding submitted directly reviews its own repository and nothing else. Only
     // the conversation's own binding fans out, so a manual resubmission of repo B's run can
     // never quietly start repo A's. Falsy reads as the session's own, the same rule
@@ -1490,6 +1491,12 @@ export class WorkflowManager {
     for (const { ref } of reviewable) {
       const binding = ref.role === "primary" ? anchor : this.ensureRepoBinding(anchor, ref);
       if (binding) {
+        // A sibling binding owns one checkout. Moving the task's worktree cannot transfer
+        // an active repair or a completed publication to that new checkout.
+        if (verifySiblingWorktrees && ref.role === "secondary" && (!ref.worktreePath || !binding.sessionCwd
+          || canonicalWorktreePath(binding.sessionCwd) !== canonicalWorktreePath(ref.worktreePath))) {
+          throw new Error(`Foreman completion repository ownership changed for ${ref.repoRoot}: rebind the workflow to the current worktree`);
+        }
         targets.push(binding);
         continue;
       }
@@ -3929,13 +3936,15 @@ export class WorkflowManager {
     // One settled turn, one run per repository it changed. `repoRunTargets` returns
     // `[anchor]` for every single-repo conversation, so everything below is one claim against
     // one binding exactly as it always was.
-    const targets = this.repoRunTargets(session, anchor);
+    const targets = this.repoRunTargets(session, anchor, true);
     // Only a completed publication needs a git read before the claim. Probe each checkout
     // independently, then revalidate ownership before spending the shared generation.
     const primaryCheckout = workflowCheckoutPath(anchor, session);
     const latestRuns = claim.completionKind === "prompted" ? targets.map(target => this.store.latestRunForBinding(target.id)) : [];
     const deadline = performance.now() + PUBLICATION_REVISION_BUDGET_MS;
     const probes = targets.flatMap((target, i) => this.publicationComparison(target, latestRuns[i] ?? null, session, claim, deadline) ?? []);
+    // Only synchronous work consumes the daemon's blocking budget. The asynchronous
+    // evidence capture can legitimately take seconds on an unchanged repository.
     const remainingVerificationMs = Math.max(0, deadline - performance.now());
     const comparisons = probes.length ? await Promise.all(probes) : [];
     if (probes.length) {
@@ -3945,7 +3954,7 @@ export class WorkflowManager {
       }
       const current = this.store.activeBindingForNote(noteKeyFor(session));
       const currentTargets = current && current.id === anchor.id && current.triggerMode === "foreman_complete"
-        ? this.repoRunTargets(session, current) : [];
+        ? this.repoRunTargets(session, current, true) : [];
       if (primaryCheckout !== workflowCheckoutPath(anchor, session) || targets.length !== currentTargets.length || targets.some((target, i) =>
         target.id !== currentTargets[i]?.id || target.workflowVersionId !== currentTargets[i]?.workflowVersionId
         || target.sessionId !== currentTargets[i]?.sessionId || target.sessionCwd !== currentTargets[i]?.sessionCwd)) {

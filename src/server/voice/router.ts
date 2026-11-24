@@ -33,6 +33,7 @@ export class RecentlyHeard {
 interface OpenCard {
   card: VoiceCard;
   entry: HeardEntry;
+  receivedAt: number;
   message: string;
   command?: VoiceAddressedCommand;
   timer?: ReturnType<typeof setTimeout>;
@@ -69,7 +70,8 @@ export class VoiceRouter {
     const { mode, roster, backend } = this.state();
     if ((mode !== "listening" && mode !== "push-to-talk") || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
-    if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
+    const receivedAt = Date.now();
+    if (capturedAt > receivedAt + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     this.recentIds.add(id);
     if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
@@ -107,7 +109,7 @@ export class VoiceRouter {
       parts: [{ target: addressed ? { ...decision.target } : null, text: addressed ? decision.text : utterance.text }],
       candidates: addressed ? [] : decision.candidates.map((c) => ({ kind: "agent", id: c.key, title: c.name, detail: c.role })),
     };
-    await this.openCard({ card, entry, message: decision.text, command: decision.command }, capturedAt);
+    await this.openCard({ card, entry, receivedAt, message: decision.text, command: decision.command }, capturedAt);
     return true;
   }
 
@@ -153,7 +155,7 @@ export class VoiceRouter {
     return true;
   }
 
-  async pick(id: string, candidateId: string, pickedAt = Date.now()): Promise<boolean> {
+  async pick(id: string, candidateId: string, capturedAt?: number): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
     const target = this.state().roster.find((c) => c.key === candidateId);
@@ -161,6 +163,9 @@ export class VoiceRouter {
     this.take(item);
     item.entry.matchedName = target.name;
     item.entry.detail = "picked";
+    // Clicks have no listener timestamp. Advance the card's capture time by the time it
+    // spent open here, so subsequent spoken controls compare timestamps on the same clock.
+    const pickedAt = capturedAt ?? item.entry.time + Math.max(0, Date.now() - item.receivedAt);
     await this.openCard({ ...item, card: { ...item.card, state: "pending", reason: "picked",
       candidates: [], parts: [{ target: { ...target }, text: item.message }] } }, Math.max(item.entry.time, pickedAt));
     return true;

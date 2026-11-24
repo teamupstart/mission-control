@@ -40,4 +40,4 @@ With the chosen external capture client, inject abrupt listener death during act
 
 ## Downstream handoff and cross-phase audit
 
-Linux 3 can attach one observer to the daemon lifecycle. Linux 4 can advertise a holder-qualified player using this process identity. The consumer must never generate its own instance or treat a fresh hello, time limit or signal delivery as OS exit.
+Linux 3 can attach one observer to the daemon lifecycle. Linux 4 can advertise a holder-qualified player using this process identity only once the Linux supervisor can prove device silence on every exit path. For a playback-capable holder, keep the durable record and hold, withhold exited, and defer replacement until both OS exit and discard or drain of queued output are established. This applies to normal replacement and recovery with either a complete or partial record. Phase 4 owns qualification of that guarantee on real outputs. In Phase 2, test the handoff with a fake device that remains audible after process death. The consumer must never generate its own instance or treat a fresh hello, time limit or signal delivery as OS exit.

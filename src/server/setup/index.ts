@@ -59,7 +59,7 @@ import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupRepositoryIndexRead, SetupSkillsRead } from "./types.ts";
 import { repoIndexView } from "../repo-index.ts";
 import { listRepos } from "../repos.ts";
-import { locateExecutable } from "../executables/locator.ts";
+import { locateExecutable, loginShellVariables } from "../executables/locator.ts";
 import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 import { servingRuntime } from "../owned-runtime.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
@@ -202,9 +202,35 @@ async function ghAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
   }
   return {
     state: "needs-setup",
-    why: "The GitHub CLI is installed but is not authenticated to github.com.",
+    why: `The GitHub CLI is installed but is not authenticated to github.com.${await shellOnlyGhTokenHint(deps)}`,
     evidence: evidence || null,
   };
+}
+
+/** The variables `gh` reads a token from, in the order it prefers them. */
+const GH_TOKEN_VARIABLES = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
+
+/**
+ * Why a token that works in the operator's terminal does not reach Mission Control's `gh`.
+ *
+ * A desktop launch inherits launchd's environment, not the login shell's, so a token exported
+ * in `~/.zshrc` authenticates `gh` in a terminal while the daemon's `gh` reports no login at
+ * all. Only which names are set is read here; their values never leave the locator.
+ */
+async function shellOnlyGhTokenHint(deps: SetupDeps): Promise<string> {
+  if (!deps.loginShellVariableNames) return "";
+  const absent = GH_TOKEN_VARIABLES.filter((name) => !deps.processEnv?.()[name]);
+  if (absent.length === 0) return "";
+  let names: string[];
+  try {
+    names = (await deps.loginShellVariableNames(absent)).filter((name) => absent.includes(name as typeof absent[number]));
+  } catch {
+    return "";
+  }
+  if (names.length === 0) return "";
+  const listed = names.join(" and ");
+  const unset = names.map((name) => `-u ${name}`).join(" ");
+  return ` Your login shell sets ${listed}, but Mission Control was not started from that shell, so the gh it runs cannot see ${names.length > 1 ? "them" : "it"}. Store the login in gh itself: in a terminal, run \`env ${unset} gh auth login\`, then press Re-check.`;
 }
 
 async function pluginStatus(deps: SetupDeps): Promise<SetupStatus> {
@@ -687,6 +713,8 @@ export function defaultSetupDeps(): SetupDeps {
     herdrServer: () => herdrServerProbe(),
     cmuxControl: () => cmuxControlProbe(),
     ghBin,
+    processEnv: () => process.env,
+    loginShellVariableNames: async (names) => Object.keys(await loginShellVariables(names)),
     acliSourceSites: configuredAcliSites,
     resolveBinPath,
     runCommand: async (bin, argv, managedEnv, timeoutMs) => {

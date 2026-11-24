@@ -900,11 +900,16 @@ export class ReviewManager {
    */
   wait(id: string, timeoutMs: number, signal?: AbortSignal, convertible = false): Promise<ReviewWaitResponse | null> {
     const current = this.registry.getReview(id);
+    if (convertible) {
+      // A settled ask can be absent from the registry after restart. Its answer already
+      // belongs to the outbox, so the retry still returns the original filing receipt.
+      const review = current ?? loadReview(id);
+      if (review?.waitMode === "message" && review.filedByVoiceAt != null) {
+        return Promise.resolve(convertedResponse(review));
+      }
+    }
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    if (convertible && current.waitMode === "message" && current.filedByVoiceAt != null) {
-      return Promise.resolve(convertedResponse(current));
-    }
     return new Promise<ReviewWaitResponse | null>((resolve) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));

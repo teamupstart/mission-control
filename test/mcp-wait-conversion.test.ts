@@ -7,13 +7,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { asyncInputReceipt } from "../src/shared/async-input.ts";
 import { requestInputReview } from "../src/shared/request-input.ts";
-import { app, home, reviews, token } from "./helpers/voice-http.ts";
+import { app, home, pending, registry, reviews, token } from "./helpers/voice-http.ts";
 
-test("the MCP child re-polls a dropped conversion response and returns the durable receipt", async t => {
+test("the MCP child recovers its dropped receipt when the operator answers before the retry", async t => {
   const sessionId = "sdk:Will";
   const question = "Which build?";
   const ask = requestInputReview({ question });
   const row = reviews.create(sessionId, ask.kind, ask.title, ask.body, null, { snoozable: true });
+  reviews.startContinuationRecovery((review, text, kind) =>
+    pending.submitReviewContinuation(review.id, review.sessionId, text, kind).ok,
+  );
   let polls = 0;
   const receipts: string[] = [];
   const listener = getRequestListener(app.fetch);
@@ -24,7 +27,10 @@ test("the MCP child re-polls a dropped conversion response and returns the durab
     if (polls === 1) reviews.convertToFiled(row.id);
     const result = await (await waiting).json();
     receipts.push(result.converted?.receipt);
-    if (polls === 1) return res.destroy();
+    if (polls === 1) {
+      reviews.resolve(row.id, "answer", "Use the nightly build.");
+      return res.destroy();
+    }
     res.end(JSON.stringify(result));
   });
   await new Promise<void>(resolve => daemon.listen(0, "127.0.0.1", resolve));
@@ -44,4 +50,7 @@ test("the MCP child re-polls a dropped conversion response and returns the durab
   assert.deepEqual(result.content, [{ type: "text", text: receipt }]);
   assert.deepEqual(receipts, [receipt, receipt]);
   assert.equal(polls, 2);
+  const messages = registry.getSession(sessionId)!.pendingTurns;
+  assert.equal(messages.length, 1);
+  assert.match(messages[0]!.text, /Use the nightly build\./);
 });

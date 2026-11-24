@@ -4,7 +4,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
-import type { Session, Task } from "../../src/shared/types.ts";
+import type { ReviewItem, Session, Task } from "../../src/shared/types.ts";
 import type { VoiceCard } from "../../src/shared/voice-routing.ts";
 import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
 
@@ -244,4 +244,41 @@ test("a spoken message waiting behind a compatible question moves from the visib
     mkdirSync(dir, { recursive: true });
     await reply.screenshot({ path: join(dir, "delivered-reply.png") });
   }
+});
+
+test("speech releases the SDK agent's own request_input call and reaches its next turn", async ({ dashboard: page, daemon, request }) => {
+  const flag = (id: string, enabled: boolean) => request.put(`${daemon.baseURL}/api/feature-flags`, {
+    data: { kind: "flag", id, enabled },
+  });
+  expect((await flag("async-input", false)).ok()).toBe(true);
+  const created = await request.post(`${daemon.baseURL}/api/tasks`, { data: {
+    repoRoot: daemon.repo, title: "Choose the toolchain", intent: "Choose the toolchain", callSign: "Steve",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  } });
+  expect(created.ok(), await created.text()).toBe(true);
+  const task = await created.json() as Task;
+  let session!: Session;
+  await expect.poll(async () => {
+    const sessions = await (await request.get(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    session = sessions.find(s => s.task?.id === task.id)!;
+    return session?.agentSessionId && session.state;
+  }, { timeout: 60_000 }).toBe("idle");
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
+  const detail = page.locator(".console-detail");
+  const composer = detail.getByPlaceholder(/^Reply to this session/);
+  await composer.fill("ask me which linter to use");
+  await composer.press("Enter");
+  let question: ReviewItem | undefined;
+  await expect.poll(async () => {
+    const reviews = await (await request.get(`${daemon.baseURL}/api/reviews`)).json() as ReviewItem[];
+    question = reviews.find(r => r.sessionId === session.id && r.title === "Which linter?");
+    return question?.status === "pending" && (question.waitMode ?? "call");
+  }).toBe("call");
+
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) expect((await flag(id, true)).ok()).toBe(true);
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  expect(await (await say(daemon, "Steve, inspect the toolchain", { id: "active-sdk-ask" })).json()).toEqual({ accepted: true });
+  const receipt = detail.getByText(/request_input answered: Filed, not answered:/);
+  await expect(receipt.first()).toContainText(`(review ${question!.id})`, { timeout: 30_000 });
+  await expect(detail.getByText(/Mock reply to: inspect the toolchain/).first()).toBeVisible({ timeout: 30_000 });
 });

@@ -86,7 +86,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
             // Another blur may have arrived before Electron replied to the first one.
             if (blurCount !== attempt) notifyWhenAway();
           };
-          void shell.showVoiceCardNotice({ id, title, body, deadline: Date.now() + Math.floor(remaining), scope }).then(choice => {
+          void shell.showVoiceCardNotice({ id, title, body, remainingMs: Math.floor(remaining), scope }).then(choice => {
             if (!choice) return;
             if (choice === "window-focused") return allowRetry();
             // Electron can accept a button before a clock correction replaces the notice.

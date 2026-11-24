@@ -113,9 +113,9 @@ test("an uncertain desktop countdown uses the same configured cap as the card", 
     Object.defineProperty(Notification, "permission", { get: () => "granted" });
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true, onOpenSettings: () => () => {},
-      showVoiceCardNotice: ({ title, deadline }: { title: string; deadline: number }) => {
+      showVoiceCardNotice: ({ title, remainingMs }: { title: string; remainingMs: number }) => {
         document.documentElement.dataset.noticeTitle = title;
-        document.documentElement.dataset.noticeBudget = String(deadline - Date.now());
+        document.documentElement.dataset.noticeBudget = String(remainingMs);
         return Promise.resolve(null);
       },
       dismissVoiceCardNotice() {},
@@ -309,7 +309,7 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true,
       onOpenSettings: () => () => {},
-      showVoiceCardNotice: ({ title, body, scope, deadline }: { title: string; body: string; scope: string; deadline: number }) => {
+      showVoiceCardNotice: ({ title, body, scope, remainingMs }: { title: string; body: string; scope: string; remainingMs: number }) => {
         if (declineFirst) {
           declineFirst = false;
           document.documentElement.dataset.fixtureBlurred = "false";
@@ -319,7 +319,7 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
         }
         document.title = title + " | " + body;
         document.documentElement.dataset.noticeScope = scope;
-        document.documentElement.dataset.noticeRemaining = String(deadline - Date.now());
+        document.documentElement.dataset.noticeRemaining = String(remainingMs);
         document.documentElement.dataset.noticeCount = String(Number(document.documentElement.dataset.noticeCount ?? 0) + 1);
         return new Promise(resolve => window.addEventListener("fixture-native-action", event => resolve((event as CustomEvent).detail), { once: true }));
       },

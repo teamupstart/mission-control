@@ -342,6 +342,11 @@ test("a held card identifies the blocking question and recalls the queued words"
   await captureCard(held, "held");
   await page.evaluate(() => { window.location.hash = "#/library/personas/new"; });
   await page.getByRole("textbox", { name: "Name", exact: true }).fill("Unfinished persona");
+  const recall = held.getByRole("button", { name: "Cancel message" });
+  await page.route("**/pending-turns/*/recall", () => {}, { times: 1 });
+  await recall.click();
+  await expect(held).toContainText("Recall was not confirmed", { timeout: 6000 });
+  await expect(recall).toBeEnabled();
   await held.getByRole("button", { name: "Open question" }).click();
   const leave = page.getByRole("dialog", { name: "Leave with unsaved changes" });
   await expectContentClearsBorder(leave);
@@ -350,7 +355,7 @@ test("a held card identifies the blocking question and recalls the queued words"
   await leave.getByRole("button", { name: "Discard and leave" }).click();
   await expectContentClearsBorder(question);
   await page.keyboard.press("Escape");
-  await held.getByRole("button", { name: "Cancel message" }).click();
+  await recall.click();
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
   await expect.poll(async () => ((await (await page.request.get(daemon.baseURL + "/api/sessions")).json()) as Session[]).find(s => s.id === session.id)?.pendingTurns.length).toBe(0);
 });

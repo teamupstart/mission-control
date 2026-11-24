@@ -116,6 +116,20 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(words.map(\.startMs), [0, 100, 200, 300, 400])
     }
 
+    func testPartialRosterMatchCannotRewriteACommaDelimitedAddress() {
+        let original = "Wyl Smyth, check the build"
+        let decoded = original.split(separator: " ").enumerated().map {
+            TimedWord(text: String($0.element), startMs: Double($0.offset * 100), endMs: Double($0.offset * 100 + 80))
+        }
+        var text = original
+        var words = decoded
+        Recognizer.applyAddressCorrection("Will Smith", in: 0..<1, roster: ["Will Smith"], text: &text, words: &words)
+        XCTAssertEqual(text, original)
+        XCTAssertEqual(words.map(\.text), decoded.map(\.text))
+        XCTAssertEqual(words.map(\.startMs), decoded.map(\.startMs))
+        XCTAssertEqual(words.map(\.endMs), decoded.map(\.endMs))
+    }
+
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
         var gate = SpeechGate()
         let speech = Array(repeating: Float(0.1), count: 320)

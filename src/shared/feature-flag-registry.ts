@@ -29,7 +29,16 @@ export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort"
 /** The one owner of the Markdown question body preview's id; the dashboard's question surfaces read it. */
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
+export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: BUG_FIX_INSPECTOR_FLAG_ID,
+    label: "Bug Fix Inspector",
+    description: "Offer an optional resident that investigates Mission Control bugs and prepares GitHub issues for approval.",
+    stage: "preview",
+    keywords: ["resident", "bugs", "inspector", "logs", "github"],
+  },
   {
     id: PINNED_PLAN_CHANGE_FLAG_ID,
     label: "Change pinned plan revision",

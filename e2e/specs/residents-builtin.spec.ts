@@ -212,7 +212,7 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   const ownRow = rows.filter({ hasNotText: "built-in" });
   await expect(builtinRow).toHaveCount(1);
   await expect(ownRow).toHaveCount(1);
-  await expect(rail).toContainText("3 live");
+  await expect(rail).toContainText("2 live");
 
   // The operator's profile keeps its data and stays editable.
   await ownRow.click();
@@ -253,9 +253,22 @@ test("an Agent Shepherd profile that predates the built-in keeps its data, and b
   await capture(dialog, "09-both-listed-dispatch");
 });
 
+async function inspectorPreview(daemon: DaemonHandle, enabled: boolean): Promise<void> {
+  const result = await api(daemon, "/api/feature-flags", { method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "flag", id: "bug-fix-inspector", enabled }) });
+  expect(result.status).toBe(200);
+}
+
 test("Bug Fix Inspector offers optional GitHub reporting with fixed loop guardrails", async ({ dashboard, daemon }) => {
-  await dashboard.goto(`${daemon.baseURL}/#/residents`);
+  const savedLink = `${daemon.baseURL}/#/residents/builtin%3Abug-fix-inspector`;
+  await dashboard.goto(savedLink);
   const rail = dashboard.getByRole("complementary", { name: "Resident profiles" });
+  const row = rail.getByRole("button").filter({ hasText: "Bug Fix Inspector" });
+  await expect(rail).toContainText("Agent Shepherd");
+  await expect(row).toHaveCount(0);
+  await expect(dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" })).toHaveCount(0);
+  await inspectorPreview(daemon, true);
   await rail.getByRole("button").filter({ hasText: "Bug Fix Inspector" }).click();
   const editor = dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" });
   await expect(editor.getByLabel("Description")).toHaveValue(/optional resident that helps improve Mission Control over time/);
@@ -270,9 +283,17 @@ test("Bug Fix Inspector offers optional GitHub reporting with fixed loop guardra
   await expect(editor).toContainText("read-only inspection of other sessions and workflows");
   await capture(editor.getByRole("region", { name: "Authority", exact: true }), "15-inspector-authority");
   await capture(editor.getByRole("region", { name: "Identity", exact: true }), "12-inspector-profile");
+  await inspectorPreview(daemon, false);
+  await expect(row).toHaveCount(0);
+  await expect(editor).toHaveCount(0);
+  const refused = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {
+    data: { repoRoot: null, requestId: "preview-disabled" },
+  });
+  expect(refused.status()).toBe(404);
 });
 
 test("a launched Bug Fix Inspector receives a GitHub issue URL only after approval of its finding", async ({ dashboard, daemon }) => {
+  await inspectorPreview(daemon, true);
   const finding = "Finished task leaves its bound workflow unsubmitted";
   writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
   const launch = await dashboard.request.post(`${daemon.baseURL}/api/residents/profiles/builtin:bug-fix-inspector/launch`, {

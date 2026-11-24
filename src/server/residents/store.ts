@@ -17,6 +17,8 @@ import {
   type StoredResidentSettings,
   preserveUnknownResidentSettings,
 } from "@shared/residents.ts";
+import { BUG_FIX_INSPECTOR_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 import { openDb } from "../db.ts";
 
 /**
@@ -161,6 +163,15 @@ export function getResidentProfile(id: string): ResidentProfile | null {
   return row ? rowToProfile(row) : null;
 }
 
+/** Gate discovery and new launches while retaining revisions for existing runs and upgrades. */
+function residentProfileAvailable(id: string): boolean {
+  return id !== "builtin:bug-fix-inspector" || featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+}
+
+export function getAvailableResidentProfile(id: string): ResidentProfile | null {
+  return residentProfileAvailable(id) ? getResidentProfile(id) : null;
+}
+
 /**
  * Live profiles by name: the operator's, bounded by `RESIDENT_LIMITS.liveProfiles`, then the
  * built-ins, which this build ships a handful of and which the bound does not count.
@@ -174,7 +185,7 @@ export function listLiveResidentProfiles(): ResidentProfile[] {
   const builtins = d
     .prepare(`${PROFILE_SELECT} WHERE p.archived_at IS NULL AND ${builtinRow("p.id")} ORDER BY p.id`)
     .all() as unknown as ProfileRow[];
-  return [...operator, ...builtins].flatMap((row) => rowToProfile(row) ?? []);
+  return [...operator, ...builtins.filter(row => residentProfileAvailable(row.id))].flatMap((row) => rowToProfile(row) ?? []);
 }
 
 /**

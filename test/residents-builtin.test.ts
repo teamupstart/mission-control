@@ -201,7 +201,7 @@ test("an operator profile that held the name before it shipped keeps it and its 
   store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 2);
 
   const live = store.listLiveResidentProfiles();
-  assert.deepEqual(live.map((profile) => profile.id).sort(), [...BUILTIN_RESIDENTS.map(({ id }) => id), "mine"].sort());
+  assert.deepEqual(live.map((profile) => profile.id).sort(), [SHEPHERD, "mine"]);
   const saved = store.updateResidentProfile({ id: "mine", expectedRevision: 1, settings: settings("Agent Shepherd", "edited"), at: 3 });
   assert.equal(saved.status, "ok", "keeping its own name is not a rename into the built-in's");
 
@@ -261,6 +261,6 @@ test("built-ins do not count toward the live operator profile bound", () => {
     store.ResidentProfileLimitError,
   );
   const live = store.listLiveResidentProfiles();
-  assert.equal(live.length, RESIDENT_LIMITS.liveProfiles + BUILTIN_RESIDENTS.length, "a full operator catalog still lists the built-in");
+  assert.equal(live.length, RESIDENT_LIMITS.liveProfiles + 1, "a full operator catalog still lists the built-in");
   assert.ok(live.some((profile) => profile.id === SHEPHERD));
 });

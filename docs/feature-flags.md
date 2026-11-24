@@ -1,6 +1,7 @@
 # Feature flags
 
 The flag core stores one set of operator choices for this machine. The registry includes
+[Bug Fix Inspector](residents.md#built-in-residents),
 [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
@@ -182,6 +183,7 @@ gates, not by resolving an unknown id as on.
 | Id | Stage | Gates | Guide |
 | --- | --- | --- | --- |
 | `background-reasoning-effort` | preview | Per-call effort settings for background jobs, Foreman and GitHub Inspector. Turning it off suspends the saved overrides for new calls | [Models](models.md#reasoning-effort-for-background-work) |
+| `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |

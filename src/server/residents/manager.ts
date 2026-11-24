@@ -74,7 +74,7 @@ import {
   endResidentRun,
   endedResidentWorkspaces,
   clearResidentWorkspace,
-  getResidentProfile,
+  getAvailableResidentProfile,
   getResidentRun,
   listOpenResidentRuns,
   listPendingResidentRuns,
@@ -492,7 +492,7 @@ export class ResidentManager {
   private readonly resettingState = new Set<string>();
 
   async resetState(id: string): Promise<void> {
-    const profile = getResidentProfile(id);
+    const profile = getAvailableResidentProfile(id);
     if (!profile || profile.archivedAt !== null) throw new Error("No live resident profile.");
     if (this.resettingState.has(id)) throw new Error("State reset is already in progress.");
     if (residentProfileTasks(id).some((run) => run.open || this.runtimeStillRunning(run.taskId))) {
@@ -538,7 +538,7 @@ export class ResidentManager {
     if (known) return this.replay(known, profileId, request, input.answerWhen);
     if (!resolved.ok) return { ok: false, status: 400, code: "invalid", error: resolved.error };
 
-    const profile = getResidentProfile(profileId);
+    const profile = getAvailableResidentProfile(profileId);
     if (!profile) return { ok: false, status: 404, code: "not_found", error: "no such resident profile" };
     if (profile.archivedAt !== null) {
       return { ok: false, status: 409, code: "conflict", error: "this resident profile is archived" };

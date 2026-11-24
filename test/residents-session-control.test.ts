@@ -309,6 +309,8 @@ class GrantRefusingRegistry extends Registry {
 }
 
 test("the inspector desktop click grants only inspection, including after restore", async () => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "bug-fix-inspector", enabled: true });
   const { BUILTIN_RESIDENTS } = await import("../src/server/residents/builtin-residents.ts");
   const h = harness();
   store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, Date.now());

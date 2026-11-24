@@ -353,6 +353,7 @@ test("desktop Launch grants Bug Fix Inspector read-only inspection and Off revok
     const dashboard = await application.firstWindow();
     await startDesktopDaemon(application, daemon);
     await api(daemon, "/api/ui/config", { layout: "console", residentPlacement: "fleet" }, "PUT");
+    await api(daemon, "/api/feature-flags", { kind: "flag", id: "bug-fix-inspector", enabled: true }, "PUT");
     await dashboard.goto(`${daemon.baseURL}/#/residents/builtin%3Abug-fix-inspector`);
     await dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" }).getByRole("button", { name: "Launch" }).click();
     const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });

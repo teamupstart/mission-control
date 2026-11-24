@@ -9234,8 +9234,18 @@ export class WorkflowStore {
   ): DeliveredWorkflowTranscriptAnchor[] {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
-      `SELECT d.payload, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
+      `SELECT d.payload, d.delivered_at, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
               json_extract(e.payload_json, '$.transcriptPath') AS transcript_path,
+              CASE WHEN json_extract(e.payload_json, '$.submitVerified') = 1
+                    AND json_type(e.payload_json, '$.receiptId') IS NULL
+                    AND json_type(e.payload_json, '$.transcriptPath') IS NULL
+                   THEN COALESCE((
+                     SELECT sending.ts FROM workflow_events sending
+                      WHERE sending.run_id = e.run_id AND sending.id < e.id
+                        AND sending.event_kind = 'delivery_sending'
+                        AND json_extract(sending.payload_json, '$.deliveryId') = d.id
+                      ORDER BY sending.id DESC LIMIT 1
+                   ), d.delivered_at) END AS legacy_start,
               json_extract(e.payload_json, '$.transcriptTurn.id') AS turn_id,
               json_extract(e.payload_json, '$.transcriptTurn.ts') AS turn_ts,
               COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
@@ -9255,6 +9265,8 @@ export class WorkflowStore {
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
       receipt_id: string | null;
+      delivered_at: number;
+      legacy_start: number | null;
       transcript_path: string | null;
       turn_id: string | null;
       turn_ts: number | null;
@@ -9264,6 +9276,7 @@ export class WorkflowStore {
     }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
+      ...(row.legacy_start !== null ? { legacySend: { start: row.legacy_start, end: row.delivered_at } } : {}),
       ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
       ...(row.turn_id && row.turn_ts !== null ? { turn: { id: row.turn_id, ts: row.turn_ts } } : {}),
       ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),

@@ -43,8 +43,13 @@ export function publicationCheckoutRevision(checkout: string, retained: readonly
       digest.update(JSON.stringify([path, stat
         ? [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].map(String)
         : null]));
-      // Git represents an embedded repository or submodule by its checked-out commit.
-      if (stat?.isDirectory()) digest.update(git(file, ["rev-parse", "HEAD"]));
+      // A gitlink's HEAD can stay fixed while files inside it change. Only reuse a
+      // clean nested checkout. An uninitialized submodule would resolve to its parent.
+      if (stat?.isDirectory()) {
+        if (git(file, ["rev-parse", "--show-prefix"]).toString().trim()
+          || git(file, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"]).length) return null;
+        digest.update(git(file, ["rev-parse", "HEAD"]));
+      }
     }
     return performance.now() < deadline ? digest.digest("hex") : null;
   } catch {

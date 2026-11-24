@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import { gitIn, seedGitRepo } from "./helpers/git-fixture.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 ensureNativeStateLockAddon();
@@ -70,6 +70,27 @@ test("a publication checkout revision detects content, inventory, index and HEAD
   execFileSync("git", ["-C", dir, "commit", "-qm", "edit"]);
   assert.notEqual(stamp(), beforeCommit);
   assert.equal(publicationCheckoutRevision(join(home, "absent"), []), null);
+});
+
+test("a clean submodule publication revision refuses tracked or untracked nested edits", async () => {
+  const { publicationCheckoutRevision } = await import("../src/server/workflows/publication-revision.ts");
+  const parent = join(home, "submodule-parent");
+  const source = join(home, "submodule-source");
+  const nested = join(parent, "nested");
+  seedGitRepo(parent);
+  seedGitRepo(source);
+  gitIn(parent, "-c", "protocol.file.allow=always", "submodule", "add", source, "nested");
+  gitIn(parent, "commit", "-qm", "add nested checkout");
+  const revision = () => publicationCheckoutRevision(parent, []);
+  assert.ok(revision());
+  const head = gitIn(nested, "rev-parse", "HEAD");
+  writeFileSync(join(nested, "keep.txt"), "edit\n");
+  assert.equal(gitIn(nested, "rev-parse", "HEAD"), head);
+  assert.equal(revision(), null);
+  gitIn(nested, "restore", "keep.txt");
+  assert.ok(revision());
+  writeFileSync(join(nested, "untracked"), "new");
+  assert.equal(revision(), null);
 });
 
 const raw = {
@@ -191,6 +212,7 @@ for (const beforeSend of [false, true]) test(`workflow context excludes the deli
   forgetInjections(session.id);
   const captured = await readWorkflowContextRaw(registry, binding, [], [{
     payload: workflowPacket,
+    transcriptPath,
     transcriptAnchor: beforeSend ? Buffer.byteLength(records[0]!) : deliveryAnchor,
     ...(beforeSend ? { beforeSend: true as const } : {}),
   }]);
@@ -213,7 +235,7 @@ for (const beforeSend of [false, true]) test(`workflow context excludes the deli
   );
   if (!beforeSend) {
     const ambiguous = await readWorkflowContextRaw(registry, binding, [], [{
-      payload: workflowPacket, transcriptAnchor: Buffer.byteLength(records.join("")),
+      payload: workflowPacket, transcriptPath, transcriptAnchor: Buffer.byteLength(records.join("")),
     }]);
     assert.deepEqual(ambiguous.raw.humanDecisions.map(d => d.source.id),
       ["human-decision", "workflow-repair", "human-repetition"], "an ambiguous legacy end offset cannot remove the human copy");

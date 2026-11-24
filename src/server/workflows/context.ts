@@ -48,7 +48,7 @@ import { workflowDeliveryLedger } from "../delivery-ledgers.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
-import { sessionMessages } from "../harness/index.ts";
+import { sessionMessages, transcriptFor } from "../harness/index.ts";
 import { attributeTranscript } from "../transcript-attribution.ts";
 import { changedPaths } from "../inspector/diff-lines.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
@@ -443,6 +443,7 @@ export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
   transcriptAnchor: number;
   transcriptPath?: string;
+  legacySend?: { start: number; end: number };
   turn?: { id: string; ts: number };
   beforeSend?: true;
   receiptId?: string;
@@ -521,14 +522,36 @@ export function attributeWorkflowContextTranscript(
   });
 }
 
+/** An old offset has no filename. Verify the harness's native conversation file still
+ * exists and predates confirmation before interpreting any bytes at that offset. */
+function legacyConversationFileBirth(session: Session, path: string): number | null {
+  const { agentSessionId, cwd } = session;
+  if (!agentSessionId || !cwd) return null;
+  try {
+    const nativePath = transcriptFor(session)?.locateByConversation?.({ ...session, agentSessionId, cwd });
+    return nativePath === path ? statSync(path).birthtimeMs || null : null;
+  } catch {
+    return null;
+  }
+}
+
 function deliveredWorkflowTurnIdentities(
+  session: Session,
   located: NonNullable<ReturnType<typeof sessionMessages>>,
   deliveries: readonly DeliveredWorkflowTranscriptAnchor[],
 ): WorkflowTranscriptTurnIdentity[] {
   const identities: WorkflowTranscriptTurnIdentity[] = [];
+  let legacyFileBirth: number | null | undefined;
   for (const delivery of deliveries) {
     if (delivery.transcriptPath !== undefined && delivery.transcriptPath !== located.path) continue;
     if ((delivery.receiptId && delivery.beforeSend) || !delivery.payload.trim()) continue;
+    if (delivery.transcriptPath === undefined) {
+      if (!delivery.legacySend || delivery.turn) continue;
+      if (legacyFileBirth === undefined) {
+        legacyFileBirth = legacyConversationFileBirth(session, located.path);
+      }
+      if (!legacyFileBirth || Math.floor(legacyFileBirth) > delivery.legacySend.end) continue;
+    }
     const payloadFingerprint = injectionFingerprint(delivery.payload);
     if (delivery.turn) {
       identities.push({ ...delivery.turn, payloadFingerprint });
@@ -541,8 +564,9 @@ function deliveredWorkflowTurnIdentities(
     const matches = page.messages.filter(message =>
       message.role === "user" && injectionFingerprint(message.text) === payloadFingerprint);
     // An old end offset alone cannot tell a packet from a verbatim human repeat before it.
-    const match = delivery.beforeSend || matches.length === 1 ? matches[0] : undefined;
-    if (match && injectionFingerprint(match.text) === payloadFingerprint) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
+    const match = matches.length === 1 || (delivery.beforeSend && delivery.transcriptPath) ? matches[0] : undefined;
+    if (!match || (delivery.legacySend && (match.ts <= 0 || match.ts < delivery.legacySend.start || match.ts > delivery.legacySend.end))) continue;
+    identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
   }
   return identities;
 }
@@ -1264,7 +1288,7 @@ function contextTranscriptFor(
   const attributed = attributeWorkflowContextTranscript(
     session.id,
     transcriptMessages,
-    located ? deliveredWorkflowTurnIdentities(located, deliveredWorkflowAnchors) : [],
+    located ? deliveredWorkflowTurnIdentities(session, located, deliveredWorkflowAnchors) : [],
   );
   const receipts = new Set(deliveredWorkflowAnchors.flatMap(delivery => delivery.receiptId ?? []));
   const workflowTurns = new Set<string>();

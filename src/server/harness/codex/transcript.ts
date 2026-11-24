@@ -389,6 +389,7 @@ export function latestCodexNarration(lines: string[]): string | null {
 export const codexTranscript: TranscriptSpec = {
   metaSource: "codex-rollout",
   locate,
+  locateByConversation: (session) => findRolloutForSession(session),
   // Codex lifecycle markers report task start/completion directly; `readRolloutPassive`
   // reads them from the same bounded tail as runtime metadata.
   passiveRead: readRolloutPassive,

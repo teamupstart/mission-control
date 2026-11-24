@@ -17,6 +17,7 @@ import { nativeVoiceListener } from "./voice-listener.ts";
 const ShellVoiceStateSchema = z.object({
   mode: z.enum(VOICE_MODES),
   configuredHotkey: z.string().nullable().optional(),
+  recordingHotkey: z.literal(true).optional(),
   muted: z.boolean().optional(),
   model: z.object({
     status: z.enum(VOICE_MODEL_STATUSES),
@@ -63,33 +64,49 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let lastReportUs = -1;
   const disabled = () => state.mode === "off";
 
+  // Routine status can coalesce. Each physical hold transition has its own dated snapshot
+  // and follows the preceding transition, independently of an outstanding status POST.
+  let edgeDelivery: Promise<boolean> | undefined;
+  let lastHeld = false;
+
+  function makeReport(owner: VoiceHardware): VoiceShellReport {
+    const microphone = systemPreferences.getMediaAccessStatus("microphone");
+    const controls = owner.report();
+    lastReportUs = Math.max(controls.reportedAtHostUs, lastReportUs + 1);
+    return {
+      ...controls,
+      reportedAtHostUs: lastReportUs,
+      capabilities: {
+        ...controls.capabilities,
+        tray: { available: true, reason: null },
+        microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
+      },
+      microphone,
+    };
+  }
+
+  async function deliver(current: NonNullable<typeof connection>, owner: VoiceHardware, report: VoiceShellReport) {
+    if (connection !== current || hardware !== owner || disabled()) return false;
+    const response = await current.postStatus("/voice/shell-report", report,
+      AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+    const accepted = response?.ok ?? false;
+    if (connection === current && hardware === owner) {
+      if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
+      reportFailed = !accepted;
+    }
+    return accepted;
+  }
+
   async function sendReports() {
     let accepted = false;
     try {
-      while (connection && reportRequested && state.mode !== "off") {
-        reportRequested = false;
-        const microphone = systemPreferences.getMediaAccessStatus("microphone");
-        if (!hardware) break;
-        const controls = hardware.report();
-        lastReportUs = Math.max(controls.reportedAtHostUs, lastReportUs + 1);
-        const report: VoiceShellReport = {
-          ...controls,
-          reportedAtHostUs: lastReportUs,
-          capabilities: {
-            ...controls.capabilities,
-            tray: { available: true, reason: null },
-            microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
-          },
-          microphone,
-        };
-        const current = connection;
-        const response = await current.postStatus("/voice/shell-report", report,
-          AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
-        accepted = response?.ok ?? false;
-        if (connection === current) {
-          if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
-          reportFailed = !accepted;
+      while (connection && hardware && reportRequested && !disabled()) {
+        if (edgeDelivery) {
+          await edgeDelivery;
+          continue;
         }
+        reportRequested = false;
+        accepted = await deliver(connection, hardware, makeReport(hardware));
       }
       return accepted;
     } finally {
@@ -97,7 +114,19 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     }
   }
 
-  function requestReport() {
+  function requestReport(): Promise<boolean> {
+    if (hardware && connection && hardware.holdingToTalk !== lastHeld) {
+      const owner = hardware;
+      const current = connection;
+      lastHeld = owner.holdingToTalk;
+      const snapshot = makeReport(owner);
+      const send = () => deliver(current, owner, snapshot);
+      const delivery = (edgeDelivery ? edgeDelivery.then(send) : send()).finally(() => {
+        if (edgeDelivery === delivery) edgeDelivery = undefined;
+      });
+      edgeDelivery = delivery;
+      return delivery;
+    }
     reportRequested = true;
     return sending ??= Promise.resolve().then(sendReports);
   }
@@ -115,6 +144,8 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     layoutSubscription = undefined;
     hardware?.stop();
     hardware = undefined;
+    edgeDelivery = undefined;
+    lastHeld = false;
   }
 
   async function sync() {
@@ -133,7 +164,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
         () => hardware?.layoutChanged());
     }
-    hardware.update(state.configuredHotkey ?? null, state.mode);
+    hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkey);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
     listener.update(state, installed && microphone === "granted");

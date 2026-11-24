@@ -241,6 +241,9 @@ export interface VoiceCapability {
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
 export type VoiceCapabilities = Partial<Record<VoiceCapabilityId, VoiceCapability>>;
 
+/** A failed sample is unavailable until the next poll. Its preference is still editable. */
+export const VOICE_CALL_POLL_RETRY = "Retrying microphone check. ";
+
 export const VOICE_MODEL_STATUSES = ["missing", "downloading", "verifying", "ready", "failed"] as const;
 export type VoiceModelStatus = (typeof VOICE_MODEL_STATUSES)[number];
 
@@ -308,6 +311,8 @@ export interface VoiceState {
   capabilities: VoiceCapabilities;
   /** The persisted shortcut, observed in the same snapshot as the shell's registration. */
   configuredHotkey: string | null;
+  /** A focused Settings recorder is waiting for the desktop to release its reservation. */
+  recordingHotkey?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
   registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
@@ -419,6 +424,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.reasons,
     capabilities,
     state.configuredHotkey,
+    state.recordingHotkey,
     state.registeredHotkey,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
     canonicalVoiceModel(state.model),

@@ -12,6 +12,9 @@ import {
 } from "@shared/voice-decide.ts";
 import type { Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { streamSSE } from "hono/streaming";
+import { endedOnShutdown } from "../http-shutdown.ts";
+import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import {
   VOICE_FLAG,
   VOICE_BACKENDS,
@@ -162,9 +165,32 @@ export function registerVoiceRoutes(
     const config = setVoiceConfig(parsed.data, ticket);
     return config ? c.json({ config, ...(ticket && { providerRevision: providerRevision() }) }) : c.json(providerConflict(), 409);
   });
+  // The browser owns the reservation only while this request is open. Closing the
+  // window, cancelling capture, or a lost client releases it without another PUT.
+  app.post("/api/voice/hotkey-recording", gate, c => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const end = store.beginHotkeyRecording();
+    if (!end) return c.json({ error: "Another window is recording a shortcut." }, 409);
+    return streamSSE(c, endedOnShutdown(async stream => {
+      let finish!: () => void;
+      const done = new Promise<void>(resolve => { finish = resolve; });
+      stream.onAbort(finish);
+      const timeout = setTimeout(finish, 60_000);
+      const unsubscribe = store.onChange(state => { if (!state.recordingHotkey) finish(); });
+      try {
+        await stream.writeSSE({ data: "recording" });
+        if (!stream.aborted && store.state().recordingHotkey) await done;
+      } finally {
+        unsubscribe();
+        clearTimeout(timeout);
+        end();
+      }
+    }));
+  });
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
+    if ("toggle" in parsed.data && store.state().recordingHotkey) return c.json({ state: store.state() });
     setVoiceConfig({ muted: "toggle" in parsed.data ? !getVoiceConfig().muted : parsed.data.muted });
     return c.json({ state: store.state() });
   });

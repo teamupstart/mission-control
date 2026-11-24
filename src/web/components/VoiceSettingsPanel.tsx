@@ -1,11 +1,12 @@
 import { ConsoleSwitch } from "./settings-console.tsx";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useChordCapture } from "../lib/useChordCapture.ts";
 import { formatChord } from "../lib/keybindings.ts";
 import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
 import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
   VOICE_CANCEL_WINDOW_SECONDS,
+  VOICE_CALL_POLL_RETRY,
   VOICE_INPUT_DEVICE_BUILT_IN,
   VOICE_INPUT_DEVICE_SYSTEM_DEFAULT,
   VOICE_MODE_LABEL,
@@ -357,21 +358,54 @@ function FasterRoutingGroup({ state, keys }: {
 }
 
 function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceState | null }) {
-  const [recording, setRecording] = useState(false);
+  const [recordingLabel, setRecordingLabel] = useState<string | null>(null);
+  const [captureError, setCaptureError] = useState("");
+  const [leaseGranted, setLeaseGranted] = useState(false);
   const available = !!voice?.capabilities.hotkey?.available && !!state.config;
   const error = voice?.hotkeyError;
   const chord = error ? error.chordInForce : state.config?.hotkey;
   const label = chord ? formatChord(chord) : "Unset";
-  useChordCapture(recording && available, () => setRecording(false), captured => {
-    setRecording(false);
+  const requested = recordingLabel !== null;
+  const recording = requested && leaseGranted && voice?.recordingHotkey && voice.registeredHotkey === null;
+  useEffect(() => {
+    if (!requested) return;
+    if (!available) { setRecordingLabel(null); return; }
+    const controller = new AbortController();
+    const cancel = () => setRecordingLabel(null);
+    window.addEventListener("blur", cancel);
+    void (async () => {
+      try {
+        const response = await fetch("/api/voice/hotkey-recording", {
+          method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+        });
+        if (!response.ok) throw Error(response.status === 409
+          ? "Another window is recording a shortcut." : "Could not start shortcut recording.");
+        if (!controller.signal.aborted) setLeaseGranted(true);
+        await response.text();
+      } catch (error) {
+        if (!controller.signal.aborted) setCaptureError(error instanceof Error ? error.message : "Could not record shortcut.");
+      } finally {
+        if (!controller.signal.aborted) cancel();
+      }
+    })();
+    return () => {
+      controller.abort();
+      setLeaseGranted(false);
+      window.removeEventListener("blur", cancel);
+    };
+  }, [requested, available]);
+  useChordCapture(requested && available, () => setRecordingLabel(null), captured => {
+    if (!recording) return;
+    setRecordingLabel(null);
     // The config trims strings. Spell a physical space explicitly on this wire.
     void state.update({ hotkey: captured.replace(/[ \u00a0]$/, "Space") });
-  });
+  }, true);
   return (
     <div className={`kb-row${error ? " has-conflict" : ""}`} data-anchor="voice/hotkey">
       <div className="kb-row-text">
         <span className="kb-row-label">Mute hotkey</span>
-        {recording && available ? <span className="kb-row-desc">Press the chord you want. Esc keeps {label}.</span>
+        {recording && available ? <span className="kb-row-desc">Press the chord you want. Esc keeps {recordingLabel}.</span>
+          : captureError ? <span className="kb-row-conflict" role="alert">{captureError}</span>
           : error && <span className="kb-row-conflict" role="alert">
             {error.reason}{" "}
             {chord ? `${label} is still your hotkey.` : "No hotkey is in force."}
@@ -380,9 +414,9 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
       <div className="kb-row-controls">
         {available ? (
           <Tooltip label={recording ? "Press a shortcut, or Escape to cancel" : "Record a system-wide mute shortcut"}>
-            <button type="button" aria-label="Mute hotkey" aria-pressed={recording}
+            <button type="button" aria-label="Mute hotkey" aria-pressed={!!recording} aria-busy={requested && !recording}
               className={`kb-capture${recording ? " is-recording" : ""}`}
-              onBlur={() => setRecording(false)} onClick={() => setRecording(!recording)}>
+              onBlur={() => setRecordingLabel(null)} onClick={() => { setCaptureError(""); setRecordingLabel(requested ? null : label); }}>
               {recording ? <span className="kb-recording">Press a key…</span> : <kbd>{label}</kbd>}
             </button>
           </Tooltip>
@@ -410,6 +444,9 @@ export function VoiceSettingsPanel({
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
   const { config, update, error } = state;
+  const detection = voice?.capabilities["call-detection"];
+  const pollFailed = detection?.reason?.startsWith(VOICE_CALL_POLL_RETRY) ||
+    detection?.reason?.startsWith("CoreAudio input query failed"); // Older desktop shells.
   const seconds = config?.cancelWindow.seconds ?? 4;
   const lengths = CANCEL_WINDOW_CHOICES.includes(seconds as (typeof CANCEL_WINDOW_CHOICES)[number])
     ? CANCEL_WINDOW_CHOICES
@@ -467,7 +504,7 @@ export function VoiceSettingsPanel({
             </div>
             <div className="kb-row-controls">
               <ConsoleSwitch label="Auto-mute on calls" tone="ok" checked={config?.autoMuteDuringCalls ?? true}
-                disabled={!config || voice?.capabilities["call-detection"]?.available === false}
+                disabled={!config || (detection?.available === false && !pollFailed)}
                 onChange={autoMuteDuringCalls => void update({ autoMuteDuringCalls })}
                 tooltip="Stop listening while another app is using the microphone" />
             </div>

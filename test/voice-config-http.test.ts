@@ -7,10 +7,11 @@ import { after, beforeEach, mock, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
 process.env.MISSION_HOME = home;
-const { closeDb, getAppConfig, deleteAppConfig, openDb } = await import("../src/server/db.ts");
+const { closeDb, getAppConfig, deleteAppConfig, openDb, upgradeDatabaseToCurrentSchema } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -74,6 +75,7 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
     await json("/api/voice/config"),
     await json("/api/voice/config", "PUT", { muted: true }),
     await json("/api/voice/config/provider-intent", "POST"),
+    await json("/api/voice/hotkey-recording", "POST"),
     await json("/api/voice/mute", "POST", { muted: true }),
     await json("/api/voice/indicators", "PUT", { id: "edge", enabled: true }),
     await hello(),
@@ -92,6 +94,42 @@ test("GET returns every contract A field with its default", async () => {
   const response = await json("/api/voice/config");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
+});
+
+test("a recorder owns the shortcut only until disconnect and cannot be opened by a foreign origin", async () => {
+  const path = "/api/voice/hotkey-recording";
+  assert.equal((await json(path, "POST", undefined, { origin: "https://example.org" })).status, 403);
+  const res = await json(path, "POST");
+  assert.equal(res.status, 200);
+  assert.equal(voiceStateStore.state().recordingHotkey, true);
+  assert.equal((await json(path, "POST")).status, 409);
+  await json("/api/voice/mute", "POST", { toggle: true });
+  assert.equal(voiceStateStore.state().muted, false, "a key queued before unregistration does not mute");
+  const end = new Promise<void>(resolve => {
+    const stop = voiceStateStore.onChange(state => { if (!state.recordingHotkey) { stop(); resolve(); } });
+  });
+  await res.body!.cancel();
+  await end;
+  await json("/api/voice/mute", "POST", { toggle: true });
+  assert.equal(voiceStateStore.state().muted, true);
+});
+
+test("the schema upgrade replaces only the stored legacy default and preserves later explicit selections", t => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  upgradeDatabaseToCurrentSchema(db);
+  const save = db.prepare("INSERT OR REPLACE INTO app_config(key, value) VALUES ('voice', ?)");
+  const read = () => db.prepare("SELECT value FROM app_config WHERE key = 'voice'").get()!.value;
+  for (const config of [{ hotkey: "ctrl+alt+m", muted: true, future: 4 }, { hotkey: "ctrl+k" }, { hotkey: null }, {}]) {
+    save.run(JSON.stringify(config));
+    db.exec("PRAGMA user_version = 62");
+    upgradeDatabaseToCurrentSchema(db);
+    assert.deepEqual(JSON.parse(String(read())), config.hotkey === "ctrl+alt+m"
+      ? { ...config, hotkey: VOICE_CONFIG_DEFAULTS.hotkey } : config);
+  }
+  save.run('{"hotkey":"ctrl+alt+m"}');
+  upgradeDatabaseToCurrentSchema(db);
+  assert.equal(read(), '{"hotkey":"ctrl+alt+m"}', "selecting the old chord after upgrading survives restart");
 });
 
 const readProviderRevision = async () => {

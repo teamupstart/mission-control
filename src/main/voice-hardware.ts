@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { loadVoiceHostClock } from "../server/voice/native-clock.ts";
 import { formatChord } from "../shared/keyboard-chords.ts";
-import { VOICE_LIMITS, type VoiceCapability, type VoiceHotkeyError, type VoiceMode } from "../shared/voice.ts";
+import { VOICE_CALL_POLL_RETRY, VOICE_LIMITS, type VoiceCapability, type VoiceHotkeyError, type VoiceMode } from "../shared/voice.ts";
 
 type Edge = (down: boolean, hostUs: number) => void;
 interface Registrar {
@@ -19,6 +19,7 @@ const reasonOf = (error: unknown) => String(error instanceof Error ? error.messa
 
 export class VoiceHardware {
   private desired?: string | null;
+  private suspended?: string | null;
   private registeredHotkey: string | null = null;
   private hotkeyError: VoiceHotkeyError | null = null;
   private press?: number;
@@ -36,20 +37,31 @@ export class VoiceHardware {
     this.callCapability = activity.value ? available : unavailable(activity.reason);
   }
 
-  update(chord: string | null, mode: VoiceMode) {
+  update(chord: string | null, mode: VoiceMode, recording = false) {
     this.mode = mode;
     if (mode !== "auto-muted" && mode !== "push-to-talk" && this.pushToTalk) this.cancelPress();
     if (this.activity.value && !this.poll) {
       this.sample();
       this.poll = setInterval(() => this.sample(), 500);
     }
-    if (this.desired === chord) return;
+    if (recording) {
+      if (this.suspended === undefined) {
+        this.suspended = this.registeredHotkey;
+        this.bind(null);
+      }
+      return;
+    }
+    if (this.suspended !== undefined) {
+      // Reinstate the previous owner first in case the recorded replacement is refused.
+      if (chord && this.suspended && chord !== this.suspended) this.bind(this.suspended);
+      this.suspended = undefined;
+    } else if (this.desired === chord) return;
     this.desired = chord;
     this.bind(chord);
   }
 
   layoutChanged() {
-    if (!this.desired) return;
+    if (!this.desired || this.suspended !== undefined) return;
     const previous = this.registeredHotkey;
     // A refused preference may have left a different shortcut in force. Remap it too.
     if (previous) this.bind(previous, true);
@@ -86,7 +98,7 @@ export class VoiceHardware {
     let active = this.callActive;
     let capability: VoiceCapability = available;
     try { active = this.activity.value.running(this.listenerPid()); }
-    catch (error) { capability = unavailable(reasonOf(error)); }
+    catch (error) { capability = unavailable((VOICE_CALL_POLL_RETRY + reasonOf(error)).slice(0, VOICE_LIMITS.reasonChars)); }
     if (active === this.callActive && capability.reason === this.callCapability.reason) return;
     this.callActive = active;
     this.callCapability = capability;
@@ -100,9 +112,9 @@ export class VoiceHardware {
       if (this.press !== undefined) return;
       this.press = at;
       this.release = undefined;
-      if (this.mode === "auto-muted" && this.callActive) {
+      if (this.canTalkThroughCall()) {
         this.holdTimer = setTimeout(() => {
-          if (this.mode !== "auto-muted" || !this.callActive) return;
+          if (!this.canTalkThroughCall()) return;
           this.pushToTalk = true;
           this.changed();
         }, Math.max(0, 350 - (this.clock() - at) / 1000));
@@ -123,6 +135,12 @@ export class VoiceHardware {
     this.release = undefined;
     this.pushToTalk = false;
   }
+
+  private canTalkThroughCall() {
+    return this.callActive && (this.mode === "auto-muted" || this.mode === "push-to-talk");
+  }
+
+  get holdingToTalk() { return this.pushToTalk; }
 
   report() {
     return {

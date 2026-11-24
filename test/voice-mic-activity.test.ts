@@ -54,7 +54,7 @@ test("native CoreAudio process query", { skip: process.platform !== "darwin" }, 
       // CoreAudio FourCCs: '!obj' at list level is fatal; 'nope' on an individual process is fatal.
       const status = Buffer.from(scenario.startsWith("list-") ? "!obj" : "nope").readUInt32BE();
       assert.deepEqual(report.capabilities["call-detection"], {
-        available: false, reason: `CoreAudio input query failed (${status}).`,
+        available: false, reason: `Retrying microphone check. CoreAudio input query failed (${status}).`,
       });
     });
   }

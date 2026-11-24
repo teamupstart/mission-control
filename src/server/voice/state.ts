@@ -58,6 +58,18 @@ export type VoiceHelloResult =
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
+  private recorder?: symbol;
+
+  beginHotkeyRecording(): (() => void) | undefined {
+    if (this.recorder || !this.deps.enabled(VOICE_FLAG)) return;
+    const owner = this.recorder = Symbol();
+    this.publish();
+    return () => {
+      if (this.recorder !== owner) return;
+      this.recorder = undefined;
+      this.publish();
+    };
+  }
   private readonly source = randomUUID();
   private lastMode: VoiceState["mode"] = "off";
   private modeRevision = 0;
@@ -141,6 +153,7 @@ export class VoiceStateStore {
   /** The state now. Lapsed readings are dropped here, so a read never returns a stale mode. */
   state(): VoiceState {
     if (!this.deps.enabled(VOICE_FLAG)) {
+      this.recorder = undefined;
       this.lastMode = "off";
       return voiceStateOff();
     }
@@ -181,6 +194,7 @@ export class VoiceStateStore {
       reasons,
       capabilities,
       configuredHotkey: config.hotkey,
+      ...(this.recorder && { recordingHotkey: true }),
       registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
@@ -336,6 +350,7 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.recorder = undefined;
     this.lastReportHostUs = -1;
     this.lastPhysicalKeyHostUs = -1;
     this.releases.clear();

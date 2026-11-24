@@ -916,13 +916,16 @@ Choose **Settings > Voice > Mute hotkey**, then press a chord. Escape cancels re
 A tap toggles manual mute from any app. During call auto-mute, hold for 350 ms to talk and
 release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
 the warning names the chord still registered, or says when none is in force.
-Typing keys require Command, Control, or Option so ordinary typing stays in the foreground
-app. Voice remaps the shortcut when the keyboard layout changes.
+Voice releases the current shortcut while Settings records, so recording it again keeps the
+same binding without muting. Typing and navigation keys require Command, Control, or Option.
+On upgrade, the stored Phase 1 default Control+Option+M moves to Control+Command+Option+V.
+Older saves could not distinguish choosing that exact chord from inheriting it. You can
+select it again after upgrading. Voice remaps the shortcut when the keyboard layout changes.
 
 On macOS 14.2 and later the shell samples CoreAudio running input every 500 ms. It excludes
 the shell and its listener by process ID. Any other process using input, including a recorder,
 can engage auto-mute. If a poll fails, Settings reports the error and Voice keeps the last
-confirmed input state until a poll succeeds. On November 23, 2026, CoreAudio reported Zoom 7.1.9 (88375) using input
+confirmed input state until a poll succeeds. You can still turn auto-mute off during a polling error. On November 23, 2026, CoreAudio reported Zoom 7.1.9 (88375) using input
 in all eight polls while Zoom was muted during a call and in none of the eight polls after
 leaving the call. Other call apps are untested. [S6 microphone observations](voice-spike-findings.md#s6-another-app-on-the-microphone)
 

@@ -116,11 +116,17 @@ napi_value replace(napi_env env, napi_callback_info info) {
   }
   std::optional<UInt32> code;
   auto special = nonTypingKeys.find(key);
+  // Only function keys may be reserved without a primary modifier. Navigation keys
+  // (including Shift+Arrow selection) must keep working in the foreground app.
+  if (!(modifiers & (cmdKey | controlKey | optionKey))) {
+    if (special == nonTypingKeys.end())
+      return fail(env, "Use Command, Control, or Option with a typing key.");
+    if (key.front() != 'F')
+      return fail(env, "Use Command, Control, or Option with a navigation key.");
+  }
   if (special != nonTypingKeys.end()) {
     code = special->second;
   } else {
-    if (!(modifiers & (cmdKey | controlKey | optionKey)))
-      return fail(env, "Use Command, Control, or Option with a typing key.");
     code = typingKeyCode(key, modifiers);
   }
   if (!code) return fail(env, "This key is unavailable on the current keyboard layout.");

@@ -95,7 +95,7 @@ test("tap toggles, hold during auto-mute publishes physical edges, other holds d
   assert.equal(taps, 1);
   failed = true;
   t.mock.timers.tick(500);
-  assert.equal(hardware.report().capabilities["call-detection"].reason, "CoreAudio error");
+  assert.equal(hardware.report().capabilities["call-detection"].reason, "Retrying microphone check. CoreAudio error");
   failed = false;
   t.mock.timers.tick(500);
   assert.equal(hardware.report().capabilities["call-detection"].available, true);
@@ -137,6 +137,29 @@ test("an input-source change remaps a retained shortcut and retries the refused 
   hardware.stop();
 });
 
+test("recording releases the chord in force, then restores it when a replacement is refused", t => {
+  let bound: string | null = null;
+  const hardware = new VoiceHardware({ value: {
+    register(chord) {
+      if (chord === "alt+Space") throw Error("Reserved");
+      bound = chord;
+      return true;
+    },
+    unregister() { bound = null; },
+  } }, { reason: "Unused" }, () => -1, () => {}, () => {}, () => 0);
+  t.after(() => hardware.stop());
+  hardware.update("ctrl+k", "listening");
+  hardware.update("alt+Space", "listening");
+  assert.equal(bound, "ctrl+k");
+  hardware.update("alt+Space", "listening", true);
+  hardware.layoutChanged();
+  assert.equal(bound, null);
+  assert.equal(hardware.report().registeredHotkey, null);
+  hardware.update("alt+Space", "listening");
+  assert.equal(bound, "ctrl+k");
+  assert.equal(hardware.report().hotkeyError?.chordInForce, "ctrl+k");
+});
+
 test("a failed poll preserves confirmed contention until a successful poll finds the input free", t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   let sample: boolean | Error = true;
@@ -149,7 +172,7 @@ test("a failed poll preserves confirmed contention until a successful poll finds
   sample = new Error("CoreAudio busy");
   t.mock.timers.tick(500);
   assert.equal(hardware.report().callActive, true);
-  assert.deepEqual(hardware.report().capabilities["call-detection"], { available: false, reason: "CoreAudio busy" });
+  assert.deepEqual(hardware.report().capabilities["call-detection"], { available: false, reason: "Retrying microphone check. CoreAudio busy" });
   sample = true;
   t.mock.timers.tick(500);
   assert.equal(hardware.report().callActive, true);

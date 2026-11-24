@@ -168,13 +168,14 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         const activityPath = nativeRequire.resolve("./mic-activity.node");
         const activity = nativeRequire(activityPath);
         let polls = 0;
+        let testCall = false;
         nativeRequire.cache[activityPath].exports = {
-          running(pid) { polls++; return activity.running(pid); }
+          running(pid) { polls++; return testCall || activity.running(pid); }
         };
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
         const { post, releaseReservation } = nativeRequire(${JSON.stringify(eventFixture)});
         const freeKeyAndNotify = () => { releaseReservation(); systemPreferences.postNotification(layoutEvent, {}, true); };
-        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; }, get polls() { return polls; } };
+        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, setTestCall: value => { testCall = value; }, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; }, get polls() { return polls; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -184,7 +185,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };
+  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; setTestCall(value: boolean): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -216,9 +217,9 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   assert.equal(reports.length, 0);
   await click("click");
   assert.equal((await read()).opens, 1);
-  await t.test("Electron dispatches Carbon down and up from its application queue and reports replacement failures", async () => {
-    const publish = (configuredHotkey: string | null) => events!.write("data: " + JSON.stringify({
-      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey },
+  await t.test("Electron dispatches Carbon down and up from its application queue and reports replacement failures", async t => {
+    const publish = (configuredHotkey: string | null, mode: VoiceMode = "listening") => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode, configuredHotkey },
     }) + "\n\n");
     const chord = "cmd+ctrl+shift+F9";
     const startUs = voiceHostTimeUs();
@@ -229,6 +230,12 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       await until(() => reports.at(-1)?.hotkeyError?.reason ===
         `macOS refused ${formatChord(key)}: Use Command, Control, or Option with a typing key.`);
       assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, chord);
+    }
+    for (const key of ["ArrowLeft", "shift+ArrowRight", "Home", "End", "PageUp", "PageDown"]) {
+      publish(key);
+      await until(() => reports.at(-1)?.hotkeyError?.reason ===
+        `macOS refused ${formatChord(key)}: Use Command, Control, or Option with a navigation key.`);
+      assert.equal(reports.at(-1)?.registeredHotkey, chord);
     }
     const reserved = "cmd+ctrl+shift+F10";
     publish(reserved);
@@ -242,6 +249,46 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.ok(startUs <= released.pushToTalkReleasedAtHostUs!);
     assert.ok(released.pushToTalkReleasedAtHostUs! <= released.reportedAtHostUs!);
     assert.ok(released.reportedAtHostUs! <= voiceHostTimeUs());
+
+    await t.test("hold and release reach the daemon in order while a routine shell report is delayed", async t => {
+      if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
+      const call = (value: boolean) => app.evaluate((_, value) =>
+        (globalThis as unknown as {fixture: Fixture}).fixture.setTestCall(value), value);
+      const post = (down: boolean) => app.evaluate((_, down) =>
+        (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
+      await call(true);
+      publish(reserved, "auto-muted");
+      await until(async () => !!reports.at(-1)?.callActive && (await read()).mode === "auto-muted");
+      holdReport = true;
+      const check = app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.checkMicrophone());
+      await until(() => !!heldReport);
+      const routine = heldReport!;
+      heldReport = undefined;
+      try {
+        const start = reports.length;
+        holdReport = true;
+        await post(true);
+        await until(() => !!heldReport && reports.slice(start).some(r => r.pushToTalk));
+        const press = reports.at(-1)!;
+        await post(false);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        assert.equal(reports.at(-1), press, "release waits for the preceding press delivery");
+        heldReport!.end();
+        await until(() => reports.slice(start + 1).some(r => !r.pushToTalk && !!r.pushToTalkReleasedAtHostUs));
+        const release = reports.at(-1)!;
+        assert.ok(press.reportedAtHostUs! < release.reportedAtHostUs!);
+        assert.ok(press.pushToTalkPressedAtHostUs! < release.pushToTalkReleasedAtHostUs!);
+        assert.equal(routine.writableEnded, false, "both transitions bypassed the routine POST");
+      } finally {
+        holdReport = false;
+        const pending = heldReport as ServerResponse | undefined;
+        if (pending && !pending.writableEnded) pending.end();
+        heldReport = undefined;
+        routine.end();
+        await check;
+        await call(false);
+      }
+    });
 
     await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.freeKeyAndNotify());
     await until(() => reports.at(-1)?.registeredHotkey === reserved && reports.at(-1)?.hotkeyError === null);
@@ -266,6 +313,15 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     }) + "\n\n");
     await until(() => reports.at(-1)?.registeredHotkey === chord);
     assert.equal(await canAcquireShortcut(), false, "Voice owns the shortcut while listening");
+    const record = (recordingHotkey?: true) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey: chord, recordingHotkey },
+    }) + "\n\n");
+    record(true);
+    await until(() => reports.at(-1)?.registeredHotkey === null);
+    assert.equal(await canAcquireShortcut(), true, "the focused recorder can receive the active chord");
+    record();
+    await until(() => reports.at(-1)?.registeredHotkey === chord);
+    assert.equal(await canAcquireShortcut(), false, "finishing capture restores the reservation");
     const [major, minor] = (await app.evaluate(() => process.getSystemVersion())).split(".").map(Number);
     const listeningPolls = await polls();
     if (major! > 14 || (major === 14 && minor! >= 2)) {

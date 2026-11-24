@@ -474,7 +474,7 @@ const RESERVED_KEYS = new Set([
  * - A named key (Tab, Enter) has no character to bake shift into, so shift is a
  *   modifier there too: "shift+Tab".
  */
-export function chordFromEvent(e: KeyboardEvent): string | null {
+export function chordFromEvent(e: KeyboardEvent, physicalModifiers = false): string | null {
   const k = e.key;
   if (k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return null;
   const mods: string[] = [];
@@ -490,6 +490,7 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
     key = digit;
   } else if (k.length === 1 && !isCased(k)) {
     key = k;
+    if (physicalModifiers && e.shiftKey) mods.push("shift");
   } else {
     key = k.length === 1 ? k.toLowerCase() : k;
     if (e.shiftKey) mods.push("shift");

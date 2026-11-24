@@ -23,7 +23,7 @@ export interface VoiceConfigState {
   config: VoiceConfig | null;
   /** The provider the daemon currently acknowledges, independent of edits still queued. */
   confirmedDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
-  providerRevision: string;
+  keyReportVersion: string;
   pendingDecisionProvider: VoiceConfig["decisionProvider"] | undefined;
   /**
    * Show an edit immediately and resolve to whether the daemon kept it.
@@ -55,6 +55,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   const confirmedProviderEdit = useRef(0);
   const [writer] = useState(() => crypto.randomUUID());
   const providerRevision = useRef("");
+  const [unconfirmedProviderEdit, setUnconfirmedProviderEdit] = useState<number | null>(null);
   const nextEdit = useRef(0);
   // The newest edit made when the current error was set. Only an edit made after it clears it, so
   // an edit already waiting behind the refused one cannot wipe the sentence before it is read.
@@ -83,6 +84,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       if (alive && read && id > appliedRead && nextEdit.current === at && pendingRef.current.length === 0) {
         appliedRead = id;
         providerRevision.current = read.providerRevision;
+        setUnconfirmedProviderEdit(null);
         setConfirmed(read.config);
       }
     };
@@ -92,7 +94,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       alive = false;
       clearInterval(id);
     };
-  }, [enabled, setConfirmed]);
+  }, [enabled, setConfirmed, unconfirmedProviderEdit]);
 
   const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;
@@ -119,13 +121,21 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
         const retry = await api.reserveVoiceProviderWrite(writer, res.providerRevision);
         if (!superseded()) res = retry.ticket ? await api.setVoiceConfig(patch, retry.ticket) : retry;
       }
-      const kept = res.ok && res.config !== undefined;
+      const unconfirmed = sendProvider && (!res.config || !res.providerRevision) &&
+        (res.ok || res.status === undefined || res.status >= 500);
+      const kept = res.ok && res.config !== undefined && !unconfirmed;
       const current = confirmedRef.current ?? res.config;
-      if (res.config && current && (kept || res.status === 409)) {
+      if (unconfirmed && edit.id > confirmedProviderEdit.current) {
+        // The write may already have committed. Invalidate both reads before displaying
+        // any routing destination again, and ignore older local write acknowledgements.
+        confirmedProviderEdit.current = edit.id;
+        setUnconfirmedProviderEdit(edit.id);
+      } else if (res.config && current && (kept || res.status === 409)) {
         const applyProvider = sendProvider && edit.id > confirmedProviderEdit.current;
         if (applyProvider && res.providerRevision) {
           confirmedProviderEdit.current = edit.id;
           providerRevision.current = res.providerRevision;
+          setUnconfirmedProviderEdit(null);
         }
         setConfirmed({
           ...(changesSettings && kept ? res.config : current),
@@ -136,7 +146,7 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
       if (superseded() && !changesSettings) return false;
       if (!kept) {
         errorAfter.current = nextEdit.current;
-        setError(whyItFailed(res.error));
+        setError(unconfirmed ? "The provider change could not be confirmed." : whyItFailed(res.error));
       } else if (edit.id > errorAfter.current) {
         setError(null);
       }
@@ -158,7 +168,8 @@ export function useVoiceConfig(enabled: boolean): VoiceConfigState {
   );
 
   return {
-    config, confirmedDecisionProvider: confirmed?.decisionProvider, providerRevision: providerRevision.current,
+    config, confirmedDecisionProvider: unconfirmedProviderEdit === null ? confirmed?.decisionProvider : undefined,
+    keyReportVersion: unconfirmedProviderEdit === null ? providerRevision.current : `unconfirmed:${unconfirmedProviderEdit}`,
     pendingDecisionProvider: pending.find(edit => edit.id === latestProviderEdit.current)?.patch.decisionProvider, update, error,
   };
 }

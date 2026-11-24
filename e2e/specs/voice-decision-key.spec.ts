@@ -548,6 +548,41 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
     }
   });
 
+  for (const next of ["openai", "off"] as const) {
+    test(`a lost provider PUT response reconciles a switch to ${next} before the next poll`, async ({ dashboard: page, daemon, decisions }) => {
+      await turnVoiceOn(daemon);
+      await codexAgents(daemon);
+      await openVoiceSettings(page, daemon);
+      if (next === "openai") await providerMenu(page).selectOption("off");
+      await expect(line(page)).toHaveText(next === "openai" ? NOT_SET : using("OpenAI Decisions"));
+      const release = Promise.withResolvers<void>();
+      const reads = new Set<string>();
+      await page.route(/\/api\/voice\/(?:config|decision-key)$/, async route => {
+        if (route.request().method() === "GET") {
+          reads.add(new URL(route.request().url()).pathname);
+          await release.promise;
+          return route.continue();
+        }
+        expect((await route.fetch()).ok()).toBe(true);
+        await route.abort("connectionreset");
+      });
+      try {
+        await providerMenu(page).selectOption(next);
+        await expect(line(page)).toHaveText("Reading…", { timeout: 1_500 });
+        await expect(providerMenu(page)).toHaveValue("unknown");
+        await expect(panel(page)).toContainText("The provider change could not be confirmed.");
+        await expect.poll(() => reads.size, { timeout: 1_500 }).toBe(2);
+      } finally {
+        release.resolve();
+      }
+      await expect(providerMenu(page)).toHaveValue(next);
+      await expect(line(page)).toHaveText(next === "openai" ? using("OpenAI Decisions") : NOT_SET, { timeout: 1_500 });
+      expect((await sayAndSettle(daemon, SPLIT)).entry.detail).toBe(next === "openai" ? "OpenAI Decisions answered: split" : "job on codex answered: split");
+      expect(decisions.requests).toHaveLength(next === "openai" ? 1 : 0);
+      if (next === "openai") await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "26-lost-provider-response");
+    });
+  }
+
   test("a fresh provider report discloses routing enabled in another window while config is stalled", async ({ dashboard: page, context, daemon, decisions }) => {
     await turnVoiceOn(daemon);
     await codexAgents(daemon);

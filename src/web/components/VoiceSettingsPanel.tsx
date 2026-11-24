@@ -301,8 +301,8 @@ function FasterRoutingGroup({ state, keys }: {
   // A key report observes the selection and effective provider together, even if the
   // independent config poll is stalled. Keep an optimistic selection until its write settles.
   const stored = state.pendingDecisionProvider !== undefined ? state.pendingDecisionProvider
-    : keys.report ? keys.report.selection : config?.decisionProvider ?? null;
-  const chosen = DECISION_PROVIDER_CHOICES.find((choice) => choice.stored === stored)?.value ?? "auto";
+    : keys.report ? keys.report.selection : confirmedDecisionProvider;
+  const chosen = DECISION_PROVIDER_CHOICES.find((choice) => choice.stored === stored)?.value ?? "unknown";
   const provider = keys.report?.provider ?? null;
   const status = keys.report ? fasterRoutingLine(provider, keys.report.savedKeysUnavailable)
     : keys.report === null ? "Key status unavailable"
@@ -336,6 +336,7 @@ function FasterRoutingGroup({ state, keys }: {
                 if (next) void update({ decisionProvider: next.stored }, keys.report?.providerRevision);
               }}
             >
+              {chosen === "unknown" && <option value="unknown" disabled>Checking selection…</option>}
               {DECISION_PROVIDER_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
             </select>
           </Tooltip>
@@ -376,7 +377,7 @@ export function VoiceSettingsPanel({
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
   const inputs = voiceInputChoices(devices.devices, inputDevice);
-  const keys = useVoiceDecisionKey(true, state.providerRevision);
+  const keys = useVoiceDecisionKey(true, state.keyReportVersion);
   return (
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />

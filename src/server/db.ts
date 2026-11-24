@@ -119,6 +119,7 @@ import {
   TASK_KINDS,
 } from "@shared/types.ts";
 import { RESIDENT_RESTART_PAUSE_REASON, residentRestartRequestId } from "@shared/residents.ts";
+import { SpokenNameSchema } from "@shared/voice-names.ts";
 import {
   PROMPTED_DECISION_GAPS_MAX,
   PROMPTED_DECISION_GAP_DETAIL_MAX,
@@ -321,7 +322,11 @@ let db: DatabaseSync | undefined;
 //     phase 6). Nullable, no backfill: no digest counted a report before it existed.
 // 50: muted report authors (`report_mutes`, agent reports phase 7), a new empty table: no
 //     author was muted before it existed, so every report notifies and is listed as before.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 50;
+// 51: a task's call sign (`tasks.call_sign`, @shared/voice-names.ts), nullable with no backfill:
+//     no task was given a spoken name before it existed.
+// 52: remember a stopped task's displaced roster name until it runs or changes names.
+// 53: reports and their mute records keep the spoken label alongside the fallback.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 53;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -580,6 +585,10 @@ function createSchemaObjects(d: DatabaseSync): void {
       advisor_model TEXT,
       -- Library Persona whose guidance the launch carries as standing instructions. NULL is none.
       persona_id    TEXT,
+      -- The call sign: a short name the operator says to address the task's session by voice
+      -- (@shared/voice-names.ts). NULL is none. Annotation: it may change while the agent runs.
+      call_sign     TEXT,
+      retired_call_sign TEXT,
       -- Published Workflow identity armed for this task's completion. The immutable
       -- version is selected only when the launched session can be bound.
       workflow_id   TEXT,
@@ -4285,6 +4294,10 @@ function migrate(d: DatabaseSync): void {
       throw err;
     }
   }
+  // A task's call sign (schema 51). Nullable with no backfill: no task had a spoken name before
+  // this column existed, so every existing row reads as having none.
+  addColumn(d, "tasks", "call_sign", "TEXT");
+  addColumn(d, "tasks", "retired_call_sign", "TEXT");
   d.exec(`
     CREATE TABLE IF NOT EXISTS task_shaping_text (
       task_id    TEXT PRIMARY KEY,
@@ -5180,6 +5193,9 @@ function migrate(d: DatabaseSync): void {
       muted_at    INTEGER NOT NULL
     );
   `);
+
+  addColumn(d, "reports", "author_spoken_name", "TEXT");
+  addColumn(d, "report_mutes", "author_spoken_name", "TEXT");
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
@@ -6948,6 +6964,8 @@ interface TaskRow {
   effort: string | null;
   advisor_model: string | null;
   persona_id: string | null;
+  /** Optional: a row read before `migrate` added the column has none. */
+  call_sign?: string | null;
   workflow_id: string | null;
   source_id: string | null;
   external_id: string | null;
@@ -7356,6 +7374,13 @@ function readTaskPlans(inputs: string | null, policy: string | null): Pick<Task,
   return result;
 }
 
+/** A stored call sign as `rowToTask` spreads it: present only when it is one a writer could store. */
+function readCallSign(raw: string | null | undefined): { callSign?: string } {
+  if (!raw) return {};
+  const parsed = SpokenNameSchema.safeParse(raw);
+  return parsed.success ? { callSign: parsed.data } : {};
+}
+
 /** A stale/newer effort value cannot be trusted as a harness launch option. */
 function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
   return raw && supportsEffort(agent, raw as NonNullable<Task["effort"]>)
@@ -7432,6 +7457,9 @@ function rowToTask(
     effort: parseEffort(r.agent as Task["agent"], r.effort),
     advisorModel: parseAdvisor(r.agent as Task["agent"], r.advisor_model),
     personaId: r.persona_id || null,
+    // Present only when set, so a task with none decodes exactly as it did before the column.
+    // Validated, not cast: a value no build would write (blank, or past the limit) reads as none.
+    ...readCallSign(r.call_sign),
     workflowId: r.workflow_id,
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
@@ -7537,7 +7565,7 @@ export function upsertTask(
     d.prepare(
       `INSERT INTO tasks (
          id, work_unit_id, title, intent, kind, agent, priority, labels, dependencies, plan_inputs, plan_policy, grill_first, enabled, backlog_rank,
-         model, effort, advisor_model, persona_id,
+         model, effort, advisor_model, persona_id, call_sign,
          workflow_id, source_id, external_id, source_url, source_parent, repo_root, workspace_kind,
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
@@ -7546,7 +7574,7 @@ export function upsertTask(
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error, launch_failure, launch_report_for, claim_warnings, hibernation,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          -- Written once. A stored id is never replaced, whatever this copy of the task carries:
          -- a writer holding a copy read before the id was given must not erase or change it.
@@ -7556,7 +7584,8 @@ export function upsertTask(
          plan_inputs=excluded.plan_inputs, plan_policy=excluded.plan_policy,
          grill_first=excluded.grill_first, enabled=excluded.enabled, backlog_rank=excluded.backlog_rank,
          model=excluded.model, effort=excluded.effort, advisor_model=excluded.advisor_model,
-         persona_id=excluded.persona_id,
+         persona_id=excluded.persona_id, call_sign=excluded.call_sign,
+         retired_call_sign=CASE WHEN excluded.call_sign IS NULL THEN NULL ELSE tasks.retired_call_sign END,
          workflow_id=excluded.workflow_id,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url, source_parent=excluded.source_parent,
@@ -7601,6 +7630,7 @@ export function upsertTask(
       t.effort,
       t.advisorModel,
       t.personaId,
+      t.callSign ?? null,
       t.workflowId,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.sourceParent ? JSON.stringify(t.sourceParent) : null,
@@ -8807,7 +8837,8 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
   }
 }
 
-export function deleteTask(id: string): void {
+/** Delete a task and everything keyed on it. True when a task row was there to delete. */
+export function deleteTask(id: string): boolean {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
@@ -8833,8 +8864,9 @@ export function deleteTask(id: string): void {
     d.prepare(`DELETE FROM task_source_sync WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_shaping_text WHERE task_id = ?`).run(id);
     d.prepare(`DELETE FROM task_skill_prompts WHERE task_id = ?`).run(id);
-    d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+    const deleted = Number(d.prepare(`DELETE FROM tasks WHERE id = ?`).run(id).changes) > 0;
     if (ownsTransaction) d.exec("COMMIT");
+    return deleted;
   } catch (error) {
     if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
     throw error;
@@ -9265,6 +9297,34 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
        ORDER BY updated_at DESC LIMIT ?`,
     )
     .all(limit) as unknown as TaskRow[];
+  return rowsToTasks(rows);
+}
+
+/** Roster retirement belongs to the task row and leaves its configured call sign intact. */
+export const taskNameRetirement = {
+  read(id: string): string | null {
+    const row = openDb().prepare("SELECT retired_call_sign FROM tasks WHERE id = ?").get(id);
+    return typeof row?.retired_call_sign === "string" ? row.retired_call_sign : null;
+  },
+  write(id: string, name: string | null): void {
+    openDb().prepare("UPDATE tasks SET retired_call_sign = ? WHERE id = ?").run(name, id);
+  },
+};
+
+/**
+ * Finished tasks with a call sign that stopped at or after `since`, from storage rather than the
+ * Registry's 50 most recent finished tasks: the voice roster keeps such a name for 24 hours from
+ * when its task stopped (`@server/voice/names.ts`), and a restart reloads only those 50, so it
+ * reads the rest of that day's named tasks here without widening the board's cache. Stopped is
+ * `completed_at`, or `updated_at` on a row with none, the time the roster counts from.
+ */
+export function loadFinishedTasksWithCallSign(since: number): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE call_sign IS NOT NULL AND status IN ('done','failed','cancelled')
+       AND COALESCE(completed_at, updated_at) >= ?`,
+    )
+    .all(since) as unknown as TaskRow[];
   return rowsToTasks(rows);
 }
 

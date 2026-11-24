@@ -10,14 +10,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Stall, StallFacts } from "../src/shared/stall.ts";
 import type { Session } from "../src/shared/types.ts";
-import { interruptDone, parkedStep, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
+import { interruptDone, StuckCard, stuckDetail } from "../src/web/components/StuckCard.tsx";
+import { parkedStep } from "../src/web/lib/stall-actions.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 function stall(facts: StallFacts, reason = "idle 21m with work unfinished"): Stall {
   return { sessionId: "s1", kind: facts.kind, forMs: 21 * 60_000, reason, facts, fingerprint: "f" };
 }
 
-function draw(st: Stall, session: Session = mkSession({ id: "s1", state: "idle" })): string {
+function draw(st: Stall, session: Session = mkSession({ id: "s1", state: "idle" }), complete = true): string {
   return renderToStaticMarkup(createElement(StuckCard, {
     session,
     stall: st,
@@ -25,6 +26,7 @@ function draw(st: Stall, session: Session = mkSession({ id: "s1", state: "idle" 
     subject: { name: "Fix the parser", colorId: null },
     onOpenSession: () => undefined,
     onOpenRun: () => undefined,
+    ...(complete ? { onComplete: () => undefined } : {}),
     onDismiss: () => undefined,
   }));
 }
@@ -42,6 +44,11 @@ test("a stall with an open task draws Continue and Mark done", () => {
   assert.match(html, /idle 21m with work unfinished/);
   assert.match(html, /Idle with work open/);
   assert.match(html, /Open: the task &quot;Fix the parser&quot;\./);
+});
+
+test("Mark done is the session's Complete dialog, so a card that cannot open it draws none", () => {
+  const html = draw(stall({ kind: "unfinished-work", task, queueOpen: 0 }), undefined, false);
+  assert.deepEqual(actions(html), ["open-session", "dismiss", "continue", "message"]);
 });
 
 test("a queue-only stall draws Continue and Open session and no Mark done", () => {
@@ -86,10 +93,10 @@ test("a parked run draws Resubmit only when it can be resubmitted, and push only
     actions(draw(stall(parked({ unpushedCommits: 3 })))),
     ["open-session", "dismiss", "continue", "open-run", "message"],
   );
-  // Waiting for a head with nothing unpushed: new work has to be made, so Continue again.
+  // Waiting for a head with nothing unpushed: the review needs a new remote head.
   assert.deepEqual(
     actions(draw(stall(parked({ status: "waiting_for_new_head" })))),
-    ["open-session", "dismiss", "continue", "open-run", "message"],
+    ["open-session", "dismiss", "open-run", "message"],
   );
 });
 
@@ -176,7 +183,7 @@ test("a parked run's step is decided once, from its status, source and commits",
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", resubmittable: true }), "resubmit");
   assert.equal(parkedStep({ ...base, status: "waiting_for_new_head", unpushedCommits: 2 }), "push");
   assert.equal(parkedStep({ ...base, status: "waiting_for_new_head", unpushedCommits: 2, externalSource: "ensemble" }), "push");
-  assert.equal(parkedStep({ ...base, status: "waiting_for_new_head" }), "next-turn");
+  assert.equal(parkedStep({ ...base, status: "waiting_for_new_head" }), "new-head");
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", externalSource: "ensemble", unpushedCommits: 2 }), "source");
   assert.equal(parkedStep({ ...base, status: "waiting_for_session", unpushedCommits: 2 }), "next-turn");
 });

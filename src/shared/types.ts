@@ -2632,6 +2632,15 @@ export interface Task {
    */
   personaId: string | null;
   /**
+   * The call sign: a short name the operator can say to address this task's session by voice
+   * (`@shared/voice-names.ts`), or null for none. Absent on a row read before the column existed,
+   * which means the same. A spoken name, not a launch setting: nothing is provisioned from it, so
+   * it may change while the agent runs (`isAnnotationOnlyUpdate`). It is also the first rank of
+   * `agentDisplayName`. A resident's task takes none (`taskKindTakesCallSign`): a resident is
+   * addressed by its profile's names.
+   */
+  callSign?: string | null;
+  /**
    * Published Workflow identity armed for this task's completion, or null for none.
    *
    * This is durable dispatch intent rather than a binding id: the binding cannot exist until
@@ -2987,6 +2996,12 @@ export interface TaskSummary {
    * so the chip applies the whole rule to the task's own binding rather than trusting the card.
    */
   shapingDelivery?: string;
+  /**
+   * `Task.callSign`, carried to the session card while the task has one. Absent otherwise, so
+   * every other card's payload is what it was before call signs existed. The display-name
+   * resolver reads it as its first rank.
+   */
+  callSign?: string;
 }
 
 /** One repository of a multi-repo task, and the pull request it has produced so far. */
@@ -3781,6 +3796,8 @@ export interface LlmStatus {
    * the app-wide value.
    */
   jobRunners: Record<LlmJobId, ResolvedLlmRunner>;
+  /** Foreman reads this live gate over HTTP. Present only while the preview is on. */
+  backgroundReasoningEffort?: true;
   /** Every provider this build has, in declaration order. */
   runners: LlmProviderView[];
 }
@@ -4057,9 +4074,11 @@ export type ServerEvent =
       /**
        * The voice state at connect time (contract B of the voice plan). Present only while the
        * `voice` flag is on; absent reads as off. A handful of scalars, a capability map of at most
-       * seven entries, and a roster that is empty until the names phase fills it.
+       * seven entries, the speech model's state, and the roster of who can be addressed (contract C).
        */
       voice?: import("./voice.ts").VoiceState;
+      /** Cards still awaiting delivery or a pick when this window connects. */
+      voiceCards?: import("./voice-routing.ts").VoiceCard[];
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -4241,7 +4260,18 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
+  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
+  /**
+   * Who can be addressed changed: a resident profile or run, a task's call sign, or a session
+   * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces
+   * `VoiceState.roster`; a change to the roster alone sends this and no `voice_state` frame. Sent
+   * only while the `voice` flag is on, and only when the roster changed. Bounded by the live
+   * resident profiles (at most 200) and the launched tasks with a call sign that are running,
+   * hibernated, or recently stopped and still kept by the roster's retention rules
+   * (`computeVoiceRoster`; docs/voice.md, "Who can be addressed").
+   */
+  | { type: "voice_roster"; roster: import("./voice-names.ts").SpokenName[] }
   /**
    * The per-harness dispatch defaults (model, effort, runtime) were rewritten. An
    * invalidation signal: whoever cares re-reads `GET /api/harnesses/config`.

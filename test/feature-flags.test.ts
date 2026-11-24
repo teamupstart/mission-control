@@ -71,9 +71,10 @@ test("schemas bound keys and entries while accepting future ids", () => {
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), [
-    "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
+    "BACKGROUND_REASONING_EFFORT_FLAG_ID", "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "IDLE_STALLED_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
     "WORK_UNIT_ID_FLAG_ID",
   ]);
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BACKGROUND_REASONING_EFFORT_FLAG_ID)?.stage, "preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.MCP_SCHEDULES_FLAG_ID)?.stage, "preview",
     "recurring missions through MCP ships as a preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.WORK_UNIT_ID_FLAG_ID)?.stage, "preview",

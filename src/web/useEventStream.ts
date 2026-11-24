@@ -2,6 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
+import type { VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
 import { observeBrowserConnection } from "./lib/experience.ts";
@@ -208,9 +209,11 @@ export interface MissionState {
   /**
    * The daemon's voice state (contract B of the voice plan). Null before the first snapshot and
    * while the `voice` flag is off at connect time; a `voice_state` frame replaces it whole, and
-   * the one sent when the flag turns off carries the mode `off`.
+   * the one sent when the flag turns off carries the mode `off`. A `voice_roster` frame replaces
+   * only its `roster` (contract C).
    */
   voice: VoiceState | null;
+  voiceCards: Map<string, VoiceCard>;
   /**
    * The subsystem status the Settings rail dots and topbar gear read (Inspector live,
    * YOLO armed, failing task sources). The ONE client-side source of these facts - no
@@ -333,6 +336,7 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [voiceCards, setVoiceCards] = useState(new Map<string, VoiceCard>());
   const [voice, setVoice] = useState<VoiceState | null>(null);
   const shapingListeners = useRef(new Set<(config: ShapingConfigView | null) => void>());
   const subscribeShaping = useCallback((listener: (config: ShapingConfigView | null) => void) => {
@@ -482,6 +486,7 @@ export function useEventStream(): MissionState {
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           // Absent while the flag is off, which reads as off.
+          setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
           setVoice(msg.voice ?? null);
           // Same reasoning for the settings dots: seed them from the snapshot so they are
           // right on the first render instead of blank until the next config write.
@@ -743,6 +748,23 @@ export function useEventStream(): MissionState {
         // Replaced whole: one state for every window, which is how a mute in one reaches another.
         case "voice_state":
           setVoice(msg.state);
+          if (msg.state.mode === "off") setVoiceCards(new Map());
+          break;
+        case "voice_card":
+          setVoiceCards((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.card.id);
+            next.set(msg.card.id, msg.card);
+            const completed = [...next.values()].filter((c) => !["pending", "unsure", "resolving"].includes(c.state));
+            if (completed.length > 50) next.delete(completed[0]!.id);
+            return next;
+          });
+          break;
+        // Who can be addressed moved: replace the roster inside the state. A frame that lands
+        // while no state is held (voice was off at connect) has nothing to update; the frame
+        // that switches voice on carries the roster itself.
+        case "voice_roster":
+          setVoice((prev) => (prev ? { ...prev, roster: msg.roster } : prev));
           break;
         case "settings_status":
           setSettingsStatus(hydrateSettingsStatus(msg.status));
@@ -910,6 +932,7 @@ export function useEventStream(): MissionState {
     shaping,
     subscribeShaping,
     voice,
+    voiceCards,
     settingsStatus,
     keepAwakeStatus,
     pauseState,

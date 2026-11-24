@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import type { ThinkingLevel } from "@shared/types.ts";
 import { workflowEvidenceRequirement, type TaskCompletionContract } from "@shared/task-completion.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
@@ -74,11 +75,13 @@ export async function reviewShipRecovery(
   input: ShipRecoveryReviewInput,
   model: string,
   runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
+  effort?: ThinkingLevel,
 ): Promise<ShipRecoveryReviewResult> {
   const schema = providerJsonSchema(ShipRecoveryReviewWireSchema);
   const result = await runStructured<typeof ShipRecoveryReviewSchema>(
     (prompt) => llmRunner(runnerId).run(prompt, {
       model,
+      effort,
       role: "foreman:ship-recovery",
       schema,
     }),

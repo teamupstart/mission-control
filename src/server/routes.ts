@@ -5,7 +5,7 @@ import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
 import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
-import { registerVoiceRoutes } from "./voice/routes.ts";
+import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { taskShapingForReads } from "./shaping/reads.ts";
 import { ensureResidentState, readResidentStateFile } from "./residents/state.ts";
@@ -319,7 +319,10 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import { advertisedDaemonCapabilities } from "@shared/daemon-protocol.ts";
-import { HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import {
+  HEADLESS_MODE_FLAG_ID, SESSION_AWAITING_FLAG_ID, MCP_SCHEDULES_FLAG_ID, IDLE_STALLED_FLAG_ID,
+  BACKGROUND_REASONING_EFFORT_FLAG_ID,
+} from "@shared/feature-flag-registry.ts";
 import { orderInspectorFindings } from "@shared/inspector-findings.ts";
 import type {
   ForemanInstructionsConflict,
@@ -594,8 +597,7 @@ import {
 } from "@shared/organizations.ts";
 import {
   getInspectorConfig,
-  inspectorModel,
-  inspectorRunner,
+  inspectorExecution,
   setInspectorConfig,
 } from "./inspector/config.ts";
 import { getLlmConfig, setLlmConfig } from "./llm/config.ts";
@@ -5486,6 +5488,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         agent: prepared.agent,
         model: data.model ?? undefined,
         effort: data.effort ?? undefined,
+        callSign: data.callSign ?? undefined,
         workflowId,
         enabled: data.enabled,
         priority: data.priority,
@@ -6486,12 +6489,15 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // A Stuck row's fixed message (`inbox` flag): Nudge, Continue or Tell it to push. The request
-  // names a kind; the outbox picks the words and records them as daemon-written, so the agent's
-  // prompt hook never takes them for the operator's Goal. A free-form reply from the same row
-  // goes through /send like any other message.
+  // A Stuck row's fixed message (`inbox` flag), or a Stalled card's in Idle (`idle-stalled`):
+  // Nudge, Continue or Tell it to push. Either preview opens it, because both draw the same fixes.
+  // The request names a kind; the outbox picks the words and records them as daemon-written, so
+  // the agent's prompt hook never takes them for the operator's Goal. A free-form reply from the
+  // same row goes through /send like any other message.
   app.post("/api/sessions/:id/inbox-message", async (c) => {
-    if (!featureEnabled(INBOX_FLAG)) return c.json({ ok: false, error: "the inbox preview flag is off" }, 403);
+    if (!featureEnabled(INBOX_FLAG) && !featureEnabled(IDLE_STALLED_FLAG_ID)) {
+      return c.json({ ok: false, error: "the inbox and Stalled section preview flags are off" }, 403);
+    }
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ ok: false, error: "no such session" }, 404);
     const parsed = await parseBody(c, InboxMessageSchema);
@@ -7899,6 +7905,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/foreman/config", async (c) => {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
     const config = setForemanConfig(parsed.data);
     // Stacked pull requests: every cached stack standing says whether Foreman will send its
     // prompt, so a change to Foreman's switches has to reach them now rather than at the next
@@ -8162,6 +8171,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/inspector/config", async (c) => {
     const parsed = await parseBody(c, InspectorConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.effort !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
     const next = setInspectorConfig(parsed.data);
     // The per-session chip bakes `mode` in when the summary is resolved, and the tick
     // that would otherwise re-resolve it only runs while the feature is ENABLED. Without
@@ -8332,9 +8344,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // for the reason `ForemanStatus.models` documents: the env layer is invisible to the
   // browser, so a panel showing `config || default` would confidently print a model a
   // `MISSION_INSPECTOR_MODEL` in the daemon's environment is overriding.
-  app.get("/api/inspector/status", (c) =>
-    c.json({ model: inspectorModel(), runner: inspectorRunner() } satisfies InspectorStatus),
-  );
+  app.get("/api/inspector/status", (c) => {
+    const { model, runner } = inspectorExecution();
+    return c.json({ model, runner } satisfies InspectorStatus);
+  });
 
   // --- LLM: which provider does the app's own offline work, and on which model ---
   //
@@ -8346,6 +8359,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
     const config = setLlmConfig(parsed.data);
     // Personas without a provider override follow this setting. Refresh their top-level SSE
     // projections in the same mutation so the editor never advertises a stale effective model.
@@ -9293,6 +9309,22 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
   registerVoiceRoutes(app);
+  registry.voiceRouter = registerVoiceUtteranceRoutes(app, {
+    async deliver(target, text, _utteranceId, command) {
+      if (target.state !== "running" || !target.sessionId) return "not-running";
+      const session = registry.getSession(target.sessionId);
+      if (!session || session.state === "exited") return "not-running";
+      if (command === "stop") {
+        const unsupported = interruptUnsupportedWhy(session.agent, session.runtime);
+        if (unsupported) return { outcome: "failed", detail: unsupported };
+        const result = await interruptSession(session, sdkSessions, pendingTurns, panes, pauses);
+        return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
+      }
+      if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
+      const result = pendingTurns.submit(target.sessionId, text);
+      return result.ok ? "queued" : { outcome: "failed", detail: result.error || "Queue refused the message." };
+    },
+  }, (card) => registry.emitVoiceCard(card));
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.
@@ -9752,6 +9784,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       model: task.model ?? undefined,
       effort: task.effort ?? undefined,
       personaId: task.personaId ?? undefined,
+      // The same agent tried again answers to the same name.
+      callSign: task.callSign ?? undefined,
       workflowId: task.workflowId,
       grillFirst: task.grillFirst ?? false,
       priority: task.priority,

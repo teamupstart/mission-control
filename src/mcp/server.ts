@@ -637,6 +637,7 @@ function taskConfiguration(task: Task) {
     effort: task.effort,
     advisorModel: task.advisorModel,
     personaId: task.personaId,
+    callSign: task.callSign ?? null,
     workflowId: task.workflowId,
     planPolicy: task.planPolicy,
     enabled: task.enabled,
@@ -656,7 +657,10 @@ server.registerTool(
       "unless an absolute local checkout path or unique repository directory name is supplied, " +
       "and it can attach additional local repositories to the same task. " +
       "Set agent (harness), model, effort, kind, workflowId, enabled (backlog autopilot), priority, " +
-      "labels, planStorage (plan tasks only), and dependencies as needed. Omitted agent uses the kind default; omitted or null " +
+      "labels, callSign, planStorage (plan tasks only), and dependencies as needed. callSign is a short spoken name " +
+      "the task's session is listed under in Settings > Voice, for the operator to address it by once voice routing is available; " +
+      "it is not the title and is set only when asked for. " +
+      "Omitted agent uses the kind default; omitted or null " +
       "model/effort follows launch-time defaults. The advisor is not a task setting: Settings -> Harnesses " +
       "chooses it per launch model. Null workflowId opts out of an after-work workflow. " +
       "Pass direct prerequisite " +
@@ -933,7 +937,8 @@ server.registerTool(
     description:
       "Edit an existing Mission Control backlog task by taskId. Only supplied fields change; " +
       "running or finished tasks are refused. Supports title, intent, kind, agent (harness), " +
-      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, dependencies, planInputs, " +
+      "model, effort, workflowId, enabled (backlog autopilot), priority, labels, callSign (a short spoken name; null clears it; a resident's task takes none), " +
+      "dependencies, planInputs, " +
       "planInputChange ({from, to}, each an exact repoKey, planId, revision and files), and previewOnly. " +
       "With the Change pinned plan revision preview enabled, planInputChange replaces only that pin and its " +
       "superseded originating prerequisites, preserving unrelated dependencies. Do not combine it with " +

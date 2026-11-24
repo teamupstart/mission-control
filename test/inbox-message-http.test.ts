@@ -94,6 +94,24 @@ test("with the inbox flag off the route refuses and queues nothing", async () =>
   f.pending.stop();
 });
 
+test("the Stalled section's preview opens the route on its own, for the same fixes", async () => {
+  // Idle's Stalled cards (`idle-stalled`) send the Stuck row's fixed messages, so the route takes
+  // either preview. With both off it refuses, as above.
+  setInbox(false);
+  const stalledOn = applyFeatureFlagIntent({ kind: "flag", id: "idle-stalled", enabled: true });
+  assert.equal(stalledOn.ok, true);
+  try {
+    const f = fixture();
+    const response = await f.post({ kind: "continue" });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { ok: boolean; pendingTurn: { text: string } };
+    assert.equal(body.pendingTurn.text, INBOX_MESSAGES.continue);
+    f.pending.stop();
+  } finally {
+    assert.equal(applyFeatureFlagIntent({ kind: "flag", id: "idle-stalled", enabled: false }).ok, true);
+  }
+});
+
 test("each kind queues its fixed text under the daemon-written prefix", async () => {
   setInbox(true);
   for (const kind of ["nudge", "continue", "push"] as const) {

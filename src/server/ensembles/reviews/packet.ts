@@ -449,6 +449,7 @@ export async function runEvidenceReview<S extends ZodTypeAny>(
       (request) =>
         runtime.runModel(execution.runnerId, request, {
           modelId: execution.modelId,
+          ...(execution.effort && { effort: execution.effort }),
           timeoutMs: runtime.timeoutMs,
           schema: spec.replyJsonSchema,
         }),

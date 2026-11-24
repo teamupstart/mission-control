@@ -1,3 +1,4 @@
+import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
@@ -10,14 +11,18 @@ import {
   type VoiceListenerHello,
 } from "../../src/shared/voice.ts";
 import type { VoiceModelManifest } from "../../src/shared/voice-models.ts";
-import type { DaemonHandle } from "./daemon.ts";
+
+interface VoiceDaemon {
+  home: string;
+  baseURL: string;
+}
 
 /**
  * Voice fixtures (contract B of the voice plan): a stand-in listener, so a spec reaches the mode
  * `listening` on any platform with no microphone, model or macOS.
  *
  * Specs speak to the daemon as a listener would, under the daemon's own token, and never start
- * a recognizer. Phase 3 adds `say` here.
+ * a recognizer.
  */
 
 /** How often the stand-in sends a hello: well inside the daemon's 30 second lapse. */
@@ -32,12 +37,12 @@ export const LISTENER_HELLO: VoiceListenerHello = {
   microphone: "granted",
 };
 
-export function voiceToken(daemon: DaemonHandle): string {
+export function voiceToken(daemon: VoiceDaemon): string {
   return readFileSync(join(daemon.home, "token"), "utf8").trim();
 }
 
 /** Send one hello. Resolves to the daemon's HTTP status. */
-export async function sendHello(daemon: DaemonHandle, hello: Partial<VoiceListenerHello> = {}): Promise<number> {
+export async function sendHello(daemon: VoiceDaemon, hello: Partial<VoiceListenerHello> = {}): Promise<number> {
   const response = await fetch(`${daemon.baseURL}/voice/listener/hello`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
@@ -57,7 +62,7 @@ export interface Listener {
  * the `voice` flag is off (404) is not an error, so a spec may start this before it turns voice
  * on. Stop it in the test's teardown.
  */
-export async function beListener(daemon: DaemonHandle, hello: Partial<VoiceListenerHello> = {}): Promise<Listener> {
+export async function beListener(daemon: VoiceDaemon, hello: Partial<VoiceListenerHello> = {}): Promise<Listener> {
   let stopped = false;
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -72,6 +77,39 @@ export async function beListener(daemon: DaemonHandle, hello: Partial<VoiceListe
       clearInterval(timer);
     },
   };
+}
+
+async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Promise<Response> {
+  const listener = await beListener(daemon, { backend: utterance.backend });
+  try {
+    return await fetch(`${daemon.baseURL}/voice/utterances`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+      body: JSON.stringify(utterance),
+    });
+  } finally {
+    listener.stop();
+  }
+}
+
+const lastCapturePost = new Map<string, Promise<Response>>();
+
+/** Post in capture order so a cancel or pick cannot overtake the utterance it acts on. */
+export async function say(daemon: VoiceDaemon, text: string, options: Partial<Omit<VoiceUtterance, "text">> = {}): Promise<Response> {
+  const utterance = {
+    id: crypto.randomUUID(), text, capturedAt: Date.now(), backend: LISTENER_HELLO.backend,
+    words: text.trim().split(/\s+/).map((word, i) => ({ text: word, startMs: 100 * i, endMs: 100 * (i + 1) })),
+    ...options,
+  };
+  const post = () => postUtterance(daemon, utterance);
+  const previous = lastCapturePost.get(daemon.baseURL);
+  const current = previous ? previous.then(post, post) : post();
+  lastCapturePost.set(daemon.baseURL, current);
+  try {
+    return await current;
+  } finally {
+    if (lastCapturePost.get(daemon.baseURL) === current) lastCapturePost.delete(daemon.baseURL);
+  }
 }
 
 // ---- a speech model a spec can download ----

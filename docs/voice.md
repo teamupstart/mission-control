@@ -1029,6 +1029,11 @@ under the newly issued capture revision. A delayed frame from the playback revis
 is still logged as heard while speaking. The daemon discards captures at or before
 the end of an expired interval.
 
+After a restart with prior speech use, the first capture-enabled directive also
+sets a cutoff for buffered frames. Samples from before that grant cannot route
+even if resubmitted with its new revision. Every routable utterance still needs
+a valid capture revision.
+
 After a restart, the daemon asks each recorded holder to stop. If the speech
 ledger is missing or unreadable, it checks the launch inventory and supervisor
 records. It asks each identifiable player to stop. If speech has been used and
@@ -1055,6 +1060,11 @@ the base64 DER SubjectPublicKeyInfo through
 instance signed by the configured launcher can be announced. The instance is
 `<shell|dev>_<hex DER public key>_<hex nonce>`, with 32 fresh random bytes per
 child. The listener receives the instance and ordinary listener credentials.
+
+On daemon reconnect, the launcher calls the surviving child's `reannounce()`
+to replay its original signed start. A hello alone renews only the capture
+lease. Reannouncement restores speech eligibility and leaves any recovered
+Stop in force until silence is confirmed. An accepted exit supersedes replay.
 
 The body is `{ instance, state }`. Alongside the harness token, the supervisor
 sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of

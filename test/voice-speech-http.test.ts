@@ -234,6 +234,52 @@ test("a fresh capture grant accepts the release millisecond while a delayed play
   assert.deepEqual(await (await send(fresh.revision, "Steve fresh")).json(), { accepted: true });
 });
 
+test("after restart a surviving player regains eligibility by replaying its signed start without releasing recovered playback", async () => {
+  const holder = player();
+  const proof = holder.supervisor.proof("started");
+  const replay = () => holder.report("started", holder.instance, proof);
+  assert.equal((await replay()).status, 200);
+  await holder.hello();
+  const id = await audition();
+  await holder.event(id, "started");
+  store.reset(); await holder.hello();
+  assert.equal(store.state().capabilities["speech-output"]?.available, false);
+  assert.equal((await holder.poll()).capture, false);
+  assert.equal((await replay()).status, 200);
+  assert.equal(store.state().capabilities["speech-output"]?.available, true);
+  const pending = await holder.poll();
+  assert.equal(pending.capture, false);
+  assert.deepEqual(pending.speak, { id, stop: true });
+  await holder.event(id, "ended");
+  const next = await audition();
+  assert.equal((await holder.poll()).speak.id, next);
+  assert.equal((await holder.report("exited")).status, 200);
+  assert.equal((await replay()).status, 409);
+});
+
+test("restart rejects buffered playback frames under a missing, old, or freshly supplied revision", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  await holder.event(id, "started");
+  const playing = await holder.poll();
+  const frame = capture("Steve buffered playback");
+  t.mock.timers.tick(1);
+  await holder.event(id, "ended");
+  store.reset();
+  t.mock.timers.tick(1);
+  await holder.hello();
+  const fresh = await holder.poll();
+  assert.equal(fresh.capture, true);
+  const before = await readHeard();
+  for (const path of ["/voice/utterances", utterancePath(playing.revision), utterancePath(fresh.revision)]) {
+    assert.deepEqual(await (await holder.request(path, frame)).json(), { accepted: false });
+  }
+  assert.deepEqual(await readHeard(), before);
+  assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh speech"))).json(), { accepted: true });
+});
+
 test("a start that cannot be recorded grants no speech authority", async () => {
   writeFileSync(supervised, "not a directory");
   const p = player();
@@ -743,10 +789,19 @@ test("a supervised same-account child cannot read or change the daemon's recover
   const completed = once(child, "close");
   const output = text(child.stdout), errors = text(child.stderr);
   await peer.hello(instance);
+  if (process.platform === "darwin") {
+    const finished = await audition();
+    assert.equal((await peer.request("/voice/speech/jobs/" + finished + "/events", { type: "ended", outcome: "finished" }, instance)).status, 200);
+    store.reset(); await peer.hello(instance);
+    assert.equal(store.state().capabilities["speech-output"]?.available, false);
+    await launched.reannounce();
+    assert.equal(store.state().capabilities["speech-output"]?.available, true);
+  }
   const id = await audition();
   child.stdin.on("error", () => {}); // A host that disallows namespaces can refuse the child before stdin opens.
   child.stdin.end("check");
   const [code] = await completed;
+  assert.equal(await launched.reannounce(), false);
   const stderr = await errors;
   if (process.platform === "linux" && code !== 0 && /bwrap:.*(?:namespace|permitted|userns)/iu.test(stderr)) {
     assert.equal(await output, ""); // The host refused confinement and the listener never ran.

@@ -154,6 +154,7 @@ export class VoiceStateStore {
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
     const issuedAt = (this.deps.wallNow ?? Date.now)();
+    if (capture) this.manager?.captureGranted(issuedAt);
     this.lastDirective = { issuedAt, holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
     return directive;
   }

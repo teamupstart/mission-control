@@ -48,6 +48,7 @@ export class VoiceSpeechManager {
   private readonly jobs = new Map<string, Playback>();
   private readonly history: { from: number; until: number }[] = [];
   private discardedThrough = -Infinity;
+  private awaitingRestartGrant: boolean;
   private unknown = false;
   private enabled = true;
   private readonly synth: VoiceSynthesizer;
@@ -56,6 +57,7 @@ export class VoiceSpeechManager {
     this.synth = deps.synthesizer ?? unavailable;
     this.ledger = new SpeechHolds(deps.directory);
     this.recover();
+    this.awaitingRestartGrant = this.ledger.hasPriorSpeech();
   }
 
   private recover() {
@@ -116,6 +118,13 @@ export class VoiceSpeechManager {
       this.discardedThrough = Math.max(this.discardedThrough, this.history[count++]!.until);
     }
     if (count) this.history.splice(0, count);
+  }
+  captureGranted(at: number) {
+    if (!this.awaitingRestartGrant) return;
+    // A prior daemon's playback intervals are unavailable. Buffered audio must
+    // belong to this daemon's first capture grant or a later one.
+    this.discardedThrough = Math.max(this.discardedThrough, at - 1);
+    this.awaitingRestartGrant = false;
   }
   captureConflict(time: number, grantTime?: number): "while-speaking" | "stale" | null {
     this.pruneHistory(this.deps.now());

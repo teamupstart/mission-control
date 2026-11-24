@@ -54,15 +54,20 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
       report: (instance: string, state: SupervisorReportState, proof: string) => Promise<void | false>) {
       const instance = prefix + randomBytes(32).toString("hex");
       const start = confinedVoiceListener(stateHome, instance);
+      const startProof = signature(instance, "started");
+      const announce = () => report(instance, "started", startProof);
       let refused = false;
       try {
-        refused = await report(instance, "started", signature(instance, "started")) === false;
+        refused = await announce() === false;
         if (refused) throw new Error("Voice supervisor start was refused.");
         const child = start(executable, args, env);
         // An OS spawn error precedes 'spawn'. Once spawned, the launcher owns
         // the live child's handle and must observe its exit before retiring it.
         await once(child, "spawn");
-        return { instance, child };
+        return { instance, child, reannounce: async () => {
+          if (child.exitCode !== null || child.signalCode !== null || child.killed) return false;
+          return announce();
+        } };
       } catch (error) {
         if (refused) throw error;
         // An accepted start, including one whose acknowledgement was lost, can

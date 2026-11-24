@@ -45,6 +45,8 @@ export class SpeechHolds {
     return [this.usedPath, this.path, this.inventoryPath, join(this.directory, "supervised")].some(mayExist);
   }
 
+  hasPriorSpeech(): boolean { return mayExist(this.usedPath); }
+
   supervisorRecord(name: string): string | undefined {
     const path = join(this.directory, "supervised", name + ".json");
     try {

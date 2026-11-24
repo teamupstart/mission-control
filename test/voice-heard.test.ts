@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RecentlyHeard, VoiceRouter } from "../src/server/voice/router.ts";
-import { voiceStateOff } from "../src/shared/voice.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
 import type { VoiceCard, VoiceUtterance } from "../src/shared/voice-routing.ts";
 
 test("Recently heard retains the newest 50 reasons and clears in memory", async () => {
   const cat: SpokenName = { key: "task:cat", name: "Cat", kind: "session", sessionId: null, taskId: "cat",
     role: "", colorId: null, agent: "codex", state: "not-running" };
-  const router = new VoiceRouter(() => ({ ...voiceStateOff(), mode: "listening", roster: [cat] }),
+  const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: "listening", roster: [cat] }),
     () => ({ enabled: false, seconds: 1 }), { deliver: async () => "not-running" }, () => {});
   const say = (id: number, text: string) => router.accept({ id: String(id), text, capturedAt: id, backend: "fluidaudio", words: [] });
   for (let i = 0; i < 50; i++) await say(i, "morning everyone");
@@ -49,7 +48,7 @@ test("a rejected delivery marks the card and Recently heard failed and cannot de
   const deliver = t.mock.fn(async () => { throw new Error("queue unavailable"); });
   const cards: VoiceCard[] = [];
   const router = new VoiceRouter(
-    () => ({ ...voiceStateOff(), mode: "listening", roster: [target] }),
+    () => ({ backend: "fluidaudio", mode: "listening", roster: [target] }),
     () => ({ enabled: true, seconds: 1 }),
     { deliver },
     (card) => cards.push(card),
@@ -76,7 +75,7 @@ test("delivery receives the routed stop decision across a cancel window and a ca
   const roster = [steve, { ...steve, key: "task:other", name: "Stevie" }];
   const deliveries: unknown[] = [];
   const router = new VoiceRouter(
-    () => ({ ...voiceStateOff(), mode: "listening", roster }),
+    () => ({ backend: "fluidaudio", mode: "listening", roster }),
     () => ({ enabled: true, seconds: 30 }),
     { async deliver(target, text, id, command) {
       deliveries.push([target.key, text, id, command]);

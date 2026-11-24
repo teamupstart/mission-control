@@ -1016,8 +1016,10 @@ and restarts its countdown. The footer's **Cancel** and **Submit now** act on th
 Editing the form requests cancellation and keeps the edit in your draft. Until cancellation is
 confirmed, the footer shows the original voice answer and its deadline. Use **Retry cancel**
 if the request fails or takes too long. The original answer can still submit at the deadline.
-A closed question shows the countdown on a companion card. Opening the question moves
-the controls to its footer and keeps the same deadline. Disabling the cancel window submits a matched answer immediately.
+If the focused dashboard shows the question, its footer carries the countdown. When the
+question closes or its dashboard loses focus or disconnects, a companion card shows the same
+answer and deadline. Returning to the question moves the controls back to its footer.
+Disabling the cancel window submits a matched answer immediately.
 
 The daemon keeps pending answers in memory, includes them in reconnect snapshots, and
 publishes changes with `voice_answer`. The focused dashboard reports its drawn question

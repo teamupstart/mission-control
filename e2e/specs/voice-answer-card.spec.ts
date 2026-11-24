@@ -120,6 +120,42 @@ test("answer, correct, cancel and submit through a question card or its countdow
   await expect.poll(async () => (await read(free)).selections).toEqual([{ decisionId: "q", selected: [], other: "neither yet" }]);
 });
 
+test("the foreground dashboard can cancel an explicit answer to a background question", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "Which database?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { kind: "input", env: {}, cwd: steve.cwd, title, body: title },
+  });
+  expect(filed.ok(), await filed.text()).toBe(true);
+  const { id } = await filed.json();
+  const drawn = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().cards.some((card: { id: string }) => card.id === id));
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  await drawn;
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+
+  const foreground = await page.context().newPage();
+  const focused = foreground.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().focused && !r.request().postDataJSON().cards.length);
+  await foreground.goto(daemon.baseURL + "/#/fleet");
+  await focused;
+  await say(daemon, "Steve, answer: Postgres");
+  const companion = foreground.getByRole("status").filter({ hasText: "Voice answer" });
+  await expect(companion).toContainText("Postgres");
+  await expect(companion.getByText(/^\d+s$/)).toBeVisible();
+  await expect(companion.getByRole("button", { name: "Submit now" })).toBeVisible();
+  await expect(inbox.getByRole("textbox")).toHaveValue("Postgres");
+  await captureCard(companion, "answer-background-dashboard");
+  await companion.getByRole("button", { name: "Cancel" }).click();
+  await expect(inbox.getByRole("textbox")).toBeEmpty();
+  await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+  const review = await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json();
+  expect(review.status).toBe("pending");
+});
+
 test("after voice restarts on the same dashboard, choosing a question opens and focuses it without answering", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 10);
   // Keep the feature-flag view at its enabled snapshot. The voice-state frames

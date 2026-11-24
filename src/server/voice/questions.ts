@@ -24,9 +24,12 @@ export class VoiceOpenCards {
   connect(windowId: string): () => void {
     const token = Symbol();
     this.streams.set(windowId, token);
+    if (this.reports.has(windowId)) this.changed();
     return () => {
       if (this.streams.get(windowId) !== token) return;
       this.streams.delete(windowId);
+      // Keep the report for reconnection, but its footer cannot show a live countdown.
+      if (this.reports.has(windowId)) this.changed();
       setTimeout(() => {
         if (this.streams.has(windowId)) return;
         const current = this.current;
@@ -60,13 +63,17 @@ export class VoiceOpenCards {
     return current;
   }
 
+  private get connectedDashboard(): OpenCardsReport | undefined {
+    const report = this.current;
+    return report && this.streams.has(report.windowId) ? report : undefined;
+  }
+
   get dashboard(): string | undefined {
-    const id = this.current?.windowId;
-    return id && this.streams.has(id) ? id : undefined;
+    return this.connectedDashboard?.windowId;
   }
 
   showing(reviewId: string): boolean {
-    return [...this.reports.values()].some(({ report }) => report.cards.some(card => card.id === reviewId));
+    return this.connectedDashboard?.cards.some(card => card.id === reviewId) ?? false;
   }
 
   target(questions: ReviewItem[], capturedAt = Infinity): ReviewItem | undefined {

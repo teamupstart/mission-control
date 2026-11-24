@@ -181,6 +181,26 @@ for (const [command, phrases] of [
   });
 }
 
+test("two recommended options leave an open question pending without starting a countdown", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const title = "Which database?";
+  const q = reviews.create("sdk:Steve", "input", title, title, [{
+    id: "q", question: title, allowOther: true, options: [
+      { id: "sqlite", label: "SQLite", recommended: true },
+      { id: "postgres", label: "Postgres", recommended: true },
+    ],
+  }]);
+  await show([q.id]);
+  await say("Steve, go with your recommendation");
+  assert.deepEqual(answers(), []);
+  assert.equal(cards.at(-1)?.detail, "No matching option.");
+  assert.equal(cards.at(-1)?.deadline, null);
+
+  t.mock.timers.tick(1001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+});
+
 test("a choice command picked for a free-text question cannot become dictation", async () => {
   const free = reviews.create("sdk:Steve", "input", "What next?", "What next?");
   await say("Steve, option B");
@@ -276,9 +296,11 @@ test("the inline footer takes over the same countdown and retires stale companio
     assert.deepEqual(answers(), [answer]);
     assert.equal(router.pendingVoiceActions.length, 1);
   }
-  // Another focused dashboard does not make the still-drawn inline footer relinquish its countdown.
+  // The newer focused dashboard needs the companion even if the first one has not reported blur yet.
   router.openCards.connect("other-dashboard");
   await put("/api/voice/open-cards", { windowId: "other-dashboard", focused: true, cards: [] });
+  assert.equal(visible(), true);
+  await show([q.id]);
   assert.equal(visible(), false);
   assert.equal((await act("companion", "send-now?source=card")).status, 409);
   assert.equal(registry.getReview(q.id)?.status, "pending");
@@ -289,6 +311,38 @@ test("the inline footer takes over the same countdown and retires stale companio
   reviews.resolve(q.id, "dismiss", null);
   await show([]);
   assert.equal(router.activeCards().some(card => card.id === "settled"), false);
+});
+
+test("a background or disconnected question keeps its countdown on the companion", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const q = question();
+  const router = registry.voiceRouter!;
+  const windowId = "question-dashboard";
+  const disconnect = router.openCards.connect(windowId);
+  const report = (focused: boolean) => put("/api/voice/open-cards", { windowId, focused,
+    cards: [{ kind: "question", id: q.id, focused: true }] });
+  assert.equal((await report(false)).status, 200);
+  await say("Steve, answer: Postgres", "background-answer");
+  const [answer] = answers();
+  assert.equal(answer?.reviewId, q.id);
+  const companion = () => router.activeCards().find(card => card.id === answer.id);
+  assert.equal(companion()?.deadline, answer.deadline);
+
+  t.mock.timers.tick(200);
+  assert.equal((await report(true)).status, 200);
+  assert.equal(companion(), undefined);
+  disconnect();
+  assert.equal(companion()?.deadline, answer.deadline);
+  t.after(router.openCards.connect(windowId));
+  assert.equal(companion(), undefined);
+  assert.equal((await report(false)).status, 200);
+  assert.equal(companion()?.deadline, answer.deadline);
+  assert.deepEqual(answers(), [answer]);
+  assert.equal(router.pendingVoiceActions.length, 1);
+  assert.equal((await act(answer.id, "cancel")).status, 200);
+  t.mock.timers.tick(1001);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.deepEqual(answers(), []);
 });
 
 test("delayed focus and blur reports cannot steal or clear the newer dashboard's reply target", async t => {

@@ -105,12 +105,7 @@ finalizations**, so the inbox's own **Snoozed** heading always comes right after
 
 ### Answering questions by voice
 
-With the voice preview enabled, each question card shows its spoken hint and letters for
-its options. Say “reply, option B” on the focused card or name the agent and the option, as in “Steve, option B”.
-During the countdown, use **Cancel** to restore the previous draft or **Submit now** to
-answer immediately. A manual edit requests cancellation. While you wait, the footer shows
-which answer can still submit and offers **Retry cancel**. See [answering questions by
-voice](voice.md#answer-a-question-by-voice) for targeting and correction phrases.
+See [Answer a question by voice](voice.md#answer-a-question-by-voice).
 
 ### Agent reports
 

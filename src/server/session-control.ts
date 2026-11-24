@@ -211,7 +211,7 @@ export function registerSessionControlRoutes(
     const parsed = await parseBody(c, SessionControlReadSchema);
     if (!parsed.ok) return parsed.res;
     const caller = sessionController(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER), "read");
-    if (!caller) return c.json({ error: "Ask the operator to enable Control other sessions on your session" }, 403);
+    if (!caller) return c.json({ error: "Reading other sessions requires read-only inspection or Control other sessions. Launch an inspection profile from the desktop to grant read-only access." }, 403);
     if (!parsed.data.sessionId) {
       const sessions = registry.snapshot().sessions.filter((s) => s.id !== caller && s.state !== "exited" && s.state !== "stopping"
         && (!parsed.data.blocked || hasBlocker(s))

@@ -135,7 +135,9 @@ test("read-only grant permits session inspection but refuses mutations and can b
   assert.equal((await f.act({ action: "message", text: "must not send" })).status, 403);
   assert.deepEqual(f.messages, []);
   await f.grant(false);
-  assert.equal((await f.request("/mcp/session-control/read", {})).status, 403);
+  const denied = await f.request("/mcp/session-control/read", {});
+  assert.equal(denied.status, 403);
+  assert.match((await denied.json()).error, /grant read-only access/);
 });
 
 test("a headerless local caller cannot enable its own session-control grant", async () => {

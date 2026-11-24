@@ -340,7 +340,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     try { process.kill(pid, 0); return false; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
   };
-  await t.test("capture stops on stream loss and a fresh snapshot restores it after two HTTP 503 handshakes", async () => {
+  await t.test("capture stops on stream loss, ignores an early incremental update and resumes from a fresh snapshot after two HTTP 503s", async () => {
     const [first] = pids();
     assert.equal(exited(first!), false);
     unavailableHandshakes = 2;
@@ -361,8 +361,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     });
     assert.deepEqual(duringReconnect, { ask: "unavailable", settings: "unavailable", osCalls: 0 });
     assert.deepEqual(pids(), [first]);
+    const imagesBeforeSnapshot = (await read()).captures.length;
+    const early = { ...ready, mode: "listening", model: { ...ready.model, directory: "/pre-snapshot-model" } };
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: early }) + "\n\n");
     events!.write("data: " + JSON.stringify({ type: "snapshot", voice: ready }) + "\n\n");
     await until(() => pids().length === 2);
+    assert.equal((await read()).captures.length, imagesBeforeSnapshot + 1, "only the snapshot updated the tray");
+    assert.doesNotMatch(readFileSync(join(root, "daemon.log"), "utf8"), /modelRevision="pre-snapshot-model"/);
     const second = pids()[1]!;
     assert.notEqual(second, first);
     assert.equal(exited(second), false);

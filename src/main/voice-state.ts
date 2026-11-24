@@ -29,6 +29,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     return connection;
   });
   let stream: EventSource | undefined;
+  let hasSnapshot = false;
   let reconnect: NodeJS.Timeout | undefined;
   let reconnectDelay = 500;
   let state: ShellVoiceState = voiceStateOff();
@@ -65,10 +66,8 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
           microphone, hotkeyError: null, callActive: false, pushToTalk: false,
         };
         const current = connection;
-        const response = await current.request("/voice/shell-report", {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify(report), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-        }).catch(() => undefined);
+        const response = await current.postStatus("/voice/shell-report", report,
+          AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
         accepted = response?.ok ?? false;
         if (connection === current) {
           if (!accepted && !reportFailed) logMain(`Voice shell report failed status=${response?.status ?? "unavailable"}`);
@@ -122,6 +121,7 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     }
     connection?.close();
     connection = undefined;
+    hasSnapshot = false;
     reportFailed = false;
   }
   function requestSnapshot() {
@@ -139,17 +139,14 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
       return;
     }
     if (message.type !== "voice_state" && message.type !== "snapshot") return;
-    // An omitted voice field is a valid flag-off snapshot.
-    if (message.type === "snapshot" && !("voice" in message)) {
-      reconnectDelay = 500;
-      update(voiceStateOff());
-      return;
-    }
+    // A snapshot without voice establishes a disabled baseline.
     const payload = message.type === "snapshot"
-      ? ("voice" in message && message.voice)
+      ? ("voice" in message ? message.voice : voiceStateOff())
       : ("state" in message && message.state);
     const parsed = ShellVoiceStateSchema.safeParse(payload);
     if (!parsed.success) { requestSnapshot(); return; }
+    if (message.type === "snapshot") hasSnapshot = true;
+    if (!hasSnapshot) return;
     reconnectDelay = 500;
     update(parsed.data);
   }
@@ -182,10 +179,9 @@ export function startShellVoice(binary: string, onState: (state: ShellVoiceState
     },
     async mute(muted: boolean) {
       if (!connection || state.mode === "off") return false;
-      return connection.request("/api/voice/mute", {
-        method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
-        body: JSON.stringify({ muted }), signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]),
-      }).then(response => response.ok, () => false);
+      const response = await connection.postStatus("/api/voice/mute", { muted },
+        AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      return response?.ok ?? false;
     },
     stop() {
       clearTimeout(reconnect);

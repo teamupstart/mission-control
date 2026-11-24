@@ -16,12 +16,23 @@ export function desktopVoiceConnection() {
       ca: pin.toString(), rejectUnauthorized: true,
       checkServerIdentity: (_host, peer) => peer.raw.equals(pin.raw) ? undefined : new Error("Unexpected desktop voice certificate"),
     } });
+    function request(path: string, options: RequestInit = {}) {
+      const headers = new Headers(options.headers);
+      headers.set("x-harness-token", readToken());
+      return fetch(origin + path, { ...options, headers, dispatcher, redirect: "error" });
+    }
     return {
-      origin, certificate,
-      request(path: string, options: RequestInit = {}) {
-        const headers = new Headers(options.headers);
-        headers.set("x-harness-token", readToken());
-        return fetch(origin + path, { ...options, headers, dispatcher, redirect: "error" });
+      origin, certificate, request,
+      async postStatus(path: string, body: object, signal: AbortSignal) {
+        try {
+          const response = await request(path, {
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
+          });
+          await response.body?.cancel();
+          return { ok: response.ok, status: response.status };
+        } catch {
+          return undefined;
+        }
       },
       close: () => { void dispatcher.destroy(); },
     };

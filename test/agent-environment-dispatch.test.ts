@@ -32,8 +32,8 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "settled" | "cancel-probe") {
-  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "settled";
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "settled" | "cancel-probe" | "exited" | "exited-dirty") {
+  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
@@ -177,6 +177,25 @@ process.stdin.resume();
       const observed = JSON.parse(report.value);
       assert.equal(observed.listedMatches, true);
       assert.ok(existsSync(observed.home));
+      if (scenario === "exited" || scenario === "exited-dirty") {
+        const work = join(delayed.cwd, "agent-work.txt");
+        if (scenario === "exited-dirty") writeFileSync(work, "saved work");
+        child.stdin.end();
+        assert.deepEqual(await exited, [0, null]);
+        assert.equal(existsSync(observed.home), false);
+        t.mock.timers.tick(RESUME_START_MS);
+        await dispatch;
+        const failed = registry.getTask(task.id)!;
+        assert.equal(failed.status, "failed");
+        if (scenario === "exited-dirty") {
+          assert.equal(failed.worktreeLeaseId, launched.worktreeLeaseId);
+          assert.ok(existsSync(work));
+        } else {
+          assert.equal(failed.launchFailure?.sessionKept, false, failed.error ?? undefined);
+          assert.equal(failed.worktreeLeaseId, null);
+        }
+        return;
+      }
       t.mock.timers.tick(RESUME_START_MS);
       await dispatch;
       assert.equal(registry.getTask(task.id)?.launchFailure?.sessionKept, true);
@@ -212,6 +231,11 @@ test("a pane confirmed only after the backend timeout can still enter its checko
 
 test("a backend timeout releases the failed task's checkout when its wrapper never starts",
   (t) => checkTerminalDispatch(t, "never-started"));
+
+test("a timed-out wrapper that exits before the deadline releases its clean checkout",
+  (t) => checkTerminalDispatch(t, "exited"));
+test("a timed-out wrapper that exits before the deadline retains unpublished work",
+  (t) => checkTerminalDispatch(t, "exited-dirty"));
 
 test("expiry preserves the checkout of a task marked done during the startup window",
   (t) => checkTerminalDispatch(t, "settled"));

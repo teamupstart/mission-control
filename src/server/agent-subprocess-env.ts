@@ -1,9 +1,12 @@
 import { DISPOSABLE_STATE_ROOT, LAUNCH_PID_FILE, LAUNCH_SCRIPT_FILE, turnOneOutcomePath } from "./terminal/launch-process.ts";
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -48,8 +51,21 @@ const SHARED_GO_BUILD_CACHE = join(tmpdir(), `mission-control-go-build-${GO_CACH
 const LOOPBACK_TOKEN_FILE = "loopback-token";
 const liveDisposableStateHomes = new Set<string>();
 const pendingTerminalHomeChecks = new Set<() => void>();
+const WRAPPER_EXIT_FILE = "terminal-wrapper.exit";
 let cleanupHooked = false;
 const ABANDONED_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Hold the inode through removal of the home. An unmarked, unlinked file is not proof of exit. */
+export function observeTerminalWrapperExit(stateHome: string) {
+  const fd = openSync(join(stateHome, WRAPPER_EXIT_FILE), "wx", 0o600);
+  return {
+    confirmed: () => {
+      const file = fstatSync(fd);
+      return file.nlink === 0 && file.size === 1;
+    },
+    close: () => closeSync(fd),
+  };
+}
 
 function sharedGoBuildCache(): string {
   mkdirSync(SHARED_GO_BUILD_CACHE, { recursive: true, mode: 0o700 });
@@ -323,7 +339,14 @@ function launchAndCleanupScript(
     }),
     // Install cleanup before competing for the start record. An interrupted contender
     // can reach EXIT at any point, so only the recorded owner may remove the home.
-    `trap 'if IFS= read -r launch_pid 2>/dev/null < "$MISSION_HOME/${LAUNCH_PID_FILE}" && [ "$launch_pid" = "$$" ]; then /bin/rm -rf -- "$MISSION_HOME"; fi' EXIT`,
+    "cleanup_owned_home() {",
+    `  IFS= read -r launch_pid 2>/dev/null < "$MISSION_HOME/${LAUNCH_PID_FILE}" || return`,
+    '  [ "$launch_pid" = "$$" ] || return',
+    `  exit_record="$MISSION_HOME/${WRAPPER_EXIT_FILE}"`,
+    '  if [ -f "$exit_record" ] && [ ! -L "$exit_record" ]; then printf x >> "$exit_record"; fi',
+    '  /bin/rm -rf -- "$MISSION_HOME"',
+    "}",
+    "trap cleanup_owned_home EXIT",
     `(set -C; printf '%s\\n' "$$" > "$MISSION_HOME/${LAUNCH_PID_FILE}") || exit 1`,
     ...(fallbackArgv ? fittingLaunch(argv, fallbackArgv, turnOneOutcomePath(env.MISSION_HOME!)) : [shellCommand(argv)]),
     "",

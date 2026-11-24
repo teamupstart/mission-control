@@ -277,7 +277,11 @@ test("doctor names each failing check with its fix and exits 1", async () => {
     const stale = await r.run("doctor");
     assert.equal(stale.code, 1);
     assert.match(stale.out, /FAIL {2}mod-current: the installed mod is 2\.1\.0 but the staged build is 2\.3\.0/);
-    assert.match(stale.out, /fix: Run `mctl setup`, or by hand: claude plugin marketplace add /);
+    assert.ok(
+      stale.out.includes("fix: Run `mctl setup`, or by hand: claude plugin uninstall " + MOD_ID + " --scope user && claude plugin marketplace add "),
+      "the by-hand fix for a stale mod starts with the uninstall",
+    );
+    assert.ok(stale.out.includes("&& claude plugin install " + MOD_ID + " --scope user"));
 
     // Disabled.
     r.claude.update({ plugins: [{ id: MOD_ID, version: "2.3.0", scope: "user", enabled: false }] });

@@ -145,7 +145,9 @@ export function checkFlag(health: unknown): DoctorCheck {
 /** `mod-enabled` and `mod-current`, from one listing and the staged `plugin.json`. */
 export async function checkInstalled(claude: ClaudeCli, deps: SetupDeps): Promise<DoctorCheck[]> {
   const listed = await readInstalledMod(claude, deps);
-  const reinstall = recoveryCommands(deps.stateDir).join(" && ");
+  // Replacing an installed build is uninstall then install (a plain install does not replace it), so
+  // the by-hand fix for a stale mod starts with the uninstall that `mctl setup` itself runs.
+  const reinstall = [`claude plugin uninstall ${MOD_PLUGIN_ID} --scope user`, ...recoveryCommands(deps.stateDir)].join(" && ");
   if ("error" in listed) return [{ name: "mod-enabled", status: "fail", message: listed.error, fix: "Run `mctl setup`." }];
   const mod = listed.mod;
   if (!mod) return [{ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} is not installed`, fix: "Run `mctl setup`." }];

@@ -23,9 +23,9 @@ export interface ExecResult {
 export type Exec = (file: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number }) => Promise<ExecResult>;
 
 /** Runs a program without a shell. A start failure is a result, never a throw. */
-export const realExec: Exec = (file, args, options = {}) =>
+export const realExec: Exec = (executable, args, options = {}) =>
   new Promise((resolve) => {
-    execFile(file, [...args], { cwd: options.cwd, timeout: options.timeoutMs ?? 30_000, encoding: "utf8" }, (error, stdout, stderr) => {
+    execFile(executable, [...args], { cwd: options.cwd, timeout: options.timeoutMs ?? 30_000, encoding: "utf8" }, (error, stdout, stderr) => {
       if (!error) return resolve({ code: 0, stdout, stderr });
       const code = typeof error.code === "number" ? error.code : -1;
       resolve({ code, stdout: stdout ?? "", stderr: stderr || error.message });

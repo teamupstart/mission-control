@@ -107,6 +107,7 @@ conversation before the daemon queues the message. Recently heard and the card s
 `held` for a blocking question, including after resume) until the outbox confirms the handoff.
 Replaying a capture while its outbox row exists reuses that row for the same conversation and spoken words.
 Confirmation changes the outcome to `sent`. Recalling an unsent message changes it to `cancelled`.
+An outstanding card still receives that outcome after its entry leaves Recently heard.
 If writing the delivery receipt fails, the card keeps its queue status while the daemon retries
 the database write. A successful retry publishes the receipt without sending the message again.
 A stopped agent receives nothing. The

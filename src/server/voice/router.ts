@@ -46,8 +46,8 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
-  // Keep receipt correlations only as long as the associated Recently heard entry survives.
-  private readonly outbox = new WeakMap<HeardEntry, { turnId: string; card: VoiceCard }>();
+  // The outbox can outlive its Recently heard entry. Only the card is needed to publish the receipt.
+  private readonly outbox = new Map<string, { card: VoiceCard; entry: WeakRef<HeardEntry> }>();
   private readonly delivering = new Map<string, VoiceCard>();
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
@@ -231,27 +231,28 @@ export class VoiceRouter {
         openQuestions: latest?.sessionId ? this.deliverer.openQuestions?.(latest.sessionId) ?? 0 : 0,
         ...(item.entry.detail && { detail: item.entry.detail }),
       };
-      if (typeof result !== "string" && "turnId" in result) this.outbox.set(item.entry, { turnId: result.turnId, card });
+      if (typeof result !== "string" && "turnId" in result) {
+        this.outbox.set(result.turnId, { card, entry: new WeakRef(item.entry) });
+      }
       this.publish(card);
     }
     return true;
   }
 
   settleSpoken(turnId: string, outcome: "sent" | "cancelled"): void {
-    for (const entry of this.heard.list()) {
-      const pending = this.outbox.get(entry);
-      if (pending?.turnId !== turnId) continue;
-      this.outbox.delete(entry);
-      entry.outcome = outcome;
-      this.publish({ ...pending.card, state: outcome });
-      return;
-    }
+    const pending = this.outbox.get(turnId);
+    if (!pending) return;
+    this.outbox.delete(turnId);
+    const entry = pending.entry.deref();
+    if (entry) entry.outcome = outcome;
+    this.publish({ ...pending.card, state: outcome });
   }
 
   clearActionsAndHistory(): void {
     for (const item of this.open.values()) clearTimeout(item.timer);
     this.open.clear();
     this.delivering.clear();
+    this.outbox.clear();
     this.pendingVoiceActions.length = 0;
     this.heard.clear();
   }

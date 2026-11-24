@@ -65,32 +65,41 @@ function applyTerminalHook(input: {
   });
 }
 
-test("a first native Stop completes the provisional spoken cycle before its late receipt", async () => {
+for (const [sawStart, priorGeneration] of [[true, 1], [false, 1], [false, 0]] as const) {
+test(`a first native Stop closes a stamped spoken handoff ${sawStart ? "with" : "without"} a preceding start hook at generation ${priorGeneration}`, async () => {
   const db = await import("../src/server/db.ts");
   const registry = new Registry();
-  const id = "terminal-spoken-before-binding";
-  const native = "spoken-bound-by-stop";
+  const id = `terminal-spoken-before-binding-${sawStart}-${priorGeneration}`;
+  const native = `spoken-bound-by-stop-${sawStart}-${priorGeneration}`;
   const paneId = "%73";
   registry.applyDiscovery([discovered("claude", id, paneId)]);
   // A resumed native conversation already has its own generation counter.
-  db.markWorkCycleActive(native, 1);
-  db.completeWorkCycle(native, 2, 2);
+  if (priorGeneration) {
+    db.markWorkCycleActive(native, 1);
+    db.completeWorkCycle(native, 2, 2);
+  }
   const row = db.createPendingTurn({ id: "spoken-before-stop", noteKey: id, text: "inspect", spokenWords: "inspect", now: 3 });
   const claim = db.claimNextPendingTurn(id, 4, row, words => words)!;
   const reservation = db.recordSpokenHandoff(row.id, claim.revision, 0);
   assert.ok(reservation);
-  registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: null, cwd: "/repo",
-    transcriptPath: null, env: { tmuxPane: paneId }, ts: 5, prompt: "inspect" });
-  assert.equal(db.workCycleFor(id)?.active, true);
+  assert.equal(db.completeWorkCycle(id, 3, 5), null, "a Stop timestamped before the claim is not its completion");
+  if (sawStart) {
+    registry.applyHook({ agent: "claude", event: "UserPromptSubmit", sessionId: null, cwd: "/repo",
+      transcriptPath: null, env: { tmuxPane: paneId }, ts: 5, prompt: "inspect" });
+    assert.equal(db.workCycleFor(id)?.active, true);
+  }
   applyTerminalHook({ registry, agent: "claude", event: "Stop", logicalKey: native, paneId, ts: 6 });
   assert.equal(registry.getSession(id)?.agentSessionId, native);
-  assert.equal(db.workCycleFor(native)?.generation, 2);
-  assert.equal(db.workCycleFor(id)?.active, false);
+  assert.equal(db.workCycleFor(native)?.generation, priorGeneration + 1);
+  assert.ok(!db.workCycleFor(id)?.active);
+  applyTerminalHook({ registry, agent: "claude", event: "Stop", logicalKey: native, paneId, ts: 7 });
+  assert.equal(db.workCycleFor(native)?.generation, priorGeneration + 1, "a repeated Stop cannot close the same handoff twice");
   db.closeDb();
   assert.ok(db.retireDeliveredPendingTurn(row.id, claim.revision, 7, reservation));
   assert.equal(db.hasDeliveredSpokenHold(native), false);
   assert.equal(db.workCycleFor(native)?.active, false);
 });
+}
 
 test("Claude and Codex terminal turns share one durable generation contract", () => {
   for (const [index, agent] of (["claude", "codex"] as const).entries()) {

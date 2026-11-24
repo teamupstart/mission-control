@@ -6484,8 +6484,8 @@ export function markWorkCycleActive(logicalKey: string, updatedAt: number, occur
 /**
  * Complete an armed cycle, advancing its generation once.
  *
- * A turn end with no prior work is a no-op. No row is created for idle/end noise, and an
- * existing inactive row is returned unchanged so duplicate turn ends stay on one generation.
+ * A stamped spoken handoff can be the only evidence of work before a terminal's first Stop.
+ * It closes only the generation stamped at handoff, so duplicate ends and idle noise do nothing.
  */
 export function completeWorkCycle(
   logicalKey: string,
@@ -6494,15 +6494,17 @@ export function completeWorkCycle(
 ): WorkCycleSummary | null {
   openDb()
     .prepare(
-      `UPDATE session_work_cycles
-          SET generation = generation + 1,
-              active = 0,
-              spoken_hold = 0,
-              completed_at = ?,
-              updated_at = ?
-        WHERE logical_key = ? AND active = 1`,
+      `INSERT INTO session_work_cycles (logical_key, generation, active, completed_at, updated_at)
+        SELECT $key, 1, 0, $completedAt, $updatedAt
+         WHERE EXISTS (SELECT 1 FROM session_work_cycles WHERE logical_key = $key AND active = 1)
+            OR EXISTS (SELECT 1 FROM pending_turns WHERE spoken_handoff_key = $key
+                 AND state IN ('sending', 'uncertain') AND claimed_at <= $completedAt
+                 AND spoken_handoff_generation = COALESCE(
+                   (SELECT generation FROM session_work_cycles WHERE logical_key = $key), 0))
+        ON CONFLICT(logical_key) DO UPDATE SET generation = generation + 1, active = 0,
+          spoken_hold = 0, completed_at = excluded.completed_at, updated_at = excluded.updated_at`,
     )
-    .run(completedAt, updatedAt, logicalKey);
+    .run({ key: logicalKey, completedAt, updatedAt });
   return workCycleFor(logicalKey);
 }
 

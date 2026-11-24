@@ -40,6 +40,26 @@ test("Recently heard retains the 50 newest capture times and breaks ties by late
   assert.deepEqual(ids.slice(24, 28), ["26", "tie", "25", "24"]);
 });
 
+test("queued cards still publish their final receipt after Recently heard rolls over", async () => {
+  const target: SpokenName = { key: "task:steve", name: "Steve", kind: "session", sessionId: "sdk:steve",
+    taskId: "steve", role: "", colorId: null, agent: "codex", state: "running" };
+  const cards: VoiceCard[] = [];
+  const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: "listening", roster: [target] }),
+    () => ({ enabled: false, seconds: 1 }),
+    { deliver: async (_target, _text, id) => ({ outcome: "queued", turnId: "turn-" + id }) }, card => cards.push(card));
+  const say = (id: number, text: string) => router.accept({ id: String(id), text, capturedAt: id, backend: "fluidaudio", words: [] });
+  await say(0, "Steve, inspect the build");
+  await say(1, "Steve, inspect the logs");
+  for (let i = 2; i < 52; i++) await say(i, "morning everyone");
+  assert.equal(router.heard.list().at(-1)?.id, "2");
+  cards.length = 0;
+  router.settleSpoken("turn-0", "sent");
+  router.settleSpoken("turn-1", "cancelled");
+  router.settleSpoken("turn-0", "sent");
+  assert.deepEqual(cards.map(({ id, state }) => [id, state]), [["0", "sent"], ["1", "cancelled"]]);
+  assert.equal(router.heard.list().at(-1)?.id, "2", "settlement does not restore old history");
+});
+
 test("a rejected delivery marks the card and Recently heard failed and cannot deliver twice", async (t) => {
   const target: SpokenName = {
     key: "task:release", name: "Release", kind: "session", sessionId: "session:release",

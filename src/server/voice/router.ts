@@ -28,6 +28,7 @@ export interface PendingVoiceAction {
 }
 
 const HISTORY_LIMIT = 50;
+const MAX_ACTIVE_CARDS = 50;
 const MAX_UNSURE_CARDS = 5;
 const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
@@ -169,13 +170,16 @@ export class VoiceRouter {
     const { id, capturedAt } = utterance;
     if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
-    this.recentIds.add(id);
-    if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
     const unsureCards = Array.from(this.open.values())
       .filter(({ card, entry }) => card.state === "unsure" && entry.time <= capturedAt)
       .map(({ card }) => card);
     // Bind every potential part to the roster session present when the utterance arrived.
     const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards });
+    // An unsure card reserves its delivery slot so it can still be picked at capacity.
+    if ((decision.kind === "addressed" || decision.kind === "needs-model") &&
+        this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return false;
+    this.recentIds.add(id);
+    if (this.recentIds.size > HISTORY_LIMIT) this.recentIds.delete(this.recentIds.values().next().value!);
     const entry: HeardEntry = { id, time: capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);

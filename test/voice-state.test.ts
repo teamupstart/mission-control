@@ -197,7 +197,7 @@ test("mute, a call with auto-mute, and push-to-talk come from the config and the
   h.setConfig({ muted: false });
   h.store.acceptShellReport({ ...REPORT, callActive: true });
   assert.equal(h.store.state().mode, "auto-muted");
-  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true });
+  h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true, reportedAtHostUs: 1000 });
   assert.equal(h.store.state().mode, "push-to-talk");
   h.setConfig({ autoMuteDuringCalls: false });
   assert.equal(h.store.state().mode, "listening");

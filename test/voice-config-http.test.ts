@@ -203,10 +203,11 @@ test("a hello makes voice listen, mute mutes it, and every change reaches the ev
   assert.equal((await json("/api/voice/mute", "POST", { muted: "yes" })).status, 400);
 });
 
-test("a window that connects after a lapse but before its timer fires still sees the listener come back", async () => {
+test("a window that connects after a lapse but before its timer fires still sees the listener come back", async (t) => {
   // Mocked time: the hello's lapse passes while its timer has not fired, which is the window a
   // late timer leaves on a busy daemon.
   mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  t.mock.method(performance, "now", () => Date.now() - 1_000_000);
   try {
     voiceStateStore.reset();
     await hello();

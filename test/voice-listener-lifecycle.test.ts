@@ -59,7 +59,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
         if (posted.length === 0 && firstPostHeld) res.setHeader("x-voice-held-revision", "first");
         if (posted.length === 0 && firstPostCutoff) {
           res.setHeader("x-voice-release-revision", "first");
-          res.setHeader("x-voice-release-at", String(firstPostCutoff));
+          res.setHeader("x-voice-release-host-ms", String(firstPostCutoff));
         }
         if (posted.length === 0) res.statusCode = firstPostStatus;
         posted.push({ text: JSON.parse(body).text, revision: url.searchParams.get("revision") });
@@ -165,7 +165,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     await until(() => events.includes("decode in-flight"), "recognition in progress");
     const off = await nextPoll("first");
     off.setHeader("x-voice-release-revision", "first");
-    off.setHeader("x-voice-release-at", String(Date.now()));
+    off.setHeader("x-voice-release-host-ms", "2500");
     apply(off, "released", false);
     await nextPoll("released");
     await until(() => posted.length === 3, "all held speech to drain after closing");
@@ -192,18 +192,31 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     const release = await nextPoll("first");
     assert.deepEqual(posted, []);
     release.setHeader("x-voice-release-revision", "first");
-    release.setHeader("x-voice-release-at", "1000");
+    release.setHeader("x-voice-release-host-ms", "1000");
     apply(release, "off", false);
     await until(() => posted.length === 5, "complete phrases and tail");
     assert.deepEqual(posted, ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(text => ({ text, revision: "first" })));
     assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 
+  it("closes a held microphone and discards all speech on a Unix-only release", async t => {
+    const { events, posted, nextPoll, apply } = await launch(t, { held: true });
+    await until(() => events.includes("holding audio"), "held microphone");
+    const release = await nextPoll("first");
+    release.setHeader("x-voice-release-revision", "first");
+    release.setHeader("x-voice-release-at", String(Date.now()));
+    apply(release, "off", false);
+    await nextPoll("off");
+    await until(() => events.includes("released microphone 1"), "discarded hold to close");
+    assert.deepEqual(posted, []);
+    assert.ok(!events.some(e => e.startsWith("decode ")));
+  });
+
   it("records a second hold while the first is decoding and drains both in spoken order", async t => {
     const { events, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "rapid-press" });
     function keyUp(res: ServerResponse, from: string, to: string) {
       res.setHeader("x-voice-release-revision", from);
-      res.setHeader("x-voice-release-at", "1000");
+      res.setHeader("x-voice-release-host-ms", "1000");
       res.setHeader("x-voice-draining-revisions", from === "first" ? "first" : "first,second");
       apply(res, to, false);
     }
@@ -225,7 +238,8 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     await until(() => events.includes("decode in-flight"), "recognition before release");
     const off = await nextPoll("first");
     off.setHeader("x-voice-release-revision", "first");
-    off.setHeader("x-voice-release-at", "1000");
+    off.setHeader("x-voice-release-at", String(Date.now() + 60_000));
+    off.setHeader("x-voice-release-host-ms", "1000");
     apply(off, "released", false);
     await until(() => posted.length === 3, "clipped in-flight result, queue and tail");
     assert.ok(events.includes("decode in-flight-clipped"));

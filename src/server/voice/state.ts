@@ -60,6 +60,7 @@ export class VoiceStateStore {
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; keyChangedAt: number | null; report: VoiceShellReport } | null = null;
+  private lastReportHostUs = -1;
   /**
    * The last microphone permission each source reported, kept past its lapse: whether macOS
    * allows the microphone does not change because a listener stopped, and the Setup row reads it.
@@ -68,7 +69,7 @@ export class VoiceStateStore {
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private lastDirective?: { directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
-  private releases = new Map<string, number>();
+  private releases = new Map<string, { pressedAt: number; at: number }>();
   private latestRelease?: string;
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
@@ -116,8 +117,8 @@ export class VoiceStateStore {
 
   releasedCapture(revision = this.latestRelease) {
     if (!revision) return undefined;
-    const at = this.releases.get(revision);
-    return at === undefined ? undefined : { revision, at };
+    const bounds = this.releases.get(revision);
+    return bounds && { revision, ...bounds };
   }
 
   /**
@@ -245,25 +246,31 @@ export class VoiceStateStore {
   /** Apply dated key events in capture order, independently of heartbeat or request arrival time. */
   acceptShellReport(report: VoiceShellReport): void {
     const at = this.deps.now();
-    const keyUp = report.pushToTalkReleasedAt;
+    const order = report.reportedAtHostUs;
+    if (order !== undefined) {
+      if (order <= this.lastReportHostUs) return;
+      this.lastReportHostUs = order;
+    }
+    const snapshotMs = order === undefined ? null : Math.floor(order / 1000);
+    const pushToTalk = report.pushToTalk && snapshotMs !== null;
     const lastChange = this.report?.keyChangedAt ?? null;
     const heldSince = this.report?.report.pushToTalk && at - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? lastChange : null;
-    const stamp = report.pushToTalk ? report.pushToTalkPressedAt : keyUp;
-    const eventAt = stamp !== undefined && stamp <= at ? stamp : undefined;
+    const stamp = pushToTalk ? report.pushToTalkPressedAtHostMs : report.pushToTalkReleasedAtHostMs;
+    const eventAt = stamp !== undefined && snapshotMs !== null && stamp <= snapshotMs ? stamp : undefined;
     if (eventAt !== undefined && lastChange !== null && (eventAt < lastChange ||
-        (eventAt === lastChange && report.pushToTalk && !this.report?.report.pushToTalk))) return;
-    const held = !report.pushToTalk && this.report?.report.pushToTalk && this.state().mode === "push-to-talk"
+        (eventAt === lastChange && pushToTalk && !this.report?.report.pushToTalk))) return;
+    const held = !pushToTalk && heldSince !== null && this.state().mode === "push-to-talk"
       ? this.directive() : null;
     let keyChangedAt = lastChange;
     if (eventAt !== undefined) keyChangedAt = eventAt;
-    else if (report.pushToTalk !== (heldSince !== null)) keyChangedAt = at;
-    this.report = { at, keyChangedAt, report };
+    else if (pushToTalk !== (heldSince !== null)) keyChangedAt = snapshotMs;
+    this.report = { at, keyChangedAt, report: { ...report, pushToTalk } };
     if (report.microphone) this.microphone.shell = { at, reading: { permission: report.microphone, source: "shell" } };
-    if (held?.capture && keyUp !== undefined && keyUp <= at && this.state().mode === "auto-muted") {
+    if (held?.capture && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.
       if (this.releases.size >= 8) this.releases.delete(this.releases.keys().next().value!);
-      this.releases.set(held.revision, keyUp);
+      this.releases.set(held.revision, { pressedAt: heldSince, at: eventAt });
       this.latestRelease = held.revision;
     }
     this.publish();
@@ -292,6 +299,7 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.lastReportHostUs = -1;
     this.releases.clear();
     this.latestRelease = undefined;
     this.lastDirective = undefined;
@@ -333,7 +341,7 @@ export class VoiceStateStore {
 
 /** The daemon's one store. Routes, the registry's snapshot and the event wiring read this. */
 export const voiceStateStore = new VoiceStateStore({
-  now: () => Date.now(),
+  now: () => performance.now(),
   enabled: featureEnabled,
   config: getVoiceConfig,
   model: () => voiceModelManager.state(),

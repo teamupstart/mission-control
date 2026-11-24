@@ -183,7 +183,7 @@ export function registerVoiceUtteranceRoutes(
     if (heldBeforeRelease) {
       const endHeader = c.req.header(VOICE_CAPTURE_END_HEADER);
       const end = endHeader ? Number(endHeader) : NaN;
-      if (!Number.isSafeInteger(end) || end < parsed.data.capturedAt || end > release.at) {
+      if (!Number.isSafeInteger(end) || end < release.pressedAt || end > release.at) {
         c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
         c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
         return c.json({ accepted: false });

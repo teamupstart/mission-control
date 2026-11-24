@@ -50,7 +50,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || endedAt != nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
-        if let endedAt { req.setValue(String(endedAt), forHTTPHeaderField: "x-voice-capture-ended-at") }
+        if let endedAt { req.setValue(String(endedAt), forHTTPHeaderField: "x-voice-capture-end-host-ms") }
         if let body {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -182,7 +182,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     return true
                 }
                 if let current, permission() == "granted", releasedRevision == current.revision,
-                   let time = http.value(forHTTPHeaderField: "x-voice-release-at").flatMap(Int64.init) {
+                   let time = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init) {
                     current.release(at: time)
                     draining.append(current)
                 } else {
@@ -227,7 +227,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                         endedAt: segment.endedAt, body: JSONEncoder().encode(words))
                                     // The POST can also beat the key-up directive back to the helper.
                                     guard http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
-                                          let cutoff = http.value(forHTTPHeaderField: "x-voice-release-at").flatMap(Int64.init),
+                                          let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),
                                           segment.endedAt > cutoff else { return }
                                     daemonCutoff = cutoff
                                 }

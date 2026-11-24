@@ -79,8 +79,8 @@ them after a confirmed release. It can retain up to 120 seconds of segmented PCM
 The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
 If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
 When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
-`x-voice-release-revision` (the held capture revision) and `x-voice-release-at` (epoch
-milliseconds). A helper applying that exact held revision uses key-up as the boundary for
+`x-voice-release-revision` (the held capture revision) and `x-voice-release-host-ms` (monotonic
+host milliseconds). A helper applying that exact held revision uses key-up as the boundary for
 the unfinished phrase. If its input tap still owes samples through that time, the helper
 collects the pre-release portion of the last callback before closing. A stalled input
 closes after 250 ms. Manual mute stops the input immediately. The helper can finish decoding and posting
@@ -92,14 +92,21 @@ The native helper dates the samples from the input tap's audio timestamp on the 
 clock, so a delayed callback still includes speech recorded before key-up. A gap in
 the input timeline discards the interrupted utterance through the next silence boundary.
 
-The shell sends `pushToTalk: false` with `pushToTalkReleasedAt` set to the key event's
-Unix time in milliseconds on the shared host clock. Transport delay does not extend the
-held interval. On key-down the shell can supply the key event's Unix milliseconds in
-`pushToTalkPressedAt`, so even a short tap can finish before the daemon receives the press.
-Otherwise the daemon dates the press on receipt. A dated key-up older than that press is
-ignored. A newer dated press starts a fresh capture revision even if its predecessor's
-key-up is still in flight. Shell heartbeats preserve the press time. A missing, invalid or future key-up
-timestamp closes capture and discards the tail.
+The shell timestamps every snapshot, including idle heartbeats, at observation time with
+`reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
+monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
+across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
+older and duplicate snapshots before applying state or renewing its 15-second lifetime.
+
+On macOS use the Core Audio host clock (`mach_absolute_time` converted with its timebase).
+Key events use the same origin and round down to whole milliseconds. During a hold send
+`pushToTalk: true` and the original `pushToTalkPressedAtHostMs` when available. Otherwise
+the first ordered down snapshot dates the press. A later press starts a fresh revision.
+On release send `pushToTalk: false` and `pushToTalkReleasedAtHostMs`, retaining the last
+release stamp on subsequent idle snapshots so a reordered heartbeat can confirm it.
+A missing, invalid or future release stamp closes capture and discards the tail. Reports
+without ordering metadata still carry shell capabilities and call state but cannot authorize
+a hold. Legacy Unix key timestamps are accepted as input and have no delivery authority.
 
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
@@ -145,7 +152,8 @@ anything reaches Recently heard, a card or the queue. If the same key is still h
 The listener retries the same POST and utterance ID. During auto-mute following key-up,
 the daemon accepts the same owner's held revision for segments ending by the release
 timestamp. The listener clips on 16 kHz sample boundaries and rounds the exclusive end up
-to Unix milliseconds for `x-voice-capture-ended-at`. If a POST races key-up
+to host milliseconds for `x-voice-capture-end-host-ms`. Only the utterance’s `capturedAt`
+history field uses Unix milliseconds. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. Successive key presses during the
 same call preserve the release exception. Manual mute, a change of recipient, listener or input,
@@ -567,7 +575,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`3`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkPressedAt?, pushToTalkReleasedAt?, hotkeyError }`,
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostMs?, pushToTalkReleasedAtHostMs?, hotkeyError }`,
   sent by the desktop shell. A report lapses 15 seconds after it arrives. Capability ids this build
   does not know are dropped rather than refused.
 

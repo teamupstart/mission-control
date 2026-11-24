@@ -65,7 +65,8 @@ struct Segment {
     static let sampleNs: Int64 = 62_500 // one mono PCM sample at 16 kHz
     let samples: [Float]
     let startNs: Int64
-    var capturedAt: Int64 { startNs / 1_000_000 }
+    // Capture and release boundaries use milliseconds since the monotonic host-clock origin.
+    var startedAtHostMs: Int64 { startNs / 1_000_000 }
     var endedAt: Int64 { (startNs + Int64(samples.count) * Self.sampleNs + 999_999) / 1_000_000 }
 
     static func completeSamples(_ count: Int, startingAt startNs: Int64, through releaseMs: Int64) -> Int {
@@ -210,23 +211,6 @@ final class SpeechSegmenter {
     }
 }
 
-// AVAudioTime and mach_absolute_time use the same host clock. Pair it with Unix
-// time to express recorded samples on the daemon's key-release clock.
-struct CaptureClock {
-    let hostTime: UInt64
-    let unixTime: TimeInterval
-
-    init(hostTime: UInt64 = mach_absolute_time(), unixTime: TimeInterval = Date().timeIntervalSince1970) {
-        self.hostTime = hostTime
-        self.unixTime = unixTime
-    }
-
-    func unixNanoseconds(at time: UInt64) -> Int64 {
-        let offset = AVAudioTime.seconds(forHostTime: time) - AVAudioTime.seconds(forHostTime: hostTime)
-        return Int64((unixTime * 1e9).rounded()) + Int64((offset * 1e9).rounded())
-    }
-}
-
 // Owned by one tap. Destroying the capture drops the converter's filter history
 // as well as any speech that has not reached the end-of-segment threshold.
 final class InputSegmenter {
@@ -275,7 +259,7 @@ final class InputSegmenter {
         return prefix
     }
 
-    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock(), cutoff: Int64? = nil) -> [Segment] {
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, cutoff: Int64? = nil) -> [Segment] {
         if let cutoff, let deliveredThrough, deliveredThrough >= cutoff { return [] }
         let rate = buffer.format.sampleRate
         let hostSeconds = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : nil
@@ -300,7 +284,7 @@ final class InputSegmenter {
         nextSample = when.isSampleTimeValid ? when.sampleTime + Int64(buffer.frameLength) : nil
         nextHostSeconds = (hostSeconds ?? AVAudioTime.seconds(forHostTime: time.hostTime)) + Double(buffer.frameLength) / rate
 
-        let inputStart = clock.unixNanoseconds(at: time.hostTime)
+        let inputStart = Int64((AVAudioTime.seconds(forHostTime: time.hostTime) * 1e9).rounded())
         let inputDuration = Double(buffer.frameLength) / rate
         let inputEnd = inputStart + Int64((inputDuration * 1e9).rounded())
         let atRelease = cutoff.map { $0 <= inputEnd / 1_000_000 } ?? false
@@ -385,7 +369,6 @@ final class Microphone {
     private var heldSpeech: HeldSpeech?
     private let onQueueFull: () -> Void
     private var queueFullReported = false
-    private let captureClock = CaptureClock()
     private var cutoff: Int64?
     private var onBoundary: (@MainActor () -> Void)?
     private var releaseTimeout: Task<Void, Never>?
@@ -425,7 +408,7 @@ final class Microphone {
         segmenter = try InputSegmenter(source: source, held: held)
         input.installTap(onBus: 0, bufferSize: 1024, format: source) { [weak self] buffer, when in
             guard let self else { return }
-            self.consume(buffer, at: when, clock: self.captureClock)
+            self.consume(buffer, at: when)
         }
         configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
                                                                       object: engine, queue: nil) { [weak self] _ in
@@ -437,10 +420,10 @@ final class Microphone {
         catch { stop(); throw error }
     }
 
-    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock) {
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
         let finish = tapLock.withLock { () -> (@MainActor () -> Void)? in
             guard let segmenter else { return nil }
-            for segment in segmenter.consume(buffer, at: when, clock: clock, cutoff: cutoff) {
+            for segment in segmenter.consume(buffer, at: when, cutoff: cutoff) {
                 if heldSpeech != nil {
                     heldSpeech?.append(segment)
                 } else if case .dropped = continuation.yield(segment) {

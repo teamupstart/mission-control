@@ -421,8 +421,8 @@ export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** Response headers on the capture-off directive for an explicit push-to-talk key release. */
 export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
-export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-at";
-export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-ended-at";
+export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
+export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
 export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
 export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
 export const VoiceListenerIdSchema = z.uuid();
@@ -472,10 +472,14 @@ export const VoiceShellReportSchema = z.object({
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS).nullable().default(null),
   callActive: z.boolean().default(false),
   pushToTalk: z.boolean().default(false),
-  /** Host Unix milliseconds of key-down, when the shell has the key event. */
+  /** Legacy Unix fields are accepted for compatibility. They cannot authorize release. */
   pushToTalkPressedAt: z.number().int().nonnegative().optional().catch(undefined),
-  /** Host Unix milliseconds of the actual key-up. An undated release just closes capture. */
   pushToTalkReleasedAt: z.number().int().nonnegative().optional().catch(undefined),
+  /** Monotonic host time when the shell sampled this snapshot, strictly increasing across reports. */
+  reportedAtHostUs: z.number().int().nonnegative().optional().catch(undefined),
+  /** Core Audio host clock, rounded down to milliseconds at the physical key event. */
+  pushToTalkPressedAtHostMs: z.number().int().nonnegative().optional().catch(undefined),
+  pushToTalkReleasedAtHostMs: z.number().int().nonnegative().optional().catch(undefined),
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),

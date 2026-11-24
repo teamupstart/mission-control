@@ -26,8 +26,7 @@ final class ListenerTests: XCTestCase {
         var start = 2000
         func consume() -> [Segment] {
             defer { start += 20 }
-            return tap.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 1000)),
-                               clock: CaptureClock(hostTime: 0, unixTime: 0))
+            return tap.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 1000)))
         }
         fill(0.1)
         for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
@@ -45,7 +44,7 @@ final class ListenerTests: XCTestCase {
         let firstTone = try XCTUnwrap(segment.samples.firstIndex { abs($0) > 0.05 })
         let lastTone = try XCTUnwrap(segment.samples.lastIndex { abs($0) > 0.05 })
         XCTAssertEqual(Double(lastTone - firstTone + 1), 4_800, accuracy: 40)
-        XCTAssertGreaterThan(segment.capturedAt, 3000)
+        XCTAssertGreaterThan(segment.startedAtHostMs, 3000)
     }
 
     func testMultiWordRosterCorrectionAlignsTimingLabelsWithinDecoderSpan() {
@@ -110,7 +109,7 @@ final class ListenerTests: XCTestCase {
         XCTAssertTrue(feed(fresh) == nil)
         for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) }
         let segment = try XCTUnwrap(feed(quiet))
-        XCTAssertEqual(segment.capturedAt, freshStart)
+        XCTAssertEqual(segment.startedAtHostMs, freshStart)
         XCTAssertEqual(segment.samples, fresh + Array(repeating: 0, count: 12_800))
     }
 
@@ -189,7 +188,7 @@ final class ListenerTests: XCTestCase {
             }
             segments += detector.consume(frame, endNs: Int64(end) * Segment.sampleNs)
         }
-        let commands = segments.filter { $0.capturedAt > 31_000 }
+        let commands = segments.filter { $0.startedAtHostMs > 31_000 }
         XCTAssertEqual(commands.count, 1)
         let command = try XCTUnwrap(commands.first)
         let recognizer = try await Recognizer(directory: models)
@@ -235,7 +234,7 @@ final class ListenerTests: XCTestCase {
         let clipped = try XCTUnwrap(gate.finish(tail: [], at: 1001))
         XCTAssertEqual(clipped.samples, Array(frame.prefix(8)))
         XCTAssertEqual(clipped.startNs, startNs)
-        XCTAssertEqual(clipped.capturedAt, 1000)
+        XCTAssertEqual(clipped.startedAtHostMs, 1000)
         XCTAssertEqual(clipped.endedAt, 1001)
     }
 
@@ -253,15 +252,12 @@ final class ListenerTests: XCTestCase {
             let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(end - i)))
             frame.frameLength = frame.frameCapacity
             for j in i..<end { frame.floatChannelData![0][j - i] = input[j] }
-            let start = Double(i) / 16_000
             let when = i == 0
                 ? AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 10), sampleTime: 0, atRate: 16_000)
                 : AVAudioTime(sampleTime: AVAudioFramePosition(i), atRate: 16_000)
-            // The callback runs half a second after these samples were captured.
-            let clock = CaptureClock(hostTime: AVAudioTime.hostTime(forSeconds: 10.5 + start), unixTime: 100.5 + start)
-            XCTAssertTrue(tap.consume(frame, at: when, clock: clock).isEmpty)
+            XCTAssertTrue(tap.consume(frame, at: when).isEmpty)
         }
-        let final = try XCTUnwrap(tap.finish(at: Int64(100_000 + heldLength / 16)))
+        let final = try XCTUnwrap(tap.finish(at: Int64(10_000 + heldLength / 16)))
         XCTAssertEqual(final.samples.suffix(320), held.suffix(320))
         let recognizer = try await Recognizer(directory: models)
         let result = try await recognizer.transcribe(final, boosting: nil)
@@ -270,8 +266,7 @@ final class ListenerTests: XCTestCase {
 
     func test48kReleaseIsIndependentOfPostReleaseInput() throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
-        let clock = CaptureClock(hostTime: 0, unixTime: 100)
-        let release: Int64 = 100_205
+        let release: Int64 = 205
         func released(afterKeyUp: Float, held: Bool, cutoffKnown: Bool) throws -> Segment {
             let tap = try InputSegmenter(source: format, held: held)
             let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
@@ -284,7 +279,7 @@ final class ListenerTests: XCTestCase {
                 }
                 let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 48_000),
                                        sampleTime: Int64(start), atRate: 48_000)
-                XCTAssertTrue(tap.consume(frame, at: when, clock: clock, cutoff: cutoffKnown && start == 9600 ? release : nil).isEmpty)
+                XCTAssertTrue(tap.consume(frame, at: when, cutoff: cutoffKnown && start == 9600 ? release : nil).isEmpty)
             }
             return try XCTUnwrap(tap.finish(at: release))
         }
@@ -306,15 +301,14 @@ final class ListenerTests: XCTestCase {
         frame.frameLength = frame.frameCapacity
         for i in 0..<960 { frame.floatChannelData![0][i] = 0.3 * sin(Float(i) * 2 * .pi * 400 / 48_000) }
         let tap = try InputSegmenter(source: format, held: true)
-        let clock = CaptureClock(hostTime: 0, unixTime: 100)
         for i in 0..<12 {
             let jitter = i.isMultiple(of: 2) ? 0.0 : 0.0004
             let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(i) * 0.02 + jitter),
                                    sampleTime: Int64(i * 960), atRate: 48_000)
-            XCTAssertTrue(tap.consume(frame, at: when, clock: clock).isEmpty)
+            XCTAssertTrue(tap.consume(frame, at: when).isEmpty)
         }
-        let phrase = try XCTUnwrap(tap.finish(at: 100_230))
-        XCTAssertEqual(phrase.startNs, 100_000_000_000)
+        let phrase = try XCTUnwrap(tap.finish(at: 230))
+        XCTAssertEqual(phrase.startNs, 0)
         XCTAssertEqual(phrase.samples.count, 230 * 16)
     }
 
@@ -323,14 +317,14 @@ final class ListenerTests: XCTestCase {
         let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 960))
         frame.frameLength = frame.frameCapacity
         for i in 0..<960 { frame.floatChannelData![0][i] = 0.3 * sin(Float(i) * 2 * .pi * 400 / 48_000) }
-        let release: Int64 = 100_205
+        let release: Int64 = 205
         func capture(jitter: Double) throws -> Segment {
             let tap = try InputSegmenter(source: format, held: true)
             for i in 0...10 {
                 let host = Double(i) * 0.02 + (i == 10 ? jitter : 0)
                 let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: host),
                                        sampleTime: Int64(i * 960), atRate: 48_000)
-                XCTAssertTrue(tap.consume(frame, at: when, clock: CaptureClock(hostTime: 0, unixTime: 100),
+                XCTAssertTrue(tap.consume(frame, at: when,
                                           cutoff: i == 10 ? release : nil).isEmpty)
             }
             XCTAssertEqual(tap.deliveredThrough, release)
@@ -352,7 +346,7 @@ final class ListenerTests: XCTestCase {
             let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
             frame.frameLength = frame.frameCapacity
             for i in 0..<frames { frame.floatChannelData![0][i] = tone ? 0.3 * sin(Float(i) * 2 * .pi * 400 / 16_000) : 0 }
-            XCTAssertTrue(tap.consume(frame, at: time, clock: CaptureClock(hostTime: 0, unixTime: 100)).isEmpty)
+            XCTAssertTrue(tap.consume(frame, at: time).isEmpty)
         }
         try feed(AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 10), sampleTime: 32_000, atRate: 16_000), tone: true)
         for position: Int64 in [0, 320] {
@@ -362,9 +356,9 @@ final class ListenerTests: XCTestCase {
         // The first paired callback on the new timeline supplies the silence boundary.
         try feed(AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 20), sampleTime: 640, atRate: 16_000), frames: 16_000)
         try feed(AVAudioTime(sampleTime: 16_640, atRate: 16_000), frames: 3200, tone: true)
-        XCTAssertEqual(tap.deliveredThrough, 121_200)
-        let final = try XCTUnwrap(tap.finish(at: 121_150))
-        XCTAssertEqual(final.endedAt, 121_150)
+        XCTAssertEqual(tap.deliveredThrough, 21_200)
+        let final = try XCTUnwrap(tap.finish(at: 21_150))
+        XCTAssertEqual(final.endedAt, 21_150)
     }
 
     func testTapGapDiscardsInterruptedSpeechThroughSilenceAndKeepsTheNextCommand() throws {
@@ -380,7 +374,7 @@ final class ListenerTests: XCTestCase {
                 let host = AVAudioTime.hostTime(forSeconds: Double(start) / 16_000)
                 let time = hostOnly ? AVAudioTime(hostTime: host) :
                     AVAudioTime(hostTime: host, sampleTime: Int64(start), atRate: 16_000)
-                return input.consume(frame, at: time, clock: CaptureClock(hostTime: 0, unixTime: 100))
+                return input.consume(frame, at: time)
             }
             let split = speech.count / 2
             XCTAssertTrue(try callback(Array(speech.prefix(split)), start: 0).isEmpty)
@@ -388,7 +382,7 @@ final class ListenerTests: XCTestCase {
             let end = speech.count + gap
             XCTAssertTrue(try callback(Array(speech.dropFirst(split)), start: split + gap).isEmpty)
             // Key-up inside the gap cannot flush a command stitched from both sides.
-            XCTAssertNil(input.finish(at: 100_000 + Int64((split + gap / 2) / 16)))
+            XCTAssertNil(input.finish(at: Int64((split + gap / 2) / 16)))
 
             // Repeat without releasing, and let ordinary segmentation resume after silence.
             XCTAssertTrue(try callback(Array(speech.prefix(split)), start: end).isEmpty)
@@ -399,7 +393,7 @@ final class ListenerTests: XCTestCase {
             let fresh = try callback(speech + silence, start: freshStart)
             XCTAssertEqual(fresh.count, 1)
             let captured = try XCTUnwrap(fresh.first)
-            XCTAssertGreaterThanOrEqual(captured.capturedAt, 100_000 + Int64(freshStart / 16) - 150)
+            XCTAssertGreaterThanOrEqual(captured.startedAtHostMs, Int64(freshStart / 16) - 150)
         }
     }
 
@@ -418,17 +412,17 @@ final class ListenerTests: XCTestCase {
         frame.floatChannelData![0].update(from: pcm, count: pcm.count)
         for i in 0..<4 {
             let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(i * pcm.count) / 16_000))
-            input.consume(frame, at: when, clock: CaptureClock(hostTime: 0, unixTime: 100))
+            input.consume(frame, at: when)
         }
         return (input, pcm.count)
     }
 
     func testHeldMicrophoneKeepsFourPhrasesInOrderUntilRelease() throws {
         let (input, length) = try captureFourPhrases(held: true) { XCTFail("The normal listening queue overflowed") }
-        let held = input.stop(releasedAt: 100_000 + Int64((4 * length + 15) / 16))
+        let held = input.stop(releasedAt: Int64((4 * length + 15) / 16))
         XCTAssertEqual(held.count, 4)
         for (i, phrase) in held.enumerated() {
-            XCTAssertEqual(Double(phrase.capturedAt), 100_000 + Double(i * length) / 16, accuracy: 200)
+            XCTAssertEqual(Double(phrase.startedAtHostMs), Double(i * length) / 16, accuracy: 200)
         }
     }
 
@@ -437,11 +431,11 @@ final class ListenerTests: XCTestCase {
         let (input, length) = try captureFourPhrases(held: false) { warnings += 1 }
         input.stop()
         var starts: [Int64] = []
-        for await segment in input.segments { starts.append(segment.capturedAt) }
+        for await segment in input.segments { starts.append(segment.startedAtHostMs) }
         XCTAssertEqual(warnings, 1)
         XCTAssertEqual(starts.count, 2)
         for (i, start) in starts.enumerated() {
-            XCTAssertEqual(Double(start), 100_000 + Double(i * length) / 16, accuracy: 200)
+            XCTAssertEqual(Double(start), Double(i * length) / 16, accuracy: 200)
         }
     }
 
@@ -467,17 +461,16 @@ final class ListenerTests: XCTestCase {
         engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
         XCTAssertEqual(engine.inputNode.outputFormat(forBus: 0), format)
         let input = try Microphone(selection: "system-default", devices: [], engine: engine)
-        let clock = CaptureClock(hostTime: 0, unixTime: 100)
         func callback(_ pcm: [Float], start: Int) throws {
             let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
             frame.frameLength = frame.frameCapacity
             for i in pcm.indices { frame.floatChannelData![0][i] = pcm[i] }
             let time = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 16_000))
-            input.consume(frame, at: time, clock: clock)
+            input.consume(frame, at: time)
         }
         let split = held.count - 1600
         try callback(Array(held[..<split]), start: 0)
-        let release = Int64(100_000 + held.count / 16)
+        let release = Int64(held.count / 16)
         var final: Segment?
         let closed = expectation(description: "the callback through key-up releases the input")
         input.whenCaptured(through: release) {

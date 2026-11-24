@@ -147,8 +147,8 @@ Recently heard, a card or the queue. This also covers a mute and unmute while a 
 Reassigning a spoken name or changing its target task or session issues a fresh revision,
 even when the list of names sent to the recognizer stays the same.
 Use a fresh ID per capture. Set `capturedAt` to the time of capture in Unix milliseconds
-on the host clock shared by the listener and daemon. A recognizer using its own clock
-converts its timestamps to host time at capture.
+on the host clock shared by the listener and daemon. The helper dates the first sample
+when it detects speech and carries that timestamp through clipping and transcription.
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
@@ -161,8 +161,8 @@ segment after three attempts or 55 seconds, including time spent waiting for a r
 and continues with later speech. During auto-mute following key-up,
 the daemon accepts the same owner's held revision for segments ending by the release
 timestamp. The listener clips on 16 kHz sample boundaries and rounds the exclusive end up
-to host milliseconds for `x-voice-capture-end-host-ms`. Only the utterance’s `capturedAt`
-history field uses Unix milliseconds. If a POST races key-up
+to host milliseconds for `x-voice-capture-end-host-ms`. The router uses the Unix
+`capturedAt` time for history and for ordering a spoken action against dashboard actions. If a POST races key-up
 and extends past it, the daemon returns `accepted: false` and the release headers. The
 helper transcribes the clipped PCM again before retrying. Successive key presses during the
 same call preserve the release exception. Manual mute, a change of recipient, listener or input,

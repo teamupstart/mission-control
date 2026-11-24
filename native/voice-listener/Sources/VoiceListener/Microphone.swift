@@ -65,6 +65,7 @@ struct Segment {
     static let sampleNs: Int64 = 62_500 // one mono PCM sample at 16 kHz
     let samples: [Float]
     let startNs: Int64
+    let capturedAt: Int64 // Unix milliseconds fixed when speech starts
     // Capture and release boundaries use milliseconds since the monotonic host-clock origin.
     var startedAtHostMs: Int64 { startNs / 1_000_000 }
     var endedAt: Int64 { (startNs + Int64(samples.count) * Self.sampleNs + 999_999) / 1_000_000 }
@@ -79,8 +80,18 @@ struct Segment {
         let count = Self.completeSamples(samples.count, startingAt: startNs, through: release)
         guard count > 0 else { return nil }
         if count == samples.count { return self }
-        return Segment(samples: Array(samples.prefix(count)), startNs: startNs)
+        return prefix(count)
     }
+
+    func prefix(_ count: Int) -> Segment {
+        Segment(samples: Array(samples.prefix(count)), startNs: startNs, capturedAt: capturedAt)
+    }
+}
+
+private func captureUnixMs(_ startNs: Int64) -> Int64 {
+    let hostNow = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+    let elapsed = hostNow - Double(startNs) / 1e9
+    return Int64(((Date().timeIntervalSince1970 - elapsed) * 1000).rounded(.down))
 }
 
 // Keep an onset lead-in and bound the audio retained between speech boundaries.
@@ -91,6 +102,7 @@ struct SpeechGate {
     private var samples: [Float] = []
     private var quiet = 0
     private var startNs: Int64 = 0
+    private var capturedAt: Int64 = 0
     private var discarding = false
     private let held: Bool
     private var overflowPrefix: Segment?
@@ -113,12 +125,13 @@ struct SpeechGate {
             return prefix.through(release)
         }
         guard !discarding, !samples.isEmpty else { return nil }
-        let segment = Segment(samples: samples + tail, startNs: startNs).through(release)
+        let segment = Segment(samples: samples + tail, startNs: startNs, capturedAt: capturedAt).through(release)
         guard let segment, segment.samples.count <= Self.maxSegmentSamples else { return nil }
         return segment
     }
 
-    mutating func feed(_ frame: [Float], active: Bool, endNs: Int64) -> Segment? {
+    mutating func feed(_ frame: [Float], active: Bool, endNs: Int64,
+                       toUnixMs: (Int64) -> Int64 = captureUnixMs) -> Segment? {
         guard !frame.isEmpty else { return nil }
         if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(Self.maxSegmentSamples) * Segment.sampleNs + 2_000_000_000 {
             overflowPrefix = nil
@@ -129,6 +142,7 @@ struct SpeechGate {
                 return nil
             }
             startNs = endNs - Int64(lead.count + frame.count) * Segment.sampleNs
+            capturedAt = toUnixMs(startNs)
             samples = lead
             lead.removeAll()
         }
@@ -142,14 +156,14 @@ struct SpeechGate {
             samples.append(contentsOf: frame.prefix(count))
             if ended {
                 defer { samples.removeAll() }
-                return Segment(samples: samples, startNs: startNs)
+                return Segment(samples: samples, startNs: startNs, capturedAt: capturedAt)
             }
             if samples.count < Self.maxSegmentSamples { return nil }
         }
         // Drop the entire unfinished instruction. Its tail must never start another segment.
         if held && !discarding {
             samples.append(contentsOf: frame.prefix(Self.maxSegmentSamples - samples.count))
-            overflowPrefix = Segment(samples: samples, startNs: startNs)
+            overflowPrefix = Segment(samples: samples, startNs: startNs, capturedAt: capturedAt)
         }
         samples.removeAll()
         discarding = !ended
@@ -347,7 +361,7 @@ struct HeldSpeech {
         let room = limit - sampleCount
         if segment.samples.count > room {
             firstExcessEndNs = segment.startNs + Int64(room + 1) * Segment.sampleNs
-            if room > 0 { segments.append(Segment(samples: Array(segment.samples.prefix(room)), startNs: segment.startNs)) }
+            if room > 0 { segments.append(segment.prefix(room)) }
         } else {
             sampleCount += segment.samples.count
             segments.append(segment)

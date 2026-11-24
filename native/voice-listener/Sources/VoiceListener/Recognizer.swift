@@ -1,4 +1,3 @@
-import AVFAudio
 import FluidAudio
 import Foundation
 
@@ -107,10 +106,6 @@ struct Recognizer {
            let range = address.wordRange, let name = address.replacementWord {
             Self.applyAddressCorrection(name, in: range, roster: boosting.vocabulary.terms.map(\.text), text: &text, words: &words)
         }
-        // Only history uses Unix time. Project the capture start onto the current
-        // wall clock here, after every sample boundary has been decided.
-        let elapsed = AVAudioTime.seconds(forHostTime: mach_absolute_time()) - Double(segment.startNs) / 1e9
-        let capturedAt = Int64(((Date().timeIntervalSince1970 - elapsed) * 1000).rounded(.down))
-        return Utterance(text: text, words: words, capturedAt: capturedAt)
+        return Utterance(text: text, words: words, capturedAt: segment.capturedAt)
     }
 }

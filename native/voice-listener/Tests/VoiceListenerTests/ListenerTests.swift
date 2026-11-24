@@ -480,9 +480,10 @@ final class ListenerTests: XCTestCase {
     func testHeldAudioOverflowDiscardsTheWholeHoldIncludingLaterSpeech() {
         let pcm = Array(repeating: Float(0.5), count: 32)
         var hold = HeldSpeech(limit: 48)
-        for i in 0..<4 { hold.append(Segment(samples: pcm, startNs: Int64(i) * 2_000_000)) }
+        for i in 0..<4 { hold.append(Segment(samples: pcm, startNs: Int64(i) * 2_000_000, capturedAt: 1000 + Int64(i) * 2)) }
         XCTAssertEqual(hold.finish(at: 2)?.map { $0.samples.count }, [32])
         XCTAssertEqual(hold.finish(at: 3)?.map { $0.samples.count }, [32, 16])
+        XCTAssertEqual(hold.finish(at: 3)?.map(\.capturedAt), [1000, 1002])
         XCTAssertNil(hold.finish(at: 4))
         XCTAssertNil(hold.finish(at: 8))
     }
@@ -539,11 +540,30 @@ final class ListenerTests: XCTestCase {
         XCTAssertNil(recognizer.ctc)
         let boosting = try await recognizer.prime(["Steve"])
         XCTAssertNil(boosting)
-        let segment = Segment(samples: try samples(from: corpus.appending(path: "Steve-0.wav")), startNs: 1_000_000_000)
+        let segment = Segment(samples: try samples(from: corpus.appending(path: "Steve-0.wav")), startNs: 1_000_000_000, capturedAt: 1000)
         let utterance = try await recognizer.transcribe(segment, boosting: boosting)
         let result = try XCTUnwrap(utterance)
         XCTAssertEqual(result.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
         XCTAssertFalse(result.words.isEmpty)
+    }
+
+    func testClockStepAfterSpeechOnsetPreservesCaptureTimeThroughDecoding() async throws {
+        let (models, corpus) = try fixtureDirectories()
+        let pcm = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let onset: Int64 = 1_000_000_000
+        var unixAtHostZero: Int64 = 1_700_000_000_000
+        func toUnixMs(_ ns: Int64) -> Int64 { unixAtHostZero + ns / 1_000_000 }
+        var gate = SpeechGate(held: true)
+        let end = onset + Int64(pcm.count) * Segment.sampleNs
+        XCTAssertNil(gate.feed(pcm, active: true, endNs: end, toUnixMs: toUnixMs))
+        unixAtHostZero += 60_000
+        let silence = Array(repeating: Float(0), count: 12_800)
+        let segment = try XCTUnwrap(gate.feed(silence, active: false, endNs: end + 800_000_000, toUnixMs: toUnixMs))
+        let clipped = try XCTUnwrap(segment.through((end + 999_999) / 1_000_000))
+        let recognizer = try await Recognizer(directory: models)
+        let words = try await recognizer.transcribe(clipped, boosting: nil)
+        XCTAssertEqual(words?.capturedAt, 1_700_000_001_000)
+        XCTAssertEqual(clipped.endedAt, (end + 999_999) / 1_000_000)
     }
 
     func testGeneratedFirstWordsPlainAndPrimed() async throws {

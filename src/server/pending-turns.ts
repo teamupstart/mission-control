@@ -729,7 +729,10 @@ export class PendingTurnManager {
     if (event.type === "review_upsert" && event.review.status === "pending" && event.review.filedByVoiceAt != null) {
       // Filing a plan releases the call without changing the session’s pending review count.
       const session = this.registry.getSession(event.review.sessionId);
-      if (session) this.scheduleDrain(noteKeyFor(session));
+      if (session) {
+        this.releaseSpokenHolds(session);
+        this.scheduleDrain(noteKeyFor(session));
+      }
     }
     if (event.type === "feature_flags") {
       for (const session of this.registry.liveSessions()) {
@@ -738,7 +741,15 @@ export class PendingTurnManager {
     }
   }
 
+  private releaseSpokenHolds(session: Session): void {
+    if (!session.pendingTurns.length || session.state === "awaiting_review" || this.registry.hasPendingReviewCall(session.id)) return;
+    for (const turn of session.pendingTurns) {
+      if (turn.spokenWords !== undefined && turn.state === "queued") this.registry.voiceRouter?.releaseSpokenHold(turn.id);
+    }
+  }
+
   private observeSession(session: Session): void {
+    this.releaseSpokenHolds(session);
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);

@@ -196,7 +196,7 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
   }
 });
 
-test("Send now updates the compatible question's spoken card and delivers the words", async ({ dashboard: page, daemon, request }) => {
+test("a spoken message waiting behind a compatible question moves from the visible queue into the conversation", async ({ dashboard: page, daemon, request }) => {
   const title = "Which release?";
   const created = await request.post(`${daemon.baseURL}/api/tasks`, { data: {
     repoRoot: daemon.repo, title: "Verify the release", intent: "Verify the release", callSign: "Steve",
@@ -223,29 +223,22 @@ test("Send now updates the compatible question's spoken card and delivers the wo
   const review = await ask.json();
   expect(review.wait).toBe("call");
   for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) expect((await flag(id, true)).ok()).toBe(true);
-  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
 
-  // Phase 5's dashboard receives cards on its event stream. Phase 6 owns their controls.
-  const devtools = await page.context().newCDPSession(page);
-  await devtools.send("Network.enable");
-  const states: string[] = [];
-  devtools.on("Network.eventSourceMessageReceived", ({ data }) => {
-    const event = JSON.parse(data);
-    if (event.type === "voice_card" && event.card.id === "convert-release") states.push(event.card.state);
-  });
-  await page.reload();
-  await expect(page.locator(".pulse")).not.toHaveClass(/is-down/);
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
   expect(await (await say(daemon, "Steve, verify the release", { id: "convert-release" })).json()).toEqual({ accepted: true });
-  await expect.poll(() => states).toContain("pending");
-  expect((await request.post(`${daemon.baseURL}/api/voice/cards/convert-release/send-now`)).ok()).toBe(true);
-  // Observe the real hold before starting the poll, so request scheduling cannot choose the case.
-  await expect.poll(() => states.at(-1)).toBe("held");
+  // Phase 6 owns the confirmation card. This phase exposes the queued turn and delivered payload in the transcript.
+  const queued = page.locator(".pending-turn").filter({ hasText: "verify the release" });
+  await expect(queued.getByRole("status")).toHaveText("queued");
+  await expect(queued.getByText("Spoken", { exact: true })).toBeVisible();
   const wait = await request.get(`${daemon.baseURL}/mcp/reviews/${review.id}/wait?convertible=1`, { headers });
   expect((await wait.json()).converted.receipt).toContain(review.id);
-  await expect.poll(() => states.at(-1)).toBe("sent");
+  await expect(queued).toHaveCount(0);
   const reply = page.getByText(/Mock reply to: verify the release/).first();
   await expect(reply).toBeVisible({ timeout: 30_000 });
+  const spoken = page.getByRole("article").filter({ has: page.getByText("Spoken", { exact: true }), hasText: "verify the release" });
+  await spoken.getByText("What the agent received", { exact: true }).click();
+  await expect(spoken.locator(".review-received-text")).toContainText(`- ${review.id}: ${title}`);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const dir = artifactsDir("voice-question-conversion");
     mkdirSync(dir, { recursive: true });

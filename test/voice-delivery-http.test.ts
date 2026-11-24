@@ -450,6 +450,8 @@ test("a plan's first compatible wait releases speech queued in the create-to-pol
   assert.equal(cards.at(-1)?.state, "held");
   assert.equal(registry.getReview(plan.id)?.waitMode, undefined);
   const call = reviews.wait(plan.id, 5000, undefined, true);
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
   t.mock.timers.tick(5001);
   assert.ok((await call)?.converted);
   t.mock.timers.tick(60_001);
@@ -457,6 +459,41 @@ test("a plan's first compatible wait releases speech queued in the create-to-pol
   assert.equal(send.mock.callCount(), 1);
   assert.ok(send.mock.calls[0]!.arguments[1].text.includes(plan.id));
   assert.equal(cards.at(-1)?.state, "sent");
+});
+
+test("a filing failure preserves queued speech and its receipt until a compatible poll retries", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const sessionId = "sdk:Will";
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  const question = reviews.create(sessionId, "input", "Which target?", "Choose", null, { snoozable: true });
+  const db = openDb();
+  db.exec(`CREATE TEMP TRIGGER refuse_voice_filing BEFORE UPDATE OF filed_by_voice_at ON reviews
+    BEGIN SELECT RAISE(ABORT, 'injected filing failure'); END`);
+  t.after(() => {
+    db.exec("DROP TRIGGER IF EXISTS refuse_voice_filing");
+    reviews.resolve(question.id, "dismiss", null);
+  });
+  const firstPoll = reviews.wait(question.id, 5000, undefined, true);
+  await say("Will, inspect the build", "retry-filing");
+  await act("retry-filing", "send-now");
+  assert.deepEqual(queued("Will"), ["inspect the build"]);
+  assert.equal(cards.at(-1)?.state, "held");
+  assert.equal((await readHeard())[0]?.outcome, "held");
+  t.mock.timers.tick(5000);
+  assert.equal((await firstPoll)?.converted, undefined);
+  db.exec("DROP TRIGGER refuse_voice_filing");
+  assert.ok((await reviews.wait(question.id, 5000, undefined, true))?.converted);
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  assert.equal(cards.at(-1)?.state, "sent");
+  assert.equal((await readHeard())[0]?.outcome, "sent");
 });
 
 test("recalling held speech removes the reason to file an ask on its next poll", async () => {

@@ -9412,17 +9412,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
-      const result = pendingTurns.submitSpoken(session.id, text, utteranceId, turnId => {
-        onQueued?.(turnId);
-        // The words are durable, and the outbox has yet to schedule its drain. Replaying an
-        // existing turn must not file a question that opened after the operator spoke.
-        if (session.pendingTurns.some(existing => existing.id === turnId)) return;
-        for (const review of registry.pendingReviews(session.id)) {
-          if (review.waitMode !== "message") reviews.convertToFiled(review.id);
-        }
-      });
+      const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
       const turn = result.pendingTurn;
       if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
+      for (const review of registry.pendingReviews(session.id)) {
+        if (review.waitMode !== "message") reviews.tryFileForQueuedSpeech(review.id, turn.noteKey);
+      }
       const held = registry.hasPendingReviewCall(session.id) || registry.getSession(session.id)?.state === "awaiting_review";
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },

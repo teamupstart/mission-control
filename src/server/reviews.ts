@@ -887,15 +887,28 @@ export class ReviewManager {
     this.registry.recordRetroHumanReview(review.sessionId);
   }
 
+  /** Enqueue and every compatible long-poll recheck the durable association. A transient
+   * filing failure leaves the accepted speech in its outbox and the call available to retry. */
+  tryFileForQueuedSpeech(reviewId: string, noteKey: string): void {
+    try {
+      if (hasQueuedSpeechForReview(reviewId, noteKey)) this.convertToFiled(reviewId);
+    } catch (error) {
+      console.warn(`[reviews] could not file ${reviewId} for queued speech; retrying on the next compatible poll:`, error);
+    }
+  }
+
   /** Voice converts a call only with every current waiter's consent. From then on all filed-ask rules apply. */
   convertToFiled(reviewId: string): boolean {
     const waiters = this.waiters.get(reviewId);
     if (!waiters?.size || [...waiters].some(waiter => !waiter.convertible)) return false;
-    const filed = fileReviewByVoice(reviewId, Date.now());
-    if (!filed) return false;
+    const result = inTransaction(() => {
+      const filed = fileReviewByVoice(reviewId, Date.now());
+      return filed && { filed, response: convertedResponse(filed) };
+    });
+    if (!result) return false;
     // Remove the calls before publishing: synchronous registry listeners may settle the filed ask.
-    this.releaseWaiters(convertedResponse(filed));
-    this.registry.upsertReview(filed);
+    this.releaseWaiters(result.response);
+    this.registry.upsertReview(result.filed);
     return true;
   }
 
@@ -946,7 +959,7 @@ export class ReviewManager {
         this.attachCall(current);
       } else if (convertible && featureEnabled("voice")) {
         const session = this.registry.getSession(current.sessionId);
-        if (session && hasQueuedSpeechForReview(id, noteKeyFor(session))) this.convertToFiled(id);
+        if (session) this.tryFileForQueuedSpeech(id, noteKeyFor(session));
       }
     });
   }

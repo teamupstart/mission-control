@@ -23944,16 +23944,28 @@ button.wf-carried.is-link:focus-visible {
   border-radius: 6px;
 }
 .agent-environment-settings h4 { margin: 0; }
-.agent-environment-settings .si-textarea { display: block; margin-top: 5px; }
-.agent-environment-settings ul { padding: 0; margin: 10px 0 0; list-style: none; }
-.agent-environment-settings li {
+.agent-environment-entry {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 4px 0;
+  gap: 8px;
+  margin-top: 5px;
+}
+.agent-environment-entry input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.agent-environment-settings ul { padding: 0; margin: 12px 0 0; list-style: none; }
+.agent-environment-settings li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(15ch, auto) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
 }
+.agent-environment-settings li code { justify-self: start; color: var(--fg); overflow-wrap: anywhere; }
 .harnesses-row .kb-row-label {
   display: flex;
   align-items: center;

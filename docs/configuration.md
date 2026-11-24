@@ -533,8 +533,9 @@ recomputation, grace periods, and the destructive cleanup boundary.
 
 ## Agent environment
 
-Enable **Agent environment** in Settings > Feature flags. In Settings > Harnesses, enter one
-variable name per line and save. For example, a repository can reference `MY_TOKEN` in a
+Enable **Agent environment** in Settings > Feature flags. In Settings > Harnesses, find **Agent environment** below
+the per-harness model and effort controls. Enter a name and select **Add variable**. Each addition
+is saved immediately. Select **Delete** beside a name to remove it from future launches. For example, a repository can reference `MY_TOKEN` in a
 Claude MCP header or as a Codex `bearer_token_env_var`.
 
 Each managed launch or managed resume reads the listed names from the daemon, then probes the

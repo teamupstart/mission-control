@@ -624,7 +624,6 @@ export function HarnessesPanel({
       </p>
 
       {error && <p className="settings-error">{error}</p>}
-      {environmentOn && <AgentEnvironmentSettings />}
 
       <div className="kb-row harnesses-row" data-anchor="harnesses/auto-mode">
         <div className="kb-row-text">
@@ -705,6 +704,7 @@ export function HarnessesPanel({
         changing the default. The advisor is not a per-task choice: a dispatched session
         gets the one set here for the model it launches on.
       </p>
+      {environmentOn && <AgentEnvironmentSettings />}
     </section>
   );
 }

@@ -1861,6 +1861,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       transcript_offset INTEGER,
       contested         INTEGER NOT NULL,
       message_id        TEXT,
+      discarded_at      INTEGER,
       message_ts        INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_workflow_delivery_turns_key ON workflow_delivery_turns(note_key);
@@ -4049,6 +4050,8 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_runs", "publication_handoff_generation", "INTEGER");
+  addColumn(d, "workflow_delivery_turns", "discarded_at", "INTEGER");
+  d.exec("CREATE INDEX IF NOT EXISTS idx_workflow_discarded_turns ON workflow_delivery_turns(discarded_at) WHERE discarded_at IS NOT NULL");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
   d.exec(`
     CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution

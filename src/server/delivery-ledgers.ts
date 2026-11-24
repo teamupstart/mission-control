@@ -77,14 +77,14 @@ export const delegatedLedger = new DeliveryLedger<DelegatedTurnRow>({
 type WorkflowDeliveryTurn = BindableDelivery & { deliveryId: string; transcriptPath: string | null };
 export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
   label: "a workflow packet",
-  acceptsTranscript: (row, transcript) => row.transcriptPath === transcript.path,
+  acceptsTranscript: (row, transcript) => row.transcriptPath === null || row.transcriptPath === transcript.path,
   requireExactFingerprint: true,
   maxCachedConversations: 200,
   load: key => {
     const rows = openDb().prepare(
       `SELECT id, delivery_id AS deliveryId, transcript_path AS transcriptPath, note_key AS noteKey, fingerprint, delivered_at AS deliveredAt,
               transcript_offset AS transcriptOffset, contested, message_id AS messageId, message_ts AS messageTs
-         FROM workflow_delivery_turns WHERE note_key = ? ORDER BY rowid`,
+         FROM workflow_delivery_turns WHERE note_key = ? AND discarded_at IS NULL ORDER BY rowid`,
     ).all(key) as unknown as (Omit<WorkflowDeliveryTurn, "contested"> & { contested: number })[];
     return rows.map(row => ({ ...row, contested: Boolean(row.contested) }));
   },
@@ -101,10 +101,38 @@ export const workflowDeliveryLedger = new DeliveryLedger<WorkflowDeliveryTurn>({
       .run(Number(contested), id);
   },
   bind: (row, id, ts) => Boolean(openDb().prepare(
-    "UPDATE workflow_delivery_turns SET message_id = ?, message_ts = ? WHERE id = ? AND message_id IS NULL",
+    "UPDATE workflow_delivery_turns SET message_id = ?, message_ts = ? WHERE id = ? AND message_id IS NULL AND discarded_at IS NULL",
   ).run(id, ts, row.id).changes),
   sender: () => "workflow",
 });
+
+let checkDiscardedWorkflowReceipts = true;
+
+/** The delivery transition already made this receipt ineligible, even if deleting it fails. */
+export function noteDiscardedWorkflowReceipt(noteKey: string): void {
+  workflowDeliveryLedger.forgetConversation(noteKey);
+  checkDiscardedWorkflowReceipts = true;
+}
+
+function cleanDiscardedWorkflowReceipts(): void {
+  if (!checkDiscardedWorkflowReceipts || openDb().isTransaction) return;
+  checkDiscardedWorkflowReceipts = false;
+  try {
+    inTransaction(() => {
+      const rows = openDb().prepare(
+        "DELETE FROM workflow_delivery_turns WHERE discarded_at IS NOT NULL RETURNING note_key AS noteKey, fingerprint",
+      ).all() as { noteKey: string; fingerprint: string }[];
+      for (const row of rows) {
+        workflowDeliveryLedger.forgetConversation(row.noteKey);
+        workflowDeliveryLedger.reconsider(row.noteKey, row.fingerprint);
+      }
+    });
+  } catch {
+    // Retry on the next ledger read. A rolled-back reconsideration cannot survive in cache.
+    forgetDeliveryBindingState();
+    checkDiscardedWorkflowReceipts = true;
+  }
+}
 
 const reviewForgetHooks: Array<() => void> = [];
 
@@ -464,6 +492,7 @@ export async function pruneExpiredSpokenTurns(now: number, transcriptsFor: (key:
 }
 
 registerDeliveryLedgers([delegatedLedger, reviewLedger, spokenLedger, workflowDeliveryLedger], () => {
+  cleanDiscardedWorkflowReceipts();
   try {
     processSpokenReleases(rows => {
       for (const { noteKey, fingerprint } of rows) {

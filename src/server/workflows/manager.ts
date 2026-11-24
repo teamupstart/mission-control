@@ -138,7 +138,7 @@ import {
   releaseInjection,
   reserveInjection,
 } from "../injections.ts";
-import { workflowDeliveryLedger } from "../delivery-ledgers.ts";
+import { noteDiscardedWorkflowReceipt, workflowDeliveryLedger } from "../delivery-ledgers.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -3931,7 +3931,16 @@ export class WorkflowManager {
     // independently, then revalidate ownership before spending the shared generation.
     const primaryCheckout = workflowCheckoutPath(anchor, session);
     const probes = targets.flatMap(target => this.publicationComparison(target, session, claim) ?? []);
-    const comparisons = probes.length ? await Promise.all(probes) : [];
+    const comparisons = probes.length ? await Promise.all(probes.map(async probe => ({
+      bindingId: probe.bindingId, runId: probe.runId, unchanged: await probe.matches(),
+    }))) : [];
+    // A fast checkout may change while a slower sibling is being read. Verify each
+    // proposed reuse against the accepted evidence once all initial probes have settled.
+    if (probes.length > 1) {
+      await Promise.all(comparisons.map(async (comparison, index) => {
+        if (comparison.unchanged) comparison.unchanged = await probes[index]!.matches();
+      }));
+    }
     if (probes.length) {
       session = this.currentCompletionSession(sessionId, claim);
       if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
@@ -4039,7 +4048,7 @@ export class WorkflowManager {
     binding: WorkflowBinding,
     session: Session,
     claim: WorkflowCompletionClaim,
-  ): Promise<{ bindingId: string; runId: string; unchanged: boolean }> | null {
+  ): { bindingId: string; runId: string; matches: () => Promise<boolean> } | null {
     if (claim.completionKind !== "prompted" || !claim.expectedIntent || !claim.expectedWorkCycle) return null;
     const run = this.store.latestRunForBinding(binding.id);
     const source = run?.intent?.intentSource;
@@ -4048,24 +4057,27 @@ export class WorkflowManager {
       || source.promptRevision !== claim.expectedIntent.promptRevision
       || source.resolvedPromptRevision !== source.promptRevision) return null;
 
-    if (!this.store.publicationHandoffDue(run.id, claim.expectedWorkCycle.generation)) return null;
+    const acceptedTree = this.store.publicationHandoffTree(run.id, claim.expectedWorkCycle.generation);
+    if (!acceptedTree) return null;
     const submission = this.store.latestSubmission(run.id);
     if (submission?.status !== "completed") return null;
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success || context.data.session.cwd !== workflowCheckoutPath(binding, session)) return null;
     const evidence = context.data.evidence;
-    if (!evidence.headSha || !evidence.contentTreeOid) return null;
+    if (!evidence.headSha || !evidence.contentTreeOid || workflowPublicationTree(evidence) !== acceptedTree) return null;
     const publication = evidence.publication;
     const unpublished = publication
       ? publication.unpublishedPaths.length > 0 || publication.pathsTruncated || Boolean(publication.artifactProblems?.length)
       : evidence.workingTreeDirty;
     if (unpublished) return null;
     // Missing repository proof cannot retire a new review opportunity.
-    const ownership = { bindingId: binding.id, runId: run.id };
-    return this.probeRepository(binding, submission).then(
-      probe => ({ ...ownership, unchanged: Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence) }),
-      () => ({ ...ownership, unchanged: false }),
-    );
+    return {
+      bindingId: binding.id, runId: run.id,
+      matches: () => this.probeRepository(binding, submission).then(
+        probe => Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence),
+        () => false,
+      ),
+    };
   }
 
   /**
@@ -7065,31 +7077,20 @@ export class WorkflowManager {
         // authorship on file, and the cost of being wrong that way is one suppressed retype.
         // Only a reservation this send made: a refused one recorded nothing, and releasing would
         // give back an earlier reservation of the same text.
-        if (receipt) workflowDeliveryLedger.release(sending.noteKey, receipt.id);
+        const requeue = result.error === "inspector_feedback_superseded" || result.error === PAUSED_SESSION_REASON;
+        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
+        const refused = this.store.finishDeliverySend(sending.id, requeue ? "prepared" : "refused",
+          requeue ? null : reason, Date.now(), receipt?.id);
+        if (receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
         if (result.pasted === false && attributionRefused === null) releaseInjection(session.id, sending.payload);
-        if (result.error === "inspector_feedback_superseded") {
-          if (this.store.getDelivery(sending.id)?.state === "sending") {
-            this.store.setDeliveryState(sending.id, "prepared", null);
-          }
-          this.publishRun(sending.runId);
-          return;
-        }
-        // The operator paused the session while this packet was on its way: the guard refused
-        // for the pause, not for anything wrong with the packet. Held exactly as the check at
-        // the top holds one - back to `prepared`, the run left as it is, offered again when the
-        // pause lifts - never refused with the run blocked.
-        if (result.error === PAUSED_SESSION_REASON) {
-          if (this.store.getDelivery(sending.id)?.state === "sending") {
-            this.store.setDeliveryState(sending.id, "prepared", null);
+        if (requeue) {
+          if (refused && result.error === PAUSED_SESSION_REASON) {
             this.pausedDeliveries.add(sending.id);
-            // Lifted while the write was in flight: the resume that would offer it has passed.
             if (!this.registry.getSession(sending.sessionId)?.pause) this.offerResumedDeliveries(sending.sessionId);
           }
           this.publishRun(sending.runId);
           return;
         }
-        const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
-        const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;
         this.store.setRunState(
           sending.runId,

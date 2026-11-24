@@ -240,9 +240,9 @@ export function registerDeliveryLedgers(list: ReadonlyArray<DeliveryLedger<any>>
 }
 
 /** One conversation's unbound rows of these words, in every ledger, with who they credit. */
-function openRows(noteKey: string, fingerprint: string): Array<{ ledger: DeliveryLedger<BindableDelivery>; row: BindableDelivery }> {
+function openRows(noteKey: string, fingerprint: string, transcript?: SessionMessages | null): Array<{ ledger: DeliveryLedger<BindableDelivery>; row: BindableDelivery }> {
   return ledgers.flatMap((ledger) => ledger.rows(noteKey)
-    .filter((row) => row.fingerprint === fingerprint && row.messageId === null)
+    .filter((row) => row.fingerprint === fingerprint && row.messageId === null && ledger.acceptsTranscript(row, transcript))
     .map((row) => ({ ledger, row })));
 }
 
@@ -515,7 +515,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // words race as two controllers do.
     bindAll(conversation, now);
     const sender = this.senderKey(row);
-    const rivals = openRows(conversation.key, fingerprint).filter(({ ledger, row: other }) =>
+    const rivals = openRows(conversation.key, fingerprint, conversation.transcript).filter(({ ledger, row: other }) =>
       ledger.senderKey(other) !== sender && !ledger.isExpired(other.id) && now - other.deliveredAt <= DELIVERY_LAG_MS);
     if (rivals.length) {
       row.contested = true;
@@ -536,10 +536,15 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     if (released) this.reconsider(noteKey, released.fingerprint);
   }
 
+  acceptsTranscript(row: Row, transcript?: SessionMessages | null): boolean {
+    return !transcript || !this.store.acceptsTranscript || this.store.acceptsTranscript(row, transcript);
+  }
+
   /** Contest this conversation's unbound rows of these words, once what has landed is bound. */
   contestRacing(conversation: DeliveryConversation, fingerprint: string, now: number): void {
     const rows = this.rows(conversation.key);
-    const racing = () => rows.filter((row) => row.fingerprint === fingerprint && row.messageId === null && !row.contested);
+    const racing = () => rows.filter((row) => row.fingerprint === fingerprint && row.messageId === null && !row.contested
+      && this.acceptsTranscript(row, conversation.transcript));
     if (!racing().length) return;
     bindAll(conversation, now);
     for (const row of racing()) this.contest(row);
@@ -592,7 +597,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       }
     }
     const pending = rows.filter(row => row.messageId === null && !row.contested &&
-      (!this.store.acceptsTranscript || this.store.acceptsTranscript(row, transcript)) &&
+      this.acceptsTranscript(row, transcript) &&
       (row.transcriptOffset !== null || this.store.newTranscriptAfter) && (!this.store.textBoundary || !options.candidate || options.candidate(row)) &&
       (options.pagedRow === undefined || row.id === options.pagedRow));
     return !pending.length || this.bindPending(pending, transcript, now, options.strict ?? false, options.pagedRow !== undefined, version, options.beforeBind);
@@ -707,7 +712,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     if (!reconciled) bindAll(conversation, now);
     // A contested delivery's turn may already be among the matches below, and nothing says
     // which one it is, so no landed turn can be credited to the other sends: still in flight.
-    if (openRows(conversation.key, fingerprint).some(({ row }) => row.contested || row.transcriptOffset === null)) return true;
+    if (openRows(conversation.key, fingerprint, conversation.transcript).some(({ row }) => row.contested || row.transcriptOffset === null)) return true;
     const claimed = claimedTurns(conversation.key);
     if (sends.some(send => send.spokenBoundary)) return settledSendInFlight(transcript, fingerprint, sends, claimed);
     let from = Math.min(...sends.map((send) => send.offset!));
@@ -984,7 +989,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
       const key = turnKey(fingerprint, m.ts);
       const entry = key ? keyed.get(key) : undefined;
       const row = entry && entry.turns === 1 && entry.rows.length === 1 ? entry.rows[0]! : null;
-      if (row && conversation.transcript && (!this.store.acceptsTranscript || this.store.acceptsTranscript(row, conversation.transcript))
+      if (row && conversation.transcript && this.acceptsTranscript(row, conversation.transcript)
         && (this.store.textBoundary && conversation.preparedSpokenFallbacks
         ? conversation.preparedSpokenFallbacks.has(row.id) : this.uniqueAtTimestamp(row, conversation.transcript))
           && this.boundTextIntact(row, conversation.transcript)) result.rows.set(m.id, row);

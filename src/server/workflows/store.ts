@@ -5276,9 +5276,10 @@ export class WorkflowStore {
   }
 
   /** The action and its accepted continuation are durable even when the author finishes later. */
-  publicationHandoffDue(runId: string, generation: number): boolean {
-    return !!this.db.prepare(
-      `SELECT 1 FROM workflow_submissions child
+  publicationHandoffTree(runId: string, generation: number): string | null {
+    const row = this.db.prepare(
+      `SELECT json_extract(action.output_json, '$.expectation.acceptedContentTreeOid') AS tree
+         FROM workflow_submissions child
         JOIN workflow_node_attempts action ON action.id = child.continuation_node_attempt_id
         JOIN workflow_runs r ON r.id = child.run_id
         WHERE r.id = ? AND ${publicationHandoffDueSql} AND action.submission_id = child.parent_submission_id
@@ -5286,8 +5287,9 @@ export class WorkflowStore {
           AND json_extract(action.session_action_snapshot_json, '$.completion.kind') = 'pull_request'
           AND json_extract(action.output_json, '$.expectation.kind') = 'pull_request'
           AND json_extract(action.output_json, '$.continuationSubmissionId') = child.id
-        LIMIT 1`,
+        ORDER BY child.round DESC, child.segment DESC LIMIT 1`,
     ).get(runId, generation);
+    return typeof row?.tree === "string" ? row.tree : null;
   }
 
   latestRunForBinding(bindingId: string): WorkflowRun | null {
@@ -9449,11 +9451,16 @@ export class WorkflowStore {
 
   finishDeliverySend(
     id: string,
-    state: Extract<WorkflowDelivery["state"], "refused" | "uncertain">,
+    state: Extract<WorkflowDelivery["state"], "prepared" | "refused" | "uncertain">,
     error: string | null,
     now = Date.now(),
+    unsentReceiptId?: string,
   ): WorkflowDelivery | null {
     return this.mutate(() => {
+      if (unsentReceiptId) {
+        this.db.prepare("UPDATE workflow_delivery_turns SET discarded_at = ? WHERE id = ? AND delivery_id = ?")
+          .run(now, unsentReceiptId, id);
+      }
       const result = this.db.prepare(
         `UPDATE workflow_deliveries
             SET state = ?, error = ?, updated_at = ?

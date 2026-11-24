@@ -507,7 +507,7 @@ function deliveredWorkflowTurnIdentities(
 ): WorkflowTranscriptTurnIdentity[] {
   const identities: WorkflowTranscriptTurnIdentity[] = [];
   for (const delivery of deliveries) {
-    if (delivery.receiptId || !delivery.payload.trim()) continue;
+    if ((delivery.receiptId && delivery.beforeSend) || !delivery.payload.trim()) continue;
     const payloadFingerprint = injectionFingerprint(delivery.payload);
     // Before native turn receipts, verified writes recorded a starting or ending byte offset.
     const match = delivery.beforeSend

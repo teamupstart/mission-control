@@ -1,4 +1,4 @@
-import { OpenCardsSchema, VOICE_FOCUS_TIME_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
+import { OpenCardsSchema, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
 import { z } from "zod";
 import { VoiceUtteranceSchema, type VoiceCard } from "@shared/voice-routing.ts";
@@ -137,6 +137,7 @@ export function registerVoiceRoutes(
     c.header("Cache-Control", "no-store");
     if (c.req.method === "HEAD") {
       c.header("X-Voice-Server-Time-Ms", String(Date.now()));
+      c.header(VOICE_MONOTONIC_TIME_HEADER, String(performance.now()));
       return c.body(null);
     }
     return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
@@ -312,7 +313,12 @@ export function registerVoiceUtteranceRoutes(
     if (version !== undefined && (!/^\d+$/.test(version) || !Number.isSafeInteger(revision))) {
       return c.json({ error: "Invalid report revision." }, 400);
     }
-    const ok = router.openCards.report(parsed.data, focusAtUs, revision, c.req.query("withdraw") === "1");
+    const observed = c.req.header(VOICE_CARDS_OBSERVED_HEADER);
+    const observedAt = observed === undefined ? undefined : Number(observed);
+    if (observed !== undefined && (!/^\d+$/.test(observed) || !Number.isSafeInteger(observedAt))) {
+      return c.json({ error: "Invalid card observation time." }, 400);
+    }
+    const ok = router.openCards.report(parsed.data, focusAtUs, revision, c.req.query("withdraw") === "1", observedAt);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/voice/utterances", gate, limitBody, async (c) => {

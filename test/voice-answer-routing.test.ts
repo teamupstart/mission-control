@@ -575,3 +575,30 @@ test("a slow match cannot revive a cancelled newer answer or take a different qu
   assert.equal(registry.getReview(q.id)?.status, "pending");
   assert.equal(registry.getReview(other.id)?.status, "answered");
 });
+
+test("a prefilled question pick is acknowledged while its match is pending", async t => {
+  const q = question();
+  question("Which cache?");
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const matcher = t.mock.method(model, "decide", async () => {
+    await waiting;
+    return { rung: "job", answers: [{ choice: "postgres", confidence: 1 }], detail: "matched" };
+  });
+  await say("Steve, answer: the existing service", "picker");
+  const pick = act("picker", "pick", { id: q.id });
+  try {
+    const ack = await Promise.race([pick, new Promise<void>(resolve => setImmediate(resolve))]);
+    assert.equal(matcher.mock.callCount(), 1);
+    assert.equal(ack?.status, 200);
+    assert.deepEqual(answers(), []);
+    assert.equal((await act("picker", "pick", { id: q.id })).status, 409);
+  } finally {
+    release();
+    await pick;
+    await registry.voiceRouter!.resolution("picker");
+  }
+  assert.equal(answers()[0]?.reviewId, q.id);
+  assert.equal(answers()[0]?.text, "Postgres");
+  assert.equal(cards.at(-1)?.reason, "voice-answer");
+});

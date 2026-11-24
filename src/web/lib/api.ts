@@ -521,10 +521,10 @@ function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) 
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
 /** A card with an uncertain countdown only needs the daemon clock. Voice settings stay lazy. */
-export async function fetchVoiceCardTime(signal: AbortSignal): Promise<number | null> {
+export async function fetchVoiceCardTime(signal: AbortSignal, header = "X-Voice-Server-Time-Ms"): Promise<number | null> {
   try {
     const res = await fetch("/api/voice/config", { method: "HEAD", signal, cache: "no-store" });
-    const stamp = res.headers.get("X-Voice-Server-Time-Ms");
+    const stamp = res.headers.get(header);
     return res.ok && stamp && Number.isFinite(Number(stamp)) ? Number(stamp) : null;
   } catch {
     return null;

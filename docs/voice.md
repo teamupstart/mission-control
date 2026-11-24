@@ -1036,6 +1036,10 @@ Disabling the cancel window submits a matched answer immediately.
 The daemon keeps pending answers in memory, includes them in reconnect snapshots, and
 publishes changes with `voice_answer`. The focused dashboard reports its drawn question
 cards to `PUT /api/voice/open-cards`. A focus timestamp in the request header orders reports
-across windows. If two windows claim focus at the same instant, an unaddressed reply cannot answer either
+across windows. The dashboard also reports when the question became eligible on the daemon's
+monotonic clock, so a delayed report can still accept speech captured while the card was visible.
+Without a clock sample, the daemon uses report receipt time. Choosing a question in the picker
+acknowledges the choice immediately and publishes the matched answer when it is ready.
+If two windows claim focus at the same instant, an unaddressed reply cannot answer either
 question. Turning voice back on refreshes the report, even when the dashboard shows no questions.
 A disconnected stream's report expires after ten seconds.

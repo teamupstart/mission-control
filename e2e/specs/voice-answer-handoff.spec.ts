@@ -70,6 +70,59 @@ test("a stalled card report cannot block a newer report after the question close
   }
 });
 
+test("a delayed report accepts a reply captured after the question appeared", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const id = await file(page, daemon, steve.cwd, "Which benchmark?");
+  const beforeOpen = Date.now();
+  const observed = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const delivered = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().cards.some((c: { id: string }) => c.id === id));
+  await page.route("**/api/voice/open-cards", async route => {
+    if (route.request().postDataJSON().cards.length) {
+      observed.resolve();
+      await release.promise;
+    }
+    await route.continue();
+  });
+  try {
+    await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+    const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+    await expectContentClearsBorder(inbox);
+    await observed.promise;
+    const afterOpen = Date.now();
+    await expect.poll(() => Date.now()).toBeGreaterThan(afterOpen + 15);
+    release.resolve();
+    await delivered;
+    await say(daemon, "reply, too early", { capturedAt: beforeOpen });
+    await expect(inbox.getByRole("textbox")).toBeEmpty();
+    await say(daemon, "reply, tomorrow", { capturedAt: afterOpen });
+    await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
+    await inbox.getByRole("button", { name: "Cancel", exact: true }).click();
+  } finally {
+    release.resolve();
+  }
+});
+
+test("a prefilled picker choice is acknowledged and its answer appears in the companion", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const first = await file(page, daemon, steve.cwd, "When should the build start?");
+  const second = await file(page, daemon, steve.cwd, "Which benchmark?");
+  await say(daemon, "Steve, answer: tomorrow");
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  const ack = page.waitForResponse(r => r.url().endsWith("/pick"));
+  await picker.getByRole("button", { name: /When should the build start/ }).click();
+  expect((await ack).status()).toBe(200);
+  await expect(picker).toHaveCount(0);
+  const companion = page.getByRole("status").filter({ hasText: "When should the build start?" });
+  await expect(companion).toContainText("tomorrow");
+  await companion.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + first)).json()).response).toBe("tomorrow");
+  expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + second)).json()).status).toBe("pending");
+});
+
 test("a companion identifies its destination and hands its calibrated countdown to the owning footer", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 30);
   const steve = await runningAgent(page, daemon, "Steve");

@@ -1,5 +1,5 @@
 import type { OpenCardsReport, VoiceAnswer } from "@shared/voice-answers.ts";
-import { optionLetter, voiceFocusClockSkewMs } from "@shared/voice-answers.ts";
+import { optionLetter, voiceFocusClockSkewMs, voiceReplyState } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceDecider } from "./decide.ts";
@@ -14,12 +14,13 @@ export interface VoiceQuestions {
 
 /** Reports belong to a dashboard stream. A reconnect has ten seconds to reclaim its report. */
 export class VoiceOpenCards {
-  private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number }>();
+  private readonly streams = new Map<string, { floorUs: number; clockOffsetUs: number; connectedAt: number }>();
   private clockSkewMs = 0;
   private changedAt = 0;
+  private observedAt?: number;
   private replyState?: string;
   private latestFocusUs = 0;
-  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number }>();
+  private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number; observedAt?: number }>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -28,7 +29,7 @@ export class VoiceOpenCards {
     // Freeze the causal lower bound here so HTTP arrival order cannot move it.
     const previous = this.reports.get(windowId);
     this.clockSkewMs = voiceFocusClockSkewMs(this.clockSkewMs);
-    const token = { floorUs: this.latestFocusUs, clockOffsetUs: previous?.clockOffsetUs ?? this.clockSkewMs * 1000 };
+    const token = { floorUs: this.latestFocusUs, clockOffsetUs: previous?.clockOffsetUs ?? this.clockSkewMs * 1000, connectedAt: performance.now() };
     this.streams.set(windowId, token);
     if (previous) this.reportChanged();
     return () => {
@@ -43,7 +44,7 @@ export class VoiceOpenCards {
     };
   }
 
-  report(report: OpenCardsReport, observedAtUs?: number, revision = 0, withdraw = false): boolean {
+  report(report: OpenCardsReport, observedAtUs?: number, revision = 0, withdraw = false, cardsObservedAt?: number): boolean {
     const stream = this.streams.get(report.windowId);
     if (!stream) return false;
     // A new stream cannot have observed focus before it existed. Keep later reports
@@ -58,21 +59,19 @@ export class VoiceOpenCards {
     if (last && (focusAtUs < last.focusAtUs || (focusAtUs === last.focusAtUs && revision < last.revision))) return true;
     // A standalone surface keeps its stream but ceases to be a dashboard. Retain
     // the order of its withdrawal so an in-flight report cannot resurrect its footer.
-    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs });
+    this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs, observedAt: cardsObservedAt });
     if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
-    this.reportChanged();
+    const observedAt = this.current === report && cardsObservedAt !== undefined
+      ? Math.max(stream.connectedAt, Math.min(cardsObservedAt, performance.now())) : undefined;
+    this.reportChanged(observedAt, last?.observedAt !== undefined && cardsObservedAt !== last.observedAt);
     return true;
   }
 
-  private reportChanged(): void {
-    const current = this.current;
-    // Report retries and DOM reordering leave the same questions eligible for a reply.
-    // With one drawn question, keyboard focus within the card is immaterial.
-    const state = current?.cards.length ? JSON.stringify([current.windowId, current.cards
-      .toSorted((a, b) => a.id.localeCompare(b.id))
-      .map(card => [card.id, current.cards.length > 1 && card.focused])]) : undefined;
-    if (state !== this.replyState) {
+  private reportChanged(observedAt?: number, observedAgain = false): void {
+    const state = voiceReplyState(this.current);
+    if (state !== this.replyState || (observedAt !== undefined && observedAgain)) {
       this.replyState = state;
+      this.observedAt = observedAt;
       this.changedAt = Date.now();
     }
     this.changed();
@@ -102,8 +101,8 @@ export class VoiceOpenCards {
     return current?.cards.some(card => card.id === reviewId) ? current.windowId : undefined;
   }
 
-  target(questions: ReviewItem[], capturedAt = Infinity): ReviewItem | undefined {
-    if (capturedAt < this.changedAt) return undefined;
+  target(questions: ReviewItem[], capturedAt = Infinity, monotonicCapture = performance.now() + (capturedAt - Date.now())): ReviewItem | undefined {
+    if (this.observedAt === undefined ? capturedAt < this.changedAt : monotonicCapture < this.observedAt) return undefined;
     const cards = this.current?.cards ?? [];
     const open = questions.filter(q => cards.some(c => c.id === q.id));
     const focused = open.filter(q => cards.some(c => c.id === q.id && c.focused));

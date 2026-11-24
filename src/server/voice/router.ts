@@ -422,7 +422,7 @@ export class VoiceRouter {
     const target = addressed?.target ?? null;
     const pending = this.questions!.pending().filter(q => q.createdAt <= time.openedAt && (!target || q.sessionId === target.sessionId))
       .sort((a, b) => a.createdAt - b.createdAt);
-    const open = this.openCards.target(pending, time.openedAt);
+    const open = this.questionAtCapture(pending, time);
     const body = (reply?.[1] ?? addressed!.text).trim();
     if (!body) return false;
     const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
@@ -451,6 +451,11 @@ export class VoiceRouter {
     const review = open ?? (explicit && pending.length === 1 ? pending[0] : undefined);
     if (!review) return false;
     return this.prepareQuestionReply(item, review, content, choiceCommand, open).then(() => true);
+  }
+
+  private questionAtCapture(pending: ReviewItem[], time: ActionTime) {
+    const monotonic = time.openedAtHostUs === undefined ? undefined : performance.now() + (time.openedAtHostUs - this.hostNowUs()) / 1000;
+    return this.openCards.target(pending, time.openedAt, monotonic);
   }
 
   private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
@@ -619,7 +624,11 @@ export class VoiceRouter {
         card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts,
           ...(resolved.reason === "mention" && decision.reason === "second-name" && { mentions: decision.candidates.filter(t => t.key !== resolved.parts[0]?.target?.key) }) } });
     };
-    const done = settle().finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
+    this.trackResolution(id, settle());
+  }
+
+  private trackResolution(id: string, work: Promise<void>): void {
+    const done = work.finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
     this.resolutions.set(id, done);
   }
 
@@ -726,9 +735,15 @@ export class VoiceRouter {
       delete item.questionPick;
       if (!review) this.questionNotice(item, "That question is already settled.");
       else if (words) {
-        this.publish({ ...item.card, state: "cancelled", deadline: null });
+        this.questions!.removeCompanion(id);
         item.time = time ?? this.now();
-        await this.prepareQuestionReply(item, review, words, choiceCommand, this.openCards.target(pending, item.time.openedAt));
+        const work = this.prepareQuestionReply(item, review, words, choiceCommand, this.questionAtCapture(pending, item.time))
+          .catch(() => {
+            if (this.open.get(id) !== item) return;
+            this.take(item);
+            this.questionNotice(item, "Could not match an option. Try again.");
+          });
+        this.trackResolution(id, work);
       } else if (dashboard) {
         this.questions!.open(dashboard, review);
         this.questionNotice(item, "Opened question.");

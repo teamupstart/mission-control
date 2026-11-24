@@ -9,7 +9,12 @@ import type {
   ReviewStatus,
 } from "@shared/types.ts";
 import { isHumanResolvedReview, deliversContinuation, reviewToolResult } from "@shared/review-item.ts";
-import { ASYNC_INPUT_FLAG, asyncInputAnswer, filedPlanAnswer, isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion, withdrawnByItsAgent } from "@shared/async-input.ts";
+import {
+  ASYNC_INPUT_FLAG, asyncInputAnswer, asyncInputReceipt, filedPlanAnswer, filedPlanReceipt,
+  isAgentAsk, isFiledGate, isRequestInputQuestion, MAX_OPEN_QUESTIONS, questionHoldsCompletion,
+  type ReviewWaitResponse, withdrawnByItsAgent,
+} from "@shared/async-input.ts";
+import { isStandingFollowUp } from "./plans/publication.ts";
 import { restoreRequestInputText } from "@shared/request-input.ts";
 import {
   snoozeMeanwhileProblem,
@@ -19,6 +24,8 @@ import {
 } from "@shared/review-snooze.ts";
 import type { Registry } from "./registry.ts";
 import {
+  blockReviewVoiceConversion,
+  fileReviewByVoice,
   inTransaction,
   insertReview,
   loadReview,
@@ -59,7 +66,18 @@ export const PARALLEL_ASK_WINDOW_MS = 30_000;
 
 export type ReviewAction = "approve" | "reject" | "answer" | "dismiss";
 
-type Waiter = (r: ReviewItem) => void;
+type Waiter = { convertible: boolean; finish: (r: ReviewWaitResponse) => void };
+
+export function filedReviewReceipt(review: ReviewItem): string {
+  return isFiledGate(review)
+    ? filedPlanReceipt(review, { bundleApproved: isStandingFollowUp(review.id) })
+    : asyncInputReceipt(review);
+}
+
+function convertedResponse(review: ReviewItem): ReviewWaitResponse {
+  return { ...review, converted: { receipt: filedReviewReceipt(review) } };
+}
+
 /**
  * Which review message is being handed to the outbox: a human resolution that arrived after the
  * agent's wait ended, or a snoozed question's "carry on" instruction that the agent never got
@@ -570,7 +588,7 @@ export class ReviewManager {
    */
   private attachCall(review: ReviewItem): ReviewItem {
     if (!markReviewWaitAttached(review.id)) return review;
-    const { waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
+    const { filedByVoiceAt: _voice, waitMode: _filed, meanwhile: _carryingOn, ...call } = review;
     this.registry.upsertReview(call);
     return call;
   }
@@ -862,33 +880,50 @@ export class ReviewManager {
     this.registry.recordRetroHumanReview(review.sessionId);
   }
 
+  /** Voice converts a call only with every current waiter's consent. From then on all filed-ask rules apply. */
+  convertToFiled(reviewId: string): boolean {
+    const waiters = this.waiters.get(reviewId);
+    if (!waiters?.size || [...waiters].some(waiter => !waiter.convertible)) return false;
+    const filed = fileReviewByVoice(reviewId, Date.now());
+    if (!filed) return false;
+    // Remove the calls before publishing: synchronous registry listeners may settle the filed ask.
+    this.releaseWaiters(convertedResponse(filed));
+    this.registry.upsertReview(filed);
+    return true;
+  }
+
   /**
    * Resolve immediately if already decided; otherwise wait up to `timeoutMs`.
    * On timeout returns the still-pending item so the caller can long-poll again.
    * Returns null if the id is unknown. `signal` ends the wait early the same way a timeout does,
    * which is how the daemon's shutdown answers a long-poll instead of cutting it.
    */
-  wait(id: string, timeoutMs: number, signal?: AbortSignal): Promise<ReviewItem | null> {
+  wait(id: string, timeoutMs: number, signal?: AbortSignal, convertible = false): Promise<ReviewWaitResponse | null> {
     const current = this.registry.getReview(id);
     if (!current) return Promise.resolve(null);
     if (current.status !== "pending") return Promise.resolve(current);
-    return new Promise<ReviewItem | null>((resolve) => {
+    if (convertible && current.waitMode === "message" && current.filedByVoiceAt != null) {
+      return Promise.resolve(convertedResponse(current));
+    }
+    return new Promise<ReviewWaitResponse | null>((resolve) => {
       let set = this.waiters.get(id);
       if (!set) this.waiters.set(id, (set = new Set()));
 
-      const finish = (r: ReviewItem | null): void => {
+      const finish = (r: ReviewWaitResponse | null): void => {
         clearTimeout(timer);
         set!.delete(waiter);
+        if (!set!.size) this.waiters.delete(id);
         signal?.removeEventListener("abort", early);
         resolve(r);
       };
-      const waiter: Waiter = (r) => finish(r);
+      const waiter: Waiter = { finish, convertible };
       const early = (): void => finish(this.registry.getReview(id) ?? null);
       const timer = unref(setTimeout(early, timeoutMs));
 
       set.add(waiter);
-      if (signal?.aborted) early();
-      else signal?.addEventListener("abort", early, { once: true });
+      if (signal?.aborted) return early();
+      signal?.addEventListener("abort", early, { once: true });
+      if (!convertible) blockReviewVoiceConversion(id);
       // A call is waiting on a question filed without one (`async-input`): an MCP child from an
       // older build re-asked it word for word, was handed the open row, and long-polls it because
       // it cannot read a receipt. From here the row is delivered the way a call-mode question is:
@@ -1111,10 +1146,10 @@ export class ReviewManager {
     return updated;
   }
 
-  private releaseWaiters(review: ReviewItem): void {
+  private releaseWaiters(review: ReviewWaitResponse): void {
     const set = this.waiters.get(review.id);
     if (set) {
-      for (const w of Array.from(set)) w(review);
+      for (const w of Array.from(set)) w.finish(review);
       this.waiters.delete(review.id);
     }
   }

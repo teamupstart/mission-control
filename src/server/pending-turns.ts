@@ -935,7 +935,7 @@ export class PendingTurnManager {
   }
 
   private spokenBlocked(session: Session, turn: PendingTurn): boolean {
-    return turn.spokenWords !== undefined && (!featureEnabled("voice") || session.pendingReviews > 0);
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || this.registry.hasPendingReviewCall(session.id));
   }
 
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {

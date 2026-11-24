@@ -102,7 +102,10 @@ actually submitted to the operator queue follows the queue’s normal durable de
 
 An idle agent starts a turn. A busy agent receives the message after its current turn ends.
 Only non-spoken outbox rows offer **Steer now** and **Interrupt and deliver**.
-A blocking question holds delivery until it is answered. A hibernated task resumes its
+When the agent is waiting inside a question or plan form, spoken delivery files the ask and releases
+the tool call with its receipt. The message lists the agent’s open questions. A filed plan still gates
+work on the plan. If any waiting child lacks conversion support, its call stays open and the message
+waits behind it. Typed messages leave the call open. A hibernated task resumes its
 conversation before the daemon queues the message. Messages that arrive while that task is waking
 share the resume. Each message still has its own outbox row and receipt. Recently heard and the card show `queued` (or
 `held` for a blocking question, including after resume) until the outbox confirms the handoff.

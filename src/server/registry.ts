@@ -7836,6 +7836,12 @@ export class Registry extends EventEmitter {
     return out;
   }
 
+  /** A filed plan still gates completion, but its agent can receive an addressed message. */
+  hasPendingReviewCall(sessionId: string): boolean {
+    if (!this.sessions.get(sessionId)?.pendingReviews) return false;
+    return this.pendingReviews(sessionId).some(review => review.waitMode !== "message");
+  }
+
   /**
    * Every review still unanswered, optionally narrowed to one session: the pending ones and the
    * ones the operator snoozed. What the eviction halves settle, because a session that has gone

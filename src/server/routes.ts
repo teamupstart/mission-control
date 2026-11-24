@@ -1,8 +1,8 @@
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
-import { OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
-import { ASYNC_INPUT_FLAG, asyncInputReceipt, decideWaitMode, FILED_PLAN_DECISIONS_FLAG, filedPlanReceipt, isFiledGate } from "@shared/async-input.ts";
+import { filedReviewReceipt, OpenQuestionLimitError, RevisionRefusal } from "./reviews.ts";
+import { ASYNC_INPUT_FLAG, decideWaitMode, FILED_PLAN_DECISIONS_FLAG } from "@shared/async-input.ts";
 import { registerHomeDispatchRoutes } from "./home-dispatch/routes.ts";
 import { registerShapingRoutes } from "./shaping/routes.ts";
 import { registerVoiceRoutes, registerVoiceUtteranceRoutes } from "./voice/routes.ts";
@@ -641,6 +641,7 @@ import {
   getSkillsAcks,
   loadConversationResolvedReviews,
   loadReviewsByIds,
+  blockReviewVoiceConversion,
   loadReview,
   loadInspectionsAdoptedSince,
   loadInspectorInspections,
@@ -5312,10 +5313,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
     // An exact duplicate re-attaches to the open row, whichever way that row waits, so the
     // answer names the row's own mode rather than the one this ask would have had.
-    const created = (review: ReviewItem, receiptOptions: { bundleApproved?: boolean } = {}) => {
-      if (review.waitMode !== "message") return c.json({ id: review.id, sessionId: session.id, wait: "call" });
-      const receipt = isFiledGate(review) ? filedPlanReceipt(review, receiptOptions) : asyncInputReceipt(review);
-      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt });
+    const created = (review: ReviewItem) => {
+      if (review.waitMode !== "message") {
+        if (parsed.data.convertible !== true) blockReviewVoiceConversion(review.id);
+        return c.json({ id: review.id, sessionId: session.id, wait: "call" });
+      }
+      return c.json({ id: review.id, sessionId: session.id, wait: "message", receipt: filedReviewReceipt(review) });
     };
     try {
       const target = parsed.data.managedPlan;
@@ -5368,7 +5371,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
             `${fullBody}\n\nThis final bundle was approved automatically by your standing approval for this task. Only the remaining decisions need your answer.`,
             remaining, waitOptions);
           recordStandingFollowUp(followUp.id, approvedId);
-          return created(followUp, { bundleApproved: true });
+          return created(followUp);
         }
         const review = reviews.create(session.id, kind, title, fullBody, allDecisions, waitOptions);
         bindPlanReview(authority, input, review.id, manager);
@@ -5662,7 +5665,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // Answered as a timeout when the daemon stops, so the caller long-polls the next daemon.
     const ended = new AbortController();
     const release = openEndedRequests.add(() => ended.abort());
-    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS, ended.signal).finally(release);
+    const review = await reviews.wait(c.req.param("id"), WAIT_TIMEOUT_MS,
+      AbortSignal.any([ended.signal, c.req.raw.signal]), c.req.query("convertible") === "1").finally(release);
     if (!review) return c.json({ error: "no such review" }, 404);
     return c.json(review);
   });
@@ -9349,10 +9353,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         return result.ok ? "sent" : { outcome: "failed", detail: result.error || "Interrupt refused." };
       }
       if (!pendingTurns) return { outcome: "failed", detail: "Pending turns are unavailable." };
-      const result = pendingTurns.submitSpoken(session.id, text, utteranceId, onQueued);
-      if (!result.pendingTurn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
-      const held = session.pendingReviews > 0 || session.state === "awaiting_review";
-      return { outcome: held ? "held" : "queued", turnId: result.pendingTurn.id };
+      const result = pendingTurns.submitSpoken(session.id, text, utteranceId, turnId => {
+        onQueued?.(turnId);
+        // The words are durable, and the outbox has yet to schedule its drain. Replaying an
+        // existing turn must not file a question that opened after the operator spoke.
+        if (session.pendingTurns.some(existing => existing.id === turnId)) return;
+        for (const review of registry.pendingReviews(session.id)) {
+          if (review.waitMode !== "message") reviews.convertToFiled(review.id);
+        }
+      });
+      const turn = result.pendingTurn;
+      if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
+      const held = registry.hasPendingReviewCall(session.id) || session.state === "awaiting_review";
+      return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card));
 

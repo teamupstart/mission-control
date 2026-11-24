@@ -327,7 +327,8 @@ let db: DatabaseSync | undefined;
 // 52: remember a stopped task's displaced roster name until it runs or changes names.
 // 53: reports and their mute records keep the spoken label alongside the fallback.
 // 54: spoken outbox composition, transcript binding and the receiving work cycle's Foreman hold.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 54;
+// 55: durable receipt replay for a blocking question filed by voice.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 55;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -526,6 +527,8 @@ function createSchemaObjects(d: DatabaseSync): void {
       created_at             INTEGER NOT NULL,
       resolved_at            INTEGER,
       mcp_wait_detached_at   INTEGER,
+      filed_by_voice_at      INTEGER,
+      voice_conversion_blocked INTEGER NOT NULL DEFAULT 1,
       continuation_queued_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_reviews_session ON reviews(session_id);
@@ -4650,6 +4653,9 @@ function migrate(d: DatabaseSync): void {
   // All nullable with no default: an existing row is a call-mode question with no meanwhile line
   // that no merge closed, which is exactly what every row written before this was.
   addColumn(d, "reviews", "wait_mode", "TEXT");
+  addColumn(d, "reviews", "filed_by_voice_at", "INTEGER");
+  // Existing rows may already have a legacy call. New reviews start without one in insertReview.
+  addColumn(d, "reviews", "voice_conversion_blocked", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "reviews", "meanwhile", "TEXT");
   addColumn(d, "reviews", "closed_reason", "TEXT");
 
@@ -5711,6 +5717,7 @@ interface ReviewRow {
   snooze_reminded_at?: number | null;
   snooze_instruction_owed_at?: number | null;
   snooze_instruction_queued_at?: number | null;
+  filed_by_voice_at?: number | null;
   wait_mode?: string | null;
   meanwhile?: string | null;
   closed_reason?: string | null;
@@ -5744,6 +5751,7 @@ function rowToReview(r: ReviewRow): ReviewItem {
     ...(snooze ? { snooze } : {}),
     // Spread only when set, like the snooze, so a call-mode row decodes exactly as it always did.
     // An unknown wait mode reads as call mode: the conservative reading holds and delivers less.
+    ...(r.filed_by_voice_at != null ? { filedByVoiceAt: r.filed_by_voice_at } : {}),
     ...(r.wait_mode === "message" ? { waitMode: "message" as const } : {}),
     ...(r.meanwhile ? { meanwhile: r.meanwhile } : {}),
     ...(closedReason ? { closedReason } : {}),
@@ -5807,8 +5815,8 @@ export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
       `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, snoozable, created_at, resolved_at,
-                            wait_mode, meanwhile, mcp_wait_detached_at, revises_review_id, revision)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                            wait_mode, meanwhile, mcp_wait_detached_at, revises_review_id, revision, voice_conversion_blocked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     )
     .run(
       r.id,
@@ -5997,6 +6005,23 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
   return row ? rowToReview(row) : null;
 }
 
+/** A legacy call has no per-caller identity to release its hold, even between polls or across restart. */
+export function blockReviewVoiceConversion(id: string): void {
+  openDb().prepare(`UPDATE reviews SET voice_conversion_blocked = 1
+    WHERE id = ? AND status = 'pending' AND voice_conversion_blocked = 0
+      AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))`).run(id);
+}
+
+/** File the pending ask and route its eventual answer through the outbox in the same write. */
+export function fileReviewByVoice(id: string, at: number): ReviewItem | null {
+  const row = openDb().prepare(`UPDATE reviews
+    SET wait_mode = 'message', filed_by_voice_at = ?, mcp_wait_detached_at = ?
+    WHERE id = ? AND status = 'pending' AND wait_mode IS NULL AND voice_conversion_blocked = 0
+      AND (kind = 'plan-decisions' OR (kind = 'input' AND snoozable = 1))
+    RETURNING *`).get(at, at, id) as unknown as ReviewRow | undefined;
+  return row ? rowToReview(row) : null;
+}
+
 /**
  * A call has started waiting on a message-mode question: an MCP child from an older build
  * re-attached to it (`ReviewManager.attachCall`). From here it is a call-mode question: the
@@ -6009,7 +6034,7 @@ export function markReviewWaitDetached(id: string, at: number): ReviewItem | nul
 export function markReviewWaitAttached(id: string): boolean {
   const result = openDb()
     .prepare(
-      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL
+      `UPDATE reviews SET mcp_wait_detached_at = NULL, wait_mode = NULL, meanwhile = NULL, filed_by_voice_at = NULL
         WHERE id = ? AND status = 'pending' AND continuation_queued_at IS NULL`,
     )
     .run(id);
@@ -6091,8 +6116,8 @@ export function loadReviewContinuationCandidates(id?: string): ReviewItem[] {
  */
 export function createReviewContinuationPendingTurn(input: ReviewPendingTurnInput): PendingTurn | null {
   // A message-mode question's answer (`async-input`) is daemon-written news, whoever resolved
-  // it, so it takes its own id under the shared prefix. `wait_mode` is fixed at insert, so
-  // reading it outside the queueing transaction cannot race a change.
+  // it, so it takes its own id under the shared prefix. Only a pending ask can change wait mode, so the
+  // resolved row already carries its final mode.
   const mode = openDb().prepare("SELECT wait_mode FROM reviews WHERE id = ?").get(input.reviewId) as
     | { wait_mode: string | null }
     | undefined;

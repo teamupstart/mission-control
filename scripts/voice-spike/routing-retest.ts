@@ -206,7 +206,7 @@ async function run(): Promise<void> {
 }
 
 async function runCorpus(runner: "claude" | "codex", casesPath: string, label: string): Promise<void> {
-  const { runVoiceRoutingJob } = await import("../../src/server/voice/decide.ts");
+  const { runVoiceRoutingJob, withinVoiceDeadline } = await import("../../src/server/voice/decide.ts");
   const { codexTransportChoice, llmJobModel } = await import("../../src/server/llm/config.ts");
   const { buildVoiceRoutingPrompt, VOICE_ROUTING_SYSTEM_PROMPT, voiceRoutingSchema } = await import("../../src/server/voice/decide-prompt.ts");
   const { DEFAULT_CLAUDE_TRANSPORT } = await import("../../src/shared/llm.ts");
@@ -252,7 +252,11 @@ async function runCorpus(runner: "claude" | "codex", casesPath: string, label: s
     try {
       // A 30 second watchdog, not the product budget: the point is to measure how long a call
       // takes, and a call over the five-second budget is counted against the pass bar.
-      const [answer] = await runVoiceRoutingJob([question], { runner, timeoutMs: 30_000 });
+      const watchdogMs = 30_000;
+      const [answer] = await withinVoiceDeadline(
+        signal => runVoiceRoutingJob([question], { runner, timeoutMs: watchdogMs, signal }),
+        began + watchdogMs, () => performance.now(), { keepAlive: true },
+      );
       choice = answer?.choice ?? null;
       confidence = answer?.confidence ?? 0;
     } catch (caught) {

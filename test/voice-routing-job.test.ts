@@ -6,7 +6,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,6 +173,37 @@ test("the retest measures the unrounded deadline for recorded calls", () => {
     const split = summary.byFloor[0].perCategory.find((c: { category: string }) => c.category === "split");
     assert.equal(split.acceptedBeforeDeadline, ms < 5000 ? 1 : 0);
   }
+});
+
+test("the retest records a watchdog expiry during discovery and releases its label", () => {
+  const label = "discovery-watchdog";
+  const records = record(label);
+  mkdirSync(records);
+  const preload = join(records, "slow-discovery.mjs");
+  const locator = new URL("../src/server/executables/locator.ts", import.meta.url).href;
+  const log = record(`.tmp/voice-spike/retest-${label}.jsonl`);
+  writeFileSync(preload, `import { existsSync, writeFileSync } from "node:fs";
+    import { executableLocator } from ${JSON.stringify(locator)};
+    const resolve = executableLocator.resolve.bind(executableLocator);
+    const timer = globalThis.setTimeout;
+    executableLocator.resolve = async (...args) => {
+      await new Promise(done => timer(done, 250));
+      writeFileSync(${JSON.stringify(join(records, "discovery-finished"))}, String(existsSync(${JSON.stringify(log)})));
+      return resolve(...args);
+    };
+    globalThis.setTimeout = (fn, ms, ...args) => timer(fn, ms > 29000 && ms <= 30000 ? 30 : ms, ...args);`);
+  const corpus = join(import.meta.dirname, "../scripts/voice-spike/routing-tuning.json");
+  const args = ["--yes", "--runner", "codex", "--cases", corpus, "--label", label, "--limit", "1"];
+  const run = spawnSync(process.execPath, [...retestArgs.slice(0, 2), "--import", preload, retestArgs[2]!, ...args], {
+    cwd: home, encoding: "utf8", timeout: 10_000, env: { ...retestEnv, MISSION_CODEX_TRANSPORT: "exec", VOICE_JOB_RECORD: records },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const row = JSON.parse(readFileSync(record(`.tmp/voice-spike/retest-${label}.jsonl`), "utf8"));
+  assert.equal(readFileSync(join(records, "discovery-finished"), "utf8"), "true", "the row was recorded before discovery returned");
+  assert.match(row.error ?? "", /timed out/i);
+  assert.equal(row.choice, null);
+  assert.equal(existsSync(join(records, "codex-argv")), false);
+  assert.deepEqual(readdirSync(record(`.tmp/voice-spike/retest-${label}.lock.d`)), []);
 });
 
 test("retest and summary labels must be single file names", () => {

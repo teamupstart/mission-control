@@ -132,10 +132,17 @@ export interface VoiceDeciderDeps {
   providerTimeoutMs?: number;
 }
 
-class Expired extends Error {}
+class Expired extends Error {
+  constructor() { super("Voice model call timed out."); }
+}
 
 /** Race `work` against the absolute deadline `at`; at the deadline it rejects with `Expired`. */
-function within<T>(work: (signal: AbortSignal) => Promise<T>, at: number, now: () => number, signal?: AbortSignal): Promise<T> {
+export function withinVoiceDeadline<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  at: number,
+  now: () => number,
+  { signal, keepAlive = false }: { signal?: AbortSignal; keepAlive?: boolean } = {},
+): Promise<T> {
   const left = at - now();
   if (left <= 0) return Promise.reject(new Expired());
   const controller = new AbortController();
@@ -148,7 +155,7 @@ function within<T>(work: (signal: AbortSignal) => Promise<T>, at: number, now: (
       signal.addEventListener("abort", onAbort, { once: true });
     }
     timer = setTimeout(() => reject(new Expired()), left);
-    timer.unref?.();
+    if (!keepAlive) timer.unref?.();
   });
   const start = () => {
     signal?.throwIfAborted();
@@ -199,11 +206,11 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         const label = VOICE_KEY_PROVIDER_LABEL[provider];
         const providerDeadline = Math.min(deadline, startedAt + (deps.providerTimeoutMs ?? VOICE_DECISION_PROVIDER_TIMEOUT_MS));
         try {
-          const raw = await within(
+          const raw = await withinVoiceDeadline(
             requestSignal => deps.providers[provider].ask(questions, { key, signal: requestSignal, fetch: deps.fetch }),
             providerDeadline,
             now,
-            signal,
+            { signal },
           );
           return { rung: provider, answers: accept(questions, raw, VOICE_CONFIDENCE_FLOOR), detail: `${label} answered` };
         } catch (error) {
@@ -219,9 +226,9 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; ") };
       }
       try {
-        const raw = await within(jobSignal => deps.job(questions, {
+        const raw = await withinVoiceDeadline(jobSignal => deps.job(questions, {
           runner, timeoutMs: Math.max(0, Math.floor(deadline - now())), signal: jobSignal,
-        }), deadline, now, signal);
+        }), deadline, now, { signal });
         notes.push(`job on ${runner} answered`);
         return { rung: "job", answers: accept(questions, raw, rung.floor), detail: notes.join("; ") };
       } catch (error) {

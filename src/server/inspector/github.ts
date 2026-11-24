@@ -232,14 +232,50 @@ export interface InspectorBranchActivity {
   headSha: string;
   activityId: number;
   changedAt: number;
+  refHistory: { prCreatedAt: number; anchorActivityId: number; anchorChangedAt: number; updatesChecked: number };
 }
 
 const recoveryPullRequest = z.object({
-  number: z.number().int(), state: z.literal("open"),
+  number: z.number().int(), state: z.literal("open"), created_at: z.iso.datetime(),
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
   head: z.object({ ref: z.string().min(1), sha: z.string().min(1),
     repo: z.object({ full_name: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }) }),
 });
+
+const refUpdate = z.object({
+  id: z.number().int().positive(), ref: z.string(), before: z.string().min(1), after: z.string().min(1),
+  timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(),
+}).transform((row, ctx) => {
+  const timestamp = row.timestamp ?? row.pushed_at;
+  if (!timestamp || (row.timestamp && row.pushed_at && row.timestamp !== row.pushed_at)) {
+    ctx.addIssue({ code: "custom", message: "Ambiguous branch activity time" });
+    return z.NEVER;
+  }
+  return { ...row, changedAt: Date.parse(timestamp) };
+});
+
+function verifyRefHistory(
+  updates: z.output<typeof refUpdate>[], ref: string, head: string, prCreatedAt: number,
+): InspectorBranchActivity["refHistory"] | null {
+  // Walk backwards from the current head. A pre-grant observation of this head
+  // identifies its latest arrival only if the ref could not have left it since
+  // the PR opened. Both the start boundary and the activity times are GitHub's.
+  let expectedAfter = head;
+  let newestTime = Infinity;
+  const seen = new Set<number>();
+  for (const update of updates) {
+    if (update.ref !== ref || update.after !== expectedAfter || update.changedAt > newestTime
+        || seen.has(update.id) || (seen.size > 0 && update.after === head)) return null;
+    seen.add(update.id);
+    if (update.changedAt + 1_000 <= prCreatedAt) {
+      return { prCreatedAt, anchorActivityId: update.id, anchorChangedAt: update.changedAt, updatesChecked: seen.size };
+    }
+    if (update.before === head || /^0+$/.test(update.before) || /^0+$/.test(update.after)) return null;
+    expectedAfter = update.before;
+    newestTime = update.changedAt;
+  }
+  return null;
+}
 
 export async function readInspectorBranchActivity(prUrl: string, expectedHead: string): Promise<InspectorBranchActivity | null> {
   const pr = parsePrUrl(prUrl);
@@ -255,36 +291,32 @@ export async function readInspectorBranchActivity(prUrl: string, expectedHead: s
       const pull = recoveryPullRequest.safeParse(await read(`repos/${base}/pulls/${pr.number}`));
       if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()
           || pull.data.head.sha !== expectedHead) return null;
-      return pull.data.head;
+      return pull.data;
     };
     const source = await readSource();
     if (!source) return null;
-    const repository = source.repo.full_name;
-    const ref = `refs/heads/${source.ref}`;
+    const repository = source.head.repo.full_name;
+    const ref = `refs/heads/${source.head.ref}`;
     // No activity_type filter: force pushes, merges and branch recreation also move the tip.
-    const query = new URLSearchParams({ ref, direction: "desc", per_page: "1" });
-    const endpoint = `repos/${repository}/activity?${query}`;
-    const activityRow = z.tuple([z.object({
-      id: z.number().int().positive(), ref: z.literal(ref), after: z.literal(expectedHead),
-      timestamp: z.iso.datetime().optional(), pushed_at: z.iso.datetime().optional(),
-    })]);
-    const readActivity = async () => {
-      const rows = activityRow.safeParse(await read(endpoint));
-      if (!rows.success) return null;
-      const [activity] = rows.data;
-      const timestamp = activity.timestamp ?? activity.pushed_at;
-      if (!timestamp || (activity.pushed_at && activity.timestamp && activity.pushed_at !== activity.timestamp)) return null;
-      return { activityId: activity.id, changedAt: Date.parse(timestamp) };
+    const endpoint = (count: number) => {
+      const query = new URLSearchParams({ ref, direction: "desc", per_page: String(count) });
+      return `repos/${repository}/activity?${query}`;
     };
-    const activity = await readActivity();
-    if (!activity) return null;
-    // The PR may close or change source while GitHub is serving the activity snapshot.
+    const first = z.tuple([refUpdate]).safeParse(await read(endpoint(1)));
+    if (!first.success) return null;
+    const [tip] = first.data;
+    if (tip.ref !== ref || tip.after !== expectedHead) return null;
     const current = await readSource();
-    if (!current || current.repo.full_name.toLowerCase() !== repository.toLowerCase() || current.ref !== source.ref) return null;
-    // A push away and back yields the same PR head but a different latest ref update.
-    const latest = await readActivity();
-    if (!latest || latest.activityId !== activity.activityId || latest.changedAt !== activity.changedAt) return null;
-    return { prKey: pr.key, repository, ref, headSha: expectedHead, ...latest };
+    if (!current || current.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
+        || current.head.ref !== source.head.ref || current.created_at !== source.created_at) return null;
+
+    const history = z.array(refUpdate).max(GITHUB_PAGE_SIZE).safeParse(await read(endpoint(GITHUB_PAGE_SIZE)));
+    if (!history.success) return null;
+    const latest = history.data[0];
+    if (!latest || latest.id !== tip.id || latest.changedAt !== tip.changedAt || latest.before !== tip.before) return null;
+    const refHistory = verifyRefHistory(history.data, ref, expectedHead, Date.parse(current.created_at));
+    if (!refHistory) return null;
+    return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: latest.id, changedAt: latest.changedAt, refHistory };
   } catch {
     return null;
   }

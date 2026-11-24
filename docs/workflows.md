@@ -2808,15 +2808,21 @@ and findings, the mismatch block, and a current open PR observation after the su
 It also requires a stored observation of that same replacement head strictly between the
 round-limit event and the grant. The blocked gate can retain a delayed observation from
 that interval, or the Inspector ledger can retain the head and timestamp of its review.
-For explicit recovery the daemon also reads the open PR from GitHub, resolves its source
-repository and ref (including forks), and checks the latest branch activity across all
-update types. Its resulting head must match the replacement, and its timestamp must fall
-unambiguously before the grant. After reading activity, the daemon reads the PR again to
-confirm it is still open on the same source repository, branch and head, then confirms that
-the latest activity ID and timestamp still match. A push back to an earlier reviewed head after the grant
-therefore keeps the mismatch blocked. Recovery also stays blocked when the historical
-observation or branch history is unavailable. The recovery audit includes the source ref,
-activity ID, resulting head and time alongside the stored observation and round-limit event.
+Inspector timestamps a poll when it starts. To confirm that the read also finished before
+the grant, recovery checks the adoption row for a completed open-PR scan by the CodeRabbit
+observer or a retained delivery claim for that head within the same interval. This uses
+the recorded head and daemon completion time. A CodeRabbit verdict is unnecessary.
+
+Recovery reads the open PR and its source ref twice, including for fork PRs. Starting
+at the same latest ref update, it follows GitHub's before/after SHAs back to an update
+at least one second older than GitHub's PR creation time. The replacement head must
+have been reached only once during that history. The completed local observation then
+places that unique arrival before the grant even if the daemon and GitHub clocks differ.
+The existing one-second grant cutoff can still veto recovery. A return to the head,
+a broken chain, a missing completed observation, or history that does not reach PR
+creation within 100 updates keeps the mismatch blocked. The recovery receipt records
+the completed observation ID and time, source ref, tip and anchor activity IDs and
+times, PR creation time, and count of updates checked.
 [GitHub repository activity API](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
 Ordinary polling and recheck leave the mismatch blocked. A successful recovery records `inspector_stale_grant_recovered` and
 re-enters the repair wait pinned to the verified replacement head. If the PR advances before

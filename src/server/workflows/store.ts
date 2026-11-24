@@ -193,7 +193,7 @@ import type { LlmRunnerId } from "@shared/llm.ts";
 import { THINKING_LEVELS } from "@shared/types.ts";
 import type { SessionIntentGuard, ThinkingLevel } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
-import { consumePromptedGeneration, getInspectorPr, openDb } from "../db.ts";
+import { consumePromptedGeneration, getInspectorPr, openDb, readCodeRabbit } from "../db.ts";
 import { BUILTIN_PERSONAS } from "./builtin-personas.ts";
 import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
@@ -8049,10 +8049,23 @@ export class WorkflowStore {
         witness = { source: "inspector_review", observedAt: ledger.lastReviewedAt };
       } else return null;
 
+      // Inspector dates its poll at start. A read started before the grant can
+      // return afterwards. The adoption row's CodeRabbit scan is dated after
+      // fetchPr finishes; a retained delivery claim also postdates that scan.
+      const scan = readCodeRabbit(gate.prKey, this.db);
+      if (!scan) return null;
+      const claim = scan.receipts.find(row => row.headSha === input.currentHeadSha && inSpentWindow(row.at));
+      const completedObservation = scan.state === "OPEN" && !scan.error && scan.headSha === input.currentHeadSha && inSpentWindow(scan.observedAt)
+        ? { source: "pr_scan", observationId: scan.observationId, at: scan.observedAt }
+        : claim ? { source: "delivery_claim", observationId: claim.observationId, at: claim.at } : null;
+      if (!completedObservation) return null;
+
       // Local polls overwrite one another. Even both witnesses for B are compatible
       // with a return to A at grant time and a later push back to B. Ask outside the
       // transaction, then repeat all eligibility checks with the provider's ref history.
       if (!activity) return { verifyPrUrl: ledger.url };
+      // The verified ref history ties this unique arrival at the head to our
+      // pre-grant witness. The legacy timestamp margin is only an additional veto.
       if (activity.prKey !== gate.prKey || activity.headSha !== input.currentHeadSha
           || (ledger.headRefName && activity.ref !== `refs/heads/${ledger.headRefName}`)
           || !Number.isFinite(activity.changedAt)
@@ -8070,7 +8083,7 @@ export class WorkflowStore {
       if (!updated) return null;
       this.appendEvent(runId, "inspector_stale_grant_recovered", {
         ...input, requestId, prKey: gate.prKey, observedAt: ledger.observedAt,
-        branchActivity: { ...activity }, limitEventId: limit.id, grantEventId: grant.id, bypassEventId: bypass.id,
+        branchActivity: { ...activity }, completedObservation, limitEventId: limit.id, grantEventId: grant.id, bypassEventId: bypass.id,
         failedHeadSha: gate.failedHeadSha, preGrantWitness: { ...witness, headSha: input.currentHeadSha },
       }, now);
       return { run: updated, idempotent: false };

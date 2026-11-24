@@ -41,11 +41,13 @@ const fakeGh = join(home, "gh");
 writeFileSync(fakeGh, `#!${process.execPath}
 const fs = require("node:fs");
 const target = process.argv.find(arg => arg.startsWith("repos/"));
-if (target?.includes("/activity?") && target !== "repos/author/fork/activity?ref=refs%2Fheads%2Ffeature&direction=desc&per_page=1") process.exit(1);
+const activityQuery = "repos/author/fork/activity?ref=refs%2Fheads%2Ffeature&direction=desc&per_page=";
+if (target?.includes("/activity?") && ![activityQuery + "1", activityQuery + "100"].includes(target)) process.exit(1);
 const fixture = target?.includes("/activity?") ? ${JSON.stringify(branchActivity)}
   : target?.includes("/pulls/") ? ${JSON.stringify(recoveryPr)} : ${JSON.stringify(ghSnapshot)};
 try {
-  const response = fs.readFileSync(fixture, "utf8");
+  const contents = fs.readFileSync(fixture, "utf8");
+  const response = target === activityQuery + "1" ? JSON.stringify(JSON.parse(contents).slice(0, 1)) : contents;
   if (fixture === ${JSON.stringify(branchActivity)} && fs.existsSync(${JSON.stringify(holdActivity)})) {
     fs.writeFileSync(${JSON.stringify(activityPending)}, "");
     const timer = setInterval(() => {
@@ -63,6 +65,9 @@ process.env.MISSION_GH_BIN = fakeGh;
 const {
   adoptInspectorPr,
   getInspectorPr,
+  readCodeRabbit,
+  recordCodeRabbit,
+  claimCodeRabbit,
   openDb,
   updateInspectorPr,
   upsertInspectorComment,
@@ -3429,6 +3434,7 @@ async function strandLegacyGrant(
   // Only the actual Inspector facts leading up to that grant differ between cases.
   updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: preGrantHead, observedAt: now + 8,
     reviewPosture: "live", ...(delayedObservation ? {} : { headSha: preGrantHead, lastReviewedAt: now + 8 }) }, now + 8);
+  recordCodeRabbit(key, { headSha: preGrantHead, state: "OPEN", draft: false, findings: [] }, now + 8);
   if (returnedToPinnedHead) {
     updateInspectorPr(key, { observedState: "OPEN", observedHeadSha: "historical", observedAt: now + 9 }, now + 9);
   }
@@ -3447,10 +3453,14 @@ async function strandLegacyGrant(
     ...(preGrantHead === "current" ? {} : { headSha: "current", lastReviewedAt: now + 1012 }),
     cleanReviewHeadSha: null }, now + 1012);
   const number = Number(key.split("#")[1]);
-  writeFileSync(recoveryPr, JSON.stringify({ number, state: "open", base: { repo: { full_name: "owner/repo" } },
+  writeFileSync(recoveryPr, JSON.stringify({ number, state: "open", created_at: new Date(now - 10_000).toISOString(), base: { repo: { full_name: "owner/repo" } },
     head: { repo: { full_name: "author/fork" }, ref: "feature", sha: "current" } }));
-  writeFileSync(branchActivity, JSON.stringify([{ id: 101, ref: "refs/heads/feature", after: "current",
-    timestamp: new Date(now + (returnedToPinnedHead || preGrantHead !== "current" ? 1012 : 6)).toISOString() }]));
+  writeFileSync(branchActivity, JSON.stringify([
+    { id: 101, ref: "refs/heads/feature", before: "historical", after: "current",
+      timestamp: new Date(now + (returnedToPinnedHead || preGrantHead !== "current" ? 1012 : 6)).toISOString() },
+    { id: 99, ref: "refs/heads/feature", before: "base", after: "historical",
+      timestamp: new Date(now - 12_000).toISOString() },
+  ]));
   registry.inspectionUpdated(key, "current", "OPEN", delayedObservation ? now + 8 : now + 1012);
   await manager.settleBackgroundWork();
   assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
@@ -3543,16 +3553,16 @@ test("legacy recovery rejects a changed latest ref update even when the PR retur
     const before = store.getRun(ids.run);
     const submissions = store.listSubmissions(ids.run);
     const recover = await legacyRecoveryRoute(seeded);
-    const [activity] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    const [activity, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
     const pull = readFileSync(recoveryPr, "utf8");
     // Include a second update in the same timestamp bucket. A time comparison
     // alone cannot distinguish it from the activity that preceded the grant.
     for (const latest of [null, { ...activity, id: activity.id + 1 },
       { ...activity, id: activity.id + 2, timestamp: new Date(now + 1014).toISOString() },
       { ...activity, timestamp: new Date(now + 7).toISOString() }]) {
-      writeFileSync(branchActivity, JSON.stringify([activity]));
+      writeFileSync(branchActivity, JSON.stringify([activity, ...history]));
       const response = await duringActivityRead(recover, () => {
-        if (latest) writeFileSync(branchActivity, JSON.stringify([latest]));
+        if (latest) writeFileSync(branchActivity, JSON.stringify([latest, ...history]));
         else rmSync(branchActivity);
       });
       assert.equal(response.status, 409);
@@ -3687,20 +3697,46 @@ test("legacy B to A to B stays blocked even with a retained pre-grant review of 
   } finally { await manager.stop(); }
 });
 
+test("a post-grant return to the witnessed head stays blocked when GitHub's clock is behind", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, now, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current", { returnedToPinnedHead: true });
+    const [latest, anchor] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    // The daemon observed B, then A, then granted at now + 1010. GitHub's clock
+    // is 5 seconds behind: its later return to B passes the old timestamp cutoff.
+    const providerTime = (local: number) => new Date(now + local - 5_000).toISOString();
+    writeFileSync(branchActivity, JSON.stringify([
+      { ...latest, id: 103, timestamp: providerTime(1012) },
+      { ...latest, id: 102, before: "current", after: "historical", timestamp: providerTime(9) },
+      { ...latest, timestamp: providerTime(6) },
+      anchor,
+    ]));
+    const before = store.getRun(ids.run);
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    assert.equal((await recover()).status, 409);
+    await manager.settleBackgroundWork();
+    assert.deepEqual(store.getRun(ids.run), before);
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
 test("legacy grant recovery fails closed on unavailable, inconsistent or time-ambiguous branch activity", async () => {
   const seeded = await spentInspectorGrant();
   const { ids, store, now, manager } = seeded;
   try {
     await strandLegacyGrant(seeded, "current");
     const request = { grantRequestId: "legacy", submissionId: "stranded", staleHeadSha: "historical", currentHeadSha: "current" };
-    const valid = { id: 101, ref: "refs/heads/feature", after: "current", timestamp: new Date(now + 6).toISOString() };
+    const [valid, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
     const submissions = store.listSubmissions(ids.run);
     rmSync(branchActivity);
     assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", request)).ok, false);
     for (const response of [[], [{ ...valid, ref: "refs/heads/other" }], [{ ...valid, after: "unknown" }],
       [{ ...valid, timestamp: new Date(now + 1009).toISOString() }],
       [{ ...valid, pushed_at: new Date(now + 7).toISOString() }]]) {
-      writeFileSync(branchActivity, JSON.stringify(response));
+      writeFileSync(branchActivity, JSON.stringify([...response, ...history]));
       assert.equal((await manager.recoverStaleInspectorGrant(ids.run, "refuse", request)).ok, false);
     }
     await manager.settleBackgroundWork();
@@ -3708,6 +3744,75 @@ test("legacy grant recovery fails closed on unavailable, inconsistent or time-am
     assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
     assert.deepEqual(store.listSubmissions(ids.run), submissions);
     assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+  } finally { await manager.stop(); }
+});
+
+test("a skewed GitHub clock requires contiguous ref history through PR creation", async () => {
+  const seeded = await spentInspectorGrant();
+  const { ids, now, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const [tip, anchor] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    const prCreatedAt = Date.parse(JSON.parse(readFileSync(recoveryPr, "utf8")).created_at);
+    const unique = { ...tip, timestamp: new Date(now - 5_000).toISOString() };
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    for (const history of [
+      [unique], // retained page ends before reaching an update older than PR creation
+      [unique, { ...anchor, after: "unrelated" }],
+      [unique, { ...anchor, id: unique.id }],
+      [unique, { ...anchor, ref: "refs/heads/other" }],
+      [unique, { ...anchor, timestamp: new Date(now - 4_000).toISOString() }],
+      [unique, { ...anchor, timestamp: new Date(prCreatedAt - 999).toISOString() }],
+      [{ ...unique, before: "0000000" }, anchor], // branch recreated after PR creation
+    ]) {
+      writeFileSync(branchActivity, JSON.stringify(history));
+      assert.equal((await recover()).status, 409);
+      assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+    }
+    writeFileSync(branchActivity, JSON.stringify([unique, { ...anchor, timestamp: new Date(prCreatedAt - 1_000).toISOString() }]));
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, "current");
+    const receipt = store.listEvents(ids.run).find(e => e.kind === "inspector_stale_grant_recovered");
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { branchActivity: { refHistory: unknown } }).branchActivity.refHistory,
+      { prCreatedAt, anchorActivityId: anchor.id, anchorChangedAt: prCreatedAt - 1_000, updatesChecked: 2 });
+  } finally { await manager.stop(); }
+});
+
+test("a poll started before the grant requires a retained completed read before the grant", async () => {
+  const seeded = await spentInspectorGrant();
+  const { key, ids, now, store, manager } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const recover = await legacyRecoveryRoute(seeded);
+    const submissions = store.listSubmissions(ids.run);
+    const observation = { headSha: "current", state: "OPEN" as const, draft: false, findings: [] };
+    const grant = store.listEvents(ids.run).find(e => e.kind === "repair_rounds_granted")!;
+    for (const at of [grant.timestamp, grant.timestamp + 1]) {
+      recordCodeRabbit(key, observation, at);
+      assert.equal((await recover()).status, 409);
+    }
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).some(e => e.kind === "inspector_stale_grant_recovered"), false);
+
+    // A later poll can overwrite the scan while preserving its earlier delivery claim.
+    recordCodeRabbit(key, { ...observation, findings: [{ id: "thread", rootId: "root", url: "https://github.com/owner/repo",
+      path: null, identity: "finding", resolved: false }] }, now + 8);
+    const { observationId } = readCodeRabbit(key)!;
+    assert.ok(claimCodeRabbit(key, { noteKey: "note", episodeKey: "episode" }, observationId, now + 9));
+    recordCodeRabbit(key, observation, grant.timestamp + 1);
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(store.latestSubmission(ids.run)?.prHeadSha, "current");
+    const receipt = store.listEvents(ids.run).find(e => e.kind === "inspector_stale_grant_recovered");
+    assert.ok(receipt);
+    assert.deepEqual((receipt.payload as { completedObservation: unknown }).completedObservation,
+      { source: "delivery_claim", observationId, at: now + 9 });
   } finally { await manager.stop(); }
 });
 
@@ -3720,8 +3825,8 @@ for (const elapsedMs of [1_000, 999]) {
       const grant = store.listEvents(ids.run).find(e => e.kind === "repair_rounds_granted");
       assert.ok(grant);
       const changedAt = grant.timestamp - elapsedMs;
-      writeFileSync(branchActivity, JSON.stringify([{ id: 101, ref: "refs/heads/feature",
-        after: "current", timestamp: new Date(changedAt).toISOString() }]));
+      const [activity, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+      writeFileSync(branchActivity, JSON.stringify([{ ...activity, timestamp: new Date(changedAt).toISOString() }, ...history]));
       const before = store.listSubmissions(ids.run);
       const recover = await legacyRecoveryRoute(seeded);
       const response = await recover();
@@ -3749,8 +3854,9 @@ test("legacy recovery accepts branch activity with only pushed_at and records it
   try {
     await strandLegacyGrant(seeded, "current");
     const pushedAt = now + 7;
-    writeFileSync(branchActivity, JSON.stringify([{ id: 102, ref: "refs/heads/feature",
-      after: "current", pushed_at: new Date(pushedAt).toISOString() }]));
+    const [, ...history] = JSON.parse(readFileSync(branchActivity, "utf8"));
+    writeFileSync(branchActivity, JSON.stringify([{ id: 102, ref: "refs/heads/feature", before: "historical",
+      after: "current", pushed_at: new Date(pushedAt).toISOString() }, ...history]));
     const recover = await legacyRecoveryRoute(seeded);
     assert.equal((await recover()).status, 200);
     await manager.settleBackgroundWork();
@@ -3760,6 +3866,7 @@ test("legacy recovery accepts branch activity with only pushed_at and records it
     assert.deepEqual((receipt.payload as { branchActivity: unknown }).branchActivity, {
       prKey: seeded.key, repository: "author/fork", ref: "refs/heads/feature",
       headSha: "current", activityId: 102, changedAt: pushedAt,
+      refHistory: { prCreatedAt: now - 10_000, anchorActivityId: 99, anchorChangedAt: now - 12_000, updatesChecked: 2 },
     });
   } finally { await manager.stop(); }
 });
@@ -3846,6 +3953,7 @@ test("explicit legacy-grant recovery uses remaining budget and retains both subm
     assert.ok(receipt);
     assert.deepEqual((receipt.payload as { branchActivity: unknown }).branchActivity, {
       prKey: key, repository: "author/fork", ref: "refs/heads/feature", headSha: "current", activityId: 101, changedAt: now + 6,
+      refHistory: { prCreatedAt: now - 10_000, anchorActivityId: 99, anchorChangedAt: now - 12_000, updatesChecked: 2 },
     });
     assert.deepEqual((receipt.payload as { preGrantWitness: unknown }).preGrantWitness,
       { source: "inspector_review", observedAt: now + 8, headSha: "current" });

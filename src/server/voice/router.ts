@@ -300,7 +300,6 @@ export class VoiceRouter {
           entry.matchedName = target.name;
           item.card.parts[0]!.target = target;
           item.card.candidates = decision.candidates.map(agentRow);
-          item.choicesOfferedAt = Date.now();
           result = await ask(decision);
           if (this.open.get(id) !== item) return;
         } else {
@@ -316,7 +315,6 @@ export class VoiceRouter {
         const card: VoiceCard = { ...item.card, state: "unsure", candidates: decision.candidates.map(agentRow) };
         if (decision.reason === "second-name") {
           setSplitPicks(item, card, decision.target, decision.splits);
-          if (item.choicesOfferedAt !== undefined) item.choicesOfferedAt = Date.now();
         }
         this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates }, entry.time);
         return;
@@ -338,6 +336,7 @@ export class VoiceRouter {
     this.open.set(card.id, item);
     entry.outcome = card.state;
     if (card.state === "unsure") {
+      item.choicesOfferedAt = Date.now();
       const unsure = Array.from(this.open.values()).filter((item) => item.card.state === "unsure");
       if (unsure.length > MAX_UNSURE_CARDS) {
         const oldest = unsure.reduce((first, next) => next.entry.time < first.entry.time ? next : first);

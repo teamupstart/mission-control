@@ -965,3 +965,25 @@ test("a split removes a comma-delimited connector and preserves the text before 
   assert.ok(await router.sendNow("connector"));
   assert.deepEqual(delivered, [["Steve", "explain C plus plus", "connector"], ["Alice", "review the PR", "connector#2"]]);
 });
+
+test("speech captured during initial resolution cannot confirm newly offered choices", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  for (const [text, target] of [[SPLIT.text, "Alice"], ["Steven, check the build", "Steve"]] as const) {
+    t.mock.timers.setTime(100);
+    let finish!: (result: VoiceDecisionResult) => void;
+    const pending = new Promise<VoiceDecisionResult>(resolve => { finish = resolve; });
+    const { router } = routerRig(() => pending, ["Steve", "Stevie", "Alice"].map(n => name(n)));
+    t.after(() => router.reset());
+    const capture = (id: string, speech: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+      id, text: speech, backend: "fluidaudio", capturedAt,
+    }));
+    await capture("initial", text, 100);
+    t.mock.timers.setTime(200);
+    finish(answered(null));
+    await router.resolution("initial");
+    await capture("early", target, 150);
+    assert.equal(router.activeCards()[0]?.state, "unsure");
+    await capture("current", target, 200);
+    assert.equal(router.activeCards()[0]?.state, "pending");
+  }
+});

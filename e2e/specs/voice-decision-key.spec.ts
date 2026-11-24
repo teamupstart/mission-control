@@ -287,3 +287,40 @@ test("the voice preview gates the routing controls and background job live", asy
   await expect(goal).toBeVisible();
   await expect(voice).toHaveCount(0);
 });
+
+test("an older poll cannot restore a provider removed in another window", async ({ dashboard: page, context, daemon }) => {
+  await turnVoiceOn(daemon);
+  const writer = await context.newPage();
+  await openVoiceSettings(writer, daemon);
+  await saveKey(writer, "OpenAI Decisions", SAVED_OPENAI);
+  await page.clock.install();
+  await openVoiceSettings(page, daemon);
+  await expect(line(page)).toHaveText(using("OpenAI Decisions"));
+
+  let release!: () => void;
+  let held!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { held = resolve; });
+  await page.route("**/api/voice/decision-key", async route => {
+    const prior = await route.fetch();
+    held();
+    await gate;
+    await route.fulfill({ response: prior, headers: { ...prior.headers(), "x-e2e-held-poll": "yes" } });
+  }, { times: 1 });
+  await page.clock.fastForward(5_000);
+  await started;
+  const stale = page.waitForResponse(response => response.headers()["x-e2e-held-poll"] === "yes");
+  try {
+    await row(writer, "OpenAI Decisions").getByRole("button", { name: "Remove" }).click();
+    await expect(line(writer)).toHaveText(NOT_SET);
+    await page.clock.fastForward(5_000);
+    await expect(line(page)).toHaveText(NOT_SET);
+  } finally {
+    release();
+  }
+  await (await stale).finished();
+  await page.clock.runFor(50);
+  await expect(line(page)).toHaveText(NOT_SET, { timeout: 1_000 });
+  await expect(row(page, "OpenAI Decisions")).toContainText("Not set");
+  await capture(panel(page).locator('[data-anchor="voice/faster-routing"]'), "10-cross-window-removal");
+});

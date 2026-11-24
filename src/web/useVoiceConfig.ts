@@ -172,10 +172,16 @@ export function useVoiceDecisionKey(enabled: boolean, decisionProvider: string |
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
+    let nextRead = 0;
+    let appliedRead = 0;
     const tick = async (): Promise<void> => {
+      const id = ++nextRead;
       const at = writes.current;
       const read = await fetchVoiceDecisionKey();
-      if (alive && read && writes.current === at) setReport(read);
+      if (alive && read && writes.current === at && id > appliedRead) {
+        appliedRead = id;
+        setReport(read);
+      }
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);

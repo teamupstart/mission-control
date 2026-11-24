@@ -256,8 +256,10 @@ test("a delayed spoken cancel targets the latest preceding capture even when POS
 
 test("a picked card's new cancel window follows the time of the pick", async (t) => {
   const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: now - 400 });
   await post("/voice/utterances", { ...capture("Steven ask Will about the build", "choice"), capturedAt: now - 400 }, token);
+  await resolved("choice");
+  t.mock.timers.tick(400);
   await post("/voice/utterances", { ...capture("Will"), capturedAt: now - 200 }, token);
 
   await post("/voice/utterances", { ...capture("cancel", "before-pick"), capturedAt: now - 300 }, token);
@@ -544,18 +546,23 @@ test("a candidate with leading or nonterminal boundary punctuation leaves the ca
   assert.deepEqual(registry.snapshot().voiceCards, []);
 });
 
-test("a delayed spoken pick can only queue an unsure capture that preceded it", async () => {
+test("a delayed spoken pick can only queue choices that were offered when it was captured", async (t) => {
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ cancelWindow: { enabled: false } }) });
   const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: now - 300 });
   const postAt = (id: string, text: string, capturedAt: number) =>
     post("/voice/utterances", { ...capture(text, id), capturedAt }, token);
   const before = queued("Will");
+  await postAt("older", "Steven ask Will about yesterday", now - 300);
+  await resolved("older");
+  t.mock.timers.setTime(now - 100);
   await postAt("newer", "Steven ask Will about tomorrow", now - 100);
+  await resolved("newer");
+  t.mock.timers.setTime(now);
   await postAt("too-early", "Will", now - 400);
   assert.deepEqual(queued("Will"), before);
   assert.equal((await readHeard()).find((entry) => entry.id === "too-early")?.rule, "no-message");
-  await postAt("older", "Steven ask Will about yesterday", now - 300);
   await postAt("between", "Will", now - 200);
   assert.deepEqual(queued("Will"), [...before, "about yesterday"]);
   assert.equal(queued("Steve").at(-1), "ask");

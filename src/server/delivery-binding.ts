@@ -506,6 +506,18 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     }
   }
 
+  /** Offsets this page (or a quiet feed retry) can need. SDK UUIDs never need a prefix proof. */
+  projectionOffsets(key: string, version: string | undefined, messages?: TranscriptMessage[]): number[] {
+    if (!messages && !this.deferredBindings.size) return [];
+    const visible = messages && new Set(messages.filter(m => m.role === "user" && m.text).map(m => injectionFingerprint(m.text)));
+    if (visible && !visible.size) return [];
+    const verified = version !== undefined && this.scanVersions.get(key) === version;
+    const offsets = this.rows(key).filter(row => row.messageId !== row.id && !row.contested &&
+      !(verified && this.verifiedTextRows.has(row.id)) &&
+      (visible ? visible.has(row.fingerprint) : this.deferredBindings.has(row.id))).map(row => row.transcriptOffset ?? 0);
+    return [...new Set(offsets)];
+  }
+
   /** An open feed can finish a deferred binding even if the native writer has gone quiet. */
   retryDeferredBindings(conversation: DeliveryConversation): void {
     this.flushClientObservations(conversation.key);

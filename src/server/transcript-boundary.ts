@@ -62,19 +62,25 @@ function captureBoundary(path: string, offset?: number) {
   }
 }
 
-/** Capture the handoff EOF and any outstanding text receipts against the same revision. */
-export function captureHandoffBoundaries(path: string, offsets: number[]): PreparedTranscriptBoundaries | null {
+/** Capture the requested prefix proofs against one revision, including EOF when preparing a handoff. */
+export function captureHandoffBoundaries(path: string, offsets: number[], includeEof = true): PreparedTranscriptBoundaries | null {
   try {
-    const eof = captureBoundary(path);
-    if (!eof) return null;
-    const proofs = new Map<number, TranscriptBoundary>([[eof.boundary.offset, eof.boundary]]);
+    // Projection only needs the visible handoff offsets; capturing the current EOF is for a new send.
+    const snapshot = transcriptSnapshot(path);
+    if (!snapshot) return { version: null, eof: null, proofs: new Map() };
+    const eof = includeEof ? captureBoundary(path) : null;
+    if (includeEof && !eof) return null;
+    const version = eof?.version ?? snapshot.version;
+    const size = eof?.boundary.offset ?? snapshot.size;
+    const proofs = new Map<number, TranscriptBoundary>();
+    if (eof) proofs.set(eof.boundary.offset, eof.boundary);
     for (const offset of offsets) {
-      if (offset > eof.boundary.offset || proofs.has(offset)) continue;
+      if (offset > size || proofs.has(offset)) continue;
       const receipt = captureBoundary(path, offset);
-      if (!receipt || receipt.version !== eof.version) return null;
+      if (!receipt || receipt.version !== version) return null;
       proofs.set(offset, receipt.boundary);
     }
-    return { version: eof.version, eof: eof.boundary, proofs };
+    return { version, eof: eof?.boundary ?? null, proofs };
   } catch (error) {
     // A consistently unreadable file still permits delivery, with no text attribution.
     if (!(error instanceof Error) || !("code" in error)) throw error;
@@ -82,10 +88,10 @@ export function captureHandoffBoundaries(path: string, offsets: number[]): Prepa
   }
 }
 
-export function prepareHandoffBoundaries(path: string, offsets: number[]): Promise<PreparedTranscriptBoundaries | null> {
+export function prepareHandoffBoundaries(path: string, offsets: number[], includeEof = true): Promise<PreparedTranscriptBoundaries | null> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./transcript-boundary-worker.mjs", import.meta.url), {
-      workerData: { path, offsets }, execArgv: [],
+      workerData: { path, offsets, includeEof }, execArgv: [],
     });
     worker.once("message", resolve);
     worker.once("error", reject);

@@ -81,7 +81,9 @@ test("spoken words and the exact delivered payload in both conversation views", 
       const older = page.getByRole("button", { name: "Load older messages" });
       await expect(older).toBeVisible();
       await expect(raw).toHaveCount(0);
-      await older.click();
+      // Scrolling near the top loads history and removes the button before a click can land.
+      await page.locator(".transcript-log").hover();
+      await page.mouse.wheel(0, -100_000);
     }
     await expect(raw.first()).toBeVisible();
     await expect(raw.getByText("Spoken", { exact: true })).toHaveCount(0);

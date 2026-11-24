@@ -374,3 +374,63 @@ test("a live spoken cursor bounds append I/O and recovers rewritten history", { 
   assert.equal(corrected.messages[0]?.text, "EDITED WHILE BIG");
   checkProof(corrected);
 });
+
+test("cold transcript views verify multiple visible spoken handoff offsets off-thread, including after file replacement", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  const { sessionMessages } = await import("../src/server/harness/index.ts");
+  const { noteKeyFor } = await import("../src/server/registry.ts");
+  const { prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
+  const db = await import("../src/server/db.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const key = noteKeyFor(session);
+  const native = sessionMessages(session)!;
+  const offsets: number[] = [];
+  const now = Date.now();
+  writeFileSync(path, JSON.stringify({ padding: "p".repeat(2 * 1024 * 1024) }) + "\n");
+  for (const id of ["visible-first", "visible-second"]) {
+    const queued = db.createPendingTurn({ id, noteKey: key, spokenWords: id, text: id, now });
+    const claim = db.claimNextPendingTurn(key, now, queued, text => text)!;
+    const prepared = await prepareSpokenTranscript(key, native);
+    const row = reserveSpokenHandoff({ key, session, transcript: native }, claim, id, false, 0, now, prepared)!;
+    offsets.push(row.transcriptOffset!);
+    assert.ok(db.retireDeliveredPendingTurn(claim.id, claim.revision, now, row.id));
+    appendFileSync(path, JSON.stringify({ type: "user", uuid: "native-" + id, timestamp: new Date(now).toISOString(),
+      message: { role: "user", content: id } }) + "\n");
+  }
+  spokenLedger.bindLanded(key, native, now);
+  spokenLedger.forgetCaches();
+  const reader = native.read as Required<Pick<typeof native.read, "boundary" | "prepareHandoffBoundaries">>;
+  const sync = t.mock.method(reader, "boundary");
+  let appendDuringVerification = false;
+  const prepare = reader.prepareHandoffBoundaries.bind(reader);
+  const worker = t.mock.method(reader, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+    const result = await prepare(...args);
+    if (appendDuringVerification) {
+      appendDuringVerification = false;
+      appendFileSync(path, turn("during-verification", "appended while reading history"));
+    }
+    return result;
+  });
+  const spokenIds = (messages: import("../src/shared/types.ts").TranscriptMessage[]) =>
+    messages.filter(m => m.presentation?.kind === "spoken").map(m => m.id);
+  const opened = await firstFrame();
+  assert.ok(opened.type === "init");
+  assert.deepEqual(spokenIds(opened.messages), ["native-visible-first", "native-visible-second"]);
+  assert.deepEqual(worker.mock.calls[0]?.arguments, [path, offsets, false]);
+  appendFileSync(path, turn("advance-revision", "more output"));
+  appendDuringVerification = true;
+  const history = await app.request("/api/sessions/s1/transcript?before=" + statSync(path).size, { headers: { host: "127.0.0.1:7317" } });
+  assert.equal(history.status, 200);
+  assert.deepEqual(spokenIds((await history.json()).messages), ["native-visible-first", "native-visible-second"]);
+  assert.deepEqual(worker.mock.calls[1]?.arguments, [path, offsets, false]);
+  assert.deepEqual(worker.mock.calls[2]?.arguments, [path, offsets, false], "retry the new revision before returning history");
+  writeFileSync(path + ".new", readFileSync(path));
+  renameSync(path + ".new", path);
+  const replacement = await firstFrame();
+  assert.ok(replacement.type === "init");
+  assert.deepEqual(spokenIds(replacement.messages), []);
+  assert.equal(sync.mock.callCount(), 0);
+  assert.equal(worker.mock.callCount(), 4);
+  t.diagnostic(`Three projections of ${statSync(path).size} bytes verified ${offsets.length} handoff offsets per worker batch, with zero synchronous boundary reads`);
+});

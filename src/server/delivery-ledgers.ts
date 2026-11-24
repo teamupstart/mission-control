@@ -1,6 +1,6 @@
 import { setImmediate as yieldToDaemon } from "node:timers/promises";
 import { statSync } from "node:fs";
-import type { PendingTurn } from "@shared/types.ts";
+import type { PendingTurn, TranscriptMessage } from "@shared/types.ts";
 import {
   bindDelegatedTurn,
   bindReviewDelivery,
@@ -182,6 +182,30 @@ export async function prepareSpokenTranscript(key: string, transcript: NonNullab
   } catch (error) {
     throw new SpokenTranscriptUnavailable(error);
   }
+}
+
+/** Run the synchronous projection against worker-verified offsets from the current file revision. */
+export async function withSpokenReadProofs<T>(conversation: DeliveryConversation | null, messages: TranscriptMessage[] | undefined,
+  project: (conversation: DeliveryConversation | null) => T): Promise<T> {
+  const transcript = conversation?.transcript;
+  const prepare = transcript?.read.prepareHandoffBoundaries;
+  if (!conversation || !transcript || !prepare || !spokenLedger.rows(conversation.key).length) return project(conversation);
+  const { path, read } = transcript;
+  // An append can race a worker response. Recheck against the new revision before
+  // asking the caller to retry the page. Neither attempt hashes bytes on the daemon.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const version = read.snapshot?.(path)?.version;
+    const offsets = spokenLedger.projectionOffsets(conversation.key, version, messages);
+    const capture = offsets.length ? await prepare(path, offsets, false) : null;
+    if (offsets.length && (!capture || capture.version !== version || read.snapshot?.(path)?.version !== version)) continue;
+    const result = project({ ...conversation, transcript: { path, read: { ...read,
+      boundary: (_path, offset) => offset !== undefined && capture && read.snapshot?.(path)?.version === version
+        ? capture.proofs.get(offset) ?? null : null,
+    } } });
+    const current = read.snapshot?.(path)?.version;
+    if (current === version || (!capture && !spokenLedger.projectionOffsets(conversation.key, current, messages).length)) return result;
+  }
+  throw new SpokenTranscriptChanged();
 }
 
 /** At the transport guard, the receiving cycle and its corresponding ledger reservation commit together. */

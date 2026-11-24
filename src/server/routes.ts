@@ -415,7 +415,7 @@ import { composeStandingInstructions } from "./instructions/compose.ts";
 import { pipelineHostStanding, resolveTaskPersona, withTaskPersona } from "./instructions/persona.ts";
 import { canonicalRepoPath } from "./instructions/resolve.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
-import { attributeTranscript } from "./transcript-attribution.ts";
+import { attributeTranscriptPage } from "./transcript-attribution.ts";
 import { taskTitlePresenter } from "./task-titles.ts";
 import { bindLaunchTurnMessage, resolveLaunchMarker } from "./launch-presentation.ts";
 import {
@@ -4790,7 +4790,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json({ toolUseId: path && spec?.subagentLaunch ? await spec.subagentLaunch(path, agentId) : null });
   });
 
-  app.get("/api/sessions/:id/transcript", (c) => {
+  app.get("/api/sessions/:id/transcript", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     // `unavailable` covers every reason there are no turns to serve - a harness declares
@@ -4817,7 +4817,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({
         ...page,
         // The same task-title projection the live stream applies (`task-titles.ts`).
-        messages: taskTitlePresenter(registry).transcript(attributeTranscript(
+        messages: taskTitlePresenter(registry).transcript(await attributeTranscriptPage(
           session.id,
           page.messages,
           resolveLaunchMarker(registry, session.id),

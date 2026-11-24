@@ -317,7 +317,8 @@ export interface TranscriptMessages {
   snapshot?(path: string): { size: number; version: string } | null;
   /** Identity of the file and its bytes through an offset, stable across later appends. */
   boundary?(path: string, offset?: number): TranscriptBoundary | null;
-  prepareHandoffBoundaries?(path: string, offsets: number[]): Promise<PreparedTranscriptBoundaries | null>;
+  /** Batch native prefix proofs off-thread. A dashboard read only needs its supplied offsets. */
+  prepareHandoffBoundaries?(path: string, offsets: number[], includeEof?: boolean): Promise<PreparedTranscriptBoundaries | null>;
   /** Recent history through the captured EOF (default: current EOF). Throws if unreadable. */
   initial(path: string, through?: number): TranscriptInitialRead;
   /**

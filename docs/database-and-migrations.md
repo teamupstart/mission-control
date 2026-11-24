@@ -282,6 +282,8 @@ message is queued and can be recalled. After the third failure, the daemon relea
 hold and tells the operator they can repeat the message.
 If the writer appends during the read, a second matching hash through that same offset
 confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
+The live dashboard and backward history pages verify visible text-bound receipts in a worker.
+Each page requests its distinct handoff offsets. An unrelated append needs no disclosure proof.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
 The same transaction records the conversation and fingerprint in `session_spoken_releases`.
 The next ledger read rechecks competing deliveries and acknowledges that release atomically,

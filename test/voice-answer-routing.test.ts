@@ -594,16 +594,19 @@ test("a companion submit must hear from every live dashboard before resolving th
   assert.equal(registry.getReview(q.id)?.status, "answered");
 });
 
-test("a suspended background window releases the companion and must answer a fresh request to reclaim focus", async t => {
+for (const state of ["in the background", "before its first report", "while focused with no cards"] as const) {
+test(`a window suspended ${state} releases the companion and must answer a fresh request to reclaim focus`, async t => {
   const q = question();
   const router = registry.voiceRouter!;
+  await put("/api/voice/config", { cancelWindow: { enabled: true, seconds: 30 } });
   await show([]);
   const id = "suspended";
-  t.after(router.openCards.connect(id));
+  t.after(router.openCards.connect(id, true));
   const report = (focused: boolean, sequence?: number) => put("/api/voice/open-cards", {
     windowId: id, focused, cards: [{ kind: "question", id: q.id, focused }],
   }, sequence ? { "x-voice-confirm-focus": String(sequence) } : {});
-  await report(false);
+  if (state === "in the background") await report(false);
+  if (state === "while focused with no cards") await put("/api/voice/open-cards", { windowId: id, focused: true, cards: [] });
   const requested: number[] = [];
   const publish = registry.emitQuestionEvent.bind(registry);
   t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
@@ -619,6 +622,7 @@ test("a suspended background window releases the companion and must answer a fre
   await report(true, requested[1]);
   assert.equal(router.openCards.footerOwner(q.id), id);
 });
+}
 
 test("a late report from a timed-out request cannot reinstate a closed card on the same focus transition", async t => {
   const q = question();

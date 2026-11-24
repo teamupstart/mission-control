@@ -26,7 +26,7 @@ interface CardReportTiming {
 // The browser and daemon each round their wall-to-monotonic calibration to milliseconds.
 const FOCUS_CLOCK_ROUNDING_US = 2_000;
 // Leave time to submit during even the shortest (one second) cancel window.
-const BACKGROUND_CONFIRM_MS = 400;
+const COMPANION_CONFIRM_MS = 400;
 
 interface CardStream {
   floorUs: number;
@@ -153,24 +153,21 @@ export class VoiceOpenCards {
     return [...this.streams].filter(([id, stream]) => !stream.resume && (stream.browser || this.reports.has(id))).map(([id]) => id);
   }
 
-  private inactive(windowId: string): boolean {
-    const last = this.reports.get(windowId);
-    return !!last && (!last.report?.focused || last.focusAtUs < this.latestFocusUs);
-  }
-
   async confirmCompanion(reviewId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
     const confirmed = new Set<string>();
+    const timeout = AbortSignal.timeout(COMPANION_CONFIRM_MS);
+    const probe = AbortSignal.any([timeout, signal]);
     await Promise.all(this.reportingWindows().map(async windowId => {
       const stream = this.streams.get(windowId)!;
-      const timeout = this.inactive(windowId) ? AbortSignal.timeout(BACKGROUND_CONFIRM_MS) : undefined;
-      if (await this.confirmReport(windowId, request, timeout ? AbortSignal.any([timeout, signal]) : signal)) {
+      if (await this.confirmReport(windowId, request, probe)) {
         confirmed.add(windowId);
-      } else if (timeout?.aborted && !signal.aborted && this.streams.get(windowId) === stream && !stream.resume && this.inactive(windowId)) {
-        // A frozen background tab cannot retain the right to claim a footer.
+      } else if (timeout.aborted && !signal.aborted && this.streams.get(windowId) === stream && !stream.resume && this.footerOwner(reviewId) !== windowId) {
+        // A window without this footer cannot block the companion indefinitely.
         // Fence its delayed reports until it reads its DOM again after suspension.
         const sequence = ++this.confirmationSequence;
         stream.resume = { sequence, ask: () => request(windowId, sequence) };
-        this.reports.get(windowId)!.report = null;
+        const last = this.reports.get(windowId);
+        if (last) last.report = null;
         this.reportChanged();
         stream.resume.ask();
       }

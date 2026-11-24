@@ -423,13 +423,14 @@ export function useEventStream(): MissionState {
     let voiceClock = new VoiceCardClock();
     let clockProbe: AbortController | undefined;
     let lastProbeAt = -Infinity;
-    function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }) {
+    function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }, cards: readonly VoiceCard[]) {
       const now = performance.now();
       const stamp = frame.voiceServerTime ?? Date.now();
       const sample = voiceClock.observe(connectionStartedAt, now, frame.voiceStreamStartedAt ?? stamp, stamp);
       // A long SSE handshake does not tell us which direction was slow. Take an
       // independent timestamped read and refine only the windows still using that estimate.
-      if (sample.uncertain && !clockProbe && now - lastProbeAt > 1000) {
+      if (sample.uncertain && !clockProbe && now - lastProbeAt > 1000 &&
+          cards.some(card => card.state === "pending" && card.deadline !== null)) {
         const probe = new AbortController();
         clockProbe = probe;
         lastProbeAt = now;
@@ -594,8 +595,8 @@ export function useEventStream(): MissionState {
           if (msg.voice && msg.voice.mode !== "off") {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
-            const sample = sampleCardClock(msg);
             const active = msg.voiceCards ?? [];
+            const sample = sampleCardClock(msg, active);
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
@@ -895,7 +896,7 @@ export function useEventStream(): MissionState {
           });
           break;
         case "voice_card": {
-          const sample = sampleCardClock(msg);
+          const sample = sampleCardClock(msg, [msg.card]);
           scheduleVoiceExpiry(msg.card);
           setVoiceCards((prev) => {
             const next = new Map(prev);

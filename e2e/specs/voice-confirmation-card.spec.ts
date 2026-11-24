@@ -33,14 +33,14 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
 });
 
-test("an unfocused desktop repeats the words and applies Cancel or Send now to the same card", async ({ dashboard: page, daemon }) => {
+test("leaving a focused dashboard during the countdown shows the desktop notice and applies its action", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
   expect((await page.request.put(daemon.baseURL + "/api/ui/config", { data: {
     alerts: { ...config.alerts, notifications: true, sound: false },
   } })).ok()).toBe(true);
   await page.addInitScript(() => {
-    document.hasFocus = () => false;
+    document.hasFocus = () => document.documentElement?.dataset.fixtureBlurred !== "true";
     Object.defineProperty(Notification, "permission", { get: () => "granted" });
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true,
@@ -48,6 +48,7 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
       showVoiceCardNotice: ({ title, body, scope }: { title: string; body: string; scope: string }) => {
         document.title = title + " | " + body;
         document.documentElement.dataset.noticeScope = scope;
+        document.documentElement.dataset.noticeCount = String(Number(document.documentElement.dataset.noticeCount ?? 0) + 1);
         return new Promise(resolve => window.addEventListener("fixture-native-action", event => resolve((event as CustomEvent).detail), { once: true }));
       },
       dismissVoiceCardNotice() {},
@@ -59,6 +60,19 @@ test("an unfocused desktop repeats the words and applies Cancel or Send now to t
     const id = "native-" + choice;
     const words = "inspect " + id;
     await say(daemon, "Steve, " + words, { id });
+    if (choice === "cancel") {
+      await expect(page.getByRole("status").filter({ hasText: words })).toBeVisible();
+      await expect(page.locator("html")).not.toHaveAttribute("data-notice-count", /.+/);
+      await page.clock.install();
+      await page.clock.fastForward(4000);
+      await page.evaluate(() => {
+        document.documentElement.dataset.fixtureBlurred = "true";
+        window.dispatchEvent(new Event("blur"));
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await expect(page.locator("html")).toHaveAttribute("data-notice-count", "1", { timeout: 3000 });
+      expect(Number((await page.title()).match(/sending in (\d+)s/)?.[1])).toBeLessThanOrEqual(26);
+    }
     await expect(page).toHaveTitle(new RegExp("To Steve · sending in \\d+s \\| " + words));
     const action = page.waitForResponse(response => response.url().endsWith("/cards/" + id + "/" + choice));
     await page.evaluate(detail => window.dispatchEvent(new CustomEvent("fixture-native-action", { detail })), choice);

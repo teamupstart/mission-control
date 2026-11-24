@@ -521,10 +521,20 @@ export function useEventStream(): MissionState {
           // Absent while the flag is off, which is the same answer as a cleared frame.
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
-          // Absent while the flag is off, which reads as off.
-          clearVoiceTimers();
-          msg.voiceCards?.forEach(card => scheduleVoiceExpiry(card));
-          setVoiceCards(new Map(msg.voiceCards?.map((card) => [card.id, card])));
+          if (msg.voice && msg.voice.mode !== "off") {
+            // The daemon snapshots active deliveries and held turns. Keep settled cards
+            // on their local timers, including timers paused for focus or a recovery action.
+            const active = msg.voiceCards ?? [];
+            active.forEach(card => scheduleVoiceExpiry(card));
+            setVoiceCards(current => {
+              const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
+              for (const card of active) next.set(card.id, card);
+              return next;
+            });
+          } else {
+            clearVoiceTimers();
+            setVoiceCards(new Map());
+          }
           setVoice(current => withNewerVoiceMode(msg.voice ?? null, current));
           if (msg.voiceIndicators) applyVoiceIndicatorSelection(msg.voiceIndicators, msg.voiceIndicatorVersion, msg.voiceConfirmation);
           // Same reasoning for the settings dots: seed them from the snapshot so they are

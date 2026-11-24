@@ -15,7 +15,8 @@ window off, delivery begins immediately. Sent and queued cards show the open que
 The Sound preference controls the pending chime. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
-notifications. A split card shows an immediate stop’s result as soon as it arrives. The
+notifications. If you switch away while the card is counting down, the notification shows
+the time left in the window. A split card shows an immediate stop’s result as soon as it arrives. The
 desktop notification identifies that stop separately and counts down only the waiting
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 If a desktop action fails, the dashboard card names the unconfirmed action and shows
@@ -25,7 +26,8 @@ At the deadline the card removes its delivery controls. If the outcome has yet t
 it shows “Awaiting delivery confirmation”.
 
 A settled card stays visible while one of its controls has focus or its action is in
-progress. Once both end, the card gives you another eight seconds to read the result or retry.
+progress, including when the dashboard reconnects to the daemon. Once both end, the card
+gives you another eight seconds to read the result or retry.
 Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
 draft stays available when the follow-up closes.
 

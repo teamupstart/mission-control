@@ -41,35 +41,49 @@ function Card({ card, actions, notify, sound, notifications, onDeadline }: {
   ].join("\n");
   useEffect(() => {
     if (!notify || !deadline || state !== "pending" || !waiting.length) return;
-    if (!notifications || document.hasFocus() || typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    try {
-      const seconds = Math.ceil(Math.max(0, deadline - Date.now()) / 1000);
-      if (seconds === 0) return;
-      const title = recipient + " · sending in " + seconds + "s";
-      const shell = window.missionDesktop;
-      if (shell?.showVoiceCardNotice) {
-        const id = newRequestId();
-        let active = true;
-        void shell.showVoiceCardNotice({ id, title, body, deadline, scope }).then(choice => {
-          if (!active || !choice) return;
-          const label = choice === "cancel" ? "Cancel" : "Send now";
-          void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
-        }).catch(() => {});
-        return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
-      }
-      const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
-      let timer: number | undefined;
-      const close = () => {
-        if (timer === undefined) return;
-        window.clearTimeout(timer);
-        timer = undefined;
-        note.onclick = null;
-        note.close();
-      };
-      timer = window.setTimeout(close, Math.max(0, deadline - Date.now()));
-      note.onclick = () => { window.focus(); close(); };
-      return close;
-    } catch { /* A browser may require a service worker for system notifications. */ }
+    if (!notifications || typeof Notification === "undefined") return;
+    const showNotice = () => {
+      try {
+        const seconds = Math.ceil(Math.max(0, deadline - Date.now()) / 1000);
+        if (seconds === 0) return;
+        const title = recipient + " · sending in " + seconds + "s";
+        const shell = window.missionDesktop;
+        if (shell?.showVoiceCardNotice) {
+          const id = newRequestId();
+          let active = true;
+          void shell.showVoiceCardNotice({ id, title, body, deadline, scope }).then(choice => {
+            if (!active || !choice) return;
+            const label = choice === "cancel" ? "Cancel" : "Send now";
+            void run(() => api.voiceCardAction(cardId, choice), "", `Desktop ${label} was not confirmed. `);
+          }).catch(() => {});
+          return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
+        }
+        const note = new Notification(title, { body, tag: "voice-" + cardId, silent: true });
+        let timer: number | undefined;
+        const close = () => {
+          if (timer === undefined) return;
+          window.clearTimeout(timer);
+          timer = undefined;
+          note.onclick = null;
+          note.close();
+        };
+        timer = window.setTimeout(close, Math.max(0, deadline - Date.now()));
+        note.onclick = () => { window.focus(); close(); };
+        return close;
+      } catch { /* A browser may require a service worker for system notifications. */ }
+    };
+    let dismiss: (() => void) | undefined;
+    const notifyWhenAway = () => {
+      if (!dismiss && !document.hasFocus() && Notification.permission === "granted") dismiss = showNotice();
+    };
+    window.addEventListener("blur", notifyWhenAway);
+    document.addEventListener("visibilitychange", notifyWhenAway);
+    notifyWhenAway();
+    return () => {
+      window.removeEventListener("blur", notifyWhenAway);
+      document.removeEventListener("visibilitychange", notifyWhenAway);
+      dismiss?.();
+    };
   }, [cardId, deadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
   return <VoiceCardView card={card} actions={actions} operation={{ busy, feedback, run }} onDeadline={onDeadline} />;
 }

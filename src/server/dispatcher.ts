@@ -1471,15 +1471,8 @@ export class Dispatcher {
             if (!ownsFailure()) return;
             const failure = this.registry.getTask(taskId)!.launchFailure!;
             this.patch(taskId, { error: message, launchFailure: { ...failure, sessionKept: false, terminalInactive: true } });
-            const checkCheckout = async (path: string) => {
-              // Native leases check occupancy again immediately before reset. A fallback Git
-              // checkout has no lease manager to protect a process left behind by the wrapper.
-              if (taskRepoRefs(cur).find((ref) => ref.worktreePath === path)?.provider !== "mission") {
-                const occupancy = (await inspectWorktreeOccupancy([path])).get(path);
-                if (occupancy?.status !== "known" || occupancy.occupants.length) return "checkout is occupied or occupancy is unknown";
-              }
-              return worktreeReturnBlocker(path, { fetch: true });
-            };
+            const checkCheckout = (path: string) => inactiveTerminalCheckoutBlocker(path,
+              taskRepoRefs(cur).find((ref) => ref.worktreePath === path)?.provider);
             await this.teardownTaskResources(taskId, cur, message, ownsFailure, checkCheckout);
           };
           if (await err.unstarted || err.exitRecord.confirmed()) {
@@ -3542,6 +3535,19 @@ export function releasedTaskResources(
         : entry,
     ),
   };
+}
+
+/** A timed-out terminal may leave a process in a fallback checkout after its wrapper exits. */
+export async function inactiveTerminalCheckoutBlocker(
+  path: string,
+  provider: WorktreeProvider | null | undefined,
+  inspectOccupancy = inspectWorktreeOccupancy,
+): Promise<string | null> {
+  const unsafe = await worktreeReturnBlocker(path, { fetch: true });
+  if (unsafe || provider === "mission") return unsafe; // Native leases verify occupancy before reset.
+  const occupancy = (await inspectOccupancy([path])).get(path);
+  return occupancy?.status === "known" && occupancy.occupants.length === 0
+    ? null : "checkout is occupied or occupancy is unknown";
 }
 
 /** One tree's return-or-remove, provider-aware. See `teardownWorktree` for the policy. */

@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { seedGitRepo } from "./helpers/git-fixture.ts";
+import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
+import { gitIn, originAndCloneAt, seedGitRepo } from "./helpers/git-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-dispatch-cleanup-"));
@@ -20,7 +21,7 @@ writeFileSync(process.env.MISSION_MCP_SERVER, "// not executed by this test\n");
 // test never reaches a spawn.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 const { Registry } = await import("../src/server/registry.ts");
-const { Dispatcher, teardownWorktree } = await import("../src/server/dispatcher.ts");
+const { Dispatcher, inactiveTerminalCheckoutBlocker, teardownWorktree } = await import("../src/server/dispatcher.ts");
 const { MULTIPLEXERS } = await import("../src/server/terminal/registry.ts");
 const { fakeMultiplexer, muxPane, FAIL, OK } = await import("./helpers/terminal-fakes.ts");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
@@ -227,3 +228,35 @@ test("a renamed legacy cmux home keeps its worktree when cleanup has no captured
     MULTIPLEXERS.cmux = original;
   }
 });
+
+for (const afterFetch of ["occupied", "unknown", "empty"] as const) {
+  test(`fallback removal after an inactive terminal observes ${afterFetch} occupancy after the fetch`, async () => {
+    const { clone } = originAndCloneAt(join(home, `fallback-${afterFetch}`));
+    const tree = join(home, `checkout-${afterFetch}`);
+    const branch = `harness/cleanup-${afterFetch}`;
+    gitIn(clone, "worktree", "add", "-qb", branch, tree);
+    const fetched = gitIn(tree, "rev-parse", "--path-format=absolute", "--git-path", "FETCH_HEAD");
+    rmSync(fetched, { force: true });
+    const remove = teardownWorktree({ repoRoot: clone, worktreePath: tree, branch, provider: "git", homeName: null },
+      undefined, "foreground", undefined, (path) => inactiveTerminalCheckoutBlocker(path, "git", async () => {
+        // The first occupancy snapshot would be empty. Model a process entering the
+        // checkout (or an unreadable scan) while the real fetch is in progress.
+        let occupancy: WorktreeOccupancy = { status: "known", occupants: [] };
+        if (existsSync(fetched)) {
+          if (afterFetch === "unknown") occupancy = { status: "unknown", reason: "fixture process scan unavailable" };
+          else if (afterFetch === "occupied") occupancy.occupants.push({
+            pid: 123, ppid: 1, startMs: 1, startRaw: "fixture", command: "editor", cwd: path, knownOwner: null,
+          });
+        }
+        return new Map([[path, occupancy]]);
+      }));
+    if (afterFetch === "empty") {
+      await remove;
+      assert.equal(existsSync(tree), false);
+    } else {
+      await assert.rejects(remove, /occupied or occupancy is unknown/);
+      assert.ok(existsSync(fetched), "the remote was refreshed");
+      assert.ok(existsSync(tree), "the checkout remains available to its occupant");
+    }
+  });
+}

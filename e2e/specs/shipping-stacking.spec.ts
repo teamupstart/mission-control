@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeGhCompare, writeGhPullRequests } from "../fixtures/fake-agents.ts";
@@ -368,8 +369,7 @@ test("a finished prerequisite with an open pull request releases a stacked depen
   }
   await expect.poll(async () => (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.id === session.id)?.prState, { timeout: 30_000 }).toBe("open");
 
-  // The dependent inherits the Stack default from Settings.
-  const child = await backlogTask(daemon, "Parser phase two", { dependencies: [{ type: "task", taskId: parent.id }] });
+  const child = await backlogTask(daemon, "Parser phase two", { dependencies: [{ type: "task", taskId: parent.id, mode: "stack" }] });
   await boardLayout(dashboard, daemon);
   const card = dashboard.locator(".bl-card", { hasText: child.title });
   await expect(card.locator(".bl-stacked")).toHaveText("Stacked on #31", { timeout: 30_000 });
@@ -379,13 +379,31 @@ test("a finished prerequisite with an open pull request releases a stacked depen
     .toEqual({ ready: "number", branch: "feat/parser-groundwork", url: prUrl, satisfied: null });
   await shoot(card, "backlog-stacked-on");
 
-  // Dispatching it pins the worktree to the parent branch's current head.
-  await api(daemon, `/api/tasks/${child.id}/dispatch`, { overrideDisabled: true });
+  await card.getByRole("button", { name: child.title, exact: true }).click();
+  const editor = dashboard.getByRole("dialog", { name: "Edit a backlog task" });
+  const dispatch = editor.getByRole("button", { name: "Dispatch now", exact: true });
+  await expect(dispatch).toBeEnabled();
+  await expectContentClearsBorder(editor);
+  await expect(editor.getByText("Stacked on #31", { exact: true })).toBeVisible();
+  await expect(editor.getByText(/Waits for 1 dependency/)).toHaveCount(0);
+  const mode = editor.getByRole("group", { name: /When to start after/ });
+  await mode.getByRole("button", { name: "After merge" }).click();
+  await expect(editor.getByRole("button", { name: "Waiting for dependencies" })).toBeDisabled();
+  await expect(editor.getByText(/Waits for 1 dependency/)).toBeVisible();
+  await expect(editor.getByText("Stacked on #31", { exact: true })).toHaveCount(0);
+  await shoot(editor, "editor-wait-for-merge");
+  await mode.getByRole("button", { name: "Stack" }).click();
+  await editor.getByPlaceholder("e.g. bug, infra").fill("parser");
+  await expect(dispatch).toBeEnabled();
+  await shoot(editor, "editor-stack-ready");
+  await dispatch.click();
+  await expect(editor).toBeHidden();
   let started!: Task;
   await expect.poll(async () => {
     started = (await api<Task[]>(daemon, "/api/tasks")).find((task) => task.id === child.id)!;
     return started.baseSha;
   }, { timeout: 60_000 }).toBe(head);
+  expect(started.labels).toEqual(["parser"]);
   expect({ parent: started.stackParentTaskId, branch: started.stackBaseBranch, sha: started.stackBaseSha, url: started.stackPrUrl })
     .toEqual({ parent: parent.id, branch: "feat/parser-groundwork", sha: head, url: prUrl });
   let childSession!: Session;
@@ -395,6 +413,7 @@ test("a finished prerequisite with an open pull request releases a stacked depen
     childSession = (await api<Session[]>(daemon, "/api/sessions")).find((s) => s.task?.id === child.id)!;
     return Boolean(childSession?.cwd && childSession.agentSessionId && childSession.state === "idle");
   }, { timeout: 60_000 }).toBe(true);
+  expect(childSession.cwd).not.toBe(session.cwd);
   expect(execFileSync("git", ["-C", childSession.cwd!, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(head);
   // Its task contract names the base its pull request belongs on.
   await expect.poll(async () => {

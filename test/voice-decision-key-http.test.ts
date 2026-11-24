@@ -198,10 +198,10 @@ for (const operation of ["save", "remove"] as const) {
     const path = decisionKeyPath();
     assert.equal((await report("/api/voice/decision-key", "PUT", { provider: "openai", key: OPENAI_KEY })).status, 200);
     const contents = readFileSync(path);
-    const read = fs.readFileSync;
-    const fault = t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+    const open = fs.openSync;
+    const fault = t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
       if (args[0] === path) throw Object.assign(new Error("read denied"), { code: "EACCES" });
-      return read(...args);
+      return open(...args);
     });
     syncBuiltinESMExports();
     try {
@@ -251,3 +251,27 @@ test("a saved key is in neither SQLite nor a settings backup", async () => {
     assert.equal(readFileSync(join(home, file)).includes(OPENAI_KEY), false, file);
   }
 });
+
+for (const component of ["directory", "file"] as const) {
+  test(`the key store refuses a linked ${component} on read, save and last-key removal`, async (t) => {
+    const dir = join(home, "voice");
+    const fixture = mkdtempSync(join(home, "key-fixture-"));
+    const target = join(fixture, "decision-key.json");
+    const contents = JSON.stringify({ openai: OPENAI_KEY });
+    writeFileSync(target, contents);
+    if (component === "directory") {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.symlinkSync(fixture, dir, "dir");
+    } else {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.symlinkSync(target, decisionKeyPath());
+    }
+    const link = component === "directory" ? dir : decisionKeyPath();
+    t.after(() => fs.unlinkSync(link));
+    assert.equal((await report()).body.keys.openai.source, null);
+    assert.equal((await report("/api/voice/decision-key", "PUT", { provider: "jev", key: JEV_KEY })).status, 500);
+    assert.equal((await report("/api/voice/decision-key?provider=openai", "DELETE")).status, 500);
+    assert.equal(readFileSync(target, "utf8"), contents);
+    assert.ok(fs.lstatSync(link).isSymbolicLink());
+  });
+}

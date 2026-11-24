@@ -875,3 +875,57 @@ for (const change of ["not-running", "unavailable"] as const) {
     assert.equal(router.heard.list()[0]?.outcome, "not-running");
   });
 }
+
+test("a spoken split pick must follow the change of candidate rows", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  const { router, say, delivered } = routerRig(() => answered(null), ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  await say("Steven, check the build, and Alice, review the PR", "stages");
+  t.mock.timers.setTime(200);
+  assert.ok(await router.pick("stages", "task:Steve"));
+  const sayAt = (id: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+    id, text: "Alice", backend: "fluidaudio", capturedAt,
+  }));
+  await sayAt("early", 150);
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  assert.equal(await router.sendNow("stages"), false);
+  await sayAt("current", 200);
+  assert.ok(await router.sendNow("stages"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "stages"], ["Alice", "review the PR", "stages#2"]]);
+});
+
+test("confirming a comma-only split preserves literal C plus plus", async (t) => {
+  const { router, say, delivered } = routerRig(() => answered(null));
+  t.after(() => router.reset());
+  await say("Steve, explain C plus plus, Alice, review the PR", "literal");
+  assert.ok(await router.pick("literal", "task:Alice"));
+  assert.ok(await router.sendNow("literal"));
+  assert.deepEqual(delivered, [["Steve", "explain C plus plus", "literal"], ["Alice", "review the PR", "literal#2"]]);
+});
+
+test("a spoken boundary choice waits for the model's follow-up rows", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 100 });
+  let showRows!: (result: VoiceDecisionResult) => void;
+  const result = new Promise<VoiceDecisionResult>(resolve => { showRows = resolve; });
+  let onBoundary!: () => void;
+  const boundary = new Promise<void>(resolve => { onBoundary = resolve; });
+  const { router, delivered } = routerRig(questions => {
+    if (questions[0]?.kind === "who") return answered("task:Steve");
+    onBoundary();
+    return result;
+  }, ["Steve", "Stevie", "Alice"].map(n => name(n)));
+  t.after(() => router.reset());
+  const capture = (id: string, text: string, capturedAt: number) => router.accept(VoiceUtteranceSchema.parse({
+    id, text, backend: "fluidaudio", capturedAt,
+  }));
+  await capture("model", "Steven, check the build, and Alice, review the PR", 100);
+  await boundary;
+  t.mock.timers.setTime(200);
+  showRows(answered(null));
+  await router.resolution("model");
+  await capture("early", "Alice", 150);
+  assert.equal(router.activeCards()[0]?.state, "unsure");
+  await capture("current", "Alice", 200);
+  assert.ok(await router.sendNow("model"));
+  assert.deepEqual(delivered, [["Steve", "check the build", "model"], ["Alice", "review the PR", "model#2"]]);
+});

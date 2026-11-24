@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { stateDir } from "../../shared/harness-runtime.mjs";
@@ -26,14 +26,29 @@ export function decisionKeyPath(): string {
   return join(stateDir(), "voice", "decision-key.json");
 }
 
+function inspectKeyPath(path: string) {
+  const dir = lstatSync(dirname(path), { throwIfNoEntry: false });
+  if (!dir) return;
+  if (!dir.isDirectory()) throw new Error("Invalid voice key directory");
+  const file = lstatSync(path, { throwIfNoEntry: false });
+  if (file && !file.isFile()) throw new Error("Invalid voice key file");
+  return file;
+}
+
 /** Mutations can start a new store only when there is no existing file. */
 function readKeys(path: string): SavedKeys {
+  const file = inspectKeyPath(path);
+  if (!file) return {};
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw error;
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== file.dev || opened.ino !== file.ino) {
+      throw new Error("Voice key file changed during read");
+    }
+    text = readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
   }
   try {
     return SavedKeysSchema.parse(JSON.parse(text));
@@ -55,7 +70,7 @@ export function savedDecisionKeys(path = decisionKeyPath()): SavedKeys {
 
 function writeKeys(keys: SavedKeys, path: string): void {
   if (Object.keys(keys).length === 0) {
-    rmSync(path, { force: true });
+    if (inspectKeyPath(path)) rmSync(path);
     return;
   }
   const dir = dirname(path);
@@ -68,6 +83,7 @@ function writeKeys(keys: SavedKeys, path: string): void {
   try {
     writeFileSync(temp, `${JSON.stringify(keys)}\n`, { mode: 0o600, flag: "wx" });
     chmodSync(temp, 0o600);
+    inspectKeyPath(path);
     renameSync(temp, path);
   } catch (error) {
     rmSync(temp, { force: true });

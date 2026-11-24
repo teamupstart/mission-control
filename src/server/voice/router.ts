@@ -49,6 +49,7 @@ interface OpenCard {
   entry: HeardEntry;
   message: string;
   pickTargets?: readonly SpokenName[];
+  choicesOfferedAt?: number;
   splitPicks?: Map<string, VoiceSplitPoint>;
   modelStep?: AbortController;
   resolvingVisible?: boolean;
@@ -197,7 +198,8 @@ export class VoiceRouter {
     if (capturedAt > Date.now() + MAX_CAPTURE_CLOCK_SKEW_MS) return false;
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
     const unsureCards = Array.from(this.open.values())
-      .filter(({ card, entry }) => (card.state === "unsure" || card.state === "resolving") && entry.time <= capturedAt)
+      .filter(({ card, entry, choicesOfferedAt }) => (card.state === "unsure" || card.state === "resolving") &&
+        entry.time <= capturedAt && (choicesOfferedAt === undefined || choicesOfferedAt <= capturedAt))
       .map(({ card }) => card);
     // Bind every potential part to the roster session present when the utterance arrived.
     const decision = routeUtterance(utterance, { roster: roster.map(target => ({ ...target })), unsureCards });
@@ -298,6 +300,7 @@ export class VoiceRouter {
           entry.matchedName = target.name;
           item.card.parts[0]!.target = target;
           item.card.candidates = decision.candidates.map(agentRow);
+          item.choicesOfferedAt = Date.now();
           result = await ask(decision);
           if (this.open.get(id) !== item) return;
         } else {
@@ -313,6 +316,7 @@ export class VoiceRouter {
         const card: VoiceCard = { ...item.card, state: "unsure", candidates: decision.candidates.map(agentRow) };
         if (decision.reason === "second-name") {
           setSplitPicks(item, card, decision.target, decision.splits);
+          if (item.choicesOfferedAt !== undefined) item.choicesOfferedAt = Date.now();
         }
         this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates }, entry.time);
         return;
@@ -390,6 +394,7 @@ export class VoiceRouter {
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       setSplitPicks(item, card, target, item.remainingSplits, "boundary:");
+      item.choicesOfferedAt = Math.max(Date.now(), pickedAt);
       delete item.remainingSplits;
       item.card = card;
       delete item.pickTargets;

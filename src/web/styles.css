@@ -43359,10 +43359,15 @@ button.vi { cursor: pointer; }
   border: 0; border-top: 1px solid var(--border-soft); background: var(--panel);
   font: 600 11.5px var(--sans); white-space: nowrap; flex: none;
 }
-.app > .vi-status-line { margin-top: auto; width: 100%; }
+.app > .vi-status-line { margin-top: auto; width: 100%; container: voice-status / inline-size; }
 .vi-status-line svg, .vi-edge svg { width: 11px; height: 11px; }
 .vi-hint, .vi-action { margin-left: 4px; color: var(--dim); font-weight: 400; }
 .vi-action { margin-left: auto; color: var(--muted); }
+.vi-status-line .vi-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@container voice-status (max-width: 32rem) {
+  .vi-action { flex: none; }
+  .vi-action .vi-shortcut { display: none; }
+}
 .vi-floating, .vi-composer {
   display: inline-flex; align-items: center; justify-content: center; padding: 0; flex: none;
   width: 36px; height: 36px; border-radius: 50%; background: var(--panel);

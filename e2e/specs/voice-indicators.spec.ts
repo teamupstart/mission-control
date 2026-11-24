@@ -156,6 +156,44 @@ test("five selected indicators follow the daemon and advertise only a registered
   } finally { listener.stop(); }
 });
 
+test("a 320 px status line keeps its mode and mute action inside the window with a confirmed shortcut", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  const status = page.locator("button.vi-status-line");
+  try {
+    const report = await page.request.post(daemon.baseURL + "/voice/shell-report", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m" },
+    });
+    expect(report.ok()).toBe(true);
+    await expect(status.locator("kbd")).toBeVisible();
+    await page.setViewportSize({ width: 320, height: 640 });
+    for (const [word, action] of [["Listening", "Mute"], ["Muted", "Unmute"]]) {
+      await expect(status).toHaveAccessibleName(`Voice: ${word.toLowerCase()}. ${action}`);
+      await expect(status.locator(".vi-word")).toHaveText(word);
+      await expect(status.locator(".vi-word")).toBeInViewport({ ratio: 1 });
+      const actionLabel = status.locator(".vi-action");
+      await expect(actionLabel).toHaveText(`Click to ${action.toLowerCase()}`, { useInnerText: true });
+      await expect(actionLabel).toBeInViewport({ ratio: 1, timeout: 2000 });
+      expect(await status.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      expect((await status.boundingBox())?.height).toBe(26);
+      await status.focus();
+      await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌃⌥M to talk" })).toBeVisible();
+      if (word === "Listening") await status.click();
+    }
+    await page.mouse.move(1, 1);
+    await status.blur();
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await status.screenshot({ path: join(mkdtempSync(join(root, "narrow-status-")), "muted.png") });
+    }
+    await page.setViewportSize({ width: 720, height: 640 });
+    await expect(status.locator("kbd")).toBeVisible();
+    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+  } finally { listener.stop(); }
+});
+
 test("a changed voice shortcut stays hidden until the shell confirms the exact chord", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const listener = await beListener(daemon);

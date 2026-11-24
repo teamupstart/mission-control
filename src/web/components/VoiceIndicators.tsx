@@ -100,7 +100,7 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick, pending }: {
   const clickAction = `Click to ${action.toLowerCase()}`;
   const holdAction = mode === "auto-muted" || mode === "push-to-talk" ? "to talk" : "to talk during call auto-mute";
   const shortcut = chord && <>Hold <Keycap chord={chord} /> {holdAction}</>;
-  const actions = <>{clickAction}{shortcut && <> · {shortcut}</>}</>;
+  const actions = <>{clickAction}{shortcut && <span className="vi-shortcut"> · {shortcut}</span>}</>;
   const name = `Voice: ${word.toLowerCase()}. ${action}`;
   const tip = `${hint} ${clickAction}.`;
   const cls = `vi vi-${id} vi-${mode}${id === "topbar" ? " pulse-seg pulse-btn" : ""}`;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { voiceCardDeadline, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { Tooltip } from "./Tooltip.tsx";
 import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { useUiConfig } from "../lib/uiConfig.ts";
 import { api, type ActionResult } from "../lib/api.ts";
@@ -127,11 +128,13 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
     {choices.length > 1 && selected && <label className="vc-switch">Voice message
-      <select value={selected.id} onChange={event => setChosenId(event.target.value)}>
-        {choices.map(card => <option key={card.id} value={card.id}>
-          {card.parts.map(part => [part.target?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
-        </option>)}
-      </select>
+      <Tooltip label="Choose which voice message to show">
+        <select value={selected.id} onChange={event => setChosenId(event.target.value)}>
+          {choices.map(card => <option key={card.id} value={card.id}>
+            {card.parts.map(part => [part.target?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
+          </option>)}
+        </select>
+      </Tooltip>
     </label>}
   </div>;
 }

@@ -162,6 +162,10 @@ test("standalone held messages can be switched and recalled while a new countdow
     await expect(card).toContainText("Held for Will");
   }
   await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 3000 });
+  await expect(choose).toHaveAccessibleDescription("Choose which voice message to show");
+  await choose.hover();
+  await expect(page.locator(".tooltip")).toHaveText("Choose which voice message to show");
+  await captureCard(page, "standalone-voice-selector-tooltip");
   await choose.selectOption("first");
   await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
   await captureCard(page.locator(".voice-card-surface"), "standalone-held-switcher");

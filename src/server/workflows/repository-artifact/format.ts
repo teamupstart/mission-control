@@ -113,7 +113,7 @@ export async function readExactFile(fd: FileHandle, size: number, signal: AbortS
   return offset === size ? buffer.subarray(0, size) : null;
 }
 
-async function ordinaryFile(path: string, mode: number, signal: AbortSignal, expected: number | string) {
+async function ordinaryFile(path: string, mode: number, signal: AbortSignal, expected: number | string, syncFiles: boolean) {
   const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await fd.stat();
@@ -133,15 +133,17 @@ async function ordinaryFile(path: string, mode: number, signal: AbortSignal, exp
       }
       if (hash.digest("hex") !== expected) unavailable();
     }
-    return (await readExactFile(fd, stat.size, signal)) ?? unavailable();
+    const data = (await readExactFile(fd, stat.size, signal)) ?? unavailable();
+    if (syncFiles) await fd.sync();
+    return data;
   } finally {
     await fd.close();
   }
 }
 
-async function readManifest(root: string, digest: string, signal: AbortSignal) {
+async function readManifest(root: string, digest: string, signal: AbortSignal, syncFiles: boolean) {
   if (!(await lstat(root)).isDirectory()) unavailable();
-  const bytes = await ordinaryFile(join(root, "manifest.json"), 0o400, signal, digest);
+  const bytes = await ordinaryFile(join(root, "manifest.json"), 0o400, signal, digest, syncFiles);
   if (sha256(bytes) !== digest) unavailable();
   const manifest = manifestSchema.parse(JSON.parse(bytes.toString()));
   if (!bytes.equals(Buffer.from(JSON.stringify(manifest)))) unavailable();
@@ -153,10 +155,10 @@ async function readManifest(root: string, digest: string, signal: AbortSignal) {
   return manifest;
 }
 
-async function readObject(root: string, entry: ObjectRecord, signal: AbortSignal) {
+async function readObject(root: string, entry: ObjectRecord, signal: AbortSignal, syncFiles: boolean) {
   const header = Buffer.from(`${entry.type} ${entry.size}\0`);
   const size = header.length + entry.size;
-  const data = await ordinaryFile(join(root, entry.id), entry.mode, signal, size);
+  const data = await ordinaryFile(join(root, entry.id), entry.mode, signal, size, syncFiles);
   if (data.length !== size || !data.subarray(0, header.length).equals(header) ||
       sha256(data) !== entry.sha256 || createHash(entry.id.length === 40 ? "sha1" : "sha256")
         .update(data).digest("hex") !== entry.id) unavailable();
@@ -164,17 +166,22 @@ async function readObject(root: string, entry: ObjectRecord, signal: AbortSignal
 }
 
 /** Only verified source bytes enter a lease. Destination errors do not describe the source. */
+type VerificationOptions = {
+  lease?: { root: string; storage: RepositoryArtifactStorage };
+  onIntegrityFailure?: () => void;
+  syncFiles?: boolean;
+};
 export async function verifyDirectory(root: string, digest: string, signal: AbortSignal,
-  lease?: { root: string; storage: RepositoryArtifactStorage }, onIntegrityFailure?: () => void) {
+  { lease, onIntegrityFailure, syncFiles = false }: VerificationOptions = {}) {
   const sourceFailure = (error: unknown): never => {
     if (!signal.aborted && isArtifactIntegrityFailure(error)) onIntegrityFailure?.();
     throw error;
   };
   signal.throwIfAborted();
-  const manifest = await readManifest(root, digest, signal).catch(sourceFailure);
+  const manifest = await readManifest(root, digest, signal, syncFiles).catch(sourceFailure);
   for (const entry of manifest.objects) {
     signal.throwIfAborted();
-    const data = await readObject(root, entry, signal).catch(sourceFailure);
+    const data = await readObject(root, entry, signal, syncFiles).catch(sourceFailure);
     if (lease) {
       const path = join(lease.root, "objects", entry.id.slice(0, 2), entry.id.slice(2));
       await lease.storage.write(lease.root, path, await compress(data), "lease", signal);

@@ -369,7 +369,6 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
     const keys = [...capturedPaths].sort();
     const indexView: RepositoryViewDescriptor["index"] = [],
       workView: typeof indexView = [];
-    const intent = new Set(state.intent);
     const paths = keys.map((key) => {
       const committed = headLayer.get(key),
         staged = index.get(key),
@@ -379,7 +378,7 @@ export async function seal(input: RepositoryCaptureInput, pending: string, signa
       if (committed || (!staged && !working)) classes.push("committed");
       if (!equal(staged, committed)) classes.push("staged");
       if (staged && !equal(staged, working)) classes.push("unstaged");
-      if (working && !staged) classes.push(intent.has(key) ? "unstaged" : "untracked");
+      if (working && !staged) classes.push(state.intentModes[key] ? "unstaged" : "untracked");
       if ((committed && !staged) || (staged && !working)) classes.push("deleted");
       if (!allowed(key)) classes.push("sensitive_denied");
       const path = decodedPath(key);

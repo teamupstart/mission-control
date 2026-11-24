@@ -2,7 +2,7 @@ import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   appendFileSync,
@@ -1667,6 +1667,52 @@ test("publication intent recovers a rename without a committed row and refuses u
   assert.ok(!existsSync(parent) && !existsSync(dest));
 });
 
+test("core.fileMode follows the indexed executable bit for tracked files and preserves working bytes", async (t) => {
+  const f = fixture(t);
+  f.git("config", "core.fileMode", "true");
+  f.write("plain", "plain\n");
+  f.write("exec", "exec\n");
+  chmodSync(join(f.checkout, "exec"), 0o755);
+  f.git("add", ".");
+  f.git("commit", "-qm", "modes");
+  chmodSync(join(f.checkout, "plain"), 0o755);
+  chmodSync(join(f.checkout, "exec"), 0o644);
+  f.git("config", "core.fileMode", "false");
+  assert.equal(f.git("status", "--porcelain"), "");
+  const candidate = await f.prepare();
+  const manifest = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", candidate.id, "artifact", "manifest.json"), "utf8")));
+  assert.equal(manifest.view.worktreeTree, f.git("write-tree"));
+  assert.deepEqual(manifest.view.worktree.map(e => e.classifications), [["committed"], ["committed"]]);
+  f.git("config", "core.fileMode", "true");
+  assert.deepEqual(f.git("diff", "--name-only").split("\n"), ["exec", "plain"]);
+  assert.equal(await f.service.stillCurrent(candidate, signal), false);
+  await f.service.discard(candidate);
+  const modes = await f.prepare();
+  const changed = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", modes.id, "artifact", "manifest.json"), "utf8")));
+  assert.deepEqual(changed.view.worktree.map(e => e.classifications), [["committed", "unstaged"], ["committed", "unstaged"]]);
+  await f.service.discard(modes);
+  f.git("config", "core.fileMode", "false");
+  f.write("exec", "edited\n");
+  assert.equal(f.git("diff", "--name-only"), "exec");
+  const edited = await f.prepare();
+  const last = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", edited.id, "artifact", "manifest.json"), "utf8")));
+  assert.deepEqual(last.view.worktree.map(e => e.classifications), [["committed", "unstaged"], ["committed"]]);
+  f.git("add", "exec");
+  assert.equal(last.view.worktreeTree, f.git("write-tree"));
+  await f.service.discard(edited);
+  for (const name of ["intent", "untracked"]) {
+    f.write(name, "new executable");
+    chmodSync(join(f.checkout, name), 0o755);
+  }
+  f.git("add", "-N", "intent");
+  const fresh = await f.prepare();
+  const freshView = manifestSchema.parse(JSON.parse(readFileSync(join(f.root, "pending", fresh.id, "artifact", "manifest.json"), "utf8"))).view;
+  f.git("add", "intent");
+  f.git("-c", "core.fileMode=true", "add", "untracked");
+  assert.equal(freshView.worktreeTree, f.git("write-tree"));
+  await f.service.discard(fresh);
+});
+
 test("intent-to-add, executable mode and index-only changes agree with Git's own staged tree", async (t) => {
   const f = fixture(t);
   f.write("intent", "intended");
@@ -1898,6 +1944,85 @@ test("an index-only change between the context read and artifact preparation ret
   await lease.release();
   await f.service.release(snapshot.submissionId);
   await f.service.reconcile();
+});
+
+test("publication sync failures before and after rename roll back the claim and permit retry", async (t) => {
+  const f = fixture(t);
+  f.write("a", "sealed");
+  const c = await f.prepare(), id = f.submission();
+  const root = realpathSync(f.root), pending = join(root, "pending", c.id);
+  const src = join(pending, "artifact"), dest = join(root, "digests", c.digest);
+  const files = readdirSync(src).map(name => join(src, name));
+  const fs = (await import("node:fs")).default;
+  const fsp = (await import("node:fs/promises")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const open = fsp.open, openSync = fs.openSync, sync = fs.fsyncSync, rename = fs.renameSync, write = fs.writeFileSync;
+  const dirs = new Map<number, string>(), events: string[] = [];
+  let fault: "file" | "parent" | null = "file";
+  const ioError = () => Object.assign(new Error("sync failure"), { code: "EIO" });
+  t.mock.method(fsp, "open", async (...args: Parameters<typeof open>) => {
+    const fd = await open(...args);
+    const path = String(args[0]);
+    if (dirname(path) === src || dirname(path) === dest) {
+      const flush = fd.sync.bind(fd);
+      t.mock.method(fd, "sync", async () => {
+        if (fault === "file") throw ioError();
+        await flush();
+        events.push(path);
+      });
+    }
+    return fd;
+  });
+  t.mock.method(fs, "openSync", (...args: Parameters<typeof openSync>) => {
+    const fd = openSync(...args);
+    if (typeof args[1] === "number" && (args[1] & fs.constants.O_DIRECTORY)) dirs.set(fd, String(args[0]));
+    else dirs.delete(fd);
+    return fd;
+  });
+  t.mock.method(fs, "fsyncSync", (fd: number) => {
+    const path = dirs.get(fd);
+    if (fault === "parent" && path === dirname(dest) && existsSync(dest)) throw ioError();
+    sync(fd);
+    if (path) events.push(path);
+  });
+  t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof write>) => {
+    write(...args);
+    if (String(args[0]) === join(pending, "promotion.tmp") && typeof args[2] === "object" && args[2]?.flush)
+      events.push("flushed intent");
+  });
+  t.mock.method(fs, "renameSync", (...args: Parameters<typeof rename>) => {
+    rename(...args);
+    if (String(args[1]) === join(pending, "promotion")) events.push("installed intent");
+    if (String(args[1]) === dest) events.push("published");
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const failure of ["file", "parent"] as const) {
+      fault = failure;
+      await assert.rejects(f.service.promote(c, id), { code: "artifact_unavailable" });
+      assert.equal(existsSync(dest), failure === "parent");
+      assert.equal(existsSync(join(pending, "promotion")), failure === "parent");
+      assert.equal(f.db.prepare("SELECT 1 FROM workflow_repository_artifacts WHERE digest=?").get(c.digest), undefined);
+      assert.equal(f.db.prepare("SELECT 1 FROM workflow_repository_snapshot_claims WHERE submission_id=?").get(id), undefined);
+    }
+    const beforePublish = events.slice(0, events.indexOf("published"));
+    for (const file of files) assert.ok(beforePublish.includes(file), file);
+    assert.ok(beforePublish.includes(src));
+    const flushed = beforePublish.indexOf("flushed intent"), installed = beforePublish.indexOf("installed intent");
+    assert.ok(flushed >= 0 && installed > flushed);
+    for (const directory of [pending, dirname(pending), root, dirname(root)])
+      assert.ok(beforePublish.slice(installed + 1).includes(directory), directory);
+    fault = null;
+    events.length = 0;
+    const snapshot = await f.service.promote(c, id);
+    assert.ok(events.includes(dirname(dest)));
+    f.store.commitRepositoryCaptureActivation(snapshot);
+    await f.service.release(id);
+    await f.service.reconcile();
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
 });
 
 test("disk failure and a deferred SQLite failure after rename leave no claim and recover only the marked bytes", async (t) => {

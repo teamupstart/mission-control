@@ -69,6 +69,9 @@ Writes also leave 64 MiB free on the state volume and account for in-flight file
 allocations.
 An absent skip-worktree path takes its indexed mode and object ID in the worktree layer.
 Files present on disk supply their actual contents, including edits outside a sparse cone.
+With `core.fileMode=false`, tracked regular files retain their indexed executable bit,
+including intent-to-add entries. Untracked regular files retain their on-disk mode.
+Changing this Git setting invalidates a pending stable capture.
 If a file or symlink disappears or is replaced between inspection and opening it, stable
 capture reads the submission again.
 Status compares HEAD, the index and the worktree. A deletion already committed between
@@ -117,7 +120,10 @@ bytes before storage. Earlier commit messages and tree payloads can be freed whi
 later revisions are still being considered.
 
 `promote` publishes a verified candidate under its digest and attaches a provisional claim
-after capture guards pass. `WorkflowStore.commitRepositoryCaptureActivation` makes the
+after capture guards pass. Verification syncs the manifest and every object file before
+opening the claim transaction. The service flushes the recovery intent and syncs the
+directories that name the candidate and published digest before SQLite commits the claim.
+A sync failure leaves the submission able to retry. `WorkflowStore.commitRepositoryCaptureActivation` makes the
 claim active and the submission running in one transaction. Multiple submissions can
 independently own the same bytes. Verification marks a missing or corrupt digest as failed
 for all its claims, including when materialization discovers the damage. A transient source

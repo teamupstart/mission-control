@@ -61,6 +61,8 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   }
   const index: Layer = new Map();
   const skipWorktree = new Set<string>();
+  const modeSetting = await git(["config", "--includes", "--type=bool", "--get", "core.fileMode"], true);
+  const fileMode = !modeSetting.length || line(modeSetting) === "true";
   const excludes = await git(["config", "--includes", "--path", "-z", "--get", "core.excludesFile"], true);
   if (!Buffer.from(excludes.toString()).equals(excludes)) unavailable();
   const override = excludes.length ? ["-c", "core.excludesFile=" + excludes.subarray(0, -1).toString()] : [];
@@ -99,7 +101,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
   // Intent-to-add has the id of the empty blob in ls-files, but no entry in the
   // staged tree. Ask Git for index names against its virtual empty tree only when
   // there is an ambiguous empty entry. A cached, names-only diff reads no worktree.
-  const intent: string[] = [];
+  const intentModes: Record<string, string> = {};
   const emptyBlob = createHash(format).update("blob 0\0").digest("hex");
   if ([...index.values()].some((e) => e.id === emptyBlob)) {
     const emptyTree = createHash(format).update("tree 0\0").digest("hex");
@@ -120,8 +122,8 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
       row => { ambiguous.delete(row.toString("hex")); },
     );
     for (const key of ambiguous) {
+      intentModes[key] = index.get(key)!.mode;
       index.delete(key);
-      intent.push(key);
     }
   }
   const embedded: string[] = [];
@@ -131,7 +133,7 @@ export async function sample(executable: string, cwd: string, signal: AbortSigna
     const key = collectPath(directory ? raw.subarray(0, -1) : raw);
     if (directory) embedded.push(key);
   });
-  return { root, common, format, emptyBlob, head, shallow, index, skipWorktree, intent, embedded, paths: [...paths].sort() };
+  return { root, common, format, emptyBlob, head, shallow, fileMode, index, skipWorktree, intentModes, embedded, paths: [...paths].sort() };
 }
 
 const require = createRequire(import.meta.url);
@@ -266,7 +268,10 @@ export async function workingFile(
       }
     }
     if (!st.isFile()) unavailable();
-    return await readWorkingFile(path, st, signal);
+    const file = await readWorkingFile(path, st, signal);
+    const indexedMode = indexed?.mode ?? state.intentModes[key];
+    if (!state.fileMode && indexedMode) file.mode = indexedMode === "100755" ? "100755" : "100644";
+    return file;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     // Git projects an absent skip-worktree path from the index. Present files

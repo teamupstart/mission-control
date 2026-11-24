@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -56,6 +60,11 @@ const markerSchema = z.strictObject({
 type Marker = z.infer<typeof markerSchema>;
 type Namespace = Marker["kind"] | "digests";
 type ActiveRequestLookup = (workloadId: string) => RepositoryMaterializationRequest | null;
+
+function syncDirectory(path: string) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
 
 // Only flat artifact files may be removed or displaced, even in a digest directory we own.
 function publishedFiles(path: string) {
@@ -159,7 +168,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     const path = join(this.namespace(kind), marker.id);
     mkdirSync(path, { mode: 0o700 });
     try {
-      writeFileSync(join(path, "owner.tmp"), JSON.stringify(marker), { flag: "wx", mode: 0o600 });
+      writeFileSync(join(path, "owner.tmp"), JSON.stringify(marker), { flag: "wx", mode: 0o600, flush: true });
       renameSync(join(path, "owner.tmp"), join(path, "owner.json"));
     } catch (error) {
       // This call created the directory exclusively and has not handed it to anyone.
@@ -243,26 +252,42 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     let manifest: Manifest;
     let replace = false;
     try {
-      manifest = await verifyDirectory(existing ? dest : src, digest, signal);
+      manifest = await verifyDirectory(existing ? dest : src, digest, signal, { syncFiles: true });
     } catch (error) {
       if (!existing || signal.aborted || !isArtifactIntegrityFailure(error) || !this.ownership.hasArtifact(digest))
         throw error;
       this.ownership.unavailable(digest);
-      manifest = await verifyDirectory(src, digest, signal);
+      manifest = await verifyDirectory(src, digest, signal, { syncFiles: true });
       replace = true;
     }
+    syncDirectory(existing && !replace ? dest : src);
+    const syncRename = () => {
+      syncDirectory(pending);
+      syncDirectory(dirname(dest));
+    };
     const publish = () => {
+      // Persist both sides of the recovery path before the first rename. This
+      // also covers a digest namespace recreated while replaying an older intent.
+      syncDirectory(pending);
+      syncDirectory(dirname(pending));
+      syncDirectory(this.root);
+      syncDirectory(dirname(this.root));
       if (replace) {
         const previous = join(pending, "previous");
         publishedFiles(dest);
         renameSync(dest, previous);
+        syncRename();
         try {
           renameSync(src, dest);
         } catch (error) {
           renameSync(previous, dest);
+          syncRename();
           throw error;
         }
       } else if (!existing) renameSync(src, dest);
+      // A new claim commits only after this callback. Recovery performs the
+      // same sync before it restores the existing holders to ready.
+      syncRename();
     };
     return { manifest, publish };
   }
@@ -306,7 +331,7 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
         if (this.candidates.get(candidate.id) !== candidate) unavailable();
         const pending = this.marked("pending", candidate.id, candidate.nonce);
         const { manifest, publish } = await this.preparePublication(pending, candidate.digest);
-        writeFileSync(join(pending, "promotion.tmp"), candidate.digest, { mode: 0o600 });
+        writeFileSync(join(pending, "promotion.tmp"), candidate.digest, { mode: 0o600, flush: true });
         renameSync(join(pending, "promotion.tmp"), join(pending, "promotion"));
         const snapshot = this.ownership.attach(submissionId, candidate.digest, manifest, publish);
         this.abandon({ kind: "pending", id: candidate.id, nonce: candidate.nonce });
@@ -336,8 +361,10 @@ export class WorkflowRepositoryArtifactService implements RepositoryArtifactMate
     this.checkClaim(request);
   }
   private verifyPublished(digest: string, signal: AbortSignal, lease?: string) {
-    return verifyDirectory(join(this.namespace("digests"), digest), digest, signal, lease ? { root: lease, storage: this.storage } : undefined,
-      () => this.ownership.unavailable(digest));
+    return verifyDirectory(join(this.namespace("digests"), digest), digest, signal, {
+      lease: lease ? { root: lease, storage: this.storage } : undefined,
+      onIntegrityFailure: () => this.ownership.unavailable(digest),
+    });
   }
   verify(snapshot: WorkflowRepositoryProvisionalSnapshot, signal: AbortSignal) {
     return this.exclusive(() =>

@@ -100,7 +100,7 @@ test("rebuilds publish and reuse a complete replacement when a sherpa shared lib
   assert.match(play.stderr, /Sherpa currently requires --input-file/); // The bundled entry loaded the addon.
 });
 
-for (const selection of ["automatic", "explicit"] as const) {
+for (const selection of ["automatic", "explicit auto", "explicit"] as const) {
   test(`the development launcher forwards the verified model and WAV to sherpa on ${selection} selection`, async t => {
     const cwd = mkdtempSync(join(realpathSync(tmpdir()), "voice-launch-"));
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -127,6 +127,9 @@ for (const selection of ["automatic", "explicit"] as const) {
     if (selection === "explicit") {
       env.MISSION_VOICE_BACKEND = "fluidaudio";
       args.push("--backend", "sherpa-onnx");
+    } else if (selection === "explicit auto") {
+      env.MISSION_VOICE_BACKEND = "fluidaudio";
+      args.push("--backend", "auto");
     }
     const recording = join(cwd, "speech fixture.wav");
     const { stdout } = await promisify(execFile)(process.execPath, [...args, "--input-file", recording], { cwd, env });

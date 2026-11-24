@@ -19,7 +19,7 @@ test("the bounded WAV reader preserves PCM amplitudes and skips padded metadata"
   ] as const) {
     const data = Buffer.from("data\0\0\0\0", "latin1");
     data.writeUInt32LE(pcm.length, 4);
-    const wav = Buffer.concat([header, junk, data, Buffer.from(pcm)]);
+    const wav = Buffer.concat([header, junk, data, Buffer.from(pcm), junk]);
     wav.writeUInt32LE(wav.length - 8, 4);
     wav.writeUInt16LE(format, 20);
     wav.writeUInt32LE(width * 16000, 28);
@@ -27,5 +27,19 @@ test("the bounded WAV reader preserves PCM amplitudes and skips padded metadata"
     wav.writeUInt16LE(width * 8, 34);
     writeFileSync(path, wav);
     assert.deepEqual([...readRecording(path)], [-0.5, 0.5]);
+  }
+});
+
+test("the WAV reader checks chunk headers, payloads and padding after the audio", t => {
+  const dir = mkdtempSync(join(tmpdir(), "voice-trailing-chunk-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "recording.wav");
+  const audio = readFileSync(new URL("./fixtures/voice/steve-check-the-build.wav", import.meta.url));
+  const metadata = Buffer.from([74, 85, 78, 75, 1, 0, 0, 0, 97, 0]);
+  for (const length of [4, 8, 9]) {
+    const wav = Buffer.concat([audio, metadata.subarray(0, length)]);
+    wav.writeUInt32LE(wav.length - 8, 4);
+    writeFileSync(path, wav);
+    assert.throws(() => readRecording(path), /Truncated WAV chunk/);
   }
 });

@@ -45,6 +45,7 @@ export async function playRecording(client: ListenerClient,
     }
   }
   try {
+    if (segments.exhausted) return;
     await hello();
     await Promise.race([heartbeat(), play()]);
   } finally {

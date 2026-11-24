@@ -487,3 +487,29 @@ test("the conversation Idle rail puts counts on expandable sections", async ({ d
   await expect(header.getByText("2 sessions", { exact: true })).toHaveCount(0);
   await expect(rail.getByRole("button", { name: "free 2", exact: true })).toHaveCount(0);
 });
+
+test("the Idle rail focuses the destination heading when a focused row moves into a collapsed section", async ({
+  dashboard, daemon,
+}) => {
+  const free = await dispatchIdleAgent(dashboard, daemon, "keep reading this free session");
+  const held = await dispatchIdleAgent(dashboard, daemon, "move into the collapsed section");
+  const run = await openRunOn(daemon, held, "collapsed-destination");
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: "idle-rail-section-counts", enabled: true }, "PUT");
+  await useBoardLayout(dashboard, daemon);
+
+  const freeName = await sessionName(daemon, free);
+  const heldName = await sessionName(daemon, held);
+  const idle = dashboard.locator("section.board-col.tone-idle");
+  await idle.getByRole("button", { name: `Open ${freeName}`, exact: true }).press("Enter");
+  const rail = dashboard.locator("section.board-col.is-rail.tone-idle");
+  await rail.getByRole("button", { name: "free 1", exact: true }).click();
+  await rail.getByRole("button", { name: "held by a workflow 1", exact: true }).click();
+  await rail.getByRole("button", { name: heldName, exact: true }).focus();
+
+  await api(daemon, `/api/workflow-runs/${run}/cancel`, { requestId: "release-to-collapsed-section" });
+  const targetHeading = rail.getByRole("button", { name: "free 2", exact: true });
+  await expect(targetHeading).toHaveAttribute("aria-expanded", "false");
+  await expect(targetHeading).toBeFocused();
+  await expect(rail.getByRole("button", { name: heldName, exact: true })).toHaveCount(0);
+  await expect(dashboard.locator(".cdetail .detail-head")).toContainText(freeName);
+});

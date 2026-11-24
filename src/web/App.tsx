@@ -126,7 +126,7 @@ import { inboxStalls, NO_STALLED_DRAWN, stalledSessions } from "./lib/stalled.ts
 import { detailLayer, useLayoutMode, type LayoutMode } from "./lib/layout.ts";
 import { lineChoice, toggleLineDensity, useLineDensity } from "./lib/line-density.ts";
 import { toggleSessionRail } from "./lib/session-rail.ts";
-import { idleRailSections } from "./lib/idle-rail-sections.ts";
+import { idleRailSections, type IdleRailSections } from "./lib/idle-rail-sections.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { conversationReveal } from "./lib/conversationReveal.ts";
 import { orderSessions, stalledInOrder } from "./lib/fleet-order.ts";
@@ -1073,6 +1073,7 @@ export function App(): React.JSX.Element {
   } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
+  const committedIdleSections = useRef<IdleRailSections["sections"] | undefined>(undefined);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
     if (el) {
@@ -1086,10 +1087,18 @@ export function App(): React.JSX.Element {
     // A status update can remount a session under a different heading. Let React attach
     // the replacement ref and keep any focus the operator has already moved elsewhere.
     queueMicrotask(() => {
+      if (document.activeElement !== document.body) return;
       const replacement = sessionEls.current.get(id);
-      if (document.activeElement === document.body && replacement?.matches(idleSectionRow)) {
+      if (replacement?.matches(idleSectionRow)) {
         replacement.focus({ preventScroll: true });
+        return;
       }
+      const destination = committedIdleSections.current?.find((section) =>
+        !section.expanded && section.sessionIds.includes(id));
+      if (!destination) return;
+      document.querySelector<HTMLButtonElement>(
+        `.has-idle-sections .idle-rail-section-toggle[data-idle-section="${CSS.escape(destination.key)}"]`,
+      )?.focus();
     });
   }, []);
 
@@ -3399,6 +3408,9 @@ export function App(): React.JSX.Element {
     ...section,
     expanded: idleSectionState.overrides.get(section.key) ?? (index === 0 || section.key === selectedIdleSectionKey),
   })), [idleSectionRows, idleSectionState.overrides, selectedIdleSectionKey]);
+  useLayoutEffect(() => {
+    committedIdleSections.current = idleSections;
+  }, [idleSections]);
   const hideCollapsedColumns = layout === "board" && !boardDetailOpen && collapsedColumns.length > 0;
   // The folded At the top of Idle frame hides its cards on the Board overview only, like a
   // collapsed column: the rails always list the Blocked group in full.

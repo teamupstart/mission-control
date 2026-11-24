@@ -650,6 +650,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                   type="button"
                   className="idle-rail-section-toggle"
                   aria-expanded={section.expanded}
+                  data-idle-section={section.key}
                   data-contains-selection={section.sessionIds.includes(props.selectedId ?? "") || undefined}
                   onClick={() => idleRail.onToggle(section.key, !section.expanded)}
                   onKeyDown={(event) => {

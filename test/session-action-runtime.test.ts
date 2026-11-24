@@ -1939,7 +1939,7 @@ for (const change of ["session awaits CI", "repository binding becomes manual", 
   });
 }
 
-test("a transcript first observed during delivery retains post-send attribution after restart", async () => {
+test("a post-send anchor survives restart and preserves matching human turns in a different transcript", async () => {
   const { readWorkflowIntentSnapshot } = await import("../src/server/workflows/context.ts");
   const { forgetInjections } = await import("../src/server/injections.ts");
   const path = join(home, "transcript-created-during-publication.jsonl");
@@ -1960,7 +1960,6 @@ test("a transcript first observed during delivery retains post-send attribution 
     const packet = h.store.listDeliveries(runId)[0]!.payload;
     const throughDelivery = readFileSync(path, "utf8");
     const anchors = new WorkflowStore().listDeliveredTranscriptAnchors(h.sessionId, binding.noteKey);
-    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(throughDelivery) }]);
     const { workflowDeliveryLedger } = await import("../src/server/delivery-ledgers.ts");
     assert.ok(!workflowDeliveryLedger.rows(binding.noteKey).some(row => row.deliveryId === h.store.listDeliveries(runId)[0]!.id));
     forgetInjections(h.sessionId);
@@ -1970,6 +1969,14 @@ test("a transcript first observed during delivery retains post-send attribution 
       assert.deepEqual(intent.decisions.filter(d => d.source.kind === "transcript").map(d => d.source.id),
         ["original-ask", "human-repeat"]);
     }
+    const otherPath = join(home, "replacement-publication-transcript.jsonl");
+    const other = turn("original-ask", "Publish this change") + turn("human-dup", packet);
+    assert.equal(Buffer.byteLength(other), Buffer.byteLength(throughDelivery));
+    writeFileSync(otherPath, other);
+    h.reportIdle(otherPath);
+    assert.deepEqual(readWorkflowIntentSnapshot(h.registry, binding, anchors)!.decisions
+      .filter(d => d.source.kind === "transcript").map(d => d.source.id), ["original-ask", "human-dup"]);
+    assert.deepEqual(anchors, [{ payload: packet, transcriptAnchor: Buffer.byteLength(throughDelivery), transcriptPath: path }]);
   } finally { await h.stop(); }
 });
 

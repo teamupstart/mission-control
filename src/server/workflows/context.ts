@@ -442,6 +442,7 @@ export function humanTranscriptDecisions(messages: TranscriptMessage[]): Workflo
 export interface DeliveredWorkflowTranscriptAnchor {
   payload: string;
   transcriptAnchor: number;
+  transcriptPath?: string;
   beforeSend?: true;
   receiptId?: string;
 }
@@ -507,6 +508,7 @@ function deliveredWorkflowTurnIdentities(
 ): WorkflowTranscriptTurnIdentity[] {
   const identities: WorkflowTranscriptTurnIdentity[] = [];
   for (const delivery of deliveries) {
+    if (delivery.transcriptPath !== undefined && delivery.transcriptPath !== located.path) continue;
     if ((delivery.receiptId && delivery.beforeSend) || !delivery.payload.trim()) continue;
     const payloadFingerprint = injectionFingerprint(delivery.payload);
     // Before native turn receipts, verified writes recorded a starting or ending byte offset.

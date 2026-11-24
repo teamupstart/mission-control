@@ -7125,8 +7125,7 @@ export class WorkflowManager {
       result.submitVerified,
       Date.now(),
       usableReceipt?.transcriptOffset ?? null,
-      usableReceipt?.id,
-      usableReceipt ? undefined : receipt?.id,
+      usableReceipt ? { receiptId: usableReceipt.id } : { unusableReceiptId: receipt?.id, transcriptPath: transcript?.path },
     );
     if (!usableReceipt && receipt) noteDiscardedWorkflowReceipt(sending.noteKey);
     if (!confirmed) return;

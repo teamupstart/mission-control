@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
+import { locateExecutableSync } from "../executables/locator.ts";
 import { isolatedGitEnvironment } from "../git/worktree-tree.ts";
 import { gitInfo } from "../util/git.ts";
 
@@ -16,11 +17,13 @@ export function publicationCheckoutRevision(checkout: string, retained: readonly
     const root = gitInfo(checkout).root;
     if (!root) return null;
     const deadline = performance.now() + 500;
-    const env = isolatedGitEnvironment({ GIT_OPTIONAL_LOCKS: "0" });
+    const executable = locateExecutableSync("git");
+    if (!executable) return null;
+    const env = isolatedGitEnvironment({ PATH: executable.env.PATH, GIT_OPTIONAL_LOCKS: "0" });
     const git = (cwd: string, args: string[]) => {
       const timeout = Math.ceil(deadline - performance.now());
       if (timeout <= 0) throw new Error("Publication revision timed out");
-      return execFileSync("git", ["-c", "core.untrackedCache=false", "-c", "core.fsmonitor=false", "-C", cwd, ...args], {
+      return execFileSync(executable.path, ["-c", "core.untrackedCache=false", "-c", "core.fsmonitor=false", "-C", cwd, ...args], {
         env, stdio: ["ignore", "pipe", "pipe"], timeout, killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024,
       });
     };

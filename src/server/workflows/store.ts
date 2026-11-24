@@ -8,6 +8,7 @@ import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { projectWorkflowRecovery } from "./recovery.ts";
+import type { DeliveredWorkflowTranscriptAnchor } from "./context.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { canonicalWorktreePath } from "../worktrees/path.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -9207,10 +9208,11 @@ export class WorkflowStore {
     sessionId: string,
     noteKey: string,
     limit = 200,
-  ): Array<{ payload: string; transcriptAnchor: number; beforeSend?: true; receiptId?: string }> {
+  ): DeliveredWorkflowTranscriptAnchor[] {
     const sessions = runtimeTransferPredecessors(sessionId, noteKey, this.db);
     return (this.db.prepare(
       `SELECT d.payload, json_extract(e.payload_json, '$.receiptId') AS receipt_id,
+              json_extract(e.payload_json, '$.transcriptPath') AS transcript_path,
               COALESCE(json_extract(e.payload_json, '$.transcriptStart'),
                        json_extract(e.payload_json, '$.transcriptAnchor')) AS transcript_anchor,
               json_type(e.payload_json, '$.transcriptStart') = 'integer' AS before_send
@@ -9228,12 +9230,14 @@ export class WorkflowStore {
         LIMIT ?`,
     ).all(noteKey, ...sessions, limit) as Array<{
       receipt_id: string | null;
+      transcript_path: string | null;
       payload: string;
       transcript_anchor: number;
       before_send: number | null;
     }>).map((row) => ({
       payload: row.payload,
       transcriptAnchor: row.transcript_anchor,
+      ...(row.transcript_path !== null ? { transcriptPath: row.transcript_path } : {}),
       ...(row.receipt_id ? { receiptId: row.receipt_id } : {}),
       ...(row.before_send ? { beforeSend: true as const } : {}),
     }));
@@ -9479,11 +9483,10 @@ export class WorkflowStore {
     submitVerified: boolean,
     now = Date.now(),
     transcriptStart: number | null = null,
-    receiptId?: string,
-    unusableReceiptId?: string,
+    attribution: { receiptId?: string; unusableReceiptId?: string; transcriptPath?: string } = {},
   ): { delivery: WorkflowDelivery; rearmed: WorkflowCompletionKind | null } | null {
     return this.mutate(() => {
-      if (unusableReceiptId) this.discardDeliveryReceipt(id, unusableReceiptId, now);
+      if (attribution.unusableReceiptId) this.discardDeliveryReceipt(id, attribution.unusableReceiptId, now);
       const delivery = this.getDelivery(id);
       if (!delivery || delivery.state !== "sending") return null;
       const run = this.getRun(delivery.runId);
@@ -9552,7 +9555,8 @@ export class WorkflowStore {
         deliveryId: delivery.id,
         transcriptAnchor,
         transcriptStart,
-        ...(receiptId ? { receiptId } : {}),
+        ...(attribution.receiptId ? { receiptId: attribution.receiptId } : {}),
+        ...(attribution.transcriptPath ? { transcriptPath: attribution.transcriptPath } : {}),
         submitVerified,
       }, now);
       const rearmed = this.rearmCompletionForDelivery(delivery, now);

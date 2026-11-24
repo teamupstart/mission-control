@@ -149,6 +149,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/workflows/check-identity.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved process-status utility" },
   ],
+  "src/server/workflows/publication-revision.ts": [
+    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded checkout revision read using resolved Git at the publication claim" },
+  ],
   "src/server/workflows/repository-artifact/git.ts": [
     { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git reads checkout metadata with closed arguments" },
     { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "locator-resolved Git streams bounded index and untracked path records" },

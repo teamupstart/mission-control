@@ -93,29 +93,57 @@ test("CodeRabbit reuse requires an exact comparison and respects --fresh", async
     assert.equal(called, probes);
   }
 });
-for (const dirty of [true, false]) {
-  const name = dirty ? "dirty submission" : "rejected comparison lookup";
-  test(`CodeRabbit blocks a ${name} even with a prior clean review`, async (t) => {
-    const lookup = t.mock.fn(async () => {
-      if (dirty) return comparison;
-      throw new Error("fixture lookup failed");
-    });
+const reuseFailures: Array<{
+  name: string;
+  configure: (i: RunCheckInput) => void;
+  reason: RegExp;
+  lookups?: number;
+}> = [
+  {
+    name: "dirty submission",
+    configure: (i) => { i.coderabbit!.dirty = true; },
+    reason: /uncommitted changes without a review snapshot/,
+  },
+  {
+    name: "rejected comparison lookup",
+    configure: (i) => { i.coderabbit!.comparison = async () => { throw new Error("fixture lookup failed"); }; },
+    reason: /could not establish a complete review/,
+    lookups: 1,
+  },
+  {
+    name: "active vendor wait",
+    configure: (i) => { i.coderabbit!.retryAt = Date.now() + 60_000; },
+    reason: /CodeRabbit vendor wait is active until .* Retry after that time/,
+  },
+  {
+    name: "denied repository policy",
+    configure: (i) => { i.policy.repoAllowlist = []; },
+    reason: /This repository is not on the workflow allowlist/,
+  },
+  {
+    name: "uncommitted review configuration",
+    configure: (i) => { i.coderabbit!.yaml = { ...enabled, committed: false }; },
+    reason: /The captured \.coderabbit\.yaml is not the one in the reviewed commit/,
+  },
+];
+
+for (const { name, configure, reason, lookups = 0 } of reuseFailures) {
+  test(`CodeRabbit blocks even with a prior clean review when preflight finds ${name}`, async (t) => {
     const i = input();
-    i.coderabbit = {
-      ...i.coderabbit!,
-      dirty,
-      comparison: lookup,
-      priorCleanReview: { attemptId: "prior-clean-review", review: cleanReview },
-    };
+    configure(i);
+    const candidate = i.coderabbit!;
+    const lookup = t.mock.fn(candidate.comparison);
+    candidate.comparison = lookup;
+    candidate.priorCleanReview = { attemptId: "prior-clean-review", review: cleanReview };
     const d = deps();
     const probe = t.mock.fn(d.codeRabbitProbe!);
     const execute = t.mock.fn(d.execute!);
     const result = await runCheck(i, { ...d, codeRabbitProbe: probe, execute });
 
     assert.equal(result.kind, "action_required");
-    assert.match(result.reason, dirty ? /uncommitted changes without a review snapshot/ : /could not establish a complete review/);
+    assert.match(result.reason, reason);
     assert.equal(result.review?.status, "incomplete");
-    assert.equal(lookup.mock.callCount(), dirty ? 0 : 1);
+    assert.equal(lookup.mock.callCount(), lookups);
     assert.equal(probe.mock.callCount(), 0);
     assert.equal(execute.mock.callCount(), 0);
   });

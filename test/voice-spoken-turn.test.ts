@@ -576,6 +576,52 @@ test("after restart an uncertain terminal paste still contests a later delegated
   }
 });
 
+test("marking an uncertain terminal paste sent preserves its original sender claim across rollback, restart and first native binding", async t => {
+  const { delegatedLedger, reviewLedger, reserveSpokenTurn, spokenLedger, followSpokenConversationKey } = await import("../src/server/delivery-ledgers.ts");
+  const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");
+  const { reserveReviewDelivery } = await import("../src/server/review-deliveries.ts");
+  const { wrapReviewEnvelope } = await import("../src/shared/review-message-envelope.ts");
+  const now = Date.now();
+  const words = wrapReviewEnvelope("answer", ["b99fa7da-f9dd-4bab-9e44-691bac441a4c"], "Use this build");
+  for (const mode of ["warm", "restart", "native-key", "already-flushed", "rewritten", "long-history"]) {
+    const key = "mark-sent-arbitration-" + mode;
+    const fake = fakeTranscript();
+    let conversation = fake.conversation(key);
+    fake.append("before", words, now - 1);
+    const attempt = claimSpoken(key, words, words);
+    const reservation = reserveSpokenTurn(conversation, words, words, false, attempt, now);
+    const uncertain = db.markPendingTurnUncertain(attempt.id, attempt.revision, "lost receipt", now + 1)!;
+    assert.throws(() => db.inTransaction(() => {
+      assert.ok(db.resolveUncertainPendingTurn(attempt.id, uncertain.revision, now + 2));
+      throw new Error("roll back settlement");
+    }), /roll back settlement/);
+    assert.deepEqual(db.loadOtherSends(key, 0), []);
+    assert.ok(db.resolveUncertainPendingTurn(attempt.id, uncertain.revision, now + 2));
+    assert.deepEqual(db.loadSpokenTurns(key), [], "manual settlement cannot disclose a text-only turn");
+    if (mode === "restart") { db.closeDb(); forgetDeliveryBindingState(); }
+    if (mode === "native-key") {
+      followSpokenConversationKey(key, key, key + "-native");
+      conversation = fake.conversation(key + "-native");
+      assert.deepEqual(db.loadOtherSends(key, 0), []);
+    }
+    const [saved] = db.loadOtherSends(conversation.key, 0);
+    assert.deepEqual({ ...saved }, { id: reservation.id, noteKey: conversation.key, fingerprint: reservation.fingerprint,
+      sentAt: now, transcriptOffset: reservation.transcriptOffset, spokenBoundary: reservation.transcriptBoundary });
+    fake.append("old-buffered", words, now - 1);
+    if (mode === "already-flushed" || mode === "rewritten") fake.append("spoken-first", words, now + 2);
+    if (mode === "rewritten") fake.turns[0]!.text = "different history";
+    if (mode === "long-history") for (let i = 0; i < 6000; i++) fake.append("progress-" + i, "progress", now);
+    const rival = mode === "restart" ? reviewLedger : delegatedLedger;
+    if (mode === "restart") assert.ok(reserveReviewDelivery(conversation, words, undefined, now + 3));
+    else delegatedLedger.reserve(conversation, words, base => ({ ...base, controllerId: "sdk:controller", controllerName: "Controller" }), now + 3);
+    const late = fake.append("after-reservation", words, now + 4);
+    assert.equal(rival.rows(conversation.key)[0]?.contested, mode !== "already-flushed", mode);
+    assert.equal(rival.bound(conversation, [late]).rows.has(late.id), mode === "already-flushed", mode);
+    assert.equal(spokenLedger.bound(conversation, [late]).rows.size, 0);
+    t.diagnostic(mode + ": later sender credited=" + (mode === "already-flushed") + ", spoken disclosures=0");
+  }
+});
+
 test("withdrawing uncertain speech reconsiders delegated and review senders after commit and restart", async () => {
   const { delegatedLedger, reviewLedger, reserveSpokenTurn, noteOtherSend } = await import("../src/server/delivery-ledgers.ts");
   const { forgetDeliveryBindingState } = await import("../src/server/delivery-binding.ts");

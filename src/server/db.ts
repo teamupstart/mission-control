@@ -3859,6 +3859,7 @@ function migrate(d: DatabaseSync): void {
   d.exec("CREATE INDEX IF NOT EXISTS idx_pending_spoken_handoff ON pending_turns(spoken_handoff_key) WHERE spoken_handoff_key IS NOT NULL");
   addColumn(d, "pending_turns", "spoken_reservation_id", "TEXT");
   addColumn(d, "pending_turns", "spoken_requires_guard", "INTEGER");
+  addColumn(d, "session_other_sends", "spoken_boundary", "TEXT");
   addColumn(d, "pending_turns", "spoken_proof_failures", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_spoken_turns", "outbox_turn_id", "TEXT");
   addColumn(d, "session_spoken_turns", "outbox_revision", "INTEGER");
@@ -13369,7 +13370,16 @@ export function loadSpokenTurns(noteKey: string): SpokenTurnRow[] {
 }
 
 export function moveSpokenTurns(fromKey: string, toKey: string): number {
-  return Number(openDb().prepare("UPDATE session_spoken_turns SET note_key = ? WHERE note_key = ?").run(toKey, fromKey).changes);
+  const d = openDb();
+  const move = () => {
+    const moved = d.prepare("UPDATE session_other_sends SET note_key = ? WHERE note_key = ? AND spoken_boundary IS NOT NULL").run(toKey, fromKey);
+    if (moved.changes) {
+      otherSendChanges.add(fromKey);
+      otherSendChanges.add(toKey);
+    }
+    return Number(d.prepare("UPDATE session_spoken_turns SET note_key = ? WHERE note_key = ?").run(toKey, fromKey).changes);
+  };
+  return d.isTransaction ? move() : inTransaction(move);
 }
 
 export function deleteSpokenTurn(id: string): void {
@@ -13400,11 +13410,19 @@ export function processSpokenReleases(reconsider: (rows: ReleasedDelivery[]) => 
 function discardUnconfirmedSpokenReservation(d: DatabaseSync, reservationId: string | null, now: number, withdrawn: boolean): void {
   if (!reservationId) return;
   const row = d.prepare(`DELETE FROM session_spoken_turns
-    WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL RETURNING note_key AS noteKey, fingerprint`)
-    .get(reservationId) as ReleasedDelivery | undefined;
+    WHERE id = ? AND message_id IS NULL AND runtime_confirmed_at IS NULL
+    RETURNING id, note_key AS noteKey, fingerprint, delivered_at AS sentAt, transcript_offset AS transcriptOffset,
+      transcript_boundary AS spokenBoundary`)
+    .get(reservationId) as OtherSendRow | undefined;
   if (row) {
     if (withdrawn) rememberSpokenRelease(d, row);
-    else discardedSpokenKeys.add(row.noteKey); // Marked sent: its words can still belong to that sender.
+    else {
+      // Manual settlement cannot establish a native receipt. Keep the original send boundary
+      // in the shared arbitration ledger while dropping the undisclosed payload.
+      insertOtherSend({ ...row, spokenBoundary: row.spokenBoundary ?? "unknown" });
+      otherSendChanges.add(row.noteKey);
+      discardedSpokenKeys.add(row.noteKey);
+    }
   } else d.prepare(`UPDATE session_spoken_turns SET abandoned_at = ?
     WHERE id = ? AND message_id = id AND message_ts IS NULL AND runtime_confirmed_at IS NULL AND abandoned_at IS NULL`)
     .run(now, reservationId);
@@ -13561,6 +13579,17 @@ export function pruneDelegatedTurns(liveKeys: Iterable<string> | null, olderThan
   return Number(r.changes);
 }
 
+const otherSendChanges = new Set<string>();
+
+/** Outbox settlement or first native binding can change the shared sends behind a warm ledger. */
+export function takeOtherSendChanges(): string[] {
+  if (!otherSendChanges.size) return [];
+  const keys = [...otherSendChanges];
+  // A reader inside the write transaction must reload again after commit or rollback.
+  if (!openDb().isTransaction) otherSendChanges.clear();
+  return keys;
+}
+
 /** One non-delegated send still inside its race window. */
 export interface OtherSendRow {
   id: string;
@@ -13568,15 +13597,16 @@ export interface OtherSendRow {
   fingerprint: string;
   sentAt: number;
   transcriptOffset: number | null;
+  spokenBoundary?: string | null;
 }
 
 export function insertOtherSend(row: OtherSendRow): void {
   openDb()
     .prepare(
-      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO session_other_sends (id, note_key, fingerprint, sent_at, transcript_offset, spoken_boundary)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset);
+    .run(row.id, row.noteKey, row.fingerprint, row.sentAt, row.transcriptOffset, row.spokenBoundary ?? null);
 }
 
 /** Take back a send with positive evidence that nothing landed. */
@@ -13588,7 +13618,7 @@ export function deleteOtherSend(id: string): void {
 export function loadOtherSends(noteKey: string, since: number): OtherSendRow[] {
   return openDb()
     .prepare(
-      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset
+      `SELECT id, note_key AS noteKey, fingerprint, sent_at AS sentAt, transcript_offset AS transcriptOffset, spoken_boundary AS spokenBoundary
          FROM session_other_sends WHERE note_key = ? AND sent_at >= ? ORDER BY rowid ASC`,
     )
     .all(noteKey, since) as unknown as OtherSendRow[];

@@ -6,6 +6,7 @@ import {
   insertOtherSend,
   loadOtherSends,
   pruneOtherSends,
+  takeOtherSendChanges,
   type BindableDelivery,
 } from "./db.ts";
 import type { SessionMessages } from "./harness/index.ts";
@@ -124,6 +125,7 @@ interface OtherSend {
   id: string;
   at: number;
   offset: number | null;
+  spokenBoundary?: string | null;
 }
 
 /**
@@ -160,14 +162,44 @@ function sweepOtherSends(now: number): void {
   }
 }
 
+/** Manual settlement keeps the original send boundary, but provides no runtime receipt.
+ * A later sender can be credited if distinct eligible occurrences already landed before it.
+ * A synchronous send guard with more than a page of evidence to check stays conservative. */
+function settledSendInFlight(transcript: SessionMessages, fingerprint: string, sends: OtherSend[], used: Set<string>): boolean {
+  const { read, path } = transcript;
+  const snapshot = read.snapshot?.(path);
+  if (!snapshot) return true;
+  let budget = 512 * 1024;
+  try {
+    for (const send of [...sends].sort((a, b) => b.offset! - a.offset! || b.at - a.at)) {
+      const offset = send.offset!;
+      budget -= snapshot.size - offset + (send.spokenBoundary ? offset : 0);
+      if (offset > snapshot.size || budget < 0) return true;
+      if (send.spokenBoundary && read.boundary?.(path, offset)?.proof !== send.spokenBoundary) return true;
+      const frame = read.appended(path, offset, snapshot.size);
+      const match = frame.messages.find(m => m.role === "user" && m.text && !isClaimed(m, used) &&
+        (!send.spokenBoundary || m.ts >= send.at) && injectionFingerprint(m.text) === fingerprint);
+      if (!match) return true;
+      used.add(match.id);
+    }
+    return read.snapshot?.(path)?.version !== snapshot.version;
+  } catch {
+    return true;
+  }
+}
+
 /** Bring a conversation's persisted sends into memory once per process. */
 function loadSends(noteKey: string, now: number): void {
+  for (const changed of takeOtherSendChanges()) {
+    sendsLoaded.delete(changed);
+    for (const key of otherSends.keys()) if (key.startsWith(changed + "\0")) otherSends.delete(key);
+  }
   if (sendsLoaded.has(noteKey)) return;
   sendsLoaded.add(noteKey);
   for (const row of loadOtherSends(noteKey, now - DELIVERY_LAG_MS)) {
     const key = sendKey(noteKey, row.fingerprint);
     const sends = otherSends.get(key) ?? [];
-    if (!sends.some((send) => send.id === row.id)) sends.push({ id: row.id, at: row.sentAt, offset: row.transcriptOffset });
+    if (!sends.some((send) => send.id === row.id)) sends.push({ id: row.id, at: row.sentAt, offset: row.transcriptOffset, spokenBoundary: row.spokenBoundary });
     otherSends.set(key, sends);
   }
 }
@@ -622,6 +654,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // which one it is, so no landed turn can be credited to the other sends: still in flight.
     if (openRows(conversation.key, fingerprint).some(({ row }) => row.contested || row.transcriptOffset === null)) return true;
     const claimed = claimedTurns(conversation.key);
+    if (sends.some(send => send.spokenBoundary)) return settledSendInFlight(transcript, fingerprint, sends, claimed);
     let from = Math.min(...sends.map((send) => send.offset!));
     let landed = 0;
     try {

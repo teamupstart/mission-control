@@ -295,6 +295,11 @@ those pages and rechecks the file revision before binding. An unrelated append n
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.
 The same transaction records the conversation and fingerprint in `session_spoken_releases`.
 The next ledger read rechecks competing deliveries and acknowledges that release atomically,
-including after restart. Marking a turn sent preserves uncertainty about who wrote those words.
+including after restart. Marking an uncertain terminal turn sent atomically drops its payload
+and transfers the fingerprint, original handoff time, offset and prefix proof to
+`session_other_sends`. The sender claim follows the conversation's first native binding and
+expires with the normal 24-hour send window. A later identical delivery remains contested
+unless the daemon can verify distinct earlier occurrences within its 512 KiB synchronous read
+budget. Neither manual settlement nor this arbitration establishes a Spoken disclosure.
 Startup also removes orphan payloads left by earlier builds. An older file of unknown
 size cannot establish which turn was spoken.

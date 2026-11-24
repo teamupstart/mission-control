@@ -1080,8 +1080,9 @@ completion confirms silence and records the job as timed out even when its timer
 callback is delayed. A holder reporting `started` after Stop receives HTTP 409
 with `{ ok: false, speak: { id, stop: true } }`. It must keep playback stopped
 or stop it immediately, then report `ended` to confirm silence.
-After 5 seconds without confirmation, the
-daemon reports the listener unavailable and fails jobs still waiting to play. Capture resumes only after the holder
+After 5 seconds without confirmation, the daemon reports the listener unavailable
+and fails jobs still waiting to play. A late confirmation also checks this deadline
+before advancing the queue, so waiting jobs cannot play after it expires. Capture resumes only after the holder
 reports playback ended or its supervisor confirms process exit. Switching off
 the preview still lets the holder poll for Stop and either party confirm silence,
 including after a daemon restart. A supervisor can still retire its recorded launch

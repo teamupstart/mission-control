@@ -268,6 +268,34 @@ test("a fresh capture grant accepts the release millisecond while a delayed play
   assert.deepEqual(await (await send(fresh.revision, "Steve fresh")).json(), { accepted: true });
 });
 
+test("confirmation before its deadline advances the queue and late confirmation fails waiting work even with the timer pending", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  t.mock.method(performance, "now", Date.now);
+  const holder = player();
+  await holder.announce();
+  for (const elapsed of [4999, 5000, 5001]) {
+    await holder.hello();
+    const id = await audition();
+    await holder.event(id, "started");
+    const queued = store.speech.open("audition", "Queued sample", null)!;
+    await post("/api/voice/speech/stop", { id });
+    assert.deepEqual((await holder.poll()).speak, { id, stop: true });
+    t.mock.timers.setTime(Date.now() + elapsed);
+    assert.equal(queued.state, "preparing");
+    assert.equal(store.speech.held, true);
+    assert.equal((await holder.event(id, "ended")).status, 200);
+    if (elapsed < 5000) {
+      assert.equal(queued.state, "ready");
+      assert.equal((await holder.poll()).speak.id, queued.id);
+      await holder.event(queued.id, "ended");
+    } else {
+      assert.equal(queued.state, "failed");
+      assert.equal((await holder.poll()).speak, null);
+    }
+    assert.equal((await holder.poll()).capture, true);
+  }
+});
+
 test("after restart a surviving player regains eligibility by replaying its signed start without releasing recovered playback", async () => {
   const holder = player();
   const proof = holder.supervisor.proof("started");
@@ -833,36 +861,44 @@ test("Linux monitor termination keeps playing capture held in the live superviso
     return;
   }
   assert.equal(probe.status, 0, probe.stderr);
+  const launchHome = mkdtempSync(join(home, "linux-monitor-"));
+  const state = new VoiceStateStore({ now: () => performance.now(), enabled: () => true,
+    config: () => VOICE_CONFIG_DEFAULTS, speechDirectory: join(launchHome, "voice") });
+  const server = new Hono();
+  registerVoiceRoutes(server, state);
+  t.after(() => state.reset());
   const { privateKey } = generateKeyPairSync("ed25519");
   const signer = createVoiceSupervisor("shell", privateKey);
   const replacement = createVoiceSupervisor("shell", privateKey);
   Object.assign(process.env, signer.daemonEnv);
   t.after(() => { signer.pauseExitRetries(); replacement.pauseExitRetries(); Object.assign(process.env, fixtureSupervisorEnv); });
-  const peer = player();
+  const peer = player(listenerId, server);
   const exits: string[] = [];
+  const starts: string[] = [];
   const report = async (instance: string, state: "started" | "exited", proof: string) => {
     assert.equal((await peer.report(state, instance, proof)).status, 200);
-    if (state === "exited") exits.push(instance);
+    (state === "exited" ? exits : starts).push(instance);
   };
-  const { instance, child, reannounce } = await signer.launch(home, process.execPath,
+  const { instance, child, reannounce } = await signer.launch(launchHome, process.execPath,
     ["-e", "process.stdout.write('playing'); setInterval(() => {}, 1000)"], {}, report);
-  const file = join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json");
+  const file = join(retirementDirectory(launchHome), "shell-" + announcementName(instance) + ".json");
   const { pid } = JSON.parse(readFileSync(file, "utf8"));
   assert.notEqual(pid, child.pid);
   t.after(() => { try { process.kill(pid, "SIGKILL"); } catch { /* Already exited. */ } });
   assert.equal(String((await once(child.stdout, "data"))[0]), "playing");
   await peer.hello(instance);
-  const id = await audition();
+  const id = (await (await peer.request("/api/voice/speech/audition", {})).json()).id;
   assert.equal((await peer.request("/voice/speech/jobs/" + id + "/events", { type: "started" }, instance)).status, 200);
   const stopped = once(child, "exit");
   child.kill("SIGKILL");
   await stopped;
-  assert.equal(await reannounce(), true);
+  assert.equal(await reannounce(), undefined);
+  assert.deepEqual(starts, [instance, instance]);
   assert.deepEqual(exits, []);
   assert.equal((await peer.poll(instance)).capture, false);
   signer.pauseExitRetries();
-  store.reset(); await peer.hello(instance);
-  replacement.retryPendingExits(home, report);
+  state.reset(); await peer.hello(instance);
+  replacement.retryPendingExits(launchHome, report);
   assert.deepEqual(exits, []);
   assert.deepEqual((await peer.poll(instance)).speak, { id, stop: true });
   process.kill(pid, "SIGKILL");
@@ -1087,6 +1123,11 @@ for (const disconnected of [false, true]) test("the first supervised same-accoun
   child.stdin.on("error", () => {}); // A host that disallows namespaces can refuse the child before stdin opens.
   child.stdin.end("check");
   const [code] = await completed;
+  // The monitor can close its pipes while the namespace init is still alive.
+  if (disconnected) {
+    const file = join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json");
+    await t.waitFor(() => assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { instance, proof: signer.exitProof(instance) }));
+  } else await t.waitFor(() => assert.equal(exitAttempts, 1));
   assert.equal(await launched.reannounce(), false);
   const stderr = await errors;
   if (process.platform === "linux" && code !== 0 && /bwrap:.*(?:namespace|permitted|userns)/iu.test(stderr)) {
@@ -1109,8 +1150,6 @@ for (const disconnected of [false, true]) test("the first supervised same-accoun
   assert.equal((await peer.poll(instance)).capture, false);
   let replayed = 0;
   if (disconnected) {
-    const saved = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
-    assert.deepEqual(saved, { instance, proof: signer.exitProof(instance) });
     signer.retryPendingExits(home, async (subject, state, proof) => {
       assert.equal(state, "exited");
       assert.equal((await peer.report(state, subject, proof)).status, 200);

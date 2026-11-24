@@ -304,6 +304,7 @@ export class VoiceSpeechManager {
   }
 
   private finish(item: Playback, state: "stopped" | "timed-out" | "failed" | "finished") {
+    if (item.confirmBy !== undefined && this.deps.now() >= item.confirmBy) this.missedConfirmation(item);
     const wasFirst = item.job === this.live;
     if (item.hold && !this.ledger.save(this.holds().filter(hold => hold !== item.hold))) {
       item.job.state = "stopping";
@@ -338,13 +339,14 @@ export class VoiceSpeechManager {
     item.confirmBy ??= this.deps.now() + VOICE_SPEECH_CONFIRM_LIMIT_MS;
     if (!this.enabled) return;
     const remaining = item.confirmBy - this.deps.now();
-    const unanswered = () => {
-      item.unanswered = true;
-      for (const queued of this.items()) if (!queued.hold) this.finish(queued, "failed");
-      this.deps.changed();
-    };
-    if (remaining <= 0) unanswered();
-    else this.arm(item, remaining, unanswered);
+    if (remaining <= 0) this.missedConfirmation(item);
+    else this.arm(item, remaining, () => this.missedConfirmation(item));
+  }
+  private missedConfirmation(item: Playback) {
+    if (item.unanswered) return;
+    item.unanswered = true;
+    for (const queued of this.items()) if (!queued.hold) this.finish(queued, "failed");
+    this.deps.changed();
   }
   private arm(item: Playback, ms: number, fn: () => void) {
     this.clear(item);

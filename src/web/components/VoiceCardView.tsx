@@ -127,7 +127,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       case "sent":
       case "queued":
         return <div className="vc-success"><Icon name={state === "sent" ? "check" : "clock"} />
-          {state === "sent" ? <>{part.immediateStop ? "Stop sent to " : "Sent to "}{named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
+          {state === "sent" ? <>{part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to "}{named(target)}</> : <>Queued behind {named(target)}’s current turn</>}</div>;
       case "held": {
         // The live outbox also identifies a session that resumed from hibernation.
         const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId)) ?? sessionOf(target);

@@ -42,15 +42,15 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       }
     }
   }, [card.state]);
-  const announced = useRef<number | null>(null);
-  useEffect(() => {
-    if (!notify || !card.deadline || card.state !== "pending" || announced.current === card.deadline) return;
-    announced.current = card.deadline;
-    if (sound) playChime("info");
-  }, [card, notify, sound]);
   const { id: cardId, state } = card;
   const deadline = voiceCardDeadline(card);
   const wireDeadline = card.deadline;
+  const announced = useRef<number | null>(null);
+  useEffect(() => {
+    if (!notify || state !== "pending" || deadline === null || deadline <= performance.now() || announced.current === wireDeadline) return;
+    announced.current = wireDeadline;
+    if (sound) playChime("info");
+  }, [deadline, notify, sound, state, wireDeadline]);
   const pendingNotice = useRef<{ wireDeadline: number; deadline: number } | null>(null);
   useLayoutEffect(() => {
     pendingNotice.current = state === "pending" && wireDeadline !== null && deadline !== null ? { wireDeadline, deadline } : null;

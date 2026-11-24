@@ -624,7 +624,8 @@ export class VoiceRouter {
         ? `${latest.name} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
         : "The selected session is unavailable.";
     }
-    delivery.card.parts[index] = { ...part, target: latest, ...(typeof result !== "string" && "turnId" in result && { turnId: result.turnId }) };
+    delivery.card.parts[index] = { ...part, target: latest, ...(command && { command }),
+      ...(typeof result !== "string" && "turnId" in result && { turnId: result.turnId }) };
     // A replay can settle synchronously inside submitSpoken, before deliver returns its row.
     if (!delivery.results[index]) {
       if (typeof result !== "string" && "turnId" in result) {

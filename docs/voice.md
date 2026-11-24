@@ -18,7 +18,8 @@ Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answ
 the send button names the agent who will receive the remaining message. With the cancel
 window off, delivery begins immediately. Sent and queued cards show the open question count.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
-The Sound preference controls the pending chime. During the cancel window, an unfocused
+With Sound enabled, the pending chime plays only while the card still offers Cancel.
+A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
 notifications. If you switch away while the card is counting down, the notification shows

@@ -104,7 +104,7 @@ export class VoiceStateStore {
   get speech(): VoiceSpeechManager {
     return this.manager ??= new VoiceSpeechManager({
       directory: this.speechDirectory,
-      now: this.deps.wallNow ?? (() => Date.now()), setTimer: this.deps.setTimer, clearTimer: this.deps.clearTimer,
+      now: this.deps.now, wallNow: this.deps.wallNow, setTimer: this.deps.setTimer, clearTimer: this.deps.clearTimer,
       synthesizer: this.deps.speechBackend?.synthesizer,
       target: purpose => {
         const state = this.state();
@@ -159,8 +159,8 @@ export class VoiceStateStore {
 
   /** Only the holder sees the playback command, so its long-poll revision is distinct too. */
   directiveFor(instance?: string, state = this.state()): VoiceListenerDirective {
-    const base = this.directive(state);
     const speak = this.manager?.speak(instance);
+    const base = this.directive(state);
     return speak ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
   }
 

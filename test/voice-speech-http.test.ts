@@ -221,6 +221,7 @@ test("auditions have two waiting places and receive terminal failures if the hol
 
 test("delayed utterances are logged within the playback history window and discarded after it", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  t.mock.method(performance, "now", Date.now);
   const holder = player();
   await holder.announce(); await holder.hello();
   const early = Date.now();
@@ -246,6 +247,7 @@ test("delayed utterances are logged within the playback history window and disca
 
 test("a fresh capture grant accepts the release millisecond while a delayed playback revision is ignored", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  t.mock.method(performance, "now", Date.now);
   const holder = player();
   await holder.announce(); await holder.hello();
   const before = await holder.poll();
@@ -1347,6 +1349,7 @@ test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep cap
 
 test("a start report checks the elapsed deadline even before the timer callback has run", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  t.mock.method(performance, "now", Date.now);
   const holder = player();
   await holder.announce(); await holder.hello();
   for (const elapsed of [1999, 2000, 2001]) {
@@ -1366,8 +1369,57 @@ test("a start report checks the elapsed deadline even before the timer callback 
   }
 });
 
+test("a holder poll serves Stop at the elapsed deadline before the timer runs", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  let steady = performance.now();
+  t.mock.method(performance, "now", () => steady);
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  steady += 1999;
+  assert.equal((await holder.poll()).speak.kind, "system");
+  steady++;
+  const expired = await holder.poll();
+  assert.deepEqual(expired.speak, { id, stop: true });
+  assert.equal(expired.capture, false);
+  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.deepEqual((await holder.poll()).speak, { id, stop: true });
+  await holder.event(id, "ended");
+  assert.equal((await holder.poll()).capture, true);
+});
+
+test("a backward wall-clock step during playback excludes buffered frames under a fresh capture grant", async t => {
+  const epoch = Date.now();
+  let wall = epoch, steady = performance.now();
+  t.mock.method(Date, "now", () => wall);
+  t.mock.method(performance, "now", () => steady);
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  await holder.event(id, "started");
+  steady += 30; wall += 30;
+  const beforeStep = capture("Steve before the clock step");
+  steady += 20; wall -= 1000;
+  const afterStep = capture("Steve after the clock step");
+  assert.deepEqual(await (await holder.request("/voice/utterances", afterStep)).json(), { accepted: false });
+  assert.equal((await readHeard())[0]?.rule, "while-speaking");
+  steady += 10; wall += 10;
+  await holder.event(id, "ended");
+  const grant = await holder.poll();
+  assert.equal(grant.capture, true);
+  for (const frame of [beforeStep, afterStep, capture("Steve ambiguous boundary")]) {
+    assert.deepEqual(await (await holder.request(utterancePath(grant.revision), frame)).json(), { accepted: false });
+    assert.equal((await readHeard())[0]?.rule, "while-speaking");
+  }
+  steady += 180_001; wall += 180_001;
+  await holder.hello();
+  const fresh = await holder.poll();
+  assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh"))).json(), { accepted: true });
+});
+
 test("a late start or a stop before pickup waits for the holder; muting permits only an audition", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  t.mock.method(performance, "now", Date.now);
   const p = player();
   await p.announce(); await p.hello();
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
@@ -1724,9 +1776,10 @@ test("a missing supervisor directory keeps every outstanding launch held until i
   assert.equal((await holder.poll()).capture, true);
 });
 
-test("only the holder can fetch prepared audio, until stopping or completion", async () => {
+test("only the holder can fetch prepared audio, until stopping, completion or the elapsed deadline", async () => {
   const directory = join(home, "audio-test", "voice");
-  const s = new VoiceStateStore({ now: Date.now, enabled: () => true, config: () => VOICE_CONFIG_DEFAULTS,
+  let steady = 0;
+  const s = new VoiceStateStore({ now: () => steady, enabled: () => true, config: () => VOICE_CONFIG_DEFAULTS,
     speechDirectory: directory, speechBackend: {
       model: () => ({ ...VOICE_MODEL_STATE_NONE, status: "ready" }),
       neural: () => [{ id: VOICE_SPEECH_DEFAULT_NEURAL, name: "F4", detail: "" }],
@@ -1745,6 +1798,17 @@ test("only the holder can fetch prepared audio, until stopping or completion", a
   await holder.request("/api/voice/speech/stop", {});
   assert.equal((await holder.request(path)).status, 404);
   await holder.event(id, "ended"); assert.equal((await holder.request(path)).status, 404);
+  const next = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
+  const audio = "/voice/speech/jobs/" + next + "/audio";
+  steady += 1999;
+  assert.equal((await holder.request(audio)).status, 200);
+  steady++;
+  assert.equal((await holder.request(audio)).status, 404);
+  const expired = await holder.poll();
+  assert.deepEqual(expired.speak, { id: next, stop: true });
+  assert.equal(expired.capture, false);
+  await holder.event(next, "ended");
+  assert.equal((await holder.poll()).capture, true);
   s.reset();
 });
 

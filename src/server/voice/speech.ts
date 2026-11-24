@@ -17,7 +17,9 @@ const unavailable: VoiceSynthesizer = {
 
 interface SpeechDeps {
   directory: string;
+  /** Monotonic milliseconds for deadlines and retention. Listener timestamps use wallNow. */
   now(): number;
+  wallNow?(): number;
   setTimer?(fn: () => void, ms: number): unknown;
   clearTimer?(timer: unknown): void;
   target(purpose: VoiceSpeechJob["purpose"]): { instance: string; voice: VoiceSpeechVoice } | null;
@@ -25,9 +27,16 @@ interface SpeechDeps {
   synthesizer?: VoiceSynthesizer;
 }
 
+interface HandoffClock {
+  wall: number;
+  monotonic: number;
+  recovered: boolean;
+}
+
 interface Playback {
   job: VoiceSpeechJob;
-  since: number;
+  handoff?: HandoffClock;
+  playBy?: number;
   hold?: Hold;
   wav?: Uint8Array<ArrayBuffer>;
   timer?: unknown;
@@ -41,12 +50,22 @@ const MAX_PENDING_JOBS = 2;
 // The listener can buffer 120 seconds of capture and retry its POST for another 55 seconds.
 const PLAYBACK_HISTORY_MS = 180_000;
 
+function playbackInterval(start: HandoffClock, ended: number, monotonic: number) {
+  // Across a backward step, buffered frames can be dated on either side of
+  // the jump. Elapsed time bounds both ends even if the wall readings reverse.
+  const elapsed = monotonic - start.monotonic;
+  const ambiguous = Math.floor(elapsed) > ended - start.wall;
+  const from = ambiguous ? ended - Math.ceil(elapsed) : start.wall;
+  const until = ambiguous ? start.wall + Math.ceil(elapsed) : ended;
+  return { from: start.recovered ? -Infinity : from, until, ended, monotonic, ambiguous };
+}
+
 export class VoiceSpeechManager {
   readonly announced = new Set<string>();
   lastAudition: VoiceSpeechState["lastAudition"] = null;
   private readonly ledger: SpeechHolds;
   private readonly jobs = new Map<string, Playback>();
-  private readonly history: { from: number; until: number }[] = [];
+  private readonly history: ReturnType<typeof playbackInterval>[] = [];
   private discardedThrough = -Infinity;
   private awaitingRestartGrant: boolean;
   private unknown = false;
@@ -66,7 +85,7 @@ export class VoiceSpeechManager {
     const named = "instance" in hold;
     const job: VoiceSpeechJob = { id: hold.jobId, purpose: named ? hold.purpose : "ask", state: "stopping",
       text: "", voice: null, cardId: null, durationMs: null, holder: named ? hold.instance : null };
-    const item: Playback = { job, since: -Infinity, hold, onStop: "failed" };
+    const item: Playback = { job, handoff: this.handoffClock(true), hold, onStop: "failed" };
     this.jobs.set(job.id, item);
     this.confirm(item);
   }
@@ -105,11 +124,14 @@ export class VoiceSpeechManager {
     if (this.unknown) return "the record of unfinished speech could not be read";
     return this.items().some(i => i.unanswered) ? "the listener did not confirm that speech had stopped" : null;
   }
+  private handoffClock(recovered: boolean) {
+    return { wall: (this.deps.wallNow ?? Date.now)(), monotonic: this.deps.now(), recovered };
+  }
   private pruneHistory(now: number) {
     const cutoff = now - PLAYBACK_HISTORY_MS;
     let count = 0;
-    while (count < this.history.length && this.history[count]!.until < cutoff) {
-      this.discardedThrough = Math.max(this.discardedThrough, this.history[count++]!.until);
+    while (count < this.history.length && this.history[count]!.monotonic < cutoff) {
+      this.discardedThrough = Math.max(this.discardedThrough, this.history[count++]!.ended);
     }
     if (count) this.history.splice(0, count);
   }
@@ -121,11 +143,13 @@ export class VoiceSpeechManager {
     this.awaitingRestartGrant = false;
   }
   captureConflict(time: number, grantTime?: number): "while-speaking" | "stale" | null {
-    this.pruneHistory(this.deps.now());
-    if (this.items().some(i => i.hold && time >= i.since)) return "while-speaking";
+    const monotonic = this.deps.now();
+    const wall = (this.deps.wallNow ?? Date.now)();
+    this.pruneHistory(monotonic);
+    if (this.items().some(i => i.handoff && time >= playbackInterval(i.handoff, wall, monotonic).from)) return "while-speaking";
     // At millisecond precision the first captured frame and the playback confirmation
     // can share a timestamp. Only a valid capture grant issued at that boundary counts.
-    if (this.history.some(h => time >= h.from && (time < h.until || (time === h.until && grantTime !== time)))) return "while-speaking";
+    if (this.history.some(h => time >= h.from && (time < h.until || (time === h.until && (h.ambiguous || grantTime !== time))))) return "while-speaking";
     return this.awaitingRestartGrant || time <= this.discardedThrough ? "stale" : null;
   }
   private holds() { return this.items().flatMap(item => item.hold ? [item.hold] : []); }
@@ -186,8 +210,10 @@ export class VoiceSpeechManager {
 
   speak(instance?: string): SpeakDirective | null {
     if (!instance) return null;
-    const job = this.items().find(i => i.job.holder === instance)?.job;
-    if (!job) return null;
+    const item = this.items().find(i => i.job.holder === instance);
+    if (!item) return null;
+    this.checkPlaybackDeadline(item);
+    const { job } = item;
     if (job.state === "stopping") return { id: job.id, stop: true };
     if (job.voice?.engine === "system") return { id: job.id, kind: "system", voiceId: job.voice.id, text: job.text };
     return { id: job.id, kind: "audio", durationMs: job.durationMs! };
@@ -195,14 +221,16 @@ export class VoiceSpeechManager {
 
   audio(id: string, instance?: string) {
     const item = this.jobs.get(id);
-    return instance && item?.job.holder === instance && item.job.state !== "stopping" ? item.wav : undefined;
+    if (!instance || item?.job.holder !== instance) return;
+    this.checkPlaybackDeadline(item);
+    if (item.job.state !== "stopping") return item.wav;
   }
 
   open(purpose: VoiceSpeechJob["purpose"], text: string, cardId: string | null) {
     if (this.live?.state === "stopping" || this.jobs.size >= 1 + MAX_PENDING_JOBS) return null;
     const job: VoiceSpeechJob = { id: randomUUID(), purpose, text, cardId, state: "preparing",
       holder: null, voice: null, durationMs: null };
-    this.jobs.set(job.id, { job, since: Infinity });
+    this.jobs.set(job.id, { job });
     if (job === this.live) void this.prepare(this.jobs.get(job.id)!);
     return job;
   }
@@ -241,9 +269,9 @@ export class VoiceSpeechManager {
       return this.finish(item, "failed");
     }
     job.holder = current.instance;
-    item.since = this.deps.now();
+    item.handoff = this.handoffClock(false);
     job.state = "ready";
-    this.arm(item, VOICE_SPEECH_START_LIMIT_MS, () => this.stop(job.id, "timed-out"));
+    this.armPlayback(item, VOICE_SPEECH_START_LIMIT_MS);
     this.deps.changed();
   }
 
@@ -265,14 +293,10 @@ export class VoiceSpeechManager {
     const item = this.jobs.get(id);
     if (!instance || item?.job.holder !== instance) return "not_holder";
     if (type === "ended") return this.finish(item, item.onStop ?? outcome) ? "accepted" : "hold_unavailable";
+    this.checkPlaybackDeadline(item);
     if (item.job.state === "ready") {
-      if (this.deps.now() - item.since >= VOICE_SPEECH_START_LIMIT_MS) {
-        this.stop(id, "timed-out");
-        return "accepted";
-      }
       item.job.state = "speaking";
-      this.arm(item, item.job.durationMs === null ? VOICE_SPEECH_SYSTEM_LIMIT_MS : item.job.durationMs + VOICE_SPEECH_END_MARGIN_MS,
-        () => this.stop(id, "timed-out"));
+      this.armPlayback(item, item.job.durationMs === null ? VOICE_SPEECH_SYSTEM_LIMIT_MS : item.job.durationMs + VOICE_SPEECH_END_MARGIN_MS);
       this.deps.changed();
     }
     return "accepted";
@@ -295,10 +319,11 @@ export class VoiceSpeechManager {
     }
     item.job.state = state;
     this.jobs.delete(item.job.id);
-    if (item.hold) {
-      const until = this.deps.now();
-      this.pruneHistory(until);
-      this.history.push({ from: item.since, until });
+    if (item.handoff) {
+      const monotonic = this.deps.now();
+      const ended = (this.deps.wallNow ?? Date.now)();
+      this.pruneHistory(monotonic);
+      this.history.push(playbackInterval(item.handoff, ended, monotonic));
       if (!this.held) this.unknown = false;
     }
     if (item.job.purpose === "audition") this.lastAudition = { id: item.job.id, state };
@@ -323,6 +348,15 @@ export class VoiceSpeechManager {
   private arm(item: Playback, ms: number, fn: () => void) {
     this.clear(item);
     item.timer = this.deps.setTimer ? this.deps.setTimer(fn, ms) : setTimeout(fn, ms).unref();
+  }
+  private armPlayback(item: Playback, ms: number) {
+    item.playBy = this.deps.now() + ms;
+    this.arm(item, ms, () => this.stop(item.job.id, "timed-out"));
+  }
+  private checkPlaybackDeadline(item: Playback) {
+    if (item.playBy !== undefined && item.job.state !== "stopping" && this.deps.now() >= item.playBy) {
+      this.stop(item.job.id, "timed-out");
+    }
   }
   private clear(item: Playback) {
     if (item.timer !== undefined) (this.deps.clearTimer ?? clearTimeout)(item.timer as ReturnType<typeof setTimeout>);

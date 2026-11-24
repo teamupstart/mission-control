@@ -1023,7 +1023,8 @@ waiting for a change. A non-owner polling during a hold receives 409 with
 `capture: false` and `speak: null`, without the roster or revision. Only the job's holder
 receives the job or its stop request. A start overdue by 2 seconds, a system
 voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
-duration triggers a stop request. After 5 seconds without confirmation, the
+duration triggers a stop request. The daemon checks elapsed time before serving a
+playback directive or WAV, even when its timer callback is delayed. After 5 seconds without confirmation, the
 daemon reports the listener unavailable and fails jobs still waiting to play. Capture resumes only after the holder
 reports playback ended or its supervisor confirms process exit. Switching off
 the preview still lets the holder poll for Stop and either party confirm silence,
@@ -1040,7 +1041,10 @@ The daemon keeps completed playback intervals for three minutes to identify dela
 utterances. A frame captured in the same millisecond playback ended can be routed
 under the newly issued capture revision. A delayed frame from the playback revision
 is still logged as heard while speaking. The daemon discards captures at or before
-the end of an expired interval.
+the end of an expired interval. If the wall clock steps backward during playback,
+the daemon uses monotonic elapsed time to exclude ambiguous timestamps on both
+sides of the step, including under a fresh capture revision. The three-minute
+retention window also uses monotonic time.
 
 After a restart with prior speech use, the first capture-enabled directive also
 sets a cutoff for buffered frames. Samples from before that grant cannot route

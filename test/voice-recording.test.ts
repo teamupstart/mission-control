@@ -43,3 +43,35 @@ test("the WAV reader checks chunk headers, payloads and padding after the audio"
     assert.throws(() => readRecording(path), /Truncated WAV chunk/);
   }
 });
+
+test("extensible PCM and float WAVs decode through their validated subformat", t => {
+  const dir = mkdtempSync(join(tmpdir(), "voice-extensible-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "extensible.wav");
+  const fixture = readFileSync(new URL("./fixtures/voice/steve-check-the-build.wav", import.meta.url));
+  const wav = Buffer.concat([fixture.subarray(0, 36), Buffer.alloc(24), fixture.subarray(36, 48)]);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.writeUInt32LE(40, 16);
+  wav.writeUInt16LE(0xfffe, 20);
+  wav.writeUInt32LE(16000 * 4, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(32, 34);
+  wav.writeUInt16LE(22, 36); // cbSize
+  wav.writeUInt32LE(4, 40); // mono front-center channel
+  wav.write("00001000800000aa00389b71", 48, "hex");
+  wav.writeUInt32LE(4, 64);
+  for (const [tag, precision] of [[1, 24], [1, 32], [3, 32]] as const) {
+    wav.writeUInt16LE(precision, 38);
+    wav.writeUInt32LE(tag, 44);
+    if (tag === 1) wav.writeInt32LE(-0x40000000, 68);
+    else wav.writeFloatLE(-0.5, 68);
+    writeFileSync(path, wav);
+    assert.deepEqual([...readRecording(path)], [-0.5]);
+  }
+  for (const [offset, value] of [[36, 21], [36, 23], [38, 0], [38, 33], [40, 3], [44, 6], [59, 0]] as const) {
+    const invalid = Buffer.from(wav);
+    invalid.writeUInt8(value, offset);
+    writeFileSync(path, invalid);
+    assert.throws(() => readRecording(path), /Invalid WAV format extension|Unsupported WAV/);
+  }
+});

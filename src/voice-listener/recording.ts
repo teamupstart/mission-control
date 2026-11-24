@@ -2,6 +2,23 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 
 const MAX_WAV_BYTES = 32 * 1024 * 1024;
 
+/** In a WAVEFORMATEXTENSIBLE header, the encoding tag is the first DWORD of the subformat GUID. */
+function sampleFormat(fmt: Buffer, bits: number): number {
+  const tag = fmt.readUInt16LE(0);
+  if (tag !== 0xfffe) return tag;
+  if (fmt.length < 40) throw new Error("Invalid WAV format extension");
+  const extra = fmt.readUInt16LE(16);
+  if (extra < 22 || extra > fmt.length - 18) throw new Error("Invalid WAV format extension");
+  if (fmt.toString("hex", 28, 40) !== "00001000800000aa00389b71") throw new Error("Unsupported WAV subformat");
+  const format = fmt.readUInt32LE(24);
+  const validBits = fmt.readUInt16LE(18);
+  const channelMask = fmt.readUInt32LE(20);
+  if (!validBits || validBits > bits || (format === 3 && validBits !== bits) || (channelMask & (channelMask - 1)) !== 0) {
+    throw new Error("Invalid WAV format extension");
+  }
+  return format;
+}
+
 /** Read a bounded snapshot from one regular file. Never size an allocation from a WAV header. */
 function recordingBytes(path: string): Buffer {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -42,8 +59,8 @@ export function readRecording(path: string): Float32Array {
     if (chunk === "fmt ") {
       if (size < 16 || width) throw new Error("Invalid WAV format chunk");
       if (wav.readUInt16LE(start + 2) !== 1 || wav.readUInt32LE(start + 4) !== 16000) throw new Error("Expected a 16 kHz mono WAV");
-      const format = wav.readUInt16LE(start);
       const bits = wav.readUInt16LE(start + 14);
+      const format = sampleFormat(wav.subarray(start, start + size), bits);
       floating = format === 3 && bits === 32;
       if (!floating && !(format === 1 && [8, 16, 32].includes(bits))) throw new Error("Unsupported WAV sample encoding");
       width = bits / 8;

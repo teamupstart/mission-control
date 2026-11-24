@@ -1046,7 +1046,7 @@ test("a pick older than the retained choice history abstains while a fresh pick 
   assert.equal(router.activeCards()[0]?.state, "pending");
 });
 
-test("a confirmed split removes an unpunctuated conjunction while preserving a literal word", async (t) => {
+test("a confirmed split removes one conjunction before the address and preserves literal words", async (t) => {
   const { router, say, delivered } = routerRig(() => answered("split"));
   t.after(() => router.reset());
   for (const [spoken, expected] of [
@@ -1054,10 +1054,12 @@ test("a confirmed split removes an unpunctuated conjunction while preserving a l
     ["check the build then", "check the build"], ["spell then", "spell then"],
     ["spell and", "spell and"], ["explain the word and", "explain the word and"],
   ]) {
-    const id = String(delivered.length);
-    await say(`Steve, ${spoken} Alice, review the PR`, id);
-    assert.ok(await router.sendNow(id));
-    assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+    for (const separator of [" ", ", ", ",", " , "]) {
+      const id = String(delivered.length);
+      await say(`Steve, ${spoken}${separator}Alice, review the PR`, id);
+      assert.ok(await router.sendNow(id));
+      assert.deepEqual(delivered.slice(-2), [["Steve", expected, id], ["Alice", "review the PR", id + "#2"]]);
+    }
   }
 });
 

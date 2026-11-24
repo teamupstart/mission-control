@@ -518,6 +518,41 @@ test("the downstream say fixture establishes a listener and posts contiguous or 
   assert.deepEqual(entries.map((entry) => [entry.matchedName, entry.rule]), [["Will", "exact"], ["Will", "exact"]]);
 });
 
+test("the listener posts a delayed message before a concurrently spoken cancel", async (t) => {
+  const { say: sayFixture } = await import("../e2e/fixtures/voice.ts");
+  const daemon = { home, baseURL: "http://localhost" };
+  let markStarted!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  const posted: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/voice/utterances")) {
+      const { id } = JSON.parse(String(init.body));
+      posted.push(id);
+      if (id === "first") {
+        markStarted();
+        await delayed;
+      }
+    }
+    return app.request(url, init);
+  });
+
+  const message = sayFixture(daemon, "Will discard these words", { id: "first" });
+  await started;
+  const cancel = sayFixture({ ...daemon }, "cancel", { id: "second" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const inFlight = [...posted];
+  release();
+  const responses = await Promise.all([message, cancel]);
+  assert.deepEqual(inFlight, ["first"]);
+  assert.deepEqual(posted, ["first", "second"]);
+  for (const response of responses) assert.deepEqual(await response.json(), { accepted: true });
+  assert.deepEqual(cards.map(({ id, state }) => [id, state]), [["first", "pending"], ["first", "cancelled"]]);
+  assert.deepEqual(registry.snapshot().voiceCards, []);
+  assert.ok(!queued("Will").includes("discard these words"));
+});
+
 test("two weak matches followed by a bare name leave only ignored history", async () => {
   const before = queued("Will");
   for (const text of ["fill in the form", "till tomorrow", "Will?"]) await say(text);

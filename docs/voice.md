@@ -25,6 +25,9 @@ The response is `{ accepted }`. Only listening and push-to-talk accept captures.
 The capture must name the backend in the live listener’s hello and agree with any explicit
 backend selection. The daemon drops captures dated more than one second ahead of its clock.
 Accepted captures keep their listener timestamps for history, spoken picks and cancellations.
+The listener posts captures in spoken order, waiting for each response before posting the next
+capture (including a cancel or pick). This lets the daemon apply a control to an action that
+has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole

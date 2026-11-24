@@ -2825,8 +2825,11 @@ the completed observation ID and time, source ref, tip and anchor activity IDs a
 times, PR creation time, and count of updates checked.
 [GitHub repository activity API](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
 Ordinary polling and recheck leave the mismatch blocked. A successful recovery records `inspector_stale_grant_recovered` and
-re-enters the repair wait pinned to the verified replacement head. If the PR advances before
-the replacement submission is created, the mismatch blocks again and the round remains available.
+re-enters the repair wait pinned to the verified replacement head. After resolving the
+prior commits, the evaluator checks the receipt's ref update ID and reads the open PR
+from GitHub again. A push already visible on GitHub can therefore block the replacement
+even while the Inspector ledger still shows the old tip. An unavailable read leaves
+the round available for the next evaluation.
 The stale submission keeps its head and round. Its
 replacement round must fit within the granted cap and requires the usual exact-head review
 and resolution of open findings. A stranded submission already at the cap stays blocked. Retrying the same request returns the run idempotently.

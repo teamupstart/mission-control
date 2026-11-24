@@ -3604,6 +3604,81 @@ test("a push after the legacy recovery receipt cannot spend the replacement on a
   } finally { await manager.stop(); }
 });
 
+test("a GitHub-only push during commit resolution cannot spend the recovered round", async () => {
+  let pushDuringResolution = false;
+  const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+    if (head === "historical" && pushDuringResolution) {
+      pushDuringResolution = false;
+      const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
+      writeFileSync(recoveryPr, JSON.stringify({ ...pull, head: { ...pull.head, sha: "later" } }));
+    }
+    return head;
+  } });
+  const { manager, store, ids, key } = seeded;
+  try {
+    await strandLegacyGrant(seeded, "current");
+    const submissions = store.listSubmissions(ids.run);
+    const recover = await legacyRecoveryRoute(seeded);
+    pushDuringResolution = true;
+    assert.equal((await recover()).status, 200);
+    await manager.settleBackgroundWork();
+    assert.equal(pushDuringResolution, false);
+    assert.equal(getInspectorPr(key)?.observedHeadSha, "current");
+    assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+    assert.deepEqual(store.listSubmissions(ids.run), submissions);
+    assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+  } finally { await manager.stop(); }
+});
+
+for (const change of ["new ref update on the same SHA", "unavailable final PR read"] as const) {
+  test(`legacy replacement selection waits for live confirmation: ${change}`, async () => {
+    let applyChange = false;
+    const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
+      if (head === "historical" && applyChange) {
+        applyChange = false;
+        if (change === "unavailable final PR read") rmSync(recoveryPr);
+        else writeFileSync(holdActivity, "");
+      }
+      return head;
+    } });
+    const { store, manager, ids, registry, key, now } = seeded;
+    try {
+      await strandLegacyGrant(seeded, "current");
+      const pull = readFileSync(recoveryPr);
+      const submissions = store.listSubmissions(ids.run);
+      const recover = await legacyRecoveryRoute(seeded);
+      applyChange = true;
+      assert.equal((await recover()).status, 200);
+      if (change === "new ref update on the same SHA") {
+        await waitFor(() => existsSync(activityPending), "the final ref read did not start");
+        // The first tip response is in flight; GitHub returns the same PR head
+        // after a push away and back, but the second ref update ID will differ.
+        const [previous, ...rest] = JSON.parse(readFileSync(branchActivity, "utf8"));
+        writeFileSync(branchActivity, JSON.stringify([{ ...previous, id: previous.id + 1 }, ...rest]));
+        rmSync(holdActivity);
+      }
+      await manager.settleBackgroundWork();
+      assert.equal(applyChange, false);
+      assert.deepEqual(store.listSubmissions(ids.run), submissions);
+      if (change === "new ref update on the same SHA") {
+        assert.equal(store.getRun(ids.run)?.currentPhase, "inspector_head_mismatch");
+      } else {
+        assert.equal(store.getRun(ids.run)?.status, "waiting_for_new_head");
+        writeFileSync(recoveryPr, pull);
+        registry.inspectionUpdated(key, "current", "OPEN", now + 1013);
+        await manager.settleBackgroundWork();
+        assert.equal(store.listSubmissions(ids.run).length, submissions.length + 1);
+        assert.equal(store.latestSubmission(ids.run)?.prHeadSha, "current");
+      }
+      assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
+    } finally {
+      rmSync(holdActivity, { force: true });
+      rmSync(activityPending, { force: true });
+      await manager.stop();
+    }
+  });
+}
+
 test("legacy recovery reads eligibility from the workflow store's own database", async () => {
   const seeded = await spentInspectorGrant();
   const { manager, store, ids, key, now, url } = seeded;

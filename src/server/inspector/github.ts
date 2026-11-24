@@ -236,7 +236,7 @@ export interface InspectorBranchActivity {
 }
 
 const recoveryPullRequest = z.object({
-  number: z.number().int(), state: z.literal("open"), created_at: z.iso.datetime(),
+  number: z.number().int(), state: z.enum(["open", "closed"]), created_at: z.iso.datetime(),
   base: z.object({ repo: z.object({ full_name: z.string() }) }),
   head: z.object({ ref: z.string().min(1), sha: z.string().min(1),
     repo: z.object({ full_name: z.string().regex(/^[\w.-]+\/[\w.-]+$/) }) }),
@@ -277,49 +277,73 @@ function verifyRefHistory(
   return null;
 }
 
+async function readRecoveryApi(endpoint: string): Promise<unknown> {
+  try {
+    const response = await run(ghBin(), ["api", "--hostname", "github.com", "-H", "Cache-Control: no-cache", endpoint], { timeoutMs: GH_TIMEOUT_MS });
+    return response.code === 0 && !response.overflowed ? JSON.parse(response.stdout) : null;
+  } catch { return null; }
+}
+
+function readRefActivity(repository: string, ref: string, count: number) {
+  // Include force pushes, merges and branch recreation.
+  const query = new URLSearchParams({ ref, direction: "desc", per_page: String(count) });
+  return readRecoveryApi(`repos/${repository}/activity?${query}`);
+}
+
+async function readRecoveryPull(pr: NonNullable<ReturnType<typeof parsePrUrl>>) {
+  const base = `${pr.owner}/${pr.repo}`;
+  const pull = recoveryPullRequest.safeParse(await readRecoveryApi(`repos/${base}/pulls/${pr.number}`));
+  if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()) return null;
+  return pull.data;
+}
+
+const recoveryTip = z.object({
+  prKey: z.string(), headSha: z.string(), repository: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+  ref: z.string().startsWith("refs/heads/"), activityId: z.number().int().positive(), changedAt: z.number(),
+});
+
+/** Bracket the final open-PR read with the receipt's ref update before spending the round. */
+export async function recheckInspectorRecoveryTip(prUrl: string, head: string, receipt: unknown): Promise<boolean | null> {
+  const pr = parsePrUrl(prUrl);
+  const saved = recoveryTip.safeParse(receipt);
+  if (!pr || !saved.success || saved.data.prKey !== pr.key || saved.data.headSha !== head) return false;
+  const { repository, ref, activityId, changedAt } = saved.data;
+  const matchesTip = async () => {
+    const tip = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
+    if (!tip.success) return null;
+    const [latest] = tip.data;
+    return latest.ref === ref && latest.after === head && latest.id === activityId && latest.changedAt === changedAt;
+  };
+  const before = await matchesTip();
+  const pull = await readRecoveryPull(pr);
+  if (!pull) return null;
+  if (pull.state !== "open" || pull.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
+      || `refs/heads/${pull.head.ref}` !== ref || pull.head.sha !== head) return false;
+  return before === true ? matchesTip() : before;
+}
+
 export async function readInspectorBranchActivity(prUrl: string, expectedHead: string): Promise<InspectorBranchActivity | null> {
   const pr = parsePrUrl(prUrl);
   if (!pr) return null;
-  const read = async (endpoint: string): Promise<unknown> => {
-    const response = await run(ghBin(), ["api", "--hostname", "github.com", "-H", "Cache-Control: no-cache", endpoint], { timeoutMs: GH_TIMEOUT_MS });
-    if (response.code !== 0 || response.overflowed) return null;
-    return JSON.parse(response.stdout);
-  };
-  try {
-    const base = `${pr.owner}/${pr.repo}`;
-    const readSource = async () => {
-      const pull = recoveryPullRequest.safeParse(await read(`repos/${base}/pulls/${pr.number}`));
-      if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()
-          || pull.data.head.sha !== expectedHead) return null;
-      return pull.data;
-    };
-    const source = await readSource();
-    if (!source) return null;
-    const repository = source.head.repo.full_name;
-    const ref = `refs/heads/${source.head.ref}`;
-    // No activity_type filter: force pushes, merges and branch recreation also move the tip.
-    const endpoint = (count: number) => {
-      const query = new URLSearchParams({ ref, direction: "desc", per_page: String(count) });
-      return `repos/${repository}/activity?${query}`;
-    };
-    const first = z.tuple([refUpdate]).safeParse(await read(endpoint(1)));
-    if (!first.success) return null;
-    const [tip] = first.data;
-    if (tip.ref !== ref || tip.after !== expectedHead) return null;
-    const current = await readSource();
-    if (!current || current.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
-        || current.head.ref !== source.head.ref || current.created_at !== source.created_at) return null;
+  const source = await readRecoveryPull(pr);
+  if (source?.state !== "open" || source.head.sha !== expectedHead) return null;
+  const repository = source.head.repo.full_name;
+  const ref = `refs/heads/${source.head.ref}`;
+  const first = z.tuple([refUpdate]).safeParse(await readRefActivity(repository, ref, 1));
+  if (!first.success) return null;
+  const [tip] = first.data;
+  if (tip.ref !== ref || tip.after !== expectedHead) return null;
+  const current = await readRecoveryPull(pr);
+  if (current?.state !== "open" || current.head.sha !== expectedHead || current.head.repo.full_name.toLowerCase() !== repository.toLowerCase()
+      || current.head.ref !== source.head.ref || current.created_at !== source.created_at) return null;
 
-    const history = z.array(refUpdate).max(GITHUB_PAGE_SIZE).safeParse(await read(endpoint(GITHUB_PAGE_SIZE)));
-    if (!history.success) return null;
-    const latest = history.data[0];
-    if (!latest || latest.id !== tip.id || latest.changedAt !== tip.changedAt || latest.before !== tip.before) return null;
-    const refHistory = verifyRefHistory(history.data, ref, expectedHead, Date.parse(current.created_at));
-    if (!refHistory) return null;
-    return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: latest.id, changedAt: latest.changedAt, refHistory };
-  } catch {
-    return null;
-  }
+  const history = z.array(refUpdate).max(GITHUB_PAGE_SIZE).safeParse(await readRefActivity(repository, ref, GITHUB_PAGE_SIZE));
+  if (!history.success) return null;
+  const latest = history.data[0];
+  if (!latest || latest.id !== tip.id || latest.changedAt !== tip.changedAt || latest.before !== tip.before) return null;
+  const refHistory = verifyRefHistory(history.data, ref, expectedHead, Date.parse(current.created_at));
+  if (!refHistory) return null;
+  return { prKey: pr.key, repository, ref, headSha: expectedHead, activityId: latest.id, changedAt: latest.changedAt, refHistory };
 }
 
 export interface GitHubRepositoryIdentity {

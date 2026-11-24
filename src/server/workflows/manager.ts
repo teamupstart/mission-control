@@ -234,7 +234,7 @@ import {
   taskReposFor,
 } from "../db.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
-import { parsePrUrl, readInspectorBranchActivity } from "../inspector/github.ts";
+import { parsePrUrl, readInspectorBranchActivity, recheckInspectorRecoveryTip } from "../inspector/github.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
 import { runWorkflowRetention, WORKFLOW_RETENTION_INTERVAL_MS } from "./retention.ts";
 import { WorkflowRepositoryArtifactService } from "./repository-artifact/service.ts";
@@ -4817,7 +4817,18 @@ export class WorkflowManager {
     const grantPriorHeads = state.grantObservation && state.prKey
       ? await this.priorInspectorHeads(run.id, binding.sessionRepoRoot || getInspectorPr(state.prKey)?.repoRoot)
       : null;
+    let recoveryTipMatches: boolean | null = null;
+    const recoveryHead = state.grantObservation?.verifiedHeadSha;
+    if (recoveryHead && state.prKey) {
+      const adopted = getInspectorPr(state.prKey);
+      const stranded = this.store.latestSubmission(run.id);
+      if (!adopted || !stranded) return;
+      const receipt = this.store.recoveredInspectorBranchActivity(run.id, stranded.id, recoveryHead);
+      recoveryTipMatches = await recheckInspectorRecoveryTip(adopted.url, recoveryHead, receipt);
+    }
     if (state.grantObservation) {
+      // A local observation can also arrive during the final live read. Read the
+      // ledger last and synchronously compare the gate when inserting the round.
       observation = grantedHeadObservation(state, observation);
       if (!observation) return;
     }
@@ -5023,7 +5034,7 @@ export class WorkflowManager {
     const repositoryRoot = binding.sessionRepoRoot || ledger.repoRoot;
     if (run.status === "waiting_for_new_head") {
       const newHead = state.observedHeadSha;
-      if (state.grantObservation?.verifiedHeadSha && state.grantObservation.verifiedHeadSha !== newHead) {
+      if (recoveryHead && (recoveryHead !== newHead || recoveryTipMatches === false)) {
         // The recovery receipt authorizes only its verified replacement. The stale
         // submission still owns the gate until that replacement is actually created.
         const blocked = { ...state, targetHeadSha: submission.prHeadSha, waitReason: "head_mismatch" as const };
@@ -5031,6 +5042,7 @@ export class WorkflowManager {
         this.transitionInspectorGate(run, state, blocked, "blocked", "inspector_head_mismatch", null, null, now);
         return;
       }
+      if (recoveryHead && recoveryTipMatches === null) return;
       const priorHeads = grantPriorHeads ?? await this.priorInspectorHeads(run.id, repositoryRoot);
       if (!state.failedHeadSha) {
         this.transitionInspectorGate(

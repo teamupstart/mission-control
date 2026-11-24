@@ -8090,6 +8090,14 @@ export class WorkflowStore {
     });
   }
 
+  recoveredInspectorBranchActivity(runId: string, submissionId: string, head: string): WorkflowJson {
+    const event = this.listEvents(runId).findLast(row => row.kind === "inspector_stale_grant_recovered");
+    if (!event) return null;
+    const receipt = this.eventPayload(event);
+    if (receipt.submissionId !== submissionId || receipt.currentHeadSha !== head || !receipt.completedObservation) return null;
+    return receipt.branchActivity ?? null;
+  }
+
   private eventPayload(event: WorkflowEvent): Record<string, WorkflowJson> {
     const payload = event.payload;
     return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};

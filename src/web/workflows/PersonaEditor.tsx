@@ -574,7 +574,10 @@ export function PersonaEditor({
       const create = persona === null || asDuplicate;
       const name = asDuplicate ? `${submittedDraft.name || "Persona"} copy` : submittedDraft.name;
       const body = create
-        ? { ...submittedDraft, name, runner: knownRunner(submittedDraft.runner), ...(accessPreview ? { repositoryAccess: access } : {}) }
+        ? {
+          ...submittedDraft, name, runner: knownRunner(submittedDraft.runner),
+          ...(accessPreview && !asDuplicate && accessEdit ? { repositoryAccess: accessEdit.value } : {}),
+        }
         : updateBody!;
       const saved = await personaRequest<PersonaView>(
         create ? "/api/personas" : `/api/personas/${persona.id}`,
@@ -594,7 +597,9 @@ export function PersonaEditor({
       setDraft(reconciled.draft);
       setLoadedRevision(saved.revision);
       setDirty(reconciled.dirty);
-      if (!create) {
+      if (create) {
+        setAccessEdit(null);
+      } else {
         // Saving guidance advances the custom Persona's shared CAS revision.
         setAccessEdit(edit => edit && edit.revision === loadedRevision
           ? { ...edit, revision: saved.repositoryAccessRevision ?? saved.revision } : edit);

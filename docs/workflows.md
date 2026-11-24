@@ -3143,7 +3143,9 @@ Runs whose bound session is no longer available stay on the Runs page.
 
 Enable **Persona repository access** in Settings under Feature Flags. In Library, open the
 Persona, choose **Read-only repository access**, and save the setting. Publish your workflow
-and bind the new version to use it. The setting defaults to **No repository access**. A built-in
+and bind the new version to use it. New and duplicated Personas default to **No repository
+access**, including copies saved during an edit conflict. Grant read access to the copy if
+it needs the checkout. A built-in
 Persona stores its local access override separately from its shipped guidance. Version History
 shows the permission frozen at publication and identifies older snapshots as outdated.
 The editor retries an interrupted publish with the same request ID. The daemon returns

@@ -61,6 +61,57 @@ test("repository access is opt-in and survives reload for custom and built-in re
   }
 });
 
+test("duplicating a read-enabled Persona requires a fresh grant on the copy", async ({ dashboard, daemon }) => {
+  const api = dashboard.request;
+  expect((await api.put(`${daemon.baseURL}/api/feature-flags`, {
+    data: { kind: "flag", id: "persona-repository-access", enabled: true },
+  })).ok()).toBe(true);
+  const personasUrl = `${daemon.baseURL}/api/personas`;
+  const created = await api.post(personasUrl, { data: {
+    name: "Source reviewer", guidanceMarkdown: "Check the submitted file.", repositoryAccess: "read",
+  } });
+  expect(created.ok()).toBe(true);
+  const source = await created.json();
+  const name = dashboard.getByPlaceholder("Untitled Persona");
+  const grant = dashboard.getByRole("combobox", { name: "Repository access" });
+  await dashboard.goto(`${daemon.baseURL}/#/library/personas/${source.id}`);
+  await expect(grant).toHaveValue("read");
+  await dashboard.getByRole("button", { name: "More Persona actions" }).click();
+  await dashboard.getByRole("menuitem", { name: "Duplicate", exact: true }).click();
+  await expect(grant).toHaveValue("none");
+  await name.fill("Menu copy");
+  await dashboard.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dashboard.getByRole("button", { name: "Save repository access" })).toBeVisible();
+  await dashboard.reload();
+  await expect(name).toHaveValue("Menu copy");
+  await expect(grant).toHaveValue("none");
+
+  // A conflict can create a copy directly, without opening the new-Persona editor.
+  await dashboard.getByRole("complementary", { name: "Persona library" })
+    .getByRole("button", { name: /Source reviewer/ }).click();
+  await expect(grant).toHaveValue("read");
+  await grant.selectOption("none");
+  await grant.selectOption("read");
+  await dashboard.getByPlaceholder("One line on what this reviewer judges").fill("My local description");
+  expect((await api.patch(`${personasUrl}/${source.id}`, {
+    data: { expectedRevision: source.revision, description: "Changed by another editor" },
+  })).ok()).toBe(true);
+  await dashboard.getByRole("button", { name: "Save as duplicate" }).click();
+  await expect(name).toHaveValue("Source reviewer copy");
+  await expect(grant).toHaveValue("none");
+  await dashboard.reload();
+  await expect(grant).toHaveValue("none");
+  await captureState(dashboard, "duplicate-default", grant);
+  await grant.selectOption("read");
+  await dashboard.getByRole("button", { name: "Save repository access" }).click();
+  await expect(dashboard.getByRole("button", { name: "Save repository access" })).toBeDisabled();
+  await dashboard.reload();
+  await expect(grant).toHaveValue("read");
+  const catalog = await (await api.get(personasUrl)).json() as { id: string; name: string; repositoryAccess: string }[];
+  expect(catalog.find(row => row.id === source.id)?.repositoryAccess).toBe("read");
+  expect(catalog.find(row => row.name === "Menu copy")?.repositoryAccess).toBe("none");
+});
+
 const scenarios = [
   { title: "claude reviews the submitted dirty checkout and cites exact MCP ranges", provider: "claude", marker: "Inspect submitted.txt." },
   { title: "codex reviews the submitted dirty checkout and cites exact MCP ranges", provider: "codex", marker: "Inspect submitted.txt." },

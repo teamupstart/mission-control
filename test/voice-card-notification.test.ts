@@ -39,9 +39,18 @@ test("the registered Electron handler presents the words and maps each native bu
     assert.equal(notice.options.title, fixture.input.title);
     assert.equal(notice.options.body, fixture.input.body);
     assert.deepEqual(notice.options.actions, [{ type: "button", text: "Cancel" }, { type: "button", text: "Send now" }]);
-    notice.emit("action", { actionIndex: index });
+    notice.emit("action", {}, index);
     assert.equal(await result, action);
     assert.ok(notice.closed);
+  }
+});
+
+test("the handler also accepts Electron's event details and ignores unknown button indices", async () => {
+  for (const [index, expected] of [[0, "cancel"], [1, "send-now"], [2, null]] as const) {
+    const fixture = notificationFixture();
+    const result = fixture.show();
+    fixture.notices[0]!.emit("action", { actionIndex: index });
+    assert.equal(await result, expected);
   }
 });
 
@@ -57,7 +66,7 @@ test("a different renderer cannot create or dismiss the owner's notification", a
   assert.equal(fixture.dismiss(otherRenderer), undefined);
   assert.equal(fixture.notices.length, 1);
   assert.equal(notice.closed, false);
-  notice.emit("action", { actionIndex: 0 });
+  notice.emit("action", {}, 0);
   assert.equal(await result, "cancel");
   assert.equal(notice.closed, true);
 });
@@ -80,7 +89,7 @@ test("the handler rejects late native clicks even before the expiry timer runs",
     const [notice] = fixture.notices;
     assert.ok(notice?.shown);
     t.mock.timers.setTime(fixture.input.deadline + lateness);
-    notice.emit("action", { actionIndex: index });
+    notice.emit("action", {}, index);
     assert.equal(await result, null);
     assert.ok(notice.closed);
     assert.equal(fixture.show(), null);

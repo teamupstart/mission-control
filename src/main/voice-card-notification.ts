@@ -10,7 +10,7 @@ const noticeSchema = z.object({
 type IpcListener = (event: { sender: unknown }, input: unknown) => unknown;
 interface NoticeConstructor {
   new(options: NotificationConstructorOptions): {
-    once(event: "action", listener: (event: { actionIndex: number }) => void): void;
+    once(event: "action", listener: (event: { actionIndex?: number }, actionIndex?: number) => void): void;
     once(event: "click" | "close" | "failed", listener: () => void): void;
     show(): void;
     close(): void;
@@ -48,7 +48,10 @@ export function registerVoiceCardNotifications(
       };
       const timer = setTimeout(() => finish(null), ms);
       dismiss.set(id, () => finish(null));
-      notice.once("action", ({ actionIndex }) => finish(actionIndex === 0 ? "cancel" : actionIndex === 1 ? "send-now" : null));
+      notice.once("action", (event, actionIndex) => {
+        const index = actionIndex ?? event.actionIndex;
+        finish(index === 0 ? "cancel" : index === 1 ? "send-now" : null);
+      });
       notice.once("click", () => { owner.show(); finish(null); });
       notice.once("close", () => finish(null));
       notice.once("failed", () => finish(null));

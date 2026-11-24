@@ -33,7 +33,7 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
 });
 
-test("an unfocused desktop repeats the pending words and its Cancel action stops the same card", async ({ dashboard: page, daemon }) => {
+test("an unfocused desktop repeats the words and applies Cancel or Send now to the same card", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
   expect((await page.request.put(daemon.baseURL + "/api/ui/config", { data: {
@@ -47,17 +47,22 @@ test("an unfocused desktop repeats the pending words and its Cancel action stops
       onOpenSettings: () => () => {},
       showVoiceCardNotice: ({ title, body }: { title: string; body: string }) => {
         document.title = title + " | " + body;
-        return new Promise(resolve => window.addEventListener("fixture-native-cancel", () => resolve("cancel"), { once: true }));
+        return new Promise(resolve => window.addEventListener("fixture-native-action", event => resolve((event as CustomEvent).detail), { once: true }));
       },
       dismissVoiceCardNotice() {},
     } });
   });
   await page.reload();
   await runningAgent(page, daemon, "Steve");
-  await say(daemon, "Steve, inspect CI", { id: "native-notice" });
-  await expect(page).toHaveTitle(/To Steve · sending in \d+s \| inspect CI/);
-  const action = page.waitForResponse(response => response.url().endsWith("/cards/native-notice/cancel"));
-  await page.evaluate(() => window.dispatchEvent(new Event("fixture-native-cancel")));
-  expect((await action).ok()).toBe(true);
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  for (const choice of ["cancel", "send-now"]) {
+    const id = "native-" + choice;
+    const words = "inspect " + id;
+    await say(daemon, "Steve, " + words, { id });
+    await expect(page).toHaveTitle(new RegExp("To Steve · sending in \\d+s \\| " + words));
+    const action = page.waitForResponse(response => response.url().endsWith("/cards/" + id + "/" + choice));
+    await page.evaluate(detail => window.dispatchEvent(new CustomEvent("fixture-native-action", { detail })), choice);
+    expect((await action).ok()).toBe(true);
+    await expect(page.getByRole("status").filter({ hasText: choice === "cancel" ? "Cancelled" : "Sent to Steve" })).toBeVisible();
+  }
+  expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns").all().map(r => r.spoken_words))).toEqual(["inspect native-send-now"]);
 });

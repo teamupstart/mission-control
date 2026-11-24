@@ -3044,6 +3044,14 @@ function restampsEpisode(stamped: string | null, episodeKey: string | null): boo
  */
 const FORGIVEN_CHECK_RUN_PREFIX = "forgiven:";
 
+type SubmissionCapture = {
+  context: WorkflowJson;
+  evidence: WorkflowJson;
+  fingerprint?: string;
+  repositoryFingerprint?: string;
+  readiness?: WorkflowEvidenceReadinessResult | null;
+};
+
 export class WorkflowStore {
   /** Publish domain writes before commit, including nested writes in an outer transaction. */
   private mutate<T>(
@@ -7397,14 +7405,7 @@ export class WorkflowStore {
 
   updateSubmissionCapture(
     id: string,
-    input: {
-      context: WorkflowJson;
-      evidence: WorkflowJson;
-      fingerprint?: string;
-      repositoryFingerprint?: string;
-      readiness?: WorkflowEvidenceReadinessResult | null;
-      status?: WorkflowSubmission["status"];
-    },
+    input: SubmissionCapture & { status?: WorkflowSubmission["status"] },
     now = Date.now(),
   ): WorkflowSubmission {
     const current = this.mustSubmission(id);
@@ -8067,17 +8068,20 @@ export class WorkflowStore {
     });
   }
 
-  commitRepositoryCaptureActivation(input: { submissionId: string; digest: string }, now = Date.now()): void {
-    transaction(this.db, () => {
+  commitRepositoryCaptureActivation(
+    input: { submissionId: string; digest: string; capture: Required<SubmissionCapture> },
+    now = Date.now(),
+  ): WorkflowSubmission {
+    return transaction(this.db, () => {
+      if (this.mustSubmission(input.submissionId).status !== "capturing")
+        throw new Error("Repository submission activation conflict");
       const activated = this.db.prepare(`
         UPDATE workflow_repository_snapshot_claims SET state='active', activated_at=?
         WHERE submission_id=? AND digest=? AND state='provisional'
           AND EXISTS (SELECT 1 FROM workflow_repository_artifacts WHERE digest=? AND state='ready')
       `).run(now, input.submissionId, input.digest, input.digest);
       if (activated.changes !== 1) throw new Error("Repository claim activation conflict");
-      const submission = this.db.prepare(`UPDATE workflow_submissions SET status='running', updated_at=?
-        WHERE id=? AND status='capturing'`).run(now, input.submissionId);
-      if (submission.changes !== 1) throw new Error("Repository submission activation conflict");
+      return this.updateSubmissionCapture(input.submissionId, { ...input.capture, status: "running" }, now);
     });
   }
 

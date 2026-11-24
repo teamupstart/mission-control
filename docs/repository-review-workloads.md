@@ -151,7 +151,8 @@ after capture guards pass. Verification syncs the manifest and every object file
 opening the claim transaction. The service flushes the recovery intent and syncs the
 directories that name the candidate and published digest before SQLite commits the claim.
 A sync failure leaves the submission able to retry. `WorkflowStore.commitRepositoryCaptureActivation` makes the
-claim active and the submission running in one transaction. Multiple submissions can
+claim active and the submission running in the same transaction that persists the
+captured context, evidence, both fingerprints and readiness result. Multiple submissions can
 independently own the same bytes. Verification marks a missing or corrupt digest as failed
 for all its claims, including when materialization discovers the damage. A transient source
 read error or a failure writing a private lease leaves the digest ready so any holder can retry.

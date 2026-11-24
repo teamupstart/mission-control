@@ -85,6 +85,10 @@ function fixture(t: TestContext, format = "sha1", storage?: RepositoryArtifactSt
     lookup,
     db,
     submission,
+    activate: (snapshot: { submissionId: string; digest: string }) =>
+      store.commitRepositoryCaptureActivation({ ...snapshot, capture: {
+        context: {}, evidence: {}, fingerprint: "fp", repositoryFingerprint: "repo", readiness: null,
+      } }),
     request,
     prepare: (sourceBase: string | null = null) => service.prepare({ checkout, sourceBase }, signal),
   };
@@ -160,8 +164,8 @@ test("portable layered capture reads and diffs after source deletion, omits sens
   const second = await f.service.promote(two, f.submission());
   const request = f.request(first);
   await assert.rejects(f.service.materialize(request, signal));
-  f.store.commitRepositoryCaptureActivation(first);
-  f.store.commitRepositoryCaptureActivation(second);
+  f.activate(first);
+  f.activate(second);
   for (const field of ["workloadId", "attemptId", "submissionId", "digest", "locator"])
     await assert.rejects(f.service.materialize({ ...request, [field]: "stale" }, signal));
   assert.equal(existsSync(join(f.root, "leases")), false);
@@ -289,7 +293,7 @@ for (const changed of [false, true]) {
     const f = fixture(t);
     f.write("a", "original");
     const holder = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(holder);
+    f.activate(holder);
     const retryId = f.submission();
     const interrupted = await f.service.promote(await f.prepare(), retryId);
     assert.equal(interrupted.digest, holder.digest);
@@ -316,7 +320,7 @@ for (const changed of [false, true]) {
     assert.equal(claim()?.activated_at, null);
     assert.equal(claim()?.released_at, null);
     await assert.rejects(f.service.materialize(f.request(retried), signal));
-    f.store.commitRepositoryCaptureActivation(retried);
+    f.activate(retried);
     for (const snapshot of [retried, holder]) {
       const lease = await f.service.materialize(f.request(snapshot), signal);
       assert.equal(lease.identity.digest, snapshot.digest);
@@ -332,7 +336,7 @@ test("one service per root protects live candidates, provisional claims and leas
   f.write("a", "submitted");
   const pending = await f.prepare();
   const first = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(first);
+  f.activate(first);
   const request = f.request(first);
   f.service.setActiveRequestLookup(undefined);
   await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
@@ -344,7 +348,7 @@ test("one service per root protects live candidates, provisional claims and leas
   await Promise.all([supervisor.reconcile(), f.service.reconcile()]);
   assert.ok(existsSync(join(f.root, "pending", pending.id)));
   assert.ok(existsSync(join(lease.objectDirectory, "objects")));
-  f.store.commitRepositoryCaptureActivation(second);
+  f.activate(second);
   assert.ok(supervisor.activeSnapshot(second.submissionId));
   await lease.release();
   await f.service.discard(pending);
@@ -358,7 +362,7 @@ test("verification detects object growth after fstat within the declared size pl
   f.write("file", "submitted");
   const blob = f.git("hash-object", "file");
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const path = realpathSync(join(f.root, "digests", snapshot.digest, blob));
   const expected = lstatSync(path).size;
   const fs = (await import("node:fs/promises")).default;
@@ -402,7 +406,7 @@ test("verification detects object growth after fstat within the declared size pl
 test("verification authenticates an oversized manifest before allocating space for it", async (t) => {
   const f = fixture(t);
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const path = join(f.root, "digests", snapshot.digest, "manifest.json");
   chmodSync(path, 0o600);
   truncateSync(path, MAX_CAPTURE_OBJECT_BYTES + 1);
@@ -429,8 +433,8 @@ test("transient verification I/O errors preserve ready claims and both submissio
   f.write("file", "shared bytes");
   const first = await f.service.promote(await f.prepare(), f.submission());
   const second = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(first);
-  f.store.commitRepositoryCaptureActivation(second);
+  f.activate(first);
+  f.activate(second);
   assert.equal(first.digest, second.digest);
   const manifest = realpathSync(join(f.root, "digests", first.digest, "manifest.json"));
   const candidate = await f.prepare();
@@ -631,7 +635,7 @@ test("displaced digest bytes reserve temporary storage until pending cleanup suc
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(150_000, 218_000));
   f.write("file", Buffer.alloc(64_000, 0x61));
   const holder = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(holder);
+  f.activate(holder);
   const candidate = await f.prepare();
   const pending = join(realpathSync(f.root), "pending", candidate.id);
   const blob = f.git("hash-object", "file");
@@ -652,7 +656,7 @@ test("displaced digest bytes reserve temporary storage until pending cleanup suc
   });
   syncBuiltinESMExports();
   try {
-    f.store.commitRepositoryCaptureActivation(await f.service.promote(candidate, incoming));
+    f.activate(await f.service.promote(candidate, incoming));
     assert.equal(lstatSync(join(previous, blob)).size, 128_000);
     for (let i = 0; i < 2; i++) assert.equal((await f.service.reconcile()).orphans, 1);
     f.write("file", Buffer.alloc(5_000));
@@ -675,7 +679,7 @@ test("recovery charges a previous writer's displaced bytes if cleanup still fail
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(120_000, 160_000));
   f.write("file", Buffer.alloc(80_000));
   const holder = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(holder);
+  f.activate(holder);
   const candidate = interruptedCapture(f);
   const pending = join(realpathSync(f.root), "pending", candidate.id);
   const previous = join(pending, "previous"), dest = join(f.root, "digests", holder.digest);
@@ -717,7 +721,9 @@ for (const kind of ["pending", "leases"] as const) {
       const signal = new AbortController().signal;
       const prepare = () => service.prepare({ checkout, sourceBase: null }, signal);
       const snapshot = await service.promote(await prepare(), submission);
-      store.commitRepositoryCaptureActivation(snapshot);
+      store.commitRepositoryCaptureActivation({ ...snapshot, capture: {
+        context: {}, evidence: {}, fingerprint: "fp", repositoryFingerprint: "repo", readiness: null,
+      } });
       const request = { ...snapshot, workloadId: "old", attemptId: "old" };
       service.setActiveRequestLookup(() => request);
       if (kind === "pending") await prepare();
@@ -764,7 +770,7 @@ test("reader leases share storage with pending candidates until their directorie
   const f = fixture(t, "sha1", new RepositoryArtifactStorage(128_000, 160_000));
   f.write("file", randomBytes(96_000));
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const request = f.request(snapshot);
   const first = await f.service.materialize(request, signal);
   await assert.rejects(f.service.materialize(request, signal), { code: "artifact_unavailable" });
@@ -863,7 +869,7 @@ for (const kind of ["pending", "leases"] as const) {
     const f = fixture(t);
     f.write("a", "shared bytes");
     const snapshot = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     const fs = (await import("node:fs")).default;
     const promises = (await import("node:fs/promises")).default;
     const { syncBuiltinESMExports } = await import("node:module");
@@ -917,7 +923,7 @@ for (const kind of ["pending", "leases"] as const) {
     const f = fixture(t);
     f.write("file", "submitted");
     const snapshot = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     const request = f.request(snapshot);
     assert.throws(() => execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
       import fs from "node:fs";
@@ -967,7 +973,7 @@ for (const kind of ["pending", "leases"] as const) {
 test("failed owner marker writes and renames clean up only their new pending and lease directories", async (t) => {
   const f = fixture(t);
   const holder = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(holder);
+  f.activate(holder);
   const other = await f.prepare();
   const lease = await f.service.materialize(f.request(holder), signal);
   const fs = (await import("node:fs")).default;
@@ -1018,7 +1024,7 @@ test("allocation sync failures stop pending and lease writers before their first
   const f = fixture(t, "sha1", storage);
   f.write("file", "submitted");
   const holder = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(holder);
+  f.activate(holder);
   const fs = (await import("node:fs")).default;
   const { syncBuiltinESMExports } = await import("node:module");
   const rename = fs.renameSync, fsync = fs.fsyncSync;
@@ -1068,10 +1074,10 @@ for (const [operation, replacement] of [
     const f = fixture(t);
     f.write("file", "first");
     const first = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(first);
+    f.activate(first);
     f.write("file", "second");
     const second = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(second);
+    f.activate(second);
     assert.notEqual(first.digest, second.digest);
     const root = realpathSync(join(f.root, "digests"));
     const run = () => {
@@ -1125,8 +1131,8 @@ test("materializing a damaged source object fails the shared digest for every ho
   f.write("file", "shared bytes");
   const first = await f.service.promote(await f.prepare(), f.submission());
   const second = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(first);
-  f.store.commitRepositoryCaptureActivation(second);
+  f.activate(first);
+  f.activate(second);
   const path = join(f.root, "digests", first.digest, f.git("hash-object", "file"));
   chmodSync(path, 0o600);
   writeFileSync(path, "blob 12\0broken bytes");
@@ -1146,7 +1152,7 @@ test("artifact readiness guards first activation and a failed artifact permits l
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
   const id = snapshot.submissionId;
   assert.throws(() => f.store.setSubmissionState(id, "running"), /repository claim is not active/);
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const warnings = t.mock.method(console, "warn", () => {});
   const cancelled = AbortSignal.abort(new TypeError("private cancellation details"));
   await assert.rejects(f.service.verify(snapshot, cancelled), { code: "artifact_unavailable" });
@@ -1167,17 +1173,22 @@ test("artifact readiness guards first activation and a failed artifact permits l
   await f.service.reconcile();
 });
 
-test("activation rolls back both writes and corruption and namespace substitution fail closed", async (t) => {
+test("activation commits captured evidence atomically and corruption and namespace substitution fail closed", async (t) => {
   const f = fixture(t);
   f.write("a", "allowed");
   const c = await f.prepare(),
     s = await f.service.promote(c, f.submission());
+  const capture = { context: { head: "captured" }, evidence: { proof: "frozen" }, fingerprint: "captured-fp",
+    repositoryFingerprint: "captured-repo", readiness: null };
+  const activate = () => f.store.commitRepositoryCaptureActivation({ ...s, capture });
+  const initial = f.store.getSubmission(s.submissionId);
   for (const table of ["workflow_submissions", "workflow_repository_snapshot_claims"]) {
     f.db.exec(
       `CREATE TEMP TRIGGER injected BEFORE UPDATE ON ${table} BEGIN SELECT RAISE(ABORT,'injected'); END`,
     );
-    assert.throws(() => f.store.commitRepositoryCaptureActivation(s), /injected/);
+    assert.throws(activate, /injected/);
     f.db.exec("DROP TRIGGER injected");
+    assert.deepEqual(f.store.getSubmission(s.submissionId), initial);
     assert.equal(
       f.db.prepare("SELECT status FROM workflow_submissions WHERE id=?").get(s.submissionId)?.status,
       "capturing",
@@ -1189,7 +1200,13 @@ test("activation rolls back both writes and corruption and namespace substitutio
       "provisional",
     );
   }
-  f.store.commitRepositoryCaptureActivation(s);
+  const running = activate();
+  assert.deepEqual(f.store.getSubmission(s.submissionId), running);
+  assert.deepEqual(running.context, capture.context);
+  assert.deepEqual(running.evidence, capture.evidence);
+  assert.equal(running.evidenceFingerprint, capture.fingerprint);
+  assert.equal(running.repositoryFingerprint, capture.repositoryFingerprint);
+  assert.equal(running.status, "running");
   const artifact = join(f.root, "digests", c.digest),
     r = f.request(s);
   const lease = await f.service.materialize(r, signal);
@@ -1224,7 +1241,7 @@ test("promotion repairs an owned corrupt digest from verified bytes and preserve
   const f = fixture(t);
   f.write("a", "submitted bytes");
   const first = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(first);
+  f.activate(first);
   const digestDir = join(f.root, "digests", first.digest);
   const object = f.git("hash-object", "a");
   const path = join(digestDir, object);
@@ -1258,7 +1275,7 @@ test("promotion repairs an owned corrupt digest from verified bytes and preserve
   rmSync(unknown, { recursive: true });
   const second = await f.service.promote(await f.prepare(), id);
   assert.equal(second.digest, first.digest);
-  f.store.commitRepositoryCaptureActivation(second);
+  f.activate(second);
   assert.deepEqual(readFileSync(path), valid);
   for (const claim of [first, second]) {
     const lease = await f.service.materialize(f.request(claim), signal);
@@ -1275,7 +1292,7 @@ for (const published of [false, true]) {
     const f = fixture(t);
     f.write("file", "intact bytes");
     const holder = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(holder);
+    f.activate(holder);
     const dest = join(f.root, "digests", holder.digest);
     rmSync(join(dest, "manifest.json"));
     await assert.rejects(f.service.verify(holder, signal));
@@ -1304,7 +1321,7 @@ for (const when of ["before", "after"]) {
     const f = fixture(t);
     f.write("file", "holder bytes");
     const holder = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(holder);
+    f.activate(holder);
     const dest = join(realpathSync(f.root), "digests", holder.digest);
     rmSync(dest, { recursive: true });
     await assert.rejects(f.service.verify(holder, signal), { code: "artifact_unavailable" });
@@ -1536,7 +1553,7 @@ for (const format of ["sha1", "sha256"]) {
     f.write(".env", "private");
     f.write("__init__.py", "");
     const snapshot = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     const artifact = join(f.root, "digests", snapshot.digest);
     assert.deepEqual(readFileSync(join(artifact, empty)), Buffer.from("blob 0\0"));
     assert.equal(existsSync(join(artifact, f.git("hash-object", ".env"))), false);
@@ -1578,7 +1595,7 @@ for (const parent of ["sha1", "sha256"]) {
     rmSync(join(f.checkout, "nested"), { recursive: true });
     const child = initNested(parent);
     const snapshot = await f.service.promote(await f.prepare(), f.submission());
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     const lease = await f.service.materialize(f.request(snapshot), signal);
     const entry = lease.descriptor.worktree.find(e => e.path === "nested");
     assert.equal(entry?.kind, "submodule");
@@ -1620,7 +1637,7 @@ test("raw path identity and gitlinks survive a round trip without following the 
   const caseSensitive = readFileSync(join(f.checkout, "Case"), "utf8") === "ONE";
   const candidate = await f.prepare();
   const s = await f.service.promote(candidate, f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
+  f.activate(s);
   const lease = await f.service.materialize(f.request(s), signal);
   assert.equal(lease.descriptor.worktree.find((e) => e.path === "vendor")?.blob, linkId);
   assert.equal(lease.descriptor.worktree.find((e) => e.path === "vendor")?.kind, "submodule");
@@ -1709,7 +1726,7 @@ test("object reads refuse linked loose files, fanout directories, pack files, in
   }
   const packed = await f.prepare(head.slice(0, 9));
   const snapshot = await f.service.promote(packed, f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   rmSync(f.checkout, { recursive: true });
   const lease = await f.service.materialize(f.request(snapshot), signal);
   assert.deepEqual(lease.descriptor.retainedRevisions.map(e => e.id), [head]);
@@ -1775,7 +1792,7 @@ test("a depth-two clone seals its declared frontier, rejects a missing undeclare
   writeFileSync(marker, boundary + "\n");
   assert.equal(await f.service.stillCurrent(candidate, signal), true);
   const snapshot = await f.service.promote(candidate, f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   rmSync(checkout, { recursive: true });
   rmSync(f.checkout, { recursive: true });
   const request = f.request(snapshot);
@@ -1810,7 +1827,7 @@ test("a shallow merge preserves the breadth-first prefix when another branch has
   f.git("update-ref", "HEAD", tip);
   writeFileSync(join(f.checkout, ".git", "shallow"), boundary + "\n");
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const lease = await f.service.materialize(f.request(snapshot), signal);
   assert.deepEqual(lease.descriptor.retainedRevisions.map(rev => rev.id), [tip, boundary, other]);
   assert.deepEqual(lease.descriptor.frontier, [
@@ -1901,7 +1918,7 @@ test("2,048-commit breadth-first merge prefix survives source deletion with shal
   assert.equal(second.digest, candidate.digest);
   await f.service.discard(second);
   const s = await f.service.promote(candidate, f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
+  f.activate(s);
   rmSync(f.checkout, { recursive: true });
   const r = f.request(s),
     lease = await f.service.materialize(r, signal);
@@ -2120,7 +2137,7 @@ for (const limit of ["64 MiB per object", "512 MiB total"]) {
     f.git("update-ref", "HEAD", head);
     const c = await f.prepare(base);
     const s = await f.service.promote(c, f.submission());
-    f.store.commitRepositoryCaptureActivation(s);
+    f.activate(s);
     const lease = await f.service.materialize(f.request(s), signal);
     assert.deepEqual(lease.descriptor.frontier, [{ revision: head, omittedParents: [expensive, cheap] }]);
     assert.deepEqual(
@@ -2240,7 +2257,7 @@ test("core.symlinks preserves the indexed link type and literal bytes of a regul
   f.write("new-target", "target contents");
   assert.match(f.git("diff", "--raw"), /:120000 120000 .* M\s+link/);
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const request = f.request(snapshot);
   const lease = await f.service.materialize(request, signal);
   const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
@@ -2266,7 +2283,7 @@ test("intent-to-add, executable mode and index-only changes agree with Git's own
   const tree = f.git("write-tree");
   const original = readFileSync(join(f.checkout, ".git/index"));
   const s = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
+  f.activate(s);
   const lease = await f.service.materialize(f.request(s), signal);
   assert.equal(lease.descriptor.indexTree, tree);
   assert.deepEqual(lease.descriptor.worktree.find((e) => e.path === "intent")?.classifications, ["unstaged"]);
@@ -2284,7 +2301,7 @@ test("removed intent-to-add files appear only as unstaged status deletions after
   assert.deepEqual(f.git("diff", "--name-status").split("\n"), ["D\t.env", "D\tintent"]);
   assert.equal(f.git("diff", "--cached", "--name-status"), "");
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   rmSync(f.checkout, { recursive: true });
   const request = f.request(snapshot);
   const lease = await f.service.materialize(request, signal);
@@ -2332,7 +2349,7 @@ test("stable submission retries an index-only edit across the outer evidence bou
   assert.equal(stable?.captured, 2);
   assert.deepEqual(readdirSync(join(f.root, "pending")), [stable!.candidate.id]);
   const s = await f.service.promote(stable!.candidate, f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
+  f.activate(s);
   const lease = await f.service.materialize(f.request(s), signal);
   assert.equal(lease.descriptor.index.find((e) => e.path === "a")?.blob, f.git("rev-parse", ":a"));
   await lease.release();
@@ -2388,7 +2405,7 @@ for (const [initial, replacement] of [
       assert.equal(stable.captured, 2);
       assert.deepEqual(readdirSync(join(f.root, "pending")), [stable.candidate.id]);
       const snapshot = await f.service.promote(stable.candidate, f.submission());
-      f.store.commitRepositoryCaptureActivation(snapshot);
+      f.activate(snapshot);
       const lease = await f.service.materialize(f.request(snapshot), signal);
       const entry = lease.descriptor.worktree.find(e => e.path === "racing-entry");
       assert.ok(entry);
@@ -2433,7 +2450,7 @@ for (const indexFlag of ["--sparse-index", "--no-sparse-index"]) {
     const index = readFileSync(join(f.checkout, ".git/index"));
     const snapshot = await f.service.promote(await f.prepare(), f.submission());
     assert.deepEqual(readFileSync(join(f.checkout, ".git/index")), index);
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     rmSync(f.checkout, { recursive: true });
     assert.equal(existsSync(join(f.root, "digests", snapshot.digest, secret)), false);
     const request = f.request(snapshot);
@@ -2506,7 +2523,7 @@ test("an index-only change between the context read and artifact preparation ret
   assert.equal(discarded.length, 1);
   assert.deepEqual(readdirSync(join(f.root, "pending")), [stable.candidate.id]);
   const snapshot = await f.service.promote(stable.candidate, f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const lease = await f.service.materialize(f.request(snapshot), signal);
   assert.equal(stable.captured, reads[1]);
   assert.equal(lease.descriptor.index.find(entry => entry.path === "a")?.blob, stable.captured);
@@ -2585,7 +2602,7 @@ test("publication sync failures before and after rename roll back the claim and 
     events.length = 0;
     const snapshot = await f.service.promote(c, id);
     assert.ok(events.includes(dirname(dest)));
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     await f.service.release(id);
     await f.service.reconcile();
   } finally {
@@ -2649,11 +2666,11 @@ test("a failed or cancelled capture releases its provisional claim while another
     const second = await f.service.promote(await f.prepare(), f.submission());
     f.db.prepare("UPDATE workflow_submissions SET status=? WHERE id=?").run(status, first.submissionId);
     await f.service.reconcile();
-    assert.throws(() => f.store.commitRepositoryCaptureActivation(first));
+    assert.throws(() => f.activate(first));
     const refused = await f.prepare();
     await assert.rejects(f.service.promote(refused, first.submissionId), { code: "artifact_unavailable" });
     await f.service.discard(refused);
-    f.store.commitRepositoryCaptureActivation(second);
+    f.activate(second);
     const snapshot = f.service.activeSnapshot(second.submissionId);
     assert.ok(snapshot);
     assert.equal((await f.service.verify(snapshot, signal)).digest, second.digest);
@@ -2696,7 +2713,7 @@ test("a staged deletion and a recreated working file retain both statuses and th
   f.write("file", "recreated\n");
   assert.equal(f.git("status", "--porcelain"), "D  file\n?? file");
   const s = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
+  f.activate(s);
   const request = f.request(s);
   const lease = await f.service.materialize(request, signal);
   const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
@@ -2785,7 +2802,7 @@ test("base-only deletions stay in the base-to-HEAD diff and never appear as chec
       f.git("add", "restaged");
     }
     const snapshot = await f.service.promote(await f.prepare(base), f.submission());
-    f.store.commitRepositoryCaptureActivation(snapshot);
+    f.activate(snapshot);
     const request = f.request(snapshot);
     const lease = await f.service.materialize(request, signal);
     const reader = createRepositoryReader({ view: lease.descriptor, objectDirectory: lease.objectDirectory,
@@ -2821,7 +2838,7 @@ test("a looping symlink replacing a directory preserves the target and child del
   rmSync(join(f.checkout, "dir"), { recursive: true });
   symlinkSync("dir", join(f.checkout, "dir"));
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   rmSync(f.checkout, { recursive: true });
   const request = f.request(snapshot);
   const lease = await f.service.materialize(request, signal);
@@ -2857,7 +2874,7 @@ test("status reports both sides of file and directory replacements without treat
   f.write("former-directory", "new file");
 
   const snapshot = await f.service.promote(await f.prepare(), f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   rmSync(f.checkout, { recursive: true });
   const request = f.request(snapshot);
   const lease = await f.service.materialize(request, signal);
@@ -2959,7 +2976,7 @@ test("checkout ownership accepts separate Git metadata with an explicit reciproc
   writeFileSync(join(checkout, "owned"), "submitted bytes");
   const candidate = await f.service.prepare({ checkout, sourceBase: null }, signal);
   const snapshot = await f.service.promote(candidate, f.submission());
-  f.store.commitRepositoryCaptureActivation(snapshot);
+  f.activate(snapshot);
   const lease = await f.service.materialize(f.request(snapshot), signal);
   assert.equal(lease.descriptor.worktree.find(entry => entry.path === "owned")?.blob,
     f.git("-C", checkout, "hash-object", "owned"));
@@ -2989,7 +3006,7 @@ test("a linked session checkout keeps its own staged and working bytes after the
   f.git("branch", base.slice(0, 12), "HEAD");
   const c = await f.service.prepare({ checkout: session, sourceBase: base.slice(0, 12) }, signal);
   const s = await f.service.promote(c, f.submission());
-  f.store.commitRepositoryCaptureActivation(s);
+  f.activate(s);
   const expected = f.git("-C", session, "rev-parse", ":file");
   rmSync(f.checkout, { recursive: true });
   rmSync(session, { recursive: true });

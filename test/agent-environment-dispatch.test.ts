@@ -32,8 +32,8 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
-async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "settled" | "cancel-probe" | "exited" | "exited-dirty") {
-  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty";
+async function checkTerminalDispatch(t: TestContext, scenario: "ship" | "resident" | "cleared" | "unconfirmed" | "never-started" | "never-started-dirty" | "settled" | "cancel-probe" | "exited" | "exited-dirty") {
+  const timesOut = scenario === "unconfirmed" || scenario === "never-started" || scenario === "never-started-dirty" || scenario === "settled" || scenario === "exited" || scenario === "exited-dirty";
   const kind = scenario === "resident" ? "resident" : "ship";
   process.env.MISSION_HOME = join(dir, "state");
   process.env.SHELL = join(dir, "login-shell");
@@ -158,11 +158,19 @@ process.stdin.resume();
       assert.ok(existsSync(delayed.cwd));
       return;
     }
-    if (scenario === "never-started") {
+    if (scenario === "never-started" || scenario === "never-started-dirty") {
+      const edit = join(delayed.cwd, "operator-edit.txt");
+      if (scenario === "never-started-dirty") writeFileSync(edit, "work during startup");
       t.mock.timers.tick(RESUME_START_MS);
       await dispatch;
       const expired = registry.getTask(task.id)!;
       assert.equal(expired.status, "failed");
+      if (scenario === "never-started-dirty") {
+        assert.equal(expired.worktreeLeaseId, launched.worktreeLeaseId);
+        assert.equal(expired.worktreePath, launched.worktreePath);
+        assert.ok(existsSync(edit));
+        return;
+      }
       assert.equal(expired.launchFailure?.sessionKept, false);
       assert.equal(expired.worktreePath, null, expired.error ?? undefined);
       assert.equal(expired.worktreeLeaseId, null);
@@ -231,6 +239,9 @@ test("a pane confirmed only after the backend timeout can still enter its checko
 
 test("a backend timeout releases the failed task's checkout when its wrapper never starts",
   (t) => checkTerminalDispatch(t, "never-started"));
+
+test("an edit made while waiting for an unstarted terminal wrapper survives the deadline",
+  (t) => checkTerminalDispatch(t, "never-started-dirty"));
 
 test("a timed-out wrapper that exits before the deadline releases its clean checkout",
   (t) => checkTerminalDispatch(t, "exited"));

@@ -299,7 +299,7 @@ export const codexRunner: LlmRunner = {
       const refusal = grantRefusal(codexRunner.sandbox, grant);
       throw new Error(`codex runner refused the tool grant: ${refusal ?? "unsupported grant"}`);
     }
-    const executable = await locateExecutable("codex");
+    const executable = await locateExecutable("codex", opts.signal);
     opts.signal?.throwIfAborted();
     if (!executable) throw new Error('agent binary "codex" not found in the executable environment');
     // The typed transport, when the operator has selected it. Resolved per call for the

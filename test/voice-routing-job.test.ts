@@ -454,6 +454,44 @@ test("the caller's provider wins over the job's configured one, and the model st
   assert.equal(codexModel(), "gpt-6-luna", "a stored override cannot substitute an unmeasured model");
 });
 
+test("expired Luna lookups release both slots before executable discovery returns", async (t) => {
+  const { executableLocator } = await import("../src/server/executables/locator.ts");
+  const resolve = executableLocator.resolve.bind(executableLocator);
+  let bothStarted!: () => void;
+  const started = new Promise<void>(resolve => { bothStarted = resolve; });
+  let resumeDiscovery!: () => void;
+  const held = new Promise<void>(resolve => { resumeDiscovery = resolve; });
+  let lookups = 0;
+  t.mock.method(executableLocator, "resolve", async (...args: Parameters<typeof resolve>) => {
+    const order = ++lookups;
+    if (order === 2) bothStarted();
+    if (order <= 2) await held;
+    return resolve(...args);
+  });
+  let modelCalls = 0;
+  t.after(configureCodexRunnerTransport(() => "sdk", {
+    createClient: () => ({ startThread: () => ({ run: async () => {
+      modelCalls++;
+      return { finalResponse: JSON.stringify(ANSWER) };
+    } }) }),
+  }));
+  const deadline = new AbortController();
+  const run = (signal?: AbortSignal) => runVoiceRoutingJob([QUESTION], { runner: "codex", timeoutMs: 5_000, signal });
+  const expired = [assert.rejects(run(deadline.signal)), assert.rejects(run(deadline.signal))];
+  await started;
+  deadline.abort(new Error("voice deadline expired"));
+  const next = run();
+  const watchdog = new AbortController();
+  try {
+    assert.deepEqual(await Promise.race([next, delay(2_000, null, { signal: watchdog.signal })]), [{ choice: "split", confidence: 0.99 }]);
+  } finally {
+    watchdog.abort();
+    resumeDiscovery();
+    await Promise.all([...expired, next]);
+  }
+  assert.equal(modelCalls, 1);
+});
+
 test("cancelling active Luna jobs releases their slots, and clock rollback cannot start expired work", async (t) => {
   let bothStarted!: () => void;
   const started = new Promise<void>(resolve => { bothStarted = resolve; });

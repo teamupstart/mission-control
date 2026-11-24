@@ -43,10 +43,12 @@ interface OpenCard {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+type SpokenSettlement = "sent" | "cancelled" | Extract<DeliveryResult, { outcome: "failed" }>;
+
 interface OutboxReceipt {
   card?: VoiceCard;
   entry: WeakRef<HeardEntry>;
-  outcome?: "sent" | "cancelled";
+  outcome?: SpokenSettlement;
 }
 
 export class VoiceRouter {
@@ -232,8 +234,9 @@ export class VoiceRouter {
     if (registeredId !== undefined && this.outbox.get(registeredId) === receipt) this.outbox.delete(registeredId);
     if (!active()) return true;
     this.delivering.delete(id);
-    const outcome = receipt.outcome ?? (typeof result === "string" ? result : result.outcome);
-    if (typeof result !== "string" && result.outcome === "failed") item.entry.detail = result.detail;
+    const settled = receipt.outcome ?? result;
+    const outcome = typeof settled === "string" ? settled : settled.outcome;
+    if (typeof settled !== "string" && settled.outcome === "failed") item.entry.detail = settled.detail;
     const current = this.state();
     // A stopped resident keeps its roster key after losing its session. It can still supply restart guidance.
     const stopped = outcome === "not-running" ? current.roster.find(name => name.key === selected?.key && name.state === "not-running") : undefined;
@@ -260,14 +263,16 @@ export class VoiceRouter {
     return true;
   }
 
-  settleSpoken(turnId: string, outcome: "sent" | "cancelled"): void {
+  settleSpoken(turnId: string, outcome: SpokenSettlement): void {
     const pending = this.outbox.get(turnId);
     if (!pending) return;
     this.outbox.delete(turnId);
     pending.outcome = outcome;
     const entry = pending.entry.deref();
-    if (entry) entry.outcome = outcome;
-    if (pending.card) this.publish({ ...pending.card, state: outcome });
+    const state = typeof outcome === "string" ? outcome : outcome.outcome;
+    const detail = typeof outcome === "string" ? {} : { detail: outcome.detail };
+    if (entry) Object.assign(entry, { outcome: state }, detail);
+    if (pending.card) this.publish({ ...pending.card, state, ...detail });
   }
 
   clearActionsAndHistory(): void {

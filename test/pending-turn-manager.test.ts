@@ -781,6 +781,57 @@ test("a spoken paste retries a changed transcript boundary and sends once agains
   assert.equal(row?.transcriptBoundary, claudeTranscript.messages!.boundary!(path)?.proof);
 });
 
+test("a quiet spoken delivery retries a failed transcript worker and releases Foreman after repeated failure", async t => {
+  const { VoiceRouter } = await import("../src/server/voice/router.ts");
+  const { loadSpokenTurns } = await import("../src/server/db.ts");
+  const path = join(home, "spoken-worker-recovery.jsonl");
+  writeFileSync(path, "{}\n");
+  t.mock.method(claudeTranscript, "locate", () => path);
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }));
+  const read = claudeTranscript.messages as Required<Pick<TranscriptMessages, "prepareHandoffBoundaries">>;
+  const prepare = read.prepareHandoffBoundaries.bind(read);
+  let failures = 0;
+  let attempts = 0;
+  t.mock.method(read, "prepareHandoffBoundaries", async (...args: Parameters<typeof prepare>) => {
+    attempts++;
+    if (attempts <= failures) throw new Error("Transcript worker exited before returning proof");
+    return prepare(...args);
+  });
+  for (failures of [1, 3]) {
+    attempts = 0;
+    const f = terminalFixture("spoken-worker-" + failures, async () => ({ ok: true, pasted: true, submitVerified: true }));
+    t.after(() => f.manager.stop());
+    const target = { key: "task:steve", name: "Steve", kind: "session", sessionId: f.id, taskId: null,
+      role: "", colorId: null, agent: "claude", state: "running" } as const;
+    const cards: import("../src/shared/voice-routing.ts").VoiceCard[] = [];
+    const router = new VoiceRouter(() => ({ mode: "listening", backend: "fluidaudio", roster: [target] }),
+      () => ({ enabled: false, seconds: 1 }), { deliver: async (_target, words, id, _command, _active, queued) => {
+        const turn = f.manager.submitSpoken(f.id, words, id, queued).pendingTurn!;
+        return { outcome: "queued", turnId: turn.id };
+      } }, card => cards.push(card));
+    f.registry.voiceRouter = router;
+    await router.accept({ id: f.key, text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+    assert.equal(f.registry.voiceHold(f.id), true);
+    await until(() => listPendingTurns(f.key).length === 0, "worker-result settlement", 10_000);
+    const failed = failures === 3;
+    assert.equal(attempts, failed ? 3 : 2);
+    assert.equal(f.injected.length, failed ? 0 : 1);
+    assert.equal(loadSpokenTurns(f.key).length, failed ? 0 : 1);
+    assert.equal(cards.at(-1)?.state, failed ? "failed" : "sent");
+    assert.equal(router.heard.list()[0]?.outcome, cards.at(-1)?.state);
+    if (failed) {
+      assert.match(cards.at(-1)?.detail ?? "", /Nothing was sent.*try again/);
+      assert.equal(router.heard.list()[0]?.detail, cards.at(-1)?.detail);
+      assert.equal(f.registry.voiceHold(f.id), false);
+      await router.accept({ id: f.key + "-retry", text: "Steve, inspect the build", capturedAt: Date.now(), backend: "fluidaudio", words: [] });
+      await until(() => cards.at(-1)?.state === "sent", "operator retry", 10_000);
+      assert.equal(f.injected.length, 1);
+    }
+    f.manager.stop();
+  }
+});
+
 test("a terminal refusal before paste returns to queued", async () => {
   const f = terminalFixture("refusal", async () => ({
     ok: false,

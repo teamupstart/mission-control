@@ -274,6 +274,8 @@ For a confirmed transport without client identifiers, a file created after reser
 supplies the starting boundary only if its creation millisecond is strictly later than the reservation.
 The first binding saves that file's identity at offset zero in the same transaction as the
 native message ID. For an existing file, the handoff hashes through its captured offset.
+If the proof worker fails, the daemon tries twice more before reporting the message as failed.
+The operator can repeat it. Exhausting these attempts releases the pending hold before any paste.
 If the writer appends during the read, a second matching hash through that same offset
 confirms the prefix. A replaced file or changed prefix invalidates a text-derived disclosure.
 Retrying or discarding an uncertain attempt removes its unconfirmed text-only reservation.

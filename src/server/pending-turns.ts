@@ -10,7 +10,7 @@ import { activePaneDialog, settledIdle } from "@shared/session.ts";
 import { injectPrompt, interruptPaneSession, type InjectResult } from "./actions.ts";
 import {
   followSpokenConversationKey, prepareSpokenTranscript, reserveSpokenHandoff, spokenLedger,
-  SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, type PreparedSpokenTranscript,
+  SPOKEN_TRANSCRIPT_CHANGED, SpokenTranscriptChanged, SpokenTranscriptUnavailable, type PreparedSpokenTranscript,
 } from "./delivery-ledgers.ts";
 import { VOICE_TURN_PREFIX, openQuestionsNote, spokenMessageText } from "@shared/voice-delivery.ts";
 import { isAgentAsk } from "@shared/async-input.ts";
@@ -1061,6 +1061,7 @@ export class PendingTurnManager {
     }
     this.draining.add(key);
     let turn: PendingTurn | null = null;
+    let failedBeforeHandoff = false;
     try {
       turn = claimNextPendingTurn(key, this.deps.now(), next.turn, words => spokenMessageText(words, {
         openQuestions: openQuestionsNote(this.registry.outstandingReviews(session.id).filter(isAgentAsk)),
@@ -1084,8 +1085,15 @@ export class PendingTurnManager {
           try {
             prepared = await prepareSpokenTranscript(key, transcript);
           } catch (error) {
-            releasePendingTurn(turn.id, turn.revision, errorMessage(error), this.deps.now());
+            if (error instanceof SpokenTranscriptUnavailable) {
+              failedBeforeHandoff = deleteClaimedPendingTurn(turn.id, turn.revision);
+              if (failedBeforeHandoff) this.registry.voiceRouter?.settleSpoken(turn.id, { outcome: "failed", detail: error.message });
+            } else {
+              releasePendingTurn(turn.id, turn.revision, errorMessage(error), this.deps.now());
+            }
             this.registry.refreshPendingTurns(key);
+            const live = this.registry.getSession(session.id);
+            if (live && noteKeyFor(live) !== key) this.registry.refreshPendingTurns(noteKeyFor(live));
             return;
           }
         }
@@ -1103,7 +1111,7 @@ export class PendingTurnManager {
       const retired = !!retiredId && !!current && !current.pendingTurns.some((row) => row.id === retiredId);
       // A guard's held-back mark is consumed by every delivery that ends, so none outlives its turn.
       const recheckAfterWork = !!retiredId && this.unverifiedAfterWork.delete(retiredId);
-      if (retired && following && (session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
+      if (retired && following && (failedBeforeHandoff || session.runtime === "terminal" || next.action === "steer" || following.action !== "idle")) {
         this.scheduleDrain(key);
       } else if (!retired && current) {
         // The row is still queued: a refusal, or a stage that did not finish the message.

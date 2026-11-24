@@ -1,4 +1,4 @@
-import { setImmediate as yieldToDaemon } from "node:timers/promises";
+import { setImmediate as yieldToDaemon, setTimeout as delay } from "node:timers/promises";
 import { statSync } from "node:fs";
 import type { PendingTurn } from "@shared/types.ts";
 import {
@@ -162,15 +162,30 @@ export class SpokenTranscriptChanged extends Error {
   constructor() { super(SPOKEN_TRANSCRIPT_CHANGED); }
 }
 
+export class SpokenTranscriptUnavailable extends Error {
+  constructor(cause: unknown) {
+    super("Transcript verification failed after three attempts. Nothing was sent. Repeat the spoken message to try again.", { cause });
+  }
+}
+
 export async function prepareSpokenTranscript(key: string, transcript: NonNullable<DeliveryConversation["transcript"]>): Promise<PreparedSpokenTranscript> {
   // Reserving can also settle an older pending delivery. Its prefix must not be read on
   // the daemon thread inside the write transaction either.
   const offsets = spokenLedger.rows(key).filter(row => row.messageId === null && !row.contested && row.transcriptBoundary !== null)
     .map(row => row.transcriptOffset ?? 0);
-  const capture = transcript.read.prepareHandoffBoundaries
-    ? await transcript.read.prepareHandoffBoundaries(transcript.path, offsets)
-    : { version: transcript.read.snapshot?.(transcript.path)?.version ?? null, eof: null, proofs: new Map() };
-  return { path: transcript.path, capture };
+  const prepare = transcript.read.prepareHandoffBoundaries;
+  if (!prepare) return { path: transcript.path, capture: {
+    version: transcript.read.snapshot?.(transcript.path)?.version ?? null, eof: null, proofs: new Map(),
+  } };
+  // No transport has started. Retry a failed worker here, even if the idle session emits no events.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return { path: transcript.path, capture: await prepare(transcript.path, offsets) };
+    } catch (error) {
+      if (attempt === 3) throw new SpokenTranscriptUnavailable(error);
+      await delay(100 * attempt);
+    }
+  }
 }
 
 /** At the transport guard, the receiving cycle and its corresponding ledger reservation commit together. */

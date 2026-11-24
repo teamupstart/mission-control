@@ -438,7 +438,9 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
   Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
-- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`.
+- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
+  the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
+  displays the newest confirmed mode whichever arrives first.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty
   with `listener: false` when no hello is live.
 - `POST /api/voice/model/download` starts the download and answers 202 with `{ model }`. A download

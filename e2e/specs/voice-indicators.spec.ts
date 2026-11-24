@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
-import type { Locator } from "@playwright/test";
+import type { Locator, Route } from "@playwright/test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
@@ -237,6 +237,100 @@ test("a changed voice shortcut stays hidden in both windows until the shell conf
   } finally {
     listener.stop();
   }
+});
+
+test("a mute acknowledgement offers Unmute while voice-state events are held, and an earlier event cannot undo an acknowledged unmute", async ({ page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  type HeldVoiceEvents = Window & { releaseVoiceEvent(): string };
+  try {
+    // Hold real voice_state frames before the dashboard handles them. The initial snapshot,
+    // both requests and both HTTP responses still come from the isolated daemon.
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.EventSource = class extends NativeEventSource {
+        constructor(url: string | URL, options?: EventSourceInit) {
+          super(url, options);
+          if (String(url) !== "/events") return;
+          const held: string[] = [];
+          this.addEventListener("message", event => {
+            if (!event.isTrusted || JSON.parse(event.data).type !== "voice_state") return;
+            event.stopImmediatePropagation();
+            held.push(event.data);
+          });
+          (window as HeldVoiceEvents).releaseVoiceEvent = () => {
+            const data = held.shift();
+            if (!data) return "";
+            this.dispatchEvent(new MessageEvent("message", { data }));
+            return JSON.parse(data).state.mode;
+          };
+        }
+      };
+    });
+    await page.goto(daemon.baseURL);
+    const status = page.locator("button.vi-status-line");
+    const requests: boolean[] = [];
+    const endpoint = daemon.baseURL + "/api/voice/mute";
+    page.on("request", req => {
+      if (req.url() === endpoint) requests.push(req.postDataJSON().muted);
+    });
+    await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    await test.step("HTTP confirms mute before the event; the next click can only unmute", async () => {
+      const response = page.waitForResponse(endpoint);
+      await status.click();
+      expect((await (await response).json()).state.mode).toBe("muted");
+      await expect(status).toHaveAccessibleName("Voice: muted. Unmute", { timeout: 2500 });
+      await expect(status).toBeEnabled();
+      if (process.env.MC_E2E_EVIDENCE) {
+        const root = artifactsDir("voice-window");
+        mkdirSync(root, { recursive: true });
+        await status.screenshot({ path: join(mkdtempSync(join(root, "mute-ack-")), "before-event.png") });
+      }
+      await status.click();
+      await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+      await expect(status).toBeEnabled();
+      expect(requests).toEqual([true, false]);
+    });
+    // Deliver the older muted event first, then the matching listening event.
+    for (const mode of ["muted", "listening"]) {
+      await expect.poll(() => page.evaluate(async () => {
+        const released = (window as HeldVoiceEvents).releaseVoiceEvent();
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        return released;
+      })).toBe(mode);
+      await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    }
+  } finally { listener.stop(); }
+});
+
+test("a delayed mute response cannot override a newer unmute event", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  const endpoint = daemon.baseURL + "/api/voice/mute";
+  const status = page.locator("button.vi-status-line");
+  const held = Promise.withResolvers<Route>();
+  try {
+    await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    await page.route(endpoint, route => held.resolve(route), { times: 1 });
+    await status.click();
+    const route = await held.promise;
+    const older = await route.fetch();
+    expect((await older.json()).state.mode).toBe("muted");
+    await expect(status).toHaveAccessibleName("Voice: muted. Unmute");
+    expect((await page.request.post(endpoint, { data: { muted: false } })).ok()).toBe(true);
+    await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    await expect(status).toBeDisabled();
+    await route.fulfill({ response: older });
+    await expect(status).toBeEnabled();
+    await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const root = artifactsDir("voice-window");
+      mkdirSync(root, { recursive: true });
+      await status.screenshot({ path: join(mkdtempSync(join(root, "mute-ack-")), "after-older-response.png") });
+    }
+    await status.click();
+    await expect(status).toHaveAccessibleName("Voice: muted. Unmute");
+  } finally { listener.stop(); }
 });
 
 for (const muted of [true, false]) {

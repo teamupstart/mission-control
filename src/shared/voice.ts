@@ -263,6 +263,9 @@ export interface VoiceHotkeyError {
  */
 export interface VoiceState {
   mode: VoiceMode;
+  /** Orders mode transitions within one daemon across HTTP replies and the event stream.
+   * Absent on the off state and on snapshots from older daemons. */
+  modeVersion?: { source: string; revision: number };
   /** Every reason that holds, in `VOICE_UNAVAILABLE_REASONS` order. Empty unless `unavailable`. */
   reasons: VoiceUnavailableReason[];
   /** From the latest shell report, plus the daemon's own reading of `listener`. */
@@ -374,6 +377,8 @@ export function canonicalVoiceState(state: VoiceState): string {
   }
   return JSON.stringify([
     state.mode,
+    state.modeVersion?.source,
+    state.modeVersion?.revision,
     state.reasons,
     capabilities,
     state.configuredHotkey,

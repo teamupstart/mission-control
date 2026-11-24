@@ -133,6 +133,26 @@ test("with the flag off the state is off, whatever was heard", () => {
   assert.equal(h.timers.length, 0, "nothing is scheduled while voice is off");
 });
 
+test("mute replies and published modes share a revision ordered within one daemon", () => {
+  const h = harness();
+  h.store.acceptHello(HELLO);
+  const initial = h.store.state().modeVersion;
+  assert.ok(initial);
+  h.store.acceptHello(HELLO);
+  assert.deepEqual(h.store.state().modeVersion, initial);
+  for (const [index, muted] of [true, false].entries()) {
+    h.setConfig({ muted });
+    h.store.publish();
+    const state = h.store.state();
+    assert.equal(state.mode, muted ? "muted" : "listening");
+    assert.deepEqual(state.modeVersion, { source: initial.source, revision: initial.revision + index + 1 });
+    assert.deepEqual(state.modeVersion, h.published.at(-1)?.modeVersion);
+  }
+  const restarted = harness();
+  restarted.store.acceptHello(HELLO);
+  assert.notEqual(restarted.store.state().modeVersion?.source, initial.source);
+});
+
 test("unavailable until a listener says hello; then listening; then unavailable once it lapses", () => {
   const h = harness();
   assert.deepEqual(h.store.state().reasons, ["listener"]);

@@ -8,10 +8,10 @@ function openComposer(_id: string, actions: ActionBarHandle | null) {
 }
 
 function Fallback() {
-  const { sessions, voice } = useEventStream();
+  const { sessions, voice, acknowledgeVoiceMode } = useEventStream();
   const session = sessions[0];
   if (!session) return null;
-  return <VoiceWindowProvider enabled state={voice} openSetup={() => {}}>
+  return <VoiceWindowProvider enabled state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={() => {}}>
     <ActionBar session={session} registerActions={openComposer} />
   </VoiceWindowProvider>;
 }

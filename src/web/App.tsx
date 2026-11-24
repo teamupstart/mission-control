@@ -408,6 +408,7 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
+    acknowledgeVoiceMode,
     settingsStatus,
     keepAwakeStatus,
     pauseState,
@@ -4994,7 +4995,7 @@ export function App(): React.JSX.Element {
       <HeldSessionsContext.Provider value={heldIds}>
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
-      <VoiceWindowProvider enabled={spokenNames} state={voice} openSetup={openVoiceSetup}>
+      <VoiceWindowProvider enabled={spokenNames} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>

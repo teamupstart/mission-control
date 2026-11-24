@@ -16,8 +16,8 @@ export const VoiceWindow = createContext<{
   openSetup(): void;
 } | null>(null);
 
-export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
-  state: VoiceState | null; enabled: boolean; openSetup(): void; children: ReactNode;
+export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, openSetup, children }: {
+  state: VoiceState | null; enabled: boolean; acknowledgeVoiceMode(ack: VoiceState): void; openSetup(): void; children: ReactNode;
 }) {
   const { voice: { indicators } } = useUiConfig();
   const [failure, setFailure] = useState<{ id: VoiceIndicatorId; muted: boolean; message: string } | null>(null);
@@ -39,6 +39,7 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
     const deadline = AbortSignal.timeout(5000);
     const result = await api.setVoiceMuted(muted, AbortSignal.any([request.signal, deadline]));
     if (request.signal.aborted) return;
+    if (result.ok && result.state) acknowledgeVoiceMode(result.state);
     activeRequest.current = null;
     setPendingMute(null);
     if (deadline.aborted || !result.ok) {
@@ -47,7 +48,7 @@ export function VoiceWindowProvider({ state, enabled, openSetup, children }: {
         : result.error ?? "Could not change voice mute.";
       setFailure({ id, muted, message });
     }
-  }, []);
+  }, [acknowledgeVoiceMode]);
   const mode = state?.mode;
   const showFailure = failure && enabled && mode && mode !== "off" && indicators.includes(failure.id)
     && (mode === "unavailable" || (mode === "muted") !== failure.muted);

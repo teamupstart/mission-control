@@ -278,22 +278,27 @@ function verifyRefHistory(
   return null;
 }
 
-async function readRecoveryApi(endpoint: string, ...args: string[]): Promise<unknown> {
+async function readRecoveryApi(endpoint: string, ...args: string[]) {
   try {
     const response = await run(ghBin(), ["api", "--hostname", "github.com", "-H", "Cache-Control: no-cache", endpoint, ...args], { timeoutMs: GH_TIMEOUT_MS });
-    return response.code === 0 && !response.overflowed ? JSON.parse(response.stdout) : null;
+    return response.overflowed || response.outcomeUnknown ? null : { code: response.code, body: JSON.parse(response.stdout) as unknown };
   } catch { return null; }
+}
+
+async function readRecoveryRest(endpoint: string) {
+  const response = await readRecoveryApi(endpoint);
+  return response?.code === 0 ? response.body : null;
 }
 
 function readRefActivity(repository: string, ref: string, count: number) {
   // Include force pushes, merges and branch recreation.
   const query = new URLSearchParams({ ref, direction: "desc", per_page: String(count) });
-  return readRecoveryApi(`repos/${repository}/activity?${query}`);
+  return readRecoveryRest(`repos/${repository}/activity?${query}`);
 }
 
 async function readRecoveryPull(pr: NonNullable<ReturnType<typeof parsePrUrl>>) {
   const base = `${pr.owner}/${pr.repo}`;
-  const pull = recoveryPullRequest.safeParse(await readRecoveryApi(`repos/${base}/pulls/${pr.number}`));
+  const pull = recoveryPullRequest.safeParse(await readRecoveryRest(`repos/${base}/pulls/${pr.number}`));
   if (!pull.success || pull.data.number !== pr.number || pull.data.base.repo.full_name.toLowerCase() !== base.toLowerCase()) return null;
   return pull.data;
 }
@@ -321,7 +326,7 @@ const forcePushEvent = timelineEvent.extend({
   ref: z.object({ prefix: z.string(), name: z.string(), repository: z.object({ nameWithOwner: z.string() }) }),
 });
 const recoveryPullSnapshot = z.object({
-  errors: z.array(z.unknown()).optional(),
+  errors: z.array(z.object({ message: z.string(), path: z.array(z.union([z.string(), z.number()])).optional() })).optional(),
   data: z.object({ repository: z.object({ nameWithOwner: z.string(), pullRequest: z.looseObject({
     number: z.number().int(), state: z.enum(["OPEN", "CLOSED", "MERGED"]),
   }) }) }),
@@ -335,15 +340,22 @@ async function readRecoveryTimeline(pr: NonNullable<ReturnType<typeof parsePrUrl
   // Ask GitHub about the entire timestamp bucket containing this ref update.
   const since = new Date(Math.floor(changedAt / 1_000) * 1_000 - 1);
   if (!Number.isFinite(since.getTime())) return null;
-  const response = recoveryPullSnapshot.safeParse(await readRecoveryApi("graphql", "-f", `query=${recoveryPullQuery}`,
-    "-f", `owner=${pr.owner}`, "-f", `repo=${pr.repo}`, "-F", `number=${pr.number}`, "-f", `since=${since.toISOString()}`));
+  const result = await readRecoveryApi("graphql", "-f", `query=${recoveryPullQuery}`,
+    "-f", `owner=${pr.owner}`, "-f", `repo=${pr.repo}`, "-F", `number=${pr.number}`, "-f", `since=${since.toISOString()}`);
+  if (!result || (result.code !== 0 && result.code !== 1)) return null;
+  const response = recoveryPullSnapshot.safeParse(result.body);
   if (!response.success) return null;
   const base = response.data.data.repository;
-  if (base.nameWithOwner.toLowerCase() !== `${pr.owner}/${pr.repo}`.toLowerCase() || base.pullRequest.number !== pr.number) return false;
-  // A deleted fork can leave source fields null. A positively identified closed
-  // or merged PR is already conclusive, even if a dependent field has an error.
-  if (base.pullRequest.state !== "OPEN") return false;
-  if (response.data.errors?.length) return null;
+  const matchesIdentity = base.nameWithOwner.toLowerCase() === `${pr.owner}/${pr.repo}`.toLowerCase() && base.pullRequest.number === pr.number;
+  const errors = response.data.errors;
+  if (result.code !== 0 || errors?.length) {
+    // gh writes partial GraphQL data to stdout and exits 1 for field errors.
+    // Only an identified closure survives errors confined to the source or timeline.
+    const independentErrors = errors?.length && errors.every(({ path }) => path?.[0] === "repository"
+      && path[1] === "pullRequest" && ["headRefName", "headRefOid", "headRepository", "timelineItems"].includes(String(path[2])));
+    return independentErrors && matchesIdentity && base.pullRequest.state !== "OPEN" ? false : null;
+  }
+  if (!matchesIdentity || base.pullRequest.state !== "OPEN") return false;
   const source = openRecoverySource.safeParse(base.pullRequest);
   return source.success ? source.data : null;
 }

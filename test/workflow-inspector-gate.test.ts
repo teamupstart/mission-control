@@ -60,13 +60,16 @@ try {
   const contents = fs.readFileSync(fixture, "utf8");
   if (recoveryGraph) {
     const pull = JSON.parse(contents);
+    if (pull.graphExitCode) process.exitCode = pull.graphExitCode;
     const query = process.argv.find(arg => arg.startsWith("query=query RecoveryPull("));
     if (!["HEAD_REF_FORCE_PUSHED_EVENT","HEAD_REF_DELETED_EVENT","HEAD_REF_RESTORED_EVENT","CLOSED_EVENT","REOPENED_EVENT"].every(type => query.includes(type))
         || !process.argv.some(arg => arg.startsWith("since="))) process.exit(1);
     process.stdout.write(JSON.stringify({ errors: pull.graphErrors, data: { repository: { nameWithOwner: pull.base.repo.full_name,
       pullRequest: { number: pull.number, state: pull.state.toUpperCase(), headRefName: pull.head.ref, headRefOid: pull.head.sha,
         headRepository: pull.head.repo ? { nameWithOwner: pull.head.repo.full_name } : null, timelineItems: { nodes: (pull.rewrites ?? []).slice(0, 1),
-          pageInfo: { hasNextPage: (pull.rewrites ?? []).length > 1 } } } } } }));
+          pageInfo: { hasNextPage: (pull.rewrites ?? []).length > 1 } } } } } }), () => {
+      if (pull.graphInterrupted) process.kill(process.pid, "SIGTERM");
+    });
     return;
   }
   const response = target === activityQuery + "1" ? JSON.stringify(JSON.parse(contents).slice(0, 1)) : contents;
@@ -3783,14 +3786,30 @@ test("a confirmed ref mismatch still blocks recovery when the final PR read is u
   } finally { await manager.stop(); }
 });
 
-for (const remoteState of ["closed", "merged", "open"] as const) {
-  test(`recovery checks the PR state before requiring the fork repository: ${remoteState}`, async () => {
+for (const scenario of [
+  { name: "closed", state: "closed", blocked: true },
+  { name: "merged", state: "merged", blocked: true },
+  { name: "open", state: "open", blocked: false },
+  { name: "partial closed response", state: "closed", errors: true, exit: 1, blocked: true },
+  { name: "partial merged response", state: "merged", errors: true, exit: 1, blocked: true },
+  { name: "partial open response", state: "open", errors: true, exit: 1, blocked: false },
+  { name: "failed read without GraphQL errors", state: "closed", exit: 1, blocked: false },
+  { name: "partial closure for a different PR", state: "closed", errors: true, exit: 1, wrongPr: true, blocked: false },
+  { name: "partial response with a PR state error", state: "closed", errors: true, errorField: "state", exit: 1, blocked: false },
+  { name: "interrupted partial response", state: "closed", errors: true, interrupted: true, blocked: false },
+]) {
+  test(`recovery checks the PR state before requiring the fork repository: ${scenario.name}`, async () => {
     let deleteFork = false;
     const seeded = await spentInspectorGrant({ resolveCommit: async (_root, head) => {
       if (deleteFork && head === "historical") {
         deleteFork = false;
         const pull = JSON.parse(readFileSync(recoveryPr, "utf8"));
-        writeFileSync(recoveryPr, JSON.stringify({ ...pull, state: remoteState, head: { ...pull.head, repo: null } }));
+        writeFileSync(recoveryPr, JSON.stringify({ ...pull, state: scenario.state,
+          number: scenario.wrongPr ? pull.number + 1 : pull.number,
+          head: { ...pull.head, repo: scenario.name === "partial open response" ? pull.head.repo : null },
+          graphExitCode: scenario.exit, graphInterrupted: scenario.interrupted, graphErrors: scenario.errors ? [
+            { message: "Field unavailable", path: ["repository", "pullRequest", scenario.errorField ?? "headRepository"] },
+          ] : undefined }));
       }
       return head;
     } });
@@ -3804,7 +3823,7 @@ for (const remoteState of ["closed", "merged", "open"] as const) {
       await manager.settleBackgroundWork();
       assert.equal(deleteFork, false);
       assert.equal(getInspectorPr(key)?.observedState, "OPEN");
-      assert.equal(store.getRun(ids.run)?.status, remoteState === "open" ? "waiting_for_new_head" : "blocked");
+      assert.equal(store.getRun(ids.run)?.status, scenario.blocked ? "blocked" : "waiting_for_new_head");
       assert.deepEqual(store.listSubmissions(ids.run), submissions);
       assert.equal(store.listEvents(ids.run).filter(e => e.kind === "inspector_stale_grant_recovered").length, 1);
     } finally { await manager.stop(); }

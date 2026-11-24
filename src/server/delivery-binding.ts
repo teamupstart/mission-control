@@ -735,19 +735,28 @@ export class DeliveryLedger<Row extends BindableDelivery> {
     // count, so a turn another table already bound is never bound again here.
     const claimed = rows.length ? claimedTurns(rows[0]!.noteKey) : new Set<string>();
     for (const row of rows) {
-      this.deferredBindings.delete(row.id);
-      if (row.messageId !== null || row.contested || this.expired.has(row.id)) continue;
+      if (row.messageId !== null || row.contested || this.expired.has(row.id)) {
+        this.deferredBindings.delete(row.id);
+        continue;
+      }
       if (row.transcriptOffset === null) {
         const createdAfter = this.store.newTranscriptAfter?.(transcript, row.deliveredAt);
-        if (requireReadable && createdAfter === null) throw new Error("Could not check transcript creation time");
-        if (!createdAfter) continue;
+        if (!createdAfter) {
+          if (createdAfter === null) {
+            this.deferredBindings.add(row.id);
+            if (requireReadable) throw new Error("Could not check transcript creation time");
+          } else this.deferredBindings.delete(row.id);
+          continue;
+        }
       }
       let from = this.scanned.get(row.id) ?? row.transcriptOffset ?? 0;
       let found: TranscriptMessage | null = null;
       let closed = false;
       try {
         for (;;) {
-          const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS, requireReadable);
+          // An empty best-effort page can mean a failed read. Spoken binding needs to
+          // distinguish that case from EOF so a quiet connection can finish its retry.
+          const page = transcript.read.after(transcript.path, from, BIND_PAGE_TURNS, requireReadable || !!this.store.textBoundary);
           for (const m of page.messages) {
             if (m.ts > 0 && m.ts - row.deliveredAt > DELIVERY_LAG_MS) {
               closed = true;
@@ -774,6 +783,11 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         continue;
       }
       if (!found) {
+        if (this.store.textBoundary && (!version || transcript.read.snapshot?.(transcript.path)?.version !== version)) {
+          this.deferredBindings.add(row.id);
+          continue;
+        }
+        this.deferredBindings.delete(row.id);
         if (closed || now - row.deliveredAt > DELIVERY_LAG_MS) this.expired.add(row.id);
         // Resume from the start of the last page read, not its end: a page can stop partway.
         else this.scanned.set(row.id, from);
@@ -785,7 +799,10 @@ export class DeliveryLedger<Row extends BindableDelivery> {
           const stable = version && transcript.read.snapshot?.(transcript.path)?.version === version;
           if (boundary === null || !stable) this.deferredBindings.add(row.id);
           if (requireReadable && (boundary === null || !stable)) throw new Error("Could not verify a stable transcript boundary");
-          if (!stable || !boundary) continue;
+          if (!stable || !boundary) {
+            if (stable && boundary === false) this.deferredBindings.delete(row.id);
+            continue;
+          }
         }
         beforeBind?.();
         if (!this.store.bind(row, found.id, found.ts, boundary || undefined)) continue;
@@ -796,6 +813,7 @@ export class DeliveryLedger<Row extends BindableDelivery> {
         console.error(`[transcript] could not bind ${this.store.label}:`, err instanceof Error ? err.message : String(err));
         continue;
       }
+      this.deferredBindings.delete(row.id);
       row.messageId = found.id;
       row.messageTs = found.ts;
       this.scanned.delete(row.id);

@@ -586,3 +586,42 @@ test("growth after the final prefix capture cannot disclose or bind a turn again
     worker.mock.restore();
   }
 });
+
+test("the open feed restores a spoken label on a quiet file after repeated native binding read failures", async t => {
+  const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+  applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  const words = "quiet-read-recovery";
+  const { read } = await confirmedTerminalRecord(words, false);
+  const after = read.after.bind(read);
+  let refusals = 0;
+  t.mock.method(read, "after", (...args: Parameters<typeof after>) => {
+    if (refusals < 2) {
+      refusals++;
+      if (args[3]) throw new Error("fixture transcript temporarily unavailable");
+      return { messages: [], start: args[1], end: args[1], atEnd: true };
+    }
+    return after(...args);
+  });
+  const res = await app.request("/api/sessions/s1/transcript/stream", { headers: { host: "127.0.0.1:7317" } });
+  const reader = res.body!.getReader();
+  const timeout = setTimeout(() => void reader.cancel(), 10_000);
+  t.after(() => { clearTimeout(timeout); return reader.cancel(); });
+  let sawRaw = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    assert.ok(!done, "the quiet feed must publish the recovered disclosure");
+    const line = new TextDecoder().decode(value).split("\n").find(s => s.startsWith("data: {"));
+    if (!line) continue;
+    const frame = JSON.parse(line.slice(6)) as TranscriptStreamMsg;
+    assert.ok(frame.type === "init");
+    const msg = frame.messages.find(m => m.text === words);
+    assert.ok(msg);
+    if (msg.presentation?.kind === "spoken") {
+      assert.ok(sawRaw && frame.refreshSpoken);
+      assert.equal(refusals, 2);
+      break;
+    }
+    sawRaw = true;
+  }
+});

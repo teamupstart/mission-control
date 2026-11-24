@@ -9597,25 +9597,28 @@ export class Registry extends EventEmitter {
       // known location for this exact conversation before absence can retire an unseen UUID.
       const sources = new Map<string | null, ReturnType<typeof sessionMessages>>();
       const add = (source: ReturnType<typeof sessionMessages>) => sources.set(source?.path ?? null, source);
+      const addSessionPaths = (session: Parameters<typeof sessionMessages>[0]) => {
+        if (session.transcriptPath) {
+          const read = transcriptFor(session)?.messages;
+          // A concrete location is owed a read even while it is missing or unsupported.
+          add(read ? { path: session.transcriptPath, read } : null);
+        }
+        // Default-path discovery is an additional source when it succeeds. A miss does
+        // not invalidate a complete scan of the conversation's known concrete locations.
+        const located = sessionMessages({ ...session, transcriptPath: null });
+        if (located) add(located);
+      };
       for (const session of this.sessions.values()) {
-        if (session.agentSessionId === key) add(sessionMessages(session));
+        if (session.agentSessionId === key) addSessionPaths(session);
       }
-      const hasLiveTranscript = [...sources.values()].some(Boolean);
       for (const row of listSdkSessions(key)) {
-        if (!row.agent) continue;
-        const fromSdk = sessionMessages({ id: row.id, agent: row.agent, cwd: row.cwd,
+        if (row.agent) addSessionPaths({ id: row.id, agent: row.agent, cwd: row.cwd,
           agentSessionId: key, startedAt: row.createdAt, transcriptPath: null });
-        if (fromSdk || !hasLiveTranscript) add(fromSdk);
       }
       for (const locator of locators) {
-        if (!locator.transcriptAgent) continue;
-        const archived = { id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
-          agentSessionId: key, startedAt: null, transcriptPath: null };
-        const read = transcriptFor(archived)?.messages;
-        // A missing custom file remains an unread source even if the harness locates a default file.
-        if (locator.transcriptPath && read) add({ path: locator.transcriptPath, read });
-        const located = sessionMessages(archived);
-        if (located || !locator.transcriptPath || !read) add(located);
+        if (locator.transcriptAgent) addSessionPaths({ id: key, agent: locator.transcriptAgent, cwd: locator.transcriptCwd,
+          agentSessionId: key, startedAt: null, transcriptPath: locator.transcriptPath });
+        else if (locator.transcriptPath) add(null);
       }
       return [...sources.values()];
     }, unavailableBefore, signal);

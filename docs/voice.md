@@ -120,7 +120,9 @@ and “When you have finished this, post a report.” A retry uses that exact te
 labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
 After an SDK send is acknowledged, or an uncertain send is abandoned after a crash, the daemon
 allows 24 hours for the client message ID and matching words to appear. Hourly cleanup checks live and persisted
-conversations. It scans from the beginning because a rewritten transcript can move a receipt.
+conversations and the custom transcript paths saved at handoff. If the harness cannot discover a
+default path, cleanup can still check the saved files. A missing saved file keeps the scan incomplete.
+Cleanup scans from the beginning because a rewritten transcript can move a receipt.
 It removes an unmatched payload only after reading the whole file. If the transcript is missing,
 unreadable, or changes during the scan, cleanup tries again on a later sweep. If a runtime exits
 mid-record, cleanup checks every complete record and reads through the unfinished line to EOF.

@@ -937,7 +937,7 @@ test("confirmed text-only payloads expire after the binding window while native 
   assert.ok(surviving.every(row => row.received.includes("One unseen report.")));
 });
 
-test("a late native binding advances attribution past a newer receipt after the writer goes quiet", async t => {
+test("a quiet native binding survives a failed transcript read and advances attribution past a newer receipt", async t => {
   const { reserveSpokenTurn, spokenLedger } = await import("../src/server/delivery-ledgers.ts");
   const key = "deferred-native-binding";
   const fake = fakeTranscript();
@@ -959,6 +959,17 @@ test("a late native binding advances attribution past a newer receipt after the 
   }, { times: 1 });
   spokenLedger.bindLanded(key, native, now);
   assert.equal(db.loadSpokenTurns(key)[0]?.messageId, null);
+  assert.equal(db.spokenTranscriptState(key)?.receipt, confirmed);
+  // A native reader normally folds a transient filesystem error into an empty EOF.
+  // The retry must request a strict read and keep its marker when that read fails.
+  let requestedStrict = false;
+  t.mock.method(native.read, "after", (...args: Parameters<typeof after>) => {
+    requestedStrict = args[3] === true;
+    if (requestedStrict) throw new Error("transient native read failure");
+    return { messages: [], start: args[1], end: args[1], atEnd: true };
+  }, { times: 1 });
+  spokenLedger.retryDeferredBindings(convo);
+  assert.ok(requestedStrict);
   assert.equal(db.spokenTranscriptState(key)?.receipt, confirmed);
   spokenLedger.retryDeferredBindings(convo);
   const bound = db.spokenTranscriptState(key)?.receipt;
@@ -1391,6 +1402,37 @@ test("cleanup checks live, persisted and handoff paths when a runtime moves its 
     await registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 60_000);
     assert.equal(db.loadSpokenTurns(key)[0]?.messageTs, now, location);
   }
+});
+
+test("an evicted SDK default-path miss cannot block a verified custom archive or replace an unread custom path", async t => {
+  const { Registry } = await import("../src/server/registry.ts");
+  const { upsertSdkSession } = await import("../src/server/sdk/store.ts");
+  const { reserveSpokenTurn } = await import("../src/server/delivery-ledgers.ts");
+  const { DELIVERY_LAG_MS } = await import("../src/server/delivery-binding.ts");
+  const { claudeTranscript } = await import("../src/server/harness/claude/transcript.ts");
+  const dir = mkdtempSync(join(tmpdir(), "sdk-only-custom-archive-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.mock.method(claudeTranscript, "locate", () => null);
+  const key = "only-saved-custom-path";
+  const path = join(dir, "custom.jsonl");
+  writeFileSync(path, "");
+  const now = Date.now();
+  const words = "archived missing receipt";
+  const row = reserveSpokenTurn({ key, session: { agent: "claude", cwd: dir, transcriptPath: path },
+    transcript: { path, read: claudeTranscript.messages! } }, words, words, true, claimSpoken(key, words, words), now);
+  db.recoverSendingPendingTurns(now);
+  db.clearPendingTurns(key);
+  upsertSdkSession({ id: "sdk:" + key, agentSessionId: key, agent: "claude", cwd: dir, taskId: null,
+    model: null, effort: null, permissionMode: null, status: "exited", turnInProgress: false });
+  const registry = new Registry();
+  registry.applyDiscovery([]);
+  const expire = () => registry.pruneExpiredSpokenTurns(now + DELIVERY_LAG_MS + 1000);
+  renameSync(path, path + ".away");
+  await expire();
+  assert.equal(db.loadSpokenTurns(key)[0]?.id, row.id);
+  renameSync(path + ".away", path);
+  await expire();
+  assert.equal(db.loadSpokenTurns(key).length, 0);
 });
 
 test("after eviction cleanup searches later handoffs in the same conversation before expiring a spoken receipt", async t => {

@@ -73,8 +73,16 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   await expect(field).toBeVisible();
   await expect(field).toHaveAttribute("placeholder", "Said instead of Release Captain");
 
+  await expect(identity.getByText("Residents are addressed by their profile name unless a reference name is set.")).toBeVisible();
+  const nameBox = await identity.getByLabel("Name", { exact: true }).boundingBox();
+  const referenceBox = await field.boundingBox();
+  expect(nameBox).not.toBeNull();
+  expect(referenceBox).not.toBeNull();
+  expect(referenceBox!.x - (nameBox!.x + nameBox!.width)).toBeCloseTo(14, 0);
+  expect(referenceBox!.y).toBeCloseTo(nameBox!.y, 0);
+
   await field.fill("Stevie");
-  await expect(identity.locator(".voice-heard")).toHaveText("Stevie, check the build");
+  await expect(identity.locator(".voice-heard")).toHaveText("Stevie, cut the release");
   await expect(identity.locator(".voice-meter-bad")).toHaveText("Sounds like Steve");
   await expect(identity.getByText("It can be heard as Steve, which another agent answers to.", { exact: false })).toBeVisible();
   await shoot(identity, "01-sounds-like-another-resident");
@@ -82,6 +90,8 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   await field.fill("Sage");
   await expect(identity.getByRole("meter", { name: "Distinctiveness" })).toHaveAttribute("aria-valuenow", "2");
   await expect(identity.locator(".voice-meter-bad")).toHaveText("Everyday word");
+
+  await shoot(identity, "05-sage-reference");
 
   await field.fill("Marlowe");
   await expect(identity.locator(".voice-meter-good")).toHaveText("Distinctive");
@@ -105,6 +115,9 @@ test("a reference name set on a resident's profile is checked as it is typed, su
   const row = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Marlowe", exact: true }) });
   await expect(row.getByRole("cell")).toHaveText(["Release Captain", "Resident", "Marlowe", "Not running", "Distinct"]);
   await expect(row.locator(".voice-roster-agent")).toHaveClass(/agent-name-resident/);
+  const residentName = row.locator(".voice-roster-agent");
+  const plainColor = await row.evaluate((element) => getComputedStyle(element).color);
+  expect(await residentName.evaluate((element) => getComputedStyle(element).color)).not.toBe(plainColor);
   const steve = roster.getByRole("row").filter({ has: page.getByRole("cell", { name: "Steve", exact: true }) });
   await expect(steve.getByRole("cell")).toHaveText(["Steve", "Resident", "Steve", "Not running", "Distinct"]);
   await shoot(page.getByRole("tabpanel", { name: "Voice" }), "03-roster");

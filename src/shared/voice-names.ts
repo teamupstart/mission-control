@@ -357,7 +357,9 @@ export function spokenNameWarningText(warning: SpokenNameWarning, name: string):
     case "sounds-like":
       return `It can be heard as ${either(warning.names)}, which another agent answers to. You can keep it; a name that sounds different is safer.`;
     case "common-word":
-      return `Anything you say that starts with “${said}” goes to this agent, and everyday sentences can start that way. You can keep it; a rarer name is safer.`;
+      return said.toLowerCase() === "will"
+        ? "Sentences like “Will you grab the door?” start the same way. You can keep it; a rarer name is safer."
+        : `Everyday sentences can start with “${said}”. You can keep it; a rarer name is safer.`;
     case "short":
       return "One short syllable is easy to miss or mishear. You can keep it; two syllables or more is safer.";
   }

@@ -210,9 +210,9 @@ calls a resident by one.
 
 ### Reference names
 
-A resident profile's **Identity** card has a **Reference name** field under **Description**:
-what to say instead of the profile name, for a name such as "Release Captain" that is not
-something to say. It is `identity.referenceName` in the profile's revision JSON, optional with no
+A resident profile's **Identity** card pairs **Name** with an optional **Reference name**.
+For example, a resident named "Release Captain" can answer to "Sage". The reference name
+is `identity.referenceName` in the profile's revision JSON, optional with no
 default, so a revision saved before it existed reads exactly as before. Clearing it saves it
 blank, which means none: a save that left the key out would carry the previous revision's forward.
 
@@ -220,12 +220,14 @@ If Voice is switched off during an edit, saving the profile preserves its stored
 
 A reference name is a spoken name, not a launch setting, so it applies as soon as it is saved,
 also to a resident that is running: the roster reads the profile as it stands, and so does the
-display name a card prints. Every other profile edit still applies at the next launch.
+display name a card prints. With no reference name, Voice follows the current profile name
+as soon as the operator renames the resident. With Voice off, cards use the name pinned at launch.
 
 ### Checking a name
 
-Each field shows the sentence you would say, "**Alice,** check the build", with a four-step
-meter under it and one line per warning. The meter lights four steps, less one per warning.
+Dispatch previews "**Alice,** check the build" and the resident profile previews
+"**Sage,** cut the release". Each field shows a four-step meter and one line per warning.
+The meter lights four steps, less one per warning.
 Warnings never block: Dispatch and Save stay enabled whatever they say. They come from one pure
 function, `validateSpokenName(name, roster)` in `src/shared/voice-names.ts`, checked against the
 other names on the roster, never against the agent's own entry:
@@ -260,8 +262,8 @@ taskId, sessionId, role, colorId, agent, state }`:
   `not-running`. It stays while the profile is live.
 - one per task with a call sign that has launched, keyed `task:<taskId>`: its call sign; its title
   as its role; `running` while a live session runs it, `hibernated` while the task is hibernated,
-  else `not-running`. A task is not listed until its first launch starts (`Task.dispatchedAt`), so
-  one in the backlog, or created to launch now and still waiting for the dispatcher, is not.
+  else `not-running`. A backlog task or an attempt still provisioning its first session cannot
+  displace an agent that already answers to the name.
 
 A task that is not running leaves the roster 24 hours after it stopped, or at once when another
 agent answers to the same name: a resident, a task that is running or hibernated, or a task that
@@ -279,7 +281,7 @@ absolute bound:
   a restarted daemon reads the day's named finished tasks from storage
   (`loadFinishedTasksWithCallSign`), not only the 50 it reloads.
 - A task that stopped without finishing (its session exited, the task still open) counts from when
-  the daemon first saw it stopped. That moment is held in memory only, so a restart starts the
+  the daemon first saw it stopped, even when the call sign was added later. That moment is held in memory only, so a restart starts the
   clock again and the name can stay listed for longer than a day.
 
 **Settings > Voice** draws the roster as a table: the agent (a resident's profile name in its board

@@ -127,7 +127,7 @@ test("every warning says the name can be kept", () => {
   ] as const) {
     assert.match(spokenNameWarningText(warning, "Name"), /You can keep it/, warning.kind);
   }
-  assert.match(spokenNameWarningText({ kind: "common-word" }, " Will "), /starts with “Will” goes to this agent/);
+  assert.match(spokenNameWarningText({ kind: "common-word" }, " Will "), /“Will you grab the door[?]”/);
 });
 
 test("a stored spoken name is trimmed, single-spaced, one line and at most 40 characters", () => {

@@ -52,19 +52,26 @@ export async function stageMod(options: {
   dest: string;
   /** The rename used to publish; a test injects one that fails part way through the swap. */
   rename?: typeof rename;
+  /** The copy into the staging folder; a test injects one whose result differs from the source. */
+  copy?: typeof cp;
 }): Promise<StagedMod> {
   const { source, dest } = options;
   const move = options.rename ?? rename;
+  const copy = options.copy ?? cp;
+  // A source that is not a usable build is refused before anything is copied.
   await assertBuild(source);
-  // Read the version from the source now: a plugin.json with no usable version must be refused
-  // before anything is copied or renamed, or the working mod would be replaced by a broken one.
-  const version = await readModVersion(source);
+  await readModVersion(source);
   const suffix = process.pid + "-" + randomBytes(4).toString("hex");
   const staging = dest + ".staging-" + suffix;
   const previous = dest + ".old-" + suffix;
   await mkdir(dirname(dest), { recursive: true });
+  // What gets published is what was copied, so it is the copy that is validated, not the source
+  // read a moment earlier: the source may have changed while it was being copied.
+  let version: string;
   try {
-    await cp(source, staging, { recursive: true });
+    await copy(source, staging, { recursive: true });
+    await assertBuild(staging);
+    version = await readModVersion(staging);
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
@@ -79,10 +86,23 @@ export async function stageMod(options: {
     }
     await move(staging, dest);
   } catch (error) {
-    if (movedAside) await move(previous, dest).catch(() => undefined);
     await rm(staging, { recursive: true, force: true });
+    if (movedAside) {
+      try {
+        await move(previous, dest);
+      } catch (restoreError) {
+        // The published path is now empty. Say so, and leave the old build where it is.
+        throw new Error(
+          "publishing the new mod failed (" + describeError(error) + ") and putting the previous mod back failed too (" + describeError(restoreError) + "); the previous build is at " + previous + " and must be moved back to " + dest + " by hand",
+        );
+      }
+    }
     throw error;
   }
   if (movedAside) await rm(previous, { recursive: true, force: true });
   return { dest, pluginDir: join(dest, PLUGIN_NAME), version };
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

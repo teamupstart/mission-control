@@ -6,11 +6,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { rename } from "node:fs/promises";
+import { cp, rename } from "node:fs/promises";
 import { findClaude, realExec } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import type { CliIo } from "../src/cli/commands/index.ts";
-import { calledPaths } from "../src/cli/setup-steps/checks.ts";
+import { calledPaths, recoveryCommands, shellArg } from "../src/cli/setup-steps/checks.ts";
 import { run as runDoctorStep } from "../src/cli/setup-steps/doctor.ts";
 import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
 import { stageMod } from "../src/server/mod-stage.ts";
@@ -552,6 +552,82 @@ test("mod-calls fails closed when the staged bundle is not the one the build che
     assert.equal(doctor.code, 1);
     assert.match(doctor.out, /FAIL {2}mod-calls: the staged bundle is not the one the build checked, so its daemon calls cannot be established/);
     assert.match(doctor.out, /fix: Rebuild with `npm run build`, then run `mctl setup`\./);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("a build that is invalid once copied is refused before the swap, and the old mod stays published", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-copy-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    writeModBuild(source, "1.1.0");
+    // The source changed while it was copied: the copy's plugin.json is not what was read before.
+    const racing: typeof cp = async (from, to, opts) => {
+      await cp(from, to, opts);
+      writeFileSync(join(String(to), "mission-control", ".claude-plugin", "plugin.json"), "{ truncated");
+    };
+    await assert.rejects(stageMod({ source, dest, copy: racing }), /not valid JSON/);
+    assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0");
+    assert.deepEqual(readdirSync(join(dir, "state")), ["mod"], "no staging or old sibling is left behind");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("when publishing fails and putting the old mod back fails too, both errors and the old build's location are reported", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-restore-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "1.0.0");
+    await stageMod({ source, dest });
+    writeModBuild(source, "1.1.0");
+    let calls = 0;
+    const failing: typeof rename = async (from, to) => {
+      calls += 1;
+      if (calls === 2) throw new Error("disk full");
+      if (calls === 3) throw new Error("permission denied");
+      return rename(from, to);
+    };
+    await assert.rejects(stageMod({ source, dest, rename: failing }), (error: Error) => {
+      assert.match(error.message, /publishing the new mod failed \(disk full\)/);
+      assert.match(error.message, /putting the previous mod back failed too \(permission denied\)/);
+      const old = readdirSync(join(dir, "state")).find((name) => name.startsWith("mod.old-"))!;
+      assert.ok(old, "the previous build is kept");
+      assert.ok(error.message.includes(join(dir, "state", old)), "its location is named");
+      assert.ok(error.message.includes("moved back to " + dest));
+      assert.equal(JSON.parse(readFileSync(join(dir, "state", old, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "1.0.0");
+      return true;
+    });
+    assert.equal(existsSync(dest), false);
+    assert.equal(readdirSync(join(dir, "state")).some((n) => n.includes("staging")), false, "the staging copy is removed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recovery commands quote a state directory with spaces or shell characters", async () => {
+  assert.equal(shellArg("/Users/a/.mission-control/mod"), "/Users/a/.mission-control/mod");
+  assert.equal(shellArg("/Users/a b/state"), "'/Users/a b/state'");
+  assert.equal(shellArg("/tmp/x; rm -rf ~"), "'/tmp/x; rm -rf ~'");
+  assert.equal(shellArg("/tmp/it's $HOME"), "'/tmp/it'\\''s $HOME'");
+  assert.deepEqual(recoveryCommands("/Users/a b"), ["claude plugin marketplace add '/Users/a b/mod'", "claude plugin install " + MOD_ID + " --scope user"]);
+
+  // And in what a failed setup prints, for a real state directory with a space and a quote in it.
+  const r = await rig();
+  try {
+    const odd = join(r.home, "my state's dir");
+    mkdirSync(odd, { recursive: true });
+    r.env.MISSION_HOME = odd;
+    r.claude.update({ failures: { install: { exitCode: 1, stderr: "nope", times: 5 } } });
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.ok(result.out.includes("  claude plugin marketplace add " + shellArg(join(odd, "mod"))));
+    assert.ok(result.out.includes("'\\''"), "the embedded quote is escaped");
   } finally {
     await r.cleanup();
   }

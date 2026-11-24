@@ -241,9 +241,11 @@ export interface DecisionServer {
  */
 export async function startDecisionServer(): Promise<DecisionServer> {
   const requests: DecisionRequest[] = [];
-  const verdict = (instructions: string, input: string | undefined): { choice: string; confidence: number } => {
+  const verdict = (name: string | undefined, instructions: string, input: string | undefined): { choice: string; confidence: number } => {
     const second = /Later it names (.+?)\. Decide/.exec(instructions)?.[1];
-    const speech = /^Speech a person said to a team of AI agents: (".*")$/m.exec(input ?? "")?.[1];
+    const speech = input?.split("\n")
+      .map(line => /^Speech for (q\d+(?:, q\d+)*): ("[\s\S]*")$/u.exec(line))
+      .find(match => name && match?.[1]?.split(", ").includes(name))?.[2];
     if (!second || !speech) return { choice: "not sure", confidence: 0.4 };
     const text = JSON.parse(speech) as string;
     const split = new RegExp(`[,.;]\\s*(?:and\\s+|then\\s+)?${second},`).test(text);
@@ -264,7 +266,7 @@ export async function startDecisionServer(): Promise<DecisionServer> {
       response.setHeader("content-type", "application/json");
       if (request.url === "/v1/decisions" && Array.isArray(body.questions)) {
         response.end(JSON.stringify({
-          answers: body.questions.map((question) => ({ type: "choice", name: question.name ?? null, ...verdict(question.instructions, body.input), probabilities: [] })),
+          answers: body.questions.map((question) => ({ type: "choice", name: question.name ?? null, ...verdict(question.name, question.instructions, body.input), probabilities: [] })),
           model: body.model,
           usage: { input_tokens: 1, input_tokens_details: { cache_write_tokens: 0, cached_tokens: 0 }, output_tokens: 0, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 1 },
         }));
@@ -274,7 +276,7 @@ export async function startDecisionServer(): Promise<DecisionServer> {
         response.end(JSON.stringify({
           model: body.model,
           answers: Object.fromEntries(Object.entries(body.questions).map(([name, question]) =>
-            [name, { type: "choice", ...verdict(question.instructions, body.state), probabilities: {} }])),
+            [name, { type: "choice", ...verdict(name, question.instructions, body.state), probabilities: {} }])),
           usage: { input_tokens: 1, output_tokens: 1 },
         }));
         return;

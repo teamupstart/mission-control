@@ -15,15 +15,21 @@ final class ListenerTests: XCTestCase {
             }
         }
         var tap = try InputSegmenter(source: stereo)
+        var start = 2000
+        func consume() -> [Segment] {
+            defer { start += 20 }
+            return tap.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(start) / 1000)),
+                               clock: CaptureClock(hostTime: 0, unixTime: 0))
+        }
         fill(0.1)
-        for _ in 0..<15 { XCTAssertTrue(tap.consume(frame, now: 2000).isEmpty) }
+        for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
         tap = try InputSegmenter(source: stereo) // Discard partial speech and converter history on mute.
         fill(0)
-        for _ in 0..<90 { XCTAssertTrue(tap.consume(frame, now: 3000).isEmpty) }
+        for _ in 0..<90 { XCTAssertTrue(consume().isEmpty) }
         fill(0.1)
-        for _ in 0..<15 { XCTAssertTrue(tap.consume(frame, now: 4000).isEmpty) }
+        for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
         fill(0)
-        let segments = (0..<90).flatMap { _ in tap.consume(frame, now: 5000) }
+        let segments = (0..<90).flatMap { _ in consume() }
         XCTAssertEqual(segments.count, 1)
         let segment = try XCTUnwrap(segments.first)
         // The 300 ms stereo tone spans 4,800 output samples, regardless of when
@@ -167,6 +173,35 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(gate.finish(tail: [0.1, 0.2], at: 1010)?.samples, Array(frame.prefix(160)))
         XCTAssertNil(gate.feed(Array(repeating: 0.5, count: 30 * 16_000), active: true, now: 31_000))
         XCTAssertNil(gate.finish(tail: [], at: 31_000))
+    }
+
+    func testDelayedTapUsesCaptureTimeToKeepTheLastWordAndExcludeAudioAfterKeyUp() async throws {
+        let (models, corpus) = try fixtureDirectories()
+        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let lastWordEnd = try XCTUnwrap(speech.lastIndex { abs($0) > 0.004 }) + 1
+        let heldLength = (lastWordEnd + 15) / 16 * 16 // key-up on the shared millisecond clock
+        let held = Array(speech.prefix(heldLength))
+        let input = held + Array(repeating: Float(0.6), count: 1600)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let tap = try InputSegmenter(source: format)
+        for i in stride(from: 0, to: input.count, by: 341) {
+            let end = min(i + 341, input.count)
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(end - i)))
+            frame.frameLength = frame.frameCapacity
+            for j in i..<end { frame.floatChannelData![0][j - i] = input[j] }
+            let start = Double(i) / 16_000
+            let when = i == 0
+                ? AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 10), sampleTime: 0, atRate: 16_000)
+                : AVAudioTime(sampleTime: AVAudioFramePosition(i), atRate: 16_000)
+            // The callback runs half a second after these samples were captured.
+            let clock = CaptureClock(hostTime: AVAudioTime.hostTime(forSeconds: 10.5 + start), unixTime: 100.5 + start)
+            XCTAssertTrue(tap.consume(frame, at: when, clock: clock).isEmpty)
+        }
+        let final = try XCTUnwrap(tap.finish(at: Int64(100_000 + heldLength / 16)))
+        XCTAssertEqual(final.samples.suffix(320), held.suffix(320))
+        let recognizer = try await Recognizer(directory: models)
+        let result = try await recognizer.transcribe(final, boosting: nil)
+        XCTAssertEqual(result?.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
     }
 
     func testMissingCTCDisablesPrimingAndStillTranscribes() async throws {

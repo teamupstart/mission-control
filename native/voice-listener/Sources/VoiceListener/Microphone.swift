@@ -173,12 +173,30 @@ final class SpeechSegmenter {
     }
 }
 
+// AVAudioTime and mach_absolute_time use the same host clock. Pair it with Unix
+// time to express recorded samples on the daemon's key-release clock.
+struct CaptureClock {
+    let hostTime: UInt64
+    let unixTime: TimeInterval
+
+    init(hostTime: UInt64 = mach_absolute_time(), unixTime: TimeInterval = Date().timeIntervalSince1970) {
+        self.hostTime = hostTime
+        self.unixTime = unixTime
+    }
+
+    func unixSeconds(at time: UInt64) -> TimeInterval {
+        unixTime + (AVAudioTime.seconds(forHostTime: time) - AVAudioTime.seconds(forHostTime: hostTime))
+    }
+}
+
 // Owned by one tap. Destroying the capture drops the converter's filter history
 // as well as any speech that has not reached the end-of-segment threshold.
 final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
     private let segmenter: SpeechSegmenter
+    private var anchor: AVAudioTime?
+    private var converterDelay: TimeInterval = 0
 
     func finish(at release: Int64) -> Segment? { segmenter.finish(at: release) }
 
@@ -191,7 +209,10 @@ final class InputSegmenter {
         segmenter = try SpeechSegmenter()
     }
 
-    func consume(_ buffer: AVAudioPCMBuffer, now: Int64) -> [Segment] {
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, clock: CaptureClock = CaptureClock()) -> [Segment] {
+        if when.isHostTimeValid && when.isSampleTimeValid { anchor = when }
+        let time = when.isHostTimeValid ? when : anchor.flatMap { when.extrapolateTime(fromAnchor: $0) }
+        guard let time, time.isHostTimeValid else { return [] }
         let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * mono.sampleRate / buffer.format.sampleRate)) + 1
         guard let converted = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: capacity) else { return [] }
         var supplied = false
@@ -203,7 +224,12 @@ final class InputSegmenter {
         }
         guard status != .error, let channel = converted.floatChannelData?[0] else { return [] }
         let samples = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
-        return segmenter.consume(samples, now: now)
+        // The tap timestamp names the first input frame. Some input can remain
+        // buffered in the resampler across callbacks; date the emitted PCM itself.
+        let outputDuration = Double(samples.count) / mono.sampleRate
+        let end = clock.unixSeconds(at: time.hostTime) - converterDelay + outputDuration
+        converterDelay += Double(buffer.frameLength) / buffer.format.sampleRate - outputDuration
+        return segmenter.consume(samples, now: Int64((end * 1000).rounded()))
     }
 }
 
@@ -240,8 +266,8 @@ final class Microphone {
         let source = input.outputFormat(forBus: 0)
         guard !input.isVoiceProcessingEnabled else { throw CaptureError.format }
         segmenter = try InputSegmenter(source: source)
-        input.installTap(onBus: 0, bufferSize: 1024, format: source) { [weak self] buffer, _ in
-            self?.consume(buffer)
+        input.installTap(onBus: 0, bufferSize: 1024, format: source) { [weak self] buffer, when in
+            self?.consume(buffer, at: when)
         }
         configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
                                                                       object: engine, queue: nil) { [weak self] _ in
@@ -253,10 +279,10 @@ final class Microphone {
         catch { stop(); throw error }
     }
 
-    private func consume(_ buffer: AVAudioPCMBuffer) {
+    private func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
         tapLock.withLock {
             guard let segmenter else { return }
-            for segment in segmenter.consume(buffer, now: Int64(Date().timeIntervalSince1970 * 1000)) {
+            for segment in segmenter.consume(buffer, at: when) {
                 continuation.yield(segment)
             }
         }

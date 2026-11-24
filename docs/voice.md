@@ -76,6 +76,8 @@ When releasing push-to-talk returns a call to auto-mute, the capture-off respons
 milliseconds). A helper applying that exact held revision closes its input immediately and
 uses key-up as the boundary for the unfinished phrase. It can finish decoding and posting
 the held audio with the original revision. An ordinary capture stop discards unfinished work.
+The native helper dates the samples from the input tap's audio timestamp on the shared host
+clock, so a delayed callback still includes speech recorded before key-up.
 
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so

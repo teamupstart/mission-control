@@ -57,7 +57,7 @@ function playbackInterval(start: HandoffClock, ended: number, monotonic: number)
   const ambiguous = Math.floor(elapsed) > ended - start.wall;
   const from = ambiguous ? ended - Math.ceil(elapsed) : start.wall;
   const until = ambiguous ? start.wall + Math.ceil(elapsed) : ended;
-  return { from: start.recovered ? -Infinity : from, until, ended, monotonic, ambiguous };
+  return { from: start.recovered ? -Infinity : from, until, monotonic, ambiguous };
 }
 
 export class VoiceSpeechManager {
@@ -131,7 +131,7 @@ export class VoiceSpeechManager {
     const cutoff = now - PLAYBACK_HISTORY_MS;
     let count = 0;
     while (count < this.history.length && this.history[count]!.monotonic < cutoff) {
-      this.discardedThrough = Math.max(this.discardedThrough, this.history[count++]!.ended);
+      this.discardedThrough = Math.max(this.discardedThrough, this.history[count++]!.until);
     }
     if (count) this.history.splice(0, count);
   }
@@ -292,8 +292,8 @@ export class VoiceSpeechManager {
   event(id: string, instance: string | undefined, type: "started" | "ended", outcome: "finished" | "stopped" | "failed" = "finished") {
     const item = this.jobs.get(id);
     if (!instance || item?.job.holder !== instance) return "not_holder";
-    if (type === "ended") return this.finish(item, item.onStop ?? outcome) ? "accepted" : "hold_unavailable";
     this.checkPlaybackDeadline(item);
+    if (type === "ended") return this.finish(item, item.onStop ?? outcome) ? "accepted" : "hold_unavailable";
     if (item.job.state === "ready") {
       item.job.state = "speaking";
       this.armPlayback(item, item.job.durationMs === null ? VOICE_SPEECH_SYSTEM_LIMIT_MS : item.job.durationMs + VOICE_SPEECH_END_MARGIN_MS);

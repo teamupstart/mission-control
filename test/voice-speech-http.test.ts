@@ -1388,6 +1388,28 @@ test("a holder poll serves Stop at the elapsed deadline before the timer runs", 
   assert.equal((await holder.poll()).capture, true);
 });
 
+test("holder confirmation records the same deadline outcome before or after the timer callback", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  t.mock.method(performance, "now", Date.now);
+  const holder = player();
+  await holder.announce();
+  for (const started of [false, true]) {
+    const limit = started ? 10_000 : 2_000;
+    for (const [elapsed, runTimer] of [[limit - 1, false], [limit, false], [limit + 1, false], [limit, true]] as const) {
+      await holder.hello();
+      const id = await audition();
+      if (started) await holder.event(id, "started");
+      assert.equal((await holder.poll()).capture, false);
+      if (runTimer) t.mock.timers.tick(elapsed);
+      else t.mock.timers.setTime(Date.now() + elapsed);
+      assert.equal(store.speech.held, true);
+      assert.equal((await holder.event(id, "ended")).status, 200);
+      assert.deepEqual(store.state().speech.lastAudition, { id, state: elapsed < limit ? "finished" : "timed-out" });
+      assert.equal((await holder.poll()).capture, true);
+    }
+  }
+});
+
 test("a backward wall-clock step during playback excludes buffered frames under a fresh capture grant", async t => {
   const epoch = Date.now();
   let wall = epoch, steady = performance.now();
@@ -1414,6 +1436,11 @@ test("a backward wall-clock step during playback excludes buffered frames under 
   steady += 180_001; wall += 180_001;
   await holder.hello();
   const fresh = await holder.poll();
+  const recent = await readHeard();
+  for (const frame of [beforeStep, afterStep, { ...beforeStep, capturedAt: epoch + 60 }]) {
+    assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), frame)).json(), { accepted: false });
+  }
+  assert.deepEqual(await readHeard(), recent);
   assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh"))).json(), { accepted: true });
 });
 

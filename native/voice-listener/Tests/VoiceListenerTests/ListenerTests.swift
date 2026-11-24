@@ -111,6 +111,33 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testDelayedKeyUpCanRecoverOnlyThePreReleasePartOfAnOverflowedHold() throws {
+        let limit = 30 * 16_000
+        let start: Int64 = 1_000_000_000
+        let samples = Array(repeating: Float(0.3), count: limit - 160)
+        let crossing = Array(repeating: Float(0.8), count: 320)
+        func overflow() -> SpeechGate {
+            var gate = SpeechGate(held: true)
+            XCTAssertNil(gate.feed(samples, active: true, endNs: start + Int64(samples.count) * Segment.sampleNs))
+            XCTAssertNil(gate.feed(crossing, active: true, endNs: 31_010_000_000))
+            return gate
+        }
+        // The final callback crossed the cap by 10 ms. Key-up was 5 ms before the cap.
+        var gate = overflow()
+        let recovered = try XCTUnwrap(gate.finish(tail: [], at: 30_995))
+        XCTAssertEqual(recovered.samples.count, limit - 80)
+        XCTAssertEqual(recovered.samples.suffix(80), crossing.prefix(80))
+        XCTAssertEqual(recovered.endedAt, 30_995)
+        gate = overflow()
+        XCTAssertNil(gate.finish(tail: [], at: 31_001))
+        gate = overflow()
+        let quiet = Array(repeating: Float(0), count: 320)
+        for i in 1...100 {
+            XCTAssertNil(gate.feed(quiet, active: false, endNs: 31_010_000_000 + Int64(i) * 20_000_000))
+        }
+        XCTAssertNil(gate.finish(tail: [], at: 30_995))
+    }
+
     private func fixtureDirectories() throws -> (models: URL, corpus: URL) {
         let env = ProcessInfo.processInfo.environment
         guard let models = env["MISSION_VOICE_MODEL_DIR"], let audio = env["VOICE_TEST_CORPUS"] else {
@@ -225,6 +252,78 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(result?.text.lowercased().split(whereSeparator: { !$0.isLetter }), ["steve", "check", "the", "build"])
     }
 
+    func testTapGapDiscardsInterruptedSpeechThroughSilenceAndKeepsTheNextCommand() throws {
+        let (_, corpus) = try fixtureDirectories()
+        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        for hostOnly in [true, false] {
+            let input = try InputSegmenter(source: format)
+            func callback(_ pcm: [Float], start: Int) throws -> [Segment] {
+                let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
+                frame.frameLength = frame.frameCapacity
+                frame.floatChannelData![0].update(from: pcm, count: pcm.count)
+                let host = AVAudioTime.hostTime(forSeconds: Double(start) / 16_000)
+                let time = hostOnly ? AVAudioTime(hostTime: host) :
+                    AVAudioTime(hostTime: host, sampleTime: Int64(start), atRate: 16_000)
+                return input.consume(frame, at: time, clock: CaptureClock(hostTime: 0, unixTime: 100))
+            }
+            let split = speech.count / 2
+            XCTAssertTrue(try callback(Array(speech.prefix(split)), start: 0).isEmpty)
+            let gap = 1600
+            let end = speech.count + gap
+            XCTAssertTrue(try callback(Array(speech.dropFirst(split)), start: split + gap).isEmpty)
+            // Key-up inside the gap cannot flush a command stitched from both sides.
+            XCTAssertNil(input.finish(at: 100_000 + Int64((split + gap / 2) / 16)))
+
+            // Repeat without releasing, and let ordinary segmentation resume after silence.
+            XCTAssertTrue(try callback(Array(speech.prefix(split)), start: end).isEmpty)
+            XCTAssertTrue(try callback(Array(speech.dropFirst(split)), start: end + split + gap).isEmpty)
+            let silence = Array(repeating: Float(0), count: 16_000)
+            XCTAssertTrue(try callback(silence, start: 2 * end).isEmpty)
+            let freshStart = 2 * end + silence.count
+            let fresh = try callback(speech + silence, start: freshStart)
+            XCTAssertEqual(fresh.count, 1)
+            let captured = try XCTUnwrap(fresh.first)
+            XCTAssertGreaterThanOrEqual(captured.capturedAt, 100_000 + Int64(freshStart / 16) - 150)
+        }
+    }
+
+    func testHeldMicrophoneKeepsFourPhrasesInOrderUntilRelease() throws {
+        let (_, corpus) = try fixtureDirectories()
+        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+        let pcm = speech + Array(repeating: Float(0), count: 16_000)
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let engine = TapFixtureEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+        XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+        engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+        let input = try Microphone(selection: "system-default", held: true, devices: [], engine: engine)
+        let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
+        frame.frameLength = frame.frameCapacity
+        frame.floatChannelData![0].update(from: pcm, count: pcm.count)
+        for i in 0..<4 {
+            let when = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: Double(i * pcm.count) / 16_000))
+            input.consume(frame, at: when, clock: CaptureClock(hostTime: 0, unixTime: 100))
+        }
+        let held = input.stop(releasedAt: 100_000 + Int64((4 * pcm.count + 15) / 16))
+        XCTAssertEqual(held.count, 4)
+        for (i, phrase) in held.enumerated() {
+            XCTAssertEqual(Double(phrase.capturedAt), 100_000 + Double(i * pcm.count) / 16, accuracy: 200)
+        }
+    }
+
+    func testHeldAudioOverflowDiscardsTheWholeHoldIncludingLaterSpeech() {
+        let phrase = Segment(samples: Array(repeating: 0.5, count: 16), startNs: 0)
+        var hold = HeldSpeech(limit: 32)
+        hold.append(phrase)
+        hold.append(phrase)
+        XCTAssertEqual(hold.segments.count, 2)
+        hold.append(phrase)
+        XCTAssertTrue(hold.overflowed)
+        hold.append(phrase)
+        XCTAssertTrue(hold.segments.isEmpty)
+    }
+
     @MainActor func testKeyUpBeforeFinalTapCallbackCollectsTheLastWord() async throws {
         let (models, corpus) = try fixtureDirectories()
         let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
@@ -251,7 +350,7 @@ final class ListenerTests: XCTestCase {
         var final: Segment?
         let closed = expectation(description: "the callback through key-up releases the input")
         input.whenCaptured(through: release) {
-            final = input.stop(releasedAt: release)
+            final = input.stop(releasedAt: release).first
             closed.fulfill()
         }
         XCTAssertTrue(input.isRunning)

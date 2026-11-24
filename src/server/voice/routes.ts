@@ -115,7 +115,9 @@ export function registerVoiceRoutes(
     const signal = c.req.raw.signal;
     if (c.req.query("revision") === current.revision) await waitForDirective(store, current.revision, signal);
     if (!store.ownsCapture(id)) return c.json({ error: "not_listener_owner" }, 409);
-    const next = store.directive();
+    const state = store.state();
+    const next = store.directive(state);
+    if (next.capture && state.mode === "push-to-talk") c.header(VOICE_HELD_REVISION_HEADER, next.revision);
     const release = store.releasedCapture(next);
     if (release) {
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);

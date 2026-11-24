@@ -131,6 +131,7 @@ test("only pre-release speech from the held revision can finish during call auto
   await press(true);
   const held = voiceStateStore.directive();
   assert.equal(held.capture, true);
+  assert.equal((await poll()).headers.get("x-voice-held-revision"), held.revision);
   t.mock.timers.tick(100);
   const keyUp = Date.now();
   t.mock.timers.tick(450); // The shell report was in transit after the operator released the key.
@@ -147,6 +148,7 @@ test("only pre-release speech from the held revision can finish during call auto
   assert.deepEqual(await inside, { accepted: true });
   assert.equal(queued("Steve").length, initialQueue + 1);
   const off = await poll();
+  assert.equal(off.headers.get("x-voice-held-revision"), null);
   assert.equal(off.headers.get("x-voice-release-revision"), held.revision);
   assert.equal(off.headers.get("x-voice-release-at"), String(now + 100));
   const released = await off.json();

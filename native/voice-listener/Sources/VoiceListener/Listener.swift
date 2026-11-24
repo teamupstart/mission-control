@@ -83,7 +83,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     private var decoding: Task<Void, Never>?
     private var directivePoll: Task<(Data, HTTPURLResponse), Error>?
     private var releasedAt: Int64?
-    private var finalSegment: Segment?
+    private var releasedSegments: [Segment] = []
     private var pendingHello: Task<Void, Error>?
 
     func hello() async throws {
@@ -115,7 +115,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         mic?.stop()
         mic = nil
         releasedAt = nil
-        finalSegment = nil
+        releasedSegments.removeAll()
     }
 
     func run() async throws {
@@ -153,7 +153,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     if let input = mic {
                         input.whenCaptured(through: time) { [weak self, weak input] in
                             guard let self, let input, self.mic === input else { return }
-                            self.finalSegment = input.stop(releasedAt: time)
+                            self.releasedSegments = input.stop(releasedAt: time)
                             self.mic = nil
                         }
                     }
@@ -161,7 +161,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     close()
                 }
                 if capture {
-                    let microphone = try Microphone(selection: next.inputDevice) { [weak self] stopped in
+                    let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
+                    let microphone = try Microphone(selection: next.inputDevice, held: held) { [weak self] stopped in
                         guard let self, self.mic === stopped else { return }
                         self.close()
                         self.directivePoll?.cancel()
@@ -200,9 +201,12 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                             if Task.isCancelled { return }
                             await deliver(segment)
                         }
-                        if !Task.isCancelled, let finalSegment {
-                            self.finalSegment = nil
-                            await deliver(finalSegment)
+                        guard !Task.isCancelled else { return }
+                        let pending = releasedSegments
+                        releasedSegments.removeAll()
+                        for segment in pending {
+                            if Task.isCancelled { return }
+                            await deliver(segment)
                         }
                     }
                 }

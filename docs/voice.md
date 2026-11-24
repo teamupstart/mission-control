@@ -71,6 +71,10 @@ After applying the directive, pass the opaque revision back as `?revision=...` t
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
 `pauseMs` is optional and unused. This daemon sends null.
 
+A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
+response header. The native helper retains completed phrases in capture order and decodes
+them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
+An overflow discards the entire hold and the helper reports it on stderr.
 When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
 `x-voice-release-revision` (the held capture revision) and `x-voice-release-at` (epoch
 milliseconds). A helper applying that exact held revision uses key-up as the boundary for
@@ -79,7 +83,8 @@ collects the pre-release portion of the last callback before closing. A stalled 
 closes after 250 ms. Manual mute stops the input immediately. The helper can finish decoding and posting
 the held audio with the original revision. An ordinary capture stop discards unfinished work.
 The native helper dates the samples from the input tap's audio timestamp on the shared host
-clock, so a delayed callback still includes speech recorded before key-up.
+clock, so a delayed callback still includes speech recorded before key-up. A gap in
+the input timeline discards the interrupted utterance through the next silence boundary.
 
 The shell sends `pushToTalk: false` with `pushToTalkReleasedAt` set to the key event's
 Unix time in milliseconds on the shared host clock. Transport delay does not extend the
@@ -90,7 +95,8 @@ The default-input audio engine runs with voice processing off. It converts input
 steady background noise can continue between utterances. Parakeet transcribes each segment
 after 800 ms of frames classified as non-speech. If the 30-second buffer fills
 before that boundary, the listener discards the whole utterance, including any further
-speech before the next silence boundary.
+speech before the next silence boundary. During a key hold, the prefix remains recoverable
+for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
 When CTC is available, the helper uses the directive's roster to rescore those same samples.
 Only a correction aligned to the leading address can change the transcript and its timing
 labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.

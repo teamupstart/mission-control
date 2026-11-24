@@ -28,7 +28,7 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, slowLoad = false } = {}) {
+  async function launch(t: TestContext, { roster = [] as string[], inputDevice = "built-in", firstPostStatus = 200, firstPostCutoff = 0, firstPostHeld = false, slowLoad = false, held = false } = {}) {
     const events: string[] = [];
     const hellos: { modelLoaded: boolean; version: string }[] = [];
     const instanceIds = new Set<string | undefined>();
@@ -93,7 +93,9 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     function apply(response: ServerResponse, revision: string, capture: boolean, names: string[] = roster) {
       response.end(JSON.stringify({ revision, capture, inputDevice, roster: names }));
     }
-    apply(await nextPoll(null), "first", true);
+    const initial = await nextPoll(null);
+    if (held) initial.setHeader("x-voice-held-revision", "first");
+    apply(initial, "first", true);
     return { events, posted, child, closed, nextPoll, apply, hellos, instanceIds };
   }
 
@@ -169,6 +171,19 @@ describe("Swift listener microphone lifecycle", { skip: process.platform !== "da
     apply(await nextPoll("first"), "roster-change", true, replacement);
     await until(() => primings().length >= 2, "updated recognizer priming");
     assert.deepEqual(primings(), [first, replacement]);
+  });
+
+  it("delivers every phrase in a hold in order only after confirmed release", async t => {
+    const { events, posted, nextPoll, apply } = await launch(t, { held: true });
+    await until(() => events.includes("holding audio"), "held microphone");
+    const release = await nextPoll("first");
+    assert.deepEqual(posted, []);
+    release.setHeader("x-voice-release-revision", "first");
+    release.setHeader("x-voice-release-at", "1000");
+    apply(release, "off", false);
+    await until(() => posted.length === 5, "complete phrases and tail");
+    assert.deepEqual(posted, ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "final phrase"].map(text => ({ text, revision: "first" })));
+    assert.ok(events.indexOf("stopped 1") < events.indexOf("decode phrase 1"));
   });
 
   it("re-decodes a segment straddling key-up when the directive arrives during recognition", async (t) => {

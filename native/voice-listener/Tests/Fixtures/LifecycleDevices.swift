@@ -28,9 +28,10 @@ final class Segment {
     let segments: AsyncStream<Segment>
     private(set) var isRunning = true
     private var disruption: DispatchSourceSignal?
+    private var heldPhrases: [Segment] = []
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
+    init(selection: String, held: Bool, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         Self.openings += 1
         opening = Self.openings
         if selection == "unplugged" && opening > 1 { throw CaptureError.device }
@@ -47,7 +48,10 @@ final class Segment {
             disruption = source
             source.resume()
         }
-        if selection == "two-segments" {
+        if held {
+            heldPhrases = (1...4).map { Segment("phrase \($0)") }
+            observe("holding audio")
+        } else if selection == "two-segments" {
             source.yield(Segment("undecodable"))
             source.yield(Segment("next"))
         } else if selection == "two-utterances" {
@@ -65,7 +69,7 @@ final class Segment {
 
     func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) { finish() }
 
-    @discardableResult func stop(releasedAt: Int64? = nil) -> Segment? {
+    @discardableResult func stop(releasedAt: Int64? = nil) -> [Segment] {
         disruption?.cancel()
         isRunning = false
         observe("stopped \(opening)")
@@ -73,9 +77,9 @@ final class Segment {
         if releasedAt != nil {
             Recognizer.pendingDecode?.resume()
             Recognizer.pendingDecode = nil
-            return Segment("final phrase")
+            return heldPhrases + [Segment("final phrase")]
         }
-        return nil
+        return []
     }
 
     deinit { observe("released microphone \(opening)") }

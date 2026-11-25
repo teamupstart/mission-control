@@ -149,6 +149,16 @@ test("tray popover gives long routing and message transcripts room to scroll", a
   await readTranscript(1, 140);
   await expect(card.getByRole("button", { name: "Send both now" })).toBeInViewport({ ratio: 1 });
   await captureCard(card, "tray-long-split");
+  await page.setViewportSize({ width: 356, height: 380 });
+  await expect(card.getByRole("button", { name: "Send both now" })).toBeInViewport({ ratio: 1, timeout: 2000 });
+  for (const transcript of await card.getByRole("region", { name: "Spoken message" }).all()) {
+    await expect(transcript).toBeInViewport({ ratio: 1 });
+    await transcript.press("Home");
+    await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBe(0);
+  }
+  await readTranscript(0, 50);
+  await readTranscript(1, 50);
+  await captureCard(card, "tray-long-split-380");
 });
 
 for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner toast/]] as const) {

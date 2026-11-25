@@ -10,17 +10,18 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
 
-test("ordinary native builds run both app builders without the optional listener", t => {
+test("ordinary native builds run the app addon builders without the optional listener", t => {
   const cwd = mkdtempSync(join(tmpdir(), "voice-build-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const scripts = join(cwd, "scripts");
   mkdirSync(scripts);
-  for (const name of ["state-lock", "keep-awake"]) {
-    writeFileSync(join(scripts, `build-${name}-native.mjs`), `console.log("${name}")`);
+  const builders = ["build-state-lock-native.mjs", "build-keep-awake-native.mjs", "build-voice-hardware.mjs"];
+  for (const name of builders) {
+    writeFileSync(join(scripts, name), `console.log("${name}")`);
   }
   const build = spawnSync(process.execPath, [resolve("scripts/build-native.mjs")], { cwd, encoding: "utf8" });
   assert.equal(build.status, 0, build.stderr);
-  assert.deepEqual(build.stdout.trim().split("\n"), ["state-lock", "keep-awake"]);
+  assert.deepEqual(build.stdout.trim().split("\n"), builders);
 });
 
 test("the launcher names the explicit build command when the listener is missing", t => {

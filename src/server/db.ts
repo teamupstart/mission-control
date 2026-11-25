@@ -337,7 +337,8 @@ let db: DatabaseSync | undefined;
 // 60: durable receipt replay for a blocking question filed by voice.
 // 61: remember accepted spoken outbox IDs after retirement.
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 62;
+// 63: replace the previously materialized Voice mute shortcut default once.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 63;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -513,6 +514,14 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   migrate(d);
   migrateMockupsSkill(d);
   migrateCodeRabbitFollowUp(d);
+  if (databaseSchemaVersion(d) < 63) {
+    const key = APP_CONFIG_ENTRIES.voice.key;
+    const row = d.prepare("SELECT value FROM app_config WHERE key = ?").get(key) as { value: string } | undefined;
+    // Old saves materialized defaults without recording which fields the operator chose.
+    // Change only that exact legacy value. Future explicit selections survive every reopen.
+    const next = row && withTopLevelLiteral(row.value, "hotkey", '"ctrl+alt+m"', '"cmd+ctrl+alt+v"');
+    if (next) d.prepare("UPDATE app_config SET value = ? WHERE key = ?").run(next, key);
+  }
   markDatabaseSchemaCurrent(d);
 }
 

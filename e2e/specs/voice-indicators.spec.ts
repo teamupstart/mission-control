@@ -60,22 +60,24 @@ test("five selected indicators follow the daemon and advertise only a registered
     await expect(page.locator("button.vi .kb-hint")).toHaveCount(0);
     await expect(status).not.toContainText("⌃");
     const report = (hotkeyError: unknown, callActive = false, pushToTalk = false) => page.request.post(daemon.baseURL + "/voice/shell-report", {
-      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m", hotkeyError, callActive, pushToTalk, reportedAtHostUs: voiceHostTimeUs() },
+      headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "cmd+ctrl+alt+v", hotkeyError, callActive, pushToTalk, reportedAtHostUs: voiceHostTimeUs() },
     });
     expect((await report(null)).ok()).toBe(true);
-    await expect(status.locator("kbd")).toHaveText("⌃⌥M");
+    await expect(status.locator("kbd")).toHaveText("⌘⌃⌥V");
     await expect(status).toContainText("Click to mute");
-    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk during call auto-mute");
     await status.click();
     await expect(status).toContainText("Click to unmute");
-    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk during call auto-mute");
     if (capture) await status.screenshot({ path: join(capture, "muted-shortcut.png") });
     await status.click();
     expect((await report(null, true)).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
-    await expect(status).toContainText("Hold ⌃⌥M to talk");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
     expect((await report(null, true, true)).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: talk. Mute");
+    expect((await report({ reason: "Replacement refused", chordInForce: "cmd+ctrl+alt+v" }, true)).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
     expect((await report({ reason: "Already in use", chordInForce: null })).ok()).toBe(true);
     await expect(status.locator("kbd")).toHaveCount(0);
     if (capture) {
@@ -164,7 +166,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
   try {
     const report = await page.request.post(daemon.baseURL + "/voice/shell-report", {
       headers: { "x-harness-token": voiceToken(daemon) },
-      data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "ctrl+alt+m" },
+      data: { capabilities: { hotkey: { available: true } }, registeredHotkey: "cmd+ctrl+alt+v" },
     });
     expect(report.ok()).toBe(true);
     await expect(status.locator("kbd")).toBeVisible();
@@ -179,7 +181,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
       expect(await status.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       expect((await status.boundingBox())?.height).toBe(26);
       await status.focus();
-      await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌃⌥M to talk" })).toBeVisible();
+      await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" })).toBeVisible();
       if (word === "Listening") await status.click();
     }
     await page.mouse.move(1, 1);
@@ -191,7 +193,7 @@ test("a 320 px status line keeps its mode and mute action inside the window with
     }
     await page.setViewportSize({ width: 720, height: 640 });
     await expect(status.locator("kbd")).toBeVisible();
-    await expect(status).toContainText("Hold ⌃⌥M to talk during call auto-mute");
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk during call auto-mute");
   } finally { listener.stop(); }
 });
 
@@ -202,27 +204,27 @@ test("a changed voice shortcut stays hidden in both windows until the shell conf
   const keycap = status.locator("kbd");
   const report = (registeredHotkey?: string) => page.request.post(daemon.baseURL + "/voice/shell-report", {
     headers: { "x-harness-token": voiceToken(daemon) },
-    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey },
+    data: { capabilities: { hotkey: { available: true } }, callActive: true, registeredHotkey, reportedAtHostUs: voiceHostTimeUs() },
   });
   try {
     expect((await report()).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
     await expect(keycap).toHaveCount(0, { timeout: 3000 });
-    expect((await report("ctrl+alt+m")).ok()).toBe(true);
-    await expect(status).toContainText("Hold ⌃⌥M to talk");
+    expect((await report("cmd+ctrl+alt+v")).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
 
     const peer = await context.newPage();
     const oldConfig = await (await page.request.get(daemon.baseURL + "/api/voice/config")).json();
     await peer.route("**/api/voice/config", route => route.fulfill({ json: oldConfig }));
     await peer.goto(daemon.baseURL);
     const peerStatus = peer.locator("button.vi-status-line");
-    await expect(peerStatus.locator("kbd")).toHaveText("⌃⌥M");
+    await expect(peerStatus.locator("kbd")).toHaveText("⌘⌃⌥V");
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { hotkey: "ctrl+alt+k" } })).ok()).toBe(true);
     await expect(peerStatus.locator("kbd")).toHaveCount(0, { timeout: 3000 });
     await expect(keycap).toHaveCount(0, { timeout: 10_000 });
     await expect(status).toHaveAccessibleName("Voice: on a call. Mute");
     await expect(status).toContainText("Click to mute");
-    expect((await report("ctrl+alt+m")).ok()).toBe(true);
+    expect((await report("cmd+ctrl+alt+v")).ok()).toBe(true);
     await expect(keycap).toHaveCount(0);
     let capture: string | undefined;
     if (process.env.MC_E2E_EVIDENCE) {
@@ -748,7 +750,7 @@ test("indicator labels and captions match neighboring Voice settings and the his
     const style = getComputedStyle(element);
     return { size: style.fontSize, weight: style.fontWeight, family: style.fontFamily };
   });
-  const label = page.getByText("Auto-mute during calls", { exact: true });
+  const label = page.locator('[data-anchor="voice/auto-mute"] .kb-row-label');
   const description = page.locator('[data-anchor="voice/auto-mute"] .kb-row-desc');
   const sampleCaption = group.locator(".vi-sample").filter({ has: page.locator(".vi-floating") }).first();
   const history = page.getByRole("region", { name: "Recently heard" });

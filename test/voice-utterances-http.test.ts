@@ -246,6 +246,19 @@ test("a newer dated press supersedes a hold before the delayed key-up arrives", 
   assert.equal(voiceStateStore.directive().capture, false, "replaying the completed press cannot reopen the microphone");
 });
 
+test("a release delivered before its press keeps call capture closed until a new hold", async t => {
+  t.mock.method(voiceStateStore, "hostNowUs", () => 1_000_000);
+  const report = async (body: object) =>
+    (await (await post("/voice/shell-report", { callActive: true, ...body }, token)).json()).state;
+  assert.equal((await report({ reportedAtHostUs: 800_000, pushToTalk: false, pushToTalkReleasedAtHostUs: 790_000 })).mode, "auto-muted");
+  const released = voiceStateStore.directive();
+  assert.equal(released.capture, false);
+  assert.equal((await report({ reportedAtHostUs: 500_000, pushToTalk: true, pushToTalkPressedAtHostUs: 150_000 })).mode, "auto-muted");
+  assert.deepEqual(voiceStateStore.directive(), released);
+  assert.equal((await report({ reportedAtHostUs: 990_000, pushToTalk: true, pushToTalkPressedAtHostUs: 900_000 })).mode, "push-to-talk");
+  assert.equal(voiceStateStore.directive().capture, true);
+});
+
 test("a future shell observation cannot change call state or block the next valid observation", async () => {
   const report = async (reportedAtHostUs: number, callActive: boolean) =>
     (await (await post("/voice/shell-report", { reportedAtHostUs, callActive }, token)).json()).state;

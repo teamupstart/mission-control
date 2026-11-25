@@ -123,7 +123,7 @@ test("only Settings > Voice polls for voice config, and a pending save survives 
   expect(reads, "the Display category does not read voice config").toBe(0);
 
   await voiceTab(page).click();
-  const length = page.getByRole("combobox", { name: "Cancel window length" });
+  const length = page.getByRole("combobox", { name: "Cancel window" });
   await expect(length).toHaveValue("4");
   expect((await page.request.put(endpoint, { data: { cancelWindow: { seconds: 6 } } })).ok()).toBe(true);
   await page.clock.fastForward(6000);
@@ -185,22 +185,21 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
     await capture(peer, "settings-unavailable");
 
     const panel = peer.getByRole("tabpanel", { name: "Voice" });
-    await expect(panel.getByRole("checkbox", { name: "Auto-mute during calls" })).toBeChecked();
-    await expect(panel.getByRole("checkbox", { name: "Cancel window", exact: true })).toBeChecked();
-    await expect(panel.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("4");
-    await expect(panel.getByRole("radio", { name: "Show on screen" })).toBeChecked();
+    await expect(panel.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeChecked();
+    await expect(panel.getByRole("combobox", { name: "Cancel window" })).toHaveValue("4");
+    await expect(panel.getByRole("radio", { name: "Show" })).toBeChecked();
     await expect(panel.getByRole("checkbox", { name: "Plan forms by voice" })).toBeChecked();
 
-    await panel.getByRole("combobox", { name: "Cancel window length" }).selectOption("8");
+    await panel.getByRole("combobox", { name: "Cancel window" }).selectOption("8");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(8);
     await expect(panel.getByRole("radio", { name: "Ask aloud" })).toBeDisabled();
     await expect.poll(async () => (await voiceConfig(daemon)).whenUnsure).toBe("show");
     await peer.reload();
     const reloaded = peer.getByRole("tabpanel", { name: "Voice" });
-    await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toHaveValue("8");
+    await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("8");
     await expect(reloaded.getByRole("radio", { name: "Show on screen" })).toBeChecked();
-    await reloaded.getByRole("checkbox", { name: "Cancel window", exact: true }).uncheck();
-    await expect(reloaded.getByRole("combobox", { name: "Cancel window length" })).toBeDisabled();
+    await reloaded.getByRole("combobox", { name: "Cancel window" }).selectOption("off");
+    await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("off");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: false, seconds: 8 });
 
     await modeLine(peer).getByRole("button", { name: "Open Setup" }).click();
@@ -282,7 +281,7 @@ test("a refused Voice settings write rolls the control back and says why; a refu
   // Settings > Voice: the daemon refuses every config write.
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const panel = page.getByRole("tabpanel", { name: "Voice" });
-  const length = panel.getByRole("combobox", { name: "Cancel window length" });
+  const length = panel.getByRole("combobox", { name: "Cancel window" });
   const planForms = panel.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(length).toHaveValue("4");
   let refusedWrites = 0;
@@ -352,7 +351,7 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   expect(voiceOn.ok).toBe(true);
   await page.goto(`${daemon.baseURL}/#/settings/voice`);
   const panel = page.getByRole("tabpanel", { name: "Voice" });
-  const length = panel.getByRole("combobox", { name: "Cancel window length" });
+  const length = panel.getByRole("combobox", { name: "Cancel window" });
   const planForms = panel.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(length).toHaveValue("4");
   await expect(planForms).toBeChecked();
@@ -389,12 +388,23 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   await expect.poll(async () => (await voiceConfig(daemon)).planFormsByVoice).toBe(false);
   expect((await voiceConfig(daemon)).cancelWindow.seconds, "the daemon never took the refused edit").toBe(4);
   // In order, one at a time: the second request left only after the first was answered.
-  expect(writes.map((write) => write.body)).toEqual([{ cancelWindow: { seconds: 8 } }, { planFormsByVoice: false }]);
   expect(writes[1]!.at).toBeGreaterThanOrEqual(firstAnsweredAt);
   await capture(page, "settings-edits-in-order");
 
+  // Another window disables cancellation before this window's numeric selection reaches the daemon.
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() === "PUT") {
+      const off = await page.request.put(route.request().url(), { data: { cancelWindow: { enabled: false } } });
+      expect(off.ok()).toBe(true);
+    }
+    await route.fallback();
+  });
   await length.selectOption("6");
-  await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(6);
+  await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: true, seconds: 6 });
+  expect(writes.map(write => write.body)).toEqual([
+    { cancelWindow: { enabled: true, seconds: 8 } }, { planFormsByVoice: false },
+    { cancelWindow: { enabled: true, seconds: 6 } },
+  ]);
   await expect(panel.getByText(/That change didn't stick/)).toHaveCount(0);
   await expect(planForms).not.toBeChecked();
 });

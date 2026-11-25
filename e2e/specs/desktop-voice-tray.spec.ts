@@ -1,6 +1,8 @@
 import { join, resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { buildSync } from "esbuild";
-import { _electron, type ElectronApplication } from "playwright";
+import { _electron, type ElectronApplication, type JSHandle } from "playwright";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { say, enableVoice } from "../fixtures/voice.ts";
 import { captureCard, setupCards } from "../fixtures/voice-cards.ts";
@@ -8,6 +10,15 @@ import { consoleScreenLocked } from "../fixtures/native-update-progress.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
 test.skip(process.platform !== "darwin", "the voice tray uses the macOS desktop shell");
+
+// Capture the native window. A CSS viewport screenshot crops Electron's zoomed pixels.
+async function capturePopover(win: JSHandle<Electron.BrowserWindow>, name: string) {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  const dir = artifactsDir("voice-confirmation");
+  mkdirSync(dir, { recursive: true });
+  const png = await win.evaluate(async win => (await win.webContents.capturePage()).toPNG().toString("base64"));
+  writeFileSync(join(dir, name + ".png"), Buffer.from(png, "base64"));
+}
 
 test("the voice tray reports a daemon restart and restores the standard click when Voice is disabled", async ({ daemon }) => {
   assertElectronGuiLaunchAllowed();
@@ -158,7 +169,7 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     const countdown = card.getByRole("button", { name: "Send now" });
     await expect(countdown).toHaveText(/^\d+s$/);
     const initialSeconds = parseInt(await countdown.innerText(), 10);
-    await captureCard(popover, "tray-confirmation-at-150-percent");
+    await capturePopover(nativePopover, "tray-confirmation-at-150-percent");
 
     await selectRecentlyHeard(app);
     const history = popover.getByRole("region", { name: "Recently heard" });
@@ -174,7 +185,7 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     }
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
       .some(win => win.webContents.getURL().endsWith("#/voice/popover") && win.isVisible()))).toBe(true);
-    await captureCard(popover, "tray-history-at-150-percent");
+    await capturePopover(nativePopover, "tray-history-at-150-percent");
     const age = await row.locator("time").innerText();
     await expect(row.locator("time")).not.toHaveText(age);
     await popover.keyboard.press("Escape");

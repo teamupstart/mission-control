@@ -523,7 +523,7 @@ function canonicalVoiceModel(model: VoiceModelState): unknown[] {
  */
 export function canonicalVoiceRoster(roster: readonly SpokenName[]): string {
   return JSON.stringify(roster.map((entry) => [
-    entry.key, entry.name, entry.kind, entry.taskId, entry.sessionId, entry.role, entry.colorId, entry.agent, entry.state,
+    entry.key, entry.name, entry.kind, entry.taskId, entry.sessionId, entry.role, entry.colorId, entry.agent, entry.state, entry.isReferenceName,
   ]));
 }
 

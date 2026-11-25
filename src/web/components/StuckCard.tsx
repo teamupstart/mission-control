@@ -108,13 +108,13 @@ export function StuckCard({
         <span className="inbox-spacer" />
         <InboxActionButton
           action="open-session"
-          name={name}
+          name={subject}
           tooltip="Focus this session on the fleet"
           onClick={() => onOpenSession(session.id)}
         />
         <InboxActionButton
           action="dismiss"
-          name={name}
+          name={subject}
           tooltip="Remove this from the inbox without resolving it. It stays dismissed until it reports something new"
           ariaLabel={`Dismiss ${name} from the inbox`}
           onClick={onDismiss}
@@ -126,7 +126,7 @@ export function StuckCard({
         {facts?.kind === "silent-working" && messageable && (
           <InboxActionButton
             action="nudge"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Ask it for a one-line status and what, if anything, is blocking it"
             disabled={disabled}
@@ -136,7 +136,7 @@ export function StuckCard({
         {facts?.kind === "silent-working" && canInterruptSession(session) && (
           <InboxActionButton
             action="stop"
-            name={name}
+            name={subject}
             tooltip="Stop the turn it is in. Messages queued behind it are dropped"
             disabled={disabled}
             onClick={run("stop", () => api.interrupt(session.id), undefined, interruptDone)}
@@ -145,7 +145,7 @@ export function StuckCard({
         {facts?.kind === "unfinished-work" && messageable && (
           <InboxActionButton
             action="continue"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Ask it to pick the open work up where it stopped"
             disabled={disabled}
@@ -155,7 +155,7 @@ export function StuckCard({
         {facts?.kind === "unfinished-work" && facts.task && onComplete && (
           <InboxActionButton
             action="mark-done"
-            name={name}
+            name={subject}
             tooltip="Open the Complete dialog: the work is finished and nothing more is owed. It marks the task done, closes the session, and offers a retro when one is worth running"
             disabled={disabled}
             onClick={() => onComplete(session.id)}
@@ -164,7 +164,7 @@ export function StuckCard({
         {facts?.kind === "workflow-parked" && facts.resubmittable && (
           <InboxActionButton
             action="resubmit"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Open the run's next repair round from the session's current work"
             disabled={disabled}
@@ -174,7 +174,7 @@ export function StuckCard({
         {facts?.kind === "workflow-parked" && parkedStep(facts) === "push" && messageable && (
           <InboxActionButton
             action="push"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Tell it to push: the review waits for a pushed head on this branch"
             disabled={disabled}
@@ -187,7 +187,7 @@ export function StuckCard({
           // asks it to continue.
           <InboxActionButton
             action="continue"
-            name={name}
+            name={subject}
             className="btn btn-primary"
             tooltip="Ask it to take its next turn on the parked run"
             disabled={disabled}
@@ -197,7 +197,7 @@ export function StuckCard({
         {facts?.kind === "workflow-parked" && (
           <InboxActionButton
             action="open-run"
-            name={name}
+            name={subject}
             tooltip="Open this workflow run on the Runs page"
             onClick={() => onOpenRun(facts.runId)}
           />
@@ -218,7 +218,7 @@ export function StuckCard({
           />
           <InboxActionButton
             action="message"
-            name={name}
+            name={subject}
             label={facts?.kind === "escalated" ? "Reply" : undefined}
             tooltip="Send this to the agent as your message"
             disabled={disabled || draft.trim() === ""}
@@ -238,7 +238,7 @@ export function StuckCard({
           {done}
         </p>
       )}
-      {voice && <InboxVoiceFoot name={speaker?.name} />}
+      {voice && <InboxVoiceFoot name={speaker} />}
     </section>
   );
 }

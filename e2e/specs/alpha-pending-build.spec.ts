@@ -109,7 +109,7 @@ test("a check while main's signed build is running offers the newest complete al
     await dashboard.getByRole("button", { name: "Settings" }).click();
     await dashboard.getByRole("tab", { name: "Setup" }).click();
     const panel = dashboard.getByRole("region", { name: "Application updates" });
-    await expect(panel.getByRole("checkbox", { name: "Alpha updates" })).toBeChecked();
+    await expect(dashboard.getByRole("checkbox", { name: "Alpha updates" })).toBeChecked();
     const banner = dashboard.getByRole("status", { name: "Mission Control update" });
 
     // Nothing complete is newer than the installation: up to date, naming the build in flight.

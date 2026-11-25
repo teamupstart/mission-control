@@ -1,9 +1,10 @@
+import { spokenNameLabel } from "@shared/voice-names.ts";
 import { InboxVoiceFoot } from "./InboxVoiceFoot.tsx";
 import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
 import { VoiceRosterContext } from "../lib/voice-roster.ts";
 import { useContext, useState } from "react";
 import { reportUpdatedNote, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
-import { useReportAuthorName, type ReportPublishState } from "../lib/sessionReports.ts";
+import { useReportAuthorIdentity, type ReportPublishState } from "../lib/sessionReports.ts";
 import { relativeTime } from "../lib/format.ts";
 import { InboxActionButton } from "./AgentName.tsx";
 import { useReportDraft } from "../lib/reportDrafts.ts";
@@ -91,7 +92,8 @@ export function ReportCard({
   /** Injectable so a render test can own the clock. */
   now?: number;
 }): React.JSX.Element {
-  const name = useReportAuthorName(report.author);
+  const author = useReportAuthorIdentity(report.author);
+  const name = spokenNameLabel(author);
   const voice = !!useContext(VoiceAnswersContext);
   const speaker = useContext(VoiceRosterContext).find(r => r.key === report.author.key || r.taskId && r.taskId === report.taskId || r.sessionId === report.sessionId);
   const updated = reportUpdatedNote(report.version);
@@ -101,7 +103,7 @@ export function ReportCard({
       <div className="agent-report-head">
         <InboxActionButton
           action="toggle"
-          name={name}
+          name={author}
           label={report.title}
           className="agent-report-toggle"
           tooltip={open ? "Hide this report" : "Show this report. Opening it does not mark it read"}
@@ -140,7 +142,7 @@ export function ReportCard({
             {report.readAt === null ? (
               <InboxActionButton
                 action="mark-read"
-                name={name}
+                name={author}
                 className="btn btn-ghost"
                 tooltip="Mark this report read. It leaves the inbox and the to read figure, and stays in its session"
                 cardOpen
@@ -152,7 +154,7 @@ export function ReportCard({
             {!muted && onMute && (
               <InboxActionButton
                 action="mute"
-                name={name}
+                name={author}
                 label={`Mute ${name}'s reports`}
                 className="btn btn-ghost"
                 tooltip={`Stop notifying you about ${name}'s reports and stop listing them in the inbox. Nothing is marked read, and they stay in its conversation. Unmute in Settings > Reports`}
@@ -170,7 +172,7 @@ export function ReportCard({
         </div>
       )}
       {error && <p className="inbox-line inbox-error" role="alert">{error}</p>}
-      {voice && open && <InboxVoiceFoot name={speaker?.name} />}
+      {voice && open && <InboxVoiceFoot name={speaker} />}
     </article>
   );
 }
@@ -191,7 +193,8 @@ function ReportAnswer({
   onReply: (text: string) => Promise<string | null>;
   onFollowUp: (text: string) => Promise<string | null>;
 }): React.JSX.Element {
-  const name = useReportAuthorName(report.author);
+  const author = useReportAuthorIdentity(report.author);
+  const name = spokenNameLabel(author);
   // Held by chain outside React state (`lib/reportDrafts.ts`): a replacement report keeps the
   // words, and a keystroke re-renders this card alone.
   const [draft, onDraft] = useReportDraft(report.rootId);
@@ -216,7 +219,7 @@ function ReportAnswer({
         <div className="agent-report-actions">
           <InboxActionButton
             action="follow-up"
-            name={name}
+            name={author}
             label="Retry"
             className="btn btn-primary"
             tooltip="Dispatch the follow-up task this report already started. It is never filed twice; if that task was deleted, you are asked for instructions for a new one"
@@ -281,7 +284,7 @@ function ReportAnswer({
             {live ? (
               <InboxActionButton
                 action="reply"
-                name={name}
+                name={author}
                 className="btn btn-primary"
                 tooltip="Send this reply to the agent as your message. It marks the report read"
                 disabled={busy || !draft.trim()}
@@ -293,7 +296,7 @@ function ReportAnswer({
             ) : (
               <InboxActionButton
                 action="follow-up"
-                name={name}
+                name={author}
                 className="btn btn-primary"
                 tooltip="Dispatch a new task in this report's repository with your words and the report as context. It marks the report read once the task is dispatched"
                 disabled={busy || !draft.trim()}
@@ -328,7 +331,7 @@ function ReportDocumentControls({
   publishState: ReportPublishState;
   onOpenArchive: () => void;
 }): React.JSX.Element {
-  const name = useReportAuthorName(report.author);
+  const author = useReportAuthorIdentity(report.author);
   const { busy, refusal } = publishState;
   const published = report.publishedArchiveKey !== null;
   return (
@@ -337,7 +340,7 @@ function ReportDocumentControls({
       <div className="agent-report-actions">
         <InboxActionButton
           action="open-report"
-          name={name}
+          name={author}
           className="btn"
           tooltip="Read the attached document from the copy stored when this report was posted. It does not mark the report read"
           cardOpen
@@ -348,7 +351,7 @@ function ReportDocumentControls({
             <span className="agent-report-published" role="status">Published</span>
             <InboxActionButton
               action="open-archive"
-              name={name}
+              name={author}
               className="btn btn-ghost"
               tooltip="Open this report's archive on the Scouts page"
               onClick={onOpenArchive}
@@ -357,7 +360,7 @@ function ReportDocumentControls({
         ) : (
           <InboxActionButton
             action="publish-scout"
-            name={name}
+            name={author}
             className="btn btn-ghost"
             tooltip="Save the attached document to the scout archive. Nothing is archived until you press this, and it does not mark the report read"
             disabled={busy}

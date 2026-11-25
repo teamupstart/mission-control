@@ -7,6 +7,7 @@
 // holds a completion, never counts toward the open-question limit, and Foreman never reads it.
 // It lives in its own table (`reports`) and outlives the session that posted it.
 
+import { spokenNameLabel, type SpokenNameIdentity } from "./voice-names.ts";
 import { canMessage, type Messageable } from "./pane.ts";
 import { isShippingTaskKind } from "./task.ts";
 import type { ResidentRunSummary } from "./residents.ts";
@@ -60,8 +61,10 @@ export const REPORT_ANNOUNCE_GRACE_MS = 20_000;
  * is one author, and `session:<sessionId>` for anything else.
  */
 export interface ReportAuthor {
-  /** Both labels at post time when a distinct spoken name existed. Older rows have just name. */
+  /** The raw voice-on and voice-off names at post time. Older rows have just name. */
   labels?: { spoken: string; fallback: string };
+  /** Present when the spoken label is a reference name. True while that label is active. */
+  referenceNameActive?: boolean;
   key: string;
   name: string;
   residentProfileId: string | null;
@@ -69,6 +72,16 @@ export interface ReportAuthor {
 
 export function reportAuthorName(author: ReportAuthor, voice: boolean): string {
   return author.labels ? (voice ? author.labels.spoken : author.labels.fallback) : author.name;
+}
+
+export function reportAuthorIdentity(author: ReportAuthor, voice?: boolean): SpokenNameIdentity {
+  const name = voice === undefined ? author.name : reportAuthorName(author, voice);
+  const reference = author.referenceNameActive !== undefined && (voice ?? author.referenceNameActive);
+  return reference ? { name, isReferenceName: true } : { name };
+}
+
+export function reportAuthorLabel(author: ReportAuthor, voice?: boolean): string {
+  return spokenNameLabel(reportAuthorIdentity(author, voice));
 }
 
 export interface ReportItem {
@@ -215,6 +228,7 @@ export interface ReportMute {
   authorKey: string;
   /** The author's display name when it was muted, so Settings can name it after it is gone. */
   authorName: string;
+  isReferenceName?: true;
   mutedAt: number;
 }
 

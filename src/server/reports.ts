@@ -14,6 +14,7 @@ import {
   replyRefusal,
   replyTarget,
   reportAuthorName,
+  reportAuthorLabel,
   reportDocumentKind,
   reportId,
   reportReplyText,
@@ -128,6 +129,7 @@ interface Row {
   author_key: string;
   author_name: string;
   author_spoken_name: string | null;
+  author_is_reference_name: number;
   author_resident_profile_id: string | null;
   title: string;
   body: string;
@@ -158,6 +160,7 @@ function fromRow(row: Row): ReportItem {
   const author: ReportAuthor = { key: row.author_key, name: row.author_name, residentProfileId: row.author_resident_profile_id };
   if (row.author_spoken_name) {
     author.labels = { fallback: row.author_name, spoken: row.author_spoken_name };
+    if (row.author_is_reference_name) author.referenceNameActive = featureEnabled(VOICE_FLAG);
     author.name = reportAuthorName(author, featureEnabled(VOICE_FLAG));
   }
   return {
@@ -343,8 +346,11 @@ export class ReportManager {
         this.registry.setReportMutes(this.listMutes());
         for (const report of this.registry.reportsToRead()) {
           const name = reportAuthorName(report.author, voiceOn);
-          if (name !== report.author.name) {
-            this.registry.upsertReport({ ...report, author: { ...report.author, name } });
+          const hasReference = report.author.referenceNameActive !== undefined;
+          if (name !== report.author.name || (hasReference && voiceOn !== report.author.referenceNameActive)) {
+            const author = { ...report.author, name };
+            if (hasReference) author.referenceNameActive = voiceOn;
+            this.registry.upsertReport({ ...report, author });
           } else if (resend) this.registry.upsertReport(report);
         }
       }
@@ -595,9 +601,12 @@ export class ReportManager {
     const run = session.task ? runs.find((candidate) => candidate.taskId === session.task!.id) : undefined;
     const names = withCurrentReferenceNames(runs, this.registry.listResidentProfiles());
     const fallback = agentDisplayName(sessionDisplayNameInput(session, names)).name;
-    const spoken = agentDisplayName(sessionDisplayNameInput(session, names, true)).name;
+    const display = agentDisplayName(sessionDisplayNameInput(session, names, true));
+    const spoken = display.name;
+    const reference = display.source === "reference-name";
     return {
-      ...(spoken === fallback ? {} : { labels: { spoken, fallback } }),
+      ...(spoken !== fallback || reference ? { labels: { spoken, fallback } } : {}),
+      ...(reference && { referenceNameActive: featureEnabled(VOICE_FLAG) }),
       key: run ? residentAuthorKey(run.profileId) : sessionAuthorKey(session.id),
       // A call sign or reference name names the author only while voice is on.
       name: featureEnabled(VOICE_FLAG) ? spoken : fallback,
@@ -632,12 +641,12 @@ export class ReportManager {
         const placeholder = `pending:${randomUUID()}`;
         const inserted = d.prepare(
           `INSERT INTO reports (id, session_id, task_id, repository, author_key, author_name, author_spoken_name,
-             author_resident_profile_id, title, body, url, document_name, document_kind, root_id,
+             author_is_reference_name, author_resident_profile_id, title, body, url, document_name, document_kind, root_id,
              version, created_at, root_created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           placeholder, session.id, session.task?.id ?? null, session.repoRoot ?? null, author.key, author.labels?.fallback ?? author.name,
-          author.labels?.spoken ?? null, author.residentProfileId, input.title, input.body, input.url ?? null, document?.name ?? null,
+          author.labels?.spoken ?? null, Number(author.referenceNameActive !== undefined), author.residentProfileId, input.title, input.body, input.url ?? null, document?.name ?? null,
           document?.kind ?? null, replaced?.rootId ?? placeholder, replaced ? replaced.version + 1 : 1, now,
           replaced?.rootCreatedAt ?? now,
         );
@@ -784,10 +793,16 @@ export class ReportManager {
 
   /** Muted report authors, oldest mute first. */
   listMutes(): ReportMute[] {
+    const voice = featureEnabled(VOICE_FLAG);
     return (openDb()
-      .prepare("SELECT author_key, author_name, author_spoken_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
-      .all() as Array<{ author_key: string; author_name: string; author_spoken_name: string | null; muted_at: number }>)
-      .map((row) => ({ authorKey: row.author_key, authorName: featureEnabled(VOICE_FLAG) ? row.author_spoken_name ?? row.author_name : row.author_name, mutedAt: Number(row.muted_at) }));
+      .prepare("SELECT author_key, author_name, author_spoken_name, author_is_reference_name, muted_at FROM report_mutes ORDER BY muted_at, author_key")
+      .all() as Array<{ author_key: string; author_name: string; author_spoken_name: string | null; author_is_reference_name: number; muted_at: number }>)
+      .map((row) => ({
+        authorKey: row.author_key,
+        authorName: voice ? row.author_spoken_name ?? row.author_name : row.author_name,
+        ...(voice && row.author_is_reference_name ? { isReferenceName: true as const } : {}),
+        mutedAt: Number(row.muted_at),
+      }));
   }
 
   /**
@@ -798,12 +813,12 @@ export class ReportManager {
    */
   mute(authorKey: string): ReportMute | null {
     const latest = openDb()
-      .prepare("SELECT author_name, author_spoken_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
-      .get(authorKey) as { author_name: string; author_spoken_name: string | null } | undefined;
+      .prepare("SELECT author_name, author_spoken_name, author_is_reference_name FROM reports WHERE author_key = ? ORDER BY seq DESC LIMIT 1")
+      .get(authorKey) as { author_name: string; author_spoken_name: string | null; author_is_reference_name: number } | undefined;
     if (!latest) return null;
     openDb()
-      .prepare("INSERT INTO report_mutes (author_key, author_name, author_spoken_name, muted_at) VALUES (?, ?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
-      .run(authorKey, latest.author_name, latest.author_spoken_name, this.now());
+      .prepare("INSERT INTO report_mutes (author_key, author_name, author_spoken_name, author_is_reference_name, muted_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(author_key) DO NOTHING")
+      .run(authorKey, latest.author_name, latest.author_spoken_name, latest.author_is_reference_name, this.now());
     const mutes = this.listMutes();
     this.registry.setReportMutes(mutes);
     return mutes.find((mute) => mute.authorKey === authorKey) ?? null;
@@ -920,7 +935,7 @@ export class ReportManager {
     }
     if (report.readAt !== null) throw new ReportRefusal("This report has already been read.", 409);
     const target = this.replyTargetFor(report);
-    if (target.kind !== "live") throw new ReportRefusal(replyRefusal(target, report.author.name), 409);
+    if (target.kind !== "live") throw new ReportRefusal(replyRefusal(target, reportAuthorLabel(report.author)), 409);
     const sent = submit(target.sessionId, reportReplyText(report, words, this.now()));
     if (!sent.ok) throw new ReportRefusal(sent.error ?? "the message could not be queued", 409);
     return { report: this.markRead(id, "reply") ?? report, sessionId: target.sessionId, pendingTurn: sent.pendingTurn ?? null };
@@ -956,7 +971,7 @@ export class ReportManager {
     let report = this.getRow(id);
     if (!report) return refuse(404, "no such report", null);
     if (report.author.residentProfileId !== null) {
-      return refuse(409, `${report.author.name} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
+      return refuse(409, `${reportAuthorLabel(report.author)} is a resident: launch it again from the Residents drawer and reply to it there.`, report);
     }
     // A task that was deleted or cancelled is normally forgotten the moment it happens, by the
     // task watcher (`forgetFollowUpTask`). This is the fallback for one it has not seen yet, and
@@ -986,9 +1001,9 @@ export class ReportManager {
       // one is not replaced by a second session beside it.
       const target = this.replyTargetFor(report);
       if (target.kind === "live") {
-        return refuse(409, `${report.author.name} is still running: reply to it instead of starting a follow-up task.`, report);
+        return refuse(409, `${reportAuthorLabel(report.author)} is still running: reply to it instead of starting a follow-up task.`, report);
       }
-      if (target.kind === "unreachable") return refuse(409, replyRefusal(target, report.author.name), report);
+      if (target.kind === "unreachable") return refuse(409, replyRefusal(target, reportAuthorLabel(report.author)), report);
       if (!report.repository) {
         return refuse(409, "This report recorded no repository, so a follow-up task cannot be started from it.", report);
       }

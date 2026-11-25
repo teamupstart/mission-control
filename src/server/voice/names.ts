@@ -121,6 +121,7 @@ export function computeVoiceRoster(inputs: VoiceRosterInputs): VoiceRosterResult
       key: residentSpokenNameKey(profile.id),
       name: identity.referenceName?.trim() || identity.name,
       kind: "resident",
+      ...(identity.referenceName?.trim() ? { isReferenceName: true as const } : {}),
       taskId: run?.taskId ?? null,
       sessionId: run ? sessionForTask.get(run.taskId) ?? null : null,
       role: oneLine(identity.description),

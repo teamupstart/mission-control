@@ -1,7 +1,7 @@
 import { createContext } from "react";
 import type { ResidentProfile } from "@shared/residents.ts";
 import type { Session } from "@shared/types.ts";
-import type { SpokenName } from "@shared/voice-names.ts";
+import { spokenNameLabel, type SpokenName } from "@shared/voice-names.ts";
 
 // The dashboard's half of the voice roster (contract C): the roster the daemon publishes in the
 // voice state, handed to the fields that check a new name against it, and the joins Voice
@@ -36,7 +36,7 @@ export function sessionsWithoutSpokenName(sessions: readonly Session[], roster: 
 export function rosterAgentName(entry: SpokenName, profiles: readonly Pick<ResidentProfile, "id" | "name">[]): string {
   if (entry.kind === "resident") {
     const profileId = entry.key.slice("resident:".length);
-    return profiles.find((profile) => profile.id === profileId)?.name ?? entry.name;
+    return profiles.find((profile) => profile.id === profileId)?.name ?? spokenNameLabel(entry);
   }
   return entry.role || entry.name;
 }

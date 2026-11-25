@@ -13,7 +13,7 @@ import {
 } from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import type { AttentionDismissalKey } from "@shared/protocol.ts";
-import { reportToRead, type ReportItem } from "@shared/reports.ts";
+import { reportAuthorLabel, reportToRead, type ReportItem } from "@shared/reports.ts";
 import { legacyStallFingerprint, type Stall } from "@shared/stall.ts";
 import type { ObservedStall } from "./stalls.ts";
 import { stateDisplay } from "./format.ts";
@@ -732,7 +732,7 @@ export function foldAttention(input: AttentionInput): AttentionFold {
     .map(([key, group]) => [key, [...group].sort(byQueuePlace)] as const)
     .sort(([keyA, a], [keyB, b]) => byQueuePlace(a[0]!, b[0]!) || (keyA < keyB ? -1 : 1))) {
     const newest = reports.reduce((latest, report) => (report.createdAt > latest.createdAt ? report : latest));
-    items.push({ kind: "agent_reports", id: `agent-reports:${authorKey}`, authorKey, authorName: newest.author.name, reports });
+    items.push({ kind: "agent_reports", id: `agent-reports:${authorKey}`, authorKey, authorName: reportAuthorLabel(newest.author), reports });
   }
 
   // Every other dismissed row leaves LAST, after every section has claimed its sessions, for

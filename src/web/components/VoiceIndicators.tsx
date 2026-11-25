@@ -1,4 +1,5 @@
 import { VoiceTranscriptText } from "./VoiceTranscriptText.tsx";
+import { spokenNameLabel } from "@shared/voice-names.ts";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   voiceCaptures, voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
@@ -141,7 +142,9 @@ export function useVoiceComposerHint(sessionId: string): string | null {
   const { state } = voice;
   switch (state.mode) {
     case "listening": {
-      const name = state.roster.find(entry => entry.sessionId === sessionId)?.name;
+      const entry = state.roster.find(entry => entry.sessionId === sessionId);
+      if (entry?.isReferenceName) return `Message to send… or say ${spokenNameLabel(entry)}, …`;
+      const name = entry?.name;
       return name ? `Message to send… or say "${name}, …"` : null;
     }
     case "waiting-for-key": return "Hold the voice hotkey to talk";

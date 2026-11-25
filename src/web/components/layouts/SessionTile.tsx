@@ -20,7 +20,7 @@ import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/p
 import { liveActivity, sessionWorkspaceRoot } from "@shared/session.ts";
 import { subagentActivityLine } from "@shared/subagents.ts";
 import { relativeTime, repoLeaf, sessionTitleDetail, uptime } from "../../lib/format.ts";
-import { useDisplayChoice, useDisplayItems } from "../../lib/board-card.ts";
+import { useDisplayChoice, useDisplayItems, useResidentCardNameStyles } from "../../lib/board-card.ts";
 import { ariaKeyshortcuts, formatChord } from "../../lib/keybindings.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import type { RuntimeMetaPart } from "../session-bits.tsx";
@@ -62,7 +62,13 @@ import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
 import { useIsTourTask, useTourTaskTargetRef } from "../../tour/target-context.tsx";
 import { ResidentChip } from "../../residents/ResidentChip.tsx";
-import { residentAccentStyle, residentActionName, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
+import {
+  residentAccentStyle,
+  residentActionName,
+  residentCardProfileName,
+  residentMarkTitle,
+  type ResidentSessionMark,
+} from "../../residents/marker.ts";
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
@@ -350,6 +356,14 @@ export function SessionTile({
   // chip is this tile's to draw.
   const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
   const agentDot = <AgentDot agent={session.agent} />;
+  // The resident's profile name beside the call sign its title shows, in each style the operator
+  // turned on (Settings > Display > Resident name with call sign) - either, both or neither. The
+  // chip style draws only where the chip is.
+  const residentNameStyles = useResidentCardNameStyles();
+  const residentProfileName = residentNameStyles.size > 0 ? residentCardProfileName(resident) : null;
+  const nameSubtitle = residentNameStyles.has("subtitle") ? residentProfileName : null;
+  const chipName = residentNameStyles.has("chip") ? residentProfileName ?? undefined : undefined;
+  const tileName = resident?.listeningTitle || session.name || "(unnamed)";
 
   return (
     <div
@@ -428,7 +442,7 @@ export function SessionTile({
       {kindMark === "tab" && <TaskKindMark kind={taskKind!} variant="tab" />}
       {kindMark === "band" && <TaskKindMark kind={taskKind!} variant="band" />}
 
-      <span className="tile-head">
+      <span className={nameSubtitle ? "tile-head has-name-sub" : "tile-head"}>
         {kindMark === "medallion" ? (
           <TaskKindMark kind={taskKind!} variant="medallion">
             {agentDot}
@@ -437,9 +451,18 @@ export function SessionTile({
           agentDot
         )}
         {kindMark === "chip" && <TaskKindMark kind={taskKind!} variant="chip" />}
-        {residentMark && <ResidentChip mark={residentMark} title={residentMarkTitle(residentMark)} />}
+        {residentMark && (
+          <ResidentChip mark={residentMark} title={residentMarkTitle(residentMark)} expandedName={chipName} />
+        )}
         <Tooltip label={`Open ${openName}`}>
-          <span className="tile-name">{resident?.listeningTitle || session.name || "(unnamed)"}</span>
+          {nameSubtitle ? (
+            <span className="tile-name-stack">
+              <span className="tile-name">{tileName}</span>
+              <span className="tile-name-sub">{nameSubtitle}</span>
+            </span>
+          ) : (
+            <span className="tile-name">{tileName}</span>
+          )}
         </Tooltip>
         {/* Says the same thing as the section rule this tile sits under, and is not redundant
             with it: the rule scrolls off the top of a full column, and a tile dragged into view

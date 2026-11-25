@@ -13,6 +13,7 @@ export function ResidentChip({
   mark,
   title,
   tooltip = true,
+  expandedName,
 }: {
   mark: ResidentChipMark;
   /**
@@ -27,16 +28,28 @@ export function ResidentChip({
    * lengthen the name every rail selector reads.
    */
   tooltip?: boolean;
+  /**
+   * The profile name the chip spells out beside its label while its card is pointed at or
+   * focused (the board card's Expanding chip style). Drawn only; the chip is already named by
+   * `title`, which says the resident's name.
+   */
+  expandedName?: string;
 }): React.JSX.Element {
   const name = title ?? residentChipTitle(mark);
   const chip = (
     <span
-      className="resident-chip"
+      className={expandedName ? "resident-chip has-expanded-name" : "resident-chip"}
       style={residentAccentStyle(mark.colorId)}
       {...(tooltip ? { role: "img", "aria-label": name } : { "aria-hidden": true })}
     >
       {mark.pin && <span className="resident-chip-pin" aria-hidden>⤒</span>}
       <span aria-hidden>{mark.label}</span>
+      {expandedName && (
+        <span className="resident-chip-name" aria-hidden>
+          <span className="resident-chip-name-sep">·</span>
+          {expandedName}
+        </span>
+      )}
     </span>
   );
   return tooltip ? <Tooltip label={name}>{chip}</Tooltip> : chip;

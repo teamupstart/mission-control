@@ -43,6 +43,13 @@ export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
  */
 export const SHAPER_SIGN_IN_FLAG_ID = "shaper-sign-in" as const;
 
+/**
+ * The one owner of the resident card names preview's id. While it is on, Settings > Display
+ * offers the Resident name choice (`residentCardName`) and a board card draws it; off, the card
+ * prints its call sign alone and the stored choice is kept. See `docs/residents.md`.
+ */
+export const RESIDENT_CARD_NAMES_FLAG_ID = "resident-card-names" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: SESSION_SETTINGS_FLAG_ID,
@@ -78,6 +85,13 @@ export const FEATURE_FLAGS = [
     description: "Choose the days and hours a resident's loop may wake it. Outside them the resident keeps running but sleeps: no loop prompt and no tokens until the next window opens.",
     stage: "preview",
     keywords: ["residents", "schedule", "sleep", "working hours", "weekdays"],
+  },
+  {
+    id: RESIDENT_CARD_NAMES_FLAG_ID,
+    label: "Resident names on cards",
+    description: "Offer a Display setting that shows a resident's profile name on its board card beside the call sign it answers to.",
+    stage: "preview",
+    keywords: ["residents", "reference name", "call sign", "board card", "display"],
   },
   {
     id: "automatic-pr-branch-update",

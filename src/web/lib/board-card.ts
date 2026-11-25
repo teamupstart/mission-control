@@ -1,7 +1,21 @@
 import { useCallback } from "react";
-import { BACKGROUND_AGENTS_STYLES, TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
-import type { BackgroundAgentsStyle, TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
+import { RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import {
+  BACKGROUND_AGENTS_STYLES,
+  RESIDENT_CARD_NAME_STYLES,
+  residentCardNameStylesOf,
+  TASK_KIND_CARD_STYLES,
+  TASK_KIND_HEADER_STYLES,
+} from "@shared/protocol.ts";
+import type {
+  BackgroundAgentsStyle,
+  ResidentCardNameStyle,
+  TaskKindCardStyle,
+  TaskKindHeaderStyle,
+  UiConfig,
+} from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 
 import type { DisplayItemId, DisplayItemGroup } from "@shared/board-card-settings.ts";
 export * from "@shared/board-card-settings.ts";
@@ -199,4 +213,55 @@ export function setDisplayChoice<K extends DisplayChoiceKey>(key: K, value: Disp
   // A computed key widens to an index signature, so the patch is re-narrowed to the one key
   // it holds; the signature above is what keeps the value paired with that key.
   void updateUiConfig({ [key]: value } as Pick<DisplayChoiceValues, K>);
+}
+
+/**
+ * Settings > Display > Board card > Resident name with call sign: how a resident's card shows its
+ * profile name while it is titled by the call sign it answers to. Not a `DisplayChoice`, because
+ * its styles are independent switches rather than one of a set: an operator may turn on the
+ * Subtitle, the Expanding chip, both, or neither (the call sign alone, as before). Offered only
+ * while the `resident-card-names` preview is on.
+ *
+ * Each style's copy is a `Record` over the persisted list, so a style added to
+ * `RESIDENT_CARD_NAME_STYLES` does not compile until it says how it is offered. Every description
+ * is what the card does when its title is the call sign: with no call sign, or one that is the
+ * profile name, the card prints the one name whatever is on.
+ */
+const RESIDENT_CARD_NAME_COPY: Record<ResidentCardNameStyle, Omit<DisplayChoiceOption<ResidentCardNameStyle>, "id">> = {
+  subtitle: {
+    label: "Subtitle",
+    description: "The profile name sits on a muted line under the call sign. Resident cards grow by one short line.",
+  },
+  chip: {
+    label: "Expanding chip",
+    description: "The resident's label chip spells out the profile name while you point at or focus the card. Needs the Resident marker.",
+  },
+};
+
+export const RESIDENT_CARD_NAME_SETTING = {
+  flag: RESIDENT_CARD_NAMES_FLAG_ID,
+  label: "Resident name with call sign",
+  description:
+    "Also show a resident's profile name on its card while the card is titled by the call sign it answers to. The call sign stays the title. Turn on either style, or both.",
+  options: RESIDENT_CARD_NAME_STYLES.map((id) => ({ id, ...RESIDENT_CARD_NAME_COPY[id] })),
+} as const;
+
+/**
+ * The resident name styles a board card draws: the operator's while the `resident-card-names`
+ * preview is on, and none while it is not, whatever is stored.
+ */
+export function useResidentCardNameStyles(): ReadonlySet<ResidentCardNameStyle> {
+  const offered = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID);
+  const styles = useUiConfig().residentCardNameStyles;
+  return new Set(offered ? styles : []);
+}
+
+/** Turn one resident name style on or off, keeping the other as it is. */
+export function setResidentCardNameStyle(
+  current: readonly ResidentCardNameStyle[],
+  style: ResidentCardNameStyle,
+  on: boolean,
+): void {
+  const next = on ? [...current, style] : current.filter((candidate) => candidate !== style);
+  void updateUiConfig({ residentCardNameStyles: residentCardNameStylesOf(next) });
 }

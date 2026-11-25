@@ -22,7 +22,7 @@ describes snapshot behavior independently of session access.
 | `conversation-view` | 2 | Read/write | UI config `conversationView` |
 | `skin` | 1 | Read/write | UI config `ui.skin`, shipped skin IDs |
 | `format-messages` | 2 | Read/write | UI config `richText` |
-| `board-card` | 2 | Read/write | UI config `hiddenDisplayItems` per `DISPLAY_ITEMS` entry, plus `taskKindCard` and `backgroundAgentsStyle`. A hidden-item value of true hides it. The seed marker is derived. |
+| `board-card` | 2 | Read/write | UI config `hiddenDisplayItems` per `DISPLAY_ITEMS` entry, plus `taskKindCard`, `backgroundAgentsStyle` and `residentCardNameStyles`. A hidden-item value of true hides it. The seed marker is derived. |
 | `pause-controls` | 2 | Read/write | UI config `pauseCardControls` and `pauseConsoleControls` per shown action. Pause itself is operational. |
 | `topbar` | 2 | Read/write | UI config `hiddenTopbarItems` and `compactTopbarItems` per configurable item. A hidden-item value of true hides it. |
 | `conversation-header` | 2 | Read/write | UI config `hiddenDisplayItems` conversation group and `taskKindHeader` |

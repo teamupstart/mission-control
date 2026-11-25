@@ -66,6 +66,8 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.taskKindCard, "tab");
   // Nested sub-cards, the recommended treatment, for an install that never chose.
   assert.equal(config.backgroundAgentsStyle, "nested");
+  // The call sign alone on a resident's card until the operator turns a Resident name style on.
+  assert.deepEqual(config.residentCardNameStyles, []);
   assert.equal(config.richText, true);
   // Every "What notifies you" switch is on: what each kind of item did before they existed.
   assert.deepEqual(config.alerts, {
@@ -118,6 +120,8 @@ test("a written cache round-trips", () => {
     taskKindCard: "off",
     // Off its default, so it cannot round-trip by falling back.
     backgroundAgentsStyle: "chip",
+    // Both on, off the default, so it cannot round-trip by falling back.
+    residentCardNameStyles: ["subtitle", "chip"],
     keybindings: { select: "shift+Tab" },
     // Every switch off its default, so none round-trips by falling back.
     alerts: {
@@ -174,6 +178,7 @@ test("a written cache round-trips", () => {
   assert.equal(config.taskKindHeader, "off");
   assert.equal(config.taskKindCard, "off");
   assert.equal(config.backgroundAgentsStyle, "chip");
+  assert.deepEqual(config.residentCardNameStyles, ["subtitle", "chip"]);
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, {
     notifications: true,
@@ -317,6 +322,16 @@ test("a background sub-agents treatment this build does not ship reads as Nested
     store.set("mission-control.ui", JSON.stringify({ backgroundAgentsStyle: stray }));
     assert.equal(readCache().backgroundAgentsStyle, "nested", `${JSON.stringify(stray)} was adopted`);
   }
+});
+
+test("a cached resident name style this build does not ship is dropped, and the known ones kept in order", () => {
+  // A style from a later build, or a hand-edit, must not be drawn or PUT back as real.
+  for (const stray of ["chip", "tooltip", 2, null, { chip: true }]) {
+    store.set("mission-control.ui", JSON.stringify({ residentCardNameStyles: stray }));
+    assert.deepEqual(readCache().residentCardNameStyles, [], `${JSON.stringify(stray)} was adopted`);
+  }
+  store.set("mission-control.ui", JSON.stringify({ residentCardNameStyles: ["chip", "tooltip", "subtitle", "chip"] }));
+  assert.deepEqual(readCache().residentCardNameStyles, ["subtitle", "chip"]);
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

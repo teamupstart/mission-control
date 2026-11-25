@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ResidentDrawerInertNote } from "./ResidentPlacementPanel.tsx";
 
 import {
@@ -7,8 +8,10 @@ import {
   DISPLAY_ITEMS,
   DISPLAY_ITEM_GROUPS,
   isDisplayItemShown,
+  RESIDENT_CARD_NAME_SETTING,
   setDisplayChoice,
   setDisplayItemShown,
+  setResidentCardNameStyle,
   type DisplayChoice,
   type DisplayChoiceKey,
   type DisplayItemGroup,
@@ -16,11 +19,13 @@ import {
 import {
   PREVIEW_PIPELINE_RUN,
   PREVIEW_RESIDENT,
+  PREVIEW_RESIDENT_WITH_CALL_SIGN,
   PREVIEW_WORKFLOW_RUN,
   previewSession,
 } from "../lib/board-card-preview.ts";
 import { CARD_SHORTCUT_KEYS, cardShortcutChord } from "../lib/card-shortcuts.ts";
 import { useUiConfig } from "../lib/uiConfig.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 import { ConversationHeaderPreview } from "./ConversationHeaderPreview.tsx";
 import { SessionTile } from "./layouts/SessionTile.tsx";
 import { SubagentTree } from "./layouts/SubagentTree.tsx";
@@ -104,6 +109,48 @@ function ChoicePicker<K extends DisplayChoiceKey>({
 }
 
 /**
+ * Resident name with call sign: the ChoicePicker's layout, with a checkbox per style rather than
+ * one radio among them, because the styles combine - Subtitle, Expanding chip, both or neither.
+ * Drawn only while the `resident-card-names` preview is on; off, the stored styles are kept.
+ */
+function ResidentCardNamePicker(): React.JSX.Element | null {
+  const styles = useUiConfig().residentCardNameStyles;
+  const offered = useFeatureFlag(RESIDENT_CARD_NAME_SETTING.flag);
+  if (!offered) return null;
+  const setting = RESIDENT_CARD_NAME_SETTING;
+  return (
+    <div className="display-choice">
+      <span className="settings-toggle-text">
+        <span className="settings-toggle-label">{setting.label}</span>
+        <span className="settings-toggle-desc">{setting.description}</span>
+      </span>
+      <div
+        className="display-choice-options display-choice-checks"
+        role="group"
+        aria-label={`${DISPLAY_GROUP_COPY.card.heading}: ${setting.label}`}
+      >
+        {setting.options.map((option) => {
+          const on = styles.includes(option.id);
+          return (
+            <Tooltip key={option.id} label={option.description}>
+              <label className={`display-choice-option${on ? " is-on" : ""}`}>
+                <input
+                  type="checkbox"
+                  value={option.id}
+                  checked={on}
+                  onChange={(e) => setResidentCardNameStyle(styles, option.id, e.target.checked)}
+                />
+                {option.label}
+              </label>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
  * One group of the panel: its heading, its checklist and the preview that answers it.
  *
  * Laid out as three grid areas rather than two columns, so the preview has somewhere to go
@@ -143,6 +190,7 @@ function GroupCustomizer({
         {DISPLAY_CHOICES.filter((choice) => choice.group === group).map((choice) => (
           <ChoicePicker key={choice.key} choice={choice} />
         ))}
+        {group === "card" && <ResidentCardNamePicker />}
         {items.map((item) => {
           const on = isDisplayItemShown(hidden, item.id);
           return (
@@ -192,6 +240,9 @@ export function BoardCardPanel(): React.JSX.Element {
   const config = useUiConfig();
   const hidden = config.hiddenDisplayItems;
   const session = usePreviewSession();
+  // With Resident name with call sign offered, the preview resident answers to a call sign, so the card is
+  // titled by it and the picker has a profile name to show beside it.
+  const previewResident = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID) ? PREVIEW_RESIDENT_WITH_CALL_SIGN : PREVIEW_RESIDENT;
   const groups = DISPLAY_ITEM_GROUPS.filter((group) =>
     DISPLAY_ITEMS.some((item) => item.group === group),
   );
@@ -219,7 +270,7 @@ export function BoardCardPanel(): React.JSX.Element {
           // the branch - otherwise the Jump shortcut checkbox would be the one control in
           // this panel that looks identical checked and unchecked.
           shortcutChord={cardShortcutChord(CARD_SHORTCUT_KEYS[0])}
-          resident={PREVIEW_RESIDENT}
+          resident={previewResident}
         />
         {/* The nested sub-cards hang beneath the card exactly as the board hangs them, so the
             Background sub-agents picker moves this picture both ways: the chip is the tile's

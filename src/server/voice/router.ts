@@ -1,3 +1,6 @@
+import { VOICE_DASHBOARD_CONFIRM_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
+import type { ReviewItem } from "@shared/types.ts";
+import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
   routeUtterance,
   type HeardEntry,
@@ -67,7 +70,30 @@ export class RecentlyHeard {
   clear(): void { this.entries = []; }
 }
 
+interface AnswerCapture extends ActionTime {
+  sequence: number;
+  monotonicMs: number;
+}
+
+interface AnswerAttempt extends AnswerCapture {
+  reviewId: string;
+}
+
+function compareAnswerCaptures(a: AnswerCapture, b: AnswerCapture): number {
+  const delta = a.openedAtHostUs !== undefined && b.openedAtHostUs !== undefined
+    ? a.openedAtHostUs - b.openedAtHostUs : a.monotonicMs - b.monotonicMs;
+  return delta || a.sequence - b.sequence;
+}
+
 interface OpenCard {
+  answer?: VoiceAnswer;
+  /** Daemon monotonic deadline. The wire deadline is in wall time for dashboard calibration. */
+  answerExpiresAt?: number;
+  /** The original answer's speech order survives a picker click and later corrections. */
+  answerCapture?: AnswerCapture;
+  answerAttempt?: AnswerAttempt;
+  recipientAnswer?: { words: string; choiceCommand: boolean };
+  questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
   card: VoiceCard;
   entry: HeardEntry;
@@ -191,9 +217,35 @@ export function resolveVoiceDecision(
 }
 
 export class VoiceRouter {
+  readonly openCards = new VoiceOpenCards(() => {
+    for (const item of this.open.values()) {
+      if (!item.answer) continue;
+      const owner = this.openCards.footerOwner(item.answer.reviewId);
+      if (owner === item.answer.footerWindowId) continue;
+      if (!this.questions!.pending().some(q => q.id === item.answer!.reviewId)) continue;
+      const hadCompanion = !item.answer.footerWindowId;
+      item.answer = { ...item.answer, footerWindowId: owner };
+      this.questions!.publish(item.answer.reviewId, item.answer);
+      if (!owner) this.publish(item.card);
+      else if (hadCompanion) this.questions!.removeCompanion(item.card.id);
+    }
+  });
   readonly heard = new RecentlyHeard();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
+  // Keep the last accepted capture until its question settles, even after a Cancel.
+  private readonly lastAnswer = new Map<string, AnswerAttempt>();
+  // Keep the monotonic boundaries for as long as the registry holds the review.
+  private questionTimes = new WeakMap<ReviewItem, { created?: number; reminded?: number; closed?: number }>();
+  private questionClockOffsetMs = voiceFocusClockSkewMs();
+  private clockSampleAt = performance.now();
+  private epochStart = this.clockSampleAt;
+  private readonly priorEpochs: { start: number; end: number; offset: number }[] = [];
+  private lostEpochThrough = -Infinity;
+  private answerSequence = 0;
+  // Which answer a correction could address at capture. Retiring an answer leaves
+  // its interval in history, so a delayed correction cannot fall back to a neighbor.
+  private readonly correctionTargets: { at: ActionTime; slot?: number; retired: boolean }[] = [];
   // The outbox can outlive its Recently heard entry. Only the card is needed to publish the receipt.
   private lifetime = new AbortController();
   private readonly outbox = new Map<string, OutboxReceipt>();
@@ -217,6 +269,7 @@ export class VoiceRouter {
     private readonly publish: (card: VoiceCard) => void,
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
+    private readonly questions?: VoiceQuestions,
     private readonly speech?: { unsure(card: VoiceCard): void; stop(cardId: string): void },
   ) {}
 
@@ -225,8 +278,64 @@ export class VoiceRouter {
     return this.resolutions.get(id);
   }
 
+  private questionTime(capture?: ActionTime): number {
+    if (capture?.openedAtHostUs !== undefined) {
+      return performance.now() + (capture.openedAtHostUs - this.hostNowUs()) / 1000;
+    }
+    const now = performance.now();
+    const offset = voiceFocusClockSkewMs(this.questionClockOffsetMs);
+    if (now < this.clockSampleAt) this.epochStart = now;
+    else if (offset !== this.questionClockOffsetMs) {
+      this.priorEpochs.push({ start: this.epochStart, end: now, offset: this.questionClockOffsetMs });
+      if (this.priorEpochs.length > HISTORY_LIMIT) {
+        const oldest = this.priorEpochs.shift()!;
+        this.lostEpochThrough = Math.max(this.lostEpochThrough, oldest.end - oldest.offset);
+      }
+      // The step occurred between two observations. Both epochs can be plausible in that interval.
+      this.epochStart = this.clockSampleAt;
+    }
+    this.questionClockOffsetMs = offset;
+    this.clockSampleAt = now;
+    const wall = (capture?.openedAt ?? Date.now()) - performance.timeOrigin;
+    const current = wall + offset;
+    if (!capture || !this.priorEpochs.length) return current;
+    if (wall <= this.lostEpochThrough) return NaN;
+    const possible = new Set<number>();
+    if (current >= this.epochStart - 1 && current <= now + MAX_CAPTURE_CLOCK_SKEW_MS) possible.add(current);
+    for (const epoch of this.priorEpochs) {
+      const at = wall + epoch.offset;
+      if (at >= epoch.start - 1 && at <= epoch.end + 1) possible.add(at);
+    }
+    return possible.size === 1 ? [...possible][0]! : NaN;
+  }
+
+  observeQuestion(review: ReviewItem, previous?: ReviewItem): void {
+    let times = previous && this.questionTimes.get(previous);
+    if (review.status === "pending" && previous?.status !== "pending") {
+      const at = this.questionTime();
+      times = previous ? { created: times?.created, reminded: at } : { created: at };
+    } else if (review.status !== "pending" && previous?.status === "pending") {
+      times = { ...times, closed: this.questionTime() };
+    }
+    if (times) this.questionTimes.set(review, times);
+  }
+
+  reviewSettled(reviewId: string): void {
+    this.lastAnswer.delete(reviewId);
+    for (const item of this.open.values()) {
+      if (item.answerAttempt?.reviewId !== reviewId) continue;
+      item.modelStep?.abort();
+      this.take(item);
+      this.questionNotice(item, "That question is already settled.");
+    }
+  }
+
+  activeAnswers(): VoiceAnswer[] {
+    return [...this.open.values()].flatMap(item => item.answer ? [item.answer] : []);
+  }
+
   activeCards(): VoiceCard[] {
-    const visible = [...this.open.values()].filter(item => item.card.state !== "resolving" || item.resolvingVisible);
+    const visible = [...this.open.values()].filter(item => !item.answer?.footerWindowId && (item.card.state !== "resolving" || item.resolvingVisible));
     const held = new Set<VoiceCard>();
     for (const { delivery } of this.outbox.values()) {
       if (delivery.published?.parts.some(part => part.outcome === "held")) held.add(delivery.published);
@@ -236,6 +345,27 @@ export class VoiceRouter {
 
   private now(): ActionTime {
     return { openedAt: Date.now(), openedAtHostUs: this.hostNowUs() };
+  }
+
+  private recordCorrectionTarget(retired: boolean): void {
+    let newest: OpenCard | undefined;
+    for (const candidate of this.open.values()) {
+      if (!candidate.answer) continue;
+      if (!newest || (offsetUs(candidate.time, newest.time) || candidate.answerCapture!.sequence - newest.answerCapture!.sequence) > 0) {
+        newest = candidate;
+      }
+    }
+    const slot = newest?.answerCapture?.sequence;
+    if (slot === this.correctionTargets.at(-1)?.slot) return;
+    this.correctionTargets.push({ at: this.now(), slot, retired });
+    if (this.correctionTargets.length > HISTORY_LIMIT) this.correctionTargets.shift();
+  }
+
+  private correctionTarget(time: ActionTime): OpenCard | undefined {
+    const target = this.correctionTargets.findLast(change => offsetUs(change.at, time) <= 0);
+    // A capture on the same clock tick as retirement cannot safely fall back to an older answer.
+    if (!target?.slot || (target.retired && offsetUs(target.at, time) === 0)) return;
+    return [...this.open.values()].find(item => item.answer && item.answerCapture?.sequence === target.slot);
   }
 
   private cancelLatestAt(time: ActionTime): string | undefined {
@@ -253,7 +383,7 @@ export class VoiceRouter {
   }
 
   holdsSession(sessionId: string, taskId?: string): boolean {
-    return this.activeCards().some(card => card.state === "pending" && card.parts.some(({ target }) =>
+    return [...this.open.values()].map(item => item.card).concat([...this.delivering.values()]).some(card => card.state === "pending" && card.parts.some(({ target }) =>
       target?.sessionId === sessionId || (taskId && target?.taskId === taskId)));
   }
 
@@ -310,6 +440,10 @@ export class VoiceRouter {
     const entry: HeardEntry = { id, time: capturedAt, text: utterance.text, outcome: "ignored",
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
+    if (this.questions) {
+      const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards);
+      if (routed !== false) return routed;
+    }
     if (decision.kind === "ignored") {
       entry.rule = decision.reason;
       entry.matchedName = decision.closest ?? null;
@@ -341,6 +475,254 @@ export class VoiceRouter {
     };
     this.openCard({ card, entry, time, message: decision.text, commands: [decision.command] });
     return true;
+  }
+
+  private routeQuestion(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry,
+    time: ActionTime, unsure: VoiceCard[]): boolean | Promise<boolean> {
+    const words = utterance.text.trim();
+    const correction = /^no(?:,\s*|\s+)(.+)$/iu.exec(words);
+    if (correction) {
+      const latest = this.correctionTarget(time);
+      if (!latest?.answer) return false;
+      const review = this.questions!.pending().find(q => q.id === latest.answer!.reviewId);
+      entry.outcome = "control";
+      entry.rule = "switch-answer";
+      const index = spokenIndex(correction[1]!, true);
+      if (index !== undefined && review && performance.now() < latest.answerExpiresAt! && review.decisions?.[0]?.options[index]) {
+        return this.prepareAnswer(latest, review, "option " + (index + 1), false, { id: utterance.id, time }).then(() => true);
+      }
+      return true;
+    }
+    const picks = unsure.filter(c => c.candidates[0]?.kind === "question");
+    const index = /^option /iu.test(words) ? undefined : spokenIndex(words, false, false);
+    if (picks.length && index !== undefined && index >= 0) {
+      const retired = this.priorChoices.some(window => window.reason === "answer" && window.state === "unsure" &&
+        offsetUs(window.from, time) <= 0 && offsetUs(time, window.until) <= 0);
+      const row = !retired && picks.length === 1 && picks[0]!.candidates[index];
+      entry.outcome = "control";
+      entry.rule = "pick-question";
+      return row ? this.pick(picks[0]!.id, row.id, time) : true;
+    }
+    if (decision.kind === "control") return false;
+    const reply = /^reply(?:,\s*|\s+)([\s\S]+)$/iu.exec(words);
+    const addressed = (decision.kind === "addressed" && !decision.command) ||
+      (decision.kind === "needs-model" && decision.reason === "second-name") ? decision : null;
+    const ambiguous = decision.kind === "needs-model" && decision.reason === "ambiguous-name" && !decision.command ? decision : null;
+    if (!reply && !addressed && !ambiguous) return false;
+    const target = reply ? null : addressed?.target ?? null;
+    const body = (reply?.[1] ?? addressed?.text ?? ambiguous!.text).trim();
+    if (!body) return false;
+    // The spoken prefix survives punctuation-free transcription. Keep the shorter
+    // punctuated form and the bare picker command without capturing "answer the email".
+    const answer = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
+      ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+    const choiceCommand = requestedChoice(body) !== undefined;
+    const explicit = !reply && (!!answer || choiceCommand);
+    if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
+    const monotonicMs = this.questionTime(time);
+    if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
+    const content = explicit && answer ? answer[1]!.trim() : body;
+    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
+      card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
+        openQuestions: 0, deadline: null, candidates: [] } };
+    if (!Number.isFinite(monotonicMs)) {
+      this.questionNotice(item, "The clock changed during capture. Say your answer again.");
+      return true;
+    }
+    if (ambiguous && explicit) {
+      item.recipientAnswer = { words: content, choiceCommand };
+      item.pickTargets = ambiguous.candidates;
+      item.card = { ...item.card, state: "unsure", reason: "ambiguous-name", candidates: ambiguous.candidates.map(agentRow) };
+      item.choicesOfferedAt = laterTime(time, this.now());
+      this.openCard(item);
+      return true;
+    }
+    return this.routeCapturedAnswer(item, target, content, choiceCommand);
+  }
+
+  private routeCapturedAnswer(item: OpenCard, target: SpokenName | null, content: string, choiceCommand: boolean): boolean | Promise<boolean> {
+    const monotonicMs = item.answerCapture!.monotonicMs;
+    const reviews = target ? (target.sessionId ? this.questions!.forSession(target.sessionId) : []) : this.questions!.pending();
+    const candidates = reviews.filter(review => {
+      const times = this.questionTimes.get(review);
+      // Restored pending questions predate this listener. A question that closed
+      // during transcription still counts, so its answer cannot move to a neighbor.
+      return (times?.created === undefined || times.created <= monotonicMs) &&
+        (review.status === "pending" || (times?.closed !== undefined && times.closed >= monotonicMs));
+    });
+    const pending = candidates.filter(q => q.status === "pending");
+    item.entry.matchedName = target?.name ?? null;
+    if (!target && !pending.length) return false;
+    if (!pending.length) {
+      this.questionNotice(item, target!.name + " has no open questions");
+      return true;
+    }
+    if (!content && target) {
+      this.offerQuestions(item, pending, target, content, choiceCommand);
+      return true;
+    }
+    return this.routeAnswerContent(item, candidates, content, choiceCommand, target).then(() => true);
+  }
+
+  private offerQuestions(item: OpenCard, pending: ReviewItem[], target: SpokenName, words: string, choiceCommand: boolean): void {
+    item.choicesOfferedAt = laterTime(item.time, this.now());
+    item.questionPick = { target, words, choiceCommand };
+    item.card.state = "unsure";
+    item.card.candidates = pending.map((q, i) => ({ kind: "question", id: q.id, title: q.title,
+      detail: (i + 1) + " · asked " + Math.max(0, Math.floor((Date.now() - q.createdAt) / 60000)) + "m ago" }));
+    this.openCard(item);
+  }
+
+  private confirmationSignal(signal?: AbortSignal): AbortSignal {
+    const signals = [this.lifetime.signal, AbortSignal.timeout(VOICE_DASHBOARD_CONFIRM_MS)];
+    if (signal) signals.push(signal);
+    return AbortSignal.any(signals);
+  }
+
+  private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
+    const woke = this.questionTimes.get(review)?.reminded;
+    if (woke !== undefined && item.answerCapture!.monotonicMs <= woke) {
+      if (this.open.get(item.card.id) === item) this.take(item);
+      this.questionNotice(item, "This question reopened after you spoke. Say your answer again.");
+      return;
+    }
+    const allowText = !choiceCommand && (review.id === open?.id || !review.decisions?.length);
+    return this.prepareAnswer(item, review, words, allowText);
+  }
+
+  private questionNotice(item: OpenCard, detail: string): void {
+    item.entry.detail = detail;
+    item.entry.outcome = "cancelled";
+    this.publish({ ...item.card, state: "cancelled", reason: "question-notice", detail, deadline: null });
+  }
+
+  private reserveAnswer(item: OpenCard): void {
+    const id = item.card.id;
+    item.card = { ...item.card, state: "resolving", candidates: [] };
+    item.modelStep = new AbortController();
+    this.open.set(id, item);
+    this.pendingVoiceActions.push({ id, kind: "card", ...item.time, cancel: () => this.cancel(id) });
+  }
+
+  private async routeAnswerContent(item: OpenCard, candidates: ReviewItem[], words: string, choiceCommand: boolean,
+    target: SpokenName | null, picked?: ReviewItem): Promise<void> {
+    const fixed = picked ?? (target && candidates.length === 1 ? candidates[0] : undefined);
+    const windows = this.openCards.reportingWindows();
+    // A single named or picked question has a destination even with every dashboard
+    // closed. Its Other field still needs a confirmed open card to accept dictation.
+    if (fixed && (!windows.length || choiceCommand || !fixed.decisions?.[0]?.allowOther)) {
+      await this.prepareQuestionReply(item, fixed, words, choiceCommand);
+      return;
+    }
+    if (!windows.length) {
+      if (target) this.offerQuestions(item, candidates.filter(q => q.status === "pending"), target, words, choiceCommand);
+      return;
+    }
+    const drawn = this.openCards.target(candidates, !!target);
+    const previousWindow = this.openCards.dashboard;
+    const calibratingTarget = this.openCards.calibrating ? drawn?.id : undefined;
+    this.reserveAnswer(item);
+    const windowId = await this.openCards.confirmReplyWindow(windows, this.questions!.confirmFocus, this.confirmationSignal(item.modelStep!.signal));
+    if (this.open.get(item.card.id) !== item) return;
+    const current = new Map(this.questions!.pending().map(q => [q.id, q]));
+    const pending = candidates.filter(q => current.has(q.id));
+    // Include the originally eligible cards when reading focus. Settling one while
+    // we await the report must not turn its unfocused neighbor into the sole target.
+    const focused = this.openCards.target(candidates, !!target);
+    // Picking sets a new time for cancellation priority. Only the original
+    // speech can establish whether the operator dictated into an open card.
+    const capture = item.answerCapture!;
+    const timing = this.openCards.captureTiming(capture.openedAt, capture.monotonicMs);
+    const changedDuringCalibration = windowId === previousWindow && calibratingTarget && calibratingTarget !== focused?.id;
+    const open = windowId && focused && timing === "eligible" && this.openCards.footerOwner(focused.id) === windowId &&
+      !changedDuringCalibration ? focused : undefined;
+    const destination = fixed ?? open;
+    const review = destination && current.get(destination.id);
+    if (review) {
+      await this.prepareQuestionReply(item, review, words, choiceCommand, open);
+      return;
+    }
+    this.take(item);
+    if (target) {
+      if (pending.length && !fixed) this.offerQuestions(item, pending, target, words, choiceCommand);
+      else this.questionNotice(item, "That question is already settled.");
+    } else if ((!windowId && (drawn || !previousWindow)) || (focused && timing !== "eligible" && (timing === "uncertain" || windowId !== previousWindow)) ||
+      changedDuringCalibration) {
+      this.questionNotice(item, "Question focus changed near the start of speech. Say “reply” and your answer again.");
+    }
+  }
+
+  private async prepareAnswer(item: OpenCard, review: ReviewItem, words: string, allowText: boolean,
+    correction?: { id: string; time: ActionTime }): Promise<void> {
+    const id = correction?.id ?? item.card.id;
+    const signal = this.lifetime.signal;
+    const capture = correction
+      ? { ...correction.time, monotonicMs: this.questionTime(correction.time), sequence: ++this.answerSequence }
+      : item.answerCapture!;
+    const attempt = { ...capture, reviewId: review.id };
+    const accepted = this.lastAnswer.get(review.id);
+    if (accepted && compareAnswerCaptures(attempt, accepted) < 0) {
+      if (!correction && this.open.get(id) === item) this.take(item);
+      return;
+    }
+    if (!correction) {
+      item.answerAttempt = attempt;
+      if (this.open.get(id) !== item) this.reserveAnswer(item);
+    }
+    const target = item.card.parts[0]?.target ?? null;
+    const result = await matchAnswer(review, words, allowText, this.decider, target, item.modelStep?.signal ?? signal);
+    // A concurrent correction can have changed the action ID while matching. Compare
+    // capture times on the live item; its original time still orders spoken Cancel.
+    const previousId = item.card.id;
+    if (signal.aborted || this.open.get(previousId) !== item || this.state().mode === "off") return;
+    const latest = this.lastAnswer.get(review.id);
+    if (latest && compareAnswerCaptures(attempt, latest) < 0) return;
+    if (!this.questions!.pending().some(q => q.id === review.id)) {
+      this.take(item);
+      this.questionNotice(item, "That question is already settled.");
+      return;
+    }
+    if (!result || result === "matcher-failed") {
+      if (correction) return;
+      this.take(item);
+      this.questionNotice(item, result === "matcher-failed" ? "Could not match an option. Try again." : "No matching option.");
+      return;
+    }
+    for (const other of this.open.values()) {
+      if (other === item || other.answerAttempt?.reviewId !== review.id) continue;
+      if (compareAnswerCaptures(other.answerAttempt, attempt) > 0) continue;
+      if (!this.cancel(other.card.id)) { this.take(item); return; }
+    }
+    item.answerAttempt = attempt;
+    this.lastAnswer.set(review.id, attempt);
+    clearTimeout(item.timer);
+    const window = this.window();
+    const windowMs = window.enabled ? window.seconds * 1000 : 0;
+    const deadline = Date.now() + windowMs;
+    const expiresAt = performance.now() + windowMs;
+    item.answerExpiresAt = expiresAt;
+    if (correction) {
+      // Replace the action in place so delayed buttons cannot act on the new answer,
+      // while spoken Cancel still follows the original capture order.
+      this.open.delete(previousId);
+      this.open.set(id, item);
+      const action = this.pendingVoiceActions.find(a => a.kind === "card" && a.id === previousId)!;
+      action.id = id;
+      action.cancel = () => this.cancel(id);
+      if (!item.answer?.footerWindowId) this.questions!.removeCompanion(previousId);
+    }
+    item.answer = { ...result, id, originId: item.entry.id, reviewId: review.id, deadline, windowMs, switched: !!correction,
+      footerWindowId: this.openCards.footerOwner(review.id) };
+    if (!correction) this.recordCorrectionTarget(false);
+    item.card = { ...item.card, id, state: "pending", reason: "voice-answer", detail: undefined, candidates: [], questionTitle: review.title, deadline, windowMs,
+      parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
+    item.entry.rule = "voice-answer";
+    item.entry.outcome = "pending";
+    this.questions!.publish(review.id, item.answer);
+    if (!item.answer.footerWindowId) this.publish(item.card);
+    if (!windowMs) { await this.sendNow(id); return; }
+    item.timer = setTimeout(() => { void this.sendNow(id); }, Math.ceil(expiresAt - performance.now()));
+    item.timer.unref();
   }
 
   /**
@@ -430,7 +812,11 @@ export class VoiceRouter {
         card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts,
           ...(resolved.reason === "mention" && decision.reason === "second-name" && { mentions: decision.candidates.filter(t => t.key !== resolved.parts[0]?.target?.key) }) } });
     };
-    const done = settle().finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
+    this.trackResolution(id, settle());
+  }
+
+  private trackResolution(id: string, work: Promise<void>): void {
+    const done = work.finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
     this.resolutions.set(id, done);
   }
 
@@ -474,7 +860,7 @@ export class VoiceRouter {
       item.timer.unref?.();
     }
     this.publish(card);
-    if (card.state === "unsure" && this.open.get(card.id) === item) this.speech?.unsure(card);
+    if (card.state === "unsure" && !item.questionPick && this.open.get(card.id) === item) this.speech?.unsure(card);
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
@@ -482,8 +868,17 @@ export class VoiceRouter {
     this.closeChoices(item, at);
     clearTimeout(item.timer);
     this.open.delete(item.card.id);
+    if (item.answer) {
+      this.recordCorrectionTarget(true);
+      this.questions?.publish(item.answer.reviewId, null);
+    }
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
+  }
+
+  cancelEditedAnswer(reviewId: string, originId: string): boolean {
+    const item = [...this.open.values()].find(i => i.answer?.reviewId === reviewId && i.answer.originId === originId);
+    return !!item && this.cancel(item.card.id);
   }
 
   cancel(id: string, detail?: string, capturedAt?: ActionTime): boolean {
@@ -515,7 +910,7 @@ export class VoiceRouter {
           this.publishDelivery(delivery);
         });
       }
-    } else {
+    } else if (!item.answer?.footerWindowId && !(item.answerAttempt && !item.answer)) {
       this.publish({ ...item.card, state: "cancelled", deadline: null });
     }
     return true;
@@ -524,6 +919,46 @@ export class VoiceRouter {
   async pick(id: string, candidateId: string, time?: ActionTime): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "unsure" || !item.card.candidates.some((c) => c.id === candidateId)) return false;
+    if (item.questionPick) {
+      const { target, words, choiceCommand } = item.questionPick;
+      const pending = this.questions!.pending().filter(q => q.sessionId === target.sessionId);
+      const review = pending.find(q => q.id === candidateId);
+      if (review && !words) {
+        if (item.modelStep) return false;
+        item.modelStep = new AbortController();
+        const isPending = () => this.questions!.pending().some(q => q.id === candidateId && q.sessionId === target.sessionId);
+        const opened = await this.openCards.openQuestion(candidateId, this.questions!.confirmFocus, windowId => {
+          if (!isPending()) return false;
+          this.questions!.open(windowId, review);
+          return true;
+        }, this.confirmationSignal(item.modelStep.signal));
+        if (this.open.get(id) !== item) return false;
+        delete item.modelStep;
+        if (!opened && isPending()) {
+          item.card = { ...item.card, detail: "Focus a dashboard, then choose this question again." };
+          this.publish(item.card);
+        } else {
+          this.take(item, time);
+          this.questionNotice(item, opened ? "Opened question." : "That question is already settled.");
+        }
+        return true;
+      }
+      this.take(item, time);
+      delete item.questionPick;
+      if (!review) this.questionNotice(item, "That question is already settled.");
+      else if (words) {
+        this.questions!.removeCompanion(id);
+        item.time = time ?? this.now();
+        const work = this.routeAnswerContent(item, pending, words, choiceCommand, target, review)
+          .catch(() => {
+            if (this.open.get(id) !== item) return;
+            this.take(item);
+            this.questionNotice(item, "Could not match an option. Try again.");
+          });
+        this.trackResolution(id, work);
+      }
+      return true;
+    }
     const roster = this.state().roster;
     const split = item.splitPicks?.get(candidateId);
     const target = item.splitPicks ? split?.target ?? item.card.parts[0]?.target
@@ -538,6 +973,15 @@ export class VoiceRouter {
     }
     if (parts.some(part => !this.checkedTarget(roster, part.target, split ? "deliver" : "single-pick"))) return false;
     this.speech?.stop(id);
+    if (item.recipientAnswer) {
+      const { words, choiceCommand } = item.recipientAnswer;
+      this.take(item, pickedAt);
+      this.questions!.removeCompanion(id);
+      delete item.recipientAnswer;
+      item.time = pickedAt;
+      item.card = { ...item.card, reason: "answer", candidates: [], parts: [{ target, text: words }] };
+      return this.routeCapturedAnswer(item, target, words, choiceCommand);
+    }
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       this.closeChoices(item, pickedAt);
@@ -642,11 +1086,31 @@ export class VoiceRouter {
     }
   }
 
-  async sendNow(id: string): Promise<boolean> {
+  async sendNow(id: string, source?: { companion: boolean; windowId?: string }): Promise<boolean> {
     const item = this.open.get(id);
     if (item?.card.state !== "pending") return false;
+    if (source?.companion && !item.answer) return false;
+    if (source && item.answer) {
+      const owner = source.companion ? undefined : source.windowId;
+      if ((!source.companion && !owner) || item.answer.footerWindowId !== owner) return false;
+      // Either submit control can overtake a handoff. Keep Cancel and expiry live
+      // while the windows confirm which surface still owns this exact action.
+      const request = this.questions!.confirmFocus;
+      const signal = this.confirmationSignal();
+      const confirmed = owner ? await this.openCards.confirmFocus(owner, request, signal)
+        : await this.openCards.confirmCompanion(item.answer.reviewId, request, signal);
+      if (!confirmed || this.open.get(id) !== item || item.answer.footerWindowId !== owner) return false;
+    }
     this.take(item);
     if (this.state().mode === "off") return false;
+    if (item.answer) {
+      const ok = this.questions!.pending().some(q => q.id === item.answer!.reviewId)
+        && await this.questions!.resolve(item.answer).catch(() => false);
+      item.entry.outcome = ok ? "sent" : "failed";
+      if (!ok || !item.answer.footerWindowId) this.publish({ ...item.card, state: item.entry.outcome, deadline: null,
+        detail: ok ? "Answer submitted." : "The question could not be answered." });
+      return ok;
+    }
     const inFlight = { ...item.card, reason: "delivering", deadline: null };
     this.delivering.set(id, inFlight);
     const active = () => this.delivering.get(id) === inFlight && this.state().mode !== "off";
@@ -727,7 +1191,11 @@ export class VoiceRouter {
       clearTimeout(item.timer);
       item.modelStep?.abort();
     }
+    this.openCards.clear();
     this.open.clear();
+    this.lastAnswer.clear();
+    this.questionTimes = new WeakMap();
+    this.correctionTargets.length = 0;
     this.resolutions.clear();
     this.lifetime.abort();
     this.lifetime = new AbortController();
@@ -741,6 +1209,10 @@ export class VoiceRouter {
 
   reset(): void {
     this.clearActionsAndHistory();
+    this.epochStart = this.clockSampleAt = performance.now();
+    this.questionClockOffsetMs = voiceFocusClockSkewMs();
+    this.priorEpochs.length = 0;
+    this.lostEpochThrough = -Infinity;
     this.recentIds.clear();
   }
 }

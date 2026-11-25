@@ -84,6 +84,7 @@ test("a confirmed placement stays selected without its stream update", async ({ 
   const pill = group.getByRole("radio", { name: /Floating pill/ });
   await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
   await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+  await expect(page.locator("html")).toHaveAttribute("data-fixture-stream-closed", "true");
   const saved = page.waitForResponse(response => response.url().endsWith("/api/voice/confirmation") && response.request().method() === "PUT");
   await pill.click();
   expect((await saved).ok()).toBe(true);
@@ -334,6 +335,9 @@ test("standalone held messages can be switched and recalled while a new countdow
   }
   await expect(choose.getByRole("option", { name: /check the first release/ })).toHaveCount(1, { timeout: 3000 });
   await expect(choose).toHaveAccessibleDescription("Choose which message to view and act on");
+  await choose.hover();
+  await expect(page.locator(".tooltip")).toHaveText("Choose which message to view and act on");
+  await captureCard(page, "standalone-voice-selector-tooltip");
   await choose.selectOption("first");
   await expect(card.getByRole("button", { name: "Open question" })).toBeEnabled();
   await captureCard(page.locator(".voice-card-surface"), "standalone-held-switcher");

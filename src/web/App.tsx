@@ -20,6 +20,8 @@ import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentRep
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
 import { ResidentNamesContext } from "./lib/agent-names.ts";
+import { useVoiceOpenCards, VoiceAnswersContext } from "./lib/voice-open-cards.ts";
+import { VoiceHintsContext } from "./lib/agent-names.ts";
 import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
 import { withCurrentReferenceNames } from "@shared/display-name.ts";
 
@@ -414,7 +416,7 @@ export function App(): React.JSX.Element {
     shaping,
     subscribeShaping,
     voice,
-    voiceCards,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
     acknowledgeVoiceMode,
@@ -541,6 +543,8 @@ export function App(): React.JSX.Element {
   const gearPhrase = gearDotPhrase(gearDot);
   // Storage's size and free-space warnings, as a desktop notification when the operator asked.
   useStorageNotifications(storageHealth);
+  const voiceHints = spokenNames && !!voice && voice.mode !== "off";
+  useVoiceOpenCards(voiceHints && connected ? voiceWindowId : undefined, route.page !== "voice-card");
   const [reviewRequest, setReviewRequest] = useState<{ sessionId: string; questionId?: string } | null>(null);
   const reviewSessionId = reviewRequest?.sessionId ?? null;
   const setReviewSessionId = useCallback((sessionId: string | null) => {
@@ -4148,7 +4152,7 @@ export function App(): React.JSX.Element {
   // the bar's content at a fixed width, like a browser minimum font size. Both live in
   // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
   // settling is the subtle part and it belongs beside the fit.
-  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
+  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), [standalone]);
 
   // The palette does NOT close when the page changes - that is the whole difference between
   // it and the settings-only search it replaced. It navigates for a living, and a row that
@@ -5135,7 +5139,16 @@ export function App(): React.JSX.Element {
           />
         );
 
-  const voiceCardHost = <VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
+  useEffect(() => {
+    if (!openVoiceQuestion) return;
+    if (route.page === "voice-card") consumeVoiceQuestion(openVoiceQuestion);
+    else {
+      window.missionDesktop?.revealVoiceDashboard?.();
+      setReviewSessionId(openVoiceQuestion.sessionId);
+    }
+  }, [openVoiceQuestion, setReviewSessionId, consumeVoiceQuestion, route.page]);
+
+  const voiceCardHost = <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
     actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
@@ -5165,7 +5178,7 @@ export function App(): React.JSX.Element {
         const result = await launchResident(profile.id, { repoRoot: defaultRepoRoot, additionalRepoRoots, requestId, answerWhen: "accepted" }, { profile });
         return result.state === "failed" || result.state === "refused" ? { ok: false, error: result.error } : { ok: true };
       },
-    }} />;
+    }} /></VoiceHintsContext.Provider>;
   const history = <RecentlyHeard roster={voiceRoster} mode={voice?.mode ?? "off"} />;
 
   return (
@@ -5176,6 +5189,7 @@ export function App(): React.JSX.Element {
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
       <VoiceWindowProvider enabled={spokenNames && !standalone} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
+      <VoiceAnswersContext.Provider value={voiceHints ? { answers: voiceAnswers, windowId: connected ? voiceWindowId : undefined } : null}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>
@@ -5897,6 +5911,8 @@ export function App(): React.JSX.Element {
               {modalSession && (modalReviews.length > 0 || modalDialog) && (
                 <ReviewModal
                   session={modalSession}
+                  focusQuestion={openVoiceQuestion}
+                  onQuestionFocused={consumeVoiceQuestion}
                   reviews={modalReviews}
                   dialog={modalDialog}
                   onClose={() => {
@@ -6095,6 +6111,7 @@ export function App(): React.JSX.Element {
       </LaunchFailureProvider>
       </InboxReplyBoxesContext.Provider>
       </VoiceRosterContext.Provider>
+      </VoiceAnswersContext.Provider>
       </VoiceWindowProvider>
       </ResidentNamesContext.Provider>
       </PausedResidentsContext.Provider>

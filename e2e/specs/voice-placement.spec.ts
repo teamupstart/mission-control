@@ -66,6 +66,36 @@ test.describe("floating Ask aloud", () => {
   });
 });
 
+test("a floating voice answer keeps its question and submit action when moved from pill to popover", async ({ daemon, dashboard: page }) => {
+  await desktopWith(page, daemon, "floating-windows");
+  const will = await runningAgent(page, daemon, "Will");
+  const title = "Which test suite should run?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { kind: "input", env: {}, cwd: will.cwd, title, body: title },
+  });
+  expect(filed.ok(), await filed.text()).toBe(true);
+  const { id } = await filed.json();
+  const opening = page.waitForEvent("popup");
+  await page.getByRole("radio", { name: /Floating pill/ }).check();
+  const pill = await opening;
+  await say(daemon, "Will, answer: integration tests");
+  const pillCard = pill.getByRole("status").filter({ hasText: "Voice answer for Will" });
+  await expect(pillCard).toContainText(title);
+  await expect(pillCard.getByRole("button", { name: "Submit now" })).toBeEnabled();
+  await expect(pill.getByRole("region", { name: "Voice countdown" })).toContainText("cancel or submit now");
+  await expect(page.locator(".voice-card")).toHaveCount(0);
+  const moving = page.waitForEvent("popup");
+  await page.getByRole("radio", { name: /Tray popover/ }).check();
+  const popover = await moving;
+  const popoverCard = popover.getByRole("status").filter({ hasText: title });
+  await expect(popoverCard).toContainText("integration tests");
+  await expect(popoverCard.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  await captureCard(popoverCard, "popover-voice-answer");
+  await popoverCard.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("integration tests");
+});
+
 test("moving a selected confirmation keeps its pending Cancel and the other message separate", async ({ daemon, dashboard: page }) => {
   await desktopWith(page, daemon, "floating-windows");
   const opening = page.waitForEvent("popup");

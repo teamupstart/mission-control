@@ -38,6 +38,8 @@ export type DecisionAnswers = Record<string, DecisionAnswer>;
 
 /** Everything a review card lets the operator enter before resolving it. */
 export interface ReviewDraft {
+  /** The pending voice answer whose cancellation the operator requested by editing. */
+  voiceEditOrigin?: string;
   /** The open-ended `input` review's answer box. */
   answer: string;
   /** The diff/plan review's optional note to the agent. */
@@ -129,6 +131,7 @@ function normalize(value: unknown): ReviewDraft | null {
     }
   }
   const draft: ReviewDraft = {
+    ...(typeof v.voiceEditOrigin === "string" && v.voiceEditOrigin && { voiceEditOrigin: v.voiceEditOrigin }),
     answer: typeof v.answer === "string" ? v.answer : "",
     note: typeof v.note === "string" ? v.note : "",
     decisions,
@@ -139,7 +142,8 @@ function normalize(value: unknown): ReviewDraft | null {
 
 function isEmpty(draft: ReviewDraft): boolean {
   return (
-    !draft.answer
+    !draft.voiceEditOrigin
+    && !draft.answer
     && !draft.note
     && !draft.approveFuture
     && Object.values(draft.decisions).every((a) => a.selected.length === 0 && !a.other && !a.note && !a.chat)

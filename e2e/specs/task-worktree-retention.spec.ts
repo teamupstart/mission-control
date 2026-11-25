@@ -10,16 +10,15 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
- * The 30-day task worktree rule, both halves of it, through a real native checkout.
+ * The configured task worktree retention window through a real native checkout.
  *
  * The contract a person actually experiences is a pair, and neither half means much without
  * the other:
  *
  *  - **Work you did resets the clock.** A local commit nobody pushed is still work. The
  *    checkout stays, and the manual **Clean up** control stays with it.
- *  - **An untouched checkout is eventually taken back.** No confirmation, no click - the task
- *    update that removes the cleanup control arrives on its own, and the native slot it held
- *    is available for the next dispatch.
+ *  - **A clean, published checkout is eventually taken back.** No confirmation or click is
+ *    needed. The cleanup control disappears, and the native slot is available for dispatch.
  *
  * Everything here is real: a real native worktree from the daemon's own pool, a real git
  * commit made in it, the real observation pass, the real claim, and the real provider-aware
@@ -55,20 +54,20 @@ async function taskFor(daemon: DaemonHandle, intent: string): Promise<TaskSnapsh
 
 function retentionRow(daemon: DaemonHandle, taskId: string): {
   fingerprint: string;
-  lastChangedAt: number;
   cleanupDueAt: number;
-  cleanupState: string;
+  unownedSince: number | null;
+  lastError: string | null;
 } | undefined {
   return withDaemonDb(daemon, (db) =>
     db.prepare(
-      `SELECT fingerprint, last_changed_at AS lastChangedAt, cleanup_due_at AS cleanupDueAt,
-              cleanup_state AS cleanupState
+      `SELECT fingerprint, cleanup_due_at AS cleanupDueAt, unowned_since AS unownedSince,
+              last_error AS lastError
          FROM task_worktree_retention WHERE task_id = ?`,
     ).get(taskId) as {
       fingerprint: string;
-      lastChangedAt: number;
       cleanupDueAt: number;
-      cleanupState: string;
+      unownedSince: number | null;
+      lastError: string | null;
     } | undefined);
 }
 
@@ -86,9 +85,9 @@ function ageRetention(daemon: DaemonHandle, taskId: string, days: number): void 
     const changed = db.prepare(
       `UPDATE task_worktree_retention
          SET last_changed_at = last_changed_at - ?, cleanup_due_at = cleanup_due_at - ?,
-             observed_at = observed_at - ?
+             observed_at = observed_at - ?, unowned_since = unowned_since - ?
        WHERE task_id = ?`,
-    ).run(shift, shift, shift, taskId).changes;
+    ).run(shift, shift, shift, shift, taskId).changes;
     expect(Number(changed), "no retention row to age").toBe(1);
   });
 }
@@ -142,7 +141,7 @@ async function openSitrep(page: Page) {
   return page.getByRole("dialog", { name: "Sitrep" });
 }
 
-test("an edited checkout postpones automatic cleanup; an untouched one is reclaimed", async ({
+test("an edited checkout postpones automatic cleanup and is reclaimed once published and due", async ({
   dashboard,
   daemon,
 }) => {
@@ -183,8 +182,8 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   await daemon.crash();
   await daemon.restart();
   await expect
-    .poll(() => retentionRow(daemon, dispatched.id)?.cleanupState, { timeout: 60_000 })
-    .toBe("observing");
+    .poll(() => retentionRow(daemon, dispatched.id)?.unownedSince, { timeout: 60_000 })
+    .toEqual(expect.any(Number));
   const seeded = retentionRow(daemon, dispatched.id)!;
   expect((await taskFor(daemon, INTENT))?.worktreePath, "a restart kept the checkout").toBe(worktree);
 
@@ -268,21 +267,22 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
     await dashboard.screenshot({ path: join(EVIDENCE, "retention-postponed.png"), fullPage: true });
   }
 
-  // --- half two: an untouched checkout is taken back, with no click ---
+  // --- half two: a clean, published checkout is taken back, with no click ---
   //
-  // Nothing is edited this time, and nobody presses Clean up: the daemon takes the checkout
-  // back on its own. The reclaim is asserted against the server's own state below, and then
-  // read back through a fresh page - a restarted daemon has to be reconnected to either way,
-  // so this half claims durability, not live delivery.
+  // Publish the observed commit to the fixture's local origin. The daemon must be able
+  // to verify publication before it returns the checkout after the renewed deadline.
   await dashboard.keyboard.press("Escape");
   await daemon.crash();
+  execFileSync("git", ["-C", worktree, "push", "origin", "HEAD:refs/heads/e2e-published-retention"], { stdio: "pipe" });
   ageRetention(daemon, dispatched.id, 15);
   await daemon.restart();
 
-  await expect.poll(() => taskFor(daemon, INTENT), { timeout: 60_000 }).toMatchObject({
-    status: "failed",
-    worktreePath: null,
-    worktreeLeaseId: null,
+  await expect.poll(async () => ({
+    task: await taskFor(daemon, INTENT),
+    retentionBlocker: retentionRow(daemon, dispatched.id)?.lastError ?? null,
+  }), { timeout: 60_000 }).toMatchObject({
+    task: { status: "failed", worktreePath: null, worktreeLeaseId: null },
+    retentionBlocker: null,
   });
   expect(retentionRow(daemon, dispatched.id), "the clock is dropped with the tree").toBeUndefined();
   expect(slotState(daemon, worktree)).toBe("available");

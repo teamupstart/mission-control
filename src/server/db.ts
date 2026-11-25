@@ -2336,7 +2336,6 @@ function createSchemaObjects(d: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS sdk_sessions (
       id                TEXT PRIMARY KEY NOT NULL,
-      extra_dirs_json   TEXT,
       agent             TEXT NOT NULL,
       agent_session_id  TEXT,
       cwd               TEXT NOT NULL,
@@ -2356,7 +2355,8 @@ function createSchemaObjects(d: DatabaseSync): void {
       -- restart revert every card to its pre-refinement guess. A rename outranks both.
       display_name      TEXT,
       created_at        INTEGER NOT NULL,
-      updated_at        INTEGER NOT NULL
+      updated_at        INTEGER NOT NULL,
+      extra_dirs_json   TEXT
     );
 
     -- Human turns the daemon still owns. Unlike a harness's internal queue, rows here have
@@ -4096,7 +4096,6 @@ function migrate(d: DatabaseSync): void {
   // An embedded driver can be relaunched from `status` plus `agent_session_id`, but those
   // facts cannot say whether the old process died in the middle of a turn. Existing rows
   // default idle: no older build recorded proof that they owe an automatic continuation.
-  addColumn(d, "sdk_sessions", "extra_dirs_json", "TEXT");
   addColumn(d, "sdk_sessions", "turn_in_progress", "INTEGER NOT NULL DEFAULT 0");
 
   // The operator's own name for an embedded session. Nullable with NO default, and that is
@@ -4116,6 +4115,7 @@ function migrate(d: DatabaseSync): void {
   // builds turns into a visible refusal instead of a silent retry on every restart. 0 on
   // every older row, which is what they all were.
   addColumn(d, "sdk_sessions", "resume_deferrals", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "sdk_sessions", "extra_dirs_json", "TEXT");
 
   // Phase 3 pins the compatibility facts used by explicit reattachment and records the
   // actual provider/model selected when each Persona attempt starts. Existing Phase 1/2

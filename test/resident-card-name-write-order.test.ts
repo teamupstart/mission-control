@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-/**
- * Resident name with call sign checkboxes each send the whole style list, so this window must
- * save them in the order they were clicked: two overlapping requests that the daemon applied out
- * of order would store the earlier list over the later one. Each write here is held open until
- * the test releases it, which is the overlap a quick double click produces.
- */
+// Each write is held open until the test releases it, which is the overlap a quick double click
+// produces.
 
 const store = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
@@ -42,7 +38,6 @@ test("overlapping style clicks are sent one at a time, in the order they were ma
   setResidentCardNameStyle([], "subtitle", true);
   setResidentCardNameStyle(uiConfig().residentCardNameStyles, "chip", true);
   await settle();
-  // Both clicks show at once, but only the first has gone to the daemon.
   assert.deepEqual(uiConfig().residentCardNameStyles, ["subtitle", "chip"]);
   assert.equal(writes.length, 1, "the second write was sent before the first was answered");
   assert.deepEqual(writes[0]!.body, { residentCardNameStyles: ["subtitle"] });

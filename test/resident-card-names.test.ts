@@ -3,15 +3,7 @@ import assert from "node:assert/strict";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-/**
- * Settings > Display > Board card > Resident name with call sign: a resident's board card keeps
- * the call sign (reference name) it answers to as its title, and shows the resident's profile
- * name beside it as a muted Subtitle, inside an Expanding chip, or both - each style its own
- * checkbox. Offered only while the `resident-card-names` preview is on; the stored styles are
- * ignored, not erased, while it is off.
- *
- * `createElement` rather than JSX because the runner's glob only matches .test.ts.
- */
+// `createElement` rather than JSX because the runner's glob only matches .test.ts.
 
 // A fake `localStorage` and a fetch that accepts, installed BEFORE the modules below are
 // imported, for the reason `board-card-items.test.ts` gives: `updateUiConfig` reverts its
@@ -53,7 +45,6 @@ const { mkSession } = await import("./helpers/session-fixture.ts");
 type Style = (typeof RESIDENT_CARD_NAME_STYLES)[number];
 type Mark = typeof PREVIEW_RESIDENT;
 
-/** "Triage Bot", answering to "Scout", as a listening resident with a reference name does. */
 const CALLED: Mark = { ...PREVIEW_RESIDENT, listeningTitle: '"Scout"' };
 
 const FLAG_ON = { enableAll: false, overrides: { [RESIDENT_CARD_NAMES_FLAG_ID]: true } };
@@ -87,7 +78,6 @@ function tile(resident: Mark | null, flag = true): string {
   );
 }
 
-/** The tile's head: from its opening tag to the loop status row that follows it. */
 function head(html: string): string {
   const start = html.indexOf('class="tile-head');
   assert.ok(start >= 0, "no tile head in the render");
@@ -100,39 +90,28 @@ const SUBTITLE =
 const CHIP =
   /<span class="resident-chip has-expanded-name"[^>]*>.*<span class="resident-chip-name" aria-hidden="true"><span class="resident-chip-name-sep">·<\/span>Triage Bot<\/span><\/span>/;
 
-// ---- which name the card adds ----
-
 test("the card adds the profile name only while its title is a call sign that says something else", () => {
   assert.equal(residentCardProfileName(CALLED), "Triage Bot");
-  // Titled by the session name: voice is not listening, or the profile has no reference name.
   assert.equal(residentCardProfileName(PREVIEW_RESIDENT), null);
   assert.equal(residentCardProfileName(null), null);
   assert.equal(residentCardProfileName(undefined), null);
-  // The call sign already says the profile name, in any case or spacing: nothing to repeat.
   assert.equal(residentCardProfileName({ ...PREVIEW_RESIDENT, listeningTitle: '"triage  bot"' }), null);
   assert.equal(residentCardProfileName({ ...PREVIEW_RESIDENT, name: "  ", listeningTitle: '"Scout"' }), null);
 });
-
-// ---- the stored setting ----
 
 test("Resident name with call sign ships with no style on, is a backed-up setting, and stores each style once in order", () => {
   assert.deepEqual(UI_CONFIG_DEFAULTS.residentCardNameStyles, []);
   assert.deepEqual([...RESIDENT_CARD_NAME_STYLES], ["subtitle", "chip"]);
   assert.deepEqual(UiConfigSchema.parse({}).residentCardNameStyles, []);
   assert.deepEqual(UiConfigSchema.parse({ residentCardNameStyles: ["chip", "subtitle", "chip"] }).residentCardNameStyles, ["subtitle", "chip"]);
-  // A style a newer build stored is dropped after a downgrade, keeping the ones this build
-  // knows, and a value that is not a list reads as none rather than failing the record.
   assert.deepEqual(UiConfigSchema.parse({ residentCardNameStyles: ["tooltip", "chip"] }).residentCardNameStyles, ["chip"]);
   assert.deepEqual(UiConfigSchema.parse({ residentCardNameStyles: "chip" }).residentCardNameStyles, []);
-  // A write is strict: an unknown style is refused, never dropped silently.
   assert.equal(UiConfigPatchSchema.safeParse({ residentCardNameStyles: ["tooltip"] }).success, false);
   assert.equal(UiConfigPatchSchema.safeParse({ residentCardNameStyles: "chip" }).success, false);
   const both = UiConfigPatchSchema.safeParse({ residentCardNameStyles: ["chip", "subtitle"] });
   assert.ok(both.success);
   assert.deepEqual(both.data.residentCardNameStyles, ["subtitle", "chip"]);
   assert.equal(UiConfigPatchSchema.safeParse({ residentCardNameStyles: [] }).success, true);
-  // A write may repeat each style up to twice (four entries) and is stored once each in order;
-  // a fifth entry is refused as too long before anything is normalised.
   const four = UiConfigPatchSchema.safeParse({ residentCardNameStyles: ["chip", "subtitle", "chip", "subtitle"] });
   assert.ok(four.success, "a four-entry write was refused");
   assert.deepEqual(four.data.residentCardNameStyles, ["subtitle", "chip"]);
@@ -168,11 +147,8 @@ test("the resident-card-names flag is a preview, and offers the Resident name wi
     ["subtitle", "Subtitle"],
     ["chip", "Expanding chip"],
   ]);
-  // Not one of the radio choices: its styles combine.
   assert.ok(!DISPLAY_CHOICES.some((choice) => (choice.key as string) === "residentCardNameStyles"));
 });
-
-// ---- the board card ----
 
 test("Subtitle keeps the call sign as the card's title and puts the profile name on a line under it", async () => {
   const html = await withStyles(["subtitle"], () => head(tile(CALLED)));
@@ -186,7 +162,6 @@ test("Expanding chip puts the profile name inside the resident's chip and leaves
   assert.match(html, CHIP);
   assert.match(html, /<span class="tile-name"[^>]*>&quot;Scout&quot;<\/span>/);
   assert.ok(!html.includes("tile-name-sub"), "Expanding chip alone also drew a subtitle");
-  // The chip is still named by its sentence, which already says the resident's name.
   assert.match(html, /role="img" aria-label="Resident Triage Bot/);
 });
 
@@ -205,18 +180,13 @@ test("no style, the flag off, or a card titled by its session name all draw the 
   };
   plain(await withStyles([], () => head(tile(CALLED))));
   for (const styles of [["subtitle"], ["chip"], ["subtitle", "chip"]] as Style[][]) {
-    // The preview flag off ignores the stored styles without erasing them.
     plain(await withStyles(styles, () => head(tile(CALLED, false))));
-    // No call sign: the title is the session name, and the profile name is not added to it.
     const uncalled = await withStyles(styles, () => head(tile(PREVIEW_RESIDENT)));
     plain(uncalled);
     assert.match(uncalled, /<span class="tile-name"[^>]*>triage-loop<\/span>/);
-    // Not a resident at all.
     plain(await withStyles(styles, () => head(tile(null))));
   }
 });
-
-// ---- the Settings panel ----
 
 test("the panel offers two checkboxes only while the flag is on, and its preview answers them", async () => {
   assert.ok(!withFlags(false, createElement(BoardCardPanel)).includes("Resident name with call sign"));
@@ -229,7 +199,6 @@ test("the panel offers two checkboxes only while the flag is on, and its preview
   assert.ok(!boxes.includes('type="radio"'), "the styles are offered as radios");
   assert.ok(!boxes.includes("checked"), "a style is on by default");
   for (const label of ["Subtitle", "Expanding chip"]) assert.ok(boxes.includes(`${label}</label>`), `no ${label} checkbox`);
-  // With the flag on, the preview resident answers to a call sign, so no style shows it alone.
   assert.match(none, /<span class="tile-name"[^>]*>&quot;Scout&quot;<\/span>/, "the preview is not titled by the call sign");
   assert.ok(!none.includes("tile-name-sub"));
 

@@ -236,7 +236,6 @@ export function BoardCardPanel(): React.JSX.Element {
   const config = useUiConfig();
   const hidden = config.hiddenDisplayItems;
   const session = usePreviewSession();
-  // Titled by a call sign, the preview card has a profile name for the styles to add.
   const previewResident = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID) ? PREVIEW_RESIDENT_WITH_CALL_SIGN : PREVIEW_RESIDENT;
   const groups = DISPLAY_ITEM_GROUPS.filter((group) =>
     DISPLAY_ITEMS.some((item) => item.group === group),

@@ -4,15 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/**
- * The session-settings controls for Resident name with call sign: one boolean per style on the
- * `board-card` control, offered only while the `resident-card-names` preview is on. Each write
- * turns its own style on or off and keeps the other, and a non-boolean value is refused before
- * anything is stored. Driven through the real dispatcher and the real UI config owner.
- *
- * Its own state home, set above the imports as the suite requires, because the writes reach
- * `app_config`.
- */
+// Its own state home, set above the imports as the suite requires, because the writes reach
+// `app_config`.
 const root = mkdtempSync(join(tmpdir(), "resident-card-name-settings-"));
 process.env.MISSION_HOME = join(root, "state");
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -69,7 +62,6 @@ test("each control turns its own style on or off, keeps the other, and stores th
   assert.deepEqual(getUiConfig().residentCardNameStyles, ["subtitle"], "turning the chip off dropped the subtitle");
   assert.deepEqual(run({ operation: "get", key: CHIP }), { ok: true, operation: "get", key: CHIP, value: false, type: "boolean" });
 
-  // Setting a style to what it already is changes nothing.
   assert.deepEqual(run({ operation: "set", key: SUBTITLE, value: true }), { ok: true, operation: "set", key: SUBTITLE, value: true });
   assert.deepEqual(getUiConfig().residentCardNameStyles, ["subtitle"]);
 });

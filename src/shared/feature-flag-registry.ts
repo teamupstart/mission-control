@@ -43,7 +43,6 @@ export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
  */
 export const SHAPER_SIGN_IN_FLAG_ID = "shaper-sign-in" as const;
 
-/** The one owner of the resident card names preview's id. See `docs/residents.md`. */
 export const RESIDENT_CARD_NAMES_FLAG_ID = "resident-card-names" as const;
 
 export const FEATURE_FLAGS = [

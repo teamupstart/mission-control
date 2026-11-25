@@ -66,7 +66,6 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.taskKindCard, "tab");
   // Nested sub-cards, the recommended treatment, for an install that never chose.
   assert.equal(config.backgroundAgentsStyle, "nested");
-  // The call sign alone on a resident's card until the operator turns a Resident name style on.
   assert.deepEqual(config.residentCardNameStyles, []);
   assert.equal(config.richText, true);
   // Every "What notifies you" switch is on: what each kind of item did before they existed.

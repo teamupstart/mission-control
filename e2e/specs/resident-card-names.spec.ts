@@ -8,15 +8,6 @@ import { beListener, enableVoice } from "../fixtures/voice.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 
-/**
- * Settings > Display > Board card > Resident name with call sign, end to end: a listening
- * resident with a reference name is titled on its Board card by that call sign, and two
- * preview-flagged checkboxes add its profile name as a Subtitle under the call sign, inside an
- * Expanding chip, or both, live, without a reload. With the `resident-card-names` flag off the
- * checkboxes are gone and the card is the call sign alone, while what was checked survives for
- * when the flag comes back.
- */
-
 const EVIDENCE = artifactsDir("resident-card-names");
 const PERSONA_ID = "builtin:code-risk-reviewer";
 const PROFILE = "Release Captain";
@@ -60,7 +51,6 @@ function picker(page: Page): Locator {
   return displayPanel(page).getByRole("group", { name: "Board card: Resident name with call sign" });
 }
 
-/** Check or uncheck one style's box in Settings, leaving the other as it is. */
 async function setStyle(page: Page, label: "Subtitle" | "Expanding chip", on: boolean): Promise<void> {
   await go(page, "#/settings/display");
   const group = picker(page);
@@ -100,7 +90,6 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
     await page.reload();
 
-    // Today, with the preview off: the call sign alone, and no Resident name checkboxes to find.
     const tile = await residentTile(page);
     const title = tile.locator(".tile-name");
     await expect(title).toHaveText(`"${CALL_SIGN}"`);
@@ -109,8 +98,6 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     await expect(displayPanel(page).getByRole("radiogroup", { name: "Board card: Background sub-agents" })).toBeVisible();
     await expect(picker(page)).toHaveCount(0);
 
-    // Turning the preview on offers two unchecked checkboxes in the open window, and the preview
-    // card answers to a call sign so it has a name to move.
     await setFlag(daemon, true);
     await expect(picker(page)).toBeVisible();
     await expect(picker(page).getByRole("checkbox")).toHaveCount(2);
@@ -122,7 +109,6 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     await expect(preview.locator(".tile-name")).toHaveText('"Scout"');
     await expect(preview.getByText("Triage Bot", { exact: true })).toHaveCount(0);
 
-    // Subtitle: the preview, then the Board card, gain a muted line under the call sign.
     await setStyle(page, "Subtitle", true);
     await expect(preview.getByText("Triage Bot", { exact: true })).toBeVisible();
     await shoot(displayPanel(page).locator(".board-card-customizer").first(), "01-settings-subtitle");
@@ -134,12 +120,10 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     expect(titleBox && subBox, "both names are laid out").toBeTruthy();
     expect(subBox!.y, "the profile name sits under the call sign").toBeGreaterThanOrEqual(titleBox!.y + titleBox!.height - 1);
     expect(Math.abs(subBox!.x - titleBox!.x), "the two names share a left edge").toBeLessThanOrEqual(1);
-    // The chip stays level with the call sign, not centred between the two lines.
     const chipBox = await subtitled.locator(".resident-chip").boundingBox();
     expect(Math.abs((chipBox!.y + chipBox!.height / 2) - (titleBox!.y + titleBox!.height / 2))).toBeLessThanOrEqual(2);
     await shoot(subtitled, "02-board-subtitle");
 
-    // Expanding chip alone: nothing extra at rest; pointing at the card spells the name out.
     await setStyle(page, "Subtitle", false);
     await setStyle(page, "Expanding chip", true);
     await expect(preview.locator(".resident-chip").getByText("Triage Bot")).toBeVisible();
@@ -153,14 +137,12 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     await expect(chipName).toBeVisible();
     await expect(chipped.locator(".tile-name")).toHaveText(`"${CALL_SIGN}"`);
     await expect(chipped.locator(".tile-name")).toBeVisible();
-    // The call sign keeps room beside the expanded chip.
     const expanded = await chipped.locator(".tile-name").boundingBox();
     expect(expanded!.width, "the call sign was squeezed out").toBeGreaterThan(30);
     await shoot(chipped, "04-board-chip-hover", true);
     await page.mouse.move(0, 0);
     await expect(chipName).toBeHidden();
 
-    // Both on: the subtitle under the call sign, and the chip still expands on hover.
     await setStyle(page, "Subtitle", true);
     await expect(picker(page).getByRole("checkbox", { name: "Expanding chip", exact: true })).toBeChecked();
     await shoot(displayPanel(page).locator(".board-card-customizer").first(), "07-settings-both-checked");
@@ -175,7 +157,6 @@ test("a resident's card keeps its call sign as the title and adds its profile na
     await shoot(both, "08-board-both-hover", true);
     await page.mouse.move(0, 0);
 
-    // The preview off again: the call sign alone and no checkboxes, with both styles kept.
     await setFlag(daemon, false);
     await expect(both.locator(".resident-chip").getByText(PROFILE)).toHaveCount(0);
     await expect(both.locator(".tile-name-sub")).toHaveCount(0);
@@ -222,14 +203,12 @@ test("Expanding chip opens on keyboard focus, cuts a long profile name off insid
     await page.mouse.move(0, 0);
     await expect(chipName).toBeHidden();
 
-    // Keyboard focus on the card's open control spells the name out, with no pointer involved.
     const open = tile.getByRole("button", { name: `Open "${callSign}"` });
     await open.focus();
     await expect(open).toBeFocused();
     await expect(chipName).toBeVisible();
     await expect(chipName).toContainText(longName);
 
-    // The long name is cut off inside the chip, and the call sign keeps its full width beside it.
     await expect.poll(
       () => chipName.evaluate((el) => el.scrollWidth - el.clientWidth),
       { message: "the long profile name is truncated inside the chip" },
@@ -244,12 +223,9 @@ test("Expanding chip opens on keyboard focus, cuts a long profile name off insid
     expect(await title.evaluate((el) => el.scrollWidth <= el.clientWidth), "the call sign is not cut off").toBe(true);
     await shoot(tile, "05-board-chip-focus-long-name", true);
 
-    // Taking focus away folds the chip back.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await expect(chipName).toBeHidden();
 
-    // With the Resident marker hidden there is no chip to expand: hover and focus add no name,
-    // and the card is the call sign alone.
     const { config } = await api<{ config: { hiddenDisplayItems: string[] } }>(daemon, "/api/ui/config");
     await api(daemon, "/api/ui/config", { hiddenDisplayItems: [...config.hiddenDisplayItems, "residentMarker"] }, "PUT");
     await page.reload();
@@ -276,13 +252,11 @@ test("a resident with no call sign, or one whose call sign is its profile name, 
   test.setTimeout(150_000);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await enableVoice(daemon);
-  // No reference name: the card is titled by the session name, as before voice.
   const uncalled = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
     identity: { name: "Harbor Watch", description: "Watches the harbor" },
     persona: { personaId: PERSONA_ID },
     board: { colorId: "teal", label: "HBW" },
   } });
-  // A reference name that is the profile name, in another case: the call sign already says it.
   const same = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
     identity: { name: "Sage", description: "Keeps the notes", referenceName: "sage" },
     persona: { personaId: PERSONA_ID },
@@ -312,15 +286,12 @@ test("a resident with no call sign, or one whose call sign is its profile name, 
     for (const { tile, title, name, shot } of cases) {
       await expect(tile).toHaveCount(1);
       await expect(tile.locator(".tile-name")).toHaveText(title);
-      // No subtitle, and the head is not laid out for one.
       await expect(tile.locator(".tile-name-sub")).toHaveCount(0);
       await expect(tile.locator(".tile-head")).not.toHaveClass(/\bhas-name-sub\b/);
-      // Pointing at and focusing the card leaves the chip its plain label: nothing to expand.
       await tile.locator(".tile-goal, .tile-activity").first().hover();
       await expect(tile.locator(".resident-chip-name")).toHaveCount(0);
       await tile.getByRole("button", { name: `Open ${title}` }).focus();
       await expect(tile.locator(".resident-chip-name")).toHaveCount(0);
-      // The name is printed once in the card's head, as it is today.
       const printed = await tile.locator(".tile-name").evaluate((el) => el.closest(".tile-head")!.textContent ?? "");
       expect(printed.toLowerCase().split(name.toLowerCase()).length - 1, `${name} printed more than once`).toBe(1);
       await shoot(tile, shot, true);

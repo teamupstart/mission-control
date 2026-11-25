@@ -4421,6 +4421,19 @@ export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
 export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
 
 /**
+ * Resident name with call sign styles (`docs/residents.md`). Persisted on operators' machines, so
+ * append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the panel's order, and
+ * the one a stored list is kept in.
+ */
+export const RESIDENT_CARD_NAME_STYLES = ["subtitle", "chip"] as const;
+export const ResidentCardNameStyleSchema = z.enum(RESIDENT_CARD_NAME_STYLES);
+export type ResidentCardNameStyle = (typeof RESIDENT_CARD_NAME_STYLES)[number];
+
+export function residentCardNameStylesOf(list: readonly unknown[]): ResidentCardNameStyle[] {
+  return RESIDENT_CARD_NAME_STYLES.filter((style) => list.includes(style));
+}
+
+/**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
  * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
  * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
@@ -4625,6 +4638,7 @@ export const UI_CONFIG_DEFAULTS = {
   taskKindCard: "tab",
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
+  residentCardNameStyles: [] as readonly ResidentCardNameStyle[],
   keybindings: {},
   /**
    * `notify` and `reportsInInbox` are the `inbox` flag's "What notifies you" switches. Every one
@@ -4797,6 +4811,16 @@ export const UiConfigSchema = z.object({
   backgroundAgentsStyle: BackgroundAgentsStyleSchema
     .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
     .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
+  /**
+   * Read leniently: a style a newer build added is dropped after a downgrade while the ones this
+   * build knows are kept, and anything that is not a list reads as none, rather than failing the
+   * whole `ui` record. The patch schema below is strict.
+   */
+  residentCardNameStyles: z
+    .array(z.unknown())
+    .transform(residentCardNameStylesOf)
+    .default([...UI_CONFIG_DEFAULTS.residentCardNameStyles])
+    .catch([...UI_CONFIG_DEFAULTS.residentCardNameStyles]),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -5047,6 +5071,13 @@ export const UiConfigPatchSchema = z.preprocess(
     blockedPlacement: BlockedPlacementSchema.optional(),
     // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
     backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
+    // Strict for the same reason: an unknown style is a 400, never silently dropped. Stored
+    // once each, in the panel's order.
+    residentCardNameStyles: z
+      .array(ResidentCardNameStyleSchema)
+      .max(RESIDENT_CARD_NAME_STYLES.length * 2)
+      .transform(residentCardNameStylesOf)
+      .optional(),
     // Strict for the same reason: an unknown confirmation placement is a 400.
     voice: VoiceUiConfigPatchSchema.optional(),
   }).refine(

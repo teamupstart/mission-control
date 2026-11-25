@@ -32,6 +32,12 @@ npm run package
 
 `npm run smoke` and `npm run test:e2e` both require a successful `npm run build` first. `npm run test:e2e` additionally needs the Playwright browser, which `npm install` does not fetch - run `npx playwright install chromium` to install the matching browser. `npm run package` builds the macOS application.
 
+For Apple silicon voice build or test failures, check `swift --version` and
+`xcode-select --print-path`. The Swift listener build needs Swift 6.2 or newer and the macOS SDK.
+If `swift test` reports `no such module 'XCTest'`, select a full Xcode installation for that
+command with `DEVELOPER_DIR`. See [macOS voice build and tests](CONTRIBUTING.md#macos-voice-build-and-tests)
+for the commands and the dashboard development path.
+
 Run one test file with the same loader as the full suite:
 
 ```sh

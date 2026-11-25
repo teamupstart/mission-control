@@ -34,8 +34,11 @@ Prerequisites:
   run the suite.
 - The complete desktop build includes the voice listener on Apple silicon (macOS 14+). To build it alone, run
   `npm run build:voice-listener` with Swift 6.2 or newer and the macOS SDK. SwiftPM resolves the pinned FluidAudio
-  dependency on first build. Other platforms skip this target before invoking Swift.
-  Run `swift test -c release --package-path native/voice-listener` for the native tests.
+  dependency on first build. The build uses `curl` to seed a checkout-local SwiftPM cache with the
+  SHA-256-verified NeMo archive, which SwiftPM requests even with the NeMo trait disabled.
+  Update the archive URL and checksum in `scripts/build-voice-listener.mjs` if the FluidAudio pin
+  changes its binary target. Other platforms skip the Swift listener build.
+  After building, run `swift test -c release --package-path native/voice-listener` for the native tests.
   For the recognizer check generate clips with `python3 scripts/voice-spike/corpus.py`,
   set `VOICE_TEST_CORPUS` to the absolute path of `.tmp/voice-spike/audio`, and set
   `MISSION_VOICE_MODEL_DIR` to the downloaded model revision directory.

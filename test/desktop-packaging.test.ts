@@ -80,6 +80,7 @@ test("electron-builder resolves the new bundle while the plist preserves the sat
   const {AppInfo} = require('app-builder-lib/out/appInfo.js');
   const info = new AppInfo({metadata: JSON.parse(repoFile('package.json')), config}, null, config.mac);
   assert.equal(info.productFilename + '.app', 'Agent Mission Control.app');
+  assert.equal(config.mac.extendInfo.NSUserNotificationAlertStyle, 'alert');
   assert.equal(config.mac.extendInfo.CFBundleExecutable, 'Mission Control');
   assert.equal(info.macBundleIdentifier, 'com.mission-control.app');
 });

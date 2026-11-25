@@ -1,3 +1,4 @@
+import { seedRepo } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -282,7 +283,10 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   const leave = page.getByRole("dialog", { name: "Leave with unsaved changes" });
   await expectContentClearsBorder(leave);
   await expect(dialog).toHaveCount(0);
-  await leave.getByRole("button", { name: "Cancel" }).click();
+  // Browser navigation back to the accepted address supersedes the held follow-up.
+  await page.evaluate(() => window.dispatchEvent(new HashChangeEvent("hashchange")));
+  await expect(leave).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
   await expect(nameField).toHaveValue("Unfinished reviewer");
   await followUp.click();
   await leave.getByRole("button", { name: "Discard and leave" }).click();
@@ -370,8 +374,9 @@ for (const opening of ["follow-up", "regular Dispatch"]) {
   test(`a delayed follow-up lookup cannot replace a newer ${opening} opening`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+    const secondRepo = seedRepo(daemon.workspace, "second-opening");
     for (const name of opening === "follow-up" ? ["Steve", "Will"] : ["Steve"]) {
-      const session = await runningAgent(page, daemon, name);
+      const session = await runningAgent(page, daemon, name, name === "Will" ? secondRepo : daemon.repo);
       expect((await page.request.post(daemon.baseURL + "/api/tasks/" + session.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
     }
     const waiting = Promise.withResolvers<void>();
@@ -396,6 +401,9 @@ for (const opening of ["follow-up", "regular Dispatch"]) {
         await page.getByRole("button", { name: "Dispatch", exact: true }).click();
       }
       await expectContentClearsBorder(dialog);
+      const repo = dialog.getByPlaceholder("search repos or type a path…");
+      if (opening === "regular Dispatch") await repo.fill(secondRepo);
+      await expect(repo).toHaveValue(secondRepo);
       await intent.fill("Keep the second opening");
       await expect(older.getByRole("button", { name: "Start a follow-up task" })).toBeDisabled();
     } finally {
@@ -404,6 +412,7 @@ for (const opening of ["follow-up", "regular Dispatch"]) {
     // The old action has finished and its caller can act again.
     await expect(older.getByRole("button", { name: "Start a follow-up task" })).toBeEnabled();
     await expect(intent).toHaveValue("Keep the second opening");
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(secondRepo);
   });
 }
 

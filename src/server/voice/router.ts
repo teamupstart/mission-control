@@ -92,6 +92,7 @@ interface OpenCard {
   /** The original answer's speech order survives a picker click and later corrections. */
   answerCapture?: AnswerCapture;
   answerAttempt?: AnswerAttempt;
+  recipientAnswer?: { words: string; choiceCommand: boolean };
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
   card: VoiceCard;
@@ -236,7 +237,11 @@ export class VoiceRouter {
   private readonly lastAnswer = new Map<string, AnswerAttempt>();
   // Keep the monotonic boundaries for as long as the registry holds the review.
   private questionTimes = new WeakMap<ReviewItem, { created?: number; reminded?: number; closed?: number }>();
-  private questionClockOffsetMs = 0;
+  private questionClockOffsetMs = voiceFocusClockSkewMs();
+  private clockSampleAt = performance.now();
+  private epochStart = this.clockSampleAt;
+  private readonly priorEpochs: { start: number; end: number; offset: number }[] = [];
+  private lostEpochThrough = -Infinity;
   private answerSequence = 0;
   // Which answer a correction could address at capture. Retiring an answer leaves
   // its interval in history, so a delayed correction cannot fall back to a neighbor.
@@ -265,6 +270,7 @@ export class VoiceRouter {
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
     private readonly questions?: VoiceQuestions,
+    private readonly speech?: { unsure(card: VoiceCard): void; stop(cardId: string): void },
   ) {}
 
   /** The model step for an utterance, while it runs: settles once its card is resolved. */
@@ -276,8 +282,31 @@ export class VoiceRouter {
     if (capture?.openedAtHostUs !== undefined) {
       return performance.now() + (capture.openedAtHostUs - this.hostNowUs()) / 1000;
     }
-    this.questionClockOffsetMs = voiceFocusClockSkewMs(this.questionClockOffsetMs);
-    return (capture?.openedAt ?? Date.now()) - performance.timeOrigin + this.questionClockOffsetMs;
+    const now = performance.now();
+    const offset = voiceFocusClockSkewMs(this.questionClockOffsetMs);
+    if (now < this.clockSampleAt) this.epochStart = now;
+    else if (offset !== this.questionClockOffsetMs) {
+      this.priorEpochs.push({ start: this.epochStart, end: now, offset: this.questionClockOffsetMs });
+      if (this.priorEpochs.length > HISTORY_LIMIT) {
+        const oldest = this.priorEpochs.shift()!;
+        this.lostEpochThrough = Math.max(this.lostEpochThrough, oldest.end - oldest.offset);
+      }
+      // The step occurred between two observations. Both epochs can be plausible in that interval.
+      this.epochStart = this.clockSampleAt;
+    }
+    this.questionClockOffsetMs = offset;
+    this.clockSampleAt = now;
+    const wall = (capture?.openedAt ?? Date.now()) - performance.timeOrigin;
+    const current = wall + offset;
+    if (!capture || !this.priorEpochs.length) return current;
+    if (wall <= this.lostEpochThrough) return NaN;
+    const possible = new Set<number>();
+    if (current >= this.epochStart - 1 && current <= now + MAX_CAPTURE_CLOCK_SKEW_MS) possible.add(current);
+    for (const epoch of this.priorEpochs) {
+      const at = wall + epoch.offset;
+      if (at >= epoch.start - 1 && at <= epoch.end + 1) possible.add(at);
+    }
+    return possible.size === 1 ? [...possible][0]! : NaN;
   }
 
   observeQuestion(review: ReviewItem, previous?: ReviewItem): void {
@@ -354,7 +383,7 @@ export class VoiceRouter {
   }
 
   holdsSession(sessionId: string, taskId?: string): boolean {
-    return this.activeCards().some(card => card.state === "pending" && card.parts.some(({ target }) =>
+    return [...this.open.values()].map(item => item.card).concat([...this.delivering.values()]).some(card => card.state === "pending" && card.parts.some(({ target }) =>
       target?.sessionId === sessionId || (taskId && target?.taskId === taskId)));
   }
 
@@ -465,9 +494,11 @@ export class VoiceRouter {
       return true;
     }
     const picks = unsure.filter(c => c.candidates[0]?.kind === "question");
-    const index = spokenIndex(words);
-    if (picks.length && index !== undefined && index >= 0 && !/^(?:option |[a-z][.!?]?$)/iu.test(words)) {
-      const row = picks.length === 1 && picks[0]!.candidates[index];
+    const index = /^option /iu.test(words) ? undefined : spokenIndex(words, false, false);
+    if (picks.length && index !== undefined && index >= 0) {
+      const retired = this.priorChoices.some(window => window.reason === "answer" && window.state === "unsure" &&
+        offsetUs(window.from, time) <= 0 && offsetUs(time, window.until) <= 0);
+      const row = !retired && picks.length === 1 && picks[0]!.candidates[index];
       entry.outcome = "control";
       entry.rule = "pick-question";
       return row ? this.pick(picks[0]!.id, row.id, time) : true;
@@ -476,18 +507,41 @@ export class VoiceRouter {
     const reply = /^reply(?:,\s*|\s+)([\s\S]+)$/iu.exec(words);
     const addressed = (decision.kind === "addressed" && !decision.command) ||
       (decision.kind === "needs-model" && decision.reason === "second-name") ? decision : null;
-    if (!reply && !addressed) return false;
+    const ambiguous = decision.kind === "needs-model" && decision.reason === "ambiguous-name" && !decision.command ? decision : null;
+    if (!reply && !addressed && !ambiguous) return false;
     const target = reply ? null : addressed?.target ?? null;
-    const body = (reply?.[1] ?? addressed!.text).trim();
+    const body = (reply?.[1] ?? addressed?.text ?? ambiguous!.text).trim();
     if (!body) return false;
     // The spoken prefix survives punctuation-free transcription. Keep the shorter
     // punctuated form and the bare picker command without capturing "answer the email".
     const answer = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
       ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
     const choiceCommand = requestedChoice(body) !== undefined;
-    const explicit = !!target && (!!answer || choiceCommand);
+    const explicit = !reply && (!!answer || choiceCommand);
     if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
     const monotonicMs = this.questionTime(time);
+    if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
+    const content = explicit && answer ? answer[1]!.trim() : body;
+    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
+      card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
+        openQuestions: 0, deadline: null, candidates: [] } };
+    if (!Number.isFinite(monotonicMs)) {
+      this.questionNotice(item, "The clock changed during capture. Say your answer again.");
+      return true;
+    }
+    if (ambiguous && explicit) {
+      item.recipientAnswer = { words: content, choiceCommand };
+      item.pickTargets = ambiguous.candidates;
+      item.card = { ...item.card, state: "unsure", reason: "ambiguous-name", candidates: ambiguous.candidates.map(agentRow) };
+      item.choicesOfferedAt = laterTime(time, this.now());
+      this.openCard(item);
+      return true;
+    }
+    return this.routeCapturedAnswer(item, target, content, choiceCommand);
+  }
+
+  private routeCapturedAnswer(item: OpenCard, target: SpokenName | null, content: string, choiceCommand: boolean): boolean | Promise<boolean> {
+    const monotonicMs = item.answerCapture!.monotonicMs;
     const reviews = target ? (target.sessionId ? this.questions!.forSession(target.sessionId) : []) : this.questions!.pending();
     const candidates = reviews.filter(review => {
       const times = this.questionTimes.get(review);
@@ -497,13 +551,8 @@ export class VoiceRouter {
         (review.status === "pending" || (times?.closed !== undefined && times.closed >= monotonicMs));
     });
     const pending = candidates.filter(q => q.status === "pending");
-    if (reply && !pending.length) return false;
-    if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
-    const content = explicit && answer ? answer[1]!.trim() : body;
-    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
-      card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
-        openQuestions: 0, deadline: null, candidates: [] } };
-    entry.matchedName = target?.name ?? null;
+    item.entry.matchedName = target?.name ?? null;
+    if (!target && !pending.length) return false;
     if (!pending.length) {
       this.questionNotice(item, target!.name + " has no open questions");
       return true;
@@ -665,7 +714,7 @@ export class VoiceRouter {
     item.answer = { ...result, id, originId: item.entry.id, reviewId: review.id, deadline, windowMs, switched: !!correction,
       footerWindowId: this.openCards.footerOwner(review.id) };
     if (!correction) this.recordCorrectionTarget(false);
-    item.card = { ...item.card, id, state: "pending", reason: "voice-answer", questionTitle: review.title, deadline, windowMs,
+    item.card = { ...item.card, id, state: "pending", reason: "voice-answer", detail: undefined, candidates: [], questionTitle: review.title, deadline, windowMs,
       parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
@@ -811,6 +860,7 @@ export class VoiceRouter {
       item.timer.unref?.();
     }
     this.publish(card);
+    if (card.state === "unsure" && !item.questionPick && this.open.get(card.id) === item) this.speech?.unsure(card);
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
@@ -835,6 +885,7 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (!item) return false;
     if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
+    this.speech?.stop(id);
     this.take(item, capturedAt);
     item.modelStep?.abort();
     item.entry.outcome = "cancelled";
@@ -921,6 +972,16 @@ export class VoiceRouter {
       parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
     if (parts.some(part => !this.checkedTarget(roster, part.target, split ? "deliver" : "single-pick"))) return false;
+    this.speech?.stop(id);
+    if (item.recipientAnswer) {
+      const { words, choiceCommand } = item.recipientAnswer;
+      this.take(item, pickedAt);
+      this.questions!.removeCompanion(id);
+      delete item.recipientAnswer;
+      item.time = pickedAt;
+      item.card = { ...item.card, reason: "answer", candidates: [], parts: [{ target, text: words }] };
+      return this.routeCapturedAnswer(item, target, words, choiceCommand);
+    }
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       this.closeChoices(item, pickedAt);
@@ -1148,6 +1209,10 @@ export class VoiceRouter {
 
   reset(): void {
     this.clearActionsAndHistory();
+    this.epochStart = this.clockSampleAt = performance.now();
+    this.questionClockOffsetMs = voiceFocusClockSkewMs();
+    this.priorEpochs.length = 0;
+    this.lostEpochThrough = -Infinity;
     this.recentIds.clear();
   }
 }

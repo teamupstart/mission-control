@@ -35,6 +35,10 @@ test("three placement previews persist across reload, with a toast fallback and 
   await expect(pending.getByRole("button", { name: "Cancel", exact: true })).toBeVisible({ timeout: 3000 });
   await pending.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Cancelled");
+  await page.keyboard.press("Meta+k");
+  await page.evaluate(() => { location.hash = "#/fleet"; });
+  await expect(page.locator(".app")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Search everything" })).toHaveCount(0);
 });
 
 test("visiting either standalone voice route preserves a closed Dispatch draft and attachment", async ({ dashboard: page, daemon }) => {
@@ -80,6 +84,7 @@ test("a confirmed placement stays selected without its stream update", async ({ 
   const pill = group.getByRole("radio", { name: /Floating pill/ });
   await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
   await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+  await expect(page.locator("html")).toHaveAttribute("data-fixture-stream-closed", "true");
   const saved = page.waitForResponse(response => response.url().endsWith("/api/voice/confirmation") && response.request().method() === "PUT");
   await pill.click();
   expect((await saved).ok()).toBe(true);

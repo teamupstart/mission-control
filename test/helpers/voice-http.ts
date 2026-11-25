@@ -61,6 +61,7 @@ const queued = (agent: string) => registry.getSession("sdk:" + agent)!.pendingTu
 
 beforeEach(async () => {
   voiceStateStore.reset();
+  rmSync(join(home, "voice/capture-grants"), { recursive: true, force: true });
   for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });

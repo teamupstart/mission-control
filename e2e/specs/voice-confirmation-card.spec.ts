@@ -5,18 +5,18 @@ import { say } from "../fixtures/voice.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 test("countdown sends once, click and spoken cancel stop delivery, and disabling the window sends immediately", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon, 4);
+  await setupCards(page, daemon, 10);
   const steve = await runningAgent(page, daemon, "Steve");
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
   const pending = page.getByRole("status").filter({ hasText: "To Steve" }).filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
   await say(daemon, "Steve, check the build");
   await expect(pending).toContainText("check the build");
   await expect(pending).toHaveCSS("width", "300px");
-  await expect(pending).toContainText("3s");
+  await expect(pending.locator(".vc-seconds")).toHaveText(/\d+s/);
   await captureCard(page, "pending");
   await expectCardGeometry(pending, "confirmation-card", "#a .cc-card");
   const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
-  await expect(sent).toBeVisible();
+  await expect(sent).toBeVisible({ timeout: 15_000 });
   await captureCard(sent, "sent");
   await expect(page.getByText(/Mock reply to: check the build/).first()).toBeVisible();
   for (const method of ["click", "speech"]) {
@@ -35,8 +35,12 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
     await expect(pending).toHaveCount(0);
     await expect(page.getByRole("status").filter({ hasText: "Cancelled" }).last()).toBeVisible();
   }
-  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
-  await say(daemon, "Steve, immediate delivery");
+  const changed = await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+  expect(changed.ok()).toBe(true);
+  expect((await changed.json()).config.cancelWindow.enabled).toBe(false);
+  const immediate = await say(daemon, "Steve, immediate delivery");
+  expect((await immediate.json()).accepted).toBe(true);
+  await expect(pending).toHaveCount(0);
   await expect(page.getByText(/Mock reply to: immediate delivery/).first()).toBeVisible();
   await expect(pending).toHaveCount(0);
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
@@ -45,16 +49,19 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
 test("the accessible countdown announces its initial duration without repeating the visual ticks", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 8);
   await runningAgent(page, daemon, "Steve");
+  const region = page.getByRole("region", { name: "Voice countdown" });
+  await expect(region).toBeEmpty();
+  await expect(region).toHaveAttribute("aria-live", "polite");
   await say(daemon, "Steve, read the timer");
   const card = page.getByRole("status").filter({ hasText: "read the timer" });
   const seconds = card.locator(".vc-seconds");
   await expect(seconds).toBeVisible();
   const initial = await seconds.innerText();
-  const announcement = await card.ariaSnapshot();
+  const announcement = await region.ariaSnapshot();
   expect(announcement).toMatch(/opened with (up to )?\d+ seconds? to cancel or send now/i);
   expect(announcement).not.toMatch(/\b\d+s\b/);
   await expect(seconds).not.toHaveText(initial);
-  expect(await card.ariaSnapshot()).toBe(announcement);
+  expect(await region.ariaSnapshot()).toBe(announcement);
   await card.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
@@ -97,7 +104,9 @@ test("a stalled card action reports the unconfirmed request and permits a retry"
     await expect(button).toBeDisabled();
     await expect(card).toContainText(label + " was not confirmed", { timeout: 4000 });
     await expect(button).toBeEnabled();
+    const retried = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/" + id + "/" + action));
     await button.click();
+    expect((await retried).ok()).toBe(true);
     await expect(page.getByRole("status").filter({ hasText: outcome })).toBeVisible();
   }
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all()
@@ -238,7 +247,7 @@ test("a buffered frame caps desktop actions and disconnected card controls at on
     document.documentElement.dataset.away = "true";
     window.dispatchEvent(new Event("blur"));
   });
-  await expect(page.locator("html")).toHaveAttribute("data-notice-title", "To Steve · up to 4s to cancel", { timeout: 1000 });
+  await expect(page.locator("html")).toHaveAttribute("data-notice-title", "To Steve · voice message pending", { timeout: 1000 });
   const budget = Number(await page.locator("html").getAttribute("data-notice-budget"));
   expect(budget).toBeGreaterThan(0);
   expect(budget).toBeLessThanOrEqual(4000);
@@ -463,19 +472,18 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
         document.dispatchEvent(new Event("visibilitychange"));
       });
       await expect(page.locator("html")).toHaveAttribute("data-notice-count", "1", { timeout: 3000 });
-      expect(Number((await page.title()).match(/sending in (\d+)s/)?.[1])).toBeLessThanOrEqual(26);
       const remaining = Number(await page.locator("html").getAttribute("data-notice-remaining"));
       expect(remaining).toBeGreaterThan(0);
       expect(remaining).toBeLessThanOrEqual(26000);
     }
-    await expect(page).toHaveTitle(new RegExp("To Steve · sending in \\d+s \\| " + words));
+    await expect(page).toHaveTitle(new RegExp("To Steve · voice message pending \\| " + words));
     const action = page.waitForResponse(response => response.url().endsWith("/cards/" + id + "/" + choice));
     await page.evaluate(detail => window.dispatchEvent(new CustomEvent("fixture-native-action", { detail })), choice);
     expect((await action).ok()).toBe(true);
     await expect(page.getByRole("status").filter({ hasText: choice === "cancel" ? "Cancelled" : "Sent to Steve" })).toBeVisible();
   }
   await say(daemon, "Steve, keep this pending", { id: "native-retry" });
-  await expect(page).toHaveTitle(/To Steve · sending in \d+s \| keep this pending/);
+  await expect(page).toHaveTitle(/To Steve · voice message pending \| keep this pending/);
   await page.route("**/cards/native-retry/cancel", route => route.fulfill({
     status: 503, json: { error: "The daemon could not confirm the request" },
   }), { times: 1 });
@@ -491,7 +499,7 @@ test("leaving a focused dashboard during the countdown shows the desktop notice 
   await runningAgent(page, daemon, "Will");
   await say(daemon, "Steve, inspect the build, and Will, stop", { id: "native-split" });
   await page.getByRole("status").filter({ hasText: "Who is this for?" }).getByRole("button", { name: /Will/ }).click();
-  await expect(page).toHaveTitle(/To Steve · sending in \d+s \| inspect the build Stop requested for Will separately\./, { timeout: 3000 });
+  await expect(page).toHaveTitle(/To Steve · voice message pending \| inspect the build Stop requested for Will separately\./, { timeout: 3000 });
   await expect(page.locator("html")).toHaveAttribute("data-notice-scope", "remaining");
   const pendingSplit = page.getByRole("status").filter({ hasText: "Two messages" });
   await expect(pendingSplit).toContainText("stop sent");

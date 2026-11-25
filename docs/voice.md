@@ -23,10 +23,10 @@ With Sound enabled, the pending chime plays only while the card still offers Can
 A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
-notifications. If you switch away while the card is counting down, the notification shows
-the time left in the window. If you return before the desktop shows it, switching away
+notifications. If you switch away while the card is counting down, the notification identifies the pending
+message or answer. The card shows the live countdown. If you return before the desktop shows it, switching away
 again can still show it before the deadline. A split card shows an immediate stop’s result as soon as it arrives. The
-desktop notification identifies that stop separately and counts down only the waiting
+desktop notification identifies that stop separately and expires with the waiting
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 If a desktop action fails, the dashboard card names the unconfirmed action and shows
 the reason. Its controls remain available for a retry while the cancel window is open.
@@ -747,8 +747,7 @@ after the dashboard has reported the timeout.
 Decisions key. Both operations return the updated report.
 
 The settings are one `app_config` entry, `voice`, read with defaults so a field an older build
-never wrote needs no migration. It holds every field the later phases read, so none of them
-changes the schema:
+never wrote needs no migration.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -757,6 +756,7 @@ changes the schema:
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
+| `speech` | `{ voice: null }` | Automatic voice, or a saved engine and voice ID |
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
@@ -925,7 +925,7 @@ in the order they are listed:
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
 
-The state also carries `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+The state also carries `speech`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
 Every window receives the saved chord and current shell registration together when either changes.
 The dashboard shows a shortcut only when the shell confirms the exact configured chord,
 reports the hotkey capability and has no registration error. Until then the indicator shows its
@@ -933,7 +933,8 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 `hotkeyError` are copied from the latest shell report and lapse with it; with no report they are
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
-absent otherwise; a shell report's `listener` entry is dropped.
+absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
+An unconfirmed stop can make the listener unavailable even while its hello is live.
 `model` is the speech model manager's reading (see [The speech model](#the-speech-model)), and
 `roster` is [who can be addressed](#who-can-be-addressed).
 
@@ -941,6 +942,8 @@ absent otherwise; a shell report's `listener` entry is dropped.
 
 Dashboard routes live under `/api/voice/` behind the loopback gate:
 
+- `POST /api/voice/speech/audition` returns the sample job ID when queued. It returns 409 when no voice is available, two jobs are already waiting, or playback is stopping. An immediate preparation failure returns 503. The `voice_state` event and the reconnect snapshot expose the most recent terminal audition result as `speech.lastAudition` with its `id` and `state`.
+- `POST /api/voice/speech/stop` requests a stop. A card includes its job ID to avoid stopping a later job.
 - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
   Each ordinary dashboard edit gets 15 seconds from the time it leaves the local queue.
   The dashboard uses the request and response times of daemon snapshots to estimate expiry.
@@ -960,7 +963,7 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   The dashboard gives a provider change 75 seconds, including its reservation, write and any
   retry. If the change times out, it reads the current configuration and provider from the daemon.
   The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
-  Fields replace, `cancelWindow` merges per key, and an unknown field or out-of-range value is a 400.
+  Fields replace, `cancelWindow` and `speech` merge per key, and an unknown field or out-of-range value is a 400.
 - `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
   the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
   displays the newest confirmed mode whichever arrives first.
@@ -974,7 +977,9 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
 
 Token routes live under `/voice/` and check `x-harness-token`, as the hook ingest does:
 
-- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone }`, sent by a
+- `POST /voice/listener/supervised` records a supervisor’s start or confirmed exit.
+- `GET /voice/speech/jobs/:id/audio` and `POST /voice/speech/jobs/:id/events` serve the holder’s WAV and accept its playback reports. These routes, listener hellos and directive polls use the private `x-mission-voice-instance` header. The hello body lists playback capabilities. Only its header identifies a speech target. The capture lease still uses `x-voice-listener-id`.
+- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone, speech? }`, sent by a
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
@@ -1067,6 +1072,168 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
   `startDecisionServer()` in `e2e/fixtures/voice.ts` answers both providers' endpoints, and the
   suite's daemon never inherits either variable, so no spec reaches a provider.
 
+### Ask aloud
+
+When routing is unsure, **Ask aloud** asks one question using the two or three
+candidate names. The card shows the question and a Stop button. The operator can
+choose a row during playback or wait for playback to finish and answer aloud. Selecting a
+candidate, cancelling the card or muting also requests a stop. Asking requires
+listening mode and a supervised listener with a ready voice. The setting keeps
+its saved value when unavailable and the usual on-screen choices still work.
+A sample requested through the audition route can play while muted.
+
+Neural preparation has a 15-second deadline per job once it reaches the front
+of the queue. If it expires, the daemon fails that job, discards late audio and
+starts the next waiting job. Cancelling active preparation aborts its request and
+stops the synthesizer before another job starts. Capture is held only after audio
+is ready for handoff.
+
+If the current owner received a capture grant, its first playback-time poll
+returns `capture: false` and `speak: null`. After closing microphone input,
+it sends that directive's revision in the next poll. Only then does the daemon
+offer the holder playback and serve its audio. Expiry or transfer of the lease
+leaves the pause obligation with each listener that received a grant. During a
+speech hold a former owner can receive a pause with an empty roster and
+acknowledge it, and a verified supervisor exit retires its launch's grants.
+A paused listener retries a 503 on the same directive revision with backoff.
+A supervisor retries its signed exit on 503 until grant retirement succeeds.
+Once the daemon records that exit, the launch can no longer renew its hello or
+receive another capture grant.
+The shipped capture-only clients also lock one byte of the empty, owner-only
+`voice-capture.lock` beside the daemon token. The daemon assigns a fresh, random
+byte offset to the listener's lease at hello. Before granting capture, it checks
+that the kernel names
+the reported process as the lock owner and opens a process-exit watch (kqueue
+on macOS, pidfd on Linux). A mismatched owner or unavailable watch returns 409.
+Before serving capture, the daemon saves the grant in an owner-only receipt under
+`voice/capture-grants/`. On restart it restores each owner's pause obligation. A
+standalone grant records the kernel-verified process birth and boot identity. A
+different birth at the same PID, or a confirmed process exit, retires that grant.
+A supervised grant can also be retired by its launcher's authenticated exit.
+A missing heartbeat, unlocked file or reused PID cannot signal that watch.
+An anonymous grant still requires the original listener's pause acknowledgement.
+With every grant accounted for the holder can receive the job immediately.
+Stop bypasses this wait. The directive
+poll checks the capture lease or playback holder both on arrival and after
+waiting for a change. An unrelated non-owner polling during a hold receives 409 with
+`capture: false` and `speak: null`, without the roster or revision. Only the job's holder
+receives the job or its stop request. A start overdue by 2 seconds, a system
+voice running beyond 10 seconds, or audio running 1.5 seconds beyond its
+duration triggers a stop request. The daemon checks elapsed time before serving a
+playback directive or WAV and before recording a holder's completion. An overdue
+completion confirms silence and records the job as timed out even when its timer
+callback is delayed. A holder reporting `started` after Stop receives HTTP 409
+with `{ ok: false, speak: { id, stop: true } }`. It must keep playback stopped
+or stop it immediately, then report `ended` to confirm silence.
+After 5 seconds without confirmation, the daemon reports the listener unavailable
+and fails jobs still waiting to play. A late confirmation also checks this deadline
+before advancing the queue, so waiting jobs cannot play after it expires. Capture resumes only after the holder
+reports playback ended or its supervisor confirms process exit. Switching off
+the preview still lets the holder poll for Stop and either party confirm silence,
+including after a daemon restart. A supervisor can still retire its recorded launch
+after the last playback hold ends. Switching Voice back on uses the daemon's
+current holds, so an idle listener can resume capture immediately. A currently trusted supervisor can also report
+an exit before its start arrives, even with the preview off. The daemon persists
+that exit so a delayed start cannot register the dead child after re-enabling Voice.
+New speech jobs require the preview to be on.
+Recently heard records playback-time utterances only from the capture lease owner.
+After restart, the first authorized poll that returns a capture grant establishes
+the cutoff for buffered frames. A computed revision alone grants no capture.
+The daemon keeps completed playback intervals for three minutes to identify delayed
+utterances. A frame captured in the same millisecond playback ended can be routed
+under the newly issued capture revision. A delayed frame from the playback revision
+is still logged as heard while speaking. The daemon discards captures at or before
+the end of an expired interval. If the wall clock steps backward during playback,
+the daemon uses monotonic elapsed time to exclude ambiguous timestamps on both
+sides of the step, including under a fresh capture revision. After three minutes
+of monotonic time, the stale cutoff retains the interval's adjusted upper bound.
+
+After a restart with prior speech use, the first capture-enabled directive also
+sets a cutoff for buffered frames. Samples from before that grant cannot route
+even if resubmitted with its new revision. Every routable utterance still needs
+a valid capture revision.
+
+After a restart, the daemon asks each recorded holder to stop. If the speech
+ledger is missing or unreadable, it checks the launch inventory and supervisor
+records. It asks each identifiable player to stop. If speech has been used and
+the inventory is unavailable, capture stays paused even after every listener
+with a surviving receipt confirms. When a supervisor report reveals another
+player, the daemon persists its Stop request alongside the unidentified hold.
+It records the player's confirmation so later reports and restarts do not ask
+the same launch to stop again. Recovery needs a complete launch inventory
+to account for players whose receipts may have disappeared. A fresh state home
+with no launch history can capture immediately.
+
+The daemon acknowledges silence only after it persists the updated hold ledger.
+The configured state home may be a symbolic link. The daemon opens its target,
+then opens recovery directories relative to that descriptor. It holds each
+descriptor while reading, publishing, removing and syncing records. A linked
+directory beneath the state home makes the transition unavailable until the
+records can be accessed through their owned directories.
+If that write fails, the end or exit report returns HTTP 503, the Stop directive
+remains active, and the sender can retry. An accepted signed exit is final for
+that launch instance. A delayed start for it returns HTTP 409 (`launch_exited`).
+If the daemon crashes between recording an exit and clearing the ledger, it
+verifies the original supervisor's signature for that launch before applying the
+recorded exit at startup. Capture stays held until the reconciled
+ledger has been saved and every other possible player has confirmed silence.
+
+The supervisor authenticates both reports to `POST /voice/listener/supervised`.
+The launch service provisions one durable Ed25519 key per supervisor. Each
+launcher boot imports the same key through a dedicated inherited credential
+descriptor before it starts a listener. At daemon startup the launcher supplies
+the base64 DER SubjectPublicKeyInfo through
+`MISSION_VOICE_SHELL_PUBLIC_KEY` or `MISSION_VOICE_DEV_PUBLIC_KEY`. Only an
+instance signed by the configured launcher can be announced. The instance is
+`<shell|dev>_<hex DER public key>_<hex nonce>`, with 32 fresh random bytes per
+child. The listener receives the instance and ordinary listener credentials.
+
+On daemon reconnect, the launcher calls the surviving child's `reannounce()`
+to replay its original signed start. A hello alone renews only the capture
+lease. Reannouncement restores speech eligibility and leaves any recovered
+Stop in force until silence is confirmed. Sending a signal still allows a live
+child to reannounce until the OS reports its exit. An accepted exit supersedes
+replay. If a launch fails before a child exists, the caller gets its launch
+error immediately. A start without an acknowledgement times out after five
+seconds. The supervisor persists the signed exit and retries it in the
+background, including after a reconnect or supervisor restart. It records its
+own PID before announcement. Before releasing the listener on Linux, it persists
+the host PID of the sandbox's namespace init as reported on Bubblewrap's private
+`--info-fd`. This PID covers the player and its descendants. If the outer
+monitor exits first, the live and restarted supervisors wait for the namespace
+to exit before signing retirement. Legacy Linux watch records that identify
+only a monitor cannot establish silence. On macOS the sandbox executes the
+player in the watched child. A replacement launcher can retire a launch interrupted
+between acknowledgement and spawn once the OS confirms the recorded PID is gone.
+Once the watched lifetime ends, the supervisor queues its signed exit,
+including for the first launch on a fresh state home.
+
+The body is `{ instance, state }`. Alongside the harness token, the supervisor
+sends `x-mission-voice-supervisor-proof`, a lowercase hex Ed25519 signature of
+the UTF-8 string `mission-voice-confined/v1\nstarted\n<instance>` for a start
+or `mission-voice-supervised/v2\nexited\n<instance>` for an exit (LF
+separators, no trailing newline). The start binds the launcher's promise to
+start this child with the daemon's recovery files protected by the OS.
+Legacy unrestricted starts and invalid signatures return 403. The original
+signer can retire a recorded instance even if a restarted daemon trusts another
+key for new launches. A restarted launcher loads its provisioned identity,
+reads the original process record, confirms the recorded child is gone, and
+signs the exit for the original instance. It retries if durable confirmation
+is unavailable. [Credential provisioning](storage.md#voice-supervisor-credentials)
+
+The daemon acknowledges a start after recording the launch. If the inventory is
+missing or unreadable during recovery, new starts receive 503 and can be retried
+after it is restored. A signed exit can still clear that launch's exact hold.
+The supervisor retries an exit on 503 if the daemon could not persist the exit,
+remove its receipt or save the remaining holds.
+
+An unreadable process slot can later name a replacement child. Recovery asks
+that child to stop and keeps the original unidentified hold. A placeholder for
+an immutable receipt can be matched by its launch digest. A mutable slot such
+as `shell.json` requires independent evidence of the original player, such as
+the original ledger recovered at restart. If recovery also lost the inventory,
+a separate hold remains until all possible launches can be accounted for.
+
 ### Answer a question by voice
 
 With a question card open in the focused dashboard, say “Steve, option B” or “Steve, my answer is Postgres”.
@@ -1086,7 +1253,8 @@ such as “Steve answer the email” goes to Steve as a message. If Steve has no
 question, an explicit answer shows a notice and sends nothing. If an explicit answer matches
 none of a closed question’s options, the dashboard shows “No matching option.” The question
 stays pending and the agent receives no message. With several pending questions
-and no target card, choose a question by clicking its row or saying its ordinal. If a question
+and no target card, choose a question by clicking its row or saying its ordinal.
+If the spoken name matches several agents, pick the recipient first. The original answer then applies to that agent’s eligible questions. If a question
 closes while speech is being transcribed, the picker offers the remaining questions unless
 the dashboard can confirm the intended question was already in focus. When a snoozed
 question returns, speak again to start its countdown. “Steve, answer”

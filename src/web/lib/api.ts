@@ -2555,7 +2555,7 @@ export const api = {
     put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation, expectedVersion }, { signal }),
   voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
     request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
-      undefined, editedReview ? { headers: { "x-voice-edit-review": editedReview } } : undefined),
+      undefined, { signal: AbortSignal.timeout(10_000), ...(editedReview && { headers: { "x-voice-edit-review": editedReview } }) }),
   voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: {
     candidate?: VoiceCard["candidates"][number]; deadline?: number | null; answerCompanion?: boolean;
   } = {}) => {
@@ -2579,6 +2579,7 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, { signal: AbortSignal.timeout(5000) }),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
   saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },

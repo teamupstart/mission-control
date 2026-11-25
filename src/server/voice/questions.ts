@@ -156,8 +156,10 @@ export class VoiceOpenCards {
   async openQuestion(reviewId: string, request: VoiceQuestions["confirmFocus"], open: (windowId: string) => boolean,
     signal: AbortSignal): Promise<boolean> {
     const id = this.dashboard;
+    const wasFocused = !!id && this.current?.windowId === id;
     if (!id || !await this.confirmReport(id, request, signal) || this.dashboard !== id || signal.aborted) return false;
     const stream = this.streams.get(id);
+    if (wasFocused && this.current?.windowId !== id) return false;
     return new Promise(resolve => {
       const finish = (opened: boolean) => {
         this.openingQuestions.delete(check);
@@ -168,7 +170,12 @@ export class VoiceOpenCards {
       const check = () => {
         const report = this.reports.get(id)?.report;
         if (!report || this.streams.get(id) !== stream) finish(false);
-        else if (report.cards.some(card => card.id === reviewId && card.focused)) finish(true);
+        else if (this.dashboard !== id || (wasFocused && this.current?.windowId !== id)) finish(false);
+        else if (report.cards.some(card => card.id === reviewId && card.focused)) {
+          // The sole background dashboard can open the card for a standalone pick.
+          // A different foreground dashboard must never acknowledge that handoff.
+          finish(true);
+        }
       };
       this.openingQuestions.add(check);
       signal.addEventListener("abort", abort, { once: true });
@@ -334,12 +341,13 @@ function spokenNumber(value: string, start = 0): number | undefined {
   return undefined;
 }
 
-export function spokenIndex(words: string, explicitLetters = false): number | undefined {
+export function spokenIndex(words: string, explicitLetters = false, allowLetters = true): number | undefined {
   const selector = words.trim().replace(/[.!?]+$/u, "").replace(/^(?:the |option )/iu, "");
   const value = selector.toLowerCase().replace(/-/gu, " ");
   if (/^\d+(?:st|nd|rd|th)?$/u.test(value)) return parseInt(value, 10) - 1;
   const number = spokenNumber(value) ?? (value.endsWith(" one") ? positions.get(value.slice(0, -4)) : undefined);
   if (number !== undefined) return number - 1;
+  if (!allowLetters) return undefined;
   // Two letters cover every badge on a supported form. Longer labels can
   // still be identified as capitals or spelled letters, unlike “option pricing”.
   const letters = explicitLetters && /^(?:[a-z]\s+)+[a-z]$/u.test(value) ? value.replace(/\s+/gu, "") : value;

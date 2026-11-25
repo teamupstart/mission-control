@@ -1,16 +1,8 @@
 import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
-import { act, cards, model, queued, registry, say, reviews, voiceStateStore } from "./helpers/voice-http.ts";
+import test from "node:test";
+import { act, cards, model, queued, registry, say, reviews, roster, voiceStateStore } from "./helpers/voice-http.ts";
 import { optionLetter } from "../src/shared/voice-answers.ts";
-import { answers, put, question, show } from "./helpers/voice-question.ts";
-
-function mockCaptureClock(t: TestContext): number {
-  const now = Date.now();
-  const elapsed = performance.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
-  t.mock.method(performance, "now", () => elapsed + (Date.now() - now));
-  return now;
-}
+import { answers, mockCaptureClock, put, question, show } from "./helpers/voice-question.ts";
 
 test("only an addressed open card, reply, or explicit answer can fill a question", async t => {
   const q = question();
@@ -208,8 +200,7 @@ test("a reminder that wakes during transcription requires a fresh answer", async
 });
 
 test("speech captured before the card opened and ordinary instructions about answering stay messages", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const now = mockCaptureClock(t);
   const q = question();
   await say("Steve, answer the email");
   assert.deepEqual(answers(), []);
@@ -260,7 +251,7 @@ test("explicit answers without an eligible question show a notice and cannot sen
 });
 
 test("a missing option on a closed question cannot send a message at the deadline", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const q = reviews.create("sdk:Steve", "input", "Which cache?", "Which cache?", [
     { id: "q", question: "Which cache?", options: [{ id: "sqlite", label: "SQLite" }] },
   ]);
@@ -282,7 +273,7 @@ for (const [command, phrases] of [
   ["go with your recommendation", ["Steve, go with your recommendation", "reply, go with your recommendation"]],
 ] as const) {
   test(`an unavailable “${command}” cannot submit Other on an open question`, async t => {
-    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+    mockCaptureClock(t);
     const q = reviews.create("sdk:Steve", "input", "Which cache?", "Which cache?", [
       { id: "q", question: "Which cache?", allowOther: true, options: [{ id: "sqlite", label: "SQLite" }] },
     ]);
@@ -306,7 +297,7 @@ for (const [command, phrases] of [
 }
 
 test("two recommended options leave an open question pending without starting a countdown", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const title = "Which database?";
   const q = reviews.create("sdk:Steve", "input", title, title, [{
     id: "q", question: title, allowOther: true, options: [
@@ -374,7 +365,7 @@ test("a blurred dashboard loses the reply target and its background reports cann
 });
 
 test("ordinary addressed speech bypasses answer matching and delivers a message while the question stays open", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const q = question();
   await show([q.id]);
   const matcher = t.mock.method(model, "decide");
@@ -438,7 +429,7 @@ test("the inline footer takes over the same countdown and retires stale companio
 });
 
 test("a background or disconnected question keeps its countdown on the companion", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const q = question();
   const router = registry.voiceRouter!;
   const windowId = "question-dashboard";
@@ -575,7 +566,7 @@ test("opening a question after speaking cannot authorize Other when the operator
 });
 
 test("a matcher failure leaves Other untouched and the question available to retry", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const q = question();
   await show([q.id]);
   const matcher = t.mock.method(model, "decide", () => { throw new Error("provider failed"); });
@@ -914,8 +905,7 @@ test("a correction captured before the newest answer settled cannot switch the r
 });
 
 test("choosing an old prefilled picker preserves the newer answer and its deadline", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  mockCaptureClock(t);
   const first = question();
   const second = question("Which cache?");
   await say("Steve, answer: Postgres", "old-picker");
@@ -1190,4 +1180,91 @@ test("named choice and Other dictation use the focus confirmed for that utteranc
   await dictation;
   assert.deepEqual(answers(), []);
   assert.equal(cards.at(-1)?.detail, "No matching option.");
+});
+
+test("an ambiguous spoken name keeps answer intent through the recipient pick", async t => {
+  const will = roster.find(row => row.name === "Will")!;
+  const name = will.name;
+  will.name = "Steve";
+  t.after(() => { will.name = name; });
+  const first = question();
+  const second = question("Which version?", will.sessionId!);
+  await say("Steve, option B", "select-recipient");
+  const picker = cards.at(-1)!;
+  assert.equal(picker.state, "unsure");
+  assert.deepEqual(new Set(picker.candidates.map(c => c.target?.sessionId)), new Set([first.sessionId, second.sessionId]));
+  assert.equal((await act(picker.id, "pick", { id: will.key })).status, 200);
+  assert.equal(answers()[0]?.reviewId, second.id);
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
+  assert.deepEqual(queued("Will"), []);
+});
+
+test("only the unambiguous question picker at speech time accepts an ordinal", async t => {
+  const now = mockCaptureClock(t);
+  const q = question();
+  question("Which cache?");
+  await say("Steve, answer: Postgres", "older-picker");
+  t.mock.timers.tick(10);
+  await say("Steve, answer: SQLite", "newer-picker");
+  t.mock.timers.tick(10);
+  const capturedAt = Date.now();
+  t.mock.timers.tick(10);
+  await act("older-picker", "cancel");
+  const send = (id: string, text: string, at: number) => registry.voiceRouter!.accept({ id, text, capturedAt: at, backend: "fluidaudio", words: [] });
+  await send("late-first", "first", capturedAt);
+  await send("letter", "the B.", now + 30);
+  assert.deepEqual(answers(), []);
+  t.mock.timers.tick(5);
+  await send("fresh-first", "the first", Date.now());
+  assert.equal(answers()[0]?.reviewId, q.id);
+});
+
+test("a wall-only capture spanning a rollback cannot answer a later question", async t => {
+  const now = Date.now();
+  let elapsed = performance.now();
+  t.mock.method(performance, "now", () => elapsed);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  registry.voiceRouter!.reset();
+  t.mock.timers.tick(20);
+  elapsed += 20;
+  const capturedAt = Date.now();
+  elapsed += 100;
+  t.mock.timers.setTime(now - 200);
+  const q = question();
+  elapsed += 251;
+  t.mock.timers.tick(251);
+  await registry.voiceRouter!.accept({ id: "wall-only", text: "Steve, option B", capturedAt, backend: "fluidaudio", words: [] });
+  assert.deepEqual(answers(), []);
+  assert.match(cards.at(-1)?.detail ?? "", /clock changed/);
+  assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("the inline answer holds its session until cancelled", async () => {
+  const q = question();
+  await show([q.id]);
+  await say("Steve, option B", "inline-hold");
+  assert.equal(answers()[0]?.footerWindowId, "voice-question-test");
+  assert.equal(registry.voiceRouter!.holdsSession(q.sessionId), true);
+  await say("cancel");
+  assert.equal(registry.voiceRouter!.holdsSession(q.sessionId), false);
+});
+
+test("opening a picked question cannot be acknowledged by a dashboard that has lost focus", async t => {
+  const q = question();
+  const router = registry.voiceRouter!;
+  const windows = router.openCards;
+  t.after(windows.connect("picker-home"));
+  t.after(windows.connect("new-foreground"));
+  const report = (id: string, focused: boolean, stamp: number, sequence?: number) =>
+    windows.report({ windowId: id, focused, cards: [{ kind: "question", id: q.id, focused: true }] },
+      { focusAtUs: stamp, confirmed: sequence });
+  report("picker-home", true, 10);
+  const opened = await windows.openQuestion(q.id, (id, seq) => { report(id, true, 10, seq); }, id => {
+    report("new-foreground", true, 20);
+    report(id, false, 10);
+    return true;
+  }, AbortSignal.timeout(1000));
+  assert.equal(opened, false);
+  assert.equal(windows.footerOwner(q.id), "new-foreground");
 });

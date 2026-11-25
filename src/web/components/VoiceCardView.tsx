@@ -3,6 +3,7 @@ import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type Das
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
+import { askSentence, type VoiceSpeechState } from "@shared/voice-speech.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { AgentName, SpokenHint } from "./AgentName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -10,6 +11,7 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
 export interface VoiceCardActions {
+  speechJob?: VoiceSpeechState["job"];
   sessions: readonly Session[];
   reviews: readonly ReviewItem[];
   roster: readonly SpokenName[];
@@ -51,6 +53,7 @@ function RosterRow({ target, title, detail, transcript, state, pick, disabled }:
 }
 
 const icons = {
+  speaker: "M2.5 6H5l3.5-3v10L5 10H2.5z M11 5.5a3.5 3.5 0 0 1 0 5 M12.8 3.5a6.5 6.5 0 0 1 0 9",
   mic: "M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5",
   unsure: "M14 8A6 6 0 1 1 2 8a6 6 0 0 1 12 0z M6.3 6.3a1.8 1.8 0 1 1 2.6 1.6c-.6.3-.9.7-.9 1.3M8 11.5v.1",
   check: "M3 8.5l3.2 3.2L13 4.8",
@@ -73,12 +76,12 @@ function messageWithMentions(text: string, mentions: readonly SpokenName[]) {
 }
 
 /** The live region announces the available time once when this window becomes visible. */
-function CountdownAnnouncement({ card, deadline }: { card: DashboardVoiceCard; deadline: number }) {
+export function CountdownAnnouncement({ card, deadline }: { card: DashboardVoiceCard; deadline: number }) {
   const [message] = useState(() => {
     const seconds = voiceCountdownSeconds(deadline - performance.now(), card.windowMs);
     if (!seconds) return "";
     const amount = (card.provisionalDeadline ? "up to " : "") + seconds + (seconds === 1 ? " second" : " seconds");
-    return "This card opened with " + amount + " to cancel or send now.";
+    return "This card opened with " + amount + (card.reason === "voice-answer" ? " to cancel or submit now." : " to cancel or send now.");
   });
   return <span className="sr-only">{message}</span>;
 }
@@ -126,7 +129,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       setNow(time);
       return;
     }
-    const label = action === "cancel" ? "Cancel" : "Send now";
+    const label = action === "cancel" ? "Cancel" : card.reason === "voice-answer" ? "Submit now" : "Send now";
     void run(() => api.voiceCardAction(card.id, action, { deadline, answerCompanion: card.reason === "voice-answer" }), "", label + " was not confirmed. ", voiceCardRetryDelay(deadline));
   };
   const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost");
@@ -189,12 +192,19 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
     }
   }
 
+  const job = actions.speechJob;
+  const playing = job?.state === "ready" || job?.state === "speaking";
+  const asking = playing && job.cardId === card.id;
+  const waitingForSilence = playing || job?.state === "stopping";
   let body: ReactNode;
   switch (card.state) {
     case "resolving": body = <b>Working out who this is for</b>; break;
     case "unsure":
-      body = <><div className="vc-row"><VoiceIcon name="unsure" /><b>{card.candidates[0]?.kind === "question" ? "Which question?" : "Who is this for?"}</b></div>
-        <Transcript className="vc-heard" text={first?.text ?? ""}><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</Transcript>
+      body = <>{asking ? <div className="vc-ask"><VoiceIcon name="speaker" />
+        <span className="vc-grow">Asking aloud: <q>{askSentence(card.candidates.map(c => c.title))}</q></span>
+        {button("Stop", "Stop asking aloud", () => void run(() => api.stopVoiceSpeech(job.id)), "btn-ghost")}</div>
+        : <><div className="vc-row"><VoiceIcon name="unsure" /><b>{card.candidates[0]?.kind === "question" ? "Which question?" : "Who is this for?"}</b></div>
+        <Transcript className="vc-heard" text={first?.text ?? ""}><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</Transcript></>}
         {card.candidates.map(c => {
           if (c.kind === "question") return <Tooltip key={c.id} label="Choose this question for your voice reply">
             <button type="button" className="vc-roster" disabled={busy}
@@ -204,7 +214,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
             pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidate: c }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
         })}
-        <div className="vc-row"><span className="vc-grow vc-hint">{card.candidates[0]?.kind === "question" ? (card.detail ?? "Say the ordinal, or click a question.") : "Say the name again, or click a row."} <q>Cancel</q> drops it.</span>{cancel}</div></>;
+        <div className="vc-row"><span className="vc-grow vc-hint">{waitingForSilence ? "Pick a row now, or speak once playback ends." : <>{card.candidates[0]?.kind === "question" ? (card.detail ?? "Say the ordinal, or click a question.") : "Say the name again, or click a row."} <q>Cancel</q> drops it.</>}</span>{cancel}</div></>;
       break;
     case "pending": {
       const mention = !!card.mentions?.length;
@@ -213,7 +223,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       let sendLabel = card.reason === "voice-answer" ? "Submit now" : "Send now";
       if (split && remainingParts.length > 1) sendLabel = "Send both now";
       else if ((split || mention) && recipient) sendLabel = "Send to " + recipient + " now";
-      const sendHint = split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
+      const sendHint = card.reason === "voice-answer" ? "Submit this answer before the countdown ends" : split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
         : "Deliver this message before the countdown ends";
       body = <><div className="vc-row"><VoiceIcon name="mic" /><span className="vc-grow">{card.reason === "voice-answer" ? <b>Voice answer{first?.target && <> for {named(first.target)}</>}</b> : split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
         {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, card.windowMs)}s</span>}</div>
@@ -227,7 +237,6 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         })}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
         {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
-          <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
             {cancel}{button(sendLabel, sendHint, () => act("send-now"), "btn-send")}</div></>}</>;

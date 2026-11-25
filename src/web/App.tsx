@@ -4119,7 +4119,8 @@ export function App(): React.JSX.Element {
   // the bar's content at a fixed width, like a browser minimum font size. Both live in
   // `observeTopbar`, with the reasoning, because telling those apart from the fit's own
   // settling is the subtle part and it belongs beside the fit.
-  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), []);
+  const standalone = route.page === "voice-card";
+  useEffect(() => (topbarRef.current ? observeTopbar(topbarRef.current) : undefined), [standalone]);
 
   // The palette does NOT close when the page changes - that is the whole difference between
   // it and the settings-only search it replaced. It navigates for a living, and a row that
@@ -4192,7 +4193,7 @@ export function App(): React.JSX.Element {
       // bare-key rebinding must stay behind the typing guard, or that character would open
       // the palette from inside any input.
       if (
-        chord === bindings.settingsSearch &&
+        route.page !== "voice-card" && chord === bindings.settingsSearch &&
         (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
         overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {
@@ -5115,7 +5116,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = spokenNames && <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
       openQuestion: (sessionId, questionId) => { navigate({ page: "fleet" }, allowed => {
         if (allowed) setReviewRequest({ sessionId, questionId });
       }); },
@@ -5141,7 +5142,6 @@ export function App(): React.JSX.Element {
         return result.state === "failed" || result.state === "refused" ? { ok: false, error: result.error } : { ok: true };
       },
     }} /></VoiceHintsContext.Provider>;
-  const standalone = route.page === "voice-card";
 
   return (
     <OverlayHost value={overlays}>

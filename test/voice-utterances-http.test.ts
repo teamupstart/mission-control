@@ -1,7 +1,7 @@
 import { VOICE_HELLO_LAPSE_MS, VOICE_SHELL_REPORT_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } from "../src/shared/voice.ts";
 import type { HeardEntry } from "../src/shared/voice-routing.ts";
 import assert from "node:assert/strict";
-import { beforeEach, test } from "node:test";
+import { beforeEach, test, type TestContext } from "node:test";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -1573,14 +1573,19 @@ test("a pre-release cancel onset arriving after key-up reserves the countdown un
   assert.deepEqual(queued("Will"), []);
 });
 
-test("the last microphone buffer can arrive after expiry, but speech starting at expiry cannot reserve delivery", async t => {
+async function setupOnsetCountdown(t: TestContext) {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
   const hostUs = voiceStateStore.hostNowUs();
   t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
-  await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
+  const hello = await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
     devices: [], microphone: "granted", modelLoaded: true, reportsSpeechOnset: true }, token);
-  const revision = voiceStateStore.directive().revision;
+  assert.equal(hello.status, 200);
+  return { hostUs, revision: voiceStateStore.directive().revision };
+}
+
+test("the last microphone buffer can arrive after expiry, but speech starting at expiry cannot reserve delivery", async t => {
+  const { hostUs, revision } = await setupOnsetCountdown(t);
   const speech = (phase: string, speechStartUs: number) =>
     post("/voice/listener/speech?revision=" + revision, { phase, speechStartUs }, token);
 
@@ -1600,11 +1605,58 @@ test("the last microphone buffer can arrive after expiry, but speech starting at
   await speech("start", boundary);
   t.mock.timers.tick(250);
   assert.deepEqual(queued("Will"), ["wait for the last frame", "send at expiry"]);
+});
 
+test("an onset arriving at 250 ms reserves its original card, but one arriving a microsecond later cannot", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const reportStart = async (speechStartUs: number) => {
+    const response = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs }, token);
+    assert.deepEqual(await response.json(), { accepted: true });
+  };
+  await say("Will cancel this message", "at-limit");
+  t.mock.timers.tick(999);
+  const onset = voiceStateStore.hostNowUs();
+  const capturedAt = Date.now();
+  t.mock.timers.tick(1);
+  await say("Will deliver this message", "over-limit");
+  t.mock.timers.tick(249);
+  await reportStart(onset); // 250,000 µs old, one millisecond before automatic delivery.
+  t.mock.timers.tick(1);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal(registry.snapshot().voiceCards?.find(card => card.id === "at-limit")?.state, "pending");
+
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(onset), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceStateStore.hostNowUs() / 1000)),
+  }, body: JSON.stringify({ ...capture("Cancel."), capturedAt }) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(cards.filter(card => card.state === "cancelled").map(card => card.id), ["at-limit"]);
+  t.mock.timers.tick(999);
+  // The second card is also one millisecond from automatic delivery and still eligible to be held.
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => [card.id, card.state]), [["over-limit", "pending"]]);
+  await reportStart(voiceStateStore.hostNowUs() - 250_001);
+  t.mock.timers.tick(1);
+  assert.deepEqual(queued("Will"), ["deliver this message"]);
+});
+
+test("a missing speech result delivers once at 35 seconds from reservation", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  const submits = t.mock.method(pending, "submitSpoken");
   await say("Will recover after listener loss", "lost-frame");
-  await speech("start", voiceStateStore.hostNowUs());
-  t.mock.timers.tick(40_000);
-  assert.equal(queued("Will").at(-1), "recover after listener loss");
+  t.mock.timers.tick(800);
+  const onset = voiceStateStore.hostNowUs();
+  t.mock.timers.tick(100);
+  const response = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: onset }, token);
+  assert.deepEqual(await response.json(), { accepted: true });
+  t.mock.timers.tick(34_999);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => [card.id, card.state]), [["lost-frame", "pending"]]);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal(submits.mock.callCount(), 0);
+  t.mock.timers.tick(1);
+  assert.deepEqual(queued("Will"), ["recover after listener loss"]);
+  t.mock.timers.tick(35_000);
+  assert.equal(submits.mock.callCount(), 1);
 });
 
 test("an explicitly cancelled target cannot redirect its in-flight spoken cancel onto another pending card", async t => {

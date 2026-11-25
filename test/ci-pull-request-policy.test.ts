@@ -55,8 +55,12 @@ test("the CI pull request gate checks incoming trailers and changed paths agains
 
   for (const path of legacy) write(path, "updated");
   write("docs/images/new.png", "product documentation");
+  write("build/new-tray-icon.png", "desktop build asset");
+  write("src/web/public/new-icon.svg", "web application asset");
   const clean = commit("Document behavior\n\nCo-authored-by: Claude Smith <colleague@example.test>");
-  assert.equal(run(clean).status, 0);
+  const allowed = run(clean);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  t.diagnostic("Accepted new desktop and web assets alongside documentation images.");
 
   write("CHANGELOG.md", "# Changelog\n\nNew version");
   const release = commit("Regenerate changelog");
@@ -73,12 +77,13 @@ test("the CI pull request gate checks incoming trailers and changed paths agains
 
   for (const path of legacy) write(path.replace("old.", "new."), "new evidence");
   write("unclassified screen.PNG", "evidence outside a named folder");
+  write("src/web/public/evidence/screenshot.png", "evidence in an asset directory");
   const blocked = commit("Add proof\n\nco-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Copilot <copilot@users.noreply.github.com>");
   const result = run(blocked, "mission-control-release[bot]", releaseRef);
   assert.equal(result.status, 1);
   assert.equal(result.stderr.match(/remove the agent Co-authored-by trailer/g)?.length, 2, result.stderr);
-  assert.equal(result.stderr.match(/new images must be documentation/g)?.length, 5, result.stderr);
-  t.diagnostic("Rejected two incoming agent co-authors and five incoming image paths. Accepted human co-authors, existing evidence paths, and docs/images.");
+  assert.equal(result.stderr.match(/new images must be in/g)?.length, 6, result.stderr);
+  t.diagnostic("Rejected two incoming agent co-authors and six incoming evidence image paths. Accepted human co-authors, existing evidence paths, and docs/images.");
 
   const sharedAddition = "e2e/evidence/parallel.png";
   git("switch", "--quiet", "--detach", base);
@@ -89,7 +94,7 @@ test("the CI pull request gate checks incoming trailers and changed paths agains
   const divergentHead = commit("Add image on feature");
   const divergent = run(divergentHead, "contributor", "feature", repo, advancedBase);
   assert.equal(divergent.status, 1);
-  assert.match(divergent.stderr, /"e2e\/evidence\/parallel\.png": new images must be documentation/);
+  assert.match(divergent.stderr, /"e2e\/evidence\/parallel\.png": new images must be in/);
   t.diagnostic("Rejected the same image path added independently on both sides of the merge base.");
 
   git("switch", "--quiet", "--detach", base);
@@ -98,6 +103,6 @@ test("the CI pull request gate checks incoming trailers and changed paths agains
   const renameHead = commit("Move existing evidence");
   const renamed = run(renameHead);
   assert.equal(renamed.status, 1);
-  assert.match(renamed.stderr, /"e2e\/evidence\/renamed\.png": new images must be documentation/);
+  assert.match(renamed.stderr, /"e2e\/evidence\/renamed\.png": new images must be in/);
   t.diagnostic("Rejected the destination of a tracked evidence image moved to a new path.");
 });

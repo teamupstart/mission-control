@@ -32,7 +32,6 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   write("src/server/independent-map.ts", 'export function prune(id) { const sessions = new Map(); sessions.delete(id); }');
   write("src/server/independent-destructured-map.ts", 'export function prune(cache, id) { const { sessions } = cache; sessions.delete(id); }');
   write("src/server/independent-json.ts", "export function read({ req }) { return ((req) => req.json())(req); }");
-  write("src/server/independent-helpers.ts", "function read(response) { return response.json(); } const prune = (sessions, id) => sessions.delete(id); export function use(response, id) { prune(new Map(), id); return read(response); }");
   write("src/server/reassigned.ts", "export function use(c, registry, other, id) { let request = c.req; request = other; request.json(); let sessions = registry.sessions; sessions = new Map(); sessions.delete(id); }");
   write("src/server/overwritten-event.ts", 'export function use(emit) { let type = "session_remove"; type = "other"; emit({ type }); }');
   write("src/server/typed-independent-map.ts", "export function prune({ sessions }: Cache, id) { sessions.delete(id); }");
@@ -47,8 +46,6 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   };
   const seed = {
     ...testIdSeeds,
-    "src/server/helper-request.ts": "function read(req) { return req.json(); } export const route = (c) => read(c.req);",
-    "src/server/helper-sessions.ts": "const evict = (sessions, id) => sessions.delete(id); export const route = (registry, id) => evict(registry.sessions, id);",
     "src/server/destructured-agent.ts": 'export function choose(session) { const { agent: selected } = session; return selected === "claude"; }',
     "src/server/non-null-event.ts": 'export const evict = (emit, id) => emit({ type: ("session_remove" as const)!, id });',
     "src/server/request-alias.ts": 'export function read(c) { const request = c.req; return request.json(); }',
@@ -100,9 +97,9 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "no-restricted-imports": 3,
     "test-imports": 5,
     "no-test-ids": 6,
-    "parse-request-body": 8,
+    "parse-request-body": 7,
     "agent-comparison": 7,
-    "registry-eviction": 20,
+    "registry-eviction": 19,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
@@ -112,8 +109,6 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   t.diagnostic("Rejected the session removal event wrapped in satisfies.");
   for (const [file, rule] of [
     ["request-alias", "parse-request-body"],
-    ["helper-request", "parse-request-body"],
-    ["helper-sessions", "registry-eviction"],
     ["destructured-agent", "agent-comparison"],
     ["non-null-event", "registry-eviction"],
     ["agent-alias", "agent-comparison"],

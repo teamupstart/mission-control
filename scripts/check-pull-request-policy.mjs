@@ -33,6 +33,9 @@ const releasePr = pr.user?.login === "mission-control-release[bot]" &&
 const mergeBase = git("merge-base", base.sha, head.sha).trim();
 const changes = git("diff", "--no-renames", "--name-status", "-z", mergeBase, head.sha, "--").split("\0");
 const image = /\.(?:png|apng|jpe?g|gif|webp|avif|heic|heif|svgz?|bmp|tiff?|ico)$/i;
+// The build and dashboard keep their product images in these asset locations.
+const productAsset = /^(?:build\/[^/]+$|src\/web\/public\/)/;
+const evidenceDirectory = /(?:^|\/)(?:evidence|verification|shots)\//i;
 for (let i = 0; i < changes.length - 1; i += 2) {
   const [status, path] = changes.slice(i, i + 2);
   if (path === "CHANGELOG.md" && !releasePr) {
@@ -40,8 +43,10 @@ for (let i = 0; i < changes.length - 1; i += 2) {
   }
   // The merge-base tree is the exact-path allowlist for legacy evidence, including
   // e2e/evidence and old plan evidence, verification, and shots. Renames add new paths.
-  if (status === "A" && image.test(path) && !path.startsWith("docs/images/")) {
-    problems.push(`${JSON.stringify(path)}: new images must be documentation in docs/images/. Attach evidence to the pull request.`);
+  const allowedImage = path.startsWith("docs/images/") ||
+    (productAsset.test(path) && !evidenceDirectory.test(path));
+  if (status === "A" && image.test(path) && !allowedImage) {
+    problems.push(`${JSON.stringify(path)}: new images must be in docs/images/ or an established product asset path. Attach evidence to the pull request.`);
   }
 }
 

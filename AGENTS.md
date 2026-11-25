@@ -293,7 +293,7 @@ A spec that opens a new modal calls `expectContentClearsBorder` from
 
 - Never commit secrets, tokens, credentials, local state, or operator data.
 - Never commit evidence artifacts. Proof-of-work screenshots and transcripts attach to the pull request. Evidence produced for or submitted to workflow personas is also never committed: produce it in a gitignored location and attach it to the pull request. Committed documentation imagery in `docs/images/` is documentation, not evidence.
-  The CI pull request policy gates new image paths outside `docs/images/`.
+  The CI pull request policy gates new image paths outside `docs/images/` and established product asset locations.
 - Never modify production, signing, release, CI, or deployment configuration unless the task explicitly requires it.
 - Never let the Foreman worker touch SQLite. The daemon is the only database writer.
 - Never add a second session-eviction path. Terminal and SDK sessions leave through `Registry.beginEviction`.

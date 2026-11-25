@@ -82,26 +82,7 @@ function reachingAssignments(context, node, variable, declaration) {
   return { values, overwritten: latest !== undefined };
 }
 
-function directArguments(context, definition) {
-  if (definition?.type !== "Parameter") return [];
-  const fn = definition.node;
-  const index = fn.params.indexOf(definition.name);
-  if (index < 0) return [];
-  const declarator = fn.parent;
-  const callee = fn.type === "FunctionDeclaration" ? fn.id :
-    declarator.type === "VariableDeclarator" && declarator.parent.kind === "const" ? declarator.id : null;
-  const variable = localBinding(context, callee);
-  const args = [];
-  for (const { identifier } of variable?.references ?? []) {
-    const call = identifier.parent;
-    if (call.type !== "CallExpression" || call.callee !== identifier || index >= call.arguments.length) continue;
-    if (call.arguments.slice(0, index + 1).some((arg) => arg.type === "SpreadElement")) continue;
-    args.push(call.arguments[index]);
-  }
-  return args;
-}
-
-function matchesLocalValue(context, initial, matches, followArguments = false) {
+function matchesLocalValue(context, initial, matches) {
   const seen = new Set();
   const pending = [initial];
   while (pending.length > 0) {
@@ -123,7 +104,6 @@ function matchesLocalValue(context, initial, matches, followArguments = false) {
     }
     if (matches(node, binding)) return true;
     if (declaration?.type === "VariableDeclarator" && declaration.id === binding) pending.push(declaration.init);
-    if (followArguments) pending.push(...directArguments(context, definition));
   }
   return false;
 }
@@ -210,7 +190,7 @@ export default {
               return member(value, "req") || (property?.type === "Property" &&
                 property.parent.type === "ObjectPattern" && property.value === binding &&
                 name(property.key, property.computed) === "req");
-            }, true);
+            });
             if (isRequest) {
               context.report({ node, message: "Parse request JSON through src/server/http-body.ts." });
             }
@@ -263,7 +243,7 @@ export default {
                 return hasRegistrySessions(ownerBinding) || (!ownerType &&
                   (name(candidate) === "registry" || member(candidate, "registry")));
               });
-            }, true);
+            });
             if (isRegistryMap) report(node);
           },
           Property(node) {

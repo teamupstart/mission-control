@@ -224,6 +224,18 @@ is already running.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
+- **Resident name beside the call sign (preview).** While voice is listening, a resident with a
+  [reference name](voice.md#reference-names) is titled on its Board card by that call sign in
+  double quotes. With the **Resident names on cards** preview (`resident-card-names`) on,
+  **Settings → Display → Board card → Resident name with call sign** offers two checkboxes
+  that also show the profile name on that card. Turn on either, or both. **Subtitle** puts it on a
+  muted line under the call sign and makes the card one short line taller. **Expanding chip**
+  keeps the card's size: the label chip spells the name out while you point at or focus the card,
+  truncating a long name inside the chip so the call sign stays readable, and it needs **Resident
+  marker** on to have a chip to expand. Both start unchecked, which shows the call sign alone. A
+  card titled by its session name, and one whose call sign is the profile name, show one name
+  whatever is checked. Turning the preview off hides the checkboxes and the extra name; what was
+  checked is kept for when it comes back.
 
 In **Drawer** placement there is no card or rail row for the marker or the pin to act on, so
 **Resident marker** and the profile's **Pin to top of column** say they apply only in Board and

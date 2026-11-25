@@ -1460,6 +1460,14 @@ of the tray leaves its call behind, so a description could land on another agent
 recorded as launching reads **Launch not in transcript**. A search reads as far back as the
 transcript goes; it stops early only if loading older messages fails or stops moving back through the file.
 
+## Resident name with call sign
+
+With the **Resident names on cards** preview (`resident-card-names`) on, **Settings → Display →
+Board card** offers the **Resident name with call sign** checkboxes. What they do to a resident's
+card is described under [Finding a resident](residents.md#finding-a-resident). The section's
+preview card answers to the call sign "Scout" while the preview is on, so it redraws as you check
+a style; it draws Expanding chip already expanded, because a preview cannot be pointed at.
+
 ## Chip and popover
 
 **Settings → Display → Board card → Background sub-agents** chooses how a session shows the

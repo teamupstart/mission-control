@@ -36719,6 +36719,19 @@ span.line-run-prov {
   outline: 2px solid var(--select);
   outline-offset: -2px;
 }
+/* A segment row whose options combine (Resident name with call sign): each keeps its checkbox
+   visible, because a filled segment alone reads as one-of-many and would hide that two can be
+   on together. */
+.display-choice-checks .display-choice-option {
+  gap: 6px;
+}
+.display-choice-checks .display-choice-option input {
+  position: static;
+  opacity: 1;
+  width: 13px;
+  height: 13px;
+  accent-color: var(--select);
+}
 
 /* ---- Board card (Settings -> Display) ----
    A checklist beside a live card. The card is the real `SessionTile` against a fixture,
@@ -42313,6 +42326,79 @@ body.foreman-sidecar-open .modal-backdrop {
 .resident-chip-pin {
   font-size: 9px;
   opacity: 0.85;
+}
+
+/* Resident name: Expanding chip. The chip spells out the profile name while its card is
+   pointed at or focused, and folds back to its label at rest. Capped so a long profile name
+   ellipsises inside the chip rather than pushing the call sign off the card. At rest the
+   name takes no width, and its negative margin cancels the chip's `gap`, so a folded chip is
+   exactly the plain one. */
+.resident-chip.has-expanded-name {
+  max-width: 48%;
+  min-width: 0;
+}
+/* Inline-block rather than flex, so its text node can ellipsise: the separator is the one
+   child, and the name is the trailing text. */
+.resident-chip-name {
+  display: inline-block;
+  min-width: 0;
+  max-width: 0;
+  margin-left: -2px;
+  overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition:
+    max-width 0.22s ease,
+    opacity 0.18s ease,
+    margin-left 0.22s ease;
+}
+.resident-chip-name-sep {
+  opacity: 0.6;
+}
+.tile:hover .resident-chip-name,
+.tile:focus-within .resident-chip-name,
+/* The Settings preview is `inert`, so it can never be hovered: it shows the expanded state. */
+.board-card-preview-stage .resident-chip-name {
+  max-width: 16em;
+  margin-left: 2px;
+  opacity: 1;
+}
+.resident-chip-name-sep {
+  margin-right: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .resident-chip-name {
+    transition: none;
+  }
+}
+
+/* Resident name: Subtitle. The call sign stays the card's title, and the profile name sits on
+   a muted line under it. The head aligns its items to the title's first baseline rather than
+   to the centre of both lines, so the chips and the keycap read on the call sign's line and the
+   agent dot, which has no text, rests on that baseline beside the capitals. */
+.tile-name-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.tile-name-stack > .tile-name {
+  flex: none;
+}
+.tile-name-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tile-head.has-name-sub {
+  align-items: first baseline;
 }
 
 /* Wraps rather than clips: the board's drill-in detail is a narrow pane, and the band's one

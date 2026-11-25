@@ -59,6 +59,13 @@ const SKIN_MAX_RETRY_MS = 30_000;
 let skinRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSkinWrites = 0;
 let skinWriteTail = Promise.resolve();
+/**
+ * Resident name with call sign writes, saved in the order they were made, like skin writes. Each
+ * checkbox sends the whole style list it rebuilt from the last one drawn, and the daemon parses
+ * each body before it writes, so two overlapping requests could store the earlier list over the
+ * later one: Subtitle then Expanding chip would keep only the subtitle after a reload.
+ */
+let residentCardNameWriteTail = Promise.resolve();
 
 /** Fetch just the skin into the live store after a daemon invalidation or reconnect. */
 export async function refreshUiSkin(): Promise<void> {
@@ -236,11 +243,17 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     skinReadGeneration++;
   }
   commit(optimistic);
-  // Serialize skin writes from this window so rapid clicks save in the order they were made.
-  const request = skin === undefined
-    ? api.setUiConfig(patch)
-    : skinWriteTail.then(() => api.setUiConfig(patch, AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS)));
+  // Serialize skin writes from this window so rapid clicks save in the order they were made, and
+  // resident name style writes for the same reason. A failed resident name write still releases
+  // the next one.
+  const residentCardNames = skin === undefined && patch.residentCardNameStyles !== undefined;
+  const request = skin !== undefined
+    ? skinWriteTail.then(() => api.setUiConfig(patch, AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS)))
+    : residentCardNames
+      ? residentCardNameWriteTail.then(() => api.setUiConfig(patch))
+      : api.setUiConfig(patch);
   if (skin !== undefined) skinWriteTail = request.then(() => {});
+  if (residentCardNames) residentCardNameWriteTail = request.then(() => {}, () => {});
   const res = await request;
   if (skin !== undefined) {
     pendingSkinWrites--;

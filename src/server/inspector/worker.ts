@@ -672,7 +672,7 @@ async function processPr(
   cfg: InspectorConfig,
   pr: InspectorPr,
   now: number,
-  replyRetryOrder: Map<string, Set<number | null>>,
+  replyRetryOrder: Map<string, Set<string>>,
   onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
 ): Promise<boolean> {
@@ -806,63 +806,60 @@ async function processPr(
   let acted = false;
   const resolvedThreadIds = new Set<string>();
 
-  // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
-  //    pushes ago should not queue behind a fresh review of a big diff.
-  //    Only when we could actually send the answer: a reply has no `drafted` state, so
-  //    running one we cannot post spends a model call to produce nothing.
-  const waiting = post ? threadsAwaitingUs(s, rows, login) : [];
-  const deferred = replyRetryOrder.get(pr.key) ?? new Set<number | null>();
-  const ordered = waiting.filter((w) => !deferred.has(w.newest.databaseId));
-  for (const id of deferred) {
-    const reply = waiting.find((w) => w.newest.databaseId === id);
-    if (reply) ordered.push(reply);
-    else deferred.delete(id);
-  }
-  replyRetryOrder.delete(pr.key);
-  if (ordered.length) {
-    const diff = await readDiff();
-    for (const w of ordered) {
-      const id = w.newest.databaseId;
-      deferred.delete(id);
-      const replied = await answerFollowUp(
-        cfg,
-        pr,
-        dir,
-        w,
-        rows,
-        diff.value?.diff ?? "",
-        diff.value?.truncated ?? false,
-        post,
-        login,
-        now,
-        tick,
-        resolvedThreadIds,
-      );
-      if (replied) acted = true;
-      // Leave the other questions pending and let the sweep move on to the next PR.
-      // Check the failure flag even if the reply posted before thread resolution failed.
-      if (tick.failed) {
-        // Untried questions go first next time. If failures recur, retry them in
-        // failure order so one thread cannot keep taking the first slot.
-        if (!replied) deferred.add(id);
-        if (deferred.size) replyRetryOrder.set(pr.key, deferred);
-        return acted;
-      }
+  // 1. Give waiting questions and outstanding resolutions a turn before re-reviewing.
+  // Both share a queue so a model failure and a GitHub refusal follow the same retry order.
+  const work = new Map<string, () => Promise<string | null>>();
+  const resolutionKey = (threadId: string) => `resolve:${threadId}`;
+  if (post) {
+    for (const w of threadsAwaitingUs(s, rows, login)) {
+      if (w.newest.databaseId === null) continue;
+      const key = `reply:${w.newest.databaseId}`;
+      work.set(key, async () => {
+        const diff = await readDiff();
+        const replied = await answerFollowUp(
+          cfg, pr, dir, { ...w, row: rows.get(w.row.fingerprint) ?? w.row }, rows,
+          diff.value?.diff ?? "", diff.value?.truncated ?? false,
+          post, login, now, tick, resolvedThreadIds,
+        );
+        if (replied) acted = true;
+        if (!tick.failed) return null;
+        // A reply that posted is complete. Only the resolution needs another turn.
+        return replied ? resolutionKey(w.thread.id) : key;
+      });
+    }
+    // Only a previously authorized resolution on an owned thread may be retried.
+    for (const [fingerprint, thread] of ourThreads(s, login)) {
+      if (!rows.get(fingerprint)?.resolutionPending) continue;
+      const key = resolutionKey(thread.threadId);
+      work.set(key, async () => {
+        if (!rows.get(fingerprint)?.resolutionPending) return null;
+        const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
+        if (!resolved.ok) {
+          noteFailure(pr, "could not resolve the answered thread", tick);
+          return key;
+        }
+        resolvedThreadIds.add(thread.threadId);
+        closeRow(rows, fingerprint, now);
+        acted = true;
+        return null;
+      });
     }
   }
 
-  // A review or reply may have succeeded before resolving its thread failed. Its durable marker
-  // authorizes retrying that mutation, without treating an operator's ledger override
-  // as permission to close GitHub threads. Retry only after waiting questions get a turn,
-  // so a repeated GitHub refusal cannot starve them.
-  for (const [fingerprint, thread] of ourThreads(s, login)) {
-    if (!post) break;
-    if (!rows.get(fingerprint)?.resolutionPending) continue;
-    const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
-    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", tick) || acted;
-    resolvedThreadIds.add(thread.threadId);
-    closeRow(rows, fingerprint, now);
-    acted = true;
+  const order = new Set([...(replyRetryOrder.get(pr.key) ?? []), ...work.keys()]);
+  replyRetryOrder.delete(pr.key);
+  for (const key of order) {
+    order.delete(key);
+    const run = work.get(key);
+    if (!run) continue;
+    const failure = await run();
+    if (failure === null) continue;
+    // Keep the remaining work ahead of the failure across sweeps, even if GitHub
+    // reorders threads or more questions arrive.
+    order.delete(failure);
+    order.add(failure);
+    replyRetryOrder.set(pr.key, order);
+    return acted;
   }
 
   // 2. Ship it, if YOLO mode says every gate is green.
@@ -1041,7 +1038,9 @@ async function answerFollowUp(
   //
   // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
   if (answer.resolved) {
-    const resolved = w.thread.isResolved ? { ok: true } : await resolveThread(dir, w.thread.id);
+    const resolved = w.thread.isResolved || resolvedThreadIds.has(w.thread.id)
+      ? { ok: true }
+      : await resolveThread(dir, w.thread.id);
     if (resolved.ok) {
       closeRow(rows, w.row.fingerprint, now);
       resolvedThreadIds.add(w.thread.id);
@@ -1639,7 +1638,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // One PR at a time. A review is an Opus run with tool round-trips inside it; a
   // dashboard with six open PRs must not fork six of them.
   const limit = createLimiter(1);
-  const replyRetryOrder = new Map<string, Set<number | null>>();
+  const replyRetryOrder = new Map<string, Set<string>>();
 
   // The hook's signal is transient, so it has to be caught as it happens.
   //

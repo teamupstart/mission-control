@@ -6,7 +6,7 @@ import { Codex } from "@openai/codex-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   REPOSITORY_OPERATION_IDS,
-  PersonaWorkloadProviderResultSchema,
+  PersonaWorkloadProviderResultSchema, InspectorWorkloadProviderResultSchema,
   type PersonaWorkloadRequest,
   type RepositoryCapabilityReason,
 } from "@shared/repository-access.ts";
@@ -24,6 +24,7 @@ export interface RepositoryProviderLaunch {
 export interface RepositoryProviderResult {
   verdict: unknown;
   usage: Record<string, number>;
+  providerRunId?: string;
 }
 export type RepositoryProvider = (
   launch: RepositoryProviderLaunch,
@@ -36,9 +37,13 @@ export class RepositoryCapabilityError extends Error {
 export const REPOSITORY_TOOL_NAMES = REPOSITORY_OPERATION_IDS.map(
   (name) => `mcp__repository__${name}`,
 );
-const schema = providerJsonSchema(PersonaWorkloadProviderResultSchema);
-function providerVerdict(value: unknown): unknown {
-  const parsed = PersonaWorkloadProviderResultSchema.safeParse(value);
+const personaSchema = providerJsonSchema(PersonaWorkloadProviderResultSchema);
+const inspectorSchema = providerJsonSchema(InspectorWorkloadProviderResultSchema);
+
+function providerVerdict(request: PersonaWorkloadRequest, value: unknown): unknown {
+  const contract = request.accounting.purpose === "inspector_review"
+    ? InspectorWorkloadProviderResultSchema : PersonaWorkloadProviderResultSchema;
+  const parsed = contract.safeParse(value);
   return parsed.success ? parsed.data.result.verdict : undefined;
 }
 
@@ -190,11 +195,12 @@ export async function runCodexRepositoryWorkload(
       })),
       { type: "text", text: launch.request.prompt },
     ],
-    { signal: launch.signal, outputSchema: schema },
+    { signal: launch.signal, outputSchema: launch.request.accounting.purpose === "inspector_review" ? inspectorSchema : personaSchema },
     "await_terminal",
   );
   return {
-    verdict: providerVerdict(JSON.parse(result.finalResponse)),
+    verdict: providerVerdict(launch.request, JSON.parse(result.finalResponse)),
+    ...(thread.id ? { providerRunId: thread.id } : {}),
     usage: z.record(z.string(), z.number()).parse(result.usage ?? {}),
   };
 }
@@ -202,8 +208,6 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
   launch,
 ) => {
   await verifyProviderBuild(launch);
-  if (launch.request.execution.effort === "xhigh")
-    throw new RepositoryCapabilityError("unsupported_effort");
   const images = validateLlmImages(launch.request.images);
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -252,7 +256,7 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
       effort: launch.request.execution.effort,
       maxTurns: launch.request.budgets.attemptCalls + 3,
       abortController: controller,
-      outputFormat: { type: "json_schema", schema },
+      outputFormat: { type: "json_schema", schema: launch.request.accounting.purpose === "inspector_review" ? inspectorSchema : personaSchema },
     },
   });
   try {
@@ -286,9 +290,12 @@ export const runClaudeRepositoryWorkload: RepositoryProvider = async (
         )
           throw Error("Invalid provider result");
         return {
-          verdict: providerVerdict(frame.structured_output),
+          verdict: providerVerdict(launch.request, frame.structured_output),
+          providerRunId: frame.session_id,
           usage: {
             input_tokens: frame.usage.input_tokens,
+          cache_read_input_tokens: frame.usage.cache_read_input_tokens ?? 0,
+          cache_creation_input_tokens: frame.usage.cache_creation_input_tokens ?? 0,
             output_tokens: frame.usage.output_tokens,
             total_cost_usd: frame.total_cost_usd,
           },

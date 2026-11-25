@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REVIEW_PROMPT_CAPS, buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "../src/server/inspector/prompt.ts";
+import { REVIEW_PROMPT_CAPS, buildLocalReviewPrompt, buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "../src/server/inspector/prompt.ts";
 import { InspectorReplySchema } from "../src/server/inspector/verdict.ts";
 import type { ReplyPromptInput, ReviewPromptInput } from "../src/server/inspector/prompt.ts";
 import type { StandardsBundle } from "../src/server/standards.ts";
@@ -305,4 +305,37 @@ test("the policy asks for every finding that clears the bar in one review", () =
   const prompt = buildReviewPrompt(input());
   assert.ok(prompt.includes("raise all of it in this review"));
   assert.ok(!prompt.includes("Prefer saying less"));
+});
+
+test("the GitHub review prompt stays byte-identical with the local subject available", async () => {
+  const { createHash } = await import("node:crypto");
+  const { DEFAULT_BRIEF } = await import("../src/server/inspector/brief.ts");
+  const prompt = buildReviewPrompt({
+    brief: { source: "default", text: DEFAULT_BRIEF, truncated: false },
+    standards: { docs: [{ path: "AGENTS.md", realPath: "/repo/AGENTS.md", text: "House rules", truncated: false }], truncated: false },
+    prTitle: "Verify published content", prBody: "Check the updated file.",
+    diff: "diff --git a/app.ts b/app.ts\n", diffTruncated: false, changedPaths: ["app.ts"], open: [], round: 2,
+  });
+  assert.equal(createHash("sha256").update(prompt).digest("hex"),
+    "f0787a359c906bd25b54e7d82ea7fb8fe220dfc4133c68cb7d4e620872537644");
+});
+
+test("the local policy distinguishes new findings from carried issues outside the diff", () => {
+  const finding = { fingerprint: "older", path: "src/earlier.ts", line: 3,
+    severity: "major" as const, title: "Repair the route", body: "The original defect remains." };
+  const advisory = Array.from({ length: REVIEW_PROMPT_CAPS.openRows }, (_, index) => ({
+    ...finding, fingerprint: `advisory-${index}`, severity: "nit" as const,
+  }));
+  const { prompt, prompted } = buildLocalReviewPrompt({
+    goal: "Update the settings", diff: "diff for settings.ts", changedPaths: ["settings.ts"],
+    open: [...advisory, finding], round: 2,
+  });
+  assert.match(prompt, /Your findings go directly to the author's session/);
+  assert.match(prompt, /Every new finding must name a file changed in the submitted diff/);
+  assert.match(prompt, /Check each finding against this checkout, including files absent from the diff/);
+  assert.match(prompt, /older - src\/earlier\.ts:3/);
+  assert.match(prompt, /The rest stay open \(1 omitted\)/);
+  assert.doesNotMatch(prompt, /GitHub|pull request|\bpush\b/);
+  assert.equal(prompted.has(finding.fingerprint), true);
+  assert.equal(prompted.has(advisory.at(-1)!.fingerprint), false);
 });

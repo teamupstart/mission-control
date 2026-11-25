@@ -10,6 +10,7 @@ import {
   WORKFLOW_LIMITS,
 } from "../src/shared/workflow.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
+import { LOCAL_INSPECTOR_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
 
 // What is at stake: HTTP is the write boundary for an argv the daemon will EXECUTE, and there
 // are now two doors into one catalog - the dedicated Command routes and the legacy workflow
@@ -21,7 +22,8 @@ import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-commands-http-"));
 process.env.HARNESS_HOME = join(home, "state");
 
-const { openDb, setAppConfig } = await import("../src/server/db.ts");
+const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
@@ -90,6 +92,46 @@ test("an unknown slot is 404 on read and on write, rather than minting a fifth s
   });
   assert.equal(written.status, 404);
   assert.equal((await written.json() as { code: string }).code, "workflow_command_not_found");
+});
+
+test("Local Inspector Command reads and writes and local-review writes return 404 with the preview off", async t => {
+  const { commands, request } = fixture();
+  const command = commands.get("inspector");
+  assert.ok(command);
+  const inspectorBefore = getAppConfig(APP_CONFIG_ENTRIES.inspector);
+  const setPreview = (enabled: boolean) => {
+    assert.equal(applyFeatureFlagIntent({ kind: "flag", id: LOCAL_INSPECTOR_FLAG_ID, enabled }).ok, true);
+  };
+  t.after(() => {
+    setPreview(false);
+    setAppConfig(APP_CONFIG_ENTRIES.inspector, inspectorBefore ?? {});
+  });
+
+  const commandPath = "/api/workflow-commands/inspector";
+  const saveCommand = () => request(commandPath, {
+    method: "PUT", body: body({ ...command, expectedRevision: command.revision, inspectorSeverity: "minor" }),
+  });
+  const enableLocalReview = () => request("/api/inspector/config", { method: "PUT", body: body({ localReview: true }) });
+
+  setPreview(false);
+  for (const response of [await request(commandPath), await saveCommand()]) {
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: "Local Inspector preview is off" });
+  }
+  const settingDenied = await enableLocalReview();
+  assert.equal(settingDenied.status, 404);
+  assert.deepEqual(await settingDenied.json(), { error: "This feature is disabled.", feature: LOCAL_INSPECTOR_FLAG_ID });
+  assert.deepEqual(commands.get("inspector"), command);
+  assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.inspector), inspectorBefore);
+
+  setPreview(true);
+  assert.equal((await request(commandPath)).status, 200);
+  const savedCommand = await saveCommand();
+  assert.equal(savedCommand.status, 200);
+  assert.partialDeepStrictEqual(await savedCommand.json(), { inspectorSeverity: "minor" });
+  const savedSetting = await enableLocalReview();
+  assert.equal(savedSetting.status, 200);
+  assert.partialDeepStrictEqual(await savedSetting.json(), { localReview: true });
 });
 
 test("invalid ordinary recipes name their own slot rather than CodeRabbit", async () => {

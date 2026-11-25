@@ -4198,6 +4198,7 @@ function migrate(d: DatabaseSync): void {
   // upgrading catalog the same budget a fresh install gets - deliberately a behaviour change,
   // since a gate that re-ran on every repair round is the cost this bounds - and it needs no
   // backfill because the default IS the migrated value for every existing slot.
+  addColumn(d, "workflow_commands", "inspector_severity", "TEXT");
   addColumn(d, "workflow_commands", "max_runs", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
   addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
@@ -4380,6 +4381,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_input_json", "TEXT");
+  addColumn(d, "workflow_submissions", "local_inspector_comparison_json", "TEXT");
   addColumn(d, "workflow_submissions", "coderabbit_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "review_rejections_json", "TEXT");
 

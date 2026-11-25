@@ -1,5 +1,8 @@
+import { codexTokenSplit } from "../harness/codex/usage.ts";
+import { reportLlmSpend, spendReportIsRecordable } from "../llm/spend.ts";
+import type { LlmSpendReport } from "@shared/llm-spend.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
-import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { LOCAL_INSPECTOR_FLAG_ID, PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { locateExecutable } from "../executables/locator.ts";
@@ -38,7 +41,7 @@ async function binary(id: "node" | "git" | "claude" | "codex") {
 }
 
 type ReviewInput = Pick<PersonaWorkloadRequest, "attemptId" | "submissionId" | "accounting" | "prompt" | "images" | "deadline" | "execution">
-  & { persona: import("@shared/workflow.ts").PersonaSnapshot };
+  & { persona?: import("@shared/workflow.ts").PersonaSnapshot };
 
 export class RepositoryReview {
   private readonly dispatching = new Set<string>();
@@ -109,8 +112,9 @@ export class RepositoryReview {
 
   private current(id: string) {
     // The materializer calls this before opening the checkout and before returning its lease.
-    if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) return undefined;
-    return this.store.currentRepositoryWorkload(id);
+    const owner = this.store.currentRepositoryWorkload(id);
+    if (!owner || !featureEnabled(repositoryReviewFlag(owner.purpose))) return undefined;
+    return owner;
   }
 
   interrupt() {
@@ -161,7 +165,7 @@ export class RepositoryReview {
     const executor = this.injected ?? await this.localExecutor(service);
     if (executor.repositoryEvidenceCapability !== request.requiredCapability) throw new Error("Repository executor capability mismatch");
     // Executable lookup can yield after the engine's check. Recheck before granting workload ownership.
-    if (!featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) throw new Error("Persona repository access preview is off");
+    if (!featureEnabled(repositoryReviewFlag(request.accounting.purpose))) throw new Error("Repository review preview is off");
     this.store.startRepositoryWorkload(request, !this.injected);
     const cancel = new AbortController();
     const signal = AbortSignal.any([shutdown, cancel.signal, AbortSignal.timeout(Math.max(1, input.deadline - Date.now()))]);
@@ -195,6 +199,7 @@ export class RepositoryReview {
     let events: AsyncIterator<PersonaWorkloadEvent> | undefined;
     let streamFinished = false;
     let sequence = 0;
+    let queriedRepository = false;
     let stage: "new" | "accepted" | "repository_verified" | "persona_started" | "cancelled" = "new";
     try {
       signal.throwIfAborted();
@@ -241,19 +246,30 @@ export class RepositoryReview {
         this.store.recordRepositoryEvent(request, event, hash, () => Boolean(this.current(id)));
         if (event.type === "repository_query" && ["unavailable","audit_unavailable","budget_exhausted","timeout","cancelled"].includes(event.audit.code ?? ""))
           throw new Error(`Repository query failed: ${event.audit.code}`);
+        if (event.type === "repository_query" && event.audit.status === "ok" && event.audit.items > 0) queriedRepository = true;
         if (event.type === "terminal") terminal = event;
       }
       signal.throwIfAborted();
       if (!terminal || !this.current(id)) throw new Error("No current terminal repository verdict");
+      if (request.accounting.purpose === "inspector_review") reportInspectorSpend(request.execution, terminal.result);
       if (terminal.result.status === "failed") {
         errorCode = terminal.result.code;
         if (terminal.result.providerFailure) throw new ProviderFailure(errorCode, null, terminal.result.providerFailure);
         throw new Error(`Repository workload failed: ${errorCode}`);
       }
-      const verdict = terminal.result.result.verdict;
-      const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(c => c.evidence);
-      this.store.verifyRepositoryCitations(id, refs);
-      verdictJson = JSON.stringify(verdict);
+      const result = terminal.result.result;
+      if (request.accounting.purpose === "inspector_review") {
+        if (result.kind !== "inspector_verdict" || !queriedRepository) {
+          errorCode = "invalid_verdict";
+          throw new Error("Local Inspector did not complete a verified repository query");
+        }
+      } else {
+        if (result.kind !== "persona_verdict") throw new Error("Unexpected repository verdict kind");
+        const verdict = result.verdict;
+        const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(c => c.evidence);
+        this.store.verifyRepositoryCitations(id, refs);
+      }
+      verdictJson = JSON.stringify(result.verdict);
     } finally {
       clearInterval(timer);
       // Iterator teardown may itself wait for the provider. Request cancellation before closing it.
@@ -293,4 +309,30 @@ export class RepositoryReview {
       throw error;
     }
   }
+}
+
+function repositoryReviewFlag(purpose: string) {
+  return purpose === "inspector_review" ? LOCAL_INSPECTOR_FLAG_ID : PERSONA_REPOSITORY_ACCESS_FLAG_ID;
+}
+
+function reportInspectorSpend(
+  execution: PersonaWorkloadRequest["execution"],
+  result: Extract<PersonaWorkloadEvent, { type: "terminal" }>["result"],
+) {
+  const { usage, providerRunId } = result;
+  if (!usage || !providerRunId) return;
+  const tokens = execution.provider === "codex" ? codexTokenSplit(usage) : {
+    input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0, reasoningOutput: 0,
+    cacheRead: usage.cache_read_input_tokens ?? 0, cacheWrite: usage.cache_creation_input_tokens ?? 0,
+  };
+  if (!tokens) return;
+  const report: LlmSpendReport = {
+    role: "inspector:review", runner: execution.provider, runId: providerRunId, ts: Date.now(),
+    models: [{
+      modelId: execution.model,
+      ...tokens,
+      reportedCostUsd: usage.total_cost_usd ?? null,
+    }],
+  };
+  if (spendReportIsRecordable(report)) reportLlmSpend(report);
 }

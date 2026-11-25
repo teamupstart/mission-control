@@ -1,3 +1,4 @@
+export const LOCAL_INSPECTOR_FLAG_ID = "local-inspector" as const;
 export const BACKGROUND_REASONING_EFFORT_FLAG_ID = "background-reasoning-effort" as const;
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 export const MACOS_TERMINAL_FLAG_ID = "macos-terminal" as const;

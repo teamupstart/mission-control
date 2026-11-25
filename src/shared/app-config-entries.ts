@@ -256,6 +256,7 @@ const standingFields = {
 } satisfies Record<keyof StandingInstructionsConfig, AppConfigValueClass>;
 
 const inspectorFields = {
+  localReview: "setting",
   runner: "setting",
   enabled: "setting",
   mode: "setting",

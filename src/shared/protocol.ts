@@ -1,3 +1,4 @@
+import { LocalInspectorReviewSchema } from "./inspector-review.ts";
 export { FeatureFlagIntentSchema } from "./feature-flags.ts";
 export { shapingConfigView, ShapingIntentSchema, ShapingTestRequestSchema } from "./shaping.ts";
 export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
@@ -3048,6 +3049,7 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
  * An empty `repoAllowlist` grants no permission to post under the operator's GitHub identity.
  */
 export const InspectorConfigSchema = z.object({
+  localReview: z.boolean().default(false),
   /**
    * Provider used for reviews and follow-up replies. Empty means the Inspector never chose,
    * which hands the question to the app-wide ladder (`llm` config, then `MISSION_LLM_RUNNER`,
@@ -7410,6 +7412,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
   }),
   evidence: z.object({
     coderabbit: CodeRabbitConfigSnapshotSchema.optional(),
+    localInspectorEnabled: z.boolean().optional(),
     headSha: z.string().max(100).nullable(),
     contentTreeOid: CommitOidSchema.nullable().optional().default(null),
     publication: z.object({
@@ -7901,7 +7904,7 @@ export const WorkflowCheckCommandSchema = z.object({
   repoRoot: z.string().min(1).max(WORKFLOW_LIMITS.checkRepoRoot),
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   command: WorkflowCommandArgvSchema,
-}).refine((entry) => entry.slot !== "coderabbit", { message: "CodeRabbit uses typed repository-root tuning, not legacy argv" });
+}).refine((entry) => entry.slot !== "coderabbit" && entry.slot !== "inspector", { message: "Managed review slots do not accept legacy argv" });
 
 /** One repository or subdirectory exception, inside the slot that owns it. */
 export const CodeRabbitTuningSchema = z.object({
@@ -7938,6 +7941,7 @@ export const WorkflowCommandOverrideSchema = z.object({
  * do it: two open windows editing one slot must not silently overwrite one another.
  */
 export const UpdateWorkflowCommandSchema = z.object({
+  inspectorSeverity: z.enum(INSPECTOR_SEVERITIES).optional(),
   expectedRevision: z.number().int().min(1),
   defaultCommand: WorkflowCommandArgvSchema.nullable(),
   maxRuns: z
@@ -8127,6 +8131,7 @@ export const CodeRabbitReviewSummarySchema = z.object({
 
 /** What a Check node recorded, read back out of `workflow_node_attempts.output_json`. */
 export const WorkflowCheckOutcomeSchema = z.object({
+  localInspector: LocalInspectorReviewSchema.optional(),
   review: CodeRabbitReviewSummarySchema.optional(),
   warning: z.string().max(2000).optional(),
   diagnosticError: z.string().max(2000).optional(),

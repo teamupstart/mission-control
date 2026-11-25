@@ -1,3 +1,5 @@
+import { LOCAL_INSPECTOR_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "../feature-flags/index.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { INSPECTOR_MODEL_ENV, inspectorEffortChoice, resolveInspectorModel } from "@shared/inspector.ts";
@@ -17,17 +19,23 @@ import { backgroundReasoningEffortEnabled, llmRunnerChoice } from "../llm/config
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.inspector;
 
 /** Read saved settings, including the defaults written when a new installation starts. */
-export function getInspectorConfig(): InspectorConfig {
+function storedInspectorConfig(): InspectorConfig {
   const parsed = InspectorConfigSchema.safeParse(getAppConfig(CONFIG_ENTRY) ?? {});
   return parsed.success ? parsed.data : InspectorConfigSchema.parse({});
 }
 
+export function getInspectorConfig(): InspectorConfig {
+  const cfg = storedInspectorConfig();
+  return featureEnabled(LOCAL_INSPECTOR_FLAG_ID) ? cfg : { ...cfg, localReview: false };
+}
+
 /** Merge a patch over the current config, persist, and return the result. */
 export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig {
-  const cur = getInspectorConfig();
+  const cur = storedInspectorConfig();
+  if (!featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) patch = { ...patch, localReview: cur.localReview };
   const next = InspectorConfigSchema.parse({ ...cur, ...patch, ...pinInspectorProvider(cur, patch) });
   setAppConfig(CONFIG_ENTRY, next);
-  return next;
+  return getInspectorConfig();
 }
 
 /**

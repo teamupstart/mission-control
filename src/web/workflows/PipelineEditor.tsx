@@ -1,3 +1,4 @@
+import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
 import { useMemo, useRef, useState } from "react";
 import {
   addableSessionActions,
@@ -764,6 +765,7 @@ export function PipelineEditor({
    * why the pickers below no longer disable on an empty Persona list - only `readOnly` closes
    * them now.
    */
+  const visibleCommandSlots = useWorkflowCommandSlots();
   const memberOptions = (
     <>
       {activePersonas.length > 0 && (
@@ -776,7 +778,7 @@ export function PipelineEditor({
         </optgroup>
       )}
       <optgroup label="Commands">
-        {WORKFLOW_CHECK_SLOTS.map((slot) => (
+        {visibleCommandSlots.map((slot) => (
           <option key={slot} value={memberOptionValue({ kind: "check", slot })}>
             {checkLabel(slot)}
           </option>

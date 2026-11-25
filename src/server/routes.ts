@@ -1,5 +1,5 @@
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
-import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { LOCAL_INSPECTOR_FLAG_ID, PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, requireFeature } from "./feature-flags/index.ts";
@@ -2939,6 +2939,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const code = `workflow_command_${result.reason}`;
     if (result.reason === "invalid_recipe") return c.json({ error: c.req.param("slot") === "coderabbit"
       ? "CodeRabbit requires repository-root tuning and a supported coderabbit review command"
+      : c.req.param("slot") === "inspector" ? "Local Inspector accepts a severity, timeout and run allowance without an argv recipe"
       : `${c.req.param("slot")} requires nonempty argv overrides without review tuning`, code, current: result.current }, 400);
     if (result.reason === "not_found") {
       return c.json({ error: "no such command slot", code }, 404);
@@ -2951,6 +2952,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.list());
   });
   app.get("/api/workflow-commands/:slot", (c) => {
+    if (c.req.param("slot") === "inspector" && !featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) {
+      return c.json({ error: "Local Inspector preview is off" }, 404);
+    }
     const manager = workflowCommandManager();
     if (!manager) return c.json({ error: "Command catalog unavailable" }, 503);
     const view = manager.get(c.req.param("slot"));
@@ -2960,6 +2964,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     maxSize: WORKFLOW_COMMAND_BODY_MAX_BYTES,
     onError: (c) => c.json({ error: "Command request is too large" }, 413),
   }), async (c) => {
+    if (c.req.param("slot") === "inspector" && !featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) {
+      return c.json({ error: "Local Inspector preview is off" }, 404);
+    }
     const manager = workflowCommandManager();
     if (!manager) return c.json({ error: "Command catalog unavailable" }, 503);
     const parsed = await parseBody(c, UpdateWorkflowCommandSchema);
@@ -8176,6 +8183,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     if (parsed.data.effort !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
       return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
+    if (parsed.data.localReview !== undefined && !featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: LOCAL_INSPECTOR_FLAG_ID }, 404);
     }
     const next = setInspectorConfig(parsed.data);
     // The per-session chip bakes `mode` in when the summary is resolved, and the tick

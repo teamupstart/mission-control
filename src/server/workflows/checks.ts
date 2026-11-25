@@ -1,3 +1,5 @@
+import { runLocalInspector, type LocalInspectorInput } from "./local-inspector.ts";
+import type { LocalInspectorReview } from "@shared/inspector-review.ts";
 import { runCodeRabbit, type probeCodeRabbit } from "./coderabbit.ts";
 import { commandMisfitSignal } from "./command-fit.ts";
 import { WORKFLOW_COMMAND_INTERPRETERS, type CodeRabbitComparison, type CodeRabbitConfigSnapshot, type CodeRabbitReviewSummary } from "@shared/workflow.ts";
@@ -68,6 +70,7 @@ export interface CheckInfrastructureFailure {
 }
 
 export interface CheckActionRequiredFailure {
+  localInspector?: LocalInspectorReview;
   kind: "action_required";
   reason: string;
   setup?: boolean;
@@ -349,6 +352,7 @@ function runCount(runs: number): string {
  * different halves of the same question - see `resolveWorkflowCommand`.
  */
 export interface RunCheckInput {
+    localInspector?: LocalInspectorInput;
     slot: WorkflowCheckSlot;
     coderabbit?: {
       yaml?: CodeRabbitConfigSnapshot;
@@ -398,6 +402,7 @@ export async function runCheck(
   deps: CheckRunDeps = {},
 ): Promise<CheckResult> {
   const { slot, policy } = input;
+  if (WORKFLOW_COMMAND_INTERPRETERS[slot] === "inspector") return runLocalInspector(input);
   if (WORKFLOW_COMMAND_INTERPRETERS[slot] === "coderabbit") return runCodeRabbit(input, deps);
 
   // Unconfigured is asked FIRST, before consent. A repository nobody wrote a command for is

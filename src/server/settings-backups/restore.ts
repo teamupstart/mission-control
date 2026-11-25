@@ -378,8 +378,10 @@ export function preflightSettingsRestore(
   ));
 
   blockers.push(...keyedDuplicates(staged.workflowCommands, (row) => row.slot, "Command slot"));
-  if (!staged.workflowCommands.some((row) => row.slot === "coderabbit")) {
-    staged.workflowCommands.push(emptyWorkflowCommandView("coderabbit"));
+  for (const slot of ["coderabbit", "inspector"] as const) {
+    if (!staged.workflowCommands.some((row) => row.slot === slot)) {
+      staged.workflowCommands.push(emptyWorkflowCommandView(slot));
+    }
   }
   const expectedSlots = new Set<string>(WORKFLOW_CHECK_SLOTS);
   for (const command of staged.workflowCommands) {

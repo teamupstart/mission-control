@@ -37,6 +37,12 @@ existing dashboard API. See [Recurring missions](recurring-missions.md#creating-
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
+**Local Inspector** (`local-inspector`) exposes the pre-PR workflow stage, its Command tuning
+and the Local review setting in GitHub Inspector. It uses the repository workload independently
+of the Persona repository access preview. Turning the flag off hides its authoring controls
+and skips the stage when a saved workflow reaches it. See
+[Local Inspector Command](workflows.md#local-inspector-command-preview).
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one

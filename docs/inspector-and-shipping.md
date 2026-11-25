@@ -427,6 +427,15 @@ which also shows its fingerprint and timestamps. The modal reads
 stays open. It has no Resolve: that stays on the row, and closes every finding on the pull
 request at once.
 
+## Local Inspector (preview)
+
+**Review in the workflow before the pull request opens** runs the Inspector's review when a
+workflow reaches a [Local Inspector Command](workflows.md#local-inspector-command-preview).
+Inspector must be on. Both Dry run and Live support local review. Findings go to the author's
+session, and enabled reviews require a verified read-only workload on the submitted checkout.
+Tune the blocking severity, timeout and allowance in **Library > Commands > Local Inspector**.
+The GitHub Inspector continues to review posted heads in this preview.
+
 ## Shipping (YOLO mode)
 
 **Settings → Shipping** is where you decide what lands without you. **YOLO mode** merges

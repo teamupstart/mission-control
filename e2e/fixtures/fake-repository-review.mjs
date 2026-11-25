@@ -10,7 +10,7 @@ const tools = ["read", "search", "glob", "git_status", "git_diff", "git_show", "
 async function review(mcp, prompt) {
   // The browser changes the live checkout after the capture event, then releases this fixture.
   let release = new URL("../repository-review-ready", import.meta.url);
-  if (prompt.includes("E2E_LOCAL_CLEANUP_RESTART")) {
+  if (prompt.includes("E2E_LOCAL_CLEANUP_RESTART") || prompt.includes("E2E_LOCAL_INSPECTOR_RESTART")) {
     release = new URL(`../repository-review-ready-${process.pid}`, import.meta.url);
     writeFileSync(new URL("../repository-provider-started", import.meta.url), String(process.pid));
   }
@@ -19,6 +19,9 @@ async function review(mcp, prompt) {
     if (Date.now() >= expires) throw Error("Timed out waiting for the fixture checkout change");
     await delay(25);
   }
+  const inspector = prompt.includes("inspector_verdict");
+  const inspectorResult = (summary, findings = [], resolved = []) =>
+    ({ result: { kind: "inspector_verdict", verdict: { summary, findings, resolved } } });
   const args = prompt.includes("E2E_REPOSITORY_MCP_FAILURE")
     ? mcp.args.map(arg => arg.startsWith("REPOSITORY_MCP_DESCRIPTOR=") ? "REPOSITORY_MCP_DESCRIPTOR=/missing-fixture-descriptor" : arg)
     : mcp.args;
@@ -43,6 +46,24 @@ async function review(mcp, prompt) {
     await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     const call = async (name, args) => JSON.parse((await request("tools/call", { name, arguments: args })).content[0].text);
+    if (inspector) {
+      if (prompt.includes("E2E_LOCAL_INSPECTOR_NO_QUERY")) return inspectorResult("Prompt only");
+      const outsideDiff = await call("read", { path: "README.md" });
+      const changed = await call("read", { path: "submitted.txt" });
+      if (!outsideDiff.items[0]?.text.startsWith("# ") || !changed.items[0]?.text) throw Error("Submitted checkout is unavailable");
+      if (changed.items[0].text.startsWith("fixed")) {
+        const fingerprint = /- ([a-f0-9]+) - submitted\.txt:/.exec(prompt)?.[1];
+        if (!fingerprint) throw Error("An earlier unresolved finding was not carried");
+        return inspectorResult("Repair verified", [], [fingerprint]);
+      }
+      if (prompt.includes("E2E_LOCAL_INSPECTOR_CARRY_OFF_DIFF") && prompt.includes("- unrelated.txt")) {
+        return inspectorResult("The unrelated change raises no new findings");
+      }
+      return inspectorResult("The placeholder is still in use", [{
+        path: "submitted.txt", line: 1, severity: "major",
+        title: "Replace the local placeholder", body: "The submitted worktree still contains the placeholder.",
+      }]);
+    }
     if (prompt.includes("E2E_QUERY_SNAPSHOTS")) {
       const read = await call("read", { path: "submitted.txt", length: 2 });
       const evidence = [{ kind: "repository", operationId: read.operationId, evidenceHandleId: read.items[0].evidenceHandleId }];

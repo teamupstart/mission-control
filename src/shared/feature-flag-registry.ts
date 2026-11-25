@@ -35,7 +35,16 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
+export const LOCAL_INSPECTOR_FLAG_ID = "local-inspector" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: LOCAL_INSPECTOR_FLAG_ID,
+    label: "Local Inspector",
+    description: "Review the submitted checkout in a workflow before opening a pull request.",
+    stage: "preview",
+    keywords: ["workflow", "inspector", "review", "repository"],
+  },
   {
     id: BUG_FIX_INSPECTOR_FLAG_ID,
     label: "Bug Fix Inspector",

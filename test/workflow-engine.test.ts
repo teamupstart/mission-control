@@ -17,7 +17,7 @@ import type {
   WorkflowCommandView,
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
-import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { DEFAULT_WORKFLOW_POLICY, emptyWorkflowCommandView } from "../src/shared/workflow.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-engine-"));
@@ -146,6 +146,7 @@ function seedSubmission(
   id: string,
   executionGraph: PublishedWorkflowGraph,
   captured: WorkflowContextSnapshot = context,
+  repoRoot = "/repo",
 ): InstanceType<typeof WorkflowStore> {
   seedNamedVersion(id, executionGraph);
   const store = new WorkflowStore();
@@ -156,8 +157,8 @@ function seedSubmission(
     sessionId: `session-${id}`,
     sessionAgent: "claude",
     sessionName: id,
-    sessionCwd: "/repo",
-    sessionRepoRoot: "/repo",
+    sessionCwd: repoRoot,
+    sessionRepoRoot: repoRoot,
     triggerMode: "manual",
     deliveryMode: "preview",
     maxRepairRounds: 5,
@@ -3500,3 +3501,173 @@ test("repository review verifies executor capability, the live grant at material
     }[scenario]);
   }
 });
+
+for (const { id, description, query, severity } of [
+  { id: "local-inspector-repair", description: "carries off-diff findings across restart and waits for a verified repair before Pull Request", query: true, severity: "major" },
+  { id: "local-inspector-without-query", description: "rejects a terminal verdict without a verified repository query", query: false, severity: "major" },
+  { id: "local-inspector-saved-severity", description: "uses the saved minor threshold to fail before Pull Request", query: true, severity: "minor" },
+] as const) {
+  test(`Local Inspector ${description}`, async t => {
+    const { execFileSync } = await import("node:child_process");
+    const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+    const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+    const { fingerprint } = await import("../src/server/inspector/marker.ts");
+    const { WorkflowRepositoryArtifactService } = await import("../src/server/workflows/repository-artifact/service.ts");
+    const { WorkflowCommandArtifactService } = await import("../src/server/workflows/command-artifacts.ts");
+    const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
+    const { InspectorConfigPatchSchema, WorkflowCheckOutcomeSchema } = await import("../src/shared/protocol.ts");
+    const prior = InspectorConfigPatchSchema.parse(getInspectorConfig());
+    applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: true });
+    setInspectorConfig({ enabled: true, localReview: true, runner: "codex", model: "gpt-5.6-sol" });
+    t.after(() => {
+      setInspectorConfig(prior);
+      applyFeatureFlagIntent({ kind: "flag", id: "local-inspector", enabled: false });
+    });
+    const repo = mkdtempSync(join(tmpdir(), "mission-local-inspector-engine-"));
+    t.after(() => rmSync(repo, { recursive: true, force: true }));
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+    const commit = (name: string) => git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", name);
+    git("init", "-q");
+    commit("base");
+    const base = git("rev-parse", "HEAD");
+    git("update-ref", "refs/remotes/origin/main", base);
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+
+    const runId = `run-${id}`;
+    const first = `submission-${id}`;
+    const store = seedSubmission(id, {
+      nodes: [
+        graph.nodes[0]!,
+        { id: "inspect", kind: "check", slot: "inspector", position: { x: 200, y: 0 } },
+        { id: "pr", kind: "session_action", position: { x: 400, y: 0 }, action: {
+          sourceSessionActionId: "builtin:pull-request", sourceRevision: 1, name: "Pull Request",
+          description: "", promptMarkdown: "Open the pull request", requiredSkillId: null,
+          completion: { kind: "pull_request" },
+        } },
+        graph.nodes.at(-1)!,
+      ],
+      edges: [
+        { id: "inspect", source: "session", sourcePort: "submitted", target: "inspect", targetPort: "activate" },
+        { id: "publish", source: "inspect", sourcePort: "pass", target: "pr", targetPort: "activate" },
+        { id: "repair", source: "inspect", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+        { id: "end", source: "pr", sourcePort: "complete", target: "end", targetPort: "terminal" },
+      ],
+    }, context, repo);
+    if (severity === "minor") {
+      const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
+      const catalog = new WorkflowCommandManager(new Registry(), store);
+      const command = catalog.get("inspector");
+      assert.ok(command);
+      assert.equal(command.inspectorSeverity, "major");
+      const saved = catalog.replace("inspector", { ...command, expectedRevision: command.revision, inspectorSeverity: "minor" });
+      assert.ok(saved.ok);
+      t.after(() => {
+        assert.ok(catalog.replace("inspector", { ...command, expectedRevision: saved.view.revision }).ok);
+      });
+    }
+    const artifacts = WorkflowRepositoryArtifactService.forRoot(store);
+    const capture = async (id: string, text: string, path = "submitted.txt") => {
+      writeFileSync(join(repo, path), text + "\n");
+      git("add", path);
+      commit(text);
+      const head = git("rev-parse", "HEAD");
+      const evidence = { ...context.evidence, headSha: head, reviewCommit: head, localInspectorEnabled: true,
+        contentTreeOid: git("rev-parse", "HEAD^{tree}") };
+      store.setSubmissionState(id, "capturing");
+      const candidate = await artifacts.prepare({ checkout: repo, sourceBase: base }, new AbortController().signal);
+      const claim = await artifacts.promote(candidate, id);
+      store.commitRepositoryCaptureActivation({ ...claim, capture: {
+        context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+        readiness: null, fingerprint: head, repositoryFingerprint: head,
+      } });
+    };
+
+    const finding = { path: "submitted.txt", line: 1, severity, title: "Remove placeholder", body: "The task still contains a placeholder." } as const;
+    const fp = fingerprint(finding.path, finding.title);
+    const options: ConstructorParameters<typeof WorkflowEngine>[2] = {
+      commandArtifacts: new WorkflowCommandArtifactService(),
+      workflowPolicy: () => ({ ...DEFAULT_WORKFLOW_POLICY, checksEnabled: true, repoAllowlist: [repo] }),
+      repositoryExecutor: {
+        repositoryEvidenceCapability: REPOSITORY_EVIDENCE_CAPABILITY,
+        async *dispatch(request) {
+          assert.equal(request.accounting.purpose, "inspector_review");
+          assert.equal(request.execution.provider, "codex");
+          assert.equal(request.persona, undefined);
+          assert.equal(store.hasActiveRepositoryClaim(request.submissionId), true);
+          let next = 0;
+          const event = () => ({ eventId: randomUUID(), sequence: ++next, timestamp: Date.now(),
+            workloadId: request.workloadId, attemptId: request.attemptId });
+          yield { ...event(), type: "accepted" };
+          yield { ...event(), type: "repository_verified" };
+          yield { ...event(), type: "persona_started" };
+          if (query) yield { ...event(), type: "repository_query", audit: {
+            operationId: randomUUID(), workloadId: request.workloadId, attemptId: request.attemptId,
+            snapshotDigest: request.artifact.digest, operation: "read", inputHash: "a".repeat(64),
+            status: "ok", code: null, bytes: 10, items: 1, durationMs: 1, truncated: false, handles: [],
+          } };
+          const subsequent = request.submissionId !== first;
+          if (subsequent) assert.match(request.prompt, new RegExp(fp));
+          const resolved = request.submissionId === `${first}-repair` ? [fp] : [];
+          yield { ...event(), type: "terminal", capability: REPOSITORY_EVIDENCE_CAPABILITY,
+            result: { status: "completed", usage: {}, result: { kind: "inspector_verdict", verdict: {
+              summary: "Fixture review", findings: subsequent || !query ? [] : [finding], resolved,
+            } } } };
+        },
+        async reconcile(workloadId) { return { workloadId, state: "terminal", events: [] }; },
+        async cancel() {},
+      },
+    };
+    await capture(first, "placeholder");
+    let engine = new WorkflowEngine(store, undefined, options);
+    t.after(async () => { await engine.stop(); });
+    engine.start();
+    engine.activateSubmission(first);
+    if (severity === "minor") {
+      await waitFor(() => store.latestAttemptForNode(first, "inspect")?.state === "completed");
+      const outcome = WorkflowCheckOutcomeSchema.parse(store.latestAttemptForNode(first, "inspect")?.output);
+      assert.equal(outcome.status, "failed");
+      assert.partialDeepStrictEqual(outcome.localInspector, { status: "failed", blockingSeverity: "minor", findingCount: 1 });
+    }
+    await waitFor(() => store.getRun(runId)?.status === (query ? "waiting_for_session" : "blocked"));
+    assert.equal(store.latestAttemptForNode(first, "pr"), null);
+    if (!query) {
+      assert.equal(store.getRun(runId)?.currentPhase, "command_action_required");
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), 0);
+      assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "", /verified repository query/);
+      return;
+    }
+    assert.match(JSON.stringify(store.getRun(runId)?.gateState), /Remove placeholder/);
+    assert.equal(store.checkRunsSpent(runId, "inspector", null), 1);
+    if (severity === "minor") return;
+
+    await engine.stop();
+    // The next base already contains the original defect, so the unrelated submission's
+    // diff omits its file even though the sealed checkout still contains the defect.
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    const second = `${first}-unrelated`;
+    store.createRepairSubmission({ id: second, runId, round: 2, triggerSource: "manual",
+      triggerKey: `manual:${id}:unrelated`, context: {}, evidence: {}, now: Date.now() });
+    await capture(second, "unrelated", "notes.txt");
+    assert.equal(git("diff", "--name-only", "refs/remotes/origin/main", "HEAD"), "notes.txt");
+    engine = new WorkflowEngine(store, undefined, options);
+    engine.start();
+    engine.activateSubmission(second);
+    await waitFor(() => ["completed", "error"].includes(store.latestAttemptForNode(second, "inspect")?.state ?? ""));
+    assert.equal(store.latestAttemptForNode(second, "inspect")?.error, null);
+    const carried = WorkflowCheckOutcomeSchema.parse(store.latestAttemptForNode(second, "inspect")?.output);
+    assert.partialDeepStrictEqual(carried.localInspector, { status: "failed", findingCount: 1 });
+    assert.match(carried.output, /Remove placeholder/);
+    assert.equal(store.latestAttemptForNode(second, "pr"), null);
+    await waitFor(() => store.getRun(runId)?.status === "waiting_for_session");
+
+    const third = `${first}-repair`;
+    store.createRepairSubmission({ id: third, runId, round: 3, triggerSource: "manual",
+      triggerKey: `manual:${id}:repair`, context: {}, evidence: {}, now: Date.now() });
+    await capture(third, "fixed");
+    engine.activateSubmission(third);
+    await waitFor(() => store.latestAttemptForNode(third, "pr")?.state === "waiting");
+    assert.equal(store.checkRunsSpent(runId, "inspector", null), 3);
+    assert.match(JSON.stringify(store.latestAttemptForNode(third, "inspect")?.output), /"status":"passed"/);
+  });
+}

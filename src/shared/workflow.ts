@@ -1,3 +1,4 @@
+import { DEFAULT_LOCAL_INSPECTOR_SEVERITY, type LocalInspectorReview } from "./inspector-review.ts";
 import type { WorkflowFindingReason } from "./workflow-reasons.ts";
 import type { KindWorkflowDefaults } from "./task.ts";
 import { LLM_IMAGE_LIMITS, LLM_RUNNER_IDS, resolveLlmEffort } from "./llm.ts";
@@ -2017,8 +2018,12 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
  * hard-coding `npm test` would be wrong on every repository that is not the one it was
  * written in. The operator describes the machine; the version describes the gate.
  */
-export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit"] as const;
+export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build", "documentation", "coderabbit", "inspector"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
+
+export function workflowCommandName(slot: WorkflowCheckSlot): string {
+  return slot === "inspector" ? "Local Inspector" : slot;
+}
 
 /**
  * The provider and model ONE Persona occurrence runs under, chosen by the workflow.
@@ -2085,8 +2090,13 @@ export interface WorkflowDraftGraph {
   edges: WorkflowEdge[];
 }
 
-export function workflowRequiresRepositoryCapture(graph: PublishedWorkflowGraph): boolean {
-  return graph.nodes.some((node) => node.kind === "persona" && node.persona.repositoryAccess === "read");
+export function workflowRequiresRepositoryCapture(graph: PublishedWorkflowGraph, localInspectorEnabled = false): boolean {
+  return graph.nodes.some((node) => (node.kind === "persona" && node.persona.repositoryAccess === "read")
+    || (localInspectorEnabled && node.kind === "check" && node.slot === "inspector"));
+}
+
+export function workflowCapturedLocalInspector(evidence: WorkflowJson): boolean {
+  return !!evidence && typeof evidence === "object" && !Array.isArray(evidence) && evidence.localInspectorEnabled === true;
 }
 
 export interface PersonaSnapshot {
@@ -2230,7 +2240,7 @@ export function withNodeExecutionOverride<
 export function verdictAuthor(node: WorkflowVerdictNode): string {
   // "Command", not the wire kind. The node is serialized as `check` forever - see
   // `WorkflowCommandView` - and every surface a person reads says Command.
-  return node.kind === "persona" ? node.persona.name : `Command · ${node.slot}`;
+  return node.kind === "persona" ? node.persona.name : `Command · ${workflowCommandName(node.slot)}`;
 }
 
 export type WorkflowSessionActionNode = Extract<PublishedWorkflowNode, { kind: "session_action" }>;
@@ -2890,6 +2900,7 @@ export const WORKFLOW_LLM_PURPOSES = [
   "persona_review",
   "context_reconciliation",
   "criterion_fulfillment",
+  "inspector_review",
 ] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
@@ -3079,6 +3090,7 @@ export interface CodeRabbitReviewSummary {
  */
 export interface WorkflowCommandView {
   slot: WorkflowCheckSlot;
+  inspectorSeverity?: LocalInspectorReview["blockingSeverity"];
   /**
    * What this slot runs when no override matches - repository-neutral, and null when the
    * operator has not named one.
@@ -3143,13 +3155,13 @@ export interface WorkflowCommandView {
  */
 export const WORKFLOW_COMMAND_DEFAULT_MAX_RUNS = 1;
 export function defaultWorkflowCommandMaxRuns(slot: WorkflowCheckSlot): number {
-  return slot === "coderabbit" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
+  return slot === "coderabbit" || slot === "inspector" ? 10 : WORKFLOW_COMMAND_DEFAULT_MAX_RUNS;
 }
 
 /** Browser-safe result selection; server interpreters consume this descriptor. */
-export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit"> = {
+export const WORKFLOW_COMMAND_INTERPRETERS: Record<WorkflowCheckSlot, "exit_code" | "coderabbit" | "inspector"> = {
   test: "exit_code", lint: "exit_code", typecheck: "exit_code", build: "exit_code",
-  documentation: "exit_code", coderabbit: "coderabbit",
+  documentation: "exit_code", coderabbit: "coderabbit", inspector: "inspector",
 };
 
 export const WORKFLOW_COMMAND_FAILURE_POLICIES = ["skip", "block"] as const;
@@ -3167,6 +3179,7 @@ export const WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS: Record<WorkflowCheckSlot, numb
   build: 10 * 60_000,
   documentation: 10 * 60_000,
   coderabbit: 45 * 60_000,
+  inspector: 10 * 60_000,
 };
 
 export function effectiveWorkflowCommandTimeoutMs(
@@ -3186,8 +3199,9 @@ export function emptyWorkflowCommandView(
     overrides: [],
     maxRuns: defaultWorkflowCommandMaxRuns(slot),
     timeoutMs: null,
-    onUnavailable: slot === "coderabbit" ? "block" : "skip",
-    onBudgetExhausted: "skip",
+    onUnavailable: WORKFLOW_COMMAND_INTERPRETERS[slot] === "exit_code" ? "skip" : "block",
+    onBudgetExhausted: slot === "inspector" ? "block" : "skip",
+    ...(slot === "inspector" ? { inspectorSeverity: DEFAULT_LOCAL_INSPECTOR_SEVERITY } : {}),
     revision: 1,
     createdAt: now,
     updatedAt: now,
@@ -3231,6 +3245,7 @@ export function workflowCommandRunsFact(maxRuns: number): string {
  * feature is built to stop making.
  */
 export const WORKFLOW_COMMAND_PURPOSE: Record<WorkflowCheckSlot, string> = {
+  inspector: "Local Inspector reviews the submitted checkout before the Pull Request action.",
   coderabbit: "Committed CodeRabbit review. Either a root .coderabbit.yaml or .coderabbit.config.ts enables it, unless the YAML turns it off with reviews.auto_review.enabled: false.",
   documentation: "The documentation checks for this repository: links, formatting, generated references, or a docs build.",
   test: "The automated test suite this repository gates on.",
@@ -3287,9 +3302,10 @@ export const CODERABBIT_COMMAND_STATUS_NOTE =
  * flag says - the flag describes an absence, and a slot the stream delivered is not absent.
  */
 export function workflowCommandFact(
-  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "inspectorSeverity"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
+  if (view?.slot === "inspector") return `Blocks at ${view.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY} and above`;
   if (view?.slot === "coderabbit") return `YAML-enabled defaults${view.overrides.length ? ` · ${view.overrides.length} tuning ${view.overrides.length === 1 ? "rule" : "rules"}` : ""}`;
   if (!view && !hasSnapshot) return WORKFLOW_COMMAND_UNKNOWN;
   const overrides = view?.overrides.length ?? 0;
@@ -3323,7 +3339,7 @@ export function workflowCommandFact(
  * carry `COMMAND_AUTHORIZATION_NOTE` instead of a promise.
  */
 export function workflowCommandStatusSentence(
-  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides"> & { slot?: WorkflowCheckSlot }) | null | undefined,
+  view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "inspectorSeverity"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
 ): string {
   if (view?.slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
@@ -3367,7 +3383,7 @@ export function legacyCheckCommands(
   const bySlot = new Map(views.map((view) => [view.slot, view]));
   const rows: WorkflowCheckCommand[] = [];
   for (const slot of WORKFLOW_CHECK_SLOTS) {
-    if (slot === "coderabbit") continue;
+    if (WORKFLOW_COMMAND_INTERPRETERS[slot] !== "exit_code") continue;
     for (const override of bySlot.get(slot)?.overrides ?? []) {
       rows.push({ repoRoot: override.repoRoot, slot, command: [...override.command] });
     }
@@ -3782,6 +3798,7 @@ export const WORKFLOW_CHECK_STATUSES = [
 export type WorkflowCheckStatus = (typeof WORKFLOW_CHECK_STATUSES)[number];
 
 export interface WorkflowCheckOutcome {
+  localInspector?: LocalInspectorReview;
   status: WorkflowCheckStatus;
   review?: CodeRabbitReviewSummary;
   warning?: string;
@@ -4894,6 +4911,7 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
     diff: string;
     diffTruncated: boolean;
     coderabbit?: CodeRabbitConfigSnapshot;
+    localInspectorEnabled?: boolean;
     workingTreeDirty: boolean;
     workingTreeStatus: string[];
     workingTreeStatusTruncated: boolean;

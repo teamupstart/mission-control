@@ -1,7 +1,9 @@
+import { DEFAULT_LOCAL_INSPECTOR_SEVERITY, INSPECTOR_SEVERITIES } from "@shared/inspector-review.ts";
+import type { ReviewComparison } from "./review-comparison.ts";
 import type { EvidenceRef } from "@shared/workflow.ts";
 import type { PersonaWorkloadRequest, PersonaWorkloadEvent } from "@shared/repository-access.ts";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
-import { workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
+import { workflowCapturedLocalInspector, workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
 import { RepositoryEvidenceHandleSchema, RepositoryQueryAuditMetadataSchema } from "@shared/repository-access.ts";
 import { workflowGraphFingerprint } from "./graph-fingerprint.ts";
 import type { InspectorBranchActivity } from "../inspector/github.ts";
@@ -1010,6 +1012,7 @@ const COMMAND_ARGV_JSON_BYTES =
 const WorkflowCommandRowSchema = z.object({
   slot: z.enum(WORKFLOW_CHECK_SLOTS),
   default_command_json: nullableText,
+  inspector_severity: z.enum(INSPECTOR_SEVERITIES).nullish().catch(null),
   /*
    * Deliberately UNTYPED in the row schema, and read by `readCommandMaxRuns` instead.
    *
@@ -1149,6 +1152,7 @@ function parseWorkflowCommandRow(
   const row = parseShape("workflow_commands", WorkflowCommandRowSchema, value);
   return {
     slot: row.slot,
+    ...(row.slot === "inspector" ? { inspectorSeverity: row.inspector_severity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY } : {}),
     defaultCommand: readCommandArgv(
       "workflow_commands", row.slot, "default_command_json", row.default_command_json,
       row.slot === "coderabbit" ? CodeRabbitCommandSchema : CommandArgvJsonSchema,
@@ -3783,6 +3787,19 @@ export class WorkflowStore {
   // compare-and-swap write inside one transaction, and a store that refuses rather than
   // repairs.
 
+  getLocalInspectorComparison(submissionId: string): ReviewComparison | null {
+    const row = this.db.prepare("SELECT local_inspector_comparison_json AS comparison FROM workflow_submissions WHERE id = ?")
+      .get(submissionId) as { comparison: string | null } | undefined;
+    return row?.comparison ? JSON.parse(row.comparison) : null;
+  }
+
+  freezeLocalInspectorComparison(submissionId: string, comparison: ReviewComparison): ReviewComparison {
+    if (comparison.error) return comparison;
+    this.db.prepare("UPDATE workflow_submissions SET local_inspector_comparison_json = ? WHERE id = ? AND local_inspector_comparison_json IS NULL")
+      .run(JSON.stringify(comparison), submissionId);
+    return this.getLocalInspectorComparison(submissionId) ?? comparison;
+  }
+
   getCodeRabbitComparison(submissionId: string): CodeRabbitComparison | null {
     const row = this.db.prepare("SELECT coderabbit_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { coderabbit_json: string | null } | undefined;
     const comparison = row?.coderabbit_json ? CodeRabbitComparisonSchema.parse(JSON.parse(row.coderabbit_json)) : null;
@@ -3854,10 +3871,13 @@ export class WorkflowStore {
       .get() as { n: number };
     const wasEmpty = Number(existing.n) === 0;
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, revision, created_at, updated_at)
-       VALUES (?, NULL, ?, ?, 1, ?, ?)`,
+      `INSERT OR IGNORE INTO workflow_commands (slot, default_command_json, max_runs, on_unavailable, on_budget_exhausted, revision, created_at, updated_at)
+       VALUES (?, NULL, ?, ?, ?, 1, ?, ?)`,
     );
-    for (const slot of WORKFLOW_CHECK_SLOTS) insert.run(slot, defaultWorkflowCommandMaxRuns(slot), slot === "coderabbit" ? "block" : "skip", now, now);
+    for (const slot of WORKFLOW_CHECK_SLOTS) {
+      const defaults = emptyWorkflowCommandView(slot);
+      insert.run(slot, defaults.maxRuns, defaults.onUnavailable, defaults.onBudgetExhausted, now, now);
+    }
     return wasEmpty;
   }
 
@@ -3879,6 +3899,7 @@ export class WorkflowStore {
       maxRuns: number;
       timeoutMs?: number | null;
       onUnavailable?: "skip" | "block";
+      inspectorSeverity?: WorkflowCommandView["inspectorSeverity"];
       onBudgetExhausted?: "skip" | "block";
     },
     now = Date.now(),
@@ -3887,7 +3908,11 @@ export class WorkflowStore {
       return { ok: false, reason: "not_found", current: null };
     }
     const key = slot as WorkflowCheckSlot;
-    const validRecipe = key === "coderabbit"
+    const validRecipe = key === "inspector"
+      ? next.defaultCommand === null && next.overrides.length === 0
+        && (next.inspectorSeverity === undefined || INSPECTOR_SEVERITIES.includes(next.inspectorSeverity))
+      : next.inspectorSeverity !== undefined ? false
+      : key === "coderabbit"
       ? (next.defaultCommand === null || CodeRabbitCommandSchema.safeParse(next.defaultCommand).success)
         && next.overrides.every((rule) => rule.command.length === 0 && CodeRabbitTuningSchema.safeParse(rule.review).success)
       : next.overrides.every((rule) => !rule.review && rule.command.length > 0);
@@ -3913,7 +3938,7 @@ export class WorkflowStore {
         .prepare(
           `UPDATE workflow_commands
               SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
-                  on_budget_exhausted = ?, revision = revision + 1, updated_at = ?
+                  on_budget_exhausted = ?, inspector_severity = ?, revision = revision + 1, updated_at = ?
             WHERE slot = ? AND revision = ?`,
         )
         .run(
@@ -3928,8 +3953,9 @@ export class WorkflowStore {
             WORKFLOW_LIMITS.commandMaxRunsMax,
           ),
           next.timeoutMs === undefined ? current.timeoutMs : next.timeoutMs,
-          key === "coderabbit" ? "block" : next.onUnavailable ?? current.onUnavailable,
+          key === "coderabbit" || key === "inspector" ? "block" : next.onUnavailable ?? current.onUnavailable,
           key === "coderabbit" ? "skip" : next.onBudgetExhausted ?? current.onBudgetExhausted,
+          next.inspectorSeverity ?? current.inspectorSeverity ?? null,
           now,
           key,
           expectedRevision,
@@ -4184,7 +4210,7 @@ export class WorkflowStore {
       this.db.prepare(
         `UPDATE workflow_commands
             SET default_command_json = ?, max_runs = ?, timeout_ms = ?, on_unavailable = ?,
-                on_budget_exhausted = ?, revision = ?, updated_at = ?
+                on_budget_exhausted = ?, inspector_severity = ?, revision = ?, updated_at = ?
           WHERE slot = ?`,
       ).run(
         row.defaultCommand === null ? null : JSON.stringify(row.defaultCommand),
@@ -4192,6 +4218,7 @@ export class WorkflowStore {
         row.timeoutMs,
         row.onUnavailable,
         row.onBudgetExhausted,
+        row.inspectorSeverity ?? null,
         revision,
         now,
         row.slot,
@@ -4386,7 +4413,7 @@ export class WorkflowStore {
     this.seedWorkflowCommandsInTransaction(now);
     const changed: WorkflowCommandView[] = [];
     for (const slot of WORKFLOW_CHECK_SLOTS) {
-      if (slot === "coderabbit") continue;
+      if (slot === "coderabbit" || slot === "inspector") continue;
       const desired = legacy
         .filter((entry) => entry.slot === slot)
         .map((entry) => ({ repoRoot: entry.repoRoot, command: entry.command }));
@@ -8423,14 +8450,15 @@ export class WorkflowStore {
 
   currentRepositoryWorkload(id: string) {
     return this.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
-      s.id AS submissionId, w.digest, a.locator FROM workflow_repository_workloads w
+      s.id AS submissionId, w.digest, a.locator, l.purpose FROM workflow_repository_workloads w
+      JOIN workflow_llm_calls l ON l.id=w.id
       JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
       JOIN workflow_submissions s ON s.id=n.submission_id AND s.status='running'
       JOIN workflow_runs r ON r.id=s.run_id AND r.status='running'
       JOIN workflow_repository_snapshot_claims c ON c.submission_id=s.id AND c.digest=w.digest AND c.state='active'
       JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
       WHERE w.id=? AND w.state='running'`).get(id)) as
-      { workloadId: string; attemptId: string; submissionId: string; digest: string; locator: string } | undefined;
+      { workloadId: string; attemptId: string; submissionId: string; digest: string; locator: string; purpose: string } | undefined;
   }
 
   interruptRepositoryWorkloads() {
@@ -10700,7 +10728,7 @@ export class WorkflowStore {
         SET state = 'cancelled', error = 'preflight_exhausted', updated_at = ?
         WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
           AND state = 'prepared'`).run(now, run.id, submission.id);
-      if (version && workflowRequiresRepositoryCapture(version.graph)) this.activateReadySubmissionClaim(submission, now);
+      if (version && workflowRequiresRepositoryCapture(version.graph, workflowCapturedLocalInspector(submission.evidence))) this.activateReadySubmissionClaim(submission, now);
       // Preserve the frozen gaps. This is an engine decision, never an operator override.
       this.setSubmissionState(submission.id, "running", now);
       this.setRunState(run.id, "running", "activating", null, now);
@@ -10768,7 +10796,7 @@ export class WorkflowStore {
       const readiness = submission.readiness
         ? { ...submission.readiness, status: "overridden" as const }
         : null;
-      if (version && workflowRequiresRepositoryCapture(version.graph)) this.activateReadySubmissionClaim(submission, input.now);
+      if (version && workflowRequiresRepositoryCapture(version.graph, workflowCapturedLocalInspector(submission.evidence))) this.activateReadySubmissionClaim(submission, input.now);
       this.db.prepare(
         `UPDATE workflow_submissions
             SET status = 'running', readiness_json = ?, updated_at = ?
@@ -11850,7 +11878,7 @@ export class WorkflowStore {
     const eventCount = Number(eventCountRow.count);
     const llmCallCount = Number(llmCallCountRow.count);
     let repositoryReview: WorkflowRunDetail["repositoryReview"];
-    if (version && workflowRequiresRepositoryCapture(version.graph)) {
+    if (version && workflowRequiresRepositoryCapture(version.graph, submissions.some(s => workflowCapturedLocalInspector(s.evidence)))) {
       const snapshot = this.db.prepare(`SELECT c.digest, a.state,
         json_extract(a.metadata_json,'$.retainedCommitCount') AS retained,
         json_array_length(a.metadata_json,'$.frontier') AS frontier

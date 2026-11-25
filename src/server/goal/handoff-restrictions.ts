@@ -8,7 +8,7 @@ const DIRECTIVE_JOIN = /(\s*,\s*(?:(?:and|but)\s+)?|\s+(?:and|but)\s+)/i;
 const LIST_MARKER = /^\s*(?:[-+*]|\d+[.)])\s+/;
 
 export const HANDOFF_RESTRICTION_PREFIX = "Operator handoff restriction: ";
-const WORKFLOW_DELEGATION = /\b(?:let|have)\s+(?:the\s+)?(?:bound\s+)?workflow\s+(?:open|create|make|raise|publish|file|submit)\s+(?:it|(?:the|a)\s+(?:pr|pull request))\b/i;
+const WORKFLOW_DELEGATION = /^(?:(?:then|please|also)\s+)*(?:let|have)\s+(?:the\s+)?(?:bound\s+)?workflow\s+(?:open|create|make|raise|publish|file|submit)\s+(?:it|(?:the|a)\s+(?:pr|pull request))\b/i;
 const APPROVAL_CONDITION = /\s+(?:yet|(?:until|before)\s+\S.*|without\s+my\s+approval)$/i;
 export function isStandaloneHandoffRelease(text: string): boolean {
   return /^(?:please\s+)?resume\s+automatic\s+handoff$/i.test(text.trim().replace(/[.!?]+$/, ""));
@@ -22,7 +22,7 @@ export function contextualHandoffRestriction(instruction: string): string {
 
 function restrictionParts(clause: string, listItem: boolean): boolean[] {
   const parts = clause.split(DIRECTIVE_JOIN);
-  const delegates = WORKFLOW_DELEGATION.test(clause);
+  const delegates = parts.some((part, index) => index % 2 === 0 && WORKFLOW_DELEGATION.test(part.trim()));
   return parts.map((part, index) => {
     if (index % 2) return false;
     const directive = part.trim().replace(/^also\s+/i, "");

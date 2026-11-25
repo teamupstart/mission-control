@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 481 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The entries outside /dispatch include the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -76,13 +76,14 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The listener's verified model lookup, GET /api/voice/model, answers 404 with the voice preview off.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
   // PUT /api/voice/confirmation and GET /api/voice/tasks/:id/follow-up both return 404 with Voice off.
+  // PUT /api/voice/open-cards also returns 404 with Voice off.
   // The five speech routes for supervision, audio, playback events, Stop and audition also return 404 with Voice off.
   // Persona repository access adds the grant update and per-run repository query audit routes.
   // The synthesis model adds gated POST and DELETE /api/voice/speech/model/download.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 483);
+  assert.equal(others.length, 484);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "70581e0ae5718b202224ffe33d7a36736b9ad501ba6eb34a635cce94f7016805");
+    "4fb70babf3e36f50b607a8506b0837aa990b2b34888353d0ce44c08491308631");
 });
 
 function sourceFiles(dir: string): string[] {

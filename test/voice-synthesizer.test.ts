@@ -119,15 +119,17 @@ for (const [name, reply] of [
   });
 }
 
-test("a stalled helper fails within the five-second synthesis deadline and is reaped", async () => {
+test("a stalled helper fails within the five-second synthesis deadline and is reaped", async t => {
+  const deadline = new AbortController();
+  const timeout = t.mock.method(AbortSignal, "timeout", () => deadline.signal);
   const { synth, children } = fixture("hang");
-  // AbortSignal.timeout is unrefed. Stand in for the real child's IPC handle.
-  const handle = setInterval(() => {}, 1000);
-  try {
-    await assert.rejects(synth.synthesize("Steve?", voice), { name: "TimeoutError" });
-    assert.equal(children.length, 1);
-    assert.equal(children[0]?.alive, false);
-  } finally { clearInterval(handle); synth.stop(); }
+  t.after(() => synth.stop());
+  const rejected = assert.rejects(synth.synthesize("Steve?", voice), { name: "TimeoutError" });
+  assert.deepEqual(timeout.mock.calls.map(call => call.arguments), [[5000]]);
+  deadline.abort(new DOMException("Synthesis timed out", "TimeoutError"));
+  await rejected;
+  assert.equal(children.length, 1);
+  assert.equal(children[0]?.alive, false);
 });
 
 test("stopping a preparing audition immediately releases its helper for the next audition", async t => {
@@ -193,5 +195,6 @@ test("resolving warms only a neural voice that could ask aloud", async t => {
   state.speech.voice = voice;
   store.warmForAsk();
   assert.equal(children.length, 1);
-  synth.stop();
+  store.reset();
+  assert.equal(children[0]?.alive, false);
 });

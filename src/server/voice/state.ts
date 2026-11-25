@@ -517,7 +517,8 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
-    this.manager?.dispose();
+    if (this.manager) this.manager.dispose();
+    else this.deps.speechBackend?.synthesizer.stop();
     this.manager = undefined;
     this.muted = false;
     this.lastReportHostUs = -1;

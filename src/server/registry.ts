@@ -1477,6 +1477,7 @@ export class Registry extends EventEmitter {
     voiceIndicators?: string[];
     voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
     voiceCards?: VoiceCard[];
+    voiceAnswers?: import("@shared/voice-answers.ts").VoiceAnswer[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1530,6 +1531,7 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
       ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
+        voiceAnswers: this.voiceRouter?.activeAnswers() ?? [],
         voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
@@ -1680,6 +1682,10 @@ export class Registry extends EventEmitter {
     if (!featureEnabled(VOICE_FLAG)) return;
     const selection = { confirmation: storedVoiceUi().confirmation, indicators };
     this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
+  }
+
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 
   emitVoiceCard(card: VoiceCard): void {
@@ -7798,18 +7804,27 @@ export class Registry extends EventEmitter {
 
   /** Make the whole committed batch visible before synchronous listeners can answer any member. */
   upsertReviews(reviews: ReviewItem[]): void {
-    for (const review of reviews) this.reviews.set(review.id, review);
+    for (const review of reviews) this.storeReview(review);
     for (const review of reviews) {
       if (this.reviews.get(review.id) === review) this.publishReview(review);
     }
   }
 
   upsertReview(review: ReviewItem): void {
-    this.reviews.set(review.id, review);
+    this.storeReview(review);
     this.publishReview(review);
   }
 
+  private storeReview(review: ReviewItem): void {
+    const previous = this.reviews.get(review.id);
+    this.reviews.set(review.id, review);
+    if (this.voiceRouter && review.kind === "input" && featureEnabled(VOICE_FLAG)) {
+      this.voiceRouter.observeQuestion(review, previous);
+    }
+  }
+
   private publishReview(review: ReviewItem): void {
+    if (review.status !== "pending") this.voiceRouter?.reviewSettled(review.id);
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session
@@ -7906,9 +7921,8 @@ export class Registry extends EventEmitter {
   /**
    * Every review this daemon holds for one session, settled ones included.
    *
-   * A read for the one caller that must see an ANSWER rather than an open question: a
-   * session-configured workflow Command is accepted only when its operator picked that exact
-   * argv on one of this session's `request_input` cards (`workflows/commands.ts`).
+   * Workflow commands read the operator's answer. Voice routing also needs questions
+   * that settled after the operator started speaking.
    */
   reviewsFor(sessionId: string): ReviewItem[] {
     const out: ReviewItem[] = [];

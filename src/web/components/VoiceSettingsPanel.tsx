@@ -8,6 +8,7 @@ import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
   VOICE_CANCEL_WINDOW_SECONDS,
   VOICE_END_OF_SPEECH_MS,
+  TRANSCRIPT_WORD_LIMIT,
   VOICE_CONFIG_DEFAULTS,
   VOICE_CALL_POLL_RETRY,
   VOICE_INPUT_DEVICE_BUILT_IN,
@@ -485,6 +486,53 @@ export function VoiceSettingsPanel({
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />
       {error && <p className="settings-error">{error}</p>}
+
+      <div className="settings-group" role="group" aria-labelledby="voice-transcript-heading">
+        <p className="settings-group-label" id="voice-transcript-heading">Live transcript</p>
+        <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Show live transcript</span>
+          <span className="kb-row-controls skill-switch">
+            <Tooltip label="Show recognized words while the microphone is listening">
+              <input type="checkbox" disabled={!config} checked={config?.showTranscript ?? true}
+                onChange={e => void update({ showTranscript: e.target.checked })} />
+            </Tooltip>
+          </span>
+        </label>
+        <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Transcript style</span>
+          <span className="kb-row-controls">
+            <Tooltip label="Choose a wrapping corner card or a bottom-center capsule">
+              <select className="settings-select" disabled={!config} value={config?.transcriptStyle ?? "card"}
+                onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
+                <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
+              </select>
+            </Tooltip>
+          </span>
+        </label>
+        <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Maximum transcript words</span>
+          <span className="kb-row-controls sc-number">
+            <Tooltip label={`Show the latest 1 to ${TRANSCRIPT_WORD_LIMIT} words`}>
+              <input type="number" disabled={!config} min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
+                defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
+                  if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
+                  else e.target.value = String(config?.transcriptWords ?? 20);
+                }} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+            </Tooltip>
+          </span>
+        </label>
+        {config?.transcriptStyle !== "capsule" && <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Corner card placement</span>
+          <span className="kb-row-controls">
+            <Tooltip label="Choose which bottom corner shows the transcript">
+              <select className="settings-select" disabled={!config} value={config?.transcriptCorner ?? "bottom-right"}
+                onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
+                <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
+              </select>
+            </Tooltip>
+          </span>
+        </label>}
+      </div>
 
       <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />
 

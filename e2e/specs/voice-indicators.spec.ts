@@ -505,6 +505,10 @@ for (const outcome of ["refusal", "timeout"] as const) {
       const peer = await context.newPage();
       await peer.goto(daemon.baseURL + "/#/settings/voice");
       if (outcome === "refusal") await peer.getByRole("checkbox", { name: "Floating button" }).check();
+      // Finish loading the peer's settings before starting the mute request's five-second deadline.
+      const peerStatus = peer.getByRole("checkbox", { name: "Status line" });
+      await expect(peerStatus).toBeChecked();
+      await peerStatus.click({ trial: true });
       const floating = page.locator("button.vi-floating");
       await expect(floating).toHaveCount(outcome === "refusal" ? 1 : 0);
       const status = page.locator("button.vi-status-line");
@@ -513,7 +517,7 @@ for (const outcome of ["refusal", "timeout"] as const) {
       await page.route("**/api/voice/mute", route => held.resolve(route), { times: 1 });
       await status.click();
       const request = await held.promise;
-      await peer.getByRole("checkbox", { name: "Status line" }).uncheck();
+      await peerStatus.uncheck();
       await expect(status).toHaveCount(0);
       await expect(page.getByRole("status").filter({ hasText: "Muting voice…" })).toBeVisible();
       if (outcome === "refusal") {

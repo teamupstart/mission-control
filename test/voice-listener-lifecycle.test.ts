@@ -43,6 +43,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     const diagnostics: string[] = [];
     const hellos: { modelLoaded: boolean; version: string; microphone: string }[] = [];
     const speechEvents: { path: string; type: string; outcome?: string }[] = [];
+    const transcripts: { phase: string; revision: string | null }[] = [];
     const audioRequests: string[] = [];
     const endReports: ServerResponse[] = [];
     const instanceIds = new Set<string | undefined>();
@@ -74,7 +75,18 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
         return;
       }
       let body = "";
-      for await (const chunk of req) body += chunk;
+      try {
+        for await (const chunk of req) body += chunk;
+      } catch (error) {
+        // Revoking capture or stopping the helper can cancel an in-flight preview POST.
+        if (req.readableAborted) return;
+        throw error;
+      }
+      if (url.pathname === "/voice/listener/transcript") {
+        transcripts.push({ phase: JSON.parse(body).phase, revision: url.searchParams.get("revision") });
+        res.end(JSON.stringify({ accepted: true }));
+        return;
+      }
       if (url.pathname.endsWith("/events")) {
         const event = JSON.parse(body);
         speechEvents.push({path: url.pathname, ...event});
@@ -153,11 +165,12 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     if (held) initial.setHeader("x-voice-held-revision", "first");
     apply(initial, "first", initialCapture);
     return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds,
-      heldAttempts, audioRequests, speechEvents, endReports, speechReports, acknowledgeStart };
+      heldAttempts, audioRequests, speechEvents, endReports, speechReports, transcripts, acknowledgeStart };
   }
 
   it("the supervised Swift peer authenticates its polls, fetch and reports and acknowledges an unseen stop", async t => {
-    const {nextPoll, speechEvents, events, audioRequests, posted, apply} = await launch(t, {speechInstance: crypto.randomUUID()});
+    const {nextPoll, speechEvents, events, audioRequests, posted, transcripts, apply} = await launch(t, {speechInstance: crypto.randomUUID()});
+    await until(() => transcripts.some(t => t.phase === "ready" && t.revision === "first"), "initial microphone readiness");
     const directive = (response: ServerResponse, revision: string, speak: unknown) =>
       response.end(JSON.stringify({revision, capture: true, roster: [], inputDevice: "built-in", speak}));
     const missing = crypto.randomUUID();
@@ -177,6 +190,8 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     await nextPoll("resumed");
     await until(() => posted.length > 0, "the fresh capture segment to arrive");
     assert.deepEqual(posted, [{ text: "fresh", revision: "resumed" }]);
+    await until(() => transcripts.some(t => t.phase === "ready" && t.revision === "resumed"), "resumed microphone readiness");
+    assert.ok(transcripts.every(t => t.revision === "first" || t.revision === "resumed"));
     assert.equal(events.filter(e => e.startsWith("opened ")).length, 2);
   });
 

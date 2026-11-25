@@ -56,6 +56,15 @@ test("the published sherpa addon transcribes a recording through the listener an
   const app = new Hono();
   const captures: VoiceUtterance[] = [];
   let posts = 0;
+  const readings: { phase: string; posts: number; final: boolean; text: string }[] = [];
+  app.use("/voice/listener/transcript", async (c, next) => {
+    const sample = await c.req.raw.clone().json();
+    await next();
+    if ((await c.res.clone().json()).accepted) {
+      const preview = voiceStateStore.state().transcript;
+      if (preview) readings.push({ phase: preview.phase, posts, final: sample.final === true, text: preview.text });
+    }
+  });
   let hellos = 0;
   let acceptedAfterRelease = false;
   let onDirectivePoll: (() => void) | undefined;
@@ -175,6 +184,11 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.equal(posts, 1);
   });
   assert.equal(captures.length, 1);
+  await t.test("short WAV playback reports quiet and audio and publishes the accepted final words", () => {
+    // Either decoder can finish first on a short file. Completed addressing has priority.
+    assert.deepEqual(readings.slice(0, 2).map(r => r.phase), ["ready", "audio"]);
+    assert.deepEqual(readings.at(-1), { phase: "words", final: true, posts: 1, text: captures[0]!.text });
+  });
   const capture = captures[0]!;
   assert.equal(capture.backend, "sherpa-onnx");
   const normalize = (text: string) => text.toLowerCase().replace(/[^a-z ]/gu, "").trim();
@@ -249,8 +263,12 @@ test("the published sherpa addon transcribes a recording through the listener an
   await t.test("a five-second pause setting still joins recorded speech across Sherpa’s 20-second threshold", async () => {
     voiceStateStore.reset();
     setVoiceConfig({ endOfSpeechMs: 5000 });
+    const before = posts;
+    readings.length = 0;
     const messages = await playPhrases("past-twenty-seconds.wav", ...Array<Buffer>(9).fill(phrase), silence(5000));
     assert.equal(messages.length, 1);
+    assert.ok(readings.some(r => r.posts === before && !r.final && r.phase === "words" && r.text.trim()),
+      "unpaced playback published a recognized prefix before the long utterance reached the router");
     assert.ok(messages[0]!.words.at(-1)!.endMs > 8 * phrase.length / pcmBytesPerMs, "the ninth command belongs to the first capture");
   });
   await t.test("Sherpa drops a recording’s overlong command through its selected pause and admits the next command", async t => {

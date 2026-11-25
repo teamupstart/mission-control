@@ -223,6 +223,23 @@ only the onset lead-in for replay. A change in capture
 authorization discards that audio, including a mute and unmute between polls.
 `pauseMs` is optional and unused. This daemon sends null.
 
+The live microphone helper posts display updates to `/voice/listener/transcript?revision=...`
+with the same token and listener ID. It reports `ready` while the input is open and quiet,
+`audio` with the detected onset in host microseconds, and `words` with that onset and the
+current recognized text. Each update for an unfinished phrase replaces its previous words.
+The daemon publishes the configured word window in voice state. Muting, disabling the overlay,
+or losing the capture grant clears it. Six seconds without a fresh reading also clears it.
+Quiet readings discard unfinished words and keep finalized words. In a short window, tab to
+the overflowing text and scroll to read it while the status stays visible.
+Only the completed utterance goes to the address router.
+
+The Sherpa listener uses the same overlay protocol while reading its supported WAV input on
+Linux and macOS. Quiet input reports ready. During detected speech it decodes growing PCM
+prefixes for the display in the background, keeping only the latest waiting prefix.
+The completed segment goes directly to recognition with the spoken roster for addressing.
+Its final `words` update carries `final: true` to replace the last partial and retain those
+words when the next phrase starts.
+
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
 response header. The native helper retains completed phrases in capture order and decodes
 them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
@@ -833,6 +850,10 @@ never wrote needs no migration.
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
+| `showTranscript` | `true` | Show the live transcript during capture |
+| `transcriptStyle` | `card` | `card` or `capsule` |
+| `transcriptCorner` | `bottom-right` | `bottom-left` or `bottom-right` |
+| `transcriptWords` | `20` | Whole number from 1 to 100 |
 | `backend` | `auto` | `auto`, `fluidaudio` or `sherpa-onnx` |
 
 The settings snapshot backs them up under the `voice` domain, except `muted`.
@@ -1568,3 +1589,9 @@ any different text you have typed in the report. The cancel window applies to
 inbox actions. The voice card confirms the action after the dashboard invokes the button.
 If the card closes or the control disappears before then, the voice card reports that the
 action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.
+
+### Live transcript
+
+With the Voice preview enabled, Settings > Voice lets you show the live transcript as a wrapping corner card or a bottom-center capsule. The card starts at the bottom right and can move to the bottom left. The overlay starts enabled and displays up to 20 recognized words. Set **Maximum transcript words** to any whole number from 1 to 100.
+
+Microphone ready indicates active capture. Audio detected means the listener has detected speech and is waiting for recognized words. Transcribing shows words as recognition progresses, even before a name matches. Screen readers announce the phase when it changes. The rolling words remain available to read in the overlay. Muting voice or losing capture hides the overlay. Partial words are for display only. Addressing uses the completed phrase.

@@ -34,6 +34,8 @@ final class Segment {
     private let exclusive: Bool
     let opening: Int
     let segments: AsyncStream<Segment>
+    // This device yields completed segments and has no unfinished PCM between them.
+    var preview: Segment? { nil }
     private(set) var isRunning = true
     private var disruption: DispatchSourceSignal?
     private var heldPhrases: [Segment] = []

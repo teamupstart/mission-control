@@ -448,3 +448,14 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
     },
   };
 }
+
+/** Post a capture observation under the fixture listener's current grant. */
+export async function transcriptSample(daemon: VoiceDaemon, sample: import("../../src/shared/voice.ts").TranscriptSample) {
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const directive = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  const { revision } = await directive.json() as VoiceListenerDirective;
+  const response = await fetch(daemon.baseURL + "/voice/listener/transcript?revision=" + encodeURIComponent(revision), {
+    method: "POST", headers, body: JSON.stringify(sample),
+  });
+  return (await response.json()).accepted;
+}

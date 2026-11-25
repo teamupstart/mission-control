@@ -65,6 +65,9 @@ test("voice requests stay bound to the authenticated instance when its port is r
   assert.ok(connection);
   t.after(() => connection.close());
   assert.equal(await (await connection.request("/events")).text(), "first instance");
+  for (const path of ["/voice/listener/transcript?revision=fixture", "/voice/listener/supervised", "/api/voice/speech/stop"]) {
+    assert.equal(await (await connection.request(path, { method: "POST" })).text(), "first instance", path);
+  }
   assert.equal((await connection.request("/api/health")).status, 404);
   const closed = once(server, "close");
   first.abort();

@@ -328,6 +328,7 @@ const voiceFields = {
   muted: "operational",
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
+  endOfSpeechMs: "setting",
   cancelWindow: "setting",
   speech: "setting",
   whenUnsure: "setting",

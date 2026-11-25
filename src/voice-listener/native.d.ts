@@ -38,13 +38,14 @@ declare module "sherpa-onnx-node" {
 
   export class Vad {
     constructor(config: {
-      sileroVad: { model: string; windowSize: number; minSilenceDuration: number; minSpeechDuration: number };
+      sileroVad: { model: string; windowSize: number; minSilenceDuration: number; minSpeechDuration: number; maxSpeechDuration: number };
       numThreads: number;
       sampleRate: number;
     }, bufferSeconds: number);
     acceptWaveform(samples: Float32Array): void;
     flush(): void;
     isEmpty(): boolean;
+    isDetected(): boolean;
     front(): { start: number; samples: Float32Array };
     pop(): void;
     reset(): void;

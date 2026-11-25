@@ -74,7 +74,7 @@ mode, see [docs/setup.md](docs/setup.md).
 | `npm run dev:desktop` | Daemon, dashboard, and Electron shell. |
 | `npm run build` | Production web, server, Electron, MCP, and hook bundles. |
 | `npm run typecheck` | TypeScript validation. |
-| `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations; React/hooks and accessibility warnings. |
+| `npm run lint` | Oxlint correctness errors over source, hooks, tests, scripts, e2e, and integrations, plus repository policy rules. React/hooks and accessibility findings are warnings. |
 | `npm test` | Full Node test suite, including Electron geometry checks on macOS. |
 | `npm run test:electron` | Focused Electron geometry checks. |
 | `npm run test:e2e` | Playwright browser tests against built application bundles. |
@@ -89,6 +89,15 @@ React/hooks and JSX accessibility findings advisory until their follow-up tasks 
 exceptions for intentional control-character sanitization and its tests. Console output is
 allowed: CLI output, daemon diagnostics, and fixture logging are intentional, so redundant
 `no-console` suppressions should not be added.
+
+Repository lint rules are named in [AGENTS.md](AGENTS.md). Scoped legacy exceptions are
+annotated at their use sites.
+CI also runs `node scripts/check-doc-links.mjs` and checks pull requests for agent co-author
+trailers, changelog changes outside Release Please, and new image paths outside documentation
+and product asset locations. The image check permits `docs/images/`, top-level files in `build/`,
+and public web assets in `src/web/public/`. Evidence, verification, and shots folders under
+product asset locations remain subject to the image check.
+Images already tracked at the pull request's merge base are grandfathered by path.
 
 `make build`, `make check`, `make test`, `make lint`, and `make smoke` install or
 refresh dependencies through the repository's stamp file. On macOS, `npm test`

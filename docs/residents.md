@@ -258,6 +258,10 @@ and count.
   **Manage residents**, which opens the Residents page to author, edit and archive profiles.
 - **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
   top line holds the chip, the name, a state dot, the resident's **⌥**-number and a fold caret.
+  While voice is listening, a configured reference name appears in double quotes as the card title.
+  When live residents share a reference name, their drawer and Console entries include the ordinary
+  title in parentheses. Board Open buttons announce the same distinction.
+  Without a reference name, the card keeps its usual title.
   Under it are tags for the loop's state, iteration and next wake, and any pause or wake
   reason. Every card ends with **Open**, **Run now** and **Pause** or **Resume**, and a
   **Control** badge when the resident's revision asks for session control.

@@ -201,6 +201,7 @@ export function ReviewCard({
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
   const voiceAnswers = useContext(VoiceAnswersContext);
+  const voicePlan = review.kind === "plan-decisions" && !!voiceAnswers && voiceAnswers.planFormsByVoice !== false;
   const drawnQuestion = question && voiceAnswers !== null && !snoozing;
   const voiceQuestion = drawnQuestion && (decisions?.length ?? 0) <= 1;
   const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
@@ -276,6 +277,7 @@ export function ReviewCard({
     action: "approve" | "reject" | "answer" | "dismiss",
     response: string | null,
     selections: PlanDecisionAnswer[] | null = null,
+    voiceSubmitId?: string,
   ) {
     setBusy(true);
     setErr(null);
@@ -286,6 +288,7 @@ export function ReviewCard({
       selections,
       // Granted only alongside an approval of this bundle, never with "Needs revision".
       action === "answer" && finalBundle && approveFuture && approvesFinalBundle(selections),
+      voiceSubmitId,
     );
     setBusy(false);
     if (!r.ok) {
@@ -328,7 +331,7 @@ export function ReviewCard({
   );
 
   return (
-    <section className={`review review-${review.kind}`} data-dialog-action-scope data-voice-question={drawnQuestion ? review.id : undefined} tabIndex={drawnQuestion ? -1 : undefined}>
+    <section className={`review review-${review.kind}`} data-dialog-action-scope data-voice-kind={voicePlan ? "plan" : undefined} data-voice-id={voicePlan ? review.id : undefined} data-voice-session={review.sessionId} data-voice-question={drawnQuestion ? review.id : undefined} tabIndex={drawnQuestion ? -1 : undefined}>
       <div className="review-head">
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
@@ -410,6 +413,7 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
+          planAddress={voicePlan ? spokenName ?? "reply" : undefined}
           voiceLetters={voiceQuestion}
           voicePending={!!preview}
           footer={footer}
@@ -436,7 +440,7 @@ export function ReviewCard({
             ))
           }
           onDismiss={() => void resolve("dismiss", null)}
-          onSubmit={(response, selections) => void resolve("answer", response, selections)}
+          onSubmit={(response, selections, submitId) => void resolve("answer", response, selections, submitId)}
         />
         </>
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (

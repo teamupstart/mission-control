@@ -30446,6 +30446,10 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.rail-name-shared {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .rail-sub {
   grid-column: 2;
   min-width: 0;
@@ -34313,32 +34317,103 @@ span.line-run-prov {
 }
 /* The same facts and fixes as a band in the session detail (`StalledBand`), for the Console and
    the Board's drill-in, where the rail row has room only for its mark. Drawn like the Awaiting
-   band beside it, in the Stalled yellow. */
+   band beside it, in the Stalled yellow.
+
+   It collapses like the blocker band (`.blocker-band`): the row is its whole collapsed face -
+   the rule, the first fact and the fixes - and is sticky when expanded, so the fixes never
+   scroll away under a long Foreman note. The summary never wraps, which bounds the row's height
+   by its controls; the expanded fact sheet carries every fact whole. */
 .stalled-band {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 9px 12px 8px;
   border: 1px solid color-mix(in oklab, var(--stalled) 38%, var(--border));
   border-left: 3px solid var(--stalled);
   border-radius: 8px;
   background: color-mix(in oklab, var(--stalled) 6%, var(--panel));
   font-size: 12.5px;
 }
-.stalled-band-top {
+.stalled-band-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 10px 7px 12px;
+  background: inherit;
+  border-radius: 7px;
+}
+.stalled-band-toggle {
+  flex: 1 1 22rem;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 8px;
+  padding: 2px 4px;
+  margin: 0 0 0 -4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stalled-band-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 .stalled-band-flag {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
+  flex: none;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--stalled);
 }
 .stalled-band-rule {
+  flex: none;
+  font-weight: 650;
+}
+.stalled-band-summary {
+  min-width: 0;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stalled-band-chevron {
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 6px;
+  margin-left: 2px;
+  background: var(--select-chevron) no-repeat center;
+  transition: transform 120ms ease;
+}
+.stalled-band.is-open .stalled-band-chevron {
+  transform: rotate(180deg);
+}
+.stalled-band-row > .stalled-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+.stalled-band-more {
+  margin: 0;
+  padding: 9px 14px 11px;
+  border-top: 1px dashed color-mix(in oklab, var(--stalled) 30%, var(--border));
+}
+.stalled-band-more[hidden] {
+  display: none;
+}
+.stalled-band.is-open .stalled-band-row {
+  border-bottom: 1px dashed color-mix(in oklab, var(--stalled) 30%, var(--border));
+  border-radius: 7px 7px 0 0;
+}
+.stalled-band.is-open .stalled-band-row + .stalled-band-more {
+  border-top: 0;
 }
 /* Board tiles mark sessions held by an open workflow run. */
 .tile-held {

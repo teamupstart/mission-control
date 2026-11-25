@@ -57,7 +57,9 @@ export { VOICE_ROUTING_JOB_RUNGS };
 
 /** The provider the job runs on for these agents: theirs when they share one, else the job's. */
 export function voiceRoutingRunner(agents: readonly AgentType[], jobRunner: LlmRunnerId): LlmRunnerId {
+  // oxlint-disable-next-line repository/agent-comparison -- The decision service preserves provider selection for a homogeneous roster.
   if (agents.length > 0 && agents.every((agent) => agent === "claude")) return "claude";
+  // oxlint-disable-next-line repository/agent-comparison -- The decision service preserves provider selection for a homogeneous roster.
   if (agents.length > 0 && agents.every((agent) => agent === "codex")) return "codex";
   return jobRunner;
 }

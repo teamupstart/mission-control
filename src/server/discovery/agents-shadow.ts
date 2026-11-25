@@ -82,6 +82,7 @@ export function compareAgents(
   sessions: readonly Session[],
   records: readonly AgentsJsonRecord[],
 ): ShadowSummary {
+  // oxlint-disable-next-line repository/agent-comparison -- Claude sessions are the input to this native discovery pass.
   const claudeSessions = sessions.filter((s) => s.agent === "claude");
   const byId = new Map<string, AgentsJsonRecord>();
   for (const rec of records) {

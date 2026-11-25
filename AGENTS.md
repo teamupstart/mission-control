@@ -13,6 +13,8 @@ Read the [documentation index](docs/README.md) for product behavior and setup. B
 
 ## Commands
 
+The CI gates job runs `scripts/check-doc-links.mjs` for local documentation links.
+
 Run commands from the repository root with Node.js 24 or newer.
 
 ```sh
@@ -139,6 +141,9 @@ When a review workflow passes, do not rerun it to address Inspector feedback. Fi
 ## Code style and examples
 
 Use schemas and shared registries instead of hand-parsing or branching on concrete agents.
+Oxlint requires request JSON parsing through `src/server/http-body.ts` (`repository/parse-request-body`)
+and keeps direct agent equality comparisons and switch cases under `src/server/harness/`
+(`repository/agent-comparison`).
 
 Correct:
 
@@ -228,7 +233,9 @@ Incorrect:
 </Overlay>
 ```
 
-Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests use `renderToStaticMarkup`; do not introduce jsdom or Testing Library without an explicit project decision.
+Tests in `test/` use `node:test` and `node:assert/strict`. React rendering tests use
+`renderToStaticMarkup`. Oxlint bans jsdom, Testing Library, Vitest, Jest, and bare
+`node:assert` in `test/` and `e2e/` (`repository/test-imports`).
 
 Browser specs in `e2e/` use `@playwright/test` and run only under `npm run test:e2e`.
 They drive the built dashboard served by the built daemon, so run `npm run build`
@@ -278,7 +285,7 @@ edge cases - belong in `test/`.
 - **Never spend model tokens.** Use the E2E fixtures for agent binaries and SDK sessions.
   Keep both the one-shot Claude CLI and Agent SDK paths faked. Managed Pi sessions load
   the fake SDK through `MISSION_PI_SDK_MODULE`.
-- **Never add `data-testid`.** The app already labels its controls. Select by role,
+- **Never add `data-testid` or `getByTestId`** (Oxlint `repository/no-test-ids`). The app already labels its controls. Select by role,
   label, or placeholder so the spec exercises the names users rely on.
 
 A spec that opens a new modal calls `expectContentClearsBorder` from
@@ -288,21 +295,24 @@ A spec that opens a new modal calls `expectContentClearsBorder` from
 
 - Never commit secrets, tokens, credentials, local state, or operator data.
 - Never commit evidence artifacts. Proof-of-work screenshots and transcripts attach to the pull request. Evidence produced for or submitted to workflow personas is also never committed: produce it in a gitignored location and attach it to the pull request. Committed documentation imagery in `docs/images/` is documentation, not evidence.
+  The CI pull request policy gates new image paths outside `docs/images/` and established product asset locations.
 - Never modify production, signing, release, CI, or deployment configuration unless the task explicitly requires it.
 - Never let the Foreman worker touch SQLite. The daemon is the only database writer.
 - Never add a second session-eviction path. Terminal and SDK sessions leave through `Registry.beginEviction`.
+  Oxlint reserves `session_remove` construction and `sessions.delete` for the registry
+  (`repository/registry-eviction`).
 - Never infer durable cleanup from `state === "exited"`; use `session_remove`.
 - Never enable Electron `asar` or move `skills/` into `dist`.
 - Never hand-edit generated files. Change their source or generator and regenerate them.
-- Never hand-edit `CHANGELOG.md`.
+- Never hand-edit `CHANGELOG.md`. The CI pull request policy requires a Release Please PR.
 - Never rename or reorder persisted append-only IDs. See the change contracts before extending them.
 - Never use `git reset --hard`, force-push, or remove worktrees unless the user explicitly requests it and the target is verified.
-- Never add an agent name as a commit co-author.
+- Never add an agent name as a commit co-author. The CI pull request policy checks incoming commit trailers.
 - Never use an em dash in project prose.
 
 Treat these paths as controlled:
 
-- `src/shared/`: wire contracts and browser-safe shared logic only; no `node:` imports.
+- `src/shared/`: wire contracts and browser-safe shared logic only. Oxlint bans `node:` imports (`no-restricted-imports`).
 - `src/server/db.ts`: schema and migrations; upgrading databases must keep opening safely.
 - `src/server/registry.ts`: session ownership, comparators, and eviction.
 - `src/server/harness/`: harness-specific capabilities and protocol adapters.

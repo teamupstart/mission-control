@@ -25,7 +25,7 @@ const phase3Owners = {
   shaping: "whole",
   standingInstructions: ["default", "repositories"],
   taskSources: ["sources"],
-  voice: ["muted", "hotkey", "autoMuteDuringCalls", "cancelWindow", "speech", "whenUnsure",
+  voice: ["muted", "hotkey", "autoMuteDuringCalls", "endOfSpeechMs", "cancelWindow", "speech", "whenUnsure",
     "planFormsByVoice", "inputDevice", "decisionProvider", "backend"],
 } as const;
 

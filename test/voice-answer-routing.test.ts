@@ -57,7 +57,12 @@ test("multiple questions require a focus or an explicit pick, bare answer opens 
   const opened: string[] = [];
   const unsub = registry.subscribe(e => { if (e.type === "voice_open_question") opened.push(e.reviewId); });
   try {
+    const registered = await put("/api/voice/open-cards", { windowId: "voice-question-test", focused: true, cards: [
+      { kind: "report", id: "open-report", sessionId: "sdk:Steve", focused: true, actions: ["reply"] },
+    ] });
+    assert.equal(registered.status, 200);
     await say("Steve, answer", "open");
+    assert.deepEqual(cards.at(-1)?.candidates.map(c => c.id), [first.id, second.id]);
     await act("open", "pick", { id: second.id });
     assert.deepEqual(opened, [second.id]);
     assert.deepEqual(answers(), []);

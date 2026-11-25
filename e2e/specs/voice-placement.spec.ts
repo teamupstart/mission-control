@@ -3,7 +3,7 @@ import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
-import { beSpeaker, say, voiceToken } from "../fixtures/voice.ts";
+import { beSpeaker, say, startSpokenCancel, voiceToken } from "../fixtures/voice.ts";
 
 test.beforeEach(async ({ daemon, dashboard: page }) => {
   await setupCards(page, daemon);
@@ -243,3 +243,32 @@ test("tray history opens without floating-window support while the pending card 
   await toast.getByRole("button", { name: "Cancel" }).click();
   await expect(toast).toContainText("Cancelled");
 });
+
+for (const placement of ["Toast", "Floating pill", "Tray popover"]) {
+  test(placement + " updates a pending card when an in-window cancel finishes decoding after expiry", async ({ daemon, dashboard: page }) => {
+    const windowSeconds = 3;
+    await setupCards(page, daemon, windowSeconds);
+    let surface = page;
+    if (placement !== "Toast") {
+      await desktopWith(page, daemon, "both");
+      const opening = page.waitForEvent("popup");
+      await page.getByRole("radio", { name: new RegExp(placement) }).check();
+      surface = await opening;
+    }
+    const id = crypto.randomUUID();
+    expect(await (await say(daemon, "Steve, cancel this build check", { id })).json()).toEqual({ accepted: true });
+    // The daemon arms the countdown before acknowledging the addressed utterance.
+    const acceptedAt = performance.now();
+    const card = surface.getByRole("status").filter({ hasText: "cancel this build check" });
+    await expect(card.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+    const finish = await startSpokenCancel(daemon);
+    await expect.poll(() => performance.now() - acceptedAt).toBeGreaterThan(windowSeconds * 1000);
+    const heard = await page.request.get(daemon.baseURL + "/api/voice/heard");
+    expect((await heard.json()).entries).toContainEqual(expect.objectContaining({ id, outcome: "pending" }));
+    await expect(card).toContainText("Awaiting delivery confirmation");
+    expect(await (await finish()).json()).toEqual({ accepted: true });
+    const result = surface.getByRole("status").filter({ hasText: "Cancelled" });
+    await expect(result).toBeVisible();
+    await captureCard(result, "spoken-cancel-" + placement.toLowerCase().replace(" ", "-"));
+  });
+}

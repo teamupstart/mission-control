@@ -574,6 +574,11 @@ test("canonicalVoiceState ignores key order and nothing else", () => {
   const b: VoiceState = { ...a, capabilities: { hotkey: { available: false, reason: "x" }, tray: { available: true, reason: null } } };
   assert.equal(canonicalVoiceState(a), canonicalVoiceState(b));
   assert.notEqual(canonicalVoiceState(a), canonicalVoiceState({ ...a, mode: "muted" }));
+  const listener = { available: false, reason: "Listener unavailable." };
+  assert.notEqual(
+    canonicalVoiceState({ ...a, capabilities: { listener } }),
+    canonicalVoiceState({ ...a, capabilities: { listener: { ...listener, code: "speech_stop_unconfirmed" } } }),
+  );
 });
 
 test("speech output belongs to the daemon and needs a supervised, capable listener and a ready voice", () => {

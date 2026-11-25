@@ -22,7 +22,7 @@ export function validateNativePlanFilesBinding(value: unknown): NativePlanFilesB
   return value as NativePlanFilesBinding;
 }
 
-const require = createRequire(import.meta.url);
+const require = createRequire(nativeStateLockAddonPath());
 export function nativePlanFiles(): NativePlanFilesBinding {
   return validateNativePlanFilesBinding(require(nativeStateLockAddonPath()));
 }

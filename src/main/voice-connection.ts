@@ -23,10 +23,10 @@ export function desktopVoiceConnection() {
     }
     return {
       origin, certificate, request,
-      async postStatus(path: string, body: object, signal: AbortSignal) {
+      async postStatus(path: string, body: object, signal: AbortSignal, headers?: Record<string, string>) {
         try {
           const response = await request(path, {
-            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal,
+            method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body), signal,
           });
           await response.body?.cancel();
           return { ok: response.ok, status: response.status };

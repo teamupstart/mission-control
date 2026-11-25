@@ -146,6 +146,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],
+  "src/server/voice/macos-supervisor.ts": [
+    { operation: "execFileSync", command: "command", contract: "fixed-os-utility", reason: "Only the macOS process table can establish that no listener executable remains during recovery." },
+  ],
   "src/server/voice/synthesizer.ts": [
     { operation: "fork", command: "speechHelperPath()", contract: "current-runtime", reason: "bundled speech helper uses the owned Node runtime and private IPC" },
   ],

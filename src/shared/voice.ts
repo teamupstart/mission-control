@@ -270,10 +270,14 @@ export const VOICE_CAPABILITY_IDS = [
 ] as const;
 export type VoiceCapabilityId = (typeof VOICE_CAPABILITY_IDS)[number];
 
+export const VOICE_SPEECH_STOP_UNCONFIRMED = "speech_stop_unconfirmed";
+
 export interface VoiceCapability {
   available: boolean;
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
+  /** Set by the daemon when the listener misses a speech stop confirmation. */
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED;
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
@@ -475,7 +479,7 @@ export function canonicalVoiceState(state: VoiceState): string {
   const capabilities: Record<string, VoiceCapability> = {};
   for (const id of VOICE_CAPABILITY_IDS) {
     const entry = state.capabilities[id];
-    if (entry) capabilities[id] = { available: entry.available, reason: entry.reason };
+    if (entry) capabilities[id] = { available: entry.available, reason: entry.reason, code: entry.code };
   }
   const { voice, reason, catalog, model, job, lastAudition } = state.speech;
   const entries = (voices: typeof catalog.system) => voices.map(v => [v.id, v.name, v.detail]);

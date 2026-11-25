@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InspectorVerdictSchema, type LocalInspectorFinding } from "../src/shared/inspector-review.ts";
@@ -100,7 +100,10 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q");
   writeFileSync(join(root, "configuration"), "approved file before replacement\n");
-  git("add", "configuration");
+  symlinkSync("configuration", join(root, "into-file"));
+  writeFileSync(join(root, "into-link"), "original regular file\n");
+  writeFileSync(join(root, "mode-only"), "contents stay the same\n");
+  git("add", "configuration", "into-file", "into-link", "mode-only");
   git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base");
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "app.ts"), "submitted code\n");
@@ -109,7 +112,12 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
   mkdirSync(join(root, "configuration"));
   writeFileSync(join(root, "configuration", ".env"), "PRIVATE_CHILD_VALUE\n");
   writeFileSync(join(root, "configuration", "public settings"), "approved replacement child\u2028diff --git is file content\n");
+  rmSync(join(root, "into-file"));
+  writeFileSync(join(root, "into-file"), "replacement regular file\n");
+  rmSync(join(root, "into-link"));
+  symlinkSync("into-file", join(root, "into-link"));
   git("add", "-A");
+  git("update-index", "--chmod=+x", "mode-only");
   git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "submitted");
   const head = git("rev-parse", "HEAD");
   writeFileSync(join(root, "app.ts"), "post-capture content\n");
@@ -133,6 +141,11 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
         assert.match(prompt, new RegExp(previous[0]!.fingerprint));
         assert.match(prompt, /-approved file before replacement/);
         assert.match(prompt, /\+approved replacement child/);
+        assert.match(prompt, /diff --git a\/into-file b\/into-file\ndeleted file mode 120000/);
+        assert.match(prompt, /\+replacement regular file/);
+        assert.match(prompt, /-original regular file/);
+        assert.match(prompt, /diff --git a\/into-link b\/into-link\nnew file mode 120000/);
+        assert.match(prompt, /diff --git a\/mode-only b\/mode-only\nold mode 100644\nnew mode 100755/);
         assert.doesNotMatch(prompt, /NEVER_IN_REVIEW_PROMPT|PRIVATE_CHILD_VALUE|configuration\/\.env|post-capture content/);
         return JSON.stringify({ summary: "", resolved: [previous[0]!.fingerprint] });
       },

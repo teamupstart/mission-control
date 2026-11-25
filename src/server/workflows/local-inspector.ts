@@ -48,11 +48,16 @@ async function submittedDiff(root: string, mergeBase: string, head: string) {
     const fields = split < 0 ? [] : result.stdout.slice(0, split).split("\0");
     const patch = split < 0 ? "" : result.stdout.slice(split + 2);
     const expected = new Set(paths);
-    if (fields.length !== paths.length * 2 || !patch.startsWith("diff --git ")
-        || [...patch.matchAll(/(?:^|\n)diff --git /g)].length !== paths.length
-        || fields.some((field, i) => i % 2 === 0 ? !field.startsWith(":") : !expected.delete(field))) {
-      throw new Error("The submitted diff could not be verified against the approved paths. Check local Git refs and retry");
+    const invalidPatch = "The submitted diff could not be verified against the approved paths. Check local Git refs and retry";
+    if (fields.length !== paths.length * 2 || !patch.startsWith("diff --git ")) throw new Error(invalidPatch);
+    let expectedSections = 0;
+    for (let i = 0; i < fields.length; i += 2) {
+      const status = /^:[0-7]{6} [0-7]{6} [a-f0-9]+ [a-f0-9]+ ([ACDMTUX])$/.exec(fields[i]!)?.[1];
+      if (!status || !expected.delete(fields[i + 1]!)) throw new Error(invalidPatch);
+      // Git renders one type-change pair as a deletion and an addition at the same path.
+      expectedSections += status === "T" ? 2 : 1;
     }
+    if ([...patch.matchAll(/(?:^|\n)diff --git /g)].length !== expectedSections) throw new Error(invalidPatch);
     if (Buffer.byteLength(patch) > budget) {
       throw new Error("The submitted diff exceeds the Inspector byte cap. Narrow the submission and retry");
     }

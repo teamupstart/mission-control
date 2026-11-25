@@ -130,7 +130,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
     const label = action === "cancel" ? "Cancel" : "Send now";
     void run(() => api.voiceCardAction(card.id, action, { deadline }), "", label + " was not confirmed. ", voiceCardRetryDelay(deadline));
   };
-  const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost");
+  const cancel = button("Cancel", "Cancel pending voice delivery", () => act("cancel"), "btn-ghost vc-cancel");
   const remaining = Math.max(0, (deadline ?? 0) - now);
   const first = card.parts[0];
   const split = card.parts.length > 1;
@@ -254,7 +254,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
           {surface ? <span className="spoken-hint">Say <q>{first?.target?.name}, answer</q> to reply to one.</span> :
             <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint>}</>}</>;
   }
-  return <article ref={article} role="status" aria-label={pill && card.state === "pending" ? `To ${first?.target?.name}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
+  return <article ref={article} role="status" tabIndex={surface ? -1 : undefined} aria-label={pill && card.state === "pending" ? `To ${first?.target?.name}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     data-pill={pill && ((card.state === "pending" && remaining > 0) || card.state === "sent" || card.state === "queued") || undefined}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}

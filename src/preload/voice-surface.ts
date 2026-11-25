@@ -6,6 +6,13 @@ ipcRenderer.on("voice:anchor", (_event, right: number) => {
   document.documentElement.style.setProperty("--voice-anchor-right", right + "px");
 });
 
+ipcRenderer.on("voice:focus-control", () => {
+  const card = document.querySelector<HTMLElement>(".voice-card");
+  const control = card?.querySelector<HTMLButtonElement>("button.vc-cancel:enabled")
+    ?? card?.querySelector<HTMLButtonElement>("button:enabled") ?? card;
+  control?.focus();
+});
+
 window.addEventListener("DOMContentLoaded", () => {
   const root = document.getElementById("root")!;
   const layout = () => ipcRenderer.send("voice:layout", root.querySelector(".voice-standalone") ? root.getBoundingClientRect().height : 0,

@@ -11,7 +11,7 @@ import { useNow } from "./useNow.ts";
 import { anyAwaiting, awaitingSessionIds, keepAwaitingIds, NO_AWAITING_SESSIONS } from "./lib/awaiting.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
 import { RecentlyHeard } from "./components/RecentlyHeard.tsx";
-import { useVoiceSurface, voicePortal } from "./components/VoiceFloatingSurface.tsx";
+import { useVoiceSurface, VoiceCardOutlet, voicePortal } from "./components/VoiceFloatingSurface.tsx";
 import { VoiceCardHost } from "./components/VoiceCardHost.tsx";
 import { launchResident } from "./residents/launch.ts";
 import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
@@ -940,21 +940,31 @@ export function App(): React.JSX.Element {
   const preferredPlacement = useUiConfig().voice.confirmation;
   const voicePlacement = desktopVoice && voiceCapable(voice, "floating-windows") ? preferredPlacement : "toast";
   const [historyOpen, setHistoryOpen] = useState(false);
-  const pillRoot = useVoiceSurface("pill", voicePlacement === "pill");
-  const popRoot = useVoiceSurface("popover", voicePlacement === "popover" || (trayHistory && historyOpen));
+  const { root: pillRoot, requestOpen: requestPill } = useVoiceSurface("pill", voicePlacement === "pill");
+  const { root: popRoot, requestOpen: requestPopover } = useVoiceSurface("popover", voicePlacement === "popover" || (trayHistory && historyOpen));
+  const previousCards = useRef(voiceCards);
+  useEffect(() => {
+    const previous = previousCards.current;
+    previousCards.current = voiceCards;
+    if (![...voiceCards.keys()].some(id => !previous.has(id))) return;
+    if (voicePlacement === "pill") requestPill();
+    if (voicePlacement === "popover") requestPopover();
+  }, [voiceCards, voicePlacement, requestPill, requestPopover]);
+  const openTrayHistory = useCallback(() => { setHistoryOpen(true); requestPopover(); }, [requestPopover]);
   const surfaceRoot = voicePlacement === "popover" ? popRoot : voicePlacement === "pill" ? pillRoot : null;
   useEffect(() => {
     if (!trayHistory) { setHistoryOpen(false); return; }
-    return window.missionDesktop?.onRecentlyHeard?.(() => setHistoryOpen(true));
-  }, [trayHistory]);
+    return window.missionDesktop?.onRecentlyHeard?.(openTrayHistory);
+  }, [trayHistory, openTrayHistory]);
   useEffect(() => {
     const child = popRoot?.ownerDocument.defaultView;
     if (!historyOpen || !child) return;
     const close = () => setHistoryOpen(false);
     const escape = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     child.addEventListener("blur", close);
+    child.addEventListener("pagehide", close);
     child.addEventListener("keydown", escape);
-    return () => { child.removeEventListener("blur", close); child.removeEventListener("keydown", escape); };
+    return () => { child.removeEventListener("blur", close); child.removeEventListener("pagehide", close); child.removeEventListener("keydown", escape); };
   }, [historyOpen, popRoot]);
   const openVoiceSetup = useCallback(() => openSettingsAnchor("setup", "setup/family-voice"), [openSettingsAnchor]);
   const openForemanTrust = useCallback(
@@ -5126,11 +5136,11 @@ export function App(): React.JSX.Element {
           />
         );
 
-  const voiceCardHost = spokenNames && <VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
+  const voiceCardHost = <VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
     actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
-      openRecentlyHeard: () => trayHistory ? setHistoryOpen(true) : openSettingsAnchor("voice", "voice/heard"),
+      openRecentlyHeard: () => trayHistory ? openTrayHistory() : openSettingsAnchor("voice", "voice/heard"),
       openQuestion: (sessionId, questionId) => { if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.(); navigate({ page: "fleet" }, allowed => {
         if (allowed) setReviewRequest({ sessionId, questionId });
       }); },
@@ -5178,12 +5188,8 @@ export function App(): React.JSX.Element {
       >
       {!standalone && <ContextMenuHost ref={contextMenuRef} />}
       <div className={route.page === "voice-card" ? `voice-standalone voice-${route.placement}` : `app app-${layout}`} role={standalone ? "main" : undefined}>
-        {surfaceRoot && voicePlacement !== "toast"
-          ? voiceCards.size > 0 && voicePortal(surfaceRoot,
-            <div className={`voice-standalone voice-${voicePlacement}`} hidden={voicePlacement === "popover" && historyOpen}>
-              {voiceCardHost}
-            </div>)
-          : voiceCardHost}
+        {spokenNames && <VoiceCardOutlet root={voiceCards.size ? surfaceRoot : null} placement={voicePlacement}
+          hidden={voicePlacement === "popover" && historyOpen}>{voiceCardHost}</VoiceCardOutlet>}
         {historyOpen && popRoot && voicePortal(popRoot, <div className="voice-standalone voice-popover">{history}</div>)}
         {!standalone && <>
         <VoiceIndicator id="edge" />

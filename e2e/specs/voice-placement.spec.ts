@@ -11,11 +11,11 @@ test.beforeEach(async ({ daemon, dashboard: page }) => {
   } } })).ok()).toBe(true);
 });
 
-async function desktopWith(page: Page, daemon: DaemonHandle, capability: "floating-windows" | "tray") {
+async function desktopWith(page: Page, daemon: DaemonHandle, capability: "floating-windows" | "tray" | "both") {
   await page.addInitScript(capability => {
     Object.assign(window, { missionDesktop: {
       isDesktop: true, onOpenSettings: () => () => {},
-      ...(capability === "tray" && { onRecentlyHeard: (open: () => void) => {
+      ...(capability !== "floating-windows" && { onRecentlyHeard: (open: () => void) => {
         window.addEventListener("fixture:recently-heard", open);
         return () => window.removeEventListener("fixture:recently-heard", open);
       } }),
@@ -24,9 +24,71 @@ async function desktopWith(page: Page, daemon: DaemonHandle, capability: "floati
   await page.goto(daemon.baseURL + "/#/settings/voice");
   await page.reload();
   expect((await page.request.post(daemon.baseURL + "/voice/shell-report", {
-    headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { [capability]: { available: true } } },
+    headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: capability === "both"
+      ? { tray: { available: true }, "floating-windows": { available: true } } : { [capability]: { available: true } } },
   })).ok()).toBe(true);
 }
+
+test("moving a selected confirmation keeps its pending Cancel and the other message separate", async ({ daemon, dashboard: page }) => {
+  await desktopWith(page, daemon, "floating-windows");
+  const opening = page.waitForEvent("popup");
+  await page.getByRole("radio", { name: /Floating pill/ }).check();
+  const pill = await opening;
+  for (const id of ["older", "newer"]) {
+    await say(daemon, "Steve, inspect the " + id + " build", { id });
+    await expect(pill.getByRole("status")).toContainText(id);
+  }
+  await pill.getByRole("combobox", { name: "Voice message" }).selectOption("older");
+  const response = Promise.withResolvers<void>();
+  await page.route("**/cards/older/cancel", async route => {
+    await response.promise;
+    await route.fulfill({ status: 503, json: { ok: false, error: "Try this cancellation again." } });
+  }, { times: 1 });
+  const move = page.waitForEvent("popup");
+  let popover: Page;
+  try {
+    await pill.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(pill.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+    await page.getByRole("radio", { name: /Tray popover/ }).check();
+    popover = await move;
+    await expect(popover.getByRole("combobox", { name: "Voice message" })).toHaveValue("older", { timeout: 3000 });
+    await expect(popover.getByRole("status")).toContainText("inspect the older build");
+    // A slow move can reach the normal two-second retry prompt before the new window paints.
+    await expect.poll(async () => await popover.getByRole("button", { name: "Cancel", exact: true }).isDisabled()
+      || await popover.getByText(/Still waiting for the daemon/).isVisible()).toBe(true);
+  } finally { response.resolve(); }
+  await expect(popover.getByRole("status")).toContainText("Try this cancellation again.");
+  const cancelled = page.waitForResponse(r => r.url().endsWith("/cards/older/cancel"));
+  await popover.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect((await cancelled).ok()).toBe(true);
+  await expect(popover.getByRole("status")).toContainText("inspect the newer build");
+});
+
+test("a closed selected popover reopens for a tray request and for the next confirmation", async ({ daemon, dashboard: page }) => {
+  await desktopWith(page, daemon, "both");
+  const opening = page.waitForEvent("popup");
+  await page.getByRole("radio", { name: /Tray popover/ }).check();
+  const first = await opening;
+  await say(daemon, "Steve, check the first build");
+  await expect(first.getByRole("status")).toContainText("check the first build");
+  await first.close();
+  await expect(page.locator(".voice-card-stack")).toContainText("check the first build");
+  const trayRequest = () => page.evaluate(() => window.dispatchEvent(new Event("fixture:recently-heard")));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const reopened = page.waitForEvent("popup", { timeout: 7000 });
+    await trayRequest();
+    const history = await reopened;
+    await expect(history.getByRole("region", { name: "Recently heard" })).toContainText("check the first build");
+    await history.close();
+    await expect(page.locator(".voice-card-stack")).toContainText("check the first build");
+  }
+  const next = page.waitForEvent("popup", { timeout: 7000 });
+  await say(daemon, "Steve, check the next build");
+  const confirmation = await next;
+  await expect(confirmation.getByRole("status")).toContainText("check the next build");
+  await expect(confirmation.getByRole("region", { name: "Recently heard" })).toHaveCount(0);
+  await expect(page.locator(".voice-card")).toHaveCount(0);
+});
 
 test("changing the saved placement moves the live card through the pill, popover and toast", async ({ daemon, dashboard: page }) => {
   await desktopWith(page, daemon, "floating-windows");

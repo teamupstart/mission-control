@@ -62,7 +62,7 @@ test("native voice windows follow content, the pointer display and tray anchor w
       const win = wins.find(w => w.getTitle() === title);
       const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
       return win && { minimized: wins.find(w => w.getTitle() === "Dashboard")?.isMinimized(),
-        area, bounds: win.getBounds(), visible: win.isVisible(), top: win.isAlwaysOnTop(), focusable: win.isFocusable(),
+        area, bounds: win.getBounds(), visible: win.isVisible(), top: win.isAlwaysOnTop(), focused: win.isFocused(), focusable: win.isFocusable(),
         hitTests: (win as Electron.BrowserWindow & { hitTests: boolean[] }).hitTests,
         requestedBounds: (win as Electron.BrowserWindow & { requestedBounds?: Electron.Rectangle }).requestedBounds,
         contentBounds: win.getContentBounds() };
@@ -77,7 +77,8 @@ test("native voice windows follow content, the pointer display and tray anchor w
     assert.ok(shown.minimized);
     assert.deepEqual(shown.bounds, shown.contentBounds, "a frameless window has no title bar inset");
     assert.ok(shown.top);
-    assert.equal(shown.focusable, surface === "popover");
+    assert.ok(shown.focusable, "an explicit keyboard command can focus the window");
+    assert.equal(shown.focused, false, "a confirmation appears without taking focus");
     assert.equal(shown.bounds.height, 81);
     assert.equal(shown.bounds.y, shown.area.y);
     assert.equal(shown.bounds.x, surface === "pill" ? Math.round(shown.area.x + (shown.area.width - shown.bounds.width) / 2)

@@ -1,4 +1,5 @@
 import { BrowserWindow, screen, type BrowserWindowConstructorOptions, type Rectangle } from "electron";
+import { setVoiceConfirmationFocus } from "./menu.ts";
 
 export type VoiceSurface = "pill" | "popover";
 
@@ -6,7 +7,7 @@ export function voiceWindowOptions(surface: VoiceSurface, preload: string): Brow
   return {
     width: surface === "pill" ? 480 : 356, height: 1, show: false,
     transparent: true, frame: false, resizable: false, minimizable: false, maximizable: false,
-    fullscreenable: false, skipTaskbar: true, focusable: surface !== "pill", alwaysOnTop: true,
+    fullscreenable: false, skipTaskbar: true, alwaysOnTop: true,
     hasShadow: false, acceptFirstMouse: true,
     webPreferences: { preload, sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
   };
@@ -19,6 +20,13 @@ export function attachVoiceWindow(win: BrowserWindow, surface: VoiceSurface, tra
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, url) => { if (url !== targetUrl) event.preventDefault(); });
   const contents = win.webContents;
+  const focusConfirmation = () => {
+    if (win.isDestroyed() || !win.isVisible()) return;
+    win.show();
+    contents.send("voice:focus-control");
+  };
+  win.on("hide", () => setVoiceConfirmationFocus(focusConfirmation, false));
+  win.once("closed", () => setVoiceConfirmationFocus(focusConfirmation, false));
   win.setIgnoreMouseEvents(true, { forward: true });
   contents.ipc.on("voice:pointer", (event, inside) => {
     if (event.senderFrame === contents.mainFrame && typeof inside === "boolean") win.setIgnoreMouseEvents(!inside, { forward: true });
@@ -41,5 +49,6 @@ export function attachVoiceWindow(win: BrowserWindow, surface: VoiceSurface, tra
     contents.send("voice:hit-test", cursor.x - x, cursor.y - y);
     if (history === true && surface === "popover") win.show();
     else if (!win.isVisible()) win.showInactive();
+    setVoiceConfirmationFocus(focusConfirmation, history !== true);
   });
 }

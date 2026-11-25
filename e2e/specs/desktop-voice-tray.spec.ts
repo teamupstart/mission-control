@@ -4,6 +4,7 @@ import { _electron, type ElectronApplication } from "playwright";
 import { expect, test } from "../fixtures/test.ts";
 import { say, enableVoice } from "../fixtures/voice.ts";
 import { captureCard, setupCards } from "../fixtures/voice-cards.ts";
+import { consoleScreenLocked } from "../fixtures/native-update-progress.ts";
 import { assertElectronGuiLaunchAllowed } from "../../test/helpers/electron-gui.ts";
 
 test.skip(process.platform !== "darwin", "the voice tray uses the macOS desktop shell");
@@ -75,6 +76,57 @@ async function selectRecentlyHeard(app: ElectronApplication) {
   }));
 }
 
+test("the default pill opens inactive and the keyboard focus command reaches Cancel and Send now", async ({ daemon }) => {
+  assertElectronGuiLaunchAllowed();
+  const locked = consoleScreenLocked(daemon.home);
+  const app = await _electron.launch({
+    args: [resolve("."), "--user-data-dir=" + join(daemon.home, "chromium")],
+    env: { ...process.env, HOME: daemon.home, MISSION_HOME: daemon.home,
+      MISSION_PORT: new URL(daemon.baseURL).port, MISSION_DEV_SERVER_URL: daemon.baseURL },
+  });
+  try {
+    const dashboard = await app.firstWindow();
+    await expect(dashboard.locator(".app")).toBeVisible();
+    await enableVoice(daemon);
+    expect((await dashboard.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
+    expect((await dashboard.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+      identity: { name: "Steve", description: "Builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+    } } })).ok()).toBe(true);
+    const main = await app.browserWindow(dashboard);
+    await main.evaluate(win => win.minimize());
+    await expect.poll(() => main.evaluate(win => win.isMinimized())).toBe(true);
+    await say(daemon, "Steve, check the keyboard");
+    await expect.poll(() => app.windows().find(w => w.url().endsWith("#/voice/pill"))?.url()).toBeTruthy();
+    const pill = app.windows().find(w => w.url().endsWith("#/voice/pill"))!;
+    const cancel = pill.getByRole("button", { name: "Cancel", exact: true });
+    await expect(cancel).toBeVisible();
+    const focused = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.getURL().endsWith("#/voice/pill") ?? false);
+    expect(await focused()).toBe(false);
+    const menuCommand = () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById("focus-voice-confirmation")?.accelerator);
+    await expect.poll(menuCommand, { timeout: 4000 }).toBe("CmdOrCtrl+Alt+V");
+    const requested = await app.evaluate(({ BrowserWindow, Menu }) => {
+      const win = BrowserWindow.getAllWindows().find(w => w.webContents.getURL().endsWith("#/voice/pill"))!;
+      let activated = false;
+      const show = win.show.bind(win);
+      win.show = () => { activated = true; show(); };
+      try { Menu.getApplicationMenu()!.getMenuItemById("focus-voice-confirmation")!.click(); }
+      finally { win.show = show; }
+      return activated && win.isFocusable();
+    });
+    expect(requested).toBe(true);
+    if (locked) test.info().annotations.push({ type: "macOS", description: "The locked console owns native key focus." });
+    else await expect.poll(focused).toBe(true);
+    await expect(cancel).toBeFocused();
+    await captureCard(pill.getByRole("status"), "keyboard-focused-confirmation");
+    await pill.keyboard.press("Shift+Tab");
+    await expect(pill.getByRole("button", { name: "Send now" })).toBeFocused();
+    await pill.keyboard.press("Tab");
+    await expect(cancel).toBeFocused();
+    await pill.keyboard.press("Space");
+    await expect(pill.getByRole("status")).toContainText("Cancelled");
+  } finally { await app.close(); }
+});
+
 test("Recently Heard from the tray shows history alone and returns to the live popover countdown", async ({ daemon, page: reference }) => {
   assertElectronGuiLaunchAllowed();
   await reference.goto(new URL("../../docs/plans/voice-addressing-for-agents/mockup-recently-heard.html", import.meta.url).href);
@@ -126,9 +178,18 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     await card.getByRole("button", { name: "Cancel" }).click();
     await expect(card).toContainText("Cancelled");
 
+    const nativePopover = await app.browserWindow(popover);
+    await nativePopover.evaluate(win => win.close());
+    await expect.poll(() => popover.isClosed()).toBe(true);
+    const replacement = app.waitForEvent("window");
+    await selectRecentlyHeard(app);
+    const restored = await replacement;
+    await expect(restored.getByRole("region", { name: "Recently heard" })).toContainText("Cancelled");
+    await restored.keyboard.press("Escape");
+
     // History also opens from a cold popover when the card placement is elsewhere.
     expect((await dashboard.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "toast" } })).ok()).toBe(true);
-    await expect.poll(() => popover.isClosed()).toBe(true);
+    await expect.poll(() => restored.isClosed()).toBe(true);
     const opened = app.waitForEvent("window");
     await selectRecentlyHeard(app);
     const reopened = (await opened).getByRole("region", { name: "Recently heard" });

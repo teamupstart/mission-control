@@ -49,9 +49,12 @@ async function review(mcp, prompt) {
     if (inspector) {
       if (prompt.includes("E2E_LOCAL_INSPECTOR_NO_QUERY")) return inspectorResult("Prompt only");
       const outsideDiff = await call("read", { path: "README.md" });
-      const changed = await call("read", { path: "submitted.txt" });
-      if (!outsideDiff.items[0]?.text.startsWith("# ") || !changed.items[0]?.text) throw Error("Submitted checkout is unavailable");
-      if (changed.items[0].text.startsWith("fixed")) {
+      const changed = await call("read", { path: "submitted.txt", verifyAbsence: true });
+      const file = changed.items[0];
+      const absent = file?.path === "submitted.txt" && file.metadata?.absent === true;
+      if (!outsideDiff.items[0]?.text.startsWith("# ") || (!absent && !file?.text)) throw Error("Submitted checkout is unavailable");
+      if (absent || file.text.startsWith("fixed")) {
+        if (absent && prompt.includes("- submitted.txt\n")) throw Error("Removed file should be outside the diff");
         const fingerprint = /- ([a-f0-9]+) - submitted\.txt:/.exec(prompt)?.[1];
         if (!fingerprint) throw Error("An earlier unresolved finding was not carried");
         return inspectorResult("Repair verified", [], [fingerprint]);

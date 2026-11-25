@@ -3505,6 +3505,7 @@ test("repository review verifies executor capability, the live grant at material
 
 for (const { id, description, query, severity } of [
   { id: "local-inspector-repair", description: "carries off-diff findings across restart and waits for a verified repair before Pull Request", query: true, severity: "major" },
+  { id: "local-inspector-removal", description: "resolves an off-diff finding after verified removal of its newly added file", query: true, severity: "major" },
   { id: "local-inspector-without-query", description: "rejects a terminal verdict without a verified repository query", query: false, severity: "major" },
   { id: "local-inspector-saved-severity", description: "uses the saved minor threshold to fail before Pull Request", query: true, severity: "minor" },
   { id: "local-inspector-revoked", description: "does not dispatch if Commands permission is revoked while waiting for a review slot", query: false, severity: "major" },
@@ -3587,6 +3588,7 @@ for (const { id, description, query, severity } of [
 
     const finding = { path: "submitted.txt", line: 1, severity, title: "Remove placeholder", body: "The task still contains a placeholder." } as const;
     const fp = fingerprint(finding.path, finding.title);
+    const removeFindingFile = id === "local-inspector-removal";
     let allowed = true;
     let providerCalls = 0;
     const options: ConstructorParameters<typeof WorkflowEngine>[2] = {
@@ -3613,19 +3615,25 @@ for (const { id, description, query, severity } of [
           const subsequent = request.submissionId !== first;
           if (subsequent) assert.match(request.prompt, new RegExp(fp));
           if (query) {
-            const read = (path: string, readLayer: "worktree" | "index"): PersonaWorkloadEvent => {
+            const read = (path: string, readLayer: "worktree" | "index", absent = false): PersonaWorkloadEvent => {
               const operationId = randomUUID();
               const binding = { operationId, workloadId: request.workloadId, attemptId: request.attemptId,
                 snapshotDigest: request.artifact.digest, operation: "read", truncated: false } as const;
               return { ...event(), type: "repository_query", audit: { ...binding, readLayer, inputHash: "a".repeat(64),
-                status: "ok", code: null, bytes: 10, items: 1, durationMs: 1, handles: [{ ...binding, path,
+                status: "ok", code: null, bytes: 10, items: 1, durationMs: 1,
+                ...(absent ? { absentWorktreePath: path, handles: [] } : { handles: [{ ...binding, path,
                   evidenceHandleId: randomUUID(), itemOrdinal: 0, policyVersion: 1,
                   range: { kind: "line", startLine: 1, endLineExclusive: 2 },
-                }],
+                }] }),
               } };
             };
-            yield read(request.submissionId.endsWith("-unrelated") ? "notes.txt" : finding.path, "worktree");
-            if (request.submissionId.endsWith("-unrelated")) yield read(finding.path, "index");
+            if (request.submissionId.endsWith("-unrelated")) {
+              yield read("notes.txt", "worktree");
+              yield read("unrelated-removed.txt", "worktree", true);
+              yield read(finding.path, "index");
+            } else {
+              yield read(finding.path, "worktree", removeFindingFile && subsequent);
+            }
           }
           const resolved = subsequent ? [fp] : [];
           yield { ...event(), type: "terminal", capability: REPOSITORY_EVIDENCE_CAPABILITY,
@@ -3686,10 +3694,15 @@ for (const { id, description, query, severity } of [
     const third = `${first}-repair`;
     store.createRepairSubmission({ id: third, runId, round: 3, triggerSource: "manual",
       triggerKey: `manual:${id}:repair`, context: {}, evidence: {}, now: Date.now() });
-    writeFileSync(join(repo, finding.path), "fixed\n");
-    git("add", finding.path);
-    commit("upstream fix");
-    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    if (removeFindingFile) {
+      git("rm", finding.path);
+      git("update-ref", "refs/remotes/origin/main", base);
+    } else {
+      writeFileSync(join(repo, finding.path), "fixed\n");
+      git("add", finding.path);
+      commit("upstream fix");
+      git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    }
     await capture(third, "unrelated revision", "notes.txt");
     assert.equal(git("diff", "--name-only", "refs/remotes/origin/main", "HEAD"), "notes.txt");
     engine.activateSubmission(third);

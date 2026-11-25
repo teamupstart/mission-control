@@ -3137,7 +3137,8 @@ checkout and review the changes against the workflow goal. Before accepting a ve
 requires a successful repository query that returns at least one item.
 The run records the publication tree, base ref, merge base, threshold and outcome. Open findings
 carry forward on the next submission and are available under **Load findings**. Closing a
-finding outside the new diff requires reading its file in the submitted worktree.
+finding outside the new diff requires an audited read of its file or confirmation that its
+exact path is absent from the submitted worktree.
 
 The defaults in **Library > Commands > Local Inspector** are **Major and above**, **10 executions
 per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity

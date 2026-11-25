@@ -333,6 +333,7 @@ test("the local policy distinguishes new findings from carried issues outside th
   assert.match(prompt, /Your findings go directly to the author's session/);
   assert.match(prompt, /Every new finding must name a file changed in the submitted diff/);
   assert.match(prompt, /Check each finding against this checkout, including files absent from the diff/);
+  assert.match(prompt, /with verifyAbsence set to true/);
   assert.match(prompt, /older - src\/earlier\.ts:3/);
   assert.match(prompt, /The rest stay open \(1 omitted\)/);
   assert.doesNotMatch(prompt, /GitHub|pull request|\bpush\b/);

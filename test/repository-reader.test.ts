@@ -159,6 +159,34 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
       "invalid_cursor",
     );
 });
+test("an opt-in read proves exact worktree absence without treating unreadable paths as removed", async (t) => {
+  const f = await fixture(t);
+  const reader = f.make();
+  const path = "src/removed[1].txt";
+  const absent = await reader.query("read", { path, verifyAbsence: true });
+  assert.equal(absent.status, "ok");
+  assert.deepEqual(absent.items, [{ path, metadata: { absent: true } }]);
+  assert.partialDeepStrictEqual(f.audit.at(-1), { readLayer: "worktree", absentWorktreePath: path, handles: [] });
+
+  for (const input of [
+    { path },
+    { path, layer: "index", verifyAbsence: true },
+    { path: ".env", verifyAbsence: true },
+    { path: "src", verifyAbsence: true },
+    { path: "link/hidden.txt", verifyAbsence: true },
+  ]) {
+    assert.notEqual((await reader.query("read", input)).status, "ok", JSON.stringify(input));
+    assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+  }
+  const present = await reader.query("read", { path: "src/a.txt", start: 500, verifyAbsence: true });
+  assert.equal(present.status, "ok");
+  assert.deepEqual(present.items, []);
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+  f.view.worktree[0]!.blob = "f".repeat(40);
+  const unavailable = await f.make().query("read", { path: "src/a.txt", verifyAbsence: true });
+  assert.equal(unavailable.code, "unavailable");
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+});
 test("case-insensitive search returns one context line on each side and audits that exact range", async (t) => {
   const f = await fixture(t, "first\nBefore\nNeedle\nAfter\nlast\n");
   const result = await f.make().query("search", {

@@ -217,12 +217,13 @@ test("Codex reads outside the diff, returns a repair packet, then releases the P
   expect(run.refs()).toBe(run.originalRefs);
 });
 
-test("an unresolved finding outside the new diff stays visible and keeps Pull Request unreached", async ({ dashboard, daemon }) => {
+test("an off-diff finding keeps Pull Request unreached until its file removal is verified", async ({ dashboard, daemon }) => {
   const run = await start(dashboard, daemon, { marker: "E2E_LOCAL_INSPECTOR_CARRY_OFF_DIFF" });
   writeFileSync(join(daemon.home, "repository-review-ready"), "ready");
   await expect.poll(async () => (await run.detail()).run.status, { timeout: 30_000 }).toBe("waiting_for_session");
 
   const checkout = dirname(run.file);
+  const originalBase = git(checkout, "rev-parse", "refs/remotes/origin/main");
   git(checkout, "add", "submitted.txt");
   git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
     "commit", "-qm", "Base advances and still contains the placeholder");
@@ -242,6 +243,15 @@ test("an unresolved finding outside the new diff stays visible and keeps Pull Re
   await card.getByRole("button", { name: "Load findings" }).click();
   await expect(card.locator(".wf-run-command-artifact pre")).toContainText("The submitted worktree still contains the placeholder.");
   await screenshot(card, "carried-finding-round5");
+
+  git(checkout, "rm", "submitted.txt");
+  git(checkout, "update-ref", "refs/remotes/origin/main", originalBase);
+  await run.resubmit(3);
+  await expect.poll(async () => (await run.detail()).attempts.find(a => a.nodeId === "pull-request")?.state,
+    { timeout: 30_000 }).toBe("waiting");
+  expect((await run.detail()).attempts.filter(a => a.nodeId === "inspect").at(-1)?.output)
+    .toMatchObject({ localInspector: { status: "passed", findingCount: 0 } });
+  expect(run.refs()).toBe(run.originalRefs);
 });
 
 test("a provider verdict without a repository query blocks without a repair or PR action", async ({ dashboard, daemon }) => {

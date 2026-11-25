@@ -268,6 +268,7 @@ export class RepositoryReview {
           queriedRepository = true;
           if (offDiffFindings?.size && event.audit.operation === "read" && event.audit.readLayer === "worktree") {
             for (const handle of event.audit.handles) inspectedPaths.add(handle.path);
+            if (event.audit.absentWorktreePath) inspectedPaths.add(event.audit.absentWorktreePath);
           }
         }
         if (event.type === "terminal") terminal = event;

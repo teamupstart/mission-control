@@ -358,7 +358,8 @@ export function buildLocalReviewPrompt(input: {
     }
     lines.push(
       "Check each finding against this checkout, including files absent from the diff.",
-      "If a finding's file is outside the diff, use the repository read tool on that file in the worktree layer before resolving it.",
+      "If a finding's file is outside the diff, use the repository read tool on its exact path in the worktree layer with verifyAbsence set to true.",
+      "A read that returns absent: true verifies the path is gone from the submitted worktree.",
       "Put its fingerprint in `resolved` only after verifying that the issue is gone.",
       "Any finding you leave unresolved carries forward.",
       "",

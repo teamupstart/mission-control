@@ -309,6 +309,16 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const r = RepositoryOperationSchemas.read.parse(input);
         allow(r.path);
         const e = view[r.layer].find((e) => e.path === r.path);
+        if (!e && r.layer === "worktree" && r.verifyAbsence) {
+          // The sealed view stores leaf entries. A replacement directory or an opaque
+          // ancestor must not be mistaken for an absent path.
+          const obscured = view.worktree.some(entry => entry.path.startsWith(r.path + "/")
+            || (entry.kind !== "file" && r.path.startsWith(entry.path + "/")));
+          if (!obscured) {
+            yield { path: r.path, metadata: { absent: true } };
+            return;
+          }
+        }
         if (!e || !e.blob) throw new Refusal("unavailable");
         if (e.kind === "submodule") throw new Refusal("denied_path");
         const data = await blob(e.blob, signal);
@@ -767,6 +777,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       });
       handles.length = 0;
     }
+    const first = result.items[0];
     const audit = RepositoryQueryAuditMetadataSchema.parse({
       operationId,
       operation,
@@ -774,6 +785,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       attemptId: options.attemptId,
       snapshotDigest: view.snapshotDigest,
       ...(readLayer === undefined ? {} : { readLayer }),
+      ...(first?.metadata?.absent === true ? { absentWorktreePath: first.path } : {}),
       inputHash,
       status: result.status,
       code: result.code,

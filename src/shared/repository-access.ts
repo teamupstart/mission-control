@@ -49,6 +49,7 @@ export const RepositoryOperationSchemas = {
     unit: z.enum(["line", "byte"]).default("line"),
     start: count.default(0),
     length: z.number().int().min(1).max(65536).default(200),
+    verifyAbsence: z.boolean().optional().describe("When true, report exact path absence in the captured worktree."),
     cursor,
   }),
   search: z.strictObject({
@@ -348,6 +349,7 @@ export const RepositoryQueryAuditMetadataSchema = z
     snapshotDigest: sha,
     operation: z.enum(REPOSITORY_OPERATION_IDS),
     readLayer: z.enum(["worktree", "index"]).optional(),
+    absentWorktreePath: RepositoryPathSchema.optional(),
     inputHash: sha,
     status: z.enum(["ok", "denied", "failed", "cancelled"]),
     code: z.enum(REPOSITORY_FAILURE_CODES).nullable(),
@@ -361,6 +363,11 @@ export const RepositoryQueryAuditMetadataSchema = z
   .superRefine((audit, ctx) => {
     if (audit.readLayer !== undefined && audit.operation !== "read")
       ctx.addIssue({ code: "custom", message: "Only a read query has a checkout layer" });
+    if (audit.absentWorktreePath !== undefined && (
+      audit.operation !== "read" || audit.readLayer !== "worktree" || audit.status !== "ok"
+      || audit.code !== null || audit.items !== 1 || audit.truncated || audit.hasNextPage
+      || audit.handles.length > 0 || !approvedPath(audit.absentWorktreePath)
+    )) ctx.addIssue({ code: "custom", message: "Invalid worktree absence evidence" });
     const ids = new Set<string>();
     const ordinals = new Set<number>();
     if (audit.status !== "ok" && audit.handles.length)

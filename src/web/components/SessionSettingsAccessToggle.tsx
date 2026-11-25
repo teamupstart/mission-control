@@ -21,7 +21,7 @@ export function SessionSettingsAccessToggle() {
     const access = await fetchSessionSettingsAccess(AbortSignal.any([request.signal, AbortSignal.timeout(5000)]));
     if (request.signal.aborted) return;
     setReadFailed(!access);
-    if (access) setEnabled(access.enabled);
+    setEnabled(access?.enabled ?? null);
   }, []);
   useEffect(() => {
     const unsubscribe = onSessionSettingsAccessChanged(() => { void refresh(); });

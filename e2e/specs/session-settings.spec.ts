@@ -153,10 +153,14 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
     try {
       expect(await callSettings(client, { operation: "get", key: "ui.skin" })).toMatchObject({ ok: true });
       let refuseWrite = true;
+      let refuseRead = false;
       await page.route(`**${ACCESS_ENDPOINT}`, route => {
-        if (route.request().method() !== "PUT" || !refuseWrite) return route.continue();
-        refuseWrite = false;
-        return route.fulfill({ status: 503 });
+        if (route.request().method() === "GET" && refuseRead) return route.fulfill({ status: 503 });
+        if (route.request().method() === "PUT" && refuseWrite) {
+          refuseWrite = false;
+          return route.fulfill({ status: 503 });
+        }
+        return route.continue();
       });
       const alert = page.getByRole("alert").filter({ hasText: "Could not save session settings access." });
       await access.click();
@@ -185,8 +189,27 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
       await access.click();
       await expect(access).toBeChecked();
       await expect(peerAccess).toBeChecked();
+
+      // The real save succeeds. Hold back both the event-driven and post-save reads.
+      refuseRead = true;
+      const saved = page.waitForResponse(response => response.url().endsWith(ACCESS_ENDPOINT)
+        && response.request().method() === "PUT" && response.ok());
       await access.click();
+      expect(await (await saved).json()).toEqual({ enabled: false });
+      const readAlert = page.getByRole("alert").filter({ hasText: "Could not read session settings access." });
+      await expect(readAlert).toBeVisible();
+      await expect(access).not.toBeChecked();
+      await expect(access).toBeDisabled();
       await expect(peerAccess).not.toBeChecked();
+      await callSettings(client, { operation: "get", key: "ui.skin" }, "access_disabled");
+      await evidence(page, "trust-read-failed-after-revoke");
+
+      refuseRead = false;
+      await page.getByRole("tab", { name: "Display", exact: true }).click();
+      await page.getByRole("tab", { name: "Trust", exact: true }).click();
+      await expect(readAlert).toBeHidden();
+      await expect(access).not.toBeChecked();
+      await expect(access).toBeEnabled();
       await application.evaluate(() =>
         (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
       await startDaemon();

@@ -59,6 +59,10 @@ import { voiceStateStore, type VoiceStateStore } from "./state.ts";
  */
 const VOICE_BODY_MAX_BYTES = 128 * 1024;
 
+function speechCaptureKey(owner: string | undefined, revision: string | undefined, onsetUs: number): string {
+  return JSON.stringify([owner, revision, onsetUs]);
+}
+
 function writeExpired(value?: string): boolean {
   if (value === undefined) return false;
   const expiry = Number(value);
@@ -522,6 +526,22 @@ export function registerVoiceUtteranceRoutes(
       observation: bounds, observationId, calibrating, confirmed });
     return c.json({ ok }, ok ? 200 : 409);
   });
+  app.post("/voice/listener/speech", gate, limitBody, async c => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, z.object({ speechStartUs: z.number().int().nonnegative(), phase: z.enum(["start", "finish"]) }), { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+    const revision = c.req.query("revision");
+    const key = speechCaptureKey(owner, revision, parsed.data.speechStartUs);
+    if (parsed.data.phase === "finish") router.speechFinished(key);
+    else {
+      const directive = voiceStateStore.directive();
+      if (!featureEnabled(VOICE_FLAG) || !directive.capture || revision !== directive.revision) return c.json({ accepted: false });
+      router.speechStarted(key, parsed.data.speechStartUs);
+    }
+    return c.json({ accepted: true });
+  });
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
@@ -575,7 +595,12 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
-    return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs }) });
+    const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, revision, onsetUs);
+    try {
+      return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey }) });
+    } finally {
+      if (captureKey) router.speechFinished(captureKey);
+    }
   });
   app.get("/api/voice/heard", gate, (c) => {
     c.header("Cache-Control", "no-store");

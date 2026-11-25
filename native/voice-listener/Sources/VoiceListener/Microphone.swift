@@ -146,7 +146,8 @@ struct SpeechGate {
     }
 
     mutating func feed(_ frame: [Float], active: Bool, endNs: Int64,
-                       toUnixMs: (Int64) -> Int64 = { CaptureClock().unixMs($0) }) -> Segment? {
+                       toUnixMs: (Int64) -> Int64 = { CaptureClock().unixMs($0) },
+                       onSpeechStart: (Int64) -> Void = { _ in }) -> Segment? {
         guard !frame.isEmpty else { return nil }
         if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(Self.maxSegmentSamples) * Segment.sampleNs + 2_000_000_000 {
             overflowPrefix = nil
@@ -159,6 +160,7 @@ struct SpeechGate {
             startNs = endNs - Int64(lead.count + frame.count) * Segment.sampleNs
             capturedAt = toUnixMs(startNs)
             firstVoicedSample = lead.count + (frame.firstIndex { abs($0) > Self.activityFloor } ?? frame.count)
+            onSpeechStart((startNs + Int64(firstVoicedSample) * Segment.sampleNs) / 1000)
             samples = lead
             lead.removeAll()
         }
@@ -241,7 +243,7 @@ final class SpeechSegmenter {
         return voiced && samples.reduce(0) { $0 + $1 * $1 } > Float(samples.count) * SpeechGate.activityFloor * SpeechGate.activityFloor
     }
 
-    func consume(_ samples: [Float], endNs: Int64) -> [Segment] {
+    func consume(_ samples: [Float], endNs: Int64, onSpeechStart: (Int64) -> Void = { _ in }) -> [Segment] {
         var result: [Segment] = []
         var offset = 0
         while offset < samples.count {
@@ -257,7 +259,8 @@ final class SpeechSegmenter {
             // our own 800 ms boundary immediately when the signal is already quiet.
             let frameEnd = endNs - Int64(samples.count - offset) * Segment.sampleNs
             if let segment = gate.feed(pending, active: isSpeech(pending), endNs: frameEnd,
-                                       toUnixMs: { self.pendingStart?.clock.unixMs($0) ?? CaptureClock().unixMs($0) }) { result.append(segment) }
+                                       toUnixMs: { self.pendingStart?.clock.unixMs($0) ?? CaptureClock().unixMs($0) },
+                                       onSpeechStart: onSpeechStart) { result.append(segment) }
             pending.removeAll(keepingCapacity: true)
             pendingStart = nil
         }
@@ -348,7 +351,8 @@ final class InputSegmenter {
         return prefix
     }
 
-    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, cutoff: Int64? = nil) -> [Segment] {
+    func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime, cutoff: Int64? = nil,
+                 onSpeechStart: (Int64) -> Void = { _ in }) -> [Segment] {
         if let cutoff, covers(cutoff) { return [] }
         let rate = buffer.format.sampleRate
         let hostSeconds = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : nil
@@ -417,7 +421,7 @@ final class InputSegmenter {
             count = Segment.completeSamples(count, startingAt: startNs, through: cutoff)
         }
         let samples = Array(UnsafeBufferPointer(start: channel, count: count))
-        return segmenter.consume(samples, endNs: startNs + Int64(count) * Segment.sampleNs)
+        return segmenter.consume(samples, endNs: startNs + Int64(count) * Segment.sampleNs, onSpeechStart: onSpeechStart)
     }
 }
 
@@ -457,6 +461,8 @@ final class Microphone {
     private let tapLock = NSLock()
     private var segmenter: InputSegmenter?
     private var heldSpeech: HeldSpeech?
+    private let onSpeechStart: (Int64) -> Void
+    private let onSegmentDropped: (Int64) -> Void
     private let onQueueFull: () -> Void
     private var queueFullReported = false
     private var cutoff: Int64?
@@ -476,6 +482,8 @@ final class Microphone {
     }
 
     init(selection: String, held: Bool = false, devices: [Device] = Device.inputs(), engine: AVAudioEngine = AVAudioEngine(),
+         onSpeechStart: @escaping (Int64) -> Void = { _ in },
+         onSegmentDropped: @escaping (Int64) -> Void = { _ in },
          onQueueFull: @escaping () -> Void = {
              DispatchQueue.global(qos: .utility).async {
                  fputs("Voice listener queue full. New speech dropped while earlier phrases await delivery.\n", stderr)
@@ -483,6 +491,8 @@ final class Microphone {
          },
          onStopped: @escaping @MainActor (Microphone) -> Void = { _ in }) throws {
         self.engine = engine
+        self.onSpeechStart = onSpeechStart
+        self.onSegmentDropped = onSegmentDropped
         self.onQueueFull = onQueueFull
         heldSpeech = held ? HeldSpeech() : nil
         (segments, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingOldest(2))
@@ -513,10 +523,11 @@ final class Microphone {
     func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
         let finish = tapLock.withLock { () -> (@MainActor () -> Void)? in
             guard let segmenter else { return nil }
-            for segment in segmenter.consume(buffer, at: when, cutoff: cutoff) {
+            for segment in segmenter.consume(buffer, at: when, cutoff: cutoff, onSpeechStart: onSpeechStart) {
                 if heldSpeech != nil {
                     heldSpeech?.append(segment)
-                } else if case .dropped = continuation.yield(segment) {
+                } else if case .dropped(let dropped) = continuation.yield(segment) {
+                    onSegmentDropped(dropped.speechStartHostUs)
                     if !queueFullReported { onQueueFull() }
                     queueFullReported = true
                 } else {

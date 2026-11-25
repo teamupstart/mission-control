@@ -1497,3 +1497,129 @@ test("a busy session's accepted turn stays queued on its card and in Recently he
   assert.deepEqual(cards.map((card) => [card.state, card.reason]), [["pending", "exact"], ["pending", "delivering"], ["queued", "exact"]]);
   assert.equal((await readHeard())[0]?.outcome, "queued");
 });
+
+test("speech onset pins the in-window message across segmentation and a later capture", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const hostUs = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
+  const setWindow = async (seconds: number) => {
+    const response = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ cancelWindow: { enabled: true, seconds } }) });
+    assert.equal(response.status, 200);
+  };
+  await setWindow(10);
+  await say("Will keep the older message", "onset-older");
+  t.mock.timers.tick(100);
+  await setWindow(1);
+  await say("Will discard this message", "onset-target");
+  t.mock.timers.tick(970);
+  const speechStartUs = voiceStateStore.hostNowUs();
+  const revision = voiceStateStore.directive().revision;
+  const onset = await post("/voice/listener/speech?revision=" + revision, { speechStartUs, phase: "start" }, token);
+  t.mock.timers.tick(10);
+  await setWindow(10);
+  await say("Will keep the newer message", "onset-newer");
+  // Model a longer end-of-speech setting, then decoder and HTTP latency.
+  t.mock.timers.tick(5500);
+  const response = await app.request(utterancePath(revision), { method: "POST", headers: {
+    host: "localhost", "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs - 100000), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 5300),
+  }, body: JSON.stringify({ ...capture("Cancel."), capturedAt: now + 970 }) });
+  assert.deepEqual(await response.json(), { accepted: true });
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), ["onset-older", "onset-newer"]);
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(queued("Will"), ["keep the older message", "keep the newer message"]);
+  assert.equal(onset.status, 200);
+  assert.deepEqual(cards.filter(card => card.state === "cancelled").map(card => card.id), ["onset-target"]);
+});
+
+test("the last microphone buffer can arrive after expiry, but speech starting at expiry cannot reserve delivery", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const hostUs = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
+  await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
+    devices: [], microphone: "granted", modelLoaded: true, reportsSpeechOnset: true }, token);
+  const revision = voiceStateStore.directive().revision;
+  const speech = (phase: string, speechStartUs: number) =>
+    post("/voice/listener/speech?revision=" + revision, { phase, speechStartUs }, token);
+
+  await say("Will wait for the last frame", "last-frame");
+  t.mock.timers.tick(1050);
+  await speech("start", hostUs + 999_999);
+  t.mock.timers.tick(400);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal((await act("last-frame", "cancel")).status, 409);
+  // The decoder dropped this segment. The waiting card must still send once.
+  await speech("finish", hostUs + 999_999);
+  assert.deepEqual(queued("Will"), ["wait for the last frame"]);
+
+  await say("Will send at expiry", "expired-frame");
+  const boundary = voiceStateStore.hostNowUs() + 1_000_000;
+  t.mock.timers.tick(1000);
+  await speech("start", boundary);
+  t.mock.timers.tick(250);
+  assert.deepEqual(queued("Will"), ["wait for the last frame", "send at expiry"]);
+
+  await say("Will recover after listener loss", "lost-frame");
+  await speech("start", voiceStateStore.hostNowUs());
+  t.mock.timers.tick(40_000);
+  assert.equal(queued("Will").at(-1), "recover after listener loss");
+});
+
+test("an explicitly cancelled target cannot redirect its in-flight spoken cancel onto another pending card", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const onset = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => onset + (Date.now() - now) * 1000);
+  await say("Will keep the other card", "pinned-other");
+  await say("Will discard by button", "pinned-click");
+  const revision = voiceStateStore.directive().revision;
+  const path = "/voice/listener/speech?revision=" + revision;
+  assert.equal((await post(path, { phase: "start", speechStartUs: onset })).status, 401);
+  await post(path, { phase: "start", speechStartUs: onset }, token);
+  assert.equal((await act("pinned-click", "cancel")).status, 200);
+  const cancel = { ...capture("cancel", "pinned-control"), capturedAt: now };
+  const response = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(onset), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(Math.ceil(onset / 1000) + 1),
+  }, body: JSON.stringify(cancel) });
+  assert.deepEqual(await response.json(), { accepted: true });
+  assert.equal((await readHeard())[0]?.rule, "nothing-pending");
+  t.mock.timers.tick(1000);
+  assert.deepEqual(queued("Will"), ["keep the other card"]);
+});
+
+test("an accepted non-cancel transcript after expiry releases the reserved message exactly once", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const hostUs = voiceStateStore.hostNowUs();
+  t.mock.method(voiceStateStore, "hostNowUs", () => hostUs + (Date.now() - now) * 1000);
+  const id = "reserved-non-cancel";
+  await say("Will check the logs", id);
+  t.mock.timers.tick(900);
+  const capturedAt = Date.now();
+  const onset = voiceStateStore.hostNowUs();
+  const revision = voiceStateStore.directive().revision;
+  const started = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: onset }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+
+  t.mock.timers.tick(1500);
+  const card = registry.snapshot().voiceCards?.find(card => card.id === id);
+  assert.equal(card?.state, "pending");
+  assert.ok(card.deadline !== null && card.deadline < Date.now());
+  assert.deepEqual(queued("Will"), []);
+
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(onset), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceStateStore.hostNowUs() / 1000)),
+  }, body: JSON.stringify({ ...capture("Just thinking aloud"), capturedAt }) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(queued("Will"), ["check the logs"]);
+  t.mock.timers.tick(40_000);
+  assert.deepEqual(queued("Will"), ["check the logs"]);
+});

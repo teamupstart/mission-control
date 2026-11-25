@@ -536,16 +536,19 @@ final class ListenerTests: XCTestCase {
         XCTAssertNil(try record(release: 90, resumeAt: 48_000)) // Recovery period elapsed.
     }
 
-    private func captureFourPhrases(held: Bool, onQueueFull: @escaping () -> Void) throws -> (Microphone, Int) {
-        let (_, corpus) = try fixtureDirectories()
-        let speech = try samples(from: corpus.appending(path: "Steve-0.wav"))
+    private func captureFourPhrases(held: Bool, speech: [Float]? = nil,
+                                    onSpeechStart: @escaping (Int64) -> Void = { _ in },
+                                    onSegmentDropped: @escaping (Int64) -> Void = { _ in },
+                                    onQueueFull: @escaping () -> Void) throws -> (Microphone, Int) {
+        let speech = try speech ?? samples(from: fixtureDirectories().corpus.appending(path: "Steve-0.wav"))
         let pcm = speech + Array(repeating: Float(0), count: 16_000)
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
         let engine = TapFixtureEngine()
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
         XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
         engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
-        let input = try Microphone(selection: "system-default", held: held, devices: [], engine: engine, onQueueFull: onQueueFull)
+        let input = try Microphone(selection: "system-default", held: held, devices: [], engine: engine,
+                                   onSpeechStart: onSpeechStart, onSegmentDropped: onSegmentDropped, onQueueFull: onQueueFull)
         let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count)))
         frame.frameLength = frame.frameCapacity
         frame.floatChannelData![0].update(from: pcm, count: pcm.count)
@@ -590,10 +593,21 @@ final class ListenerTests: XCTestCase {
 
     func testBackloggedMicrophoneKeepsOldestPhrasesAndReportsDrops() async throws {
         var warnings = 0
-        let (input, length) = try captureFourPhrases(held: false) { warnings += 1 }
+        var onsets: [Int64] = []
+        var dropped: [Int64] = []
+        let tone = (0..<4800).map { 0.2 * sin(Float($0) * .pi / 20) }
+        let (input, length) = try captureFourPhrases(held: false, speech: tone, onSpeechStart: { onsets.append($0) },
+                                                     onSegmentDropped: { dropped.append($0) }) { warnings += 1 }
         input.stop()
         var starts: [Int64] = []
-        for await segment in input.segments { starts.append(segment.startedAtHostMs) }
+        var queued: [Int64] = []
+        for await segment in input.segments {
+            starts.append(segment.startedAtHostMs)
+            queued.append(segment.speechStartHostUs)
+        }
+        XCTAssertEqual(onsets.count, 4)
+        XCTAssertEqual(queued, Array(onsets.prefix(2)))
+        XCTAssertEqual(dropped, Array(onsets.suffix(2)))
         XCTAssertEqual(warnings, 1)
         XCTAssertEqual(starts.count, 2)
         for (i, start) in starts.enumerated() {

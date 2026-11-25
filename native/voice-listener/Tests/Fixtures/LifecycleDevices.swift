@@ -35,7 +35,8 @@ final class Segment {
     private var heldPhrases: [Segment] = []
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String, held: Bool, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
+    init(selection: String, held: Bool, onSpeechStart: @escaping (Int64) -> Void,
+         onSegmentDropped: @escaping (Int64) -> Void, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         exclusive = selection == "exclusive"
         if exclusive, Self.exclusiveOwner?.isRunning == true {
             observe("overlapping microphones")
@@ -59,7 +60,12 @@ final class Segment {
             source.resume()
         }
         if held {
-            if (selection == "rapid-press" || exclusive) && opening == 1 {
+            if selection == "partial-hold" {
+                let complete = Segment("completed hold")
+                heldPhrases = [complete]
+                onSpeechStart(complete.speechStartHostUs)
+                onSpeechStart(complete.speechStartHostUs + 1)
+            } else if (selection == "rapid-press" || exclusive) && opening == 1 {
                 heldPhrases = [Segment("first hold")]
             } else {
                 heldPhrases = (1...4).map { Segment("phrase \($0)") }
@@ -69,6 +75,11 @@ final class Segment {
                 Recognizer.pendingDecode = nil
             }
             observe("holding audio")
+        } else if selection == "dropped-segment" {
+            onSpeechStart(123_456)
+            onSegmentDropped(123_456)
+        } else if selection == "unfinished-segment" {
+            onSpeechStart(123_456)
         } else if selection == "two-segments" {
             source.yield(Segment("undecodable"))
             source.yield(Segment("next"))

@@ -18,6 +18,7 @@ export interface SetupContext {
 
 export const PluginListSchema = z.array(z.object({
   id: z.string(), version: z.string(), scope: z.string(), enabled: z.boolean(),
+  errors: z.array(z.string()).optional().default([]),
 }));
 export const MOD_ID = "mission-control@mission-control";
 const MarketplacesSchema = z.array(z.object({ name: z.string(), source: z.string(), path: z.string().optional() }));

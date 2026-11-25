@@ -43,6 +43,7 @@ version, `mod-enabled`, `mod-current` and `mod-calls`. It checks user scope, the
 against the stage, the marketplace source against the state directory, the staged bundle's
 daemon paths against P8's `allowed-calls.json`, and Claude's plugin validation. It reads only,
 spends no model tokens, and returns 1 for a failed required check.
+An enabled plugin with reported load errors fails `mod-enabled`; the report includes those errors.
 
 The documentation-only `mods-*` policy and version-floor probes are deferred by the minimal
 plan. This release does not infer a blocking managed-policy check from documentation or change

@@ -54,7 +54,10 @@ export async function doctorChecks(context: SetupContext): Promise<DoctorCheck[]
   const root = join(context.stateHome, "mod");
   try {
     const plugin = await installedMod(cli);
-    checks.push({ id: "mod-enabled", ok: plugin?.enabled === true, message: plugin?.enabled ? `${MOD_ID} enabled at user scope` : `${MOD_ID} missing or disabled at user scope. Run mctl setup.` });
+    const loadErrors = plugin?.errors ?? [];
+    checks.push({ id: "mod-enabled", ok: plugin?.enabled === true && loadErrors.length === 0, message: plugin?.enabled && loadErrors.length
+      ? `${MOD_ID} failed to load: ${loadErrors.join("; ")}. Run mctl setup.`
+      : plugin?.enabled ? `${MOD_ID} enabled at user scope` : `${MOD_ID} missing or disabled at user scope. Run mctl setup.` });
     const version = await stagedModVersion(root);
     const marketplace = await modMarketplace(cli);
     const sourceMatches = marketplace?.source === "directory" && marketplace.path === root;

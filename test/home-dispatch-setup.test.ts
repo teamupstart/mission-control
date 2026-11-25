@@ -4,6 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile, stat, symlink, rm } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { detectClaude } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import { runSetup } from "../src/cli/commands/setup.ts";
@@ -77,9 +79,10 @@ test("staging replaces by rename, preserves readers of the previous inode, and c
   const f = await fixture(t);
   const first = await stageMod(f.context.buildRoot, f.context.stateHome);
   assert.equal(first.changed, true);
+  assert.equal(first.version, "2.3.0");
   const target = join(first.root, "mission-control/hooks/register.js");
   const before = await stat(target);
-  assert.equal((await stageMod(f.context.buildRoot, f.context.stateHome)).changed, false);
+  assert.deepEqual(await stageMod(f.context.buildRoot, f.context.stateHome), { root: first.root, version: "2.3.0", changed: false });
   assert.equal((await stat(target)).mtimeMs, before.mtimeMs);
   const { open } = await import("node:fs/promises");
   const reader = await open(target);
@@ -124,6 +127,67 @@ test("setup installs once at a stable path and doctor is read-only; off touches 
   assert.equal(f.fake.state().plugins[0]?.enabled, true);
   assert.equal((await doctorChecks(f.context)).find((c) => c.id === "flag")?.ok, false);
   assert.deepEqual(f.fake.launches(), []);
+});
+
+test("doctor refuses an enabled plugin with load errors without changing its installation", async (t) => {
+  const f = await fixture(t);
+  assert.equal(await runSetup(f.context), 0);
+  f.fake.update({ plugins: [{ id: MOD_ID, version: "2.3.0", enabled: true, scope: "user", errors: ["hook module failed to load"] }] });
+  const before = f.fake.state();
+  const checks = await doctorChecks(f.context);
+  const enabled = checks.find((check) => check.id === "mod-enabled")!;
+  assert.equal(enabled.ok, false);
+  assert.match(enabled.message, /hook module failed to load/);
+  assert.deepEqual(f.fake.state(), before);
+  assert.equal(await runSetup(f.context), 1, "setup's final doctor report must also fail");
+  f.fake.update({ plugins: [{ ...before.plugins[0]!, enabled: false }] });
+  const disabled = (await doctorChecks(f.context)).find((check) => check.id === "mod-enabled")!;
+  assert.equal(disabled.ok, false);
+  assert.match(disabled.message, /missing or disabled at user scope/);
+  f.fake.update({ plugins: [{ ...before.plugins[0]!, errors: [] }] });
+  assert.equal((await doctorChecks(f.context)).find((check) => check.id === "mod-enabled")!.ok, true);
+});
+
+test("staging rejects mismatched snapshot versions before replacing a working stage", async (t) => {
+  const f = await fixture(t);
+  const staged = await stageMod(f.context.buildRoot, f.context.stateHome);
+  const manifestPath = "mission-control/.claude-plugin/plugin.json";
+  const published = await readFile(join(staged.root, manifestPath), "utf8");
+  await writeFile(join(f.context.buildRoot, manifestPath), published.replace("2.3.0", "2.4.0"));
+  await assert.rejects(stageMod(f.context.buildRoot, f.context.stateHome), /versions differ/);
+  assert.equal(await readFile(join(staged.root, manifestPath), "utf8"), published);
+  await assert.rejects(stat(join(f.context.stateHome, ".mod-stage-lock")), { code: "ENOENT" });
+});
+
+test("staging never returns metadata from an earlier build than the published snapshot", async (t) => {
+  const f = await fixture(t);
+  const marketplacePath = join(f.context.buildRoot, ".claude-plugin/marketplace.json");
+  const manifestPath = join(f.context.buildRoot, "mission-control/.claude-plugin/plugin.json");
+  const originalRead = fsPromises.readFile;
+  let rebuilt = false;
+  t.mock.method(fsPromises, "readFile", async (...args: Parameters<typeof originalRead>) => {
+    const bytes = await originalRead(...args);
+    if (args[0] === marketplacePath && !rebuilt) {
+      rebuilt = true;
+      // A build publishes after the metadata read, before the remaining staging reads.
+      for (const path of [marketplacePath, manifestPath]) {
+        const source = await originalRead(path, "utf8");
+        await writeFile(path, source.replaceAll("2.3.0", "2.4.0"));
+      }
+    }
+    return bytes;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  let staged: Awaited<ReturnType<typeof stageMod>>;
+  try { staged = await stageMod(f.context.buildRoot, f.context.stateHome); }
+  catch (error) {
+    assert.match(String(error), /changed during staging/);
+    return;
+  }
+  assert.equal(rebuilt, true);
+  const manifest = JSON.parse(await originalRead(join(staged.root, "mission-control/.claude-plugin/plugin.json"), "utf8"));
+  assert.equal(staged.version, manifest.version);
 });
 
 test("setup refuses a checkout or symlink into it as the persisted marketplace destination", async (t) => {

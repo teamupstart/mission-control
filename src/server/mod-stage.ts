@@ -40,6 +40,13 @@ export async function stagedModVersion(root: string): Promise<string> {
   return ManifestSchema.parse(JSON.parse(await readFile(join(root, MOD_NAME, ".claude-plugin/plugin.json"), "utf8"))).version;
 }
 
+async function marketplaceVersion(root: string): Promise<string> {
+  const version = await stagedModVersion(root);
+  const marketplace = MarketplaceSchema.parse(JSON.parse(await readFile(join(root, ".claude-plugin/marketplace.json"), "utf8")));
+  if (marketplace.plugins[0]!.version !== version) throw new Error("Mod and marketplace versions differ; rebuild the mod");
+  return version;
+}
+
 /** Reject symlinks and hash paths as well as bytes, so an unchanged setup rewrites no files. */
 async function digest(root: string): Promise<string> {
   const hash = createHash("sha256");
@@ -63,9 +70,6 @@ export async function stageMod(source: string, stateHome: string): Promise<{ roo
   const root = resolve(stateHome, "mod");
   if (resolve(source) === resolve(root)) throw new Error("The built mod and staged mod must be separate directories");
   await refuseCheckoutDestination(root);
-  const version = await stagedModVersion(source);
-  const marketplace = MarketplaceSchema.parse(JSON.parse(await readFile(join(source, ".claude-plugin/marketplace.json"), "utf8")));
-  if (marketplace.plugins[0]!.version !== version) throw new Error("Mod and marketplace versions differ; rebuild the mod");
   const expected = await digest(source);
   await mkdir(stateHome, { recursive: true });
   const lock = join(stateHome, ".mod-stage-lock");
@@ -73,7 +77,7 @@ export async function stageMod(source: string, stateHome: string): Promise<{ roo
   let scratch: string | undefined;
   try {
     try {
-      if (await digest(root) === expected) return { root, version, changed: false };
+      if (await digest(root) === expected) return { root, version: await marketplaceVersion(root), changed: false };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -82,6 +86,7 @@ export async function stageMod(source: string, stateHome: string): Promise<{ roo
     const previous = join(scratch, "previous");
     await cp(source, candidate, { recursive: true, dereference: false });
     if (await digest(candidate) !== expected) throw new Error("Built mod changed during staging; retry setup");
+    const version = await marketplaceVersion(candidate);
     let moved = false;
     try { await rename(root, previous); moved = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

@@ -156,7 +156,8 @@ export function inboxAction(id: InboxActionId): InboxActionSpec {
  */
 export function spokenHintText(action: InboxActionSpec, name: string, cardOpen = false): string | null {
   if (!action.spoken) return null;
-  const named = `"${action.spoken.named.replaceAll("{name}", name)}"`;
+  const phrase = action.spoken.named.replaceAll("{name}", name);
+  const named = name.startsWith('"') && name.endsWith('"') ? phrase : `"${phrase}"`;
   return cardOpen && action.spoken.whileOpen ? `${named} or "${action.spoken.whileOpen}"` : named;
 }
 

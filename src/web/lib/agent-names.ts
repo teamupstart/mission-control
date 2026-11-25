@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 import {
   agentDisplayName,
   agentNameColor,
+  agentNameLabel,
   sessionDisplayNameInput,
   type ResidentNameSource,
 } from "@shared/display-name.ts";
@@ -43,7 +44,7 @@ export function agentNameView(
   if (!enabled) return { name: legacy, colorId: null };
   const input = sessionDisplayNameInput(session, runs, spokenNames);
   const display = agentDisplayName(input);
-  return { name: display.name, colorId: agentNameColor(input, display) };
+  return { name: agentNameLabel(display), colorId: agentNameColor(input, display) };
 }
 
 /** `agentNameView` for a component, from the `inbox` and `voice` flags and `ResidentNamesContext`. */

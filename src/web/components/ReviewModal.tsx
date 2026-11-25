@@ -1,3 +1,4 @@
+import { spokenNameLabel } from "@shared/voice-names.ts";
 import { useCallback, useContext, useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
@@ -205,7 +206,8 @@ export function ReviewCard({
   const drawnQuestion = question && voiceAnswers !== null && !snoozing;
   const voiceQuestion = drawnQuestion && (decisions?.length ?? 0) <= 1;
   const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
-  const spokenName = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId)?.name;
+  const speaker = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId);
+  const spokenName = speaker && spokenNameLabel(speaker);
   // The daemon owns the deadline. Once the operator edits this preview, the draft
   // owns the inputs immediately, including while the cancel request is in flight.
   const [editCancel, setEditCancel] = useState<{ id: string; status: "requested" | "failed" } | null>(null);

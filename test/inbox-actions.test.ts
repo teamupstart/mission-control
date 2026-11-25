@@ -58,6 +58,7 @@ test("action ids are unique, and the question card's two forms are declared", ()
 });
 
 test("a hint fills in the agent's name, and adds the open-card form only while the card is open", () => {
+  assert.equal(spokenHintText(inboxAction("answer"), '"Sage"', true), '"Sage", ... or "reply, ..."');
   assert.equal(spokenHintText(inboxAction("answer"), "Steve"), '"Steve, ..."');
   assert.equal(spokenHintText(inboxAction("answer"), "Steve", true), '"Steve, ..." or "reply, ..."');
   assert.equal(spokenHintText(inboxAction("answer-option"), "Steve", true), '"Steve, option B"');

@@ -339,7 +339,7 @@ let db: DatabaseSync | undefined;
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
 // 63: replace the previously materialized Voice mute shortcut default once.
 // 64: retain handoff release, accepted Goal instruction and initial queue delivery times.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 65;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -5450,6 +5450,25 @@ function migrate(d: DatabaseSync): void {
 
   addColumn(d, "reports", "author_spoken_name", "TEXT");
   addColumn(d, "report_mutes", "author_spoken_name", "TEXT");
+
+  addColumn(d, "reports", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "report_mutes", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  // Recover the source using the profile revision at post time. A profile rename alone
+  // can also make the stored spoken and pinned fallback names differ.
+  if (databaseSchemaVersion(d) < 65) {
+    d.exec(`
+      UPDATE reports SET author_is_reference_name = 1,
+        author_spoken_name = COALESCE(author_spoken_name, author_name)
+      WHERE author_resident_profile_id IS NOT NULL AND COALESCE(author_spoken_name, author_name) = (
+        SELECT CASE WHEN json_valid(settings_json) THEN json_extract(settings_json, '$.identity.referenceName') END
+        FROM resident_profile_revisions WHERE profile_id = reports.author_resident_profile_id
+          AND created_at <= reports.created_at ORDER BY revision DESC LIMIT 1
+      );
+      UPDATE report_mutes SET author_is_reference_name = 1
+      WHERE (SELECT author_is_reference_name FROM reports WHERE reports.author_key = report_mutes.author_key
+        AND created_at <= report_mutes.muted_at ORDER BY seq DESC LIMIT 1) = 1;
+    `);
+  }
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);

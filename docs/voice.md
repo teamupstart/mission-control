@@ -900,6 +900,7 @@ calls a resident by one.
 
 A resident profile's **Identity** card pairs **Name** with an optional **Reference name**.
 For example, a resident named "Release Captain" can answer to "Sage". The reference name
+appears in double quotes on cards, identity labels, and the Voice roster. It
 is `identity.referenceName` in the profile's revision JSON, optional with no
 default, so a revision saved before it existed reads exactly as before. Clearing it saves it
 blank, which means none: a save that left the key out would carry the previous revision's forward.

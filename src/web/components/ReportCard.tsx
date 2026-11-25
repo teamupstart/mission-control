@@ -1,3 +1,4 @@
+import { spokenNameLabel } from "@shared/voice-names.ts";
 import { InboxVoiceFoot } from "./InboxVoiceFoot.tsx";
 import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
 import { VoiceRosterContext } from "../lib/voice-roster.ts";
@@ -170,7 +171,7 @@ export function ReportCard({
         </div>
       )}
       {error && <p className="inbox-line inbox-error" role="alert">{error}</p>}
-      {voice && open && <InboxVoiceFoot name={speaker?.name} />}
+      {voice && open && <InboxVoiceFoot name={speaker && spokenNameLabel(speaker)} />}
     </article>
   );
 }

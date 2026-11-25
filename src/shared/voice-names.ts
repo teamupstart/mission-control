@@ -67,6 +67,8 @@ export interface SpokenName {
   /** What to say: a reference name or profile name for a resident, the call sign for a session. */
   name: string;
   kind: SpokenNameKind;
+  /** The resident answers to a configured reference name, even when identical to its profile name. */
+  isReferenceName?: true;
   /** The resident's open run's task, or the call sign's task. Null for a resident not running. */
   taskId: string | null;
   /** The live session while one runs the task; a session's last session id otherwise; or null. */
@@ -78,6 +80,19 @@ export interface SpokenName {
   /** The harness that runs it, which later chooses the model the router asks. */
   agent: AgentType;
   state: SpokenNameState;
+}
+
+/** Render the delimiter once, including for names saved with their own surrounding quotes. */
+export function quotedReferenceName(name: string): string {
+  let inner = name.trim();
+  while (inner.length >= 2 && ((inner.startsWith('"') && inner.endsWith('"')) || (inner.startsWith('“') && inner.endsWith('”')))) {
+    inner = inner.slice(1, -1).trim();
+  }
+  return `"${inner}"`;
+}
+
+export function spokenNameLabel(entry: Pick<SpokenName, "name" | "isReferenceName">): string {
+  return entry.isReferenceName ? quotedReferenceName(entry.name) : entry.name;
 }
 
 /** The roster key of a resident profile. */
@@ -304,7 +319,7 @@ export const SPOKEN_NAME_METER_STEPS = 4;
  * - `common-word`: a one-word name on the bundled list of everyday words;
  * - `short`: a one-word name of one syllable and four letters or fewer.
  */
-export function validateSpokenName(name: string, roster: readonly Pick<SpokenName, "name">[] = []): SpokenNameWarning[] {
+export function validateSpokenName(name: string, roster: readonly Pick<SpokenName, "name" | "isReferenceName">[] = []): SpokenNameWarning[] {
   const normalized = normalizeSpokenName(name);
   if (!normalized) return [];
   const words = spokenWords(name);
@@ -319,7 +334,8 @@ export function validateSpokenName(name: string, roster: readonly Pick<SpokenNam
   const alike: string[] = [];
   for (const entry of roster) {
     if (normalizeSpokenName(entry.name) !== normalized && !namesSoundAlike(name, entry.name)) continue;
-    if (!alike.some((seen) => normalizeSpokenName(seen) === normalizeSpokenName(entry.name))) alike.push(entry.name);
+    const label = spokenNameLabel(entry);
+    if (!alike.some((seen) => normalizeSpokenName(seen) === normalizeSpokenName(label))) alike.push(label);
   }
   if (alike.length > 0) warnings.push({ kind: "sounds-like", names: alike });
   if (first && words.length === 1 && VOICE_COMMON_WORDS.has(first)) warnings.push({ kind: "common-word" });
@@ -355,17 +371,18 @@ export function spokenNameWarningLabel(warning: SpokenNameWarning): string {
 }
 
 /** A warning as one sentence that says why, and that the name can be kept. */
-export function spokenNameWarningText(warning: SpokenNameWarning, name: string): string {
+export function spokenNameWarningText(warning: SpokenNameWarning, name: string, referenceName = false): string {
   const said = name.trim().replace(/\s+/g, " ");
+  const label = referenceName ? quotedReferenceName(said) : `“${said}”`;
   switch (warning.kind) {
     case "control-word":
-      return `“${warning.word}” is a word voice listens for on its own, so “${said}” can be taken for it. You can keep it; another name is safer.`;
+      return `“${warning.word}” is a word voice listens for on its own, so ${label} can be taken for it. You can keep it; another name is safer.`;
     case "sounds-like":
       return `It can be heard as ${either(warning.names)}, which another agent answers to. You can keep it; a name that sounds different is safer.`;
     case "common-word":
-      return said.toLowerCase() === "will"
+      return !referenceName && said.toLowerCase() === "will"
         ? "Sentences like “Will you grab the door?” start the same way. You can keep it; a rarer name is safer."
-        : `Everyday sentences can start with “${said}”. You can keep it; a rarer name is safer.`;
+        : `Everyday sentences can start with ${label}. You can keep it; a rarer name is safer.`;
     case "symbols-only":
       return "This name has no letters or numbers to say. You can keep it or choose a spoken word.";
     case "short":

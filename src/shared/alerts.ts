@@ -14,9 +14,9 @@
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
 import { agentKeepsWorking, confirmedWorking, openQuestionCount } from "./async-input.ts";
-import { agentDisplayName, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
+import { agentDisplayName, agentNameLabel, sessionDisplayNameInput, type ResidentNameSource } from "./display-name.ts";
 import type { ReviewItem, Session, Task } from "./types.ts";
-import { reportAuthorName, reportToRead, type ReportItem } from "./reports.ts";
+import { reportAuthorLabel, reportToRead, type ReportItem } from "./reports.ts";
 import { goalLine } from "./goal.ts";
 import {
   activePaneDialog,
@@ -278,7 +278,7 @@ export function heldReportStillDue(a: Alert, reports: readonly ReportItem[] | un
  * report stored when it was posted, so it reads the same after its session is gone.
  */
 export function reportAlert(report: ReportItem, spokenNames?: boolean): Alert {
-  const name = spokenNames === undefined ? report.author.name : reportAuthorName(report.author, spokenNames);
+  const name = reportAuthorLabel(report.author, spokenNames);
   return {
     id: `report:${report.id}`,
     kind: "report",
@@ -301,7 +301,7 @@ function sessionAlertTitle(
   const withoutInbox = (session?.task?.title || session?.name || "a session") + suffix;
   if (!session || !names) return { title: withoutInbox };
   const fallback = agentDisplayName(sessionDisplayNameInput(session, names)).name + suffix;
-  const spoken = agentDisplayName(sessionDisplayNameInput(session, names, true)).name + suffix;
+  const spoken = agentNameLabel(agentDisplayName(sessionDisplayNameInput(session, names, true))) + suffix;
   return {
     title: voice ? spoken : fallback,
     ...(spoken !== fallback || withoutInbox !== fallback ? { sessionTitles: { spoken, fallback, withoutInbox } } : {}),

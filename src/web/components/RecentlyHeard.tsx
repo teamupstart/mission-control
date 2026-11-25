@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { VOICE_MODE_LABEL, type VoiceMode } from "@shared/voice.ts";
 import type { HeardEntry } from "@shared/voice-routing.ts";
-import type { SpokenName } from "@shared/voice-names.ts";
+import { quotedReferenceName, type SpokenName } from "@shared/voice-names.ts";
 import { fetchRecentlyHeard } from "../lib/api.ts";
 import { clearVoiceHistory, useVoiceSettingsActions } from "../lib/voice-settings-actions.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
@@ -31,8 +31,8 @@ export function HeardRow({ entry, roster, now, compact }: { entry: HeardEntry; r
   const end = last ? last.index + last[0].length : 0;
   const seconds = Math.max(0, Math.floor((now - entry.time) / 1000));
   const ago = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m" : Math.floor(seconds / 3600) + "h";
-  const color = roster.find(agent => agent.name === matchedName)?.colorId;
-  const name = <strong className={color ? "agent-name-resident" : undefined} style={color ? residentAccentStyle(color) : undefined}>{matchedName}</strong>;
+  const color = roster.find(agent => agent.name === matchedName && agent.isReferenceName === entry.matchedReferenceName)?.colorId;
+  const name = <strong className={color ? "agent-name-resident" : undefined} style={color ? residentAccentStyle(color) : undefined}>{entry.matchedReferenceName && matchedName ? quotedReferenceName(matchedName) : matchedName}</strong>;
   const tone = outcome === "sent" || outcome === "queued" ? "routed" : outcome === "cancelled" || outcome === "failed" ? "cancel" : "not";
   if (compact) return <li className="rh-pop-row">
     <span className={`rh-pop-icon is-${tone}`} aria-label={outcomes[outcome]}>{tone === "routed" ? "✓" : tone === "cancel" || outcome === "ignored" ? "×" : "·"}</span>

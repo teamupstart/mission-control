@@ -1,3 +1,4 @@
+import { spokenNameLabel } from "@shared/voice-names.ts";
 import { InboxVoiceFoot } from "./InboxVoiceFoot.tsx";
 import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
 import { VoiceRosterContext } from "../lib/voice-roster.ts";
@@ -238,7 +239,7 @@ export function StuckCard({
           {done}
         </p>
       )}
-      {voice && <InboxVoiceFoot name={speaker?.name} />}
+      {voice && <InboxVoiceFoot name={speaker && spokenNameLabel(speaker)} />}
     </section>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard, type VoiceCardRetention } from "../lib/voice-card-clock.ts";
 import type { Session, ReviewItem } from "@shared/types.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
-import type { SpokenName } from "@shared/voice-names.ts";
+import { spokenNameLabel, type SpokenName } from "@shared/voice-names.ts";
 import { askSentence, type VoiceSpeechState } from "@shared/voice-speech.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { AgentName, SpokenHint } from "./AgentName.tsx";
@@ -141,11 +141,11 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
   const split = card.parts.length > 1;
   const sessionOf = (target?: SpokenName | null) => actions.sessions.find(s => s.id === target?.sessionId);
   const stateOf = (target?: SpokenName | null) => sessionOf(target)?.state.replaceAll("_", " ") ?? target?.state.replace("-", " ");
-  const named = (target?: SpokenName | null) => target ? <AgentName view={target} /> : "agent";
+  const named = (target?: SpokenName | null) => target ? <AgentName view={{ ...target, name: spokenNameLabel(target) }} /> : "agent";
   function outcome(part: VoiceCard["parts"][number]) {
     const target = part.target;
     const state = part.outcome ?? card.state;
-    const name = target?.name ?? part.restoredSession?.name ?? "agent";
+    const name = target ? spokenNameLabel(target) : part.restoredSession?.name ?? "agent";
     const recipient = target ? named(target) : name;
     if (part.immediateStop && !part.outcome) return <b>Stopping {named(target)}…</b>;
     switch (state) {
@@ -172,7 +172,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
           <Transcript as="q" id={wordsId} text={turn?.spokenWords ?? part.text} />
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
-          {address && <SpokenHint name={address.name} action="answer">Say <q>{address.name}, my answer is …</q> to answer it.</SpokenHint>}
+          {address && <SpokenHint name={spokenNameLabel(address)} action="answer">Say <q>{spokenNameLabel(address)}, my answer is …</q> to answer it.</SpokenHint>}
           <div className="vc-right">{button("Open question", "Open the question holding this message", () => question && actions.openQuestion(question.sessionId, question.id), "", !question)}</div></>;
       }
       case "not-running": {
@@ -214,7 +214,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
     case "resolving": body = <b>Working out who this is for</b>; break;
     case "unsure":
       body = <>{asking ? <div className="vc-ask"><VoiceIcon name="speaker" />
-        <span className="vc-grow">Asking aloud: <q>{askSentence(card.candidates.map(c => c.title))}</q></span>
+        <span className="vc-grow">Asking aloud: <q>{askSentence(card.candidates.map(c => c.kind === "agent" && c.target ? spokenNameLabel(c.target) : c.title))}</q></span>
         {button("Stop", "Stop asking aloud", () => void run(() => api.stopVoiceSpeech(job.id)), "btn-ghost")}</div>
         : <><div className="vc-row"><VoiceIcon name="unsure" /><b>{card.candidates[0]?.kind === "question" ? "Which question?" : "Who is this for?"}</b></div>
         <Transcript className="vc-heard" text={first?.text ?? ""}><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</Transcript></>}
@@ -224,7 +224,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
               onClick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidate: c }))}><span>{c.title}</span><span className="vc-meta">{c.detail}</span></button>
           </Tooltip>;
           const target = actions.roster.find(t => t.key === (c.target?.key ?? c.id)) ?? c.target;
-          return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
+          return <RosterRow key={c.id} title={c.target ? spokenNameLabel(c.target) : c.title} target={target} detail={c.detail} state={stateOf(target)}
             pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidate: c }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
         })}
         <div className="vc-row"><span className="vc-grow vc-hint">{waitingForSilence ? "Pick a row now, or speak once playback ends." : <>{card.candidates[0]?.kind === "question" ? (card.detail ?? "Say the ordinal, or click a question.") : "Say the name again, or click a row."} <q>Cancel</q> drops it.</>}</span>{cancel}</div>
@@ -239,7 +239,8 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
       }
       const mention = !!card.mentions?.length;
       const remainingParts = card.parts.filter(part => !part.immediateStop);
-      const recipient = remainingParts[0]?.target?.name;
+      const target = remainingParts[0]?.target;
+      const recipient = target && spokenNameLabel(target);
       let sendLabel = card.reason === "voice-answer" ? "Submit now" : "Send now";
       if (card.reason === "inbox-action") sendLabel = "Run now";
       if (split && remainingParts.length > 1) sendLabel = "Send both now";
@@ -253,11 +254,11 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
         {card.parts.map((p, i) => {
           if (!split && !mention) return <Transcript key={i} text={p.text} />;
           const text = p.immediateStop ? p.detail ?? p.text : p.text;
-          return <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"} transcript={text}
+          return <RosterRow key={i} target={p.target} title={p.target ? spokenNameLabel(p.target) : "Agent"} transcript={text}
             detail={mention && !p.immediateStop ? messageWithMentions(text, card.mentions!) : text}
             state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} />;
         })}
-        {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
+        {card.mentions?.map(t => <div key={t.key} className="vc-meta">{spokenNameLabel(t)} is mentioned. Nothing is sent to {spokenNameLabel(t)}.</div>)}
         {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
@@ -268,9 +269,9 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
       body = card.detail && ["question-notice", "form-not-open", "form-incomplete", "inbox-action", "voice-answer"].includes(card.reason) ? <b>{card.detail}</b> : <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
         {(card.state === "sent" || card.state === "queued") && card.openQuestions > 0 && <>
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
-          <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
+          <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target && spokenNameLabel(first.target)}, answer</q> to reply to one.</SpokenHint></>}</>;
   }
-  return <article ref={article} role="status" tabIndex={surface ? -1 : undefined} aria-label={pill && card.state === "pending" ? `To ${first?.target?.name}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
+  return <article ref={article} role="status" tabIndex={surface ? -1 : undefined} aria-label={pill && card.state === "pending" ? `To ${first?.target && spokenNameLabel(first.target)}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
     data-pill={pill && ((card.state === "pending" && remaining > 0) || card.state === "sent" || card.state === "queued") || undefined}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}

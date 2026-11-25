@@ -31,6 +31,7 @@ import {
 } from "@shared/voice-decide.ts";
 import {
   spokenNameWarningLabel,
+  spokenNameLabel,
   spokenNameWarningText,
   validateSpokenName,
   type SpokenName,
@@ -138,7 +139,7 @@ function RosterCheck({ entry, roster }: { entry: SpokenName; roster: readonly Sp
   const warnings = validateSpokenName(entry.name, rosterWithout(roster, entry.key));
   if (warnings.length === 0) return <span className="voice-roster-ok">Distinct</span>;
   return (
-    <Tooltip label={warnings.map((warning) => spokenNameWarningText(warning, entry.name)).join(" ")}>
+    <Tooltip label={warnings.map((warning) => spokenNameWarningText(warning, entry.name, entry.isReferenceName)).join(" ")}>
       <span className="voice-roster-warn">
         <span aria-hidden>⚠</span> {warnings.map(spokenNameWarningLabel).join(" · ")}
       </span>
@@ -194,7 +195,7 @@ function RosterSection({
                   </span>
                 </td>
                 <td className="voice-roster-kind">{entry.kind === "resident" ? "Resident" : "Session"}</td>
-                <td className="voice-roster-say">{entry.name}</td>
+                <td className="voice-roster-say">{spokenNameLabel(entry)}</td>
                 <td className={`voice-roster-state voice-roster-state-${entry.state}`}>{SPOKEN_NAME_STATE_LABEL[entry.state]}</td>
                 <td><RosterCheck entry={entry} roster={roster} /></td>
               </tr>

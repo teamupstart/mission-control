@@ -320,6 +320,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     skipScoutWrapup: cfg.skipScoutWrapup,
     skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
   });
+  if (block?.kind === "operator_hold") return { kind: "skip", why: block.reason };
   if (block) {
     return {
       kind: "retire",

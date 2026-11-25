@@ -6,6 +6,10 @@ ipcRenderer.on("voice:anchor", (_event, right: number) => {
   document.documentElement.style.setProperty("--voice-anchor-right", right + "px");
 });
 
+ipcRenderer.on("voice:available-height", (_event, height: number) => {
+  document.documentElement.style.setProperty("--voice-available-height", height + "px");
+});
+
 ipcRenderer.on("voice:focus-control", () => {
   const card = document.querySelector<HTMLElement>(".voice-card");
   const control = card?.querySelector<HTMLButtonElement>("button.vc-cancel:enabled")

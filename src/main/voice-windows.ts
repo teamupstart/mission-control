@@ -48,8 +48,10 @@ export function attachVoiceWindow(win: BrowserWindow, surface: VoiceSurface, tra
     const x = Math.max(area.x, Math.min(idealX, area.x + area.width - width));
     if (tray) contents.send("voice:anchor", (width - (anchor - x)) / zoom);
     const y = Math.max(area.y, tray ? tray.y + tray.height : area.y);
+    const availableHeight = Math.max(1, area.y + area.height - y);
+    if (surface === "popover") contents.send("voice:available-height", availableHeight / zoom);
     win.setBounds({ x, y,
-      width, height: Math.min(Math.ceil(height * zoom), Math.max(1, area.y + area.height - y)) });
+      width, height: Math.min(Math.ceil(height * zoom), availableHeight) });
     const cursor = screen.getCursorScreenPoint();
     contents.send("voice:hit-test", (cursor.x - x) / zoom, (cursor.y - y) / zoom);
     if (history === true && surface === "popover") win.show();

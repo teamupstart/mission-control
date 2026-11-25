@@ -103,6 +103,9 @@ test("native voice windows follow content, the pointer display and tray anchor w
         await expect.poll(async () => (await read())?.bounds.width).toBe(zoomedWidth);
         await expect.poll(async () => (await read())?.bounds.height).toBe(122);
         const zoomed = (await read())!.bounds;
+        await expect.poll(() => found.evaluate(() =>
+          parseFloat(document.documentElement.style.getPropertyValue("--voice-available-height"))))
+          .toBeCloseTo((area.y + area.height - zoomed.y) / 1.5);
         const anchorRight = await found.evaluate(() => parseFloat(document.documentElement.style.getPropertyValue("--voice-anchor-right")));
         assert.equal(zoomed.x + zoomed.width - anchorRight * 1.5, area.x + 432);
         await nativeDashboard.evaluate(win => win.webContents.setZoomFactor(1));

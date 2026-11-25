@@ -12,7 +12,7 @@ import { isPaused } from "@shared/pause.ts";
 import { hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
-import { resolvedSessionIntent } from "@shared/goal.ts";
+import { hasOperatorHandoffHold, isHandoffReleaseOnlyGoal, resolvedSessionIntent } from "@shared/goal.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
@@ -23,6 +23,7 @@ import {
 } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
+import { explicitHandoffRestriction, withoutHandoffRestrictions } from "../goal/handoff-restrictions.ts";
 
 // The lifecycle predicates are defined in @shared/queue.ts, not here: the DB's
 // partial unique index is built from the same constant, so the set of in-flight
@@ -403,19 +404,33 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
 
     const payload = autoWrapupPayload(cfg.wrapup);
     const intentGuard = resolvedSessionIntent(intent);
-    const block = automaticWrapupBlock({
+    if (intent && !intentGuard && !isHandoffReleaseOnlyGoal(intent)) return { kind: "none" };
+    // Work items can reserve publication until a later explicit release. A
+    // different Goal by itself cannot lift that restriction.
+    if (items.some((item) => (item.firstDeliveredAt ?? item.sentAt ?? item.createdAt) >= (intent?.handoffReleasedAt ?? 0) &&
+      (hasOperatorHandoffHold(item.intent) || explicitHandoffRestriction(item.intent)))) {
+      return { kind: "none" };
+    }
+    const eligibility = {
       taskKind: session.task?.kind ?? null,
       workflowId: session.task?.workflowId ?? null,
-      // Queue items are completion contracts too. Include them beside the durable session
-      // objective so `Output: mockups` cannot disappear merely because it was added as an
-      // item rather than as the session's opening prompt. A task title is the last compact
-      // clue available when a source filed a terse structured task.
-      objective: [intentGuard?.objective, session.task?.title, ...items.map((item) => item.intent)]
-        .filter((part): part is string => Boolean(part?.trim()))
-        .join("\n\n") || null,
       skipScoutWrapup: cfg.skipScoutWrapup,
       skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
-    });
+    };
+    // A resolved Goal supersedes earlier item deliverables. Later items still
+    // declare their own outputs, independently of code left by earlier work.
+    const laterItems = intentGuard && intent ? items.filter((item) =>
+      (item.firstDeliveredAt ?? item.sentAt ?? item.createdAt) > (intent.deliverableUpdatedAt ?? intent.updatedAt)) : [];
+    const block = automaticWrapupBlock({
+      ...eligibility,
+      objective: intentGuard?.objective ?? (
+        [session.task?.title, ...items.map((item) => withoutHandoffRestrictions(item.intent))].filter(Boolean).join("\n\n") || null
+      ),
+    }) ?? (laterItems.length ? automaticWrapupBlock({
+      ...eligibility,
+      objective: laterItems.map((item) => withoutHandoffRestrictions(item.intent)).join("\n\n"),
+    }) : null);
+    if (block?.kind === "operator_hold") return { kind: "none" };
     const blockedAction: QueueAction | null = block
       ? { kind: "skip-wrapup", queue, reason: block.reason }
       : null;

@@ -1136,8 +1136,9 @@ place the engine's control verbs go; filling it must not restructure the header 
 A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
 `Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
 from the first substantive instruction, and only while the Goal has no objective yet. After that,
-only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
-relationship. `steer` and `unclear` never change them, and no other writer does.
+only the goal refiner changes them. Adopting a different deliverable requires an `initial`,
+`amend` or `replace` relationship. The refiner can also record an explicit operator handoff
+restriction and advance the objective version while the relationship stays `unclear`.
 `openingPrompt` is write-once.
 
 `POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
@@ -1147,7 +1148,8 @@ rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
 `resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
 `source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
 `resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
-contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+contract a later caller relies on: 404 without a Goal, 409 without an objective or while an
+unapplied instruction changes handoff authority, 200 with the
 full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
 action, if one is ever wanted, is a separate route with its own review, not a body on this one.
 

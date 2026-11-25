@@ -29,6 +29,7 @@ import type {
   PromptedCompletionGap,
   PromptedDirectHandoffKind,
   ReviewItem,
+  SessionIntentGuard,
   Session,
   SessionDiff,
   SessionQueue,
@@ -1985,7 +1986,9 @@ async function processTarget(
   }
 
   const qcfg = queueConfig(cfg);
-  const intent = await client.goal(fresh.id).catch(() => null);
+  const goalRead = await client.goal(fresh.id).then((goal) => ({ goal }), () => null);
+  const intent = goalRead?.goal ?? null;
+  const actions = queueActions(client, cfg, resolvedSessionIntent(intent));
 
   const action = decideQueueTick({
     session: fresh,
@@ -2011,6 +2014,9 @@ async function processTarget(
     return true;
   }
 
+  if (!goalRead && (action.kind === "ask-wrapup" || action.kind === "skip-wrapup" || action.kind === "auto-wrapup")) {
+    return false;
+  }
   if (action.kind === "ask-wrapup" || action.kind === "auto-wrapup") {
     const completionIntent = action.kind === "auto-wrapup"
       ? action.intentGuard
@@ -2037,7 +2043,7 @@ async function processTarget(
       });
       if (block) {
         const outcome = await applyQueueAction(
-          queueActions(client, cfg),
+          actions,
           fresh,
           { kind: "skip-wrapup", queue: action.queue, reason: block.reason },
           qcfg,
@@ -2069,7 +2075,7 @@ async function processTarget(
         // so direct shipping must not race it on the same branch. Degrade to the Ship it?
         // card and let the operator choose which path owns the completion.
         const outcome = await applyQueueAction(
-          queueActions(client, cfg),
+          actions,
           fresh,
           { kind: "ask-wrapup", queue: action.queue },
           qcfg,
@@ -2087,7 +2093,7 @@ async function processTarget(
   ) return false;
 
   const outcome = await applyQueueAction(
-    queueActions(client, cfg),
+    actions,
     fresh,
     action,
     qcfg,
@@ -2817,7 +2823,7 @@ function queueItemContext(item: WorkItem | null): ReviewInput["queueItem"] {
 }
 
 /** The daemon surface the apply layer needs, bound to this client. */
-function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions {
+function queueActions(client: ForemanClient, _cfg: ForemanConfig, expectedIntent?: SessionIntentGuard | null): QueueActions {
   return {
     sessions: () => client.sessions(),
     getConfig: () => client.getConfig(),
@@ -2826,7 +2832,7 @@ function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions 
     inject: (id, text) => client.inject(id, text),
     markSent: (sid, iid, sha, anchor) => client.markSent(sid, iid, sha, anchor),
     recoverItem: (sid, iid) => client.recoverItem(sid, iid),
-    markWrapupAsked: (id) => client.markWrapupAsked(id),
+    markWrapupAsked: (id, retire) => client.markWrapupAsked(id, { expectedIntent, retire }),
     setWrapupAnswer: (id, answer) => client.setWrapupAnswer(id, answer),
     captureScope: (s) => captureScope(client, s),
     holdsLease: () => isLeader,

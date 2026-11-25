@@ -467,6 +467,9 @@ export function voiceStateOff(): VoiceState {
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
+/** A capture-only listener's process and the byte it must lock before opening the microphone. */
+export const VOICE_CAPTURE_PID_HEADER = "x-voice-capture-pid";
+export const VOICE_CAPTURE_LOCK_HEADER = "x-voice-capture-lock";
 /** Response headers on the capture-off directive for an explicit push-to-talk key release. */
 export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
 export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";

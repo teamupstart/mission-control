@@ -15,6 +15,8 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { sandboxLifetime } from "../src/server/voice/supervised-listener.ts";
 import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
+import { createServer } from "node:http";
+import { getRequestListener } from "@hono/node-server";
 import { Hono } from "hono";
 import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, utterancePath, voiceStateStore as store } from "./helpers/voice-http.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
@@ -241,11 +243,16 @@ test("the speech holder can acknowledge its own microphone pause after its heart
 });
 
 for (const proof of ["pause", "exit"] as const) {
-  test(`an expired microphone grant still needs its original owner's ${proof} proof after takeover`, async t => {
+  test(`a capture-only listener's expired microphone grant needs its own ${proof} proof before its replacement can play`, async t => {
     let steady = Math.ceil(performance.now());
     t.mock.method(performance, "now", () => steady);
     const original = player(), replacement = player(crypto.randomUUID());
-    await original.announce(); await original.hello();
+    if (proof === "exit") await original.announce();
+    const captureOnly = await original.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION,
+      backend: "fluidaudio", devices: [], modelLoaded: true, microphone: "granted" },
+    proof === "exit" ? original.instance : null);
+    assert.equal(captureOnly.status, 200);
+    assert.equal((await post("/api/voice/speech/audition")).status, 409);
     assert.equal((await original.poll()).capture, true);
     steady += VOICE_HELLO_LAPSE_MS;
     await replacement.announce();
@@ -276,6 +283,62 @@ for (const proof of ["pause", "exit"] as const) {
     assert.equal((await replacement.poll()).capture, true);
   });
 }
+
+test("a capture-only client killed without a final report releases only its kernel-verified microphone grant", async t => {
+  let steady = Math.ceil(performance.now());
+  t.mock.method(performance, "now", () => steady);
+  store.reset();
+  const server = createServer(getRequestListener(app.fetch));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { ListenerClient } from "./src/voice-listener/client.ts";
+    import { resolve } from "node:path";
+    let headers, unverified;
+    const client = new ListenerClient(process.argv[2], process.argv[1], async (url, request) => {
+      headers = request.headers;
+      const response = await fetch(url, request);
+      if (url.endsWith("/hello")) {
+        unverified = (await fetch(process.argv[2] + "/voice/listener/directive", { headers })).status;
+      }
+      return response;
+    });
+    client.trackProcess(resolve("dist/native/state-lock.node"));
+    if (!(await client.hello()).ok) throw new Error("Capture hello was refused.");
+    const denied = await fetch(process.argv[2] + "/voice/listener/directive", {
+      headers: { ...headers, "x-voice-capture-pid": String(process.ppid) }
+    });
+    const directive = await client.poll();
+    process.stdout.write(JSON.stringify([unverified, denied.status, directive.capture]));
+    process.stdin.resume();
+  `, join(home, "token"), "http://127.0.0.1:" + address.port], { stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const [data] = await Promise.race([once(child.stdout, "data"), once(child, "exit").then(() => {
+    throw new Error("The capture-only fixture exited before receiving capture.");
+  })]);
+  assert.deepEqual(JSON.parse(data.toString()), [409, 409, true]);
+  rmSync(join(home, "voice-capture.lock")); // Losing the path cannot release the pinned process.
+  steady += VOICE_HELLO_LAPSE_MS;
+  const holder = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  const pause = await holder.poll();
+  assert.equal(pause.capture, false);
+  assert.equal(pause.speak, null);
+  assert.equal((await holder.event(id, "started")).status, 409);
+  const waiting = holder.request("/voice/listener/directive?revision=" + pause.revision);
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+  assert.equal((await (await waiting).json()).speak.id, id);
+  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.equal((await holder.poll()).capture, false);
+  assert.equal((await holder.event(id, "ended")).status, 200);
+  assert.equal((await holder.poll()).capture, true);
+});
 
 test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });

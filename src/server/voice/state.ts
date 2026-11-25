@@ -1,9 +1,10 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { stateDir } from "../../shared/harness-runtime.mjs";
 import { askAloudPossible, resolveSpeechVoice, type VoiceSpeechCatalog } from "@shared/voice-speech.ts";
 import { VoiceSpeechManager, type VoiceSynthesizer } from "./speech.ts";
+import { watchCaptureProcess } from "./capture-process.ts";
 import { SpeechHolds } from "./speech-holds.ts";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
 import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
 import {
@@ -54,7 +55,7 @@ export interface VoiceStateDeps {
 }
 
 export type VoiceHelloResult =
-  | { ok: true; protocol: string }
+  | { ok: true; protocol: string; captureOffset?: number }
   | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected"; reason: string; protocol: string };
 
 /**
@@ -69,7 +70,7 @@ export class VoiceStateStore {
   private readonly source = randomUUID();
   private lastMode: VoiceState["mode"] = "off";
   private modeRevision = 0;
-  private hello: { at: number; ownerId: string | null; speechInstance?: string; hello: VoiceListenerHello } | null = null;
+  private hello: { at: number; ownerId: string | null; speechInstance?: string; captureProof?: { pid: number; offset: number }; hello: VoiceListenerHello } | null = null;
   /** The latest hello refused for its protocol version, which the `listener` capability names. */
   private refused: { at: number; reason: string } | null = null;
   private report: { at: number; keyChangedHostUs: number | null; report: VoiceShellReport } | null = null;
@@ -86,7 +87,7 @@ export class VoiceStateStore {
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   // Heartbeat expiry transfers the lease but cannot close a previous owner's microphone.
-  private readonly captureGrants = new Map<string, { instance?: string; pauseRevision?: string }>();
+  private readonly captureGrants = new Map<string, { instance?: string; pauseRevision?: string; pid?: number; watch?: ReturnType<typeof watchCaptureProcess> }>();
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
@@ -170,7 +171,21 @@ export class VoiceStateStore {
 
   drainingRevisions() { return [...this.releases.keys()]; }
 
-  get capturePausePending() { return this.captureGrants.size > 0; }
+  private releaseCaptureGrant(owner: string) {
+    this.captureGrants.get(owner)?.watch?.close();
+    this.captureGrants.delete(owner);
+  }
+
+  private reapCaptureProcesses() {
+    for (const [owner, grant] of this.captureGrants) {
+      if (grant.watch?.exited()) this.releaseCaptureGrant(owner);
+    }
+  }
+
+  get capturePausePending() {
+    this.reapCaptureProcesses();
+    return this.captureGrants.size > 0;
+  }
 
   formerOwnerPause(owner: string | undefined): VoiceListenerDirective | undefined {
     const grant = owner && this.captureGrants.get(owner);
@@ -181,19 +196,19 @@ export class VoiceStateStore {
 
   acknowledgeDirective(owner: string | undefined, revision: string | undefined) {
     if (owner && revision && this.captureGrants.get(owner)?.pauseRevision === revision) {
-      this.captureGrants.delete(owner);
+      this.releaseCaptureGrant(owner);
       if (this.manager?.held) this.publish();
     }
   }
 
   retireCapture(instance: string) {
     for (const [owner, grant] of this.captureGrants) {
-      if (grant.instance === instance) this.captureGrants.delete(owner);
+      if (grant.instance === instance) this.releaseCaptureGrant(owner);
     }
     if (this.manager?.held) this.publish();
   }
 
-  directiveServed(owner: string | undefined, directive: VoiceListenerDirective) {
+  directiveServed(owner: string | undefined, directive: VoiceListenerDirective, processHeader?: string) {
     if (!owner) return;
     if (!directive.capture) {
       const grant = this.captureGrants.get(owner);
@@ -201,7 +216,21 @@ export class VoiceStateStore {
       return;
     }
     if (!this.ownsCapture(owner)) return;
-    this.captureGrants.set(owner, { instance: this.liveHello()?.speechInstance });
+    this.reapCaptureProcesses();
+    const grant = this.captureGrants.get(owner);
+    const pid = processHeader === undefined ? undefined : Number(processHeader);
+    const proof = this.liveHello()?.captureProof;
+    if (pid !== proof?.pid) return false;
+    if (grant) {
+      // Changing the identity on a previously issued grant cannot retire or rebind it.
+      if (grant.pid !== pid || grant.instance !== this.liveHello()?.speechInstance) return false;
+      grant.pauseRevision = undefined;
+    } else {
+      try {
+        const watch = proof && watchCaptureProcess(join(dirname(this.speechDirectory), "voice-capture.lock"), proof.offset, proof.pid);
+        this.captureGrants.set(owner, { pid, watch, instance: this.liveHello()?.speechInstance });
+      } catch { return false; }
+    }
     const last = this.lastDirective;
     if (!last?.directive.capture || last.directive.revision !== directive.revision || last.issuedAt !== undefined) return;
     last.issuedAt = (this.deps.wallNow ?? Date.now)();
@@ -336,7 +365,7 @@ export class VoiceStateStore {
    * A granted listener can replace a helper still waiting for access. Once granted, only
    * that process can renew its lease until it reports denial or its heartbeat lapses.
    */
-  acceptHello(id: string | undefined, hello: VoiceListenerHello, speechInstance?: string): VoiceHelloResult {
+  acceptHello(id: string | undefined, hello: VoiceListenerHello, speechInstance?: string, capturePid?: number): VoiceHelloResult {
     const at = this.deps.now();
     const live = this.liveHello();
     const ownerId = live?.ownerId;
@@ -368,11 +397,16 @@ export class VoiceStateStore {
       this.releases.clear();
       this.latestRelease = undefined;
     }
-    this.hello = { at, ownerId: nextOwnerId, speechInstance, hello };
+    // A daemon-chosen byte binds this lease to a fresh kernel lock. A caller
+    // cannot select a byte already locked by an unrelated process.
+    const captureProof = capturePid === undefined ? undefined :
+      live?.ownerId === id && live.captureProof?.pid === capturePid ? live.captureProof :
+      { pid: capturePid, offset: randomInt(1, 2 ** 48 - 1) };
+    this.hello = { at, ownerId: nextOwnerId, speechInstance, captureProof, hello };
     this.refused = null;
     this.microphone.listener = { at, reading: { permission: hello.microphone, source: "listener" } };
     this.publish();
-    return { ok: true, protocol: VOICE_LISTENER_PROTOCOL_VERSION };
+    return { ok: true, protocol, ...(captureProof && { captureOffset: captureProof.offset }) };
   }
 
   /** Apply dated key events in capture order, independently of heartbeat or request arrival time. */
@@ -464,7 +498,7 @@ export class VoiceStateStore {
     this.releases.clear();
     this.latestRelease = undefined;
     this.lastDirective = undefined;
-    this.captureGrants.clear();
+    for (const owner of this.captureGrants.keys()) this.releaseCaptureGrant(owner);
     this.hello = null;
     this.refused = null;
     this.report = null;
@@ -476,7 +510,9 @@ export class VoiceStateStore {
     this.disarm();
     if (!this.deps.enabled(VOICE_FLAG)) return;
     const now = this.deps.now();
+    const waitingForProcess = this.manager?.live?.state === "ready" && [...this.captureGrants.values()].some(grant => grant.watch);
     const lapses = [
+      waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,

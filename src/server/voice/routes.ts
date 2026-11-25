@@ -18,6 +18,7 @@ import { createMiddleware } from "hono/factory";
 import {
   VOICE_FLAG,
   VOICE_BACKENDS,
+  VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
   VOICE_CAPTURE_END_HEADER,
   VOICE_CAPTURE_START_HEADER,
   VOICE_DRAINING_REVISIONS_HEADER,
@@ -382,17 +383,23 @@ export function registerVoiceRoutes(
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
       c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
     }
-    if (!c.req.raw.signal.aborted) store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next);
+    if (!c.req.raw.signal.aborted && store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next,
+      c.req.header(VOICE_CAPTURE_PID_HEADER)) === false) {
+      return c.json({ error: "capture_process_unverified", capture: false, speak: null }, 409);
+    }
     return c.json(next);
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data, c.req.header(VOICE_INSTANCE_HEADER));
+    const pid = z.coerce.number().int().positive().max(0x7fffffff).optional().safeParse(c.req.header(VOICE_CAPTURE_PID_HEADER));
+    if (!pid.success) return c.json({ error: "invalid_capture_process" }, 400);
+    const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data, c.req.header(VOICE_INSTANCE_HEADER), pid.data);
     if (!result.ok) {
       return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : 409);
     }
+    if (result.captureOffset !== undefined) c.header(VOICE_CAPTURE_LOCK_HEADER, String(result.captureOffset));
     return c.json({ accepted: true, protocol: result.protocol });
   });
   app.post("/voice/shell-report", gate, limitBody, async (c) => {

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Security
 
@@ -28,6 +29,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     let token: String
     let directory: URL
     private let listenerID: String
+    private let speechInstance: String?
+    private let captureLockPath: String
+    private var captureOffset: Int64?
+    private var captureLock: Int32 = -1
     private lazy var session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
 
     override init() {
@@ -44,10 +49,34 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             fputs("Expected a loopback daemon URL, readable token file and model directory.\n", stderr)
             exit(1)
         }
+        speechInstance = env["MISSION_VOICE_LISTENER_INSTANCE"]
+        captureLockPath = URL(fileURLWithPath: file).deletingLastPathComponent().appendingPathComponent("voice-capture.lock").path
         self.base = base
         self.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
         directory = URL(fileURLWithPath: models)
     }
+
+    func applyCaptureChallenge(_ challenge: String?) throws {
+        guard speechInstance == nil, let challenge else { return }
+        guard let offset = Int64(challenge), offset > 0, offset < (1 << 48) else { throw CaptureError.format }
+        if offset == captureOffset { return }
+        if captureLock >= 0 { Darwin.close(captureLock) }
+        captureOffset = nil
+        captureLock = open(captureLockPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0o600)
+        var info = stat()
+        var lock = flock()
+        lock.l_type = Int16(F_WRLCK)
+        lock.l_whence = Int16(SEEK_SET)
+        lock.l_start = offset
+        lock.l_len = 1
+        guard captureLock >= 0, fstat(captureLock, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG, fcntl(captureLock, F_SETLK, &lock) == 0 else {
+            throw CaptureError.device
+        }
+        captureOffset = offset
+    }
+
+    deinit { if captureLock >= 0 { Darwin.close(captureLock) } }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -73,6 +102,11 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
         req.setValue(token, forHTTPHeaderField: "x-harness-token")
         req.setValue(listenerID, forHTTPHeaderField: "x-voice-listener-id")
+        if let speechInstance {
+            req.setValue(speechInstance, forHTTPHeaderField: "x-mission-voice-instance")
+        } else {
+            req.setValue(String(getpid()), forHTTPHeaderField: "x-voice-capture-pid")
+        }
         if let capture {
             req.setValue(String(capture.startUs), forHTTPHeaderField: "x-voice-capture-start-host-us")
             req.setValue(String(capture.speechStartUs), forHTTPHeaderField: "x-voice-speech-start-host-us")
@@ -186,7 +220,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 exit(2)
             }
         }
-        _ = try await daemon.request("voice/listener/hello", body: JSONEncoder().encode(body))
+        let (_, response) = try await daemon.request("voice/listener/hello", body: JSONEncoder().encode(body))
+        try daemon.applyCaptureChallenge(response.value(forHTTPHeaderField: "x-voice-capture-lock"))
     }
 
     func close() {

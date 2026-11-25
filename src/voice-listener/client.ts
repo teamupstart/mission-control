@@ -1,10 +1,14 @@
-import { readFileSync } from "node:fs";
+import { claimCaptureProcess } from "../server/voice/capture-process.ts";
+import { dirname, join } from "node:path";
+import { closeSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
   VOICE_CAPTURE_END_HEADER, VOICE_CAPTURE_START_HEADER, VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER, VOICE_LISTENER_PROTOCOL_VERSION,
   VoiceListenerDirectiveSchema, type VoiceListenerDirective, type VoiceListenerHello,
 } from "../shared/voice.ts";
+import { VOICE_INSTANCE_HEADER } from "../shared/voice-speech.ts";
 import type { VoiceUtterance } from "../shared/voice-routing.ts";
 import { loopbackDaemonUrl } from "./daemon-url.ts";
 
@@ -14,6 +18,20 @@ export type CaptureBounds = { startUs: number; endMs: number };
 export class ListenerClient {
   private readonly id = crypto.randomUUID();
 
+  private processHeaders: Record<string, string> = {};
+
+  private captureAddon?: string;
+  private captureLock?: { fd: number; offset: number };
+
+  trackProcess(addon: string) {
+    const instance = process.env.MISSION_VOICE_LISTENER_INSTANCE;
+    if (instance) this.processHeaders = { [VOICE_INSTANCE_HEADER]: instance };
+    else {
+      this.captureAddon = addon;
+      this.processHeaders = { [VOICE_CAPTURE_PID_HEADER]: String(process.pid) };
+    }
+  }
+
   constructor(private readonly url: string, private readonly tokenFile: string,
     private readonly send: (url: string, init: RequestInit) => Promise<Response> = fetch,
     private readonly backend: VoiceListenerHello["backend"] = "sherpa-onnx") {
@@ -22,7 +40,7 @@ export class ListenerClient {
 
   private request(path: string, body?: unknown, signal?: AbortSignal, capture?: CaptureBounds) {
     return this.send(new URL(path, this.url).href, {
-      headers: { "x-harness-token": readFileSync(this.tokenFile, "utf8").trim(),
+      headers: { ...this.processHeaders, "x-harness-token": readFileSync(this.tokenFile, "utf8").trim(),
         [VOICE_LISTENER_ID_HEADER]: this.id, "content-type": "application/json",
         ...(capture && { [VOICE_CAPTURE_START_HEADER]: String(capture.startUs), [VOICE_CAPTURE_END_HEADER]: String(capture.endMs) }) },
       redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
@@ -30,9 +48,21 @@ export class ListenerClient {
     });
   }
 
-  hello(overrides: Partial<VoiceListenerHello> = {}, signal?: AbortSignal) {
-    return this.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION, backend: this.backend,
+  async hello(overrides: Partial<VoiceListenerHello> = {}, signal?: AbortSignal) {
+    const response = await this.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION, backend: this.backend,
       modelLoaded: true, microphone: "granted", primingAvailable: true, devices: [], ...overrides }, signal);
+    const challenge = response.headers.get(VOICE_CAPTURE_LOCK_HEADER);
+    if (response.ok && this.captureAddon && challenge !== null) {
+      const offset = Number(challenge);
+      if (!Number.isSafeInteger(offset) || offset < 1 || offset >= 2 ** 48) throw new Error("Invalid capture process challenge.");
+      if (this.captureLock?.offset !== offset) {
+        if (this.captureLock) closeSync(this.captureLock.fd);
+        this.captureLock = undefined;
+        const fd = claimCaptureProcess(join(dirname(this.tokenFile), "voice-capture.lock"), offset, this.captureAddon);
+        this.captureLock = { fd, offset };
+      }
+    }
+    return response;
   }
 
   async poll(revision?: string, signal?: AbortSignal): Promise<VoiceListenerDirective & { held?: true }> {

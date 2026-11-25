@@ -1095,6 +1095,15 @@ offer the holder playback and serve its audio. Expiry or transfer of the lease
 leaves the pause obligation with each listener that received a grant. During a
 speech hold a former owner can receive a pause with an empty roster and
 acknowledge it, and a verified supervisor exit retires its launch's grants.
+The shipped capture-only clients also lock one byte of the empty, owner-only
+`voice-capture.lock` beside the daemon token. The daemon assigns a fresh, random
+byte offset to the listener's lease at hello. Before granting capture, it checks
+that the kernel names
+the reported process as the lock owner and opens a process-exit watch (kqueue
+on macOS, pidfd on Linux). A mismatched owner or unavailable watch returns 409.
+Death of that process retires its microphone grant even after an abrupt exit.
+A missing heartbeat, unlocked file or reused PID cannot signal that watch.
+An older anonymous grant still requires the original listener's pause acknowledgement.
 With every grant accounted for the holder can receive the job immediately.
 Stop bypasses this wait. The directive
 poll checks the capture lease or playback holder both on arrival and after

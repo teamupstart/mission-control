@@ -45,6 +45,7 @@ test("end-of-speech delay saves shorter and longer choices independently and sur
   const cancel = page.getByRole("combobox", { name: "Cancel window" });
   await expect(delay).toHaveValue("2000");
   await expect(delay).toBeEnabled();
+  await expect(delay).toHaveAccessibleDescription("Speech that resumes within this delay stays in the same utterance.");
   if (EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await delay.scrollIntoViewIfNeeded();

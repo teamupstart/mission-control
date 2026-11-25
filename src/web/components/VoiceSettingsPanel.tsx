@@ -513,14 +513,16 @@ export function VoiceSettingsPanel({
             <span className="kb-row-desc">How long to wait for more speech before submitting an automatic capture.</span>
           </div>
           <div className="kb-row-controls">
-            <select className="settings-select" id="voice-end-of-speech" disabled={!config}
-              value={config?.endOfSpeechMs ?? VOICE_CONFIG_DEFAULTS.endOfSpeechMs}
-              onChange={event => {
-                const duration = VOICE_END_OF_SPEECH_MS.find(ms => ms === Number(event.target.value));
-                if (duration !== undefined) void update({ endOfSpeechMs: duration });
-              }}>
-              {VOICE_END_OF_SPEECH_MS.map(ms => <option key={ms} value={ms}>{ms / 1000} s</option>)}
-            </select>
+            <Tooltip label="Speech that resumes within this delay stays in the same utterance.">
+              <select className="settings-select" id="voice-end-of-speech" disabled={!config}
+                value={config?.endOfSpeechMs ?? VOICE_CONFIG_DEFAULTS.endOfSpeechMs}
+                onChange={event => {
+                  const duration = VOICE_END_OF_SPEECH_MS.find(ms => ms === Number(event.target.value));
+                  if (duration !== undefined) void update({ endOfSpeechMs: duration });
+                }}>
+                {VOICE_END_OF_SPEECH_MS.map(ms => <option key={ms} value={ms}>{ms / 1000} s</option>)}
+              </select>
+            </Tooltip>
           </div>
         </div>
       </div>

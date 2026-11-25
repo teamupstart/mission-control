@@ -1,4 +1,5 @@
 import type { CodeRabbitComparison, CodeRabbitConfigSnapshot, CodeRabbitTuning, WorkflowCommandView } from "@shared/workflow.ts";
+import { isDeepStrictEqual } from "node:util";
 import { checkBlockedReason, codeRabbitReviewArgv, CODERABBIT_REVIEW_COMMAND, DEFAULT_CODERABBIT_COMMAND, defaultWorkflowCommandMaxRuns, effectiveWorkflowCommandTimeoutMs, WORKFLOW_COMMAND_DEFAULT_TIMEOUT_MS, WORKFLOW_EXECUTION_LIMITS } from "@shared/workflow.ts";
 import { locateExecutable } from "../executables/locator.ts";
 import { run, type RunResult } from "../util/exec.ts";
@@ -212,12 +213,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
   // `remedy` replaces both: a problem neither Setup nor the retained output can fix says its own.
   const block = (reason: string, review?: import("@shared/workflow.ts").CodeRabbitReviewSummary, artifacts?: import("@shared/workflow.ts").WorkflowCommandArtifactDescriptor[], setup = true, remedy?: string): CheckResult => ({ kind: "action_required", reason: remedy ? `Error: ${reason}. ${remedy}.` : setup ? `Error: ${reason}. Open ${CODERABBIT_SETUP}.` : `Error: ${reason}. Inspect this attempt's retained CodeRabbit output.`, review: { ...(review ?? summary("incomplete", reason)), remainingRuns: Math.max(0, (comparison?.maxRuns ?? input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")) - (reservation?.spent ?? 0) - (started ? 1 : 0)) }, ...(artifacts ? { artifacts } : {}), ...(setup ? { setup: true } : {}) });
   if (!yaml?.enabled) return skip("skipped", yaml?.diagnostic ?? "No captured explicit YAML enablement; submit again to refresh configuration", yaml && ["invalid", "unreadable"].includes(yaml.state) ? yaml.diagnostic : undefined);
-  reservation = input.reserveRun?.();
-  if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
-    "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
-    `${CODERABBIT_ALLOWANCE_REMEDY}; no additional credits were authorized`);
-  if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
-  try {
+  const preflight = () => {
     if (input.coderabbit?.retryAt && input.coderabbit.retryAt > Date.now()) return block(`CodeRabbit vendor wait is active until ${new Date(input.coderabbit.retryAt).toISOString()}. Retry after that time`);
     const denied = checkBlockedReason(input.policy, input.cwd, input.repoRoot);
     if (denied) return block(denied);
@@ -226,8 +222,37 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     // submission captured before snapshots existed: it has no commit holding what it reviewed.
     if (input.coderabbit?.dirty) return block("This submission captured uncommitted changes without a review snapshot", undefined, undefined, false, "Submit again so Mission Control captures one");
     if (yaml.committed === false) return block(`The captured ${yaml.source} is not the one in the reviewed commit`, undefined, undefined, false, `Make sure ${yaml.source} is not ignored, then submit again`);
+    return null;
+  };
+  try {
+    const prior = input.coderabbit?.priorCleanReview;
+    const priorComparison = prior?.review.comparison;
+    let comparisonRequest: Promise<CodeRabbitComparison> | undefined;
+    if (prior && priorComparison?.command && !priorComparison.command.includes("--fresh") && !preflight()) {
+      failureStage = "comparison";
+      // Resolve a reuse candidate before asking for an execution. If it cannot be reused,
+      // keep the allowance-first outcome for an exhausted run, including comparison errors.
+      comparisonRequest = Promise.resolve().then(input.coderabbit!.comparison);
+      const candidate = await comparisonRequest.catch(() => null);
+      if (candidate?.head && candidate.mergeBase && !candidate.error && isDeepStrictEqual(priorComparison, candidate)) {
+        const diagnostic = `Reused complete CodeRabbit review with no findings from attempt ${prior.attemptId} at unchanged head ${candidate.head}`;
+        const remainingRuns = Math.max(0, candidate.maxRuns - (input.coderabbit?.readRunsSpent?.() ?? 0));
+        return { kind: "outcome", outcome: {
+          slot: "coderabbit", status: "passed", command: null, exitCode: null, output: "", truncatedBytes: 0,
+          artifacts: [], timeoutMs: null, note: diagnostic, review: { ...prior.review, diagnostic, remainingRuns },
+        } };
+      }
+    }
+    failureStage = "preflight";
+    reservation = input.reserveRun?.();
+    if (reservation && !reservation.granted && input.coderabbit?.incompleteReview) return block(
+      "CodeRabbit review remains incomplete and its execution allowance is exhausted", undefined, undefined, false,
+      `${CODERABBIT_ALLOWANCE_REMEDY}; no additional credits were authorized`);
+    if (reservation && !reservation.granted) return skip("budget_spent", `CodeRabbit execution allowance exhausted (${reservation.spent}/${input.command?.maxRuns ?? defaultWorkflowCommandMaxRuns("coderabbit")}). Review skipped without checking availability`);
+    const problem = preflight();
+    if (problem) return problem;
     failureStage = "comparison";
-    comparison = await input.coderabbit!.comparison();
+    comparison = await (comparisonRequest ?? input.coderabbit!.comparison());
     if (comparison.error || !comparison.head || !comparison.mergeBase) return block(comparison.error ?? "CodeRabbit comparison is unavailable");
     failureStage = "readiness";
     const ready = await (deps.codeRabbitProbe ?? probeCodeRabbit)();
@@ -238,7 +263,7 @@ export async function runCodeRabbit(input: RunCheckInput, deps: CheckRunDeps): P
     // unless a completed runtime result explicitly reports a pre-start refusal.
     started = true;
     failureStage = "execution";
-    const execution = await deps.execute({ slot: "coderabbit", command, repoRoot: input.repoRoot, workingSubpath: "", headSha: comparison.head,
+    const execution = await deps.execute!({ slot: "coderabbit", command, repoRoot: input.repoRoot!, workingSubpath: "", headSha: comparison.head,
       timeoutMs: comparison.timeoutMs, coderabbit: comparison, env: ready.env });
     started = execution.kind !== "unavailable" && execution.kind !== "decided"
       && (execution.kind !== "infrastructure" || execution.started !== false);

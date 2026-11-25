@@ -38,7 +38,7 @@ import { createTray, destroyTray, setTrayVoice } from "./tray.ts";
 import { startShellVoice } from "./voice-state.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
-import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
+import { armResidentLaunchAuthorization, armSessionControlAuthorization, armSessionSettingsAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
 import { registerWindowBackgroundIpc } from "../server/window-background.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
@@ -257,6 +257,7 @@ function registerIpc(updateController: UpdateController): void {
   const dashboard = () => getMainWindow()?.webContents;
   serveDashboardClick(ipcMain, "mission:product-issue-report-click", dashboard, armProductIssueAuthorization);
   serveDashboardClick(ipcMain, "mission:session-control-click", dashboard, armSessionControlAuthorization);
+  serveDashboardClick(ipcMain, "mission:session-settings-click", dashboard, armSessionSettingsAuthorization);
   serveDashboardClick(ipcMain, "mission:resident-launch-click", dashboard, armResidentLaunchAuthorization);
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));

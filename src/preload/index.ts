@@ -8,7 +8,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateApplyOutcome, UpdateSnapshot } from "../shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
 import type { VoiceCardNotice, VoiceCardNoticeResult } from "../shared/voice-routing.ts";
-import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "../shared/session-control-authorization.ts";
+import type { ResidentLaunchAuthorization, SessionControlAuthorization, SessionSettingsAuthorization } from "../shared/session-control-authorization.ts";
 
 interface ProductIssueAuthorizationInput {
   requestId: string;
@@ -35,6 +35,12 @@ window.addEventListener("keydown", (event) => {
   trustedReportShortcut = event.key === "Enter" && (event.metaKey || event.ctrlKey)
     && !event.repeat && !event.isComposing ? event : null;
 }, true);
+
+function authorizeControlClick(capability: string, channel: string, input: unknown): boolean {
+  if (!sessionControlAuthorizationClaimed || capability !== sessionControlAuthorizationCapability
+    || trustedClick?.isTrusted !== true || trustedClick.eventPhase === Event.NONE) return false;
+  return ipcRenderer.sendSync(channel, input) === true;
+}
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
@@ -84,18 +90,12 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     sessionControlAuthorizationClaimed = true;
     return sessionControlAuthorizationCapability;
   },
-  authorizeSessionControl: (capability: string, input: SessionControlAuthorization): boolean => {
-    if (!sessionControlAuthorizationClaimed || capability !== sessionControlAuthorizationCapability
-      || trustedClick?.isTrusted !== true || trustedClick.eventPhase === Event.NONE) return false;
-    return ipcRenderer.sendSync("mission:session-control-click", input) === true;
-  },
-  // The same private capability and the same trusted-click rule as the menu above: both arm
-  // session-control authority, and the renderer module that claimed it owns both.
-  authorizeResidentLaunch: (capability: string, input: ResidentLaunchAuthorization): boolean => {
-    if (!sessionControlAuthorizationClaimed || capability !== sessionControlAuthorizationCapability
-      || trustedClick?.isTrusted !== true || trustedClick.eventPhase === Event.NONE) return false;
-    return ipcRenderer.sendSync("mission:resident-launch-click", input) === true;
-  },
+  authorizeSessionControl: (capability: string, input: SessionControlAuthorization): boolean =>
+    authorizeControlClick(capability, "mission:session-control-click", input),
+  authorizeSessionSettings: (capability: string, input: SessionSettingsAuthorization): boolean =>
+    authorizeControlClick(capability, "mission:session-settings-click", input),
+  authorizeResidentLaunch: (capability: string, input: ResidentLaunchAuthorization): boolean =>
+    authorizeControlClick(capability, "mission:resident-launch-click", input),
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),
     check: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-check"),

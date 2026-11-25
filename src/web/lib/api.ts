@@ -449,6 +449,9 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
+export const fetchSessionSettingsAccess = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<import("@shared/settings-mcp.ts").SessionSettingsAccess>("/api/session-settings-access", signal);
+export const fetchUiSkin = (signal?: AbortSignal) => fetchJsonWithSignal<{ skin: UiConfigView["config"]["skin"] }>("/api/ui/skin", signal);
 export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
@@ -1331,6 +1334,7 @@ async function request<T extends ActionResult = ActionResult>(
       signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
+    options.signal?.throwIfAborted();
     if (!res.ok) {
       return { ...data, ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
@@ -2690,7 +2694,9 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
-  setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
+  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization, signal: AbortSignal) =>
+    put("/api/session-settings-access", input, { signal }),
+  setUiConfig: (cfg: UiConfigPatch, signal?: AbortSignal) => put(`/api/ui/config`, cfg, { signal }),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- First-run setup reminder ---

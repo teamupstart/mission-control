@@ -15,8 +15,7 @@ test("empty registry retains master and explains alpha without a filter or Advan
 test("populated registry has unique anchors, resolved pills and collapsed Advanced with off count", () => {
   const html = renderToStaticMarkup(createElement(FeatureFlagsView, { definitions: FEATURE_FLAGS, config: { enableAll: true, overrides: { "compact-history": false } }, onSet() {} }));
   const anchors = [...html.matchAll(/data-anchor="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(anchors.length, 5);
-  assert.equal(new Set(anchors).size, 5);
+  assert.deepEqual(anchors.sort(), ["feature-flags/enable-all", ...FEATURE_FLAGS.map(flag => `feature-flags/${flag.id}`)].sort());
   assert.match(html, /Preview navigation: on/);
   assert.match(html, /Compact history: off/);
   assert.match(html, /aria-expanded="false"/);

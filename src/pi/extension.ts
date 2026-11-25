@@ -1,7 +1,9 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BASE_URL, envVar, readClientToken, MISSION_AGENT_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
+import {
+  BASE_URL, envVar, readClientToken, MISSION_AGENT_SESSION_ID_ENV, MISSION_SESSION_ID_ENV, SCOUT_SESSION_LOCATOR_ENV,
+} from "@shared/harness-runtime.mjs";
 import { postHookEvent } from "@shared/hook-bridge.mjs";
 import type { PiApi, PiContext, PiEvent } from "./api.ts";
 import { hookBody, PI_EVENTS, statusBody } from "./event-map.ts";
@@ -33,7 +35,20 @@ async function daemonRequest(path: string, body?: unknown): Promise<unknown> {
   } catch { return null; }
 }
 
+// Pi's managed sessions share a process. Bind just their bridge child to its launch, without
+// changing process.env or passing the locator into the agent's shell tool.
+export function managedMissionExtension(
+  caller: { sessionId: string; locator: string },
+  env: NodeJS.ProcessEnv,
+): (pi: PiApi) => void {
+  return pi => configure(pi, { ...env, [MISSION_SESSION_ID_ENV]: caller.sessionId, [SCOUT_SESSION_LOCATOR_ENV]: caller.locator });
+}
+
 export default function missionControl(pi: PiApi): void {
+  configure(pi);
+}
+
+function configure(pi: PiApi, mcpEnv?: NodeJS.ProcessEnv): void {
   let client: McpClient | null = null;
   // Registrations belong to the extension, while adapters resolve the current session's
   // client. Pi's registerTool replaces a definition by name and refreshes its tool list;
@@ -74,7 +89,7 @@ export default function missionControl(pi: PiApi): void {
       const connection = new McpClient(override ?? missionControlBuild.mcpServerPath, {
         cwd: ctx.cwd,
         runtime,
-        env: { ...process.env, [MISSION_AGENT_SESSION_ID_ENV]: ctx.sessionManager.getSessionId() },
+        env: { ...(mcpEnv ?? process.env), [MISSION_AGENT_SESSION_ID_ENV]: ctx.sessionManager.getSessionId() },
       });
       client = connection;
       try {

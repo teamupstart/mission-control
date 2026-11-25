@@ -52,7 +52,7 @@ import { markReportRead, reportToRead, resolveMarkReadTarget, sessionAuthorKey, 
 import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
-import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import type { AuthorizeSessionControl, AuthorizeSessionSettings } from "./session-control-authorization.ts";
 import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
@@ -102,6 +102,7 @@ import { dismissAttentionItems, listAttentionDismissals } from "./attention-dism
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { registerSessionSettingsRoutes } from "./session-settings.ts";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { TypeOf, ZodTypeAny } from "zod";
@@ -541,7 +542,7 @@ import {
 } from "./foreman/pipeline-triage.ts";
 import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { shellCommand } from "./terminal/shell.ts";
-import { setUiConfig, uiConfigView } from "./ui-config.ts";
+import { getUiConfig, setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import {
@@ -1376,6 +1377,7 @@ export interface RouteDeps {
   sdkSessions?: SdkSupervisor;
   /** Private desktop authorization; defaults to the owning utility-process channel. */
   authorizeSessionControl?: AuthorizeSessionControl;
+  authorizeSessionSettings?: AuthorizeSessionSettings;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
@@ -1506,6 +1508,7 @@ export const ROUTE_DEP_NAMES = [
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
+  "authorizeSessionSettings",
   "handoffDeps",
   "launchSessionTerminal",
   "sessionActions",
@@ -1844,6 +1847,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ensembles,
     sdkSessions,
     authorizeSessionControl,
+    authorizeSessionSettings,
     handoffDeps,
     launchSessionTerminal,
     sessionActions,
@@ -9027,6 +9031,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
   });
 
+  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings);
+
   // --- Dashboard UI preferences (localhost only) ---
   //
   // Layout, keybindings, alert delivery, rich text. The daemon only stores these; nothing
@@ -9037,6 +9043,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // defaults, and the dashboard's one-time adoption of pre-rename `localStorage` MUST NOT
   // fire against a config the operator already has.
   app.get("/api/ui/config", (c) => c.json(uiConfigView()));
+  // Skin invalidations and reconnects only need this scalar. Keep the separate voice revisions
+  // and full config hydration on their existing read path.
+  app.get("/api/ui/skin", (c) => c.json({ skin: getUiConfig(false).skin }));
   app.put("/api/ui/config", async (c) => {
     const parsed = await parseBody(c, UiConfigPatchSchema);
     if (!parsed.ok) return parsed.res;

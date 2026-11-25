@@ -94,6 +94,7 @@ export const MISSION_MCP_TOOLS = [
   "report_status",
   "report_blocker",
   "clear_blocker",
+  "mission_settings",
   "report_awaiting",
   "clear_awaiting",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`

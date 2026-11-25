@@ -106,6 +106,11 @@ Unchanged tool definitions register once; changed descriptions or schemas refres
 replacement-by-name registration API, and newly discovered names register on demand.
 The factory itself starts no processes or timers.
 
+For tools that require a signed live caller, such as `mission_settings`, terminal Pi uses
+the registered parent process. Managed Pi binds the installed extension to its launch and
+gives the private session locator to the bridge child. Pi's shell environment does not
+receive the locator, and a replacement conversation receives the current Registry credential.
+
 Lifecycle events feed the existing hook registry. Only `agent_settled` maps to `Stop`; `agent_end`
 does not complete a work cycle. Human and RPC input start work, while extension-injected input
 does not impersonate a human prompt. Pi's UI prompt events report waiting for input. Bash PR

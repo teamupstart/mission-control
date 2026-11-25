@@ -13,11 +13,13 @@ export interface FakeOAuthModes {
   refresh: "ok" | "invalid_grant" | "invalid_client" | "invalid_scope" | "503" | "close";
   registration: "ok" | "secret" | "refuse" | "auth-method";
   metadata: "ok" | "wrong-issuer" | "foreign-endpoint" | "no-s256" | "no-registration" | "no-code";
-  resourceMetadata: "ok" | "none" | "foreign-issuer" | "wrong-resource";
+  resourceMetadata: "ok" | "none" | "foreign-issuer" | "wrong-resource" | "broader" | "root-only";
   shape: "ok" | "echo" | "error" | "unauthorized";
   stall: string | null;
   oversize: string | null;
   redirect: string | null;
+  /** A path that answers 307 to `/moved<path>` on its own origin. */
+  redirectWithin: string | null;
   /** Paths that answer an HTML status page, not an OAuth reply, repeating the request body. */
   status: Record<string, number> | null;
   iss: boolean | string;

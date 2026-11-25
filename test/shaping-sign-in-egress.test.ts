@@ -101,6 +101,20 @@ test("a redirect within the origins is returned unfollowed, with its location", 
   assert.equal(main.seen.length, seen + 1);
 });
 
+test("a redirect answering a POST is refused, even within the origins, so its body is never resent", async () => {
+  for (const method of ["POST", "PUT"]) {
+    const seen = main.seen.length;
+    await assert.rejects(
+      signInFetch([main.origin])(`${main.origin}/near`, { method, body: "code=fake-code-1&code_verifier=fake-verifier" }),
+      (error: unknown) => error instanceof SignInRefusal && new RegExp(`answered a ${method} with a 307 redirect`).test(error.message),
+    );
+    // The one request was made; the redirect target never was.
+    assert.deepEqual(main.seen.slice(seen).map((entry) => entry.path), ["/near"]);
+  }
+  // A HEAD, like a GET, is a read and comes back unfollowed for the caller to decide on.
+  assert.equal((await signInFetch([main.origin])(`${main.origin}/near`, { method: "HEAD" })).status, 307);
+});
+
 test("a reply is read to 64 KiB and no further", async () => {
   const exact = await signInFetch([main.origin])(`${main.origin}/exact`);
   assert.equal((await exact.text()).length, SIGN_IN_REPLY_BYTES);

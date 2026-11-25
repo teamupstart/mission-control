@@ -20,10 +20,13 @@
 //   metadata       "ok" | "wrong-issuer" | "foreign-endpoint" | "no-s256" | "no-registration" | "no-code"
 //   resourceMetadata "ok" | "none" | "foreign-issuer" (names elsewhereUrl as its authorization server)
 //                  | "wrong-resource" (names a resource on elsewhereUrl)
+//                  | "broader" (the path-aware document names the origin root, not the resource)
+//                  | "root-only" (only the root document is published, naming the resource itself)
 //   shape          "ok" | "echo" | "error" | "unauthorized"
 //   stall          a path that never answers
 //   oversize       a path that answers 100 KiB
 //   redirect       a path that answers 307 to elsewhereUrl
+//   redirectWithin a path that answers 307 to `/moved<path>` on its own origin, which records and answers 200
 //   status         { [path]: status }: that path answers an HTML status page repeating the request body
 //   iss            true: the `/authorize` redirect carries `iss`; or a string to send instead
 //   tokens         "full" | "no-refresh" (no refresh token, and a refresh does not rotate) | "no-expiry" | "no-scope"
@@ -37,7 +40,7 @@ const SCOPES_ADVERTISED = ["mcp:context", "mcp:other", "mcp", "offline_access"];
 
 const DEFAULT_MODES = {
   refresh: "ok", registration: "ok", metadata: "ok", resourceMetadata: "ok", shape: "ok",
-  stall: null, oversize: null, redirect: null, status: null, iss: false, tokens: "full", revoke: "ok",
+  stall: null, oversize: null, redirect: null, redirectWithin: null, status: null, iss: false, tokens: "full", revoke: "ok",
 };
 
 async function listen(handler) {
@@ -66,7 +69,8 @@ const s256 = (verifier) => createHash("sha256").update(verifier).digest("base64u
 export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
   const requests = [];
   const modes = { ...DEFAULT_MODES };
-  const holds = new Map();
+  // Every hold ever made, so a request waits on each one on its path and close releases them all.
+  const holds = [];
   const clients = new Map();
   const codes = new Map();
   const accessTokens = new Map();
@@ -152,20 +156,32 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
 
     if (modes.stall === path) return new Promise(() => {});
     if (modes.oversize === path) return json(res, 200, { padding: "x".repeat(100 * 1024) });
+    if (modes.redirectWithin === path) {
+      res.writeHead(307, { location: `http://${req.headers.host}/moved${path}${url.search}` }).end();
+      return;
+    }
+    if (path.startsWith("/moved/")) return json(res, 200, { moved: true });
     if (modes.redirect === path) { res.writeHead(307, { location: `${elsewhere.origin}${path}${url.search}` }).end(); return; }
     // A status page that is not an OAuth reply, as a gateway or proxy answers, repeating the request it got.
     if (modes.status?.[path]) {
       res.writeHead(modes.status[path], { "content-type": "text/html" }).end(`<html><body>HTTP ${modes.status[path]} for ${path}: ${body}</body></html>`);
       return;
     }
-    const held = holds.get(path);
-    if (held) await held.promise;
+    const held = holds.filter((entry) => entry.path === path && !entry.released);
+    if (held.length > 0) await Promise.all(held.map((entry) => entry.promise));
 
+    // The resource a path-aware document names is the one its URL was built from, query included.
     if (isResource && path === "/.well-known/oauth-protected-resource/mcp") {
-      return modes.resourceMetadata === "none" ? json(res, 404, {}) : json(res, 200, resourceMetadata(urls.resourceUrl));
+      if (modes.resourceMetadata === "none" || modes.resourceMetadata === "root-only") return json(res, 404, {});
+      if (modes.resourceMetadata === "broader") return json(res, 200, resourceMetadata(`${urls.resourceOrigin}/`));
+      return json(res, 200, resourceMetadata(`${urls.resourceUrl}${url.search}`));
     }
     if (isResource && path === "/.well-known/oauth-protected-resource/shape") {
-      return modes.resourceMetadata === "none" ? json(res, 404, {}) : json(res, 200, resourceMetadata(urls.shapeUrl));
+      if (modes.resourceMetadata === "none" || modes.resourceMetadata === "root-only") return json(res, 404, {});
+      return json(res, 200, resourceMetadata(`${urls.shapeUrl}${url.search}`));
+    }
+    if (isResource && path === "/.well-known/oauth-protected-resource" && modes.resourceMetadata === "root-only") {
+      return json(res, 200, resourceMetadata(urls.resourceUrl));
     }
     if (isIssuer && path === "/.well-known/oauth-authorization-server") return json(res, 200, issuerMetadata());
 
@@ -215,8 +231,13 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
           || s256(form.get("code_verifier") ?? "") !== grant.challenge) {
           return oauthError(res, 400, "invalid_grant", "the code or its verifier does not match");
         }
+        // RFC 8707: the token is for the resource the code was authorized for, never one the form swaps in.
+        const resource = form.get("resource");
+        if (resource !== null && resource !== grant.resource) {
+          return oauthError(res, 400, "invalid_target", "the resource does not match the authorization");
+        }
         grant.used = true;
-        return json(res, 200, issue(clientId, grant.scope, form.get("resource") ?? grant.resource));
+        return json(res, 200, issue(clientId, grant.scope, grant.resource));
       }
       if (form.get("grant_type") === "refresh_token") {
         switch (modes.refresh) {
@@ -292,12 +313,12 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     hold(path) {
       let release;
       const promise = new Promise((done) => { release = done; });
-      holds.set(path, { promise, release: () => release() });
-      return () => { holds.delete(path); release(); };
+      const entry = { path, promise, released: false, release: () => { entry.released = true; release(); } };
+      holds.push(entry);
+      return entry.release;
     },
     close: async () => {
-      for (const held of holds.values()) held.release();
-      holds.clear();
+      for (const entry of holds) entry.release();
       for (const socket of sockets) socket.destroy();
       await Promise.all(servers.map((server) => new Promise((done) => { server.closeAllConnections(); server.close(() => done()); })));
     },

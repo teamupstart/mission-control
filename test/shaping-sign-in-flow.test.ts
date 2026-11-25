@@ -657,6 +657,95 @@ test("resource metadata is absent only on a 404 or a 410; a 408, 429 or 5xx is r
   fake.resetModes();
 });
 
+test("a same-origin redirect at the token endpoint is refused, and the code or refresh token is never resent", async () => {
+  fake.resetModes();
+  const signed = await signIn(fake, target(fake));
+  fake.setMode({ redirectWithin: "/token" });
+  let from = fake.requests.length;
+  assert.match(failed(await refresh(signed.discovery, signed.client, signed.tokens.refreshToken!, options), "sign_in_again").reason, /answered a POST with a 307 redirect/);
+  assert.deepEqual(paths(since(fake, from)), ["POST /token"]);
+
+  fake.resetModes();
+  const { discovery } = ok(await discover(target(fake), options));
+  const begun = ok(await begin(target(fake), discovery, null, REDIRECT_URI, options));
+  secrets.add(begun.codeVerifier);
+  const code = (await authorizeInBrowser(begun.authorizationUrl)).get("code")!;
+  secrets.add(code);
+  fake.setMode({ redirectWithin: "/token" });
+  from = fake.requests.length;
+  failed(await exchange(target(fake), discovery, begun.client, { code, codeVerifier: begun.codeVerifier, redirectUri: REDIRECT_URI }, options), "refused");
+  assert.deepEqual(paths(since(fake, from)), ["POST /token"]);
+  assert.equal(fake.requests.filter((request) => request.path.startsWith("/moved/")).length, 0);
+  fake.resetModes();
+});
+
+test("the resource must be exactly the one the metadata URL was built from, query included", async () => {
+  // A path-aware document that names the origin root is a broader resource, and is refused.
+  fake.resetModes();
+  fake.setMode({ resourceMetadata: "broader" });
+  assert.match(failed(await discover(target(fake), options), "refused").reason, /does not match the shaper's URL/);
+
+  // A root document that names the shaper's own URL is still exactly this resource.
+  fake.setMode({ resourceMetadata: "root-only" });
+  const rooted = await signIn(fake, target(fake));
+  assert.equal(rooted.discovery.resource, fake.resourceUrl);
+  assert.equal(new URL(rooted.authorizationUrl).searchParams.get("resource"), fake.resourceUrl);
+  assert.deepEqual(await callGuidance(fake.resourceUrl, rooted.tokens.accessToken), { version: "v1.4.0", guidance: [{ id: "guide/fake-repo", title: "Guide", body: "guidance for fake-repo" }] });
+
+  // RFC 9728 section 3.1: the path-aware URL keeps the shaper URL's query.
+  fake.resetModes();
+  const withQuery = `${fake.resourceUrl}?tenant=blue`;
+  const from = fake.requests.length;
+  const discovered = ok(await discover({ url: withQuery, scope: SCOPE, issuer: null }, options)).discovery;
+  const [first] = since(fake, from);
+  assert.equal(`${first!.path}${first!.query}`, "/.well-known/oauth-protected-resource/mcp?tenant=blue");
+  assert.equal(discovered.resource, withQuery);
+});
+
+test("a refresh reply with no scope keeps the scope originally granted", async () => {
+  fake.resetModes();
+  const signed = await signIn(fake, target(fake));
+  fake.setMode({ tokens: "no-scope" });
+  const narrowed = noteTokens(ok(await refresh(signed.discovery, signed.client, signed.tokens.refreshToken!, { ...options, grantedScope: "mcp:context:read" })).tokens);
+  assert.equal(narrowed.scope, "mcp:context:read");
+  // Without it, the client's registered scope stands in.
+  assert.equal(noteTokens(ok(await refresh(signed.discovery, signed.client, narrowed.refreshToken!, options)).tokens).scope, signed.client.scope);
+  fake.resetModes();
+});
+
+test("the fixture keeps a code bound to its resource, and each hold is released on its own", async () => {
+  fake.resetModes();
+  const { discovery } = ok(await discover(target(fake), options));
+  const begun = ok(await begin(target(fake), discovery, null, REDIRECT_URI, options));
+  secrets.add(begun.codeVerifier);
+  const code = (await authorizeInBrowser(begun.authorizationUrl)).get("code")!;
+  secrets.add(code);
+  const swapped = await fetch(`${fake.issuer}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code", code, code_verifier: begun.codeVerifier, redirect_uri: REDIRECT_URI,
+      client_id: begun.client.clientId, resource: fake.shapeUrl,
+    }),
+  });
+  assert.equal(swapped.status, 400);
+  assert.equal(((await swapped.json()) as { error: string }).error, "invalid_target");
+
+  // Two holds on one path: releasing the later one does not free a request waiting on the earlier.
+  const releaseFirst = fake.hold("/token");
+  let settled = false;
+  const pending = exchange(target(fake), discovery, begun.client, { code, codeVerifier: begun.codeVerifier, redirectUri: REDIRECT_URI }, options)
+    .finally(() => { settled = true; });
+  await new Promise((done) => setTimeout(done, 50));
+  const releaseSecond = fake.hold("/token");
+  releaseSecond();
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(settled, false);
+  releaseFirst();
+  // The code was not spent by the refused swap, so the held exchange still signs in.
+  noteTokens(ok(await pending).tokens);
+});
+
 test("no sign-in request carries a cookie, a carrier or baggage, and codes and refresh tokens reach only /token", () => {
   const signInPaths = /^\/(\.well-known\/|register$|token$|revoke$)/;
   for (const server of [fake, split]) {

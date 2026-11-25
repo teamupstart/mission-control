@@ -29,7 +29,7 @@ import {
   type AuthorizationServerMetadata, type OAuthClientInformationMixed, type OAuthClientMetadata, type OAuthProtectedResourceMetadata,
   type OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
+import { resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import { redactResolved, type ResolvedValue } from "../references.ts";
 import { SignInRefusal, SignInRequestError, signInFetch, signInUrlProblem, type SignInFetch } from "./egress.ts";
 
@@ -99,6 +99,15 @@ export interface FlowOptions {
   timeoutMs?: number;
 }
 
+export interface RefreshOptions extends FlowOptions {
+  /**
+   * The scope the sign-in was granted, as the stored record holds it. A refresh reply that names
+   * no scope keeps the scope originally granted (RFC 6749 section 6), which may be narrower than
+   * the one the client registered with. Without it, the client's registered scope stands in.
+   */
+  grantedScope?: string;
+}
+
 export type DiscoverResult = { ok: true; discovery: SignInDiscovery } | SignInFailure;
 
 export type BeginResult =
@@ -158,14 +167,17 @@ export async function discover(target: SignInTarget, options: FlowOptions = {}):
     seen = watch.seen;
     const fetchFn = watch.fetchFn;
 
-    const resourceMetadata = await readResourceMetadata(server, fetchFn);
+    const found = await readResourceMetadata(server, fetchFn);
+    const resourceMetadata = found?.metadata ?? null;
     let authorizationServer: string;
     let resource: string | null = null;
-    if (resourceMetadata) {
-      if (!checkResourceAllowed({ requestedResource: resourceUrlFromServerUrl(server), configuredResource: resourceMetadata.resource })) {
-        return refused(`The server's resource metadata names ${quote(resourceMetadata.resource)}, which does not match the shaper's URL.`);
+    if (found) {
+      // RFC 9728 section 3.3: identical to the identifier the metadata URL was built from, never
+      // a broader resource that merely contains the shaper's URL, so the token's audience is this server.
+      if (!found.identifiers.some((identifier) => sameResource(identifier, found.metadata.resource))) {
+        return refused(`The server's resource metadata names ${quote(found.metadata.resource)}, which does not match the shaper's URL.`);
       }
-      resource = resourceMetadata.resource;
+      resource = found.metadata.resource;
     }
     const named = resourceMetadata?.authorization_servers ?? [];
     if (named.length === 0) {
@@ -301,13 +313,13 @@ export async function exchange(
  * other OAuth error or 4xx, a status page that is not an OAuth reply, a refused redirect, or a
  * client bound to another authorization server. Those get the same answer however often they
  * are asked, so retrying them would never end and never ask the operator to sign in. A refresh
- * token the server does not rotate is kept.
+ * token the server does not rotate is kept, and a reply with no scope keeps `grantedScope`.
  */
 export async function refresh(
   discovery: SignInDiscovery,
   client: SignInClient,
   refreshToken: string,
-  options: FlowOptions = {},
+  options: RefreshOptions = {},
 ): Promise<RefreshResult> {
   const now = options.now ?? Date.now;
   const secrets: ResolvedValue[] = [{ name: "refresh token", value: refreshToken }];
@@ -323,7 +335,7 @@ export async function refresh(
       fetchFn,
     });
     secrets.push(...tokenSecrets(tokens));
-    return { ok: true, tokens: signInTokens(tokens, client.scope, now()) };
+    return { ok: true, tokens: signInTokens(tokens, options.grantedScope ?? client.scope, now()) };
   } catch (error) {
     const code = classify(error, seen);
     const narrowed = code === "client_rejected" || code === "retry" ? code : "sign_in_again";
@@ -481,13 +493,23 @@ function tokenSecrets(tokens: OAuthTokens): ResolvedValue[] {
  * A 408, a 429 or a 5xx is a request error a later try may get past, and any other answer is
  * refused rather than taken for absence. No redirect is followed.
  */
-async function readResourceMetadata(server: URL, fetchFn: SignInFetch): Promise<OAuthProtectedResourceMetadata | null> {
+async function readResourceMetadata(
+  server: URL,
+  fetchFn: SignInFetch,
+): Promise<{ metadata: OAuthProtectedResourceMetadata; identifiers: string[] } | null> {
+  const target = resourceUrlFromServerUrl(server).href;
+  const origin = new URL("/", server.origin).href;
   const path = server.pathname.replace(/\/$/, "");
-  const candidates = [
-    ...(path ? [new URL(`/.well-known/oauth-protected-resource${path}`, server.origin)] : []),
-    new URL("/.well-known/oauth-protected-resource", server.origin),
+  // RFC 9728 section 3.1: the suffix goes between the host and the path and query, so the
+  // path-aware URL keeps the query. The root document describes the origin; a server may also
+  // name the shaper's own URL there, which is still exactly this resource.
+  const candidates: Array<{ url: URL; identifiers: string[] }> = [
+    ...(path || server.search
+      ? [{ url: new URL(`/.well-known/oauth-protected-resource${path}${server.search}`, server.origin), identifiers: [target] }]
+      : []),
+    { url: new URL("/.well-known/oauth-protected-resource", server.origin), identifiers: [...new Set([origin, target])] },
   ];
-  for (const url of candidates) {
+  for (const { url, identifiers } of candidates) {
     const response = await fetchFn(url, { headers: { accept: "application/json" } });
     // Only "not here" means none is published. A 401, a 403 or a 429 is the server answering,
     // and reading it as absence would sign in without the resource indicator.
@@ -498,9 +520,18 @@ async function readResourceMetadata(server: URL, fetchFn: SignInFetch): Promise<
     if (!response.ok) throw new SignInRefusal(`${server.origin} answered HTTP ${response.status} for its resource metadata.`);
     const parsed = OAuthProtectedResourceMetadataSchema.safeParse(await response.json().catch(() => null));
     if (!parsed.success) throw new SignInRefusal(`${server.origin} published resource metadata that is not valid.`);
-    return parsed.data;
+    return { metadata: parsed.data, identifiers };
   }
   return null;
+}
+
+/** Two resource identifiers that are the same URL once parsed, a fragment aside. */
+function sameResource(a: string, b: string): boolean {
+  const [x, y] = [parseUrl(a), parseUrl(b)];
+  if (!x || !y) return false;
+  x.hash = "";
+  y.hash = "";
+  return x.href === y.href;
 }
 
 /** Why the authorization server's metadata may not be used, or null. */

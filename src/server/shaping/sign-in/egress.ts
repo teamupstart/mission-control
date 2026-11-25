@@ -74,8 +74,11 @@ export function signInUrlProblem(url: URL, origins: readonly string[]): string |
  * before a request is made. It sends no cookie and adds no header of its own, follows no
  * redirect itself, refuses a redirect that leaves `origins`, reads at most 64 KiB of a reply and
  * gives each request 10 seconds. The reply comes back already read, so a caller never waits on a
- * body past the deadline. A redirect within `origins` is returned unfollowed, for the SDK's
- * same-origin redirect handling to decide on, and that hop comes back through here.
+ * body past the deadline. A redirect within `origins` answering a GET or a HEAD, a metadata
+ * read, is returned unfollowed for the SDK's same-origin redirect handling to decide on, and
+ * that hop comes back through here. A redirect answering any other method is refused: the SDK
+ * would resend a 307 or 308's body, and a token request's body holds a code, a verifier or a
+ * refresh token that belongs at the token endpoint and nowhere else on its origin.
  */
 export function signInFetch(origins: readonly string[], options: SignInFetchOptions = {}): SignInFetch {
   const allowed = [...new Set(origins.map((origin) => new URL(origin).origin))];
@@ -104,6 +107,10 @@ export function signInFetch(origins: readonly string[], options: SignInFetchOpti
         try { target = new URL(location, url); } catch { throw new SignInRefusal(`${url.origin} answered a redirect to an unreadable location.`); }
         const leaves = signInUrlProblem(target, allowed);
         if (leaves) throw new SignInRefusal(`${url.origin} redirected the sign-in elsewhere, which was not followed: ${leaves}.`);
+        const verb = method.toUpperCase();
+        if (verb !== "GET" && verb !== "HEAD") {
+          throw new SignInRefusal(`${url.origin} answered a ${verb} with a ${response.status} redirect, which is never followed, so its body is not sent again.`);
+        }
         return new Response(null, { status: response.status, statusText: response.statusText, headers: response.headers });
       }
       const read = await readCappedBody(response, capBytes);

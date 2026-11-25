@@ -138,12 +138,17 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
   const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
-  const retry = updates.getByRole("button", { name: "Retry" });
+  const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const retry = alert.getByRole("button", { name: "Retry" });
   await alpha.check();
   await expect(alert).toContainText("Alpha updates are on, but Enable all feature flags could not be switched on: flag store unavailable");
+  const setupFamilies = tab.getByRole("navigation", { name: "Setup families" });
+  expect((await alert.boundingBox())!.y).toBeGreaterThan((await alpha.boundingBox())!.y);
+  expect((await alert.boundingBox())!.y).toBeLessThan((await setupFamilies.boundingBox())!.y);
+  await expect(updates.getByRole("alert")).toHaveCount(0);
   await expect(alpha).toBeChecked();
   await expect(peerMaster).not.toBeChecked();
   // While an opt-out saves, Retry waits; a refused opt-out leaves alpha on, so its failure and
@@ -153,7 +158,7 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseAlphaSave?: () => void }).releaseAlphaSave)).toBe("function");
   await expect(retry).toBeDisabled();
   await page.evaluate(() => (window as unknown as { releaseAlphaSave(): void }).releaseAlphaSave());
-  await expect(updates.getByRole("alert").filter({ hasText: "update preferences are read-only" })).toBeVisible();
+  await expect(tab.getByRole("alert").filter({ hasText: "update preferences are read-only" })).toBeVisible();
   await expect(alpha).toBeChecked();
   await expect(alert).toContainText("flag store unavailable");
   await expect(retry).toBeEnabled();
@@ -170,7 +175,7 @@ test("a failed Enable all write keeps alpha on and offers a retry that survives 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(artifactsDir("feature-flags"), { recursive: true });
     await page.mouse.move(1, 1);
-    await updates.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enable-all-retry.png`, animations: "disabled" });
+    await alert.screenshot({ path: `${artifactsDir("feature-flags")}alpha-enable-all-retry.png`, animations: "disabled" });
   }
   // While the retried write stalls, Retry waits but the alpha switch stays usable.
   await retry.click();
@@ -210,12 +215,12 @@ test("an Enable all write the daemon never answers times out and frees Retry", a
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
-  const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
+  const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
   await alpha.check();
   await expect(alert).toContainText("Mission Control did not answer within 10 seconds", { timeout: 20_000 });
-  const retry = updates.getByRole("button", { name: "Retry" });
+  const retry = alert.getByRole("button", { name: "Retry" });
   await expect(retry).toBeEnabled();
   await expect(peerMaster).not.toBeChecked();
   await retry.click();
@@ -245,9 +250,10 @@ test("a failure that lands after another window switched Enable all on never com
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
   const updates = page.getByRole("region", { name: "Application updates" });
-  const alert = updates.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
+  const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   await alpha.check();
   await expect.poll(() => writes).toBe(1);
@@ -266,7 +272,7 @@ test("a failure that lands after another window switched Enable all on never com
   await page.getByRole("tab", { name: /Setup/ }).click();
   await expect(alpha).toBeChecked();
   await expect(alert).toHaveCount(0);
-  await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(tab.getByRole("button", { name: "Retry" })).toHaveCount(0);
 });
 
 test("a failure landing after Enable all went on and off elsewhere offers no Retry", async ({ dashboard: page, context, daemon }) => {
@@ -288,7 +294,8 @@ test("a failure landing after Enable all went on and off elsewhere offers no Ret
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  const tab = page.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
   const updates = page.getByRole("region", { name: "Application updates" });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   const setup = page.getByRole("tab", { name: /Setup/ });
@@ -308,8 +315,8 @@ test("a failure landing after Enable all went on and off elsewhere offers no Ret
   release();
   await expect.poll(() => settled).toBe(true);
   await expect(alpha).toBeChecked();
-  await expect(updates.getByRole("alert")).toHaveCount(0);
-  await expect(updates.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(tab.getByRole("alert")).toHaveCount(0);
+  await expect(tab.getByRole("button", { name: "Retry" })).toHaveCount(0);
   await expect(peerMaster).not.toBeChecked();
 });
 

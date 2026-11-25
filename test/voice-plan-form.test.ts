@@ -179,6 +179,69 @@ test("resolve refuses an incomplete selection payload with a live voice submit I
   assert.equal(registry.getReview(review.id)?.status, "pending");
 });
 
+test("an overdue submit ID cannot resolve the form before its timeout callback gets to run", async t => {
+  const { review, fill } = await form(1);
+  let submitId = "";
+  t.after(registry.subscribe(event => { if (event.type === "voice_form_submit") submitId = event.submitId; }));
+  await say("Steve, first one B");
+  await say("Steve, submit");
+  assert.ok(submitId);
+  const afterDeadline = performance.now() + 5001;
+  t.mock.method(performance, "now", () => afterDeadline);
+  const response = await post("/api/reviews/" + review.id + "/resolve", {
+    action: "answer", response: "Second", selections: fill()?.selections, voiceSubmitId: submitId,
+  });
+  assert.equal(response.status, 409);
+  assert.equal(cards.at(-1)?.reason, "form-not-open");
+  assert.equal(registry.getReview(review.id)?.status, "pending");
+});
+
+test("a plan capture spanning an ambiguous wall-clock rollback is refused before checking card timing", async t => {
+  const now = Date.now();
+  let elapsed = performance.now();
+  t.mock.method(performance, "now", () => elapsed);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const router = registry.voiceRouter!;
+  router.reset();
+  const { fill } = await form(1);
+  elapsed += 20;
+  t.mock.timers.tick(20);
+  const capturedAt = Date.now();
+  await say("Steve, first one A");
+  elapsed += 100;
+  t.mock.timers.setTime(now - 200);
+  question("Which database?");
+  elapsed += 251;
+  t.mock.timers.tick(251);
+  const timing = t.mock.method(router.openCards, "captureTiming");
+  await router.accept({ id: "ambiguous-fill", text: "Steve, first one B", capturedAt, backend: "fluidaudio", words: [] });
+  assert.equal(timing.mock.callCount(), 0);
+  assert.equal(cards.at(-1)?.detail, "The open card changed. Say it again.");
+  assert.deepEqual(fill()?.selections[0]?.selected, ["a"]);
+});
+
+test("a fill captured before submit but routed after token issuance revokes the stale draft", async t => {
+  const now = mockCaptureClock(t);
+  const { review, fill } = await form(1);
+  let submitId = "";
+  t.after(registry.subscribe(event => { if (event.type === "voice_form_submit") submitId = event.submitId; }));
+  await say("Steve, first one A");
+  const stale = fill()?.selections;
+  t.mock.timers.tick(200);
+  await say("Steve, submit", "original-submit");
+  assert.ok(submitId);
+  await registry.voiceRouter!.accept({ id: "delayed-fill", capturedAt: now + 100, text: "Steve, first one B", backend: "fluidaudio", words: [] });
+  const resolve = (selections: typeof stale) => post("/api/reviews/" + review.id + "/resolve", {
+    action: "answer", response: "Cache choice", selections, voiceSubmitId: submitId,
+  });
+  assert.equal((await resolve(stale)).status, 409);
+  assert.match(cards.findLast(c => c.id === "original-submit")?.detail ?? "", /say .*submit.* again/i);
+  assert.equal(registry.getReview(review.id)?.status, "pending");
+  await say("Steve, submit");
+  assert.equal((await resolve(fill()?.selections)).status, 200);
+  assert.deepEqual(registry.getReview(review.id)?.selections?.[0]?.selected, ["b"]);
+});
+
 test("fills stay outside cancel and correction order and clear on opt-out", async t => {
   mockCaptureClock(t);
   const { fill } = await form(2);

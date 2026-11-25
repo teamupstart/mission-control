@@ -36,6 +36,9 @@ export async function formChoices(review: ReviewItem, words: string, decider: Vo
   return selections;
 }
 
+const SUBMIT_TIMEOUT_MS = 5000;
+type SubmitRefusal = (reason?: number | "matching") => void;
+
 export class VoicePlanForms {
   private readonly fills = new Map<string, VoiceFormFill>();
   private readonly observations = new Map<string, {
@@ -44,7 +47,13 @@ export class VoicePlanForms {
     matching: Set<number>;
   }>();
   private sequence = 0;
-  private readonly submits = new Map<string, { reviewId: string; timer: NodeJS.Timeout; refuse(missing?: number): void }>();
+  private readonly submits = new Map<string, {
+    reviewId: string;
+    capture: number;
+    expiresAt: number;
+    timer: NodeJS.Timeout;
+    refuse: SubmitRefusal;
+  }>();
 
   observed(reviewId: string) {
     const previous = this.observations.get(reviewId);
@@ -61,6 +70,10 @@ export class VoicePlanForms {
   /** Bind an asynchronous option lookup to this form's lifetime and the order of speech.
    * An older lookup may still fill a different decision, but cannot undo a newer pick. */
   beginFill(reviewId: string, capture: number) {
+    // A transcript can arrive out of capture order while the dashboard is sending its draft.
+    for (const [id, submit] of this.submits) {
+      if (submit.reviewId === reviewId && capture <= submit.capture) this.refuse(id, "matching");
+    }
     const observation = this.observations.get(reviewId);
     const latest = observation?.latest;
     const sequence = ++this.sequence;
@@ -84,10 +97,11 @@ export class VoicePlanForms {
 
   get(reviewId: string) { return this.fills.get(reviewId); }
 
-  request(reviewId: string, refuse: (missing?: number) => void) {
+  request(reviewId: string, capture: number, refuse: SubmitRefusal) {
     const id = crypto.randomUUID();
-    const timer = setTimeout(() => this.refuse(id), 5000).unref();
-    this.submits.set(id, { reviewId, timer, refuse });
+    const expiresAt = performance.now() + SUBMIT_TIMEOUT_MS;
+    const timer = setTimeout(() => this.refuse(id), SUBMIT_TIMEOUT_MS).unref();
+    this.submits.set(id, { reviewId, capture, expiresAt, timer, refuse });
     return id;
   }
 
@@ -96,13 +110,17 @@ export class VoicePlanForms {
     if (!pending || pending.reviewId !== reviewId) return false;
     clearTimeout(pending.timer);
     this.submits.delete(id);
+    if (performance.now() >= pending.expiresAt) {
+      pending.refuse();
+      return false;
+    }
     return true;
   }
 
-  refuse(id: string, missing?: number) {
+  refuse(id: string, reason?: number | "matching") {
     const pending = this.submits.get(id);
     if (!pending || !this.take(id, pending.reviewId)) return false;
-    pending.refuse(missing);
+    pending.refuse(reason);
     return true;
   }
 
@@ -110,12 +128,17 @@ export class VoicePlanForms {
     this.fills.delete(reviewId);
     clearTimeout(this.observations.get(reviewId)?.timer);
     this.observations.delete(reviewId);
-    for (const id of this.submits.keys()) this.take(id, reviewId);
+    for (const [id, pending] of this.submits) {
+      if (pending.reviewId !== reviewId) continue;
+      clearTimeout(pending.timer);
+      this.submits.delete(id);
+    }
   }
 
   clear() {
     for (const reviewId of this.observations.keys()) this.settled(reviewId);
-    for (const [id, pending] of this.submits) this.take(id, pending.reviewId);
+    for (const pending of this.submits.values()) clearTimeout(pending.timer);
+    this.submits.clear();
     this.fills.clear();
   }
 }

@@ -3,7 +3,7 @@ import test from "node:test";
 import { INBOX_ACTIONS } from "../src/shared/inbox.ts";
 import { spokenInboxAction } from "../src/shared/voice-inbox.ts";
 import type { DrawnVoiceCard, VoiceInboxEvent } from "../src/shared/voice-answers.ts";
-import { act, cards, post, queued, registry, reports, say } from "./helpers/voice-http.ts";
+import { act, cards, post, queued, registry, reports, reviews, say } from "./helpers/voice-http.ts";
 import { mockCaptureClock, put } from "./helpers/voice-question.ts";
 import { mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -104,6 +104,46 @@ test("mark read cancels, refuses ambiguity, requests the drawn button, and reads
   await say("Steve, mark read", "closed-inbox");
   assert.equal((await act("closed-inbox", "send-now")).status, 200);
   assert.equal(reports.get(other.id)?.readBy, "mark-read");
+});
+
+test("speech within the open-card observation interval cannot fill, submit or run a card action", async t => {
+  const now = mockCaptureClock(t);
+  const start = performance.now();
+  const router = registry.voiceRouter!;
+  const review = reviews.create("sdk:Steve", "plan-decisions", "Plan", "Choose", [
+    { id: "d", question: "Store?", options: [{ id: "a", label: "SQLite" }] },
+  ]);
+  const windowId = "uncertain-inbox";
+  t.after(router.openCards.connect(windowId));
+  t.mock.timers.tick(300);
+  const response = await put("/api/voice/open-cards", { windowId, focused: true, cards: [
+    { kind: "plan", id: review.id, sessionId: "sdk:Steve", focused: false },
+    { kind: "stuck", id: "sdk:Steve", sessionId: "sdk:Steve", focused: true, actions: ["nudge"] },
+  ] }, { "x-voice-cards-earliest-at-ms": String(Math.floor(start) + 50), "x-voice-cards-observed-at-ms": String(Math.floor(start) + 250) });
+  assert.equal(response.status, 200);
+  for (const words of ["Steve, first one A", "Steve, submit", "Steve, nudge"]) {
+    await router.accept({ id: words, capturedAt: now + 150, text: words, backend: "fluidaudio", words: [] });
+    assert.equal(cards.at(-1)?.detail, "The open card changed. Say it again.");
+    assert.equal(router.forms.get(review.id), undefined);
+    assert.equal(router.pendingVoiceActions.length, 0);
+  }
+});
+
+test("clearing voice actions during a claimed inbox action leaves the cleared card retired", async t => {
+  const windowId = "cleared-inbox";
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect(windowId));
+  await put("/api/voice/open-cards", { windowId, focused: true, cards: [
+    { kind: "stuck", id: "sdk:Steve", sessionId: "sdk:Steve", focused: true, actions: ["nudge"] },
+  ] });
+  t.after(registry.subscribe(event => {
+    if (event.type !== "voice_inbox_action") return;
+    assert.ok(router.claimInbox(event.requestId));
+    router.clearActionsAndHistory();
+  }));
+  await say("Steve, nudge", "clear-before-receipt");
+  assert.equal(await router.sendNow("clear-before-receipt"), false);
+  assert.deepEqual(cards.filter(c => c.id === "clear-before-receipt").map(c => c.state), ["pending"]);
 });
 
 test("Mark read uses the open report's task across sessions and only the current author with the inbox closed", async t => {

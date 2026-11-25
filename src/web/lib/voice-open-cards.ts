@@ -112,7 +112,9 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
     window.addEventListener("voice-confirm-focus", confirm);
     const inboxEvent = (event: Event) => {
       const message = (event as CustomEvent<VoiceInboxEvent>).detail;
-      if (dashboard && message.windowId === windowId) void receiveInboxEvent(message, cardClock).catch(() => {});
+      if (dashboard && message.windowId === windowId) void receiveInboxEvent(message, cardClock).catch(() => {
+        console.warn("Voice event handler failed", message.type, message.type === "voice_inbox_action" ? message.requestId : message.reviewId);
+      });
     };
     window.addEventListener("voice-inbox-event", inboxEvent);
     return () => {

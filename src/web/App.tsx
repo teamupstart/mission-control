@@ -656,7 +656,7 @@ export function App(): React.JSX.Element {
     onReply: async (report, text) => {
       const result = await api.replyToReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not send the reply";
-      clearReportDraft(report.rootId);
+      clearReportDraft(report.rootId, text);
       setOpenReportId((current) => (current === report.id ? null : current));
       refreshPinned(report.id);
       return null;
@@ -664,7 +664,7 @@ export function App(): React.JSX.Element {
     onFollowUp: async (report, text) => {
       const result = await api.followUpReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not start the follow-up task";
-      clearReportDraft(report.rootId);
+      clearReportDraft(report.rootId, text);
       setOpenReportId((current) => (current === report.id ? null : current));
       refreshPinned(report.id);
       return null;

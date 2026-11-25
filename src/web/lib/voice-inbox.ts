@@ -27,7 +27,21 @@ export function drawnVoiceCards() {
 }
 
 /** Live button callbacks accept dictated text without overwriting the operator's parked draft. */
-export const voiceButtonActions = new WeakMap<HTMLButtonElement, (text: string) => void>();
+export const voiceButtonActions = new WeakMap<HTMLButtonElement, (text: string) => void | Promise<void>>();
+const inFlight = new WeakSet<HTMLButtonElement>();
+
+async function postInboxReceipt(id: string, stage: "claim" | "complete", invoked?: boolean): Promise<boolean> {
+  try {
+    const response = await fetch(`/api/voice/inbox-actions/${id}/${stage}`, { method: "POST",
+      signal: AbortSignal.timeout(2 * VOICE_INBOX_ACTION_TIMEOUT_MS),
+      ...(invoked !== undefined && { headers: { "content-type": "application/json" }, body: JSON.stringify({ invoked }) }) });
+    if (response.ok) return true;
+    console.warn("voice_inbox_action", id, stage, response.status);
+  } catch {
+    console.warn("voice_inbox_action", id, stage, "request failed");
+  }
+  return false;
+}
 
 export async function receiveInboxEvent(event: VoiceInboxEvent, clock: VoiceCardClock) {
   if (!document.hasFocus() || document.hidden) return;
@@ -57,25 +71,27 @@ export async function receiveInboxEvent(event: VoiceInboxEvent, clock: VoiceCard
   } else {
     const selector = `button[data-voice-action="${event.action}"]`;
     const button = card.querySelector<HTMLButtonElement>(selector);
-    if (!button || !voiceButtonActions.has(button)) return;
-    const path = `/api/voice/inbox-actions/${event.requestId}`;
+    if (!button || !voiceButtonActions.has(button) || inFlight.has(button)) return;
     // Start before sending so a stalled claim response cannot invoke an expired action.
     const deadline = performance.now() + VOICE_INBOX_ACTION_TIMEOUT_MS;
-    const response = await fetch(path + "/claim", { method: "POST" });
-    if (!response.ok) return;
-    let invoked = false;
+    inFlight.add(button);
     try {
-      if (performance.now() < deadline && document.hasFocus() && !document.hidden &&
-          findCard() === card && card.querySelector(selector) === button) {
-        const callback = voiceButtonActions.get(button);
+      if (!await postInboxReceipt(event.requestId, "claim")) return;
+      const callback = performance.now() < deadline && document.hasFocus() && !document.hidden &&
+        findCard() === card && card.querySelector(selector) === button ? voiceButtonActions.get(button) : undefined;
+      let invoked = false;
+      let work: void | Promise<void> = undefined;
+      try {
         if (callback) {
-          callback(event.text);
+          work = callback(event.text);
           invoked = true;
         }
+      } finally {
+        // Acknowledge invocation before a slow action finishes. Hold the button through both.
+        await Promise.all([work, postInboxReceipt(event.requestId, "complete", invoked)]);
       }
     } finally {
-      await fetch(path + "/complete", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ invoked }) });
+      inFlight.delete(button);
     }
   }
 }

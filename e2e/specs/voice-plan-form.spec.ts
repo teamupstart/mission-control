@@ -1,8 +1,46 @@
+import type { Route } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, postCachePlan, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say } from "../fixtures/voice.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER } from "../../src/shared/voice-answers.ts";
+
+test("an earlier spoken change arriving during submit rejects the stale snapshot and a retry sends the updated choice", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const plan = await postCachePlan(daemon, steve);
+  const reported = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().cards.some((c: { id: string }) => c.id === plan));
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  await reported;
+  const dialog = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(dialog);
+  const card = dialog.locator(".review-plan-decisions");
+  await say(daemon, "Steve, first one B, second one A, third one A");
+  await expect(card.locator(".pd-ord.is-voice")).toHaveCount(3);
+  const capturedAt = Date.now();
+  const resolvePath = `/api/reviews/${plan}/resolve`;
+  const held = Promise.withResolvers<Route>();
+  await page.route("**" + resolvePath, route => { held.resolve(route); }, { times: 1 });
+  await say(daemon, "Steve, submit");
+  const stale = await held.promise;
+  expect(stale.request().postDataJSON().selections[0].selected).toEqual(["b"]);
+  await say(daemon, "Steve, first one A", { capturedAt });
+  await expect(card.getByRole("radio", { name: /SQLite/ })).toBeChecked();
+  const refused = page.waitForResponse(r => r.url().endsWith(resolvePath));
+  await stale.continue();
+  expect((await refused).status()).toBe(409);
+  const retry = page.getByRole("status").filter({ hasText: /When the selection appears, say .*submit.* again/ });
+  await expect(retry).toBeVisible();
+  await captureCard(retry, "earlier-fill-submit-retry");
+  await expect(card.getByRole("button", { name: "Submit", exact: true })).toBeEnabled();
+  const saved = page.waitForResponse(r => r.url().endsWith(resolvePath));
+  await say(daemon, "Steve, submit");
+  expect((await saved).ok()).toBe(true);
+  const review = await (await page.request.get(daemon.baseURL + "/api/reviews/" + plan)).json();
+  expect(review.status).toBe("answered");
+  expect(review.selections[0].selected).toEqual(["a"]);
+});
 
 test("a delayed voice fill preserves a newer manual choice and submits the other spoken choices", async ({ dashboard: page, daemon }) => {
   await page.setViewportSize({ width: 1500, height: 1500 });

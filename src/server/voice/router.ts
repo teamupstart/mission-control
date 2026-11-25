@@ -543,6 +543,7 @@ export class VoiceRouter {
       return true;
     };
     const submit = /^submit[.!?]*$/iu.test(body);
+    const eligibleCapture = (at: number) => Number.isFinite(at) && this.openCards.captureTiming(time.openedAt, at) === "eligible";
     const planCommand = (submit || isFormChoice(body)) && inbox.formsEnabled();
     const plan = planCommand && report ? planVoiceTarget(report.cards, address) : undefined;
     const forms = planCommand ? inbox.forms() : [];
@@ -565,15 +566,15 @@ export class VoiceRouter {
           inbox.formsEnabled() && inbox.forms().some(f => f.id === form.id);
       };
       const capturedAtMonotonicMs = this.questionTime(time);
-      if (this.openCards.captureTiming(time.openedAt, capturedAtMonotonicMs) === "before" || !Number.isFinite(capturedAtMonotonicMs)) return notice("The open card changed. Say it again.", "question-notice");
+      if (!eligibleCapture(capturedAtMonotonicMs)) return notice("The open card changed. Say it again.", "question-notice");
       entry.rule = submit ? "form-submit" : "form-fill";
       entry.outcome = "control";
       if (submit) {
-        if (this.forms.isMatching(form.id)) {
-          return notice("Still matching a plan choice. When the selection appears, say “" + name + ", submit” again.", "question-notice");
-        }
-        const submitId = this.forms.request(form.id, missing => {
+        const retry = () => notice("Still matching a plan choice. When the selection appears, say “" + name + ", submit” again.", "question-notice");
+        if (this.forms.isMatching(form.id)) return retry();
+        const submitId = this.forms.request(form.id, capturedAtMonotonicMs, missing => {
           if (missing === undefined) notOpen();
+          else if (missing === "matching") retry();
           else notice("Not sent. The " + spokenOrdinal(missing) + " one has no answer yet. Say “" + name + ", " + spokenOrdinal(missing) + " one A”.", "form-incomplete");
         });
         inbox.emit({ type: "voice_form_submit", address, windowId, reviewId: form.id, submitId });
@@ -622,7 +623,7 @@ export class VoiceRouter {
     }
     if (!item.inboxAction) {
       if (!actionCard || !windowId || (actionCard.kind !== "report" && actionCard.kind !== "stuck")) return false;
-      if (this.openCards.captureTiming(time.openedAt, this.questionTime(time)) === "before") return notice("The open card changed. Say it again.", "question-notice");
+      if (!eligibleCapture(this.questionTime(time))) return notice("The open card changed. Say it again.", "question-notice");
       const action = spokenInboxAction(actionCard.actions ?? [], body, !!reply);
       if (!action || action.action === "stop") return false;
       const { kind, id } = actionCard;
@@ -1291,7 +1292,9 @@ export class VoiceRouter {
     this.take(item);
     if (this.state().mode === "off") return false;
     if (item.inboxAction) {
+      const signal = this.lifetime.signal;
       const result = await item.inboxAction().catch(() => "unavailable" as const);
+      if (signal.aborted) return false;
       const ok = result === "invoked";
       item.entry.outcome = ok ? "sent" : "failed";
       this.publish({ ...item.card, state: item.entry.outcome, deadline: null, detail: inboxActionDetails[result] });

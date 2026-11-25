@@ -315,6 +315,53 @@ test("closing a Report while its accepted Mark read claim is in flight fails the
   await captureCard(page, "closed-report-claim");
 });
 
+test("overlapping dictated replies claim one button, preserve its typed draft, and expose delivery failures without dictation", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const report = await postReport(daemon, steve, "Two build notes");
+  const card = await openReportCard(page, report);
+  const typed = "Keep these notes for later";
+  await card.getByRole("textbox").fill(typed);
+  const warnings: string[] = [];
+  page.on("console", msg => { if (msg.type() === "warning") warnings.push(msg.text()); });
+  const path = "**/api/voice/inbox-actions/*/";
+  const broken = "Retry the first build";
+  await page.route(path + "claim", route => route.abort("failed"), { times: 1 });
+  await say(daemon, "reply, " + broken);
+  await expect.poll(() => warnings.some(w => w.includes("voice_inbox_action") && w.includes("claim"))).toBe(true);
+  expect(warnings.join(" ")).not.toContain(broken);
+
+  const claims: Route[] = [];
+  await page.route(path + "claim", route => { claims.push(route); });
+  const sends: string[] = [];
+  // Keep the report in the inbox after the accepted send so its parked draft can be reopened.
+  await page.route(`**/api/reports/${report.id}/reply`, route => {
+    sends.push(route.request().postDataJSON().text);
+    return route.fulfill({ json: { ok: true } });
+  });
+  await say(daemon, "reply, Check the compiler");
+  await expect.poll(() => claims.length).toBe(1);
+  const secondEvent = page.evaluate(() => new Promise<void>(resolve => {
+    const onEvent = (event: Event) => {
+      if ((event as CustomEvent).detail.type !== "voice_inbox_action") return;
+      window.removeEventListener("voice-inbox-event", onEvent);
+      resolve();
+    };
+    window.addEventListener("voice-inbox-event", onEvent);
+  }));
+  await say(daemon, "reply, Check the build log");
+  await secondEvent;
+  await page.route(path + "complete", route => route.fulfill({ status: 503 }), { times: 1 });
+  await claims[0]!.continue();
+  await expect.poll(() => sends).toEqual(["Check the compiler"]);
+  await expect.poll(() => warnings.some(w => w.includes("voice_inbox_action") && w.includes("complete"))).toBe(true);
+  expect(claims).toHaveLength(1);
+  expect(warnings.join(" ")).not.toContain("Check the compiler");
+  await card.getByRole("button", { name: report.title }).click();
+  await expect(card.getByRole("textbox")).toHaveValue(typed);
+  await captureCard(card, "dictated-reply-preserves-draft");
+});
+
 test("spoken Publish as scout archives the attachment, Reply delivers its words, and Mute hides the author's unread report", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 1);
   const steve = await runningAgent(page, daemon, "Steve");
@@ -397,7 +444,18 @@ test("dictated follow-up instructions start a new task for an ended session's re
   const complete = await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/complete", { data: { outcome: "Diagnosed" } });
   expect(complete.ok(), await complete.text()).toBe(true);
   const card = await openReportCard(page, report);
-  await expect(card.getByRole("textbox", { name: "Instructions for the follow-up task" })).toBeVisible();
+  const textbox = card.getByRole("textbox", { name: "Instructions for the follow-up task" });
+  const parked = "Investigate the separate packaging failure";
+  await textbox.fill(parked);
+  // Hold the report in the inbox for one accepted response, then exercise the real follow-up.
+  const followUpPath = `**/api/reports/${report.id}/follow-up`;
+  await page.route(followUpPath, route => route.fulfill({ json: { ok: true } }), { times: 1 });
+  const accepted = page.waitForResponse(res => res.url().endsWith(`/api/reports/${report.id}/follow-up`));
+  await say(daemon, "reply, Check only the unit tests");
+  expect((await accepted).request().postDataJSON().text).toBe("Check only the unit tests");
+  await expect(textbox).toBeHidden();
+  await card.getByRole("button", { name: report.title }).click();
+  await expect(textbox).toHaveValue(parked);
   const instructions = "Rebuild the addon and verify the tests";
   await say(daemon, "reply, " + instructions);
   await expect.poll(async () => (await storedReport(daemon, report.id)).readBy, { timeout: 30_000 }).toBe("follow-up");

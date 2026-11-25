@@ -1389,7 +1389,9 @@ A named command selects that agent’s open plan even when a Report
 has focus. If the agent has multiple open plans, focus the one you want. With the form focused, “reply” works in place of the name.
 
 Say “Steve, submit” or click Submit to send the current draft. If a spoken choice is still
-being matched, wait for the selection to appear and say “Steve, submit” again. An incomplete form marks the
+being matched, wait for the selection to appear and say “Steve, submit” again. The same
+retry is required if an earlier spoken choice reaches the form while Submit is in progress.
+An incomplete form marks the
 first unanswered decision in amber and shows how to fill it. Closing the inbox keeps the
 draft. With the plan still pending, a named choice or submit while the form is closed asks
 you to reopen it. The draft stays as it was, even if a Report reply box has focus.
@@ -1409,7 +1411,8 @@ keyboard focus. If several open cards offer the same command, focus the one you 
 A named inbox command that needs a visible control gives an unavailable notice when no
 matching card is open, including when the inbox is closed.
 Say “reply, …” with a card
-focused to use its reply, follow-up, or message control. The cancel window applies to
+focused to use its reply, follow-up, or message control. A dictated reply or follow-up keeps
+any different text you have typed in the report. The cancel window applies to
 inbox actions. The voice card confirms the action after the dashboard invokes the button.
 If the card closes or the control disappears before then, the voice card reports that the
 action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.

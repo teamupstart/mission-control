@@ -201,7 +201,7 @@ function ReportAnswer({
   const run = (send: (text: string) => Promise<string | null>, text: string) => {
     setBusy(true);
     setFailure(null);
-    void send(text).then((error) => {
+    return send(text).then((error) => {
       setBusy(false);
       setFailure(error);
     });

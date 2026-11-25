@@ -50,6 +50,7 @@ import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 import { fetchVoiceCardTime, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
 import { applyVoiceIndicatorSelection, refreshUiSkin } from "./lib/uiConfig.ts";
+import { invalidateSessionSettingsAccess } from "./lib/session-settings-access.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -542,6 +543,7 @@ export function useEventStream(): MissionState {
           windowId = msg.windowId;
           setVoiceWindowId(windowId);
           void refreshUiSkin();
+          invalidateSessionSettingsAccess();
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -985,6 +987,9 @@ export function useEventStream(): MissionState {
           break;
         case "ui_skin_changed":
           void refreshUiSkin();
+          break;
+        case "session_settings_access_changed":
+          invalidateSessionSettingsAccess();
           break;
         case "settings_restored":
           void refreshUiSkin();

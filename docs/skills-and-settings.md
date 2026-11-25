@@ -774,13 +774,15 @@ selection because neither harness has a verified frozen-isolation mechanism. See
 
 ## Let a session change the theme
 
-Ask a registered session **“Switch Mission Control to Daylight.”** The session can use
+Enable **Session settings through MCP** under **Settings > Feature flags** to opt in. Then ask a
+registered session **“Switch Mission Control to Daylight.”** The session can use
 `mission_settings` to find “theme”, read `ui.skin` and its choices, and set it to `daylight`.
 Ask **“Which theme am I using?”** for a read. The result applies to this installation and
 open dashboards repaint as soon as the change is saved.
 
-The skin is the first editable setting available through this tool. Access starts enabled
-when the installation has no saved preference. To revoke access, turn off **Allow sessions to access Mission Control settings** in **Settings > Trust**. The next
-request from any session, including one already running, is refused. This choice survives
-restart and settings snapshot restores. You can re-enable it in Trust. The rollout switch
-in **Settings > Feature flags** can also disable the tool. Both must be on to use it.
+The skin is the first editable setting. To revoke access, turn off **Allow sessions to access
+Mission Control settings** in **Settings > Trust** in the desktop app. The next request from any
+session is refused, including requests from sessions that are already running. The choice survives
+restart and settings snapshot restores. You can re-enable access with the same desktop control.
+Browser dashboards show the active choice. Both the preview flag and the Trust preference must be
+on to use the tool.

@@ -53,17 +53,33 @@ const writeGeneration = new Map<keyof UiConfig, number>();
 let confirmedSkin = current.skin;
 let skinReadGeneration = 0;
 let skinRefreshPending = false;
+const SKIN_RETRY_MS = 1_000;
+const SKIN_MAX_RETRY_MS = 30_000;
+let skinRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSkinWrites = 0;
 let skinWriteTail = Promise.resolve();
 
 /** Fetch just the skin into the live store after a daemon invalidation or reconnect. */
 export async function refreshUiSkin(): Promise<void> {
+  if (skinRetryTimer !== null) clearTimeout(skinRetryTimer);
+  skinRetryTimer = null;
   const generation = ++skinReadGeneration;
   skinRefreshPending = true;
+  await readUiSkin(generation, SKIN_RETRY_MS);
+}
+
+async function readUiSkin(generation: number, delay: number): Promise<void> {
   if (!hydrated || pendingSkinWrites > 0) return;
-  skinRefreshPending = false;
   const view = await fetchUiSkin(AbortSignal.timeout(5000));
-  if (!view || generation !== skinReadGeneration || !isSkinId(view.skin)) return;
+  if (generation !== skinReadGeneration) return;
+  if (!view || !isSkinId(view.skin)) {
+    skinRetryTimer = setTimeout(() => {
+      skinRetryTimer = null;
+      if (generation === skinReadGeneration) void readUiSkin(generation, Math.min(delay * 2, SKIN_MAX_RETRY_MS));
+    }, delay);
+    return;
+  }
+  skinRefreshPending = false;
   confirmedSkin = view.skin;
   if (current.skin !== confirmedSkin) commit({ ...current, skin: confirmedSkin });
 }

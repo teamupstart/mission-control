@@ -75,7 +75,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     "SESSION_SETTINGS_FLAG_ID", "WORK_UNIT_ID_FLAG_ID",
   ]);
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BUG_FIX_INSPECTOR_FLAG_ID)?.stage, "preview");
-  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_SETTINGS_FLAG_ID)?.stage, "default-on");
+  assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.SESSION_SETTINGS_FLAG_ID)?.stage, "preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BACKGROUND_REASONING_EFFORT_FLAG_ID)?.stage, "preview");
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.MCP_SCHEDULES_FLAG_ID)?.stage, "preview",
     "recurring missions through MCP ships as a preview");

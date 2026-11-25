@@ -42,7 +42,7 @@ export const FEATURE_FLAGS = [
     id: SESSION_SETTINGS_FLAG_ID,
     label: "Session settings through MCP",
     description: "Let registered sessions read and change supported Mission Control settings on your request.",
-    stage: "default-on",
+    stage: "preview",
     keywords: ["settings", "access", "mcp", "mission_settings"],
   },
   {

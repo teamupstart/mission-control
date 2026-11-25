@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +57,21 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   t.after(maintainScoutSessionCredentials(registry));
   let changes = 0;
   t.after(onUiSkinChanged(() => changes++));
-  const app = buildApp({ registry, tasks: {} as TaskManager, reviews: {} as ReviewManager, queues: {} as QueueManager });
+  const clicks = new Map<string, boolean>();
+  const app = buildApp({
+    registry, tasks: {} as TaskManager, reviews: {} as ReviewManager, queues: {} as QueueManager,
+    authorizeSessionSettings: async ({ requestId, enabled }) => {
+      const armed = clicks.get(requestId);
+      clicks.delete(requestId);
+      return armed === enabled;
+    },
+  });
+  const accessChanges: boolean[] = [];
+  t.after(registry.subscribe(event => {
+    if (event.type === "session_settings_access_changed") {
+      accessChanges.push(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess) === true);
+    }
+  }));
   handleRequest = app.fetch;
   const sdk = registry.registerSdkSession({
     id: "sdk:settings", agent: "claude", name: "Theme", cwd: home, agentSessionId: "claude-settings",
@@ -80,9 +95,14 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   const headers = { host: "127.0.0.1", "content-type": "application/json" };
   const mcp = (body: unknown, auth: Record<string, string> = {}) =>
     app.request("/mcp/settings", { method: "POST", headers: { ...headers, ...auth }, body: JSON.stringify(body) });
-  const setAccess = (enabled: boolean, auth: Record<string, string> = {}) => app.request("/api/session-settings-access", {
-    method: "PUT", headers: { ...headers, ...auth }, body: JSON.stringify({ enabled }),
+  const setAccess = (enabled: boolean, requestId?: string, auth: Record<string, string> = {}) => app.request("/api/session-settings-access", {
+    method: "PUT", headers: { ...headers, ...auth }, body: JSON.stringify({ enabled, requestId }),
   });
+  function operatorClick(enabled: boolean) {
+    const requestId = randomUUID();
+    clicks.set(requestId, enabled);
+    return requestId;
+  }
   const token = ensureToken();
   const valid = { "x-harness-token": token, "x-mission-scout-credential": credential(sdk.id) };
 
@@ -90,10 +110,14 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   assert.equal((await mcp(get)).status, 401);
   assert.equal((await mcp(get, { "x-harness-token": token, "x-mission-scout-credential": "forged" })).status, 403);
   assert.equal((await mcp({ ...get, sessionId: sdk.id }, { "x-harness-token": token })).status, 403);
-  assert.equal((await mcp({ ...get, sessionId: "sdk:other" }, valid)).status, 400);
-  assert.equal((await setAccess(false, valid)).status, 403);
+  const inactive = await mcp(get, valid);
+  assert.equal(inactive.status, 403, "the preview starts off on a fresh profile");
+  assert.deepEqual(await inactive.json(), settingsFailure("access_disabled"));
   setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "console" } as never);
-  assert.equal((await mcp(get, valid)).status, 200, "profiles that predate the access preference still work");
+  assert.equal((await mcp(get, valid)).status, 403, "upgrade also keeps access closed before opt-in");
+  applyFeatureFlagIntent({ kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: true });
+  assert.equal((await mcp({ ...get, sessionId: "sdk:other" }, valid)).status, 400);
+  assert.equal((await mcp(get, valid)).status, 200, "opting in opens access when there is no saved opt-out");
 
   const tsx = fileURLToPath(import.meta.resolve("tsx"));
   const source = fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url));
@@ -187,13 +211,28 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   applyFeatureFlagIntent({ kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: false });
   await call(claude, get, "access_disabled");
   applyFeatureFlagIntent({ kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: true });
-  assert.equal((await setAccess(false)).status, 200);
+  const revoke = operatorClick(false);
+  assert.equal((await setAccess(false, revoke)).status, 200);
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess), false);
+  assert.deepEqual(accessChanges, [false]);
+  for (const response of [
+    await setAccess(true),
+    await setAccess(true, randomUUID(), { origin: `http://127.0.0.1:${address.port}`, "x-mission-operation-actor": "human" }),
+    await setAccess(true, operatorClick(true), valid),
+    await setAccess(true, revoke),
+  ]) assert.equal(response.status, 403);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess), false);
+  assert.deepEqual(accessChanges, [false], "refusals publish no access update");
   assert.ok(!SETTINGS_CONFIG_BACKUP_ENTRIES.some(entry => entry.key === APP_CONFIG_ENTRIES.sessionSettingsAccess.key));
   for (const request of [find, get, { ...set, value: "paper" }]) await call(claude, request, "access_disabled");
   await assert.rejects(piTool.execute("revoked", get), /access_disabled/);
   assert.equal(getUiConfig().skin, "daylight");
-  assert.equal((await setAccess(true)).status, 200);
+  applyFeatureFlagIntent({ kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: false });
+  applyFeatureFlagIntent({ kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: true });
+  await call(claude, get, "access_disabled");
+  assert.equal((await setAccess(true, operatorClick(true))).status, 200);
+  assert.equal((await setAccess(true, operatorClick(true))).status, 200);
+  assert.deepEqual(accessChanges, [false, true], "a repeated save does not emit a duplicate update");
   assert.equal((await call(claude, get)).ok, true);
 
   // Simulate access being withdrawn after the request passed the gate and began reading its body.

@@ -1,14 +1,13 @@
 import type { UtilityProcess } from "electron";
 import type { z } from "zod";
 import {
-  ResidentLaunchAuthorizationSchema, SessionControlAuthorizationSchema,
-  type ResidentLaunchAuthorizationReply, type SessionControlAuthorizationReply,
+  ResidentLaunchAuthorizationSchema, SessionControlAuthorizationSchema, SessionSettingsAuthorizationSchema,
+  type ResidentLaunchAuthorizationReply, type SessionControlAuthorizationReply, type SessionSettingsAuthorizationReply,
 } from "../shared/session-control-authorization.ts";
 
 /**
  * One kind of trusted click the shell arms and the daemon consumes: the exact input it was armed
- * with, single-use, for 15 seconds. Both session-control authorities - the session menu's
- * setting and a resident's Launch - are this, and differ only in what a consumption must match.
+ * with, single-use, for 15 seconds. Each operator action has its own match and arm store.
  */
 function clickAuthorizations<T extends { requestId: string }>(
   schema: z.ZodType<T>,
@@ -38,12 +37,18 @@ function clickAuthorizations<T extends { requestId: string }>(
 
 const sessionControl = clickAuthorizations(SessionControlAuthorizationSchema,
   (armed, asked) => armed.sessionId === asked.sessionId && armed.enabled === asked.enabled);
+const sessionSettings = clickAuthorizations(SessionSettingsAuthorizationSchema,
+  (armed, asked) => armed.enabled === asked.enabled);
 const residentLaunch = clickAuthorizations(ResidentLaunchAuthorizationSchema,
   (armed, asked) => armed.profileId === asked.profileId && armed.revision === asked.revision);
 
 /** Called only by IPC from the main dashboard's trusted-click preload capability. */
 export function armSessionControlAuthorization(value: unknown, now = Date.now()): boolean {
   return sessionControl.arm(value, now);
+}
+
+export function armSessionSettingsAuthorization(value: unknown, now = Date.now()): boolean {
+  return sessionSettings.arm(value, now);
 }
 
 /**
@@ -57,6 +62,7 @@ export function armResidentLaunchAuthorization(value: unknown, now = Date.now())
 export function serveSessionControlAuthorization(child: UtilityProcess): void {
   // Restarting the daemon must not inherit a click intended for its predecessor.
   sessionControl.clear();
+  sessionSettings.clear();
   residentLaunch.clear();
   child.on("message", (value: unknown) => {
     if (!value || typeof value !== "object") return;
@@ -65,6 +71,9 @@ export function serveSessionControlAuthorization(child: UtilityProcess): void {
     if (type === "mission:session-control-authorization") {
       const granted = sessionControl.consume(input);
       child.postMessage({ type: "mission:session-control-authorization-reply", id, granted } satisfies SessionControlAuthorizationReply);
+    } else if (type === "mission:session-settings-authorization") {
+      const granted = sessionSettings.consume(input);
+      child.postMessage({ type: "mission:session-settings-authorization-reply", id, granted } satisfies SessionSettingsAuthorizationReply);
     } else if (type === "mission:resident-launch-authorization") {
       const granted = residentLaunch.consume(input);
       child.postMessage({ type: "mission:resident-launch-authorization-reply", id, granted } satisfies ResidentLaunchAuthorizationReply);

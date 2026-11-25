@@ -1,4 +1,4 @@
-import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "@shared/session-control-authorization.ts";
+import type { ResidentLaunchAuthorization, SessionControlAuthorization, SessionSettingsAuthorization } from "@shared/session-control-authorization.ts";
 
 // Kept outside React's refresh boundary, like the public-report click capability.
 const capability = typeof window === "undefined"
@@ -8,6 +8,14 @@ export function canAuthorizeSessionControl(): boolean { return capability !== nu
 
 export function authorizeSessionControl(input: SessionControlAuthorization): boolean {
   return capability !== null && window.missionDesktop?.authorizeSessionControl?.(capability, input) === true;
+}
+
+export function canAuthorizeSessionSettings(): boolean {
+  return capability !== null && typeof window.missionDesktop?.authorizeSessionSettings === "function";
+}
+
+export function authorizeSessionSettings(input: SessionSettingsAuthorization): boolean {
+  return capability !== null && window.missionDesktop?.authorizeSessionSettings?.(capability, input) === true;
 }
 
 /**

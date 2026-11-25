@@ -49,3 +49,44 @@ test("out-of-order skin refreshes preserve newer peer selections, local writes a
   assert.equal(uiConfig().skin, "paper");
   assert.equal(uiConfig().voice, voice);
 });
+
+test("failed skin reads retry with backoff until refreshed or superseded", async (t) => {
+  const reads: Array<(response: Response) => void> = [];
+  t.mock.method(globalThis, "fetch", async (path: string) => {
+    if (path === "/api/ui/config") return Response.json({ configured: true, config: uiConfig() });
+    assert.equal(path, "/api/ui/skin");
+    return new Promise<Response>(resolve => reads.push(resolve));
+  });
+  await hydrateUiConfig();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const busy = () => new Response(null, { status: 503 });
+  const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+  const prior = uiConfig().skin;
+  const pending = refreshUiSkin();
+  reads[0]!(busy());
+  await pending;
+  assert.equal(uiConfig().skin, prior);
+  t.mock.timers.tick(999);
+  assert.equal(reads.length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(reads.length, 2);
+  reads[1]!(busy());
+  await settle();
+  t.mock.timers.tick(1_999);
+  assert.equal(reads.length, 2);
+  t.mock.timers.tick(1);
+  const recovered = prior === "daylight" ? "paper" : "daylight";
+  reads[2]!(Response.json({ skin: recovered }));
+  await settle();
+  assert.equal(uiConfig().skin, recovered);
+
+  const failing = refreshUiSkin();
+  reads[3]!(busy());
+  await failing;
+  const newer = refreshUiSkin();
+  reads[4]!(Response.json({ skin: "default" }));
+  await newer;
+  t.mock.timers.tick(30_000);
+  assert.equal(reads.length, 5, "a new invalidation cancels the previous backoff");
+  assert.equal(uiConfig().skin, "default");
+});

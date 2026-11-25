@@ -4,19 +4,22 @@ import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { SESSION_SETTINGS_FLAG_ID, FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import {
-  SessionSettingsAccessSchema, SETTINGS_BODY_MAX_BYTES, SettingsRequestSchema, settingsFailure,
+  SETTINGS_BODY_MAX_BYTES, SettingsRequestSchema, settingsFailure,
 } from "@shared/settings-mcp.ts";
 import { SESSION_SETTINGS_ACCESS } from "@shared/session-settings-metadata.ts";
+import { SESSION_SETTINGS_DESKTOP_REQUIRED, SessionSettingsAuthorizationSchema } from "@shared/session-control-authorization.ts";
 import { checkToken } from "./auth.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { parseBody } from "./http-body.ts";
 import type { Registry } from "./registry.ts";
 import { sessionControlCaller, sessionControlCallerRefusal } from "./session-control.ts";
+import { sessionSettingsAuthorization, type AuthorizeSessionSettings } from "./session-control-authorization.ts";
 import { dispatchSetting, type SettingDescriptor } from "./settings-dispatcher.ts";
 import { uiSkinSetting } from "./ui-config.ts";
 
 const accessEntry = APP_CONFIG_ENTRIES.sessionSettingsAccess;
+const accessWriteSchema = SessionSettingsAuthorizationSchema.partial({ requestId: true });
 
 function sessionSettingsAccess(): boolean {
   const stored = getAppConfig(accessEntry);
@@ -33,7 +36,9 @@ const catalog: readonly SettingDescriptor[] = [
   } as const] : []),
 ];
 
-export function registerSessionSettingsRoutes(app: Hono, registry: Registry): void {
+export function registerSessionSettingsRoutes(
+  app: Hono, registry: Registry, authorizeWrite: AuthorizeSessionSettings = sessionSettingsAuthorization(),
+): void {
   function authorize(c: Context) {
     try {
       if (!sessionControlCaller(registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER))) {
@@ -73,9 +78,16 @@ export function registerSessionSettingsRoutes(app: Hono, registry: Registry): vo
     onError: c => c.json({ error: "Settings access request is too large." }, 413),
   }), async c => {
     if (sessionControlCallerRefusal(c) !== null) return c.json({ error: "Only the operator can change session settings access." }, 403);
-    const parsed = await parseBody(c, SessionSettingsAccessSchema, { strict: true });
+    const parsed = await parseBody(c, accessWriteSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    setAppConfig(accessEntry, parsed.data.enabled);
-    return c.json(parsed.data);
+    const { enabled, requestId } = parsed.data;
+    if (!requestId || !await authorizeWrite({ enabled, requestId })) {
+      return c.json({ error: SESSION_SETTINGS_DESKTOP_REQUIRED }, 403);
+    }
+    if (sessionSettingsAccess() !== enabled) {
+      setAppConfig(accessEntry, enabled);
+      registry.emitSessionSettingsAccessChanged();
+    }
+    return c.json({ enabled });
   });
 }

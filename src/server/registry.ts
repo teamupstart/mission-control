@@ -1682,6 +1682,10 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "ui_skin_changed" });
   }
 
+  emitSessionSettingsAccessChanged(): void {
+    this.emitEvent({ type: "session_settings_access_changed" });
+  }
+
   emitVoiceIndicators(indicators: string[]): void {
     if (!featureEnabled(VOICE_FLAG)) return;
     const selection = { confirmation: storedVoiceUi().confirmation, indicators };

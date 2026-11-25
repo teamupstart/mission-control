@@ -4284,6 +4284,7 @@ export type ServerEvent =
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   /** Bounded invalidation for the shared dashboard skin, with no config values on the stream. */
   | { type: "ui_skin_changed" }
+  | { type: "session_settings_access_changed" }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session

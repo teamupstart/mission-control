@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { armSessionControlAuthorization, serveSessionControlAuthorization } from "../src/main/session-control-authorization.ts";
-import { sessionControlAuthorization } from "../src/server/session-control-authorization.ts";
+import { armSessionControlAuthorization, armSessionSettingsAuthorization, serveSessionControlAuthorization } from "../src/main/session-control-authorization.ts";
+import { sessionControlAuthorization, sessionSettingsAuthorization } from "../src/server/session-control-authorization.ts";
 import type { SessionControlAuthorizationMessage } from "../src/shared/session-control-authorization.ts";
 
 function channel() {
@@ -41,6 +41,23 @@ test("desktop input is validated and daemon replacement clears pending clicks", 
   assert.equal(armSessionControlAuthorization(input), true);
   const replacement = channel();
   assert.equal(await replacement.authorize(input), false);
+});
+
+test("session settings consumes only an exact desktop choice, never a session-control click", async () => {
+  const c = channel();
+  const authorize = sessionSettingsAuthorization(c.port as never);
+  const input = { requestId: randomUUID(), enabled: false };
+  assert.equal(armSessionControlAuthorization({ ...input, sessionId: "sdk:controller" }), true);
+  assert.equal(await authorize(input), false);
+  assert.equal(await sessionSettingsAuthorization(undefined)(input), false);
+  assert.equal(armSessionSettingsAuthorization(input, Date.now() - 15_001), true);
+  assert.equal(await authorize(input), false);
+  assert.equal(armSessionSettingsAuthorization(input), true);
+  assert.equal(await authorize({ ...input, enabled: true }), false);
+  assert.equal(await authorize(input), false, "a mismatched choice consumes the click");
+  assert.equal(armSessionSettingsAuthorization(input), true);
+  assert.equal(await authorize(input), true);
+  assert.equal(await authorize(input), false, "a successful write cannot be replayed");
 });
 
 test("no desktop parent, a broken port or a missing correlated reply fails closed", async (t) => {

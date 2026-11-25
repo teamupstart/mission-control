@@ -2692,7 +2692,8 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
-  setSessionSettingsAccess: (enabled: boolean) => put("/api/session-settings-access", { enabled }),
+  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization) =>
+    put("/api/session-settings-access", input),
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 

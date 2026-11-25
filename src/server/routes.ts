@@ -51,7 +51,7 @@ import { followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts"
 import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
-import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import type { AuthorizeSessionControl, AuthorizeSessionSettings } from "./session-control-authorization.ts";
 import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
@@ -1376,6 +1376,7 @@ export interface RouteDeps {
   sdkSessions?: SdkSupervisor;
   /** Private desktop authorization; defaults to the owning utility-process channel. */
   authorizeSessionControl?: AuthorizeSessionControl;
+  authorizeSessionSettings?: AuthorizeSessionSettings;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
@@ -1506,6 +1507,7 @@ export const ROUTE_DEP_NAMES = [
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
+  "authorizeSessionSettings",
   "handoffDeps",
   "launchSessionTerminal",
   "sessionActions",
@@ -1844,6 +1846,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ensembles,
     sdkSessions,
     authorizeSessionControl,
+    authorizeSessionSettings,
     handoffDeps,
     launchSessionTerminal,
     sessionActions,
@@ -9012,7 +9015,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
   });
 
-  registerSessionSettingsRoutes(app, registry);
+  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings);
 
   // --- Dashboard UI preferences (localhost only) ---
   //

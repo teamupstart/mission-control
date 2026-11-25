@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useChordCapture } from "../lib/useChordCapture.ts";
+import { useState } from "react";
 import {
   ACTIONS,
   type ActionId,
   bindingValidationError,
-  chordFromEvent,
   findConflicts,
   formatChord,
   resetAll,
@@ -43,33 +43,17 @@ export function KeyboardPanel(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const conflicts = findConflicts(bindings);
 
-  // Capture the next keystroke for the action being recorded. Capture phase +
-  // stopPropagation so we intercept before the app's global handler (and the overlay's
-  // Escape-to-close) ever sees it.
-  useEffect(() => {
+  useChordCapture(recording !== null, () => setRecording(null), chord => {
     if (!recording) return;
-    const id = recording;
-    function onKey(e: KeyboardEvent): void {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        setRecording(null);
-        return;
-      }
-      const chord = chordFromEvent(e);
-      if (!chord) return; // a lone modifier - keep waiting
-      const validationError = bindingValidationError(bindings, id, chord);
-      if (validationError) {
-        setError(validationError);
-        return;
-      }
-      setBinding(id, chord);
-      setRecording(null);
-      setError(null);
+    const validationError = bindingValidationError(bindings, recording, chord);
+    if (validationError) {
+      setError(validationError);
+      return;
     }
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [bindings, recording]);
+    setBinding(recording, chord);
+    setRecording(null);
+    setError(null);
+  });
 
   function startRecording(id: ActionId): void {
     setError(null);

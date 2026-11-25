@@ -81,7 +81,7 @@ export const VoiceConfigSchema = z.object({
    * none. Nothing registers it before Phase 11, and nothing names it before the shell reports
    * the `hotkey` capability.
    */
-  hotkey: ChordSchema.nullable().default("ctrl+alt+m"),
+  hotkey: ChordSchema.nullable().default("cmd+ctrl+alt+v"),
   autoMuteDuringCalls: z.boolean().default(true),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
@@ -146,7 +146,10 @@ export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPat
 }
 
 /** `POST /api/voice/mute`. */
-export const VoiceMuteRequestSchema = z.object({ muted: z.boolean() }).strict();
+export const VoiceMuteRequestSchema = z.union([
+  z.object({ muted: z.boolean() }).strict(),
+  z.object({ toggle: z.literal(true) }).strict(),
+]);
 
 /** Where a routed message's confirmation card appears (Phases 6 and 12). */
 export const VOICE_CONFIRMATION_PLACEMENTS = ["pill", "toast", "popover"] as const;
@@ -242,6 +245,9 @@ export interface VoiceCapability {
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
 export type VoiceCapabilities = Partial<Record<VoiceCapabilityId, VoiceCapability>>;
 
+/** A failed sample is unavailable until the next poll. Its preference is still editable. */
+export const VOICE_CALL_POLL_RETRY = "Retrying microphone check. ";
+
 export const VOICE_MODEL_STATUSES = ["missing", "downloading", "verifying", "ready", "failed"] as const;
 export type VoiceModelStatus = (typeof VOICE_MODEL_STATUSES)[number];
 
@@ -290,6 +296,8 @@ export const VOICE_MODEL_STATE_NONE: VoiceModelState = Object.freeze({
 export interface VoiceHotkeyError {
   reason: string;
   chordInForce: string | null;
+  /** Set only when this refusal came from an attempt to register a proposed shortcut. */
+  trialId?: string;
 }
 
 /**
@@ -310,6 +318,15 @@ export interface VoiceState {
   capabilities: VoiceCapabilities;
   /** The persisted shortcut, observed in the same snapshot as the shell's registration. */
   configuredHotkey: string | null;
+  /** A replacement to try while the persisted shortcut remains the fallback. */
+  pendingHotkey?: string;
+  pendingHotkeyId?: string;
+  /** The desktop missed the confirmation deadline for this replacement. */
+  expiredHotkey?: string;
+  /** A focused Settings recorder is waiting for the desktop to release its reservation. */
+  recordingHotkey?: true;
+  recordingHotkeyId?: string;
+  recordingHotkeyReady?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
   registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
@@ -425,8 +442,14 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.reasons,
     capabilities,
     state.configuredHotkey,
+    state.pendingHotkey,
+    state.pendingHotkeyId,
+    state.expiredHotkey,
+    state.recordingHotkey,
+    state.recordingHotkeyId,
+    state.recordingHotkeyReady,
     state.registeredHotkey,
-    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
+    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce, state.hotkeyError.trialId] : null,
     canonicalVoiceModel(state.model),
     voice && [voice.engine, voice.id], reason, job && [job.id, job.purpose, job.state, job.cardId],
     entries(catalog.neural), entries(catalog.system), canonicalVoiceModel(model), lastAudition && [lastAudition.id, lastAudition.state],
@@ -466,6 +489,7 @@ export function voiceStateOff(): VoiceState {
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** A capture-only listener's process and the byte it must lock before opening the microphone. */
 export const VOICE_CAPTURE_PID_HEADER = "x-voice-capture-pid";
@@ -513,6 +537,8 @@ export function voiceProtocolMajor(version: string): number {
 }
 
 const VoiceCapabilityReportSchema = z.object({
+  /** The hotkey producer released its reservation for this recorder. */
+  recordingId: z.uuid().optional(),
   available: z.boolean(),
   reason: z.string().max(VOICE_LIMITS.reasonChars).nullable().default(null),
 });
@@ -538,6 +564,7 @@ export const VoiceShellReportSchema = z.object({
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),
+    trialId: z.uuid().optional(),
   }).nullable().default(null),
 });
 export type VoiceShellReport = z.infer<typeof VoiceShellReportSchema>;

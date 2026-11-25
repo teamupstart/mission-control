@@ -145,6 +145,32 @@ test("Accept objective as is ends a paused Goal without changing the objective",
 test.describe("while the latest instruction is still reconciling", () => {
   test.use({ daemonEnv: { MISSION_GOAL_POLL_MS: "20", MISSION_GOAL_REFRESH_MS: "600000" } });
 
+  test("a pending no-PR instruction keeps automatic wrap-up paused", async ({ dashboard, daemon }) => {
+    const sessionId = await dispatch(dashboard, daemon);
+    await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+    const detail = dashboard.locator(".console-detail");
+    const reply = detail.getByPlaceholder(/^Reply to this session/);
+    await expect(reply).toBeEnabled();
+    await reply.fill("Do not open a PR.");
+    await reply.press("Enter");
+    await settled(daemon, sessionId);
+    const path = `/api/sessions/${encodeURIComponent(sessionId)}/goal`;
+    const pending = await api<Goal>(daemon, path);
+    expect(pending.resolvedPromptRevision).toBeLessThan(pending.promptRevision);
+
+    await detail.getByRole("button", { name: "Foreman intent", exact: true }).click();
+    const drawer = dashboard.locator(".foreman-drawer");
+    await drawer.getByRole("button", { name: "Accept objective as is", exact: true }).click();
+    await expect(drawer.getByRole("alert")).toContainText("The operator's handoff instruction is still being reconciled");
+    await expect(drawer.getByText("Automatic wrap-up is paused until this instruction is classified.")).toBeVisible();
+    expect(await api<Goal>(daemon, path)).toEqual(pending);
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("goal-accept-objective");
+      mkdirSync(dir, { recursive: true });
+      await drawer.screenshot({ path: `${dir}pending-handoff.png` });
+    }
+  });
+
   test("a failed or unreachable accept keeps the pause and the control, and a retry succeeds", async ({ dashboard, daemon }) => {
     const sessionId = await dispatch(dashboard, daemon);
     const before = await api<Goal>(daemon, `/api/sessions/${sessionId}/goal`);

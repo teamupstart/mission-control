@@ -2126,12 +2126,21 @@ stored objective's length limit is not shortened to fit. Like any amendment that
 check, it is treated as steering: the objective and its version stay as they were, the drawer
 shows the relationship as **steering** with a rationale that starts "Treated as steering:",
 the instruction reaches the next Workflow run as steering context, and the daemon log records
-which rule failed without quoting the objective. The classifier is also told that a reply
-picking one of the options a session offered is steering. That is guidance to the model, not
-a guarantee: if it still calls the pick an amendment and the amendment passes the check, the
-amendment is accepted; if it fails the check, it is treated as steering as above. An effective
-amendment or replacement updates the Goal and advances its objective version, while steering
-changes only the latest focus.
+which rule failed without quoting the objective. A choice within an already authorized outcome
+is steering. If the objective was to explore mockups and the operator authorizes implementing
+the selected design, the implementation becomes the new completion contract. The opening
+request remains in the Goal history. A preference alone leaves the exploration objective in
+place. If the selection leaves implementation authority ambiguous, reconciliation holds
+automatic wrap-up for a human clarification. An effective amendment or replacement updates the
+Goal and advances its objective version, while steering changes only the latest focus.
+
+The reconciler carries forward requirements for review, evidence and publication that still
+apply. An explicit instruction to stop or reserve review or publication for the operator
+records an operator-only handoff in the objective. Foreman leaves automatic completion pending
+across later changes to the objective. A turn that requests both release and a deliverable
+change keeps the hold. Once the Goal reflects the intended work, send **Resume automatic
+handoff** as its own message to lift the restriction and let Foreman evaluate the next
+completed work cycle.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
 and model are selected in **Settings → [Models](models.md)**;
@@ -2148,7 +2157,8 @@ under the relationship, and the Goal line's hover names it. Pressing it records 
 instruction as steering, oldest first, with the rationale "Accepted by you: the current
 objective is the completion contract." An instruction whose text was lost before it could be
 stored is recorded as "(not captured)". An `unclear` verdict with nothing left pending records
-its own instruction the same way. The relationship becomes **steer**, the latest revision
+its own instruction the same way. A pending instruction that changes handoff authority must
+reconcile before acceptance can confirm an eligible Goal. The relationship becomes **steer**, the latest revision
 counts as resolved, and Foreman judges completion against the objective on its next tick,
 which can claim a bound Workflow. A run frozen afterwards carries those instructions as
 steering. It confirms the contract and never rewrites it: the objective, its version, the

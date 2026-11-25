@@ -398,7 +398,7 @@ import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
-import { resolvedSessionIntent } from "@shared/goal.ts";
+import { isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
@@ -7667,8 +7667,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // work, decide to ask, and then silently drop the question. Creating the row is not a
   // side effect being smuggled in: `ensureQueue` writes cwd/branch and nothing else, an
   // itemless queue renders no item list, and `addItem` already creates one this way.
-  app.post("/api/sessions/:id/queue/wrapup/asked", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
+  const recordWrapupAsk = async (c: Context, sessionId: string, guardedDrain: boolean) => {
+    const session = registry.getSession(sessionId);
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
@@ -7683,11 +7683,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (isAwaiting(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
       return c.json({ error: "This session is awaiting a background process, so it is not finished yet." }, 409);
     }
+    const expected = parsed.data.expectedIntent;
+    if (guardedDrain !== (expected !== undefined) || (guardedDrain ? parsed.data.clearAnswer : parsed.data.retire)) {
+      return c.json({ error: "Wrap-up mode does not match its route" }, 400);
+    }
+    const current = registry.getGoal(session.id);
+    if (expected !== undefined && (expected
+      ? !sessionIntentMatches(current, expected)
+      : current !== null && !isHandoffReleaseOnlyGoal(current))) {
+      return c.json({ error: "Queue completion intent changed" }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
-    queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
+    if (parsed.data.retire) {
+      queues.setWrapupAnswer(key, "foreman:automatic-wrapup-skipped", Date.now(), true);
+    } else {
+      queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
+    }
     return c.json(queues.get(session.id));
-  });
+  };
+  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => recordWrapupAsk(c, c.req.param("id"), false));
+  // A worker talking to an older daemon gets a 404, never an unguarded ask.
+  app.post("/api/sessions/:id/queue/wrapup/drain", (c) => recordWrapupAsk(c, c.req.param("id"), true));
 
   // Consume one durable prompted work-cycle generation. `ask` atomically raises the
   // matching Ship it? card too; splitting those writes can spend a verified generation
@@ -7872,6 +7889,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = registry.acceptGoalObjective(c.req.param("id"));
     if (!result) return c.json({ error: "no goal for this session" }, 404);
     if (!result.accepted) {
+      if (result.reason === "handoff_pending") {
+        return c.json({ error: "The operator's handoff instruction is still being reconciled." }, 409);
+      }
       return c.json({ error: "this session has no objective to accept yet" }, 409);
     }
     return c.json(result.goal);

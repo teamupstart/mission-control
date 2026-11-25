@@ -1385,8 +1385,10 @@ use addressed speech for messages while filling plans by hand. It starts on.
 ### Act on an inbox card by voice
 
 An open report or Stuck row lists its available phrases at the foot of the card. For example,
-“Steve, mark read” marks Steve's open unread report, or his only unread report when none
-of his is open. When the target is ambiguous, open the intended report first.
+“Steve, mark read” marks Steve's open unread report, including one posted during an earlier
+session of the same task. With his reports closed, the command marks his current session’s
+only unread report. For a resident it uses the resident’s reports across runs. When the
+target is ambiguous, open the intended report first.
 “Steve, nudge” sends the Stuck row’s fixed status request even while Steve’s Report has
 keyboard focus. If several open cards offer the same command, focus the one you mean.
 A named inbox command that none of the agent’s open inbox cards offers gives an unavailable notice.

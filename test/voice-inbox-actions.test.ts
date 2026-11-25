@@ -5,6 +5,7 @@ import { spokenInboxAction } from "../src/shared/voice-inbox.ts";
 import type { DrawnVoiceCard, VoiceInboxEvent } from "../src/shared/voice-answers.ts";
 import { act, cards, post, registry, reports, say } from "./helpers/voice-http.ts";
 import { mockCaptureClock, put } from "./helpers/voice-question.ts";
+import { mkTaskSummary } from "./helpers/session-fixture.ts";
 
 test("all declared spoken forms map to their click action and click-only controls have no mapping", () => {
   for (const { id, spoken, label } of INBOX_ACTIONS) {
@@ -98,6 +99,41 @@ test("mark read cancels, refuses ambiguity, requests the drawn button, and reads
   await say("Steve, mark read", "closed-inbox");
   assert.equal((await act("closed-inbox", "send-now")).status, 200);
   assert.equal(reports.get(other.id)?.readBy, "mark-read");
+});
+
+test("Mark read uses the open report's task across sessions and only the current author with the inbox closed", async t => {
+  mockCaptureClock(t);
+  const current = registry.getSession("sdk:Bill")!;
+  const old = { ...current, id: "sdk:prior", task: mkTaskSummary({ id: "Bill" }) };
+  const prior = await reports.post(old, { title: "First session", body: "Previous results" });
+  const latest = await reports.post(current, { title: "Next session", body: "Current results" });
+  const foreign = await reports.post({ ...old, task: mkTaskSummary({ id: "Will" }) }, { title: "Another task", body: "Separate results" });
+  const router = registry.voiceRouter!;
+  const windowId = "continued-task";
+  t.after(router.openCards.connect(windowId));
+  const selected: string[] = [];
+  t.after(registry.subscribe(event => {
+    if (event.type !== "voice_inbox_action") return;
+    selected.push(event.cardId);
+    assert.ok(router.claimInbox(event.requestId));
+    assert.ok(router.completeInbox(event.requestId, true));
+  }));
+  const show = (id: string | null) => put("/api/voice/open-cards", { windowId, focused: true, cards: id ? [
+    { kind: "report", id, agentKey: "task:Bill", sessionId: old.id, focused: true, actions: ["mark-read"] },
+  ] : [] });
+  await show(prior.id);
+  await say("Bill, mark read");
+  t.mock.timers.tick(1000);
+  assert.deepEqual(selected, [prior.id]);
+  assert.equal(reports.get(latest.id)?.readAt, null);
+  await show(foreign.id);
+  await say("Bill, mark read");
+  assert.equal(cards.at(-1)?.detail, "Open the report first.");
+  await show(null);
+  await say("Bill, mark read", "closed-after-resume");
+  assert.equal((await act("closed-after-resume", "send-now")).status, 200);
+  assert.equal(reports.get(latest.id)?.readBy, "mark-read");
+  assert.equal(reports.get(foreign.id)?.readAt, null);
 });
 
 test("an accepted inbox claim whose dashboard never confirms invocation expires and refuses a late success", async t => {

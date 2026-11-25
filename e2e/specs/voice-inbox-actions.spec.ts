@@ -309,6 +309,36 @@ test("spoken Publish as scout archives the attachment, Reply delivers its words,
   expect((await storedReport(daemon, next.id)).readAt).toBeNull();
 });
 
+test("Steve's Mark read invokes the open report from the task's previous session", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const first = await runningAgent(page, daemon, "Steve");
+  const prior = await postReport(daemon, first, "First session results");
+  const taskPath = daemon.baseURL + "/api/tasks/" + first.task!.id;
+  const requeued = await page.request.post(taskPath + "/requeue", { data: {} });
+  expect(requeued.ok(), await requeued.text()).toBe(true);
+  const dispatched = await page.request.post(taskPath + "/dispatch", { data: { overrideDisabled: true } });
+  expect(dispatched.ok(), await dispatched.text()).toBe(true);
+  let current!: Session;
+  await expect.poll(async () => {
+    const sessions: Session[] = await (await page.request.get(daemon.baseURL + "/api/sessions")).json();
+    current = sessions.find(s => s.task?.id === first.task!.id && s.id !== first.id)!;
+    return current?.agentSessionId && current.state;
+  }, { timeout: 60_000 }).toBe("idle");
+  const latest = await postReport(daemon, current, "Second session results");
+  expect(latest.author.key).not.toBe(prior.author.key);
+  const observed = page.waitForResponse(r => r.ok() && r.url().endsWith("/api/voice/open-cards") &&
+    (r.request().postDataJSON() as OpenCardsReport).cards.some(c => c.id === prior.id && c.kind === "report" && c.actions?.includes("mark-read")));
+  const card = await openReportCard(page, prior);
+  await expect(card.locator(".vh-foot")).toContainText("Steve, mark read");
+  await observed;
+  const read = page.waitForResponse(r => r.url().endsWith(`/api/reports/${prior.id}/read`) && r.request().method() === "POST");
+  await say(daemon, "Steve, mark read");
+  expect((await read).ok()).toBe(true);
+  await expect(card).toBeHidden();
+  expect((await storedReport(daemon, prior.id)).readBy).toBe("mark-read");
+  expect((await storedReport(daemon, latest.id)).readAt).toBeNull();
+});
+
 test("dictated follow-up instructions start a new task for an ended session's report", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 1);
   const steve = await runningAgent(page, daemon, "Steve");

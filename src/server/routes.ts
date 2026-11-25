@@ -48,7 +48,7 @@ import {
 } from "./session-control.ts";
 import { registerReportRoutes } from "./report-routes.ts";
 import { getVoiceConfig } from "./voice/config.ts";
-import { markReportRead, resolveMarkReadTarget, sessionAuthorKey, followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts";
+import { markReportRead, reportToRead, resolveMarkReadTarget, sessionAuthorKey, followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts";
 import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
@@ -9415,8 +9415,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       formsEnabled: () => getVoiceConfig().planFormsByVoice,
       emit: event => registry.emitQuestionEvent(event),
       markReadTarget: (target, openId) => {
+        if (!reports || !featureEnabled(INBOX_FLAG)) return undefined;
         const key = target.kind === "resident" ? target.key : target.sessionId && sessionAuthorKey(target.sessionId);
-        return key && reports && featureEnabled(INBOX_FLAG) ? resolveMarkReadTarget(key, reports.openReportsBy(key), openId)?.id : undefined;
+        if (openId !== null) {
+          const report = reports.get(openId);
+          if (!report || !reportToRead(report)) return undefined;
+          // A task keeps its call sign when redispatched under a new session author.
+          const sameTask = target.kind === "session" && target.taskId !== null && target.taskId === report.taskId;
+          return report.author.key === key || sameTask ? report.id : undefined;
+        }
+        return key ? resolveMarkReadTarget(key, reports.openReportsBy(key), null)?.id : undefined;
       },
       markUndrawnReportRead: async id => (await markReportRead(id, path =>
         app.request(path, { method: "POST", headers: { host: "localhost" } }))).ok,

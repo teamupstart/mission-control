@@ -595,6 +595,7 @@ export class VoiceRouter {
         (command ? c.actions?.includes(command.action) : spokenInboxAction(c.actions ?? [], body, false)));
       const selected = focusedVoiceCard(offering);
       if (command?.action === "mark-read") {
+        if (!selected && candidates.some(c => c.kind === "report")) return notice("Open the report first.", "question-notice");
         const id = inbox.markReadTarget(target, selected?.id ?? null);
         if (!id) return notice("Open the report first.", "question-notice");
         actionCard = candidates.find(c => c.kind === "report" && c.id === id);

@@ -131,6 +131,16 @@ test("Resident name with call sign ships with no style on, is a backed-up settin
   assert.ok(both.success);
   assert.deepEqual(both.data.residentCardNameStyles, ["subtitle", "chip"]);
   assert.equal(UiConfigPatchSchema.safeParse({ residentCardNameStyles: [] }).success, true);
+  // A write may repeat each style up to twice (four entries) and is stored once each in order;
+  // a fifth entry is refused as too long before anything is normalised.
+  const four = UiConfigPatchSchema.safeParse({ residentCardNameStyles: ["chip", "subtitle", "chip", "subtitle"] });
+  assert.ok(four.success, "a four-entry write was refused");
+  assert.deepEqual(four.data.residentCardNameStyles, ["subtitle", "chip"]);
+  const five = UiConfigPatchSchema.safeParse({ residentCardNameStyles: ["chip", "subtitle", "chip", "subtitle", "chip"] });
+  assert.equal(five.success, false, "a five-entry write was accepted");
+  const tooLong = five.error?.issues.find((issue) => issue.path.includes("residentCardNameStyles"));
+  assert.equal(tooLong?.code, "too_big", `refused for ${JSON.stringify(five.error?.issues)}`);
+  assert.equal((tooLong as { maximum?: number } | undefined)?.maximum, RESIDENT_CARD_NAME_STYLES.length * 2);
   assert.equal(APP_CONFIG_ENTRIES.ui.classification.fields.residentCardNameStyles, "setting");
 });
 

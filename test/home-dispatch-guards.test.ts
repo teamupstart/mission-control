@@ -82,10 +82,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // GET /api/voice/mute and POST /api/voice/hotkey-recording answer 404 with the voice preview off.
   // The synthesis model adds gated POST and DELETE /api/voice/speech/model/download.
   // Session settings adds the MCP entry point, the operator access pair and the skin refresh read.
+  // Typed settings adds the narrow PATCH /api/workflows/config preference route.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 490);
+  assert.equal(others.length, 491);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "6da3047419549a01966640de3fc60e4fc910037433836ee62e7cab3786cbdcb5");
+    "739bd7cace76b10dd18d6ce903cf574e14f66b98ff2e2d653874f56ecb1f9334");
 });
 
 function sourceFiles(dir: string): string[] {

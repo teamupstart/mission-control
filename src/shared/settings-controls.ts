@@ -1,0 +1,1430 @@
+import { SESSION_SETTINGS_ACCESS, SKIN_SETTING } from "@shared/session-settings-metadata.ts";
+import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
+import { type FeatureFlagDefinition, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
+// The settings search index: one flat, control-level list of everything the settings
+// page can be told to do.
+//
+// Pure data and pure functions - no React, no `node:` anything - for the same reason
+// `settings-registry.ts` is: the palette, the page (which wires the runtime toggle
+// bindings), and the integrity test all read this SAME list. It sits BESIDE the registry
+// rather than inside it because the registry is category-level (the rail) and this is
+// control-level (the palette); keeping them apart is what lets the anchor integrity test
+// prove every entry here points at a control the page actually renders.
+//
+// This is the shared control-level index. Its entries name the web control's `data-anchor`
+// and provide labels and keywords for both the palette and session discovery.
+//
+// The MATCHER that runs over it lives in `palette-index.ts` now, which wraps this list in a
+// provider alongside the Library's assets and the Line's live objects. It kept this file's
+// rule - deterministic substring, registry order, no fuzzy ranking - and this file kept the
+// shared list. The web layer supplies the runtime toggle bindings.
+
+import { settingsCategoryAvailable, settingsCategoryInBuild, type SettingsCategoryId } from "./settings-registry.ts";
+import { CONDUCTOR_INTEGRATION_ENABLED } from "@shared/conductor-integration.ts";
+import { ACTIONS } from "./keyboard-settings.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
+import {
+  backupDomains,
+  backupNotApplicable,
+  type SettingsBackupCoverage,
+} from "@shared/settings-backup-domains.ts";
+
+/**
+ * One searchable control.
+ *
+ *  - `anchor` is the `data-anchor="<category>/<slug>"` the jump scrolls to and flashes.
+ *    Its prefix MUST equal `category`, and it MUST be one the page renders - the anchor
+ *    integrity test (`settings-search.test.ts`) fails otherwise, which is the whole point
+ *    of pinning it from day one.
+ *  - `kind` is `"toggle"` for a boolean the palette can flip in place, `"jump"` for
+ *    everything else (a scalar, a picker, a whole sub-panel). A `"toggle"` the page did
+ *    not wire a binding for degrades to a jump rather than drawing a dead switch.
+ *  - `risky` marks the D5 exemption set: booleans that ALWAYS jump to their panel so their
+ *    consent copy is on screen when they change, never flipped anonymously from a search
+ *    result. The page never builds a binding for a risky control, so it renders as a jump
+ *    by the same degrade path - the flag is what keeps that deliberate rather than a
+ *    forgotten binding.
+ */
+export interface SettingsControl {
+  id: string;
+  label: string;
+  description: string;
+  category: SettingsCategoryId;
+  anchor: string;
+  keywords: readonly string[];
+  kind: "toggle" | "jump";
+  risky?: true;
+  backup: SettingsBackupCoverage;
+}
+
+/**
+ * The per-harness cards, derived from the harness union rather than hand-listed, so a new
+ * agent's card is searchable the moment it exists - the same reason `HarnessesPanel` builds
+ * its cards from `AGENT_TYPES`. Each points at that card's `harnesses/<agent>` anchor.
+ */
+const HARNESS_CONTROLS: SettingsControl[] = AGENT_TYPES.map((agent) => ({
+  id: `harness-${agent}`,
+  label: `${AGENT_IDENTITY[agent].label} defaults`,
+  description: "What a dispatch of this harness launches with - default model and effort.",
+  category: "harnesses",
+  anchor: `harnesses/${agent}`,
+  keywords: ["model", "effort", "dispatch", "default", AGENT_IDENTITY[agent].label.toLowerCase()],
+  kind: "jump",
+  backup: backupDomains("harnesses"),
+}));
+
+const FEATURE_FLAG_CONTROLS: SettingsControl[] = (FEATURE_FLAGS as readonly FeatureFlagDefinition[]).map(flag => ({
+  id: `feature-flag-${flag.id}`, label: flag.label, description: flag.description,
+  category: "feature-flags", anchor: `feature-flags/${flag.id}`,
+  keywords: [flag.id, ...flag.keywords], kind: "toggle", backup: backupDomains("feature-flags"),
+}));
+
+/**
+ * One entry per keyboard shortcut, derived from the `ACTIONS` registry rather than
+ * collapsed into a single "Keyboard" row. Each shortcut is an independently rebindable
+ * control with its own `keyboard/<id>` anchor, so searching "dispatch" or "kill" has to
+ * land on that action's binding, not merely the top of the panel. Deriving from `ACTIONS`
+ * (the same way the harness cards derive from `AGENT_TYPES`) keeps a newly added shortcut
+ * searchable with nothing to remember here. The shared keywords let a generic "shortcut"
+ * query surface the whole set; a specific query matches the action's own label.
+ */
+const KEYBOARD_CONTROLS: SettingsControl[] = ACTIONS.map((a) => ({
+  id: `keyboard-${a.id}`,
+  label: a.label,
+  description: a.description,
+  category: "keyboard",
+  anchor: `keyboard/${a.id}`,
+  keywords: ["shortcut", "keybinding", "chord", "hotkey", "rebind", "key"],
+  kind: "jump",
+  backup: backupDomains("ui"),
+}));
+
+/**
+ * Every settings control worth searching for, in a stable order (the empty-query preview
+ * shows the first few). One entry per control except where a dynamic set collapses to one:
+ * the Skills catalog is a single entry (its per-skill rows are runtime data, not indexed),
+ * and Foreman's four models and the daemon's background jobs are each one entry over a
+ * cluster of `ModelField`s.
+ */
+/**
+ * Every control this registry knows, including those on a category the build withholds.
+ * Registry-level checks (backup ownership) read this; search and the palette read
+ * `settingsControls`.
+ */
+export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
+  {
+    id: "layout",
+    label: "Layout",
+    description: "Arrange the fleet as Console or Board.",
+    category: "display",
+    anchor: "display/layout",
+    keywords: ["console", "board", "arrangement", "view"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "line-density",
+    label: "Line density",
+    description: "Under Top bar: fold the pipeline strip to one row, expand it to read each stage's sentence, or turn it off.",
+    category: "display",
+    anchor: "display/line-density",
+    keywords: [
+      "line",
+      "strip",
+      "pipeline",
+      "collapse",
+      "condense",
+      "fold",
+      "expand",
+      "vertical space",
+      "real estate",
+      "top bar",
+      "shipping bar",
+      "disable",
+      "hide",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    // A `toggle` rather than a `jump`, unlike the Board card checklist below: this is one
+    // boolean, so the palette can flip it from the results list without opening the page.
+    id: "board-grouping",
+    label: "Group by repository",
+    description:
+      "Collect the fleet's cards by the repository their session belongs to, under a heading naming it.",
+    category: "display",
+    anchor: "display/board-grouping",
+    // "project" and "monorepo" are what somebody types who thinks about their work rather than
+    // about the directory it lives in; "ungroup" and "flat" are what somebody types who wants
+    // it OFF and would never think to search for the thing they are trying to remove.
+    keywords: [
+      "repo",
+      "repository",
+      "project",
+      "group",
+      "grouping",
+      "ungroup",
+      "flat",
+      "monorepo",
+      "board",
+      "column",
+      "colour",
+      "color",
+    ],
+    kind: "toggle",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "board-sidebar",
+    label: "Show all sessions in sidebar",
+    description: "Select Board layout to show every session state in the drill-in sidebar.",
+    category: "display",
+    anchor: "display/layout",
+    keywords: ["board", "sidebar", "sessions", "states", "rail", "drill-in"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "resident-placement",
+    label: "Where residents live",
+    description:
+      "Keep residents in a drawer on the right edge, or on the Board and Console with every other session.",
+    category: "display",
+    anchor: "display/residents",
+    keywords: ["resident", "residents", "drawer", "dock", "board", "console", "rail", "placement", "long-running"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "blocked-placement",
+    label: "Where blocked sessions appear",
+    description:
+      "Show idle blocked sessions in a lane under Needs you, in a red frame at the top of Idle, or in a column of their own.",
+    category: "display",
+    anchor: "display/blocked",
+    keywords: ["blocked", "blocker", "waiting", "lane", "needs you", "idle", "column", "board", "rail", "placement"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "conversation-view",
+    label: "Conversation rendering",
+    description: "Read conversations as a chat log or as a terminal stream.",
+    category: "display",
+    anchor: "display/conversation-view",
+    keywords: ["terminal", "pty", "shell", "stdout", "prompt", "transcript", "chat", "stream"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "skin",
+    ...SKIN_SETTING,
+    description: "Repaint the whole dashboard in another colour theme, live, such as the light Daylight skin.",
+    category: "display",
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "format-messages",
+    label: "Format messages",
+    description: "Render transcripts as markdown rather than the literal text an agent emitted.",
+    category: "display",
+    anchor: "display/format-messages",
+    keywords: ["rich text", "markdown", "appearance", "code blocks", "syntax"],
+    kind: "toggle",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "board-card",
+    label: "Board card",
+    description: "Choose which items a session card draws in every Board column, and how a session shows its background sub-agents.",
+    category: "display",
+    anchor: "display/board-card",
+    // "hide"/"show"/"customize" are what an operator types who wants the panel and has not
+    // read its label; the item names are what someone types who wants ONE of them gone and
+    // does not know they are all in one place. `kind` is "jump" rather than "toggle"
+    // because a checklist has no single boolean for the palette to flip.
+    keywords: [
+      "card",
+      "tile",
+      "hide",
+      "show",
+      "customize",
+      "items",
+      "worktree",
+      "branch",
+      "model",
+      "cost",
+      "context",
+      "goal",
+      "workflow progress",
+      "workflow details",
+      "expand",
+      "collapse",
+      "stages",
+      "repair rounds",
+      "budget",
+      // The jump keys, which are the one item in that checklist an operator is likely to
+      // hunt for by the KEY rather than by the item's name - "cmd 1" is what somebody types
+      // who wants to know where the numbers on their cards or rail rows came from, or to stop ⌘- zooming
+      // something else. They land on the panel that switches the whole thing off, because
+      // there is no per-chord row anywhere to send them to.
+      "jump",
+      "shortcut",
+      "keycap",
+      "cmd 1",
+      "command 1",
+      "number keys",
+      // The Task type picker. Not the kinds' own names: a list of them here would be a
+      // second copy of `TASK_KINDS` (`test/task-kinds.test.ts`).
+      "task type",
+      "task kind",
+      "kind",
+      // The Background sub-agents picker: what the operator saw, or wants to see, under or on
+      // a card while a session's agents run.
+      "sub-agents",
+      "subagents",
+      "background agents",
+      "agents",
+      "sub-cards",
+      "nested",
+      "agent chip",
+      "popover",
+      // The conversation half the same picker switches: the tray above the reply box, or the
+      // rail's Agents tab. Listed HERE, on the entry named for the section that holds the
+      // picker, rather than on Conversation header - a result labelled for another section
+      // reads as a different control even though both jump to the same panel.
+      "agents tab",
+      "tray",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "pause-controls",
+    label: "Pause controls",
+    description:
+      "Choose where you pause and resume a session: corner buttons, a run chip or a menu on Board cards, and a toolbar button, a message box button or the state badge in the console.",
+    category: "display",
+    anchor: "display/pause-controls",
+    keywords: [
+      "pause",
+      "resume",
+      "freeze",
+      "suspend",
+      "stop",
+      "priority",
+      "focus",
+      "bandwidth",
+      "network",
+      "pause all",
+      "run chip",
+      "corner",
+      "composer",
+      "badge",
+      "toolbar",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "topbar",
+    label: "Top bar",
+    description:
+      "Hide session counts, search, the cost estimate, product feedback, alerts or Pause all from the top bar, and keep its page and fleet controls minimized.",
+    category: "display",
+    anchor: "display/topbar",
+    keywords: [
+      "top bar",
+      "topbar",
+      "header",
+      "toolbar",
+      "menu bar",
+      "hide",
+      "show",
+      "customize",
+      "minimize",
+      "minimized",
+      "compact",
+      "expand",
+      "sessions",
+      "need you",
+      "working",
+      "search",
+      "filter",
+      "cost",
+      "spend",
+      "feedback",
+      "alerts",
+      "away mode",
+      "pause all",
+      "missions",
+      "foreman",
+      "fleet",
+      "library",
+      "runs",
+      "scouts",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    // Same panel, same anchor, second subject. An operator who wants the path gone from
+    // above the conversation would never type "board card" to find it, and the panel's
+    // heading is the only other thing that could lead them there. Two entries pointing at
+    // one anchor is what the index is for: it is a control-level index, and this section
+    // governs two controls' worth of surface.
+    id: "conversation-header",
+    label: "Conversation header",
+    description:
+      "Choose how the console marks a task's kind, and whether it states a session's working directory and branch above its conversation.",
+    category: "display",
+    anchor: "display/board-card",
+    keywords: [
+      "path",
+      "working directory",
+      "cwd",
+      "branch",
+      "console",
+      "detail",
+      "conversation",
+      "header",
+      "band",
+      "hide",
+      "show",
+      "task type",
+      "task kind",
+      "kind",
+      "badge",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    // The panel's third subject. Somebody looking for this types what they saw, or what they
+    // wanted to see: a spinner, a progress bar, a timer, "is it still running".
+    id: "working-indicator",
+    label: "Working indicator",
+    description:
+      "Choose whether a working session's status row stays pinned while you scroll back, and whether the reply box shows a progress bar.",
+    category: "display",
+    anchor: "display/board-card",
+    keywords: [
+      "working",
+      "busy",
+      "thinking",
+      "running",
+      "spinner",
+      "progress",
+      "progress bar",
+      "loading",
+      "timer",
+      "elapsed",
+      "pin",
+      "sticky",
+      "reply box",
+      "conversation",
+    ],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  ...KEYBOARD_CONTROLS,
+  {
+    id: "guided-dispatch",
+    label: "Guided dispatch",
+    description:
+      "Ask for kind, harness and after work before handing over the dispatch form.",
+    category: "dispatch",
+    anchor: "dispatch/guided",
+    // "wizard" and "walkthrough" are what someone calls this who has not read the label;
+    // "kind", "harness" and "after work" are the questions themselves, which is what an
+    // operator who met the pass and wants it gone will actually remember about it.
+    keywords: ["guided", "wizard", "walkthrough", "steps", "questions", "kind", "harness", "after work"],
+    kind: "toggle",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "setup-checks",
+    label: "Machine setup checks",
+    description: CONDUCTOR_INTEGRATION_ENABLED
+      ? "Inspect agent CLIs, terminals, GitHub access, Claude extensions, and ai-conductor."
+      : "Inspect agent CLIs, terminals, GitHub access, and Claude extensions.",
+    category: "setup",
+    anchor: "setup/recheck",
+    keywords: [
+      "install",
+      "agent cli",
+      "terminal",
+      "tmux",
+      "cmux",
+      "github",
+      "plugins",
+      "skills",
+      ...(CONDUCTOR_INTEGRATION_ENABLED ? ["ai-conductor"] : []),
+      "dependencies",
+    ],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    // The setup CHECKS are derived status and back up nothing. This one control on the same
+    // panel is an operator choice that does: which terminal app a multiplexer's sessions are
+    // focused into, set on that multiplexer's Terminals row.
+    id: "multiplexer-terminal",
+    label: "Terminal for multiplexer sessions",
+    description: "Which terminal app opens a window when you focus a tmux or Herdr session.",
+    category: "setup",
+    anchor: "setup/family-terminals",
+    keywords: [
+      "terminal",
+      "multiplexer",
+      "tmux",
+      "herdr",
+      "focus",
+      "opens in",
+      "wezterm",
+      "ghostty",
+      "iterm",
+    ],
+    kind: "jump",
+    backup: backupDomains("terminals"),
+  },
+  {
+    id: "external-sessions",
+    label: "Show sessions started outside Mission Control",
+    description: "Also show Claude, Codex, and Pi sessions you started yourself in a terminal.",
+    category: "setup",
+    anchor: "setup/external-sessions",
+    keywords: ["outside", "external", "discovery", "hand-started", "manual", "terminal", "tmux", "hide", "sessions"],
+    kind: "toggle",
+    backup: backupDomains("terminals"),
+  },
+  {
+    id: "auto-mode",
+    label: "Auto mode on dispatch",
+    description: "Launch every dispatched session in its most autonomous permission mode.",
+    category: "harnesses",
+    anchor: "harnesses/auto-mode",
+    keywords: ["permission", "bypass", "autonomous", "yolo", "accept edits"],
+    kind: "toggle",
+    backup: backupDomains("harnesses"),
+  },
+  ...HARNESS_CONTROLS,
+  ...FEATURE_FLAG_CONTROLS,
+  { id: "feature-flags-enable-all", label: "Enable all feature flags",
+    description: "Opt in to current and future preview features, keeping individual choices.",
+    category: "feature-flags", anchor: "feature-flags/enable-all",
+    keywords: ["preview", "alpha", "experimental", "master"], kind: "jump", backup: backupDomains("feature-flags") },
+  {
+    id: "task-kind-workflow-defaults",
+    label: "Default dispatch workflow per task kind",
+    description: "The published Workflow each kind of task preselects to run after its work.",
+    category: "tasks",
+    anchor: "tasks/kinds",
+    keywords: ["default", "dispatch", "after work", "workflow", "agent", "task", "task kind", "per kind"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
+    id: "task-shaping-shapers",
+    label: "Shapers",
+    description: "Registered shapers and those found on disk in the shapers folder, in run order: switch one on or off, move it, dry-run it, or remove it.",
+    category: "task-shaping",
+    anchor: "task-shaping/shapers",
+    keywords: ["shaper", "gatherer", "selector", "enable", "order", "dry run", "test", "remove", "context", "guidance", "folder", "found on disk", "discovered", "shaper.json"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-import",
+    label: "Import a shaper manifest",
+    description: "Paste or choose a shaper manifest, review what it runs or calls, and save it switched off.",
+    category: "task-shaping",
+    anchor: "task-shaping/import",
+    keywords: ["import", "manifest", "register", "add shaper", "json", "command", "mcp", "http"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-identity",
+    label: "Shaping caller identity",
+    description: "The identity a shaper receives as {caller.user}. Declared, not verified, and not a secret.",
+    category: "task-shaping",
+    anchor: "task-shaping/identity",
+    keywords: ["caller", "identity", "user", "caller.user", "who"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "task-shaping-limits",
+    label: "Shaping budgets",
+    description: "How long one shaping step may take, and how much context it may add to a worker's first prompt.",
+    category: "task-shaping",
+    anchor: "task-shaping/limits",
+    keywords: ["deadline", "timeout", "budget", "bytes", "limit", "context size"],
+    kind: "jump",
+    backup: backupDomains("shaping"),
+  },
+  {
+    id: "voice-mode",
+    label: "Voice mode",
+    description: "Whether voice is listening, muted or unable to listen, and why not, with a link to the Setup checks that fix it.",
+    category: "voice",
+    anchor: "voice/mode",
+    keywords: ["listening", "muted", "unavailable", "status", "why not"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "voice-roster",
+    label: "Who you can address",
+    description: "Every resident and every session with a call sign, the name to say to each, whether it is running, and any name warning.",
+    category: "voice",
+    anchor: "voice/roster",
+    keywords: ["roster", "call sign", "reference name", "spoken name", "address", "who", "agents", "names"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "voice-confirmation",
+    label: "Confirmation card",
+    description: "Choose where routed voice messages appear.",
+    category: "voice",
+    anchor: "voice/confirmation",
+    keywords: ["placement", "toast", "pill", "popover"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "voice-indicators",
+    label: "In the window",
+    description: "Select voice indicators and preview their modes.",
+    category: "voice",
+    anchor: "voice/indicators",
+    keywords: ["microphone", "mute", "status line", "indicator", "edge", "floating"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
+    id: "voice-heard",
+    label: "Recently heard",
+    description: "Review recent utterances, their matching rule and routing outcome.",
+    category: "voice",
+    anchor: "voice/heard",
+    keywords: ["diagnostics", "history", "utterances", "match"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "voice-input-device",
+    label: "Voice input device",
+    description: "Which microphone voice listens on: the built-in one, the system default, or another input.",
+    category: "voice",
+    anchor: "voice/input-device",
+    keywords: ["microphone", "input", "device", "mic", "bluetooth", "headset", "built-in"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-hotkey",
+    label: "Mute hotkey",
+    description: "Record a system-wide shortcut to mute voice or hold to talk during call auto-mute.",
+    category: "voice",
+    anchor: "voice/hotkey",
+    keywords: ["keyboard", "chord", "shortcut", "push to talk"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-auto-mute",
+    label: "Auto-mute on calls",
+    description: "Stop listening while another app, such as a call, is using the microphone.",
+    category: "voice",
+    anchor: "voice/auto-mute",
+    keywords: ["call", "meeting", "microphone", "mute", "zoom"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-cancel-window",
+    label: "Voice cancel window",
+    description: "How long a spoken message waits for you to say cancel before it is sent.",
+    category: "voice",
+    anchor: "voice/cancel-window",
+    keywords: ["cancel", "delay", "seconds", "confirm", "undo"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-when-unsure",
+    label: "When voice routing is unsure",
+    description: "Show the possible agents on screen, or ask aloud which one you meant.",
+    category: "voice",
+    anchor: "voice/when-unsure",
+    keywords: ["unsure", "ambiguous", "ask aloud", "show", "which agent"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-plan-forms",
+    label: "Plan forms by voice",
+    description: "Let speech fill a plan-decision form, which still waits for submit.",
+    category: "voice",
+    anchor: "voice/plan-forms",
+    keywords: ["plan", "decisions", "form", "fill", "request_plan_decisions"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "grill-first-defaults",
+    label: "Grill me first per task kind",
+    description: "Which kinds of task start by interviewing you in rounds of decision forms.",
+    category: "tasks",
+    anchor: "tasks/grill-first",
+    keywords: ["grill", "interview", "questions", "decisions", "before starting", "task kind", "per kind"],
+    kind: "jump",
+    backup: backupDomains("skills"),
+  },
+  {
+    id: "worktree-policy",
+    label: "Worktree policy",
+    description: "Default and repository-specific native checkout capacity and setup argv.",
+    category: "worktrees",
+    anchor: "worktrees/policy",
+    keywords: ["pool", "capacity", "setup", "argv", "repository", "disable"],
+    kind: "jump",
+    backup: backupDomains("worktrees"),
+  },
+  {
+    id: "native-worktree-pools",
+    label: "Native worktree pools",
+    description: "Inspect slots and preview Return, Prune, Reconcile, and Destroy.",
+    category: "worktrees",
+    anchor: "worktrees/native-pools",
+    keywords: ["slot", "lease", "dirty", "occupied", "quarantine", "cleanup"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "legacy-worktree-drain",
+    label: "Legacy Treehouse drain",
+    description: "Inspect exact and unverifiable historical Treehouse resources.",
+    category: "worktrees",
+    anchor: "worktrees/legacy-drain",
+    keywords: ["treehouse", "legacy", "return", "foreign", "unreadable"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "repository-index-directories",
+    label: "Indexed repository directories",
+    description: "Choose which machine directories Mission Control walks for git checkouts.",
+    category: "setup",
+    anchor: "setup/repositories-directories",
+    keywords: ["repository", "index", "scan", "directory", "workspace", "folder"],
+    kind: "jump",
+    backup: backupDomains("repo-index"),
+  },
+  {
+    id: "repository-index-add",
+    label: "Add indexed directory",
+    description: "Add another absolute or home-relative directory to repository discovery.",
+    category: "setup",
+    anchor: "setup/repositories-add",
+    keywords: ["repository", "add", "path", "directory", "workspace", "folder"],
+    kind: "jump",
+    backup: backupDomains("repo-index"),
+  },
+  {
+    id: "repository-index-rescan",
+    label: "Rescan repositories now",
+    description: "Drop the repository discovery cache and walk the indexed directories now.",
+    category: "setup",
+    anchor: "setup/repositories-rescan",
+    keywords: ["repository", "refresh", "rescan", "cache", "discovery"],
+    kind: "jump",
+    backup: backupDomains("repo-index"),
+  },
+  {
+    id: "skills-enabled",
+    label: "Enable Mission Control skills",
+    description: "Master switch - symlink the skill set into every harness's skills directory.",
+    category: "skills",
+    anchor: "skills/enabled",
+    keywords: ["skill", "slash command", "symlink", "master"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
+    id: "skills-plan-storage", label: "Plan storage",
+    description: "Keep complete new plans in the repository or the machine-local repository plan store.",
+    category: "skills", anchor: "skills/plan-storage", keywords: ["plan", "local", "repository", "storage", "Markdown", "Git"],
+    kind: "jump", backup: backupDomains("skills"),
+  },
+  {
+    id: "skills-plan-html",
+    label: "Commit generated HTML plan files",
+    description: "Keep rendered plans locally or include HTML in Git for new managed plans.",
+    category: "skills",
+    anchor: "skills/commit-plan-html",
+    keywords: ["plan", "HTML", "Markdown", "Git", "storage", "preview"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
+    id: "skills-catalog",
+    label: "Skills catalog",
+    description: "Which individual skills every session gets.",
+    category: "skills",
+    anchor: "skills/catalog",
+    keywords: ["skill", "catalog", "slash command"],
+    kind: "jump",
+    backup: backupDomains("skills"),
+  },
+  {
+    id: "skills-always-draft-pr",
+    label: "Always create draft PRs",
+    description: "Create draft pull requests through the skill and workflows; a human promotes them to ready for review.",
+    category: "skills",
+    anchor: "skills/always-draft-pr",
+    keywords: ["pull request", "PR", "draft", "review", "workflow", "human"],
+    kind: "toggle",
+    backup: backupDomains("skills"),
+  },
+  {
+    id: "standing-instructions-default",
+    label: "Standing instructions for every repository",
+    description: "The machine-wide text a session gets when its checkout has no rule of its own.",
+    category: "standing-instructions",
+    anchor: "standing-instructions/default",
+    keywords: ["instruction", "prompt", "default", "global", "preamble", "always"],
+    kind: "jump",
+    backup: backupDomains("standing-instructions"),
+  },
+  {
+    id: "standing-instructions-repositories",
+    label: "Standing instructions per repository",
+    description: "One box per checkout, sent to every session Mission Control opens into it.",
+    category: "standing-instructions",
+    anchor: "standing-instructions/repositories",
+    keywords: ["instruction", "repository", "override", "inherited", "per-repo", "rule"],
+    kind: "jump",
+    backup: backupDomains("standing-instructions"),
+  },
+  {
+    id: "reports-guidance",
+    label: "Report guidance",
+    description: "The text that tells agents when to post a report. Sessions started after a change use it; Reset to default puts the shipped text back.",
+    category: "reports",
+    anchor: "reports/guidance",
+    keywords: ["report", "guidance", "when to report", "post_report", "reset", "default", "chatty"],
+    kind: "jump",
+    backup: backupDomains("reports"),
+  },
+  {
+    id: "reports-muted",
+    label: "Muted agents",
+    description: "Agents whose reports raise no notification and are not listed in the inbox. Unmute one to list its reports again.",
+    category: "reports",
+    anchor: "reports/muted",
+    keywords: ["mute", "unmute", "muted", "silence", "noisy", "agent", "report"],
+    kind: "jump",
+    // Muting is an action on a report card, recorded in its own table; a settings snapshot
+    // restored onto another installation would name agents that never ran there.
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "cost-track",
+    label: "Track Claude estimated cost",
+    description: "Write a telemetry env block so sessions report usage to the daemon.",
+    category: "cost",
+    anchor: "cost/track",
+    keywords: ["telemetry", "otel", "usage", "spend", "money", "estimate"],
+    kind: "toggle",
+    backup: backupDomains("cost"),
+  },
+  {
+    id: "cost-interval",
+    label: "Export interval",
+    description: "How often each session reports its usage.",
+    category: "cost",
+    anchor: "cost/interval",
+    keywords: ["telemetry", "frequency", "seconds", "interval"],
+    kind: "jump",
+    backup: backupDomains("cost"),
+  },
+  {
+    id: "cost-view",
+    label: "Lead with",
+    description: "Whether the topbar's usage strip leads with estimated cost or plan usage.",
+    category: "cost",
+    anchor: "cost/view",
+    keywords: ["topbar", "usd", "dollars", "plan", "tokens", "strip"],
+    kind: "jump",
+    backup: backupDomains("cost"),
+  },
+  {
+    id: "telemetry-collect",
+    label: "Collect telemetry on this machine",
+    description: "Record Mission Control's own activity locally. Nothing is sent anywhere.",
+    category: "telemetry",
+    anchor: "telemetry/collect",
+    keywords: ["opentelemetry", "otel", "metrics", "traces", "privacy", "consent", "opt in"],
+    // A jump, not a flip, and marked risky so it stays one. This is a consent decision, and its
+    // consent copy - local-only means local-only, a destination is a separate decision - has to
+    // be on screen when it changes. The D5 exemption exists for exactly this shape of switch.
+    kind: "jump",
+    risky: true,
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "telemetry-user",
+    label: "Send telemetry to your own backend",
+    description: "An OTLP/HTTP endpoint you run, with its own opt-in and its own queue.",
+    category: "telemetry",
+    anchor: "telemetry/user",
+    keywords: ["otlp", "collector", "endpoint", "export", "grafana", "prometheus", "credential"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "telemetry-product",
+    label: "Share anonymous product analytics",
+    description:
+      "A separate opt-in with its own identity and queue. Needs the address of a collector you run.",
+    category: "telemetry",
+    anchor: "telemetry/product",
+    keywords: ["analytics", "anonymous", "product", "share", "opt in", "privacy"],
+    kind: "jump",
+    risky: true,
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "telemetry-identity",
+    label: "Telemetry installation pseudonym",
+    description: "What this installation reports itself as, and how to reset it.",
+    category: "telemetry",
+    anchor: "telemetry/identity",
+    keywords: ["identity", "pseudonym", "installation", "reset", "anonymous"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "storage-overview",
+    label: "Disk use",
+    description: "What Mission Control keeps on this machine by category, measured, and the volume's free space.",
+    category: "storage",
+    anchor: "storage/overview",
+    keywords: ["disk", "space", "size", "usage", "gib", "volume", "free space", "measure", "state directory"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "database-backups",
+    label: "Database backups",
+    description: "Backup interval, how many copies are kept, how old and how large they may grow, Back up now, and the kept copies.",
+    category: "storage",
+    anchor: "storage/backups",
+    keywords: [
+      "backup",
+      "back up now",
+      "interval",
+      "hourly",
+      "pre-migration",
+      "retention",
+      "copies",
+      "age",
+      "budget",
+      "size",
+      "recovery",
+      "disk",
+      "database",
+    ],
+    kind: "jump",
+    backup: backupDomains("database-backups"),
+  },
+  {
+    id: "storage-pool-caches",
+    label: "Idle-cache budget",
+    description: "How much idle native-pool cache may stay warm across every pool, and how many warm slots each pool keeps.",
+    category: "storage",
+    anchor: "storage/pool-caches",
+    keywords: ["pool", "worktree", "slot", "idle", "cache", "warm", "budget", "node_modules", "disk"],
+    kind: "jump",
+    backup: backupDomains("storage-limits"),
+  },
+  {
+    id: "storage-cleanup",
+    label: "Storage cleanup",
+    description: "The exact idle slots the budget would remove, what they free, and what blocks the rest.",
+    category: "storage",
+    anchor: "storage/cleanup",
+    keywords: ["cleanup", "clean up", "reclaim", "remove", "prune", "free space", "disk"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "storage-limits",
+    label: "Storage limits and warnings",
+    description: "A size limit, a free-space floor, and whether a banner or desktop notification warns.",
+    category: "storage",
+    anchor: "storage/limits",
+    keywords: ["limit", "warning", "low space", "free space", "floor", "notification", "banner", "disk full"],
+    kind: "jump",
+    backup: backupDomains("storage-limits"),
+  },
+  {
+    id: "storage-problems",
+    label: "Storage problems",
+    description: "Failed backups, low free space and the size limit, each linked to where it is fixed.",
+    category: "storage",
+    anchor: "storage/problems",
+    keywords: ["problem", "failed", "backup failed", "disk", "warning", "low space"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "restore-settings",
+    label: "Restore settings",
+    description: "Preview and restore an owner-only automatic snapshot.",
+    category: "restore",
+    anchor: "restore/snapshots",
+    keywords: ["backup", "snapshot", "recovery", "rollback", "safety"],
+    kind: "jump",
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "foreman-tier",
+    label: "Cheap tier",
+    description: "Whether the Foreman answers the easy prompts itself - off, shadow, or on.",
+    category: "foreman",
+    anchor: "foreman/cheap-tier",
+    keywords: ["triage", "shadow", "router", "auto-responder"],
+    kind: "jump",
+    backup: backupDomains("foreman", "foreman-instructions"),
+  },
+  {
+    id: "foreman-skip-scout-wrapup",
+    label: "Skip automatic completion for Scout tasks",
+    description: "Keep Scout findings out of Ship it, No-Mistakes Review, and Straight to PR.",
+    category: "foreman",
+    anchor: "foreman/skip-scout-wrapup",
+    keywords: ["scout", "kind", "wrap up", "workflow", "pull request", "ship it"],
+    kind: "jump",
+    backup: backupDomains("foreman"),
+  },
+  {
+    id: "foreman-skip-review-artifact-wrapup",
+    label: "Skip automatic completion for mockups and review artifacts",
+    description: "Keep review-only deliverables out of automatic shipping actions.",
+    category: "foreman",
+    anchor: "foreman/skip-review-artifact-wrapup",
+    keywords: [
+      "mockup",
+      "wireframe",
+      "prototype",
+      "report",
+      "plan",
+      "review artifact",
+      "workflow",
+      "pull request",
+    ],
+    kind: "jump",
+    backup: backupDomains("foreman"),
+  },
+  {
+    id: "foreman-ship-recovery-minutes",
+    label: "Pre-PR ship recovery wait",
+    description: "Set the quiet window before Foreman resumes an eligible managed Ship task.",
+    category: "foreman",
+    anchor: "foreman/ship-recovery-minutes",
+    keywords: ["ship", "recovery", "idle", "quiet", "minutes", "pull request", "escalation"],
+    kind: "jump",
+    backup: backupDomains("foreman"),
+  },
+  {
+    id: "foreman-episodes",
+    label: "Foreman decisions",
+    description: "Every prompt Foreman has decided on, across every session, newest first.",
+    category: "foreman",
+    anchor: "foreman/episodes",
+    keywords: ["episode", "decision", "answered", "escalated", "shadow", "ledger", "history"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "workflow-live-delivery",
+    label: "Enable Live workflow delivery",
+    description: "Whether Persona repairs may be typed into agent sessions, or only previewed.",
+    category: "workflows",
+    anchor: "workflows/live-delivery",
+    keywords: ["live delivery", "workflow", "repair", "paste", "preview", "persona"],
+    kind: "toggle",
+    backup: backupDomains("workflow-policy"),
+    // Risky for the Inspector master switch's reason in a local key: flipping it anonymously
+    // from a search row would arm a paste into somebody's live session with the consent copy
+    // off screen. It always jumps to the panel.
+    risky: true,
+  },
+  {
+    id: "workflow-judge-passes",
+    label: "Skip judges that already passed",
+    description: "Keep earned judge passes across repair rounds of the same workflow run.",
+    category: "workflows",
+    anchor: "workflows/judge-passes",
+    keywords: ["judge", "persona", "pass", "skip", "round", "repair"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
+    id: "workflow-allowlist",
+    label: "Workflow allowed repositories",
+    // Still a `workflows` row, and it still lands on `workflows/allowlist`, because that is
+    // where an operator asking this question is going: the card names the count and carries
+    // the Manage-in-Trust link. Pointing the row straight at `trust/matrix` would skip the
+    // sentence explaining that one grant covers both delivery and checks.
+    description: "Where Live delivery may send and Command nodes may run. Granted in Trust.",
+    category: "workflows",
+    anchor: "workflows/allowlist",
+    keywords: ["allowlist", "repo", "repository", "workflow", "live delivery", "grant", "trust"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
+    id: "workflow-test-evidence",
+    label: "Test evidence readiness",
+    description:
+      "First Auditor acceptance, preflight interceptions, refinements, overrides and disagreements.",
+    category: "workflows",
+    anchor: "workflows/test-evidence",
+    keywords: [
+      "test evidence", "auditor", "readiness", "rejection", "first pass", "screenshot",
+      "artifact", "evidence", "overreach", "telemetry", "override", "interception",
+      "refinement", "unavailable", "disagreement", "evaluator",
+    ],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "workflow-checks",
+    label: "Allow workflow Commands",
+    description: "Whether a Command node may run its configured argv, executing branch-authored code.",
+    category: "workflows",
+    // The anchor is unchanged and permanently so: it is a kept link, and the control it names
+    // is the same machine-wide switch it always was. Only the words on it moved.
+    anchor: "workflows/checks",
+    keywords: [
+      "check", "command", "test", "lint", "typecheck", "build", "documentation", "gate", "exit code", "allow",
+      "pause",
+    ],
+    kind: "toggle",
+    backup: backupDomains("workflow-policy"),
+    // Risky for the same reason Live delivery is, and more so: this one authorizes running
+    // code the reviewed branch supplies, with the daemon's filesystem authority.
+    risky: true,
+  },
+  {
+    // Kept under its old id and keywords, pointed at the card that now says where the catalog
+    // went. An operator searching "check commands" for a table this panel no longer has is
+    // exactly who this row exists for, and dropping it would answer them with nothing.
+    id: "workflow-check-commands",
+    label: "What each Command runs",
+    description: "The configured workflow command argvs - authored in Library › Commands.",
+    category: "workflows",
+    anchor: "workflows/command-catalog",
+    keywords: [
+      "check", "command", "argv", "slot", "test", "lint", "typecheck", "build", "documentation", "repo",
+      "override", "default", "library",
+    ],
+    kind: "jump",
+    backup: backupDomains("workflow-commands"),
+  },
+  {
+    id: "workflow-retention",
+    label: "Workflow run retention",
+    description: "How long raw evidence and finished run history are kept before a sweep prunes them.",
+    category: "workflows",
+    anchor: "workflows/retention",
+    keywords: ["retention", "history", "evidence", "prune", "sweep", "compact", "delete"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
+    id: "workflow-health",
+    label: "Workflow health",
+    description: "Active runs, queued Persona calls, waiting deliveries, and the last sweep.",
+    category: "workflows",
+    anchor: "workflows/health",
+    keywords: ["health", "queue", "deliveries", "recovery", "sweep", "counters"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "task-sources",
+    label: "Task sources",
+    description: "The upstreams that pull work into the backlog.",
+    category: "task-sources",
+    anchor: "task-sources/sources",
+    keywords: ["github issues", "sweep", "backlog", "import", "upstream"],
+    kind: "jump",
+    backup: backupDomains("task-sources"),
+  },
+  {
+    id: "conductor-repos",
+    label: "Conductor repositories",
+    description: "The repository directory: which checkouts Conductor manages, and which are observed.",
+    category: "conductor",
+    anchor: "conductor/repos",
+    keywords: ["ai-conductor", "pipeline", "sdlc", "engine", "repository", "consent", "observe", "directory"],
+    kind: "jump",
+    backup: backupDomains("pipelines"),
+  },
+  // The other five anchors this panel renders. It drew six and indexed one, so the engine,
+  // the master switch, the Engineer host and Foreman triage were reachable only by opening
+  // the category and scrolling - which is what the palette exists to replace. Every one is
+  // a `jump`: none is a boolean the palette could honestly flip from a search row, and the
+  // consent switch is exactly the kind whose copy has to be on screen when it moves.
+  {
+    id: "conductor-overview",
+    label: "Conductor commissioning",
+    description: "Where an external SDLC engine's setup stands: engine, registration, observation.",
+    category: "conductor",
+    anchor: "conductor/pipelines",
+    keywords: ["ai-conductor", "pipeline", "sdlc", "commissioning", "setup", "register", "overview"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "conductor-detection",
+    label: "Conductor engine detection",
+    description: "Whether conduct-ts was found, where, which version, and which registry it read.",
+    category: "conductor",
+    anchor: "conductor/detection",
+    keywords: ["conduct-ts", "engine", "install", "installer", "version", "registry", "probe", "path"],
+    kind: "jump",
+    backup: backupNotApplicable("derived-status"),
+  },
+  {
+    id: "conductor-enabled",
+    label: "Observe Conductor pipelines",
+    description: "The master consent switch for reading any Conductor pipeline state at all.",
+    category: "conductor",
+    anchor: "conductor/enabled",
+    keywords: ["observe", "consent", "master switch", "pipeline", "ai-conductor", "read"],
+    kind: "jump",
+    backup: backupDomains("pipelines"),
+  },
+  {
+    id: "conductor-launch-runtime",
+    label: "Conductor Engineer host",
+    description: "Which Mission Control host starts Engineer: the managed Agent SDK, or a terminal.",
+    category: "conductor",
+    anchor: "conductor/launch-runtime",
+    keywords: ["engineer", "launch", "runtime", "agent sdk", "terminal", "host", "pipeline"],
+    kind: "jump",
+    backup: backupDomains("pipelines"),
+  },
+  {
+    id: "conductor-foreman-triage",
+    label: "Foreman pipeline triage",
+    description: "Whether Foreman may unpark mechanical pipeline halts on its own.",
+    category: "conductor",
+    anchor: "conductor/foreman-triage",
+    keywords: ["foreman", "triage", "halt", "unpark", "mechanical", "pipeline"],
+    kind: "jump",
+    backup: backupDomains("pipelines"),
+  },
+  // This is the first configurable group on the Models page: people most often arrive to
+  // decide what their plan, ship, scout, or chat tasks launch with.
+  {
+    id: "task-kind-defaults",
+    label: "Agent, model and effort per task kind",
+    description: "What a dispatched plan, ship, scout or chat task is filed on and launches with.",
+    category: "models",
+    anchor: "models/task-kinds",
+    // Kind names appear only inside phrases ("plan model"), never as the bare ids. Listing
+    // them bare would restate the kind vocabulary outside its registry, which
+    // `task-kinds.test.ts` refuses precisely so a stale copy cannot silently drop a kind.
+    keywords: [
+      "task kind",
+      "plan model",
+      "plan agent",
+      "ship model",
+      "scout model",
+      "chat model",
+      "dispatch default",
+      "harness",
+      "agent",
+      "effort",
+      "reasoning",
+      "per kind",
+      "inherit",
+    ],
+    kind: "jump",
+    backup: backupDomains("harnesses"),
+  },
+  {
+    id: "llm-jobs",
+    label: "Background job providers and models",
+    description: "A provider and a model per job - titling, goals, digests, workflow context.",
+    category: "models",
+    anchor: "models/jobs",
+    keywords: [
+      "title",
+      "goal",
+      "digest",
+      "workflow",
+      "provider",
+      "runner",
+      "job",
+      "per job",
+      "reasoning effort",
+      "override",
+      "inherit",
+    ],
+    kind: "jump",
+    backup: backupDomains("models"),
+  },
+  // Re-pointed here from the Foreman and GitHub Inspector categories when their model
+  // controls moved. The IDS are unchanged - `foreman-models` and `review-model` are the keys
+  // a keybinding is stored under (`BINDABLE_CONTROL_IDS`), so renaming one to match its new
+  // home would silently orphan a chord somebody had bound. Only the category and the anchor
+  // move, which is exactly what changed.
+  {
+    id: "foreman-models",
+    label: "Foreman provider and models",
+    description: "The provider and the four models behind Review, Verify, Triage, and Backlog.",
+    category: "models",
+    anchor: "models/foreman",
+    keywords: [
+      "foreman",
+      "model",
+      "review",
+      "verify",
+      "triage",
+      "backlog",
+      "provider",
+      "runner",
+      "per role",
+      "reasoning effort",
+      "inherit",
+    ],
+    kind: "jump",
+    backup: backupDomains("foreman"),
+  },
+  {
+    id: "review-model",
+    label: "GitHub Inspector review model",
+    description: "The provider and model GitHub Inspector reviews pull requests with.",
+    category: "models",
+    anchor: "models/inspector",
+    keywords: ["inspector", "github", "model", "reasoning effort", "provider", "runner", "review", "pull request"],
+    kind: "jump",
+    backup: backupDomains("inspector"),
+  },
+  {
+    id: "inspector-enabled",
+    label: "Run GitHub Inspector",
+    description: "Whether GitHub Inspector reviews the pull requests we open remotely.",
+    category: "inspector",
+    anchor: "inspector/enabled",
+    keywords: ["review", "pull request", "pr", "enable"],
+    kind: "toggle",
+    backup: backupDomains("inspector"),
+    risky: true,
+  },
+  {
+    id: "inspector-mode",
+    label: "GitHub Inspector mode",
+    description: "Dry run - record findings and post nothing - or live, posting review comments.",
+    category: "inspector",
+    anchor: "inspector/mode",
+    keywords: ["dry run", "live", "publish", "post", "comments"],
+    kind: "jump",
+    backup: backupDomains("inspector"),
+    risky: true,
+  },
+  {
+    id: "yolo",
+    label: "YOLO mode",
+    description: "Whether clean pull requests we open merge themselves.",
+    category: "shipping",
+    anchor: "shipping/yolo",
+    keywords: ["auto merge", "automerge", "ship", "self-merge"],
+    kind: "toggle",
+    backup: backupDomains("shipping"),
+    risky: true,
+  },
+  {
+    id: "soak",
+    label: "Soak time",
+    description: "Minutes a clean pull request stays open before it may merge.",
+    category: "shipping",
+    anchor: "shipping/soak",
+    keywords: ["soak", "window", "delay", "minutes", "wait"],
+    kind: "jump",
+    backup: backupDomains("shipping"),
+  },
+  {
+    id: "merge-method",
+    label: "How to merge",
+    description: "Squash, merge commit, or rebase.",
+    category: "shipping",
+    anchor: "shipping/method",
+    keywords: ["squash", "rebase", "merge commit", "method"],
+    kind: "jump",
+    backup: backupDomains("shipping"),
+  },
+  {
+    id: "stacked-pull-requests",
+    label: "Stacked pull requests",
+    description: "Whether a same-repository dependent starts on its prerequisite's open pull request or waits for it to merge.",
+    category: "shipping",
+    anchor: "shipping/stacking",
+    keywords: ["stack", "stacked", "dependency", "dependent", "base branch", "parent", "after merge", "depth"],
+    kind: "jump",
+    backup: backupDomains("shipping"),
+  },
+  {
+    id: "session-settings-access",
+    ...SESSION_SETTINGS_ACCESS,
+    category: "trust",
+    kind: "toggle",
+    risky: true,
+    backup: backupNotApplicable("operational-action"),
+  },
+  {
+    id: "trust-grants",
+    label: "Trust grants",
+    description: "Which repositories each subsystem may act in.",
+    category: "trust",
+    anchor: "trust/matrix",
+    keywords: ["allowlist", "repo", "repository", "permission", "grant", "matrix"],
+    kind: "jump",
+    backup: backupDomains("ui", "foreman", "workflow-policy", "inspector", "shipping"),
+  },
+];
+
+/**
+ * The indexed controls drawn under these flags. A control on a category that is not drawn -
+ * Conductor's, while the ai-conductor integration is hidden, or Task shaping's while its flag
+ * is off - would be a search hit that leads nowhere, so it is not offered. Read through the
+ * category gate, live, never frozen at module load.
+ */
+export function settingsControls(flags: FeatureFlagsConfig): readonly SettingsControl[] {
+  return ALL_SETTINGS_CONTROLS.filter((control) => settingsCategoryAvailable(control.category, flags));
+}
+
+/**
+ * The control ids the page is expected to wire a boolean binding for: every `"toggle"`
+ * that is not risky, on a category this build offers. The page builds its
+ * `Map<controlId, ToggleBinding>` for exactly these (see `SettingsPage`), so a risky control
+ * can never receive a binding and can never flip from a search result - it degrades to a
+ * jump. Exported so the test can pin that without reaching into the page's runtime wiring.
+ * Whether a control can be bound is a fact about the control, so no flag changes it.
+ */
+export const BINDABLE_CONTROL_IDS: readonly string[] = ALL_SETTINGS_CONTROLS.filter(
+  (c) => settingsCategoryInBuild(c.category) && c.kind === "toggle" && !c.risky,
+).map((c) => c.id);

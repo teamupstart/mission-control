@@ -1,4 +1,5 @@
-import { getAppConfig, setAppConfig } from "../db.ts";
+import { persistConfigPatch } from "../config-patch-storage.ts";
+import { getAppConfig } from "../db.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { INSPECTOR_MODEL_ENV, inspectorEffortChoice, resolveInspectorModel } from "@shared/inspector.ts";
 import type { InspectorCall, ResolvedInspectorModel } from "@shared/inspector.ts";
@@ -26,7 +27,7 @@ export function getInspectorConfig(): InspectorConfig {
 export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig {
   const cur = getInspectorConfig();
   const next = InspectorConfigSchema.parse({ ...cur, ...patch, ...pinInspectorProvider(cur, patch) });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch);
   return next;
 }
 

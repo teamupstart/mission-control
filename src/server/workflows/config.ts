@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { TaskKind } from "@shared/types.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { WorkflowPolicyInput } from "@shared/protocol.ts";
@@ -89,6 +90,17 @@ export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
     defaultWorkflowId: taskDefaultWorkflowId("ship", next.kindWorkflowDefaults),
   });
   return next;
+}
+
+/** A narrow live preference patch preserves the grant and retention records as stored. */
+export const WorkflowPreferencesPatchSchema = z.strictObject({ skipPassedJudges: WorkflowPolicySchema.shape.skipPassedJudges.unwrap() });
+
+export function patchWorkflowPreferences(patch: Pick<WorkflowPolicy, "skipPassedJudges">): WorkflowPolicy {
+  const stored = getAppConfig(CONFIG_ENTRY);
+  // Creating the row must keep the fresh-profile command default. Existing rows keep
+  // their raw command consent, including the absence that marks a pre-field upgrade.
+  setAppConfig(CONFIG_ENTRY, { ...(stored ?? { checksEnabled: getWorkflowPolicy().checksEnabled }), ...patch });
+  return getWorkflowPolicy();
 }
 
 /**

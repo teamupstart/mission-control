@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   TestEvidenceAuditAggregate,
@@ -37,7 +38,7 @@ export interface WorkflowSettingsState {
    * Write the whole config, resolving to whether the daemon accepted it. The route is a
    * PUT of the complete blob (not a patch), so callers spread the config they were handed.
    */
-  update: (next: WorkflowConfig) => Promise<boolean>;
+  update: (next: WorkflowConfig, preferenceOnly?: boolean) => Promise<boolean>;
   /** Why the last write didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -172,6 +173,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
     setConfigState(next);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("workflows");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -208,7 +210,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig, readClock]);
+  }, [setConfig, readClock, settingsRevision]);
 
   /**
    * Apply a config change optimistically, and TAKE IT BACK if the daemon refuses.
@@ -219,7 +221,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
    * must not leave the optimistic value on screen.
    */
   const update = useCallback(
-    async (next: WorkflowConfig): Promise<boolean> => {
+    async (next: WorkflowConfig, preferenceOnly = false): Promise<boolean> => {
       const before = configRef.current;
       // Marked in flight BEFORE the request goes out, which is the whole point: the window
       // a poll has to be kept out of opens at the click, not when the daemon answers.
@@ -227,8 +229,8 @@ export function useWorkflowSettings(): WorkflowSettingsState {
       setConfig(next);
       try {
         const saved = await workflowRequest<WorkflowConfig>("/api/workflows/config", {
-          method: "PUT",
-          body: JSON.stringify(next),
+          method: preferenceOnly ? "PATCH" : "PUT",
+          body: JSON.stringify(preferenceOnly ? { skipPassedJudges: next.skipPassedJudges } : next),
         });
         setConfig(saved);
         setError(null);

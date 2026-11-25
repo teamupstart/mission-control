@@ -262,7 +262,7 @@ test("no rebindable action ships with a chord these twelve would shadow", () => 
   // the Board. An operator who rebinds onto one is their own business; a shipped default is
   // ours.
   const source = readFileSync(
-    fileURLToPath(new URL("../src/web/lib/keybindings.ts", import.meta.url)),
+    fileURLToPath(new URL("../src/shared/keyboard-settings.ts", import.meta.url)),
     "utf8",
   );
   const claimed = new Set(CARD_SHORTCUT_CHORDS);

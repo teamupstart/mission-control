@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "../config-patch-storage.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { LlmConfigSchema } from "@shared/protocol.ts";
 import type { LlmConfig, LlmConfigPatch } from "@shared/protocol.ts";
@@ -21,7 +22,7 @@ import type {
   ResolvedLlmRunner,
 } from "@shared/llm.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { getAppConfig, setAppConfig } from "../db.ts";
+import { getAppConfig } from "../db.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
 
@@ -82,7 +83,7 @@ export function setLlmConfig(patch: LlmConfigPatch): LlmConfig {
     // and the panel never has to round-trip the whole map to change one row.
     runners: { ...before.runners, ...pinOutgoingProvider(before, patch), ...patch.runners },
   });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, before, next, patch, ["models", "runners", "efforts"]);
   return next;
 }
 

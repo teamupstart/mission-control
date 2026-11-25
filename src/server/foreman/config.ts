@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "../config-patch-storage.ts";
 import { randomUUID } from "node:crypto";
 import type { ForemanPlannerHealth, ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
@@ -149,7 +150,7 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
     backlogDefaultModel: { ...cur.backlogDefaultModel, ...patch.backlogDefaultModel },
     ...(patch.efforts && { efforts: { ...cur.efforts, ...patch.efforts } }),
   });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, ["backlogDefaultModel", "efforts"]);
   return next;
 }
 

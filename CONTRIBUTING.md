@@ -140,6 +140,26 @@ label, or placeholder.
   evidence. Put evidence under gitignored `e2e/.artifacts/<topic>/` and attach it
   to the pull request.
 
+## Onboard a setting
+
+1. Reuse the control's entry in `src/shared/settings-controls.ts` for its label, keywords
+   and category. Reuse its generator for repeated controls. Keep runtime toggle bindings
+   in the web layer.
+2. In the owner's section of `src/server/session-settings-owners.ts`, declare a stable
+   public key and the exact field it reads and edits. For an ordinary field, bind it to the
+   dashboard patch schema and synchronous owner getter and writer. Reserve a custom leaf
+   projection for cases such as a single member of a preferences list. A storage or UI
+   rename keeps the published key or provides an alias. Declare the access policy and
+   document the reason and operator destination for protected, read-only and operational controls.
+3. For a new domain, provide the owner binding once and share the dashboard's validation,
+   feature checks and post-save effects. Use an existing update event or a bounded
+   invalidation that makes the browser re-read its normal route. Composite replacements
+   require an owner revision that advances on dashboard writes and restores. Prefer a
+   narrower edit when a parent also contains protected leaves.
+4. Update the [coverage inventory](docs/session-settings-inventory.md) and run
+   `test/typed-settings-owners.test.ts` and `test/mcp-settings.test.ts`. A setting
+   declaration never adds a tool, request field, enum of setting names, or prompt content.
+
 ## Submitting a change as a repository collaborator
 
 These steps apply only to authorized repository collaborators. Public issue reporters do not

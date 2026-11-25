@@ -360,11 +360,11 @@ export function WorkflowSettingsPanel({
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
 
-  const save = async (next: WorkflowConfig): Promise<void> => {
+  const save = async (next: WorkflowConfig, preferenceOnly = false): Promise<void> => {
     setBusy(true);
     setLocalError(null);
     try {
-      await update(next);
+      await update(next, preferenceOnly);
     } finally {
       setBusy(false);
     }
@@ -646,7 +646,7 @@ export function WorkflowSettingsPanel({
                   checked={config?.skipPassedJudges ?? true}
                   disabled={!config || busy}
                   onChange={(event) => {
-                    if (config) void save({ ...config, skipPassedJudges: event.target.checked });
+                    if (config) void save({ ...config, skipPassedJudges: event.target.checked }, true);
                   }}
                 />
                 Skip judges that already passed

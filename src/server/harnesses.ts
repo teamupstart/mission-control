@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
 import {
   HarnessesConfigSchema,
   type HarnessesConfig,
@@ -17,7 +18,7 @@ import { AGENT_TYPES, type AdvisorChoice, type AgentType, type SessionRuntime, t
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
 import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { getAppConfig, setAppConfig } from "./db.ts";
+import { getAppConfig } from "./db.ts";
 
 // The "Harnesses" SETTINGS section, mirroring foreman/config.ts and skills/config.ts:
 // a schema-validated blob over the `app_config` KV, so a new key needs no migration.
@@ -118,7 +119,7 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
     terminalBackend: { ...cur.terminalBackend, ...patch.terminalBackend },
     kindDefaults: merged,
   });
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, ["advisor", "defaultModel", "defaultEffort", "sessionRuntime", "terminalBackend", "kindDefaults"]);
   return next;
 }
 

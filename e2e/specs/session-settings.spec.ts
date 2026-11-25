@@ -308,3 +308,69 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
     await Promise.all([peer.close(), application.close()]);
   }
 });
+
+test("typed Harnesses defaults and Display preferences update an open dashboard", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Change launch defaults"));
+  try {
+    await openDisplay(page);
+    const format = page.getByRole("checkbox", { name: /Format messages/i });
+    await expect(format).toBeChecked();
+    expect(await callSettings(client, { operation: "set", key: "ui.richText", value: false }))
+      .toMatchObject({ value: false });
+    await expect(format).not.toBeChecked();
+
+    await page.getByRole("tab", { name: "Harnesses", exact: true }).click();
+    const runtime = page.getByRole("combobox", { name: "Session runtime for dispatched Claude Code sessions" });
+    await expect(runtime).toHaveValue("sdk");
+    expect(await callSettings(client, { operation: "find", query: "claude session runtime" })).toMatchObject({
+      matches: [{ key: "harnesses.sessionRuntime.claude", access: "read-write" }],
+    });
+    const key = "harnesses.sessionRuntime.claude";
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: "sdk" });
+    // The open panel re-reads the same route after the Harnesses notification.
+    const read = page.waitForResponse(response => response.url().endsWith("/api/harnesses/config")
+      && response.request().method() === "GET" && response.ok());
+    expect(await callSettings(client, { operation: "set", key, value: "terminal" })).toMatchObject({ value: "terminal" });
+    await read;
+    await expect(runtime).toHaveValue("terminal");
+    await runtime.scrollIntoViewIfNeeded();
+    await evidence(page, "typed-harness-runtime-live");
+
+    const saved = page.waitForResponse(response => response.url().endsWith("/api/harnesses/config")
+      && response.request().method() === "PUT" && response.ok());
+    await runtime.selectOption("sdk");
+    await saved;
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: "sdk" });
+    expect(await callSettings(client, { operation: "get", key: "harnesses.sessionRuntime.codex" })).toMatchObject({ value: "sdk" });
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    const judgePasses = page.getByRole("checkbox", { name: "Skip judges that already passed" });
+    await expect(judgePasses).toBeChecked();
+    const judgeKey = "workflows.skipPassedJudges";
+    expect(await callSettings(client, { operation: "set", key: judgeKey, value: false })).toMatchObject({ value: false });
+    await expect(judgePasses).not.toBeChecked();
+    const preference = page.waitForResponse(response => response.url().endsWith("/api/workflows/config")
+      && response.request().method() === "PATCH" && response.ok());
+    await judgePasses.check();
+    await preference;
+    expect(await callSettings(client, { operation: "get", key: judgeKey })).toMatchObject({ value: true });
+
+    await api(daemon, "/api/feature-flags", { kind: "flag", id: "inbox", enabled: true }, "PUT");
+    await page.getByRole("tab", { name: "Reports", exact: true }).click();
+    const guidance = page.getByRole("textbox", { name: "Report guidance" });
+    await expect(guidance).toBeVisible();
+    await callSettings(client, { operation: "set", key: "reports.guidance", value: "Post only on completion." });
+    await expect(guidance).toHaveValue("Post only on completion.");
+    await guidance.fill("Local draft");
+    const reportRead = page.waitForResponse(response => response.url().endsWith("/api/reports/guidance")
+      && response.request().method() === "GET" && response.ok());
+    await callSettings(client, { operation: "set", key: "reports.guidance", value: "Post exceptional findings." });
+    expect(await (await reportRead).json()).toMatchObject({ guidance: "Post exceptional findings." });
+    await expect(guidance).toHaveValue("Local draft");
+  } finally {
+    await client.close();
+  }
+});

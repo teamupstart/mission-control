@@ -2724,6 +2724,7 @@ export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 
 /** A provider id, or the empty string meaning "inherit". Strict, because this is a WRITE. */
 const ForemanRunnerOverrideSchema = z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]);
+const ForemanModelOverrideSchema = z.union([ModelIdSchema, z.literal("")]);
 
 /**
  * Partial update of the Foreman config from the dashboard.
@@ -2743,6 +2744,10 @@ export const ForemanConfigPatchSchema = partialPatch(ForemanConfigSchema)
     verifyRunner: ForemanRunnerOverrideSchema.optional(),
     triageRunner: ForemanRunnerOverrideSchema.optional(),
     backlogRunner: ForemanRunnerOverrideSchema.optional(),
+    triageModel: ForemanModelOverrideSchema.optional(),
+    reviewModel: ForemanModelOverrideSchema.optional(),
+    verifyModel: ForemanModelOverrideSchema.optional(),
+    backlogModel: ForemanModelOverrideSchema.optional(),
     efforts: effortOverridesPatch(FOREMAN_MODEL_ROLES).optional(),
     backlogDefaultModel: z
       .object({

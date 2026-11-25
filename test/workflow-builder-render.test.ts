@@ -245,7 +245,7 @@ test("the top-bar segment reaches the Library, and the builder is one level unde
   // a Workflows shelf card, which is what makes the shelf the place you learn what a
   // workflow is before you open one. The segment table lives in the topbar registry, the
   // button in `Topbar`, and `App` turns the page id into a route with nothing added.
-  assert.match(read("lib/topbar-items.ts"), /id: "runs",[\s\S]*?action: "runs"/);
+  assert.match(read("../shared/topbar-items-settings.ts"), /id: "runs",[\s\S]*?action: "runs"/);
   assert.match(read("components/Topbar.tsx"), /onClick=\{\(\) => props\.onNavigatePage\(id\)\}/);
   assert.match(source, /onNavigatePage=\{\(page\) => navigate\(\{ page \}\)\}/);
   assert.match(source, /<WorkflowLibrary[\s\S]*?initialWorkflowId=\{libraryAssetId\}/);

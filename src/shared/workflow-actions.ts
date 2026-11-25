@@ -8,6 +8,7 @@ export const WORKFLOW_ACTION_ROUTES = [
   ["DELETE", "/api/personas/:id", "persona.archive"],
   ["POST", "/api/workflows", "workflow.create"],
   ["PUT", "/api/workflows/config", "workflow.configure"],
+  ["PATCH", "/api/workflows/config", "workflow.configure"],
   ["PUT", "/api/workflow-commands/:id", "workflow.command"],
   ["PATCH", "/api/workflows/:id", "workflow.edit"],
   ["DELETE", "/api/workflows/:id", "workflow.archive"],

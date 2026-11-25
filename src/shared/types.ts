@@ -4284,6 +4284,7 @@ export type ServerEvent =
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   /** Bounded invalidation for the shared dashboard skin, with no config values on the stream. */
   | { type: "ui_skin_changed" }
+  | { type: "settings_config_changed"; domain: import("./session-settings-metadata.ts").SettingsRefreshDomain }
   | { type: "session_settings_access_changed" }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**

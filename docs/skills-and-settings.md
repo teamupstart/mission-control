@@ -782,9 +782,26 @@ Then ask a registered session **“Switch Mission Control to Daylight.”** The 
 Ask **“Which theme am I using?”** for a read. The result applies to this installation and
 open dashboards repaint as soon as the change is saved.
 
-The skin is the first editable setting. To revoke access, turn off **Allow sessions to access
+To revoke access, turn off **Allow sessions to access
 Mission Control settings** in **Settings > Trust** in the desktop app. The next request from any
 session is refused, including requests from sessions that are already running. The choice survives
 restart and settings snapshot restores. You can re-enable access with the same desktop control.
 Browser dashboards show the active choice. Both the preview flag and the Trust preference must be
 on to use the tool.
+
+
+## Discover and edit typed settings
+
+Ask a registered session to look up a preference by its label or purpose. For example,
+“Find the Claude session runtime and set it to Terminal pane” discovers
+`harnesses.sessionRuntime.claude`. Use `get` on an exact key for the current value and
+available choices. If it returns `nextChoiceCursor`, pass that cursor back in a new `get`
+for the same key. `set` returns the selected field after the owner saves it.
+
+A list replacement such as `skills.grillFirstKinds` requires the version returned by
+`get`. Read again before retrying a stale replacement. The tool routes edits to the
+same owners as the dashboard, and the [coverage inventory](session-settings-inventory.md)
+lists the owner and access for each Settings control. Changes that require operator
+confirmation, such as a backup limit that would delete copies, are made in Settings.
+
+Contributors can follow the [setting onboarding guide](../CONTRIBUTING.md#onboard-a-setting).

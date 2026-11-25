@@ -191,6 +191,7 @@
   "PATCH /api/sessions/:id/queue/:itemId": "404 {\"error\":\"no such session\"}",
   "PATCH /api/workflow-bindings/:id": "503 {\"error\":\"Workflow manager unavailable\"}",
   "PATCH /api/workflows/:id": "503 {\"error\":\"Workflow manager unavailable\"}",
+  "PATCH /api/workflows/config": "400 {\"error\":\"[\\n  {\\n    \\\"expected\\\": \\\"boolean\\\",\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"path\\\": [\\n      \\\"skipPassedJudges\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid input: expected boolean, received undefined\\\"\\n  }\\n]\"}",
   "POST /api/archives/:archiveKey/artifacts/:artifactId/open": "503 {\"error\":\"archive library unavailable\"}",
   "POST /api/attention/dismissals": "400 {\"error\":\"[\\n  {\\n    \\\"expected\\\": \\\"array\\\",\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"path\\\": [\\n      \\\"items\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid input: expected array, received undefined\\\"\\n  }\\n]\"}",
   "POST /api/ensembles": "503 {\"error\":\"Ensemble manager unavailable\"}",

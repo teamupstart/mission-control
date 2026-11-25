@@ -26,6 +26,6 @@ export function readReportGuidance(): ReportGuidanceView {
 
 /** Save the operator's guidance, or null to go back to the default. Already trimmed and bounded. */
 export function writeReportGuidance(guidance: string | null): ReportGuidanceView {
-  setAppConfig(ENTRY, { ...getAppConfig(ENTRY), guidance });
+  setAppConfig(ENTRY, { guidance });
   return view(guidance);
 }

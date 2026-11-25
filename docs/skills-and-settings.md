@@ -803,5 +803,7 @@ A list replacement such as `skills.grillFirstKinds` requires the version returne
 same owners as the dashboard, and the [coverage inventory](session-settings-inventory.md)
 lists the owner and access for each Settings control. Changes that require operator
 confirmation, such as a backup limit that would delete copies, are made in Settings.
+Use Settings > Foreman to change the automatic wrap-up exclusions and Settings > Reports
+to edit the guidance given to future sessions.
 
 Contributors can follow the [setting onboarding guide](../CONTRIBUTING.md#onboard-a-setting).

@@ -8018,6 +8018,11 @@ export const WorkflowPolicySchema = z.object({
 });
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
 
+export const WorkflowPolicyPatchSchema = partialPatch(WorkflowPolicySchema).strict().extend({
+  retention: partialPatch(WorkflowPolicySchema.shape.retention.unwrap()).strict().optional(),
+}).refine(patch => Object.keys(patch).length > 0, { message: "Supply at least one Workflow policy field" });
+export type WorkflowPolicyPatch = z.output<typeof WorkflowPolicyPatchSchema>;
+
 /**
  * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.
  *

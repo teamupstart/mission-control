@@ -105,7 +105,6 @@ import { bodyLimit } from "hono/body-limit";
 import { settingsRefreshDomain } from "@shared/session-settings-metadata.ts";
 import { typedSettings, type SettingsOwners } from "./session-settings-owners.ts";
 import { InvalidSettingValue } from "./settings-dispatcher.ts";
-import { WorkflowPreferencesPatchSchema, patchWorkflowPreferences } from "./workflows/config.ts";
 import { registerSessionSettingsRoutes } from "./session-settings.ts";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -315,6 +314,7 @@ import {
   UpdateWorkflowCommandSchema,
   ReadWorkflowCommandOutputSchema,
   WorkflowConfigSchema,
+  WorkflowPolicyPatchSchema,
   WorkflowRunActionSchema,
   WorktreeActionExecuteSchema,
   WorktreeActionRequestSchema,
@@ -768,6 +768,7 @@ import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import { CommandArtifactReadError } from "./workflows/command-artifacts.ts";
 import {
   getWorkflowPolicy,
+  patchWorkflowPolicy,
   setWorkflowPolicy,
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
@@ -2878,11 +2879,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ...getWorkflowPolicy(),
     checkCommands: legacyCheckCommands(workflowCommandManager()?.list() ?? []),
   });
+  const workflowDefaultError = (defaults: WorkflowConfig["kindWorkflowDefaults"]): string | null => {
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = defaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
+      if (!detail || detail.workflow.archivedAt !== null || detail.workflow.currentVersionId === null) {
+        return `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`;
+      }
+    }
+    return null;
+  };
   app.get("/api/workflows/config", (c) => c.json(legacyWorkflowConfig()));
   app.patch("/api/workflows/config", async c => {
-    const parsed = await parseBody(c, WorkflowPreferencesPatchSchema, { strict: true });
+    const parsed = await parseBody(c, WorkflowPolicyPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    patchWorkflowPreferences(parsed.data);
+    const defaults = parsed.data.kindWorkflowDefaults;
+    const error = defaults && workflowDefaultError(defaults);
+    if (error) return c.json({ error }, 409);
+    patchWorkflowPolicy(parsed.data);
     return c.json(legacyWorkflowConfig());
   });
   app.get("/api/workflows/status", (c) => {
@@ -2908,20 +2923,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
-      const workflowId = parsed.data.kindWorkflowDefaults[kind];
-      if (!workflowId) continue;
-      const detail = workflowManager()?.get(workflowId) ?? null;
-      if (
-        !detail
-        || detail.workflow.archivedAt !== null
-        || detail.workflow.currentVersionId === null
-      ) {
-        return c.json({
-          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
-        }, 409);
-      }
-    }
+    const error = workflowDefaultError(parsed.data.kindWorkflowDefaults);
+    if (error) return c.json({ error }, 409);
     // ONE transaction over both halves, because the old route's contract is that its body is
     // one object. `checkCommands` belongs to the Command catalog now and everything else to
     // the config blob, and committing the catalog while the policy write failed would answer

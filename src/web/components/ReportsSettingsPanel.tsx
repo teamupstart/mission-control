@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReportGuidanceView } from "@shared/protocol.ts";
 import { REPORT_GUIDANCE_RULES, type ReportMute } from "@shared/reports.ts";
-import { useSettingsConfigRevision } from "../lib/settings-config-refresh.ts";
 import { api } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -48,16 +47,14 @@ export function ReportsSettingsPanel({
 
 function GuidanceEditor({ initial }: { initial: ReportGuidanceView | null }): React.JSX.Element {
   const [view, setView] = useState<ReportGuidanceView | null>(initial);
-  const [edit, setEdit] = useState<string | null>(null);
-  const draft = edit ?? view?.effective ?? "";
+  const [draft, setDraft] = useState(initial?.effective ?? "");
   const [unreadable, setUnreadable] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
 
-  const revision = useSettingsConfigRevision("reports");
   useEffect(() => {
-    if (initial || saving) return;
+    if (initial) return;
     let alive = true;
     void api.reportGuidance().then((read) => {
       if (!alive) return;
@@ -65,13 +62,13 @@ function GuidanceEditor({ initial }: { initial: ReportGuidanceView | null }): Re
         setUnreadable(true);
         return;
       }
-      setUnreadable(false);
       setView(read.value);
+      setDraft(read.value.effective);
     });
     return () => {
       alive = false;
     };
-  }, [initial, revision, saving]);
+  }, [initial]);
 
   const save = (guidance: string | null, done: string) => {
     setSaving(true);
@@ -84,7 +81,7 @@ function GuidanceEditor({ initial }: { initial: ReportGuidanceView | null }): Re
         return;
       }
       setView(result.view);
-      setEdit(null);
+      setDraft(result.view.effective);
       setSaved(done);
     });
   };
@@ -118,7 +115,7 @@ function GuidanceEditor({ initial }: { initial: ReportGuidanceView | null }): Re
             value={draft}
             disabled={saving}
             onChange={(event) => {
-              setEdit(event.target.value);
+              setDraft(event.target.value);
               setSaved(null);
             }}
           />

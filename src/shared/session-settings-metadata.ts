@@ -16,7 +16,7 @@ export const SESSION_SETTINGS_ACCESS = {
 
 /** Settings owners whose existing HTTP views need a bounded invalidation. */
 export const SETTINGS_REFRESH_DOMAINS = [
-  "ui", "foreman", "inspector", "llm", "shipping", "skills", "cost", "terminals", "reports", "workflows",
+  "ui", "foreman", "inspector", "llm", "shipping", "skills", "cost", "terminals", "workflows",
 ] as const;
 export type SettingsRefreshDomain = (typeof SETTINGS_REFRESH_DOMAINS)[number];
 

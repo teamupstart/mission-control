@@ -34,11 +34,13 @@ after(() => {
 });
 const { managedMissionExtension } = await import("../src/pi/extension.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { DatabaseBackupService } = await import("../src/server/database-backups/service.ts");
 const { getDatabaseBackupsConfig } = await import("../src/server/database-backups/config.ts");
+const { getWorktreesConfig, setWorktreesConfig, resolveWorktreePolicy } = await import("../src/server/worktrees/config.ts");
 const { applyFeatureFlagIntent, featureEnabled, reloadFeatureFlags } = await import("../src/server/feature-flags/index.ts");
 const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
 const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
@@ -50,7 +52,6 @@ const { dispatchSetting } = await import("../src/server/settings-dispatcher.ts")
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 type SettingDescriptor = import("../src/server/settings-dispatcher.ts").SettingDescriptor;
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
-type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 
 const find = { operation: "find", query: "theme" } as const;
@@ -65,8 +66,9 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   const clicks = new Map<string, boolean>();
   const databaseBackups = new DatabaseBackupService(openDb(), { root: join(home, "database-backups") });
   const app = buildApp({
-    registry, tasks: {} as TaskManager, reviews: {} as ReviewManager, queues: {} as QueueManager,
+    registry, tasks: new TaskManager(registry), reviews: {} as ReviewManager, queues: {} as QueueManager,
     databaseBackups,
+    worktreeOperations: { setConfig: setWorktreesConfig } as import("../src/server/worktrees/operations.ts").WorktreeOperationsService,
     authorizeSessionSettings: async ({ requestId, enabled }) => {
       const armed = clicks.get(requestId);
       clicks.delete(requestId);
@@ -295,6 +297,66 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.backups), before);
     assert.deepEqual(readdirSync(databaseBackups.root).sort(), kept);
     assert.deepEqual([first.path, second.path].map(path => readFileSync(path)), copies);
+  });
+
+  await t.test("the Foreman automatic wrap-up exclusions stay under operator control", async () => {
+    const config = { wrapup: "pr", skipScoutWrapup: true, skipReviewArtifactWrapup: true } as const;
+    setAppConfig(APP_CONFIG_ENTRIES.foreman, config);
+    for (const key of ["foreman.skipScoutWrapup", "foreman.skipReviewArtifactWrapup"]) {
+      await call(claude, { ...set, key, value: false }, "protected", "Manage this setting in Settings > Foreman.");
+    }
+    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.foreman), config);
+  });
+
+  await t.test("free-form report guidance stays under operator control", async () => {
+    const config = { guidance: "Operator guidance for future sessions." };
+    setAppConfig(APP_CONFIG_ENTRIES.reports, config);
+    await call(claude, { ...get, key: "reports.guidance" }, "protected", "Manage this setting in Settings > Reports.");
+    await call(claude, { ...set, key: "reports.guidance", value: "Session-supplied text." },
+      "protected", "Manage this setting in Settings > Reports.");
+    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.reports), config);
+  });
+
+  await t.test("an explicit repository override persists even when it equals the inherited value", async () => {
+    const repo = join(home, "repository", ".git");
+    setWorktreesConfig({ enabled: true, repositories: { [repo]: { maxSlots: 2 } } });
+    const key = `worktrees.repositories.${createHash("sha256").update(repo).digest("base64url")}.enabled`;
+    assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: true, type: "boolean" });
+    assert.deepEqual(await call(claude, { ...set, key, value: true }), { ok: true, operation: "set", key, value: true });
+    assert.deepEqual(getWorktreesConfig().repositories[repo], { maxSlots: 2, enabled: true });
+    setWorktreesConfig({ enabled: false });
+    assert.equal(resolveWorktreePolicy(repo).enabled, true);
+    assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: true, type: "boolean" });
+  });
+
+  await t.test("hidden-item booleans agree with both persisted visibility lists", async () => {
+    for (const [owner, id] of [["hiddenDisplayItems", "model"], ["hiddenTopbarItems", "sessions"]] as const) {
+      const key = `ui.${owner}.${id}`;
+      for (const hidden of [true, false]) {
+        assert.deepEqual(await call(claude, { ...set, key, value: hidden }), { ok: true, operation: "set", key, value: hidden });
+        assert.equal(getUiConfig()[owner].includes(id), hidden);
+        assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: hidden, type: "boolean" });
+      }
+    }
+  });
+
+  await t.test("keyboard writes reject noncanonical chords before storing them", async () => {
+    const key = "ui.keybindings.fleet";
+    for (const value of ["Ctrl+M", "ctrl+M", "alt+ctrl+m", "shift+?", "ctrl+Nonsense"]) {
+      await call(claude, { ...set, key, value }, "invalid_value");
+    }
+    assert.equal(getUiConfig().keybindings.fleet, undefined);
+    assert.deepEqual(await call(claude, { ...set, key, value: "ctrl+m" }), { ok: true, operation: "set", key, value: "ctrl+m" });
+    assert.equal(getUiConfig().keybindings.fleet, "ctrl+m");
+  });
+
+  await t.test("shipping discovery lists every valid merge method", async () => {
+    const key = "shipping.method";
+    assert.deepEqual(await call(claude, { ...get, key }), {
+      ok: true, operation: "get", key, value: "squash", type: "string", constraints: { choicesOnly: true },
+      choices: ["squash", "merge", "rebase"].map(value => ({ value, label: value })),
+    });
+    assert.deepEqual(await call(claude, { ...set, key, value: "merge" }), { ok: true, operation: "set", key, value: "merge" });
   });
 
   await t.test("a structured Skills edit requires a fresh version after a dashboard save", async () => {

@@ -94,6 +94,9 @@ test("typed owner fields, Settings controls and exact rollout dispositions recon
     assert.ok(keys.has(`ui.${kind === "optional" ? "hiddenTopbarItems" : "compactTopbarItems"}.${id}`));
   }
   assert.equal(catalog.find(setting => setting.key === "foreman.autoBacklog")?.access, "protected");
+  for (const key of ["foreman.skipScoutWrapup", "foreman.skipReviewArtifactWrapup", "reports.guidance"]) {
+    assert.equal(catalog.find(setting => setting.key === key)?.access, "protected", key);
+  }
   assert.ok(!keys.has("ui.keybindings") && !keys.has("harnesses.advisor") && !keys.has("worktrees.repositories"));
 });
 

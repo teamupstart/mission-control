@@ -22,9 +22,9 @@ describes snapshot behavior independently of session access.
 | `conversation-view` | 2 | Read/write | UI config `conversationView` |
 | `skin` | 1 | Read/write | UI config `ui.skin`, shipped skin IDs |
 | `format-messages` | 2 | Read/write | UI config `richText` |
-| `board-card` | 2 | Read/write | UI config `hiddenDisplayItems` per `DISPLAY_ITEMS` entry, plus `taskKindCard` and `backgroundAgentsStyle`. The seed marker is derived. |
+| `board-card` | 2 | Read/write | UI config `hiddenDisplayItems` per `DISPLAY_ITEMS` entry, plus `taskKindCard` and `backgroundAgentsStyle`. A hidden-item value of true hides it. The seed marker is derived. |
 | `pause-controls` | 2 | Read/write | UI config `pauseCardControls` and `pauseConsoleControls` per shown action. Pause itself is operational. |
-| `topbar` | 2 | Read/write | UI config `hiddenTopbarItems` and `compactTopbarItems` per configurable item |
+| `topbar` | 2 | Read/write | UI config `hiddenTopbarItems` and `compactTopbarItems` per configurable item. A hidden-item value of true hides it. |
 | `conversation-header` | 2 | Read/write | UI config `hiddenDisplayItems` conversation group and `taskKindHeader` |
 | `working-indicator` | 2 | Read/write | UI config `hiddenDisplayItems` working-harness conversation and card marks |
 | `guided-dispatch` | 2 | Read/write | UI config `guidedDispatch` |
@@ -68,7 +68,7 @@ describes snapshot behavior independently of session access.
 | `skills-always-draft-pr` | 2 | Read/write | Skills config `alwaysDraftPr` |
 | `standing-instructions-default` | 3 | Protected | Standing-instructions owner, operator-authored instructions injected into launches |
 | `standing-instructions-repositories` | 3 | Protected | Standing-instructions owner, repository-scoped launch instructions and removal |
-| `reports-guidance` | 2 | Read/write | Report settings `guidance` |
+| `reports-guidance` | 2 | Protected | Free-form report guidance supplies tool instructions to future sessions across repositories. Edit it in Settings > Reports. |
 | `reports-muted` | 3 | Pending | ReportManager's `report_mutes`, per-source unmute intent |
 | `cost-track` | 3 | Protected | Cost owner `enabled` affects external export and user-local Claude settings |
 | `cost-interval` | 3 | Pending | Cost owner `exportIntervalMs` and Claude settings reconciliation |
@@ -85,8 +85,8 @@ describes snapshot behavior independently of session access.
 | `storage-problems` | 3 | Status | Storage health and diagnostics |
 | `restore-settings` | 3 | Protected action | Settings backup service checks a preview digest and restores multiple owners after operator confirmation |
 | `foreman-tier` | 3 | Pending | Foreman tier applies coordinated changes. Its standing guidance link leads to operator-authored `foreman.instructions`. |
-| `foreman-skip-scout-wrapup` | 2 | Read/write | Foreman config `skipScoutWrapup` |
-| `foreman-skip-review-artifact-wrapup` | 2 | Read/write | Foreman config `skipReviewArtifactWrapup` |
+| `foreman-skip-scout-wrapup` | 2 | Protected | Clearing `skipScoutWrapup` expands the tasks eligible for automatic shipping. |
+| `foreman-skip-review-artifact-wrapup` | 2 | Protected | Clearing `skipReviewArtifactWrapup` expands the tasks eligible for automatic shipping. |
 | `foreman-ship-recovery-minutes` | 2 | Read/write | Foreman config `shipRecoveryMinutes` |
 | `foreman-episodes` | 3 | Status | Foreman decision history |
 | `workflow-live-delivery` | 3 | Protected | Workflow policy `liveEnabled` requires operator arming |

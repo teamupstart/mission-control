@@ -5,16 +5,16 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { DISPLAY_ITEMS } from "@shared/board-card-settings.ts";
 import { capabilitiesFor, resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import { ACTIONS, bindingValidationError, resolveKeybindings } from "@shared/keyboard-settings.ts";
-import { parseChord } from "@shared/keyboard-chords.ts";
+import { isCanonicalChord } from "@shared/keyboard-chords.ts";
 import { FOREMAN_MODEL_ROLES } from "@shared/foreman-models.ts";
 import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { PAUSE_CARD_CONTROLS, PAUSE_CONSOLE_CONTROLS } from "@shared/pause.ts";
 import {
   BackgroundAgentsStyleSchema, BlockedPlacementSchema, ConversationViewSchema, CostConfigPatchSchema,
   ForemanConfigPatchSchema, HarnessesConfigPatchSchema, InspectorConfigPatchSchema, LayoutModeSchema,
-  LineDensitySchema, LlmConfigPatchSchema, ReportGuidanceUpdateSchema, ResidentPlacementSchema,
-  ShippingConfigPatchSchema, SkillsConfigPatchSchema, TaskKindCardStyleSchema, TaskKindHeaderStyleSchema,
-  TerminalsConfigPatchSchema, UiConfigPatchSchema, WorktreesConfigPatchSchema,
+  LineDensitySchema, LlmConfigPatchSchema, ResidentPlacementSchema,
+  ShippingConfigPatchSchema, ShippingConfigSchema, SkillsConfigPatchSchema, TaskKindCardStyleSchema, TaskKindHeaderStyleSchema,
+  TerminalsConfigPatchSchema, UiConfigPatchSchema, WorkflowPolicyPatchSchema, WorktreesConfigPatchSchema,
   type UiConfig,
 } from "@shared/protocol.ts";
 import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
@@ -31,13 +31,12 @@ import { getForemanConfig } from "./foreman/config.ts";
 import { getHarnessesConfig } from "./harnesses.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getLlmConfig } from "./llm/config.ts";
-import { readReportGuidance, writeReportGuidance } from "./report-guidance.ts";
 import { getShippingConfig } from "./shipping/config.ts";
 import { getSkillsConfig } from "./skills/config.ts";
 import { getTerminalsConfig, setTerminalsConfig } from "./terminals-config.ts";
 import { getUiConfig, setUiConfig } from "./ui-config.ts";
 import { getWorktreesConfig } from "./worktrees/config.ts";
-import { getWorkflowPolicy, patchWorkflowPreferences, WorkflowPreferencesPatchSchema } from "./workflows/config.ts";
+import { getWorkflowPolicy, patchWorkflowPolicy } from "./workflows/config.ts";
 import { getDatabaseBackupsConfig } from "./database-backups/config.ts";
 import { getStorageLimitsConfig } from "./storage-limits.ts";
 import { binUnsupportedReason } from "./terminal/bin.ts";
@@ -70,15 +69,15 @@ function uiField(path: string, control: string, options?: Parameters<typeof fiel
 function membership(
   path: keyof Pick<UiConfig, "hiddenDisplayItems" | "hiddenTopbarItems" | "compactTopbarItems"
     | "pauseCardControls" | "pauseConsoleControls" | "collapsedBoardColumns">,
-  id: string, control: string, label: string, inverted = false,
+  id: string, control: string, label: string,
 ) {
   return uiField(`${path}.${id}`, control, {
     label,
-    read: config => config[path].includes(id) !== inverted,
+    read: config => config[path].includes(id),
     patch: (config, value) => {
       if (typeof value !== "boolean") throw new InvalidSettingValue();
       const without = config[path].filter(item => item !== id);
-      return { [path]: value !== inverted ? [...without, id] : without };
+      return { [path]: value ? [...without, id] : without };
     },
   });
 }
@@ -105,9 +104,9 @@ const uiFields = [
   uiField("backgroundAgentsStyle", "board-card", { label: "Background agents style", choices: choices(BackgroundAgentsStyleSchema.options) }),
   ...DISPLAY_ITEMS.map(item => membership("hiddenDisplayItems", item.id,
     item.group === "card" ? "board-card" : item.group === "conversation" ? "conversation-header" : "working-indicator",
-    `Show ${item.label}`, true)),
+    `Hide ${item.label}`)),
   ...TOPBAR_ITEMS.map(item => item.kind === "optional"
-    ? membership("hiddenTopbarItems", item.id, "topbar", `Show ${item.label} in the top bar`, true)
+    ? membership("hiddenTopbarItems", item.id, "topbar", `Hide ${item.label} in the top bar`)
     : membership("compactTopbarItems", item.id, "topbar", `Compact ${item.label} in the top bar`)),
   ...PAUSE_CARD_CONTROLS.map(id => membership("pauseCardControls", id, "pause-controls", `Show card pause ${id}`)),
   ...PAUSE_CONSOLE_CONTROLS.map(id => membership("pauseConsoleControls", id, "pause-controls", `Show console pause ${id}`)),
@@ -118,9 +117,8 @@ const uiFields = [
       if (value === null) {
         delete next[id];
       } else {
-        if (typeof value !== "string" || !value || value.length > 64 || [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) throw new InvalidSettingValue();
-        const { mods, key } = parseChord(value);
-        if (!key || new Set(mods).size !== mods.length || bindingValidationError(resolveKeybindings(next), id, value)) {
+        if (typeof value !== "string" || value.length > 64 || !isCanonicalChord(value)
+          || bindingValidationError(resolveKeybindings(next), id, value)) {
           throw new InvalidSettingValue();
         }
         if (value === defaultBinding) delete next[id];
@@ -198,8 +196,6 @@ export function typedSettings(
     schema: ForemanConfigPatchSchema, read: getForemanConfig, apply: owners.foreman, changed,
     revision: () => appConfigRevision(APP_CONFIG_ENTRIES.foreman),
   }, [
-    field("foreman", "skipScoutWrapup", "foreman-skip-scout-wrapup"),
-    field("foreman", "skipReviewArtifactWrapup", "foreman-skip-review-artifact-wrapup"),
     field("foreman", "shipRecoveryMinutes", "foreman-ship-recovery-minutes"),
     field("foreman", "wrapupTriggers", "foreman-tuning", { label: "Foreman wrap-up triggers", replacement: "composite" }),
     ...["triage", "maxFixAttempts", "maxFixRounds", "maxSessions"].map(id =>
@@ -227,15 +223,17 @@ export function typedSettings(
   const descriptors = [
     ...bindTypedSettings({ schema: UiConfigPatchSchema, read: () => getUiConfig(false), apply: setUiConfig, changed }, uiFields),
     ...harnesses, ...llm, ...foreman, ...skills,
-    ...[
+    ...([
       ["wrapup", "Wrap-up action"],
       ["trackReviewFeedback", "Track review feedback"],
       ["trackCiFailures", "Track CI failures"],
       ["keepShipTasksMoving", "Keep Ship tasks moving"],
       ["autoBacklog", "Backlog autopilot"],
       ["backlogRespectOpenPrs", "Keep open pull requests out of autopilot"],
-    ].map(([id, label]) => ({
-      key: `foreman.${id}`, label: label!, keywords: ["automation", "Foreman"],
+      ["skipScoutWrapup", "Exclude Scouts from automatic wrap-up", "foreman-skip-scout-wrapup"],
+      ["skipReviewArtifactWrapup", "Exclude review artifacts from automatic wrap-up", "foreman-skip-review-artifact-wrapup"],
+    ] as const).map(([id, label, control]) => ({
+      key: `foreman.${id}`, control, label, keywords: ["automation", "Foreman"],
       access: "protected" as const, destination: "Settings > Foreman",
     })),
     ...bindTypedSettings({ schema: InspectorConfigPatchSchema, read: getInspectorConfig, apply: owners.inspector, changed }, [
@@ -246,7 +244,7 @@ export function typedSettings(
     ]),
     ...bindTypedSettings({ schema: ShippingConfigPatchSchema, read: getShippingConfig, apply: owners.shipping, changed }, [
       field("shipping", "soakMinutes", "soak"),
-      field("shipping", "method", "merge-method"),
+      field("shipping", "method", "merge-method", { choices: choices(ShippingConfigSchema.shape.method.unwrap().options) }),
       field("shipping", "stacking", "stacked-pull-requests"),
       field("shipping", "maxStackDepth", "stacked-pull-requests", { label: "Maximum stack depth" }),
     ]),
@@ -260,9 +258,12 @@ export function typedSettings(
     ...bindTypedSettings({ schema: CostConfigPatchSchema, read: getCostConfig, apply: owners.cost, changed }, [
       field("cost", "view", "cost-view"),
     ]),
-    ...bindTypedSettings({ schema: ReportGuidanceUpdateSchema, read: readReportGuidance,
-      changed, apply: ({ guidance }) => writeReportGuidance(guidance) }, [field("reports", "guidance", "reports-guidance")]),
-    ...bindTypedSettings({ schema: WorkflowPreferencesPatchSchema, read: getWorkflowPolicy, apply: patchWorkflowPreferences, changed }, [
+    {
+      key: "reports.guidance", control: "reports-guidance", label: "Report guidance",
+      keywords: ["reports", "post_report"], access: "protected" as const,
+      destination: "Settings > Reports", available: () => featureEnabled("inbox"),
+    },
+    ...bindTypedSettings({ schema: WorkflowPolicyPatchSchema, read: getWorkflowPolicy, apply: patchWorkflowPolicy, changed }, [
       field("workflows", "skipPassedJudges", "workflow-judge-passes"),
     ]),
     ...worktrees ? bindTypedSettings(worktrees, ["enabled", "taskRetentionDays", "maxSlots"].map(id =>
@@ -284,6 +285,7 @@ export function typedSettings(
         key: `worktrees.repositories.${createHash("sha256").update(repo).digest("base64url")}.${id}`,
         label: `Worktree ${id} for ${repo.split(/[/\\]/).filter(Boolean).slice(-2).join("/")}`,
         read: config => config.repositories[repo]?.[id] ?? config[id],
+        storedValue: config => config.repositories[repo]?.[id],
         patch: (_config, value) => ({ repositories: { [repo]: { [id]: value } } }),
       })))) : [],
   ];

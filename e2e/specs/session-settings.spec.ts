@@ -362,15 +362,52 @@ test("typed Harnesses defaults and Display preferences update an open dashboard"
     await page.getByRole("tab", { name: "Reports", exact: true }).click();
     const guidance = page.getByRole("textbox", { name: "Report guidance" });
     await expect(guidance).toBeVisible();
-    await callSettings(client, { operation: "set", key: "reports.guidance", value: "Post only on completion." });
+    await guidance.fill("Post only on completion.");
+    const reportSave = page.waitForResponse(response => response.url().endsWith("/api/reports/guidance")
+      && response.request().method() === "PUT" && response.ok());
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    expect(await (await reportSave).json()).toMatchObject({ guidance: "Post only on completion." });
+    await callSettings(client, { operation: "set", key: "reports.guidance", value: "Post exceptional findings." }, "protected");
+    expect(await api(daemon, "/api/reports/guidance")).toMatchObject({ guidance: "Post only on completion." });
     await expect(guidance).toHaveValue("Post only on completion.");
-    await guidance.fill("Local draft");
-    const reportRead = page.waitForResponse(response => response.url().endsWith("/api/reports/guidance")
-      && response.request().method() === "GET" && response.ok());
-    await callSettings(client, { operation: "set", key: "reports.guidance", value: "Post exceptional findings." });
-    expect(await (await reportRead).json()).toMatchObject({ guidance: "Post exceptional findings." });
-    await expect(guidance).toHaveValue("Local draft");
+    await evidence(page, "report-guidance-operator-only");
   } finally {
+    await client.close();
+  }
+});
+
+test("saving Workflow retention from a stale panel preserves a session's judge preference", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Change judge preference"));
+  let releaseRefresh!: () => void;
+  const holdRefresh = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  try {
+    await page.getByRole("button", { name: /^Settings\b/ }).click();
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    const reuse = page.getByRole("checkbox", { name: "Skip judges that already passed" });
+    await expect(reuse).toBeEnabled();
+    await expect(reuse).toBeChecked();
+    await page.route("**/api/workflows/config", async route => {
+      if (route.request().method() === "GET") await holdRefresh;
+      await route.continue();
+    });
+    const key = "workflows.skipPassedJudges";
+    expect(await callSettings(client, { operation: "set", key, value: false })).toMatchObject({ value: false });
+    await expect(reuse).toBeChecked();
+    const limit = page.getByRole("spinbutton", { name: "Newest completed runs kept" });
+    await limit.fill("1100");
+    const saved = page.waitForResponse(response => response.url().endsWith("/api/workflows/config")
+      && response.request().method() !== "GET" && response.ok());
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    expect(await (await saved).json()).toMatchObject({ retention: { maxCompletedRuns: 1100 } });
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: false });
+    await expect(reuse).not.toBeChecked();
+    await evidence(page, "workflow-retention-preserves-session-preference");
+  } finally {
+    releaseRefresh();
     await client.close();
   }
 });

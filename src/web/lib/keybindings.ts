@@ -24,47 +24,7 @@ import {
 export * from "@shared/keyboard-settings.ts";
 import { subscribeUiConfig, uiConfig, updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
-/**
- * Canonical chord for a keydown: modifier tokens (cmd/ctrl/alt/shift) joined by
- * "+" ahead of the key. Returns null for a lone modifier press so key capture can
- * keep waiting for a real key.
- *
- * Whether shift is a modifier depends on whether the key is *cased*:
- *
- * - A cased character (a letter) only changes case under shift, so shift is a real
- *   modifier: Shift+O is "shift+o", distinct from a bare "o". That asymmetry is
- *   what makes a shift+letter binding expressible at all - and it cuts both ways:
- *   Shift+S is "shift+s" and so no longer triggers "s" (send), Shift+K no longer
- *   kills, and so on. Deliberate.
- * - An uncased character comes out of the keyboard *different* under shift ("+"
- *   from Shift+= on a US layout, "?" from Shift+/), so shift stays baked into the
- *   character and is never emitted as a token - "+" and "/" bind as themselves.
- * - A named key (Tab, Enter) has no character to bake shift into, so shift is a
- *   modifier there too: "shift+Tab".
- */
-export function chordFromEvent(e: KeyboardEvent, physicalModifiers = false): string | null {
-  const k = e.key;
-  if (k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return null;
-  const mods: string[] = [];
-  if (e.metaKey) mods.push("cmd");
-  if (e.ctrlKey) mods.push("ctrl");
-  if (e.altKey) mods.push("alt");
-  let key: string;
-  // Option+digit is spelled by its physical digit. macOS turns it into a symbol (`¡`, `™`, … on
-  // a US layout, something else on others), which would let the Keyboard panel record a chord
-  // the ⌥1…⌥9 resident jumps answer first. Spelled as the digit, it meets their reservation.
-  const digit = e.altKey && !e.shiftKey ? /^Digit([0-9])$/.exec(e.code ?? "")?.[1] : undefined;
-  if (digit !== undefined) {
-    key = digit;
-  } else if (k.length === 1 && !isCased(k)) {
-    key = k;
-    if (physicalModifiers && e.shiftKey) mods.push("shift");
-  } else {
-    key = k.length === 1 ? k.toLowerCase() : k;
-    if (e.shiftKey) mods.push("shift");
-  }
-  return [...mods, key].join("+");
-}
+export { chordFromEvent } from "../../shared/keyboard-chords.ts";
 
 /** WAI-ARIA spelling of a canonical chord for `aria-keyshortcuts`. */
 export function ariaKeyshortcuts(chord: string): string | undefined {

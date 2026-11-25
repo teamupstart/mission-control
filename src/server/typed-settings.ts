@@ -15,6 +15,8 @@ export interface TypedSettingField<Config> {
   choices?: readonly SettingsChoice[];
   available?: () => boolean;
   read?: (config: Config) => SettingsValue;
+  /** Compare the stored field when the public read can fall back to an inherited value. */
+  storedValue?: (config: Config) => SettingsValue | undefined;
   patch?: (config: Config, value: SettingsValue) => unknown;
 }
 
@@ -81,7 +83,8 @@ export function bindTypedSettings<Config, Patch>(owner: {
       const parsed = owner.schema.safeParse(input);
       if (!parsed.success || !hasOnlyAcceptedKeys(input, parsed.data)) throw new InvalidSettingValue();
       const effective = project(current);
-      if (isDeepStrictEqual(effective, value)) return effective;
+      const stored = setting.storedValue ? setting.storedValue(current) : effective;
+      if (isDeepStrictEqual(stored, value)) return effective;
       const saved = owner.apply(parsed.data);
       owner.changed?.(key);
       return project(saved);

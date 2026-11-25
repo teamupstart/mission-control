@@ -1,7 +1,6 @@
-import { z } from "zod";
 import type { TaskKind } from "@shared/types.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
-import type { WorkflowPolicyInput } from "@shared/protocol.ts";
+import type { WorkflowPolicyInput, WorkflowPolicyPatch } from "@shared/protocol.ts";
 import { StoredWorkflowPolicySchema, WorkflowPolicySchema } from "@shared/protocol.ts";
 import type { WorkflowCheckSlot, WorkflowPolicy } from "@shared/workflow.ts";
 import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
@@ -92,14 +91,20 @@ export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
   return next;
 }
 
-/** A narrow live preference patch preserves the grant and retention records as stored. */
-export const WorkflowPreferencesPatchSchema = z.strictObject({ skipPassedJudges: WorkflowPolicySchema.shape.skipPassedJudges.unwrap() });
-
-export function patchWorkflowPreferences(patch: Pick<WorkflowPolicy, "skipPassedJudges">): WorkflowPolicy {
+/** Merge a policy edit at commit time, leaving untouched fields and the command catalog alone. */
+export function patchWorkflowPolicy(patch: WorkflowPolicyPatch): WorkflowPolicy {
   const stored = getAppConfig(CONFIG_ENTRY);
-  // Creating the row must keep the fresh-profile command default. Existing rows keep
-  // their raw command consent, including the absence that marks a pre-field upgrade.
-  setAppConfig(CONFIG_ENTRY, { ...(stored ?? { checksEnabled: getWorkflowPolicy().checksEnabled }), ...patch });
+  const { retention, kindWorkflowDefaults, ...preferences } = patch;
+  setAppConfig(CONFIG_ENTRY, {
+    // Preserve fresh-install consent as well as the absence that marks a pre-field upgrade.
+    ...(stored ?? { checksEnabled: getWorkflowPolicy().checksEnabled }),
+    ...preferences,
+    ...(retention && { retention: { ...getWorkflowPolicy().retention, ...retention } }),
+    ...(kindWorkflowDefaults && {
+      kindWorkflowDefaults,
+      defaultWorkflowId: taskDefaultWorkflowId("ship", kindWorkflowDefaults),
+    }),
+  });
   return getWorkflowPolicy();
 }
 

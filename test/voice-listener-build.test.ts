@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, hash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -41,6 +41,51 @@ test("the launcher names the explicit build command when the listener is missing
 test("a clean desktop build includes the voice helper before packaging dist", async () => {
   const { scripts } = (await import("../package.json", { with: { type: "json" } })).default;
   assert.ok(scripts.build.split(" && ").includes("npm run build:voice-listener"));
+});
+
+test("Swift artifact cache publishes verified downloads, reuses them, and rejects corrupt replacements", {
+  skip: process.platform === "win32",
+}, t => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-swift-cache-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const fixture = join(cwd, "archive.zip");
+  const archive = "fixture binary archive";
+  const url = "https://example.test/v0.1/fixture.zip";
+  const cache = join(cwd, "cache");
+  const key = "https___example_test_v0_1_fixture_zip";
+  const artifacts = join(cache, "artifacts");
+  const cached = join(artifacts, key);
+  writeFileSync(fixture, archive);
+  writeFileSync(join(cwd, "curl"), ["#!/bin/sh", 'while [ "$#" -gt 0 ]; do',
+    '  if [ "$1" = "--output" ]; then exec cp archive.zip "$2"; fi',
+    "  shift", "done", "exit 1", ""].join("\n"), { mode: 0o700 });
+
+  const seed = () => spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    const { cacheSwiftBinaryArtifact } = await import(process.argv[1]);
+    await cacheSwiftBinaryArtifact(...process.argv.slice(2));
+  `, resolve("scripts/cache-swift-binary-artifact.mjs"), cache, url, hash("sha256", archive)], {
+    cwd, encoding: "utf8", env: { ...process.env, PATH: `${cwd}${delimiter}${process.env.PATH}` },
+  });
+  const first = seed();
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(readFileSync(cached, "utf8"), archive);
+
+  writeFileSync(fixture, "invalid download");
+  const warm = seed();
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.equal(readFileSync(cached, "utf8"), archive);
+
+  writeFileSync(cached, "corrupt cache");
+  const failed = seed();
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /SHA-256 mismatch/);
+  assert.equal(readFileSync(cached, "utf8"), "corrupt cache");
+  assert.deepEqual(readdirSync(artifacts), [key]);
+
+  writeFileSync(fixture, archive);
+  const repaired = seed();
+  assert.equal(repaired.status, 0, repaired.stderr);
+  assert.equal(readFileSync(cached, "utf8"), archive);
 });
 
 test("the staged sherpa addon loads in the macOS app layout and refuses file playback", {

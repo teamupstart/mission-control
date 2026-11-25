@@ -1,3 +1,5 @@
+import type { ResidentCardNameStyle } from "./protocol.ts";
+
 /**
  * Every optional item a Display surface can draw, in one list.
  *
@@ -312,5 +314,20 @@ export const DISPLAY_GROUP_COPY: Record<
     heading: "Working indicator",
     blurb:
       "How a conversation shows that its session is working. The last row of the log always says what the session reports doing and how long the current turn has run; these add to it, and neither takes any height while the session is idle.",
+  },
+};
+
+/**
+ * Shared by the Display panel and the session-settings owner. A `Record` over the persisted list,
+ * so a style added to `RESIDENT_CARD_NAME_STYLES` does not compile until both can offer it.
+ */
+export const RESIDENT_CARD_NAME_COPY: Record<ResidentCardNameStyle, { label: string; description: string }> = {
+  subtitle: {
+    label: "Subtitle",
+    description: "The profile name sits on a muted line under the call sign. Resident cards grow by one short line.",
+  },
+  chip: {
+    label: "Expanding chip",
+    description: "The resident's label chip spells out the profile name while you point at or focus the card. Needs the Resident marker.",
   },
 };

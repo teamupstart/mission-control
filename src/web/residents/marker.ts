@@ -49,6 +49,18 @@ export interface ResidentSessionMark extends ResidentChipMark {
   controlOtherSessions: boolean;
 }
 
+/**
+ * The profile name a resident's board card adds beside its title, or null when there is nothing
+ * to add: the card is titled by its session name (no call sign, or voice is not listening), or
+ * the call sign already says the profile name, so a second copy would only repeat it.
+ */
+export function residentCardProfileName(mark: ResidentSessionMark | null | undefined): string | null {
+  if (!mark?.listeningTitle) return null;
+  const name = mark.name.trim();
+  if (!name) return null;
+  return normalizeSpokenName(quotedReferenceName(name)) === normalizeSpokenName(mark.listeningTitle) ? null : name;
+}
+
 /** Spoken names that collide need the ordinary name on controls that open a conversation. */
 export function residentActionName(mark: ResidentSessionMark | null | undefined, ordinaryName: string): string {
   if (!mark?.listeningTitle) return ordinaryName;

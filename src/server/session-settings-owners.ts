@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { DISPLAY_ITEMS } from "@shared/board-card-settings.ts";
+import { DISPLAY_ITEMS, RESIDENT_CARD_NAME_COPY } from "@shared/board-card-settings.ts";
 import { capabilitiesFor, resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import { ACTIONS, bindingValidationError, resolveKeybindings } from "@shared/keyboard-settings.ts";
 import { isCanonicalChord } from "@shared/keyboard-chords.ts";
@@ -12,7 +12,7 @@ import { PAUSE_CARD_CONTROLS, PAUSE_CONSOLE_CONTROLS } from "@shared/pause.ts";
 import {
   BackgroundAgentsStyleSchema, BlockedPlacementSchema, ConversationViewSchema, CostConfigPatchSchema,
   ForemanConfigPatchSchema, HarnessesConfigPatchSchema, InspectorConfigPatchSchema, LayoutModeSchema,
-  LineDensitySchema, LlmConfigPatchSchema, ResidentPlacementSchema,
+  LineDensitySchema, LlmConfigPatchSchema, RESIDENT_CARD_NAME_STYLES, ResidentPlacementSchema,
   ShippingConfigPatchSchema, ShippingConfigSchema, SkillsConfigPatchSchema, TaskKindCardStyleSchema, TaskKindHeaderStyleSchema,
   TerminalsConfigPatchSchema, UiConfigPatchSchema, WorkflowPolicyPatchSchema, WorktreesConfigPatchSchema,
   type UiConfig,
@@ -24,7 +24,7 @@ import { TOPBAR_ITEMS } from "@shared/topbar-items-settings.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO } from "@shared/task.ts";
 import { appConfigRevision } from "./db.ts";
-import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { BACKGROUND_REASONING_EFFORT_FLAG_ID, RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { getCostConfig } from "./cost.ts";
 import { getForemanConfig } from "./foreman/config.ts";
@@ -45,6 +45,7 @@ import { InvalidSettingValue, type SettingDescriptor } from "./settings-dispatch
 import { bindTypedSettings, choices, field } from "./typed-settings.ts";
 
 const effortEnabled = () => featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID);
+const residentCardNamesEnabled = () => featureEnabled(RESIDENT_CARD_NAMES_FLAG_ID);
 
 type Apply<Schema extends z.ZodType, Read extends () => unknown> = (patch: z.output<Schema>) => ReturnType<Read>;
 
@@ -68,15 +69,16 @@ function uiField(path: string, control: string, options?: Parameters<typeof fiel
 
 function membership(
   path: keyof Pick<UiConfig, "hiddenDisplayItems" | "hiddenTopbarItems" | "compactTopbarItems"
-    | "pauseCardControls" | "pauseConsoleControls" | "collapsedBoardColumns">,
-  id: string, control: string, label: string,
+    | "pauseCardControls" | "pauseConsoleControls" | "collapsedBoardColumns" | "residentCardNameStyles">,
+  id: string, control: string, label: string, available?: () => boolean,
 ) {
   return uiField(`${path}.${id}`, control, {
     label,
-    read: config => config[path].includes(id),
+    available,
+    read: config => (config[path] as readonly string[]).includes(id),
     patch: (config, value) => {
       if (typeof value !== "boolean") throw new InvalidSettingValue();
-      const without = config[path].filter(item => item !== id);
+      const without = (config[path] as readonly string[]).filter(item => item !== id);
       return { [path]: value ? [...without, id] : without };
     },
   });
@@ -105,6 +107,8 @@ const uiFields = [
   ...DISPLAY_ITEMS.map(item => membership("hiddenDisplayItems", item.id,
     item.group === "card" ? "board-card" : item.group === "conversation" ? "conversation-header" : "working-indicator",
     `Hide ${item.label}`)),
+  ...RESIDENT_CARD_NAME_STYLES.map(id => membership("residentCardNameStyles", id, "board-card",
+    `Resident name: ${RESIDENT_CARD_NAME_COPY[id].label}`, residentCardNamesEnabled)),
   ...TOPBAR_ITEMS.map(item => item.kind === "optional"
     ? membership("hiddenTopbarItems", item.id, "topbar", `Hide ${item.label} in the top bar`)
     : membership("compactTopbarItems", item.id, "topbar", `Compact ${item.label} in the top bar`)),

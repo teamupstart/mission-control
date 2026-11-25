@@ -88,10 +88,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // GET /api/inspector/config now includes localReview: false with the Local Inspector preview off.
   // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
   // POST /voice/listener/transcript also returns 404 with the voice preview off.
+  // GET /api/ui/config's default body gains `residentCardNameStyles: []` (no new route).
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 497);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "c49739e0e5328babfedf7a7af284b6162fae8f68f023e3e260e66352e436c563");
+    "65f92fe796c4780d7397d7d4bc39e565091e42d2ba3c2d5d12cf10d6773b7b2c");
 });
 
 function sourceFiles(dir: string): string[] {

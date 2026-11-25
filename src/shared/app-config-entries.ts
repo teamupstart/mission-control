@@ -294,6 +294,7 @@ const uiFields = {
   taskKindHeader: "setting",
   taskKindCard: "setting",
   backgroundAgentsStyle: "setting",
+  residentCardNameStyles: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",

@@ -311,3 +311,8 @@ export const PREVIEW_RESIDENT: ResidentSessionMark = {
   changedTo: null,
   controlOtherSessions: false,
 };
+
+export const PREVIEW_RESIDENT_WITH_CALL_SIGN: ResidentSessionMark = {
+  ...PREVIEW_RESIDENT,
+  listeningTitle: '"Scout"',
+};

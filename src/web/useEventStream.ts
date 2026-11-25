@@ -545,11 +545,9 @@ export function useEventStream(): MissionState {
           windowId = msg.windowId;
           setVoiceWindowId(windowId);
           void refreshUiSkin();
+          void refreshUiPreferences();
           invalidateSessionSettingsAccess();
-          if (reconnecting) {
-            invalidateSettingsConfig();
-            void refreshUiPreferences();
-          }
+          if (reconnecting) invalidateSettingsConfig();
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);

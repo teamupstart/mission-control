@@ -17397,8 +17397,9 @@ function bumpAppConfigRevision(entry: AppConfigEntry): void {
 export function setAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
   value: AppConfigInput<Entry>,
+  db = openDb(),
 ): void {
-  openDb()
+  db
     .prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,

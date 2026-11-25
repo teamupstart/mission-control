@@ -309,6 +309,40 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
   }
 });
 
+test("the first dashboard snapshot recovers a preference missed during connection", async ({ page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  await api(daemon, "/api/ui/config", { richText: false }, "PUT");
+  const client = await connect(daemon, await dispatch(daemon, "Change formatting before dashboard connects"));
+  let releaseStream!: () => void;
+  const streamGate = new Promise<void>(resolve => { releaseStream = resolve; });
+  try {
+    await page.route("**/events", async route => {
+      await streamGate;
+      await route.continue();
+    });
+    const streamRequested = page.waitForRequest(request => request.url().endsWith("/events"));
+    const hydration = page.waitForResponse(response => response.url().endsWith("/api/ui/config")
+      && response.request().method() === "GET" && response.ok());
+    await page.goto(`${daemon.baseURL}/#/settings/display`, { waitUntil: "domcontentloaded" });
+    await streamRequested;
+    expect(await (await hydration).json()).toMatchObject({ config: { richText: false } });
+    const format = page.getByRole("checkbox", { name: /Format messages/i });
+    await expect(format).not.toBeChecked();
+    expect(await callSettings(client, { operation: "set", key: "ui.richText", value: true }))
+      .toMatchObject({ value: true });
+
+    releaseStream();
+    await expect(format).toBeChecked();
+    await evidence(page, "format-recovered-on-first-snapshot");
+  } finally {
+    releaseStream();
+    await client.close();
+  }
+});
+
 test("typed Harnesses defaults and Display preferences update an open dashboard", async ({ dashboard: page, daemon }) => {
   await enableSettingsPreview(daemon);
   withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(

@@ -45,7 +45,9 @@ const { applyFeatureFlagIntent, featureEnabled, reloadFeatureFlags } = await imp
 const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
 const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
 const { onUiSkinChanged, getUiConfig } = await import("../src/server/ui-config.ts");
-const { SETTINGS_CONFIG_BACKUP_ENTRIES } = await import("../src/server/settings-backups/config-registry.ts");
+const {
+  SETTINGS_CONFIG_BACKUP_ENTRIES, captureSettingsConfig, restoreSettingsConfigInTransaction, stageSettingsConfigRestore,
+} = await import("../src/server/settings-backups/config-registry.ts");
 const { bindTypedSettings, field, choices } = await import("../src/server/typed-settings.ts");
 const { registerSessionSettingsRoutes } = await import("../src/server/session-settings.ts");
 const { dispatchSetting } = await import("../src/server/settings-dispatcher.ts");
@@ -342,7 +344,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
 
   await t.test("keyboard writes reject noncanonical chords before storing them", async () => {
     const key = "ui.keybindings.fleet";
-    for (const value of ["Ctrl+M", "ctrl+M", "alt+ctrl+m", "shift+?", "ctrl+Nonsense"]) {
+    for (const value of ["meta+k", "Ctrl+M", "ctrl+M", "alt+ctrl+m", "shift+?", "ctrl+Nonsense"]) {
       await call(claude, { ...set, key, value }, "invalid_value");
     }
     assert.equal(getUiConfig().keybindings.fleet, undefined);
@@ -381,6 +383,31 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     assert.deepEqual(done.value, ["ship"]);
     assert.equal(getAppConfig(APP_CONFIG_ENTRIES.skills)?.alwaysDraftPr, true);
     await call(claude, { ...edit, expectedVersion: current.version }, "stale_version");
+  });
+
+  await t.test("a settings restore invalidates a previously read Skills version", async () => {
+    const entry = APP_CONFIG_ENTRIES.skills;
+    setAppConfig(entry, { ...getAppConfig(entry), grillFirstKinds: ["plan"] });
+    const snapshot = new Map(captureSettingsConfig().map(item => [item.domain, item.payload]));
+    setAppConfig(entry, { ...getAppConfig(entry), grillFirstKinds: ["ship"] });
+    const key = "skills.grillFirstKinds";
+    const before = await call(claude, { ...get, key });
+    assert.ok(before.ok && before.operation === "get" && before.version);
+    assert.deepEqual(before.value, ["ship"]);
+
+    const db = openDb();
+    db.exec("BEGIN");
+    try {
+      restoreSettingsConfigInTransaction(db, stageSettingsConfigRestore(snapshot));
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    await call(claude, { ...set, key, value: ["ship"], expectedVersion: before.version }, "stale_version");
+    const restored = await call(claude, { ...get, key });
+    assert.ok(restored.ok && restored.operation === "get");
+    assert.deepEqual(restored.value, ["plan"]);
   });
 
   assert.deepEqual(await call(claude, find), {

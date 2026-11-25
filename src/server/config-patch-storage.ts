@@ -27,7 +27,14 @@ export function persistConfigPatch<Entry extends AppConfigEntry>(
       result[key] = preserveSiblings(raw[key], prior[key], after[key], record(patch)[key]);
     }
   }
-  setAppConfig(entry, result as AppConfigInput<Entry>);
+  if (entry.schema.safeParse(result).success) {
+    setAppConfig(entry, result as AppConfigInput<Entry>);
+    return;
+  }
+  // Whole-record fallback readers can start a patch from defaults when the saved row is
+  // malformed. Repair known fields from the validated result so a later read sees the save.
+  const repaired = { ...result, ...after };
+  setAppConfig(entry, entry.schema.safeParse(repaired).success ? repaired as AppConfigInput<Entry> : next);
 }
 
 function record(value: unknown): Record<string, unknown> {

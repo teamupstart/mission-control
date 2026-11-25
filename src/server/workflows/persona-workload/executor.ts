@@ -214,6 +214,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           budgets: request.budgets,
           auditPath,
           deadline: request.deadline,
+          ...(request.accounting.purpose === "inspector_review" ? { verifyWorktreeAbsenceByDefault: true } : {}),
         }),
         { mode: 0o600 },
       );

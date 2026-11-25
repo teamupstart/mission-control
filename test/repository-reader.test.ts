@@ -177,6 +177,15 @@ test("an opt-in read proves exact worktree absence without treating unreadable p
   assert.deepEqual(stagedDeletion.items, [{ path: deletedPath, metadata: { absent: true } }]);
   assert.partialDeepStrictEqual(f.audit.at(-1), { readLayer: "worktree", absentWorktreePath: deletedPath, handles: [] });
 
+  const inspector = f.make({ verifyWorktreeAbsenceByDefault: true });
+  for (const missingPath of [path, deletedPath]) {
+    const ordinaryRead = await inspector.query("read", { path: missingPath });
+    assert.deepEqual(ordinaryRead.items, [{ path: missingPath, metadata: { absent: true } }]);
+    assert.equal(f.audit.at(-1)?.absentWorktreePath, missingPath);
+  }
+  assert.equal((await inspector.query("read", { path, layer: "index" })).code, "unavailable");
+  assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
+
   for (const input of [
     { path },
     { path, layer: "index", verifyAbsence: true },
@@ -193,7 +202,7 @@ test("an opt-in read proves exact worktree absence without treating unreadable p
   assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
   f.view.worktree[0]!.blob = "f".repeat(40);
   f.view.worktree[0]!.classifications.push("deleted");
-  const unavailable = await f.make().query("read", { path: "src/a.txt", verifyAbsence: true });
+  const unavailable = await f.make({ verifyWorktreeAbsenceByDefault: true }).query("read", { path: "src/a.txt" });
   assert.equal(unavailable.code, "unavailable");
   assert.equal(f.audit.at(-1)?.absentWorktreePath, undefined);
 });

@@ -57,6 +57,7 @@ export interface RepositoryReaderOptions {
   attemptId: string;
   budgets: z.input<typeof RepositoryBudgetsSchema>;
   signal: AbortSignal;
+  verifyWorktreeAbsenceByDefault?: boolean;
   audit: (metadata: RepositoryQueryAuditMetadata) => Promise<void>;
 }
 
@@ -314,7 +315,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const r = RepositoryOperationSchemas.read.parse(input);
         allow(r.path);
         const e = view[r.layer].find((e) => e.path === r.path);
-        if (r.layer === "worktree" && r.verifyAbsence && (!e || worktreeDeletion(e))) {
+        if (r.layer === "worktree" && (r.verifyAbsence || options.verifyWorktreeAbsenceByDefault) && (!e || worktreeDeletion(e))) {
           // A captured deletion can have a status entry with no blob. A replacement
           // directory or an opaque ancestor prevents an absence proof.
           const obscured = view.worktree.some(entry => (entry.path.startsWith(r.path + "/") && !worktreeDeletion(entry))

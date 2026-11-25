@@ -58,7 +58,7 @@ async function review(mcp, prompt) {
         }
       }
       const outsideDiff = await call("read", { path: "README.md" });
-      const changed = await call("read", { path: "submitted.txt", verifyAbsence: true });
+      const changed = await call("read", { path: "submitted.txt" });
       const file = changed.items[0];
       const absent = file?.path === "submitted.txt" && file.metadata?.absent === true;
       if (!outsideDiff.items[0]?.text.startsWith("# ") || (!absent && !file?.text)) throw Error("Submitted checkout is unavailable");

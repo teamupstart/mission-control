@@ -10,12 +10,16 @@ function member(node, property) {
   return node?.type === "MemberExpression" && name(node.property, node.computed) === property;
 }
 
-function bindingIdentifier(context, node) {
+function localBinding(context, node) {
   if (node?.type !== "Identifier") return;
   for (let scope = context.sourceCode.getScope(node); scope; scope = scope.upper) {
     const binding = scope.set.get(node.name);
-    if (binding) return binding.defs[0]?.name;
+    if (binding) return binding;
   }
+}
+
+function bindingIdentifier(context, node) {
+  return localBinding(context, node)?.defs[0]?.name;
 }
 
 function annotation(identifier) {
@@ -27,11 +31,18 @@ function matchesLocalValue(context, node, matches) {
   const seen = new Set();
   while (node && !seen.has(node)) {
     seen.add(node);
-    const binding = bindingIdentifier(context, node);
+    if (node.type === "TSAsExpression" || node.type === "TSSatisfiesExpression") {
+      node = node.expression;
+      continue;
+    }
+    const variable = localBinding(context, node);
+    const binding = variable?.defs[0]?.name;
     if (matches(node, binding)) return true;
     const declaration = binding?.parent;
-    if (declaration?.type !== "VariableDeclarator" || declaration.id !== binding ||
-        declaration.parent.kind !== "const") break;
+    if (declaration?.type !== "VariableDeclarator" || declaration.id !== binding) break;
+    // The initializer describes the binding only while there are no later writes.
+    if (declaration.parent.kind !== "const" &&
+        variable.references.some((reference) => reference.isWrite() && !reference.init)) break;
     node = declaration.init;
   }
   return false;
@@ -154,11 +165,7 @@ export default {
           },
           Property(node) {
             if (node.parent.type !== "ObjectExpression" || name(node.key, node.computed) !== "type") return;
-            let value = node.value;
-            while (value.type === "TSAsExpression" || value.type === "TSSatisfiesExpression") {
-              value = value.expression;
-            }
-            if (name(value, true) === "session_remove") report(node);
+            if (matchesLocalValue(context, node.value, (value) => name(value, true) === "session_remove")) report(node);
           },
         };
       },

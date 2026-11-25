@@ -3,7 +3,9 @@ import { GOAL_OPERATOR_HANDOFF_ONLY, goalLine, mapUnfencedGoalLines } from "@sha
 const STOP_DIRECTIVE = /^(?:please\s+)?stop(?:\s+(?:here|now|for now|(?:this|the)\s+task|work(?:ing)?\s+on\s+this(?:\s+task)?))?$/i;
 const NO_PR_DIRECTIVE = /^(?:please\s+)?(?:no\s+|(?:do not|don['’]t)\s+(?:open|create|make|raise|publish|file|submit(?:\s+(?:this|it)\s+as)?)\s+(?:(?:a|the|any)\s+)?)(?:pr|pull request)s?(?:\s+for\s+this(?:\s+(?!yourself\b)[a-z][a-z0-9-]*)*)?$/i;
 const NO_REVIEW_DIRECTIVE = /^(?:please\s+)?(?:do not|don['’]t)\s+(?:submit|send)\s+(?:(?:this|it|the (?:work|change))\s+)?for\s+review(?:\s+or\s+open\s+(?:a\s+)?(?:pr|pull request))?$/i;
+const NO_SHIPPING_DIRECTIVE = /^(?:please\s+)?(?:do not|don['’]t)\s+ship(?:\s+(?:this|it|the (?:work|change)))?$/i;
 const DIRECTIVE_JOIN = /(\s*,\s*(?:(?:and|but)\s+)?|\s+(?:and|but)\s+)/i;
+const LIST_MARKER = /^\s*(?:[-+*]|\d+[.)])\s+/;
 
 export const HANDOFF_RESTRICTION_PREFIX = "Operator handoff restriction: ";
 const WORKFLOW_DELEGATION = /\b(?:let|have)\s+(?:the\s+)?(?:bound\s+)?workflow\s+(?:open|create|make|raise|publish|file|submit)\s+(?:it|(?:the|a)\s+(?:pr|pull request))\b/i;
@@ -18,7 +20,7 @@ export function contextualHandoffRestriction(instruction: string): string {
   return HANDOFF_RESTRICTION_PREFIX + goalLine(instruction, 480);
 }
 
-function restrictionParts(clause: string): boolean[] {
+function restrictionParts(clause: string, listItem: boolean): boolean[] {
   const parts = clause.split(DIRECTIVE_JOIN);
   const delegates = WORKFLOW_DELEGATION.test(clause);
   return parts.map((part, index) => {
@@ -26,18 +28,21 @@ function restrictionParts(clause: string): boolean[] {
     const directive = part.trim().replace(/^also\s+/i, "");
     const unconditional = directive.replace(APPROVAL_CONDITION, "");
     const holdsPublication = NO_PR_DIRECTIVE.test(unconditional) || NO_REVIEW_DIRECTIVE.test(unconditional);
-    return (holdsPublication && (!delegates || unconditional !== directive)) || PERSONAL_PR.test(directive)
-      || (STOP_DIRECTIVE.test(directive) && (!/^stop$/i.test(directive) || parts.length === 1));
+    return (holdsPublication && (!delegates || unconditional !== directive))
+      || NO_SHIPPING_DIRECTIVE.test(unconditional)
+      || PERSONAL_PR.test(directive)
+      || (STOP_DIRECTIVE.test(directive) && (!/^stop$/i.test(directive) || (!listItem && parts.length === 1)));
   });
 }
 
 export function explicitHandoffRestriction(instruction: string | null): string | undefined {
   const restrictions: string[] = [];
   if (instruction) mapUnfencedGoalLines(instruction, (line) => {
-    const trimmed = line.trim();
+    const listMarker = line.match(LIST_MARKER)?.[0] ?? "";
+    const trimmed = line.slice(listMarker.length).trim();
     if (trimmed.startsWith(HANDOFF_RESTRICTION_PREFIX)) restrictions.push(trimmed);
-    else for (const clause of line.split(/[.!?;]+/)) {
-      const matches = restrictionParts(clause);
+    else for (const clause of trimmed.split(/[.!?;]+/)) {
+      const matches = restrictionParts(clause, Boolean(listMarker));
       restrictions.push(...clause.split(DIRECTIVE_JOIN).filter((_, index) => matches[index]).map((part) => part.trim()));
     }
     return line;
@@ -47,12 +52,14 @@ export function explicitHandoffRestriction(instruction: string | null): string |
 
 export function withoutHandoffRestrictions(objective: string): string {
   return mapUnfencedGoalLines(objective, (line) => {
-    const trimmed = line.trim();
+    const listMarker = line.match(LIST_MARKER)?.[0] ?? "";
+    const content = line.slice(listMarker.length);
+    const trimmed = content.trim();
     if (trimmed === GOAL_OPERATOR_HANDOFF_ONLY || trimmed.startsWith(HANDOFF_RESTRICTION_PREFIX)) return "";
-    return line.replace(/[^.!?;]+([.!?;]*)/g, (sentence: string, punctuation: string) => {
+    const remaining = content.replace(/[^.!?;]+([.!?;]*)/g, (sentence: string, punctuation: string) => {
       const clause = sentence.slice(0, sentence.length - punctuation.length);
       const parts = clause.split(DIRECTIVE_JOIN);
-      const matches = restrictionParts(clause);
+      const matches = restrictionParts(clause, Boolean(listMarker));
       if (!matches.some(Boolean)) return sentence;
       let retained = "";
       for (let index = 0; index < parts.length; index += 2) {
@@ -62,5 +69,6 @@ export function withoutHandoffRestrictions(objective: string): string {
       }
       return retained.trim() ? retained.trimEnd() + punctuation : "";
     });
+    return listMarker && remaining !== content && !remaining.trim() ? "" : listMarker + remaining;
   }).join("\n").trim();
 }

@@ -6,8 +6,8 @@ import {
 } from "../src/server/goal/handoff-restrictions.ts";
 
 test("buttons named stop and fenced examples do not reserve automatic handoff", () => {
-  const objective = "Add start, stop, and restart buttons.";
-  const sample = ["```text", GOAL_OPERATOR_HANDOFF_ONLY, "Do not open a PR.", "```"].join("\n");
+  const objective = "Add controls for the following actions:\n- Start\n- Stop\n- Restart";
+  const sample = ["```text", GOAL_OPERATOR_HANDOFF_ONLY, "- Do not open a PR.", "Do not ship this yet.", "```"].join("\n");
   const withExample = objective + "\n" + sample;
   assert.equal(explicitHandoffRestriction(withExample), undefined);
   assert.equal(hasOperatorHandoffHold(withExample), false);
@@ -19,6 +19,8 @@ test("a bound workflow can own the PR while the operator reserves other actions"
   assert.equal(explicitHandoffRestriction(delegation), undefined);
   assert.equal(explicitHandoffRestriction("Stop here. " + delegation), "Stop here");
   assert.equal(explicitHandoffRestriction("Do not open a PR, but let the bound workflow publish the preview."), "Do not open a PR");
+  assert.equal(explicitHandoffRestriction("- " + delegation), undefined);
+  assert.equal(explicitHandoffRestriction("Do not ship this yet, but let the bound workflow open the PR."), "Do not ship this yet");
 });
 
 test("delegation cannot remove a prior approval condition", () => {
@@ -36,6 +38,9 @@ test("release removes recognized and annotated restrictions and preserves the de
   const work = "Add start, stop, and restart buttons.";
   for (const restriction of [
     "Do not open a pull request before I approve.",
+    "- Do not open a PR.",
+    "1. Do not open a PR.",
+    "Do not ship this yet.",
     "Leave opening the PR to me.",
     contextualHandoffRestriction("Keep this local until I review it."),
   ]) {
@@ -43,4 +48,5 @@ test("release removes recognized and annotated restrictions and preserves the de
     assert.ok(explicitHandoffRestriction(objective));
     assert.equal(withoutHandoffRestrictions(objective), work);
   }
+  assert.equal(withoutHandoffRestrictions("- No PR, but implement heading counts."), "- implement heading counts.");
 });

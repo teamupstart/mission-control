@@ -1728,6 +1728,17 @@ test("a fenced item example cannot hide a drained queue's Ship it card", () => {
   assert.equal(decide("Implement heading counts.\nAutomatic handoff: operator only").kind, "none");
 });
 
+test("a delivered bulleted no-PR or no-shipping instruction holds until release", () => {
+  const intent = { objective: "Implement heading counts.", updatedAt: NOW - 10_000 };
+  for (const instruction of ["- Do not open a PR.", "Do not ship this yet."]) {
+    const items = DRAINED().map((item) => ({ ...item, sentAt: NOW - 5_000, intent: instruction }));
+    assert.equal(tick({ items, intent, cfg: { wrapup: "ask" } }).kind, "none", instruction);
+    assert.equal(tick({
+      items, intent: { ...intent, handoffReleasedAt: NOW }, cfg: { wrapup: "ask" },
+    }).kind, "ask-wrapup", instruction);
+  }
+});
+
 
 test("a delivered mockup item remains artifact-only when it is newer than the implementation Goal", () => {
   const items = DRAINED().map((item) => ({

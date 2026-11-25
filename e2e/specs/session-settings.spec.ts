@@ -308,3 +308,140 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
     await Promise.all([peer.close(), application.close()]);
   }
 });
+
+test("the first dashboard snapshot recovers a preference missed during connection", async ({ page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  await api(daemon, "/api/ui/config", { richText: false }, "PUT");
+  const client = await connect(daemon, await dispatch(daemon, "Change formatting before dashboard connects"));
+  let releaseStream!: () => void;
+  const streamGate = new Promise<void>(resolve => { releaseStream = resolve; });
+  try {
+    await page.route("**/events", async route => {
+      await streamGate;
+      await route.continue();
+    });
+    const streamRequested = page.waitForRequest(request => request.url().endsWith("/events"));
+    const hydration = page.waitForResponse(response => response.url().endsWith("/api/ui/config")
+      && response.request().method() === "GET" && response.ok());
+    await page.goto(`${daemon.baseURL}/#/settings/display`, { waitUntil: "domcontentloaded" });
+    await streamRequested;
+    expect(await (await hydration).json()).toMatchObject({ config: { richText: false } });
+    const format = page.getByRole("checkbox", { name: /Format messages/i });
+    await expect(format).not.toBeChecked();
+    expect(await callSettings(client, { operation: "set", key: "ui.richText", value: true }))
+      .toMatchObject({ value: true });
+
+    releaseStream();
+    await expect(format).toBeChecked();
+    await evidence(page, "format-recovered-on-first-snapshot");
+  } finally {
+    releaseStream();
+    await client.close();
+  }
+});
+
+test("typed Harnesses defaults and Display preferences update an open dashboard", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Change launch defaults"));
+  try {
+    await openDisplay(page);
+    const format = page.getByRole("checkbox", { name: /Format messages/i });
+    await expect(format).toBeChecked();
+    expect(await callSettings(client, { operation: "set", key: "ui.richText", value: false }))
+      .toMatchObject({ value: false });
+    await expect(format).not.toBeChecked();
+
+    await page.getByRole("tab", { name: "Harnesses", exact: true }).click();
+    const runtime = page.getByRole("combobox", { name: "Session runtime for dispatched Claude Code sessions" });
+    await expect(runtime).toHaveValue("sdk");
+    expect(await callSettings(client, { operation: "find", query: "claude session runtime" })).toMatchObject({
+      matches: [{ key: "harnesses.sessionRuntime.claude", access: "read-write" }],
+    });
+    const key = "harnesses.sessionRuntime.claude";
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: "sdk" });
+    // The open panel re-reads the same route after the Harnesses notification.
+    const read = page.waitForResponse(response => response.url().endsWith("/api/harnesses/config")
+      && response.request().method() === "GET" && response.ok());
+    expect(await callSettings(client, { operation: "set", key, value: "terminal" })).toMatchObject({ value: "terminal" });
+    await read;
+    await expect(runtime).toHaveValue("terminal");
+    await runtime.scrollIntoViewIfNeeded();
+    await evidence(page, "typed-harness-runtime-live");
+
+    const saved = page.waitForResponse(response => response.url().endsWith("/api/harnesses/config")
+      && response.request().method() === "PUT" && response.ok());
+    await runtime.selectOption("sdk");
+    await saved;
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: "sdk" });
+    expect(await callSettings(client, { operation: "get", key: "harnesses.sessionRuntime.codex" })).toMatchObject({ value: "sdk" });
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    const judgePasses = page.getByRole("checkbox", { name: "Skip judges that already passed" });
+    await expect(judgePasses).toBeChecked();
+    const judgeKey = "workflows.skipPassedJudges";
+    expect(await callSettings(client, { operation: "set", key: judgeKey, value: false })).toMatchObject({ value: false });
+    await expect(judgePasses).not.toBeChecked();
+    const preference = page.waitForResponse(response => response.url().endsWith("/api/workflows/config")
+      && response.request().method() === "PATCH" && response.ok());
+    await judgePasses.check();
+    await preference;
+    expect(await callSettings(client, { operation: "get", key: judgeKey })).toMatchObject({ value: true });
+
+    await api(daemon, "/api/feature-flags", { kind: "flag", id: "inbox", enabled: true }, "PUT");
+    await page.getByRole("tab", { name: "Reports", exact: true }).click();
+    const guidance = page.getByRole("textbox", { name: "Report guidance" });
+    await expect(guidance).toBeVisible();
+    await guidance.fill("Post only on completion.");
+    const reportSave = page.waitForResponse(response => response.url().endsWith("/api/reports/guidance")
+      && response.request().method() === "PUT" && response.ok());
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    expect(await (await reportSave).json()).toMatchObject({ guidance: "Post only on completion." });
+    await callSettings(client, { operation: "set", key: "reports.guidance", value: "Post exceptional findings." }, "protected");
+    expect(await api(daemon, "/api/reports/guidance")).toMatchObject({ guidance: "Post only on completion." });
+    await expect(guidance).toHaveValue("Post only on completion.");
+    await evidence(page, "report-guidance-operator-only");
+  } finally {
+    await client.close();
+  }
+});
+
+test("saving Workflow retention from a stale panel preserves a session's judge preference", async ({ dashboard: page, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Change judge preference"));
+  let releaseRefresh!: () => void;
+  const holdRefresh = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  try {
+    await page.getByRole("button", { name: /^Settings\b/ }).click();
+    await page.getByRole("tab", { name: "Workflows", exact: true }).click();
+    const reuse = page.getByRole("checkbox", { name: "Skip judges that already passed" });
+    await expect(reuse).toBeEnabled();
+    await expect(reuse).toBeChecked();
+    await page.route("**/api/workflows/config", async route => {
+      if (route.request().method() === "GET") await holdRefresh;
+      await route.continue();
+    });
+    const key = "workflows.skipPassedJudges";
+    expect(await callSettings(client, { operation: "set", key, value: false })).toMatchObject({ value: false });
+    await expect(reuse).toBeChecked();
+    const limit = page.getByRole("spinbutton", { name: "Newest completed runs kept" });
+    await limit.fill("1100");
+    const saved = page.waitForResponse(response => response.url().endsWith("/api/workflows/config")
+      && response.request().method() !== "GET" && response.ok());
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    expect(await (await saved).json()).toMatchObject({ retention: { maxCompletedRuns: 1100 } });
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: false });
+    await expect(reuse).not.toBeChecked();
+    await evidence(page, "workflow-retention-preserves-session-preference");
+  } finally {
+    releaseRefresh();
+    await client.close();
+  }
+});

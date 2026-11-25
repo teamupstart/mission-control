@@ -1,6 +1,7 @@
 import { LOCAL_INSPECTOR_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { persistConfigPatch } from "../config-patch-storage.ts";
+import { getAppConfig } from "../db.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
-import { getAppConfig, setAppConfig } from "../db.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { INSPECTOR_MODEL_ENV, inspectorEffortChoice, resolveInspectorModel } from "@shared/inspector.ts";
 import type { InspectorCall, ResolvedInspectorModel } from "@shared/inspector.ts";
@@ -32,9 +33,10 @@ export function getInspectorConfig(): InspectorConfig {
 /** Merge a patch over the current config, persist, and return the result. */
 export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig {
   const cur = storedInspectorConfig();
-  if (!featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) patch = { ...patch, localReview: cur.localReview };
-  const next = InspectorConfigSchema.parse({ ...cur, ...patch, ...pinInspectorProvider(cur, patch) });
-  setAppConfig(CONFIG_ENTRY, next);
+  const writablePatch = { ...patch };
+  if (!featureEnabled(LOCAL_INSPECTOR_FLAG_ID)) delete writablePatch.localReview;
+  const next = InspectorConfigSchema.parse({ ...cur, ...writablePatch, ...pinInspectorProvider(cur, writablePatch) });
+  persistConfigPatch(CONFIG_ENTRY, cur, next, writablePatch);
   return getInspectorConfig();
 }
 

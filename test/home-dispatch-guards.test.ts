@@ -86,10 +86,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // Session settings adds the MCP entry point, the operator access pair and the skin refresh read.
   // Foreman's guarded POST /api/sessions/:id/queue/wrapup/drain returns 404 for a missing session.
   // GET /api/inspector/config now includes localReview: false with the Local Inspector preview off.
+  // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 495);
+  assert.equal(others.length, 496);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "47e2396045ecaa9bf1e032127f33617547e124adc8cb6022be12deb6803c6e6d");
+    "de174653f65d04968bc4c96b52628ffb06fc79fdc32549d6adf91c7f032497a0");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -132,6 +132,16 @@ test("Local Inspector Command reads and writes and local-review writes return 40
   const savedSetting = await enableLocalReview();
   assert.equal(savedSetting.status, 200);
   assert.partialDeepStrictEqual(await savedSetting.json(), { localReview: true });
+
+  setPreview(false);
+  const savedMode = await request("/api/inspector/config", { method: "PUT", body: body({ mode: "dry-run" }) });
+  assert.equal(savedMode.status, 200);
+  assert.partialDeepStrictEqual(await savedMode.json(), { mode: "dry-run", localReview: false });
+
+  setPreview(true);
+  const restoredSetting = await request("/api/inspector/config");
+  assert.equal(restoredSetting.status, 200);
+  assert.partialDeepStrictEqual(await restoredSetting.json(), { mode: "dry-run", localReview: true });
 });
 
 test("invalid ordinary recipes name their own slot rather than CodeRabbit", async () => {

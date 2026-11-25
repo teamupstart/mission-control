@@ -1683,6 +1683,10 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "ui_skin_changed" });
   }
 
+  emitSettingsConfigChanged(domain: import("@shared/session-settings-metadata.ts").SettingsRefreshDomain): void {
+    this.emitEvent({ type: "settings_config_changed", domain });
+  }
+
   emitSessionSettingsAccessChanged(): void {
     this.emitEvent({ type: "session_settings_access_changed" });
   }

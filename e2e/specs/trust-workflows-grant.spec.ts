@@ -18,8 +18,8 @@ const EVIDENCE = artifactsDir("trust-workflows-grant");
  * column now, and the panel shows a count and a link.
  *
  * Driven through the browser because every claim here spans layers no other test layer
- * crosses: a cell click has to reach `PUT /api/workflows/config` with the WHOLE config blob
- * intact (the other three columns patch, this one does not), the daemon's stored allowlist
+ * crosses: a cell click has to reach `PATCH /api/workflows/config` with the allowlist,
+ * the daemon's stored allowlist
  * has to actually move, and a second settings panel has to agree about the count. The render
  * tests pin markup shape against a stubbed state and cannot see any of that.
  *
@@ -168,7 +168,7 @@ test("granting the Workflows cell writes the daemon's workflow allowlist", async
   // The daemon's own stored list moved - not just the pill.
   await expect
     .poll(async () => (await storedConfig(daemon.baseURL)).repoAllowlist, {
-      message: "the cell click should reach PUT /api/workflows/config",
+      message: "the cell click should reach PATCH /api/workflows/config",
     })
     .toEqual([daemon.repo]);
   await expect(
@@ -182,9 +182,7 @@ test("the grant survives the round trip without flattening the rest of the confi
   dashboard,
   daemon,
 }) => {
-  // Workflows' route is a PUT of the WHOLE blob, unlike the three columns that patch. A cell
-  // click that spread a stale or default config would silently reset the switches beside it -
-  // the failure this test exists for, and one the pill would look perfectly healthy after.
+  // The allowlist patch must preserve the live delivery and command consent switches.
   const before = await storedConfig(daemon.baseURL);
 
   await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);

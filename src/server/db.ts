@@ -17410,16 +17410,29 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
     .run(noteKey, generation, now);
 }
 
+const appConfigRevisions = new Map<string, number>();
+
+/** A daemon-local generation for conditional setting replacement. */
+export function appConfigRevision(entry: AppConfigEntry): string {
+  return String(appConfigRevisions.get(entry.key) ?? 0);
+}
+
+function bumpAppConfigRevision(entry: AppConfigEntry): void {
+  appConfigRevisions.set(entry.key, (appConfigRevisions.get(entry.key) ?? 0) + 1);
+}
+
 export function setAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
   value: AppConfigInput<Entry>,
+  db = openDb(),
 ): void {
-  openDb()
+  db
     .prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(entry.key, JSON.stringify(value));
+  bumpAppConfigRevision(entry);
 }
 
 /**
@@ -17433,6 +17446,7 @@ export function hasAppConfigRow(entry: AppConfigEntry): boolean {
 /** Remove a registered config blob, so a later read answers undefined as if never set. */
 export function deleteAppConfig(entry: AppConfigEntry): void {
   openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
+  bumpAppConfigRevision(entry);
 }
 
 // ---- Inspector: the adoption + provenance ledgers ----

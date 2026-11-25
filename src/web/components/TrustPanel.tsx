@@ -261,7 +261,7 @@ export function TrustPanel({
     } else if (plan.subsystem === "workflows") {
       const config = workflowConfigRef.current;
       if (!config) return;
-      ok = await workflows.update({ ...config, repoAllowlist: plan.repoAllowlist });
+      ok = await workflows.update({ repoAllowlist: plan.repoAllowlist });
     } else if (plan.subsystem === "inspector") {
       if (!inspector.config) return;
       ok = await inspector.update({ repoAllowlist: plan.repoAllowlist });
@@ -284,7 +284,6 @@ export function TrustPanel({
     }
     if (row.workflows && workflowConfigRef.current) {
       void workflows.update({
-        ...workflowConfigRef.current,
         repoAllowlist: workflowsRef.current.filter((p) => p !== row.repo),
       });
     }
@@ -327,7 +326,7 @@ export function TrustPanel({
   function disarmChecks(): void {
     const config = workflowConfigRef.current;
     if (!config) return;
-    void workflows.update({ ...config, checksEnabled: false });
+    void workflows.update({ checksEnabled: false });
   }
 
   /**
@@ -364,7 +363,7 @@ export function TrustPanel({
       const written = await Promise.all([
         foreman.config ? foreman.update({ repoAllowlist: patch.foreman }) : false,
         workflowConfig
-          ? workflows.update({ ...workflowConfig, repoAllowlist: patch.workflows })
+          ? workflows.update({ repoAllowlist: patch.workflows })
           : false,
         inspector.config ? inspector.update({ repoAllowlist: patch.inspector }) : false,
       ]);

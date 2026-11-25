@@ -49,7 +49,7 @@ import {
 export interface CheckRunReservation {
   granted: boolean;
   spent: number;
-  /** Return a granted claim when the executor proves it could not start the Command. */
+  /** Return a granted claim when the attempt does not consume an execution slot. */
   release?: () => void;
 }
 
@@ -350,7 +350,15 @@ function runCount(runs: number): string {
  */
 export interface RunCheckInput {
     slot: WorkflowCheckSlot;
-    coderabbit?: { yaml?: CodeRabbitConfigSnapshot; dirty: boolean; retryAt?: number; incompleteReview?: boolean; comparison: () => Promise<CodeRabbitComparison> };
+    coderabbit?: {
+      yaml?: CodeRabbitConfigSnapshot;
+      dirty: boolean;
+      retryAt?: number;
+      incompleteReview?: boolean;
+      priorCleanReview?: { attemptId: string; review: CodeRabbitReviewSummary };
+      readRunsSpent?: () => number;
+      comparison: () => Promise<CodeRabbitComparison>;
+    };
     /**
      * This slot's entry in the Global Command catalog, or null when the caller has none.
      *

@@ -81,7 +81,7 @@ stop and report: those files are controlled.
    ```ts
    interface StoredSignIn {
      v: 1; target: { url: string; scope: string; issuer: string | null };
-     issuer: string; accessToken: string; refreshToken: string | null;
+     issuer: string; clientId: string; accessToken: string; refreshToken: string | null;
      expiresAt: number | null; scope: string | null; obtainedAt: number;
    }
    interface SignInStore {
@@ -106,6 +106,8 @@ stop and report: those files are controlled.
      middle of a call, so a caller always knows where a record went.
    - `target` is the connection the record belongs to. It is not a secret. It lets the
      service name a stored sign-in after a restart, when no shaper may name it any more.
+   - `clientId` is the client that obtained the tokens. It is not a secret. Every refresh
+     uses it, whatever registrations the daemon holds by then.
    - Memory backend: a map, gone when the daemon stops.
    - Nothing here logs a record or puts one in an error.
 5. **Docs.** `docs/security.md`, under Task shaping: where a sign-in is kept, the item's
@@ -127,7 +129,7 @@ stop and report: those files are controlled.
 
 - `test/shaping-sign-in-store.test.ts`, on every platform, with a fake addon: the choice of
   backend for each input in step 4; the account's form; two state homes that do not see each
-  other's ids; write, read, replace, remove and `ids()`, with the record's `target` read back unchanged; a corrupt value and an unknown `v`
+  other's ids; write, read, replace, remove and `ids()`, with the record's `target` and `clientId` read back unchanged; a corrupt value and an unknown `v`
   read as null; an addon failure rejects with `SignInStoreError`, and the fake token value
   is not in its message.
 - `test/shaping-sign-in-keychain-native.test.ts`, macOS only, with the real addon and a

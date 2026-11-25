@@ -56,9 +56,13 @@ Not here: routes, the event, the transports, Settings.
 1. **`connectionId(target)`.** The first 32 hex characters of the SHA-256 of the target's
    canonical JSON. One sign-in per id.
 2. **Client registrations.** `APP_CONFIG_ENTRIES.shapingSignIn`, key `shaping.signIn`,
-   `{ clients: [{ issuer, clientId, redirectUri, registeredAt }] }`, at most 16, the oldest
-   replaced. A registration is used only when its issuer and its redirect URI both match
-   the sign-in being started. Otherwise the sign-in registers again and replaces it.
+   `{ clients: [{ issuer, clientId, redirectUri, scope, registeredAt }] }`, at most 16, the
+   oldest dropped. A registration is reused only when its issuer, its redirect URI and its
+   scope all match the sign-in being started, because the SDK sends the scope at
+   registration and a server may hold a client to it. Otherwise the sign-in registers a new
+   client. A new registration replaces a held one only when all three match, as after
+   `client_rejected`. So two connections with different scopes on one authorization server
+   each have a client, and two with the same scope share one.
 3. **State.** Per connection, in memory: the target, the record or none, where it is kept,
    a pending sign-in or none, the refresh in flight or none, the next refresh time, and a
    reason. Nothing else holds a token.
@@ -93,17 +97,20 @@ Not here: routes, the event, the transports, Settings.
    An unknown or expired `state`, an `error` from the server, a missing `code`, or an `iss`
    that is not the pinned issuer ends in a fixed reason. Otherwise it runs `exchange`,
    stores the record, schedules the refresh and reports the change.
-8. **Storing.** Every record is written to the store, with its target, before it replaces
-   the one in memory.
+8. **Storing.** Every record is written to the store, with its target and the id of the
+   client that obtained it, before it replaces the one in memory.
    When the write fails, the record is used from memory, the connection's storage reads
    `memory`, and its reason says a restart will need a new sign-in.
 9. **Refresh.**
    - Due at 75% of the access token's lifetime. With no `expires_in`, only after
      `noteRefused`. At `start()`, at once for a record that has already expired.
    - One at a time per connection. Whatever asks while one runs shares it.
+   - A refresh uses the client the record names, whether or not `shaping.signIn` still
+     holds that registration.
    - `sign_in_again`: the record is removed from the store and from memory, and the
      connection is `signed_out` with a reason that says to sign in again.
-   - `client_rejected`: the same, and the stored registration is removed too.
+   - `client_rejected`: the same, and the registration of the client the record names is
+     removed too.
    - `retry`: tried again after 1, 2, 4 and 8 minutes, then every 15. The connection is
      `renewing` once the access token has expired.
    - Only connections in use are refreshed.
@@ -145,6 +152,11 @@ the memory store, and a store that can be made to fail.
 - A whole sign-in: `begin`, the fixture's redirect, `complete`, then `accessToken` answers
   the fake token and `view()` says `signed_in`.
 - Two shapers on one connection share one sign-in, and `view()` lists both ids.
+- **Two scopes on one authorization server.** Two connections with different scopes sign
+  in. The fixture saw two registrations, each carrying its own connection's scope, and
+  `shaping.signIn` holds both. A third connection, with the first one's scope on the
+  fixture's other resource, signs in with no further registration. Each refresh carries
+  the id of the client that obtained those tokens.
 - `state`: a second use, an unknown value, an expired one, an `iss` that does not match, an
   `error` parameter. Each fails and leaves no record.
 - Every row of the `accessToken` table.
@@ -173,6 +185,8 @@ Also `test/settings-backup-coverage.test.ts` for the new key. Run those files,
 
 - A sign-in completes against the fixture, and its record is written before it is used.
 - Concurrent refresh triggers produce exactly one refresh request.
+- Two connections with different scopes on one authorization server both sign in, each
+  with its own registration, and a third with a scope already registered reuses it.
 - After a restart, a stored sign-in that no shaper names is listed by its URL and scope, is
   not refreshed, and can be signed out.
 - The record, the client registration and the view never hold a token outside the store and

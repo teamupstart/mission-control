@@ -72,7 +72,8 @@ Not here: any Settings control, the transports.
 3. **`GET /api/shaping/sign-in/callback`**. The two flag gates, and the loopback `Host`
    check it has from being under `/api`. It reads `state`, `code`, `error` and `iss` from
    the query, each at most 2 KiB, and nothing else, then calls `complete`. They arrive in the
-   browser's redirect, and the route stores none of them.
+   browser's redirect. The route persists none of them: it hands them to `complete`, which
+   holds them in memory only, for the exchange.
    - It answers a static HTML page: 200 with "Signed in. You can close this tab and go back
      to Mission Control.", or 400 with "The sign-in did not finish." and one fixed sentence
      chosen by the kind of failure, ending "Start again from Settings > Task shaping."

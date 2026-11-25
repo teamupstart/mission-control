@@ -74,8 +74,10 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
    - `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-protected-resource/shape`
      and `/.well-known/oauth-authorization-server`. Each resource's metadata advertises more
      scopes than any test asks for.
-   - `/register` answers `fake-client-<n>`. `/authorize` checks the client, the exact
-     redirect URI and S256, then redirects at once with `code` and `state`. There is no
+   - `/register` answers `fake-client-<n>` and remembers the scope the registration
+     carried. `/authorize` checks the client, the exact redirect URI and S256. For a scope
+     the client did not register it redirects with the error `invalid_scope`. Otherwise it
+     redirects at once with `code` and `state`. There is no
      login page. `/token` checks the PKCE verifier, issues `fake-access-<n>` and
      `fake-refresh-<n>`, and rotates the refresh token, single use. `/revoke` records.
    - Modes: the authorization server on a second loopback port; a refresh that answers
@@ -101,7 +103,7 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
    `state` of 32 random bytes, and this metadata: `client_name` "Mission Control", the one
    redirect URI, `authorization_code` and `refresh_token`, response type `code`, and
    `token_endpoint_auth_method` `none`. It returns the authorization URL, the `state`, the
-   verifier and the client. The URL carries the client id, the `state` and the challenge,
+   verifier and the client, with the scope it registered. The URL carries the client id, the `state` and the challenge,
    and never the verifier. A registration that carries a `client_secret` is refused.
 5. **`exchange(target, discovery, client, { code, codeVerifier, redirectUri })`.** Runs
    `auth()` with the code and returns the tokens, with `expiresAt` from `expires_in` and an
@@ -141,6 +143,9 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
   reply, a redirect to another origin.
 - **The second resource.** A sign-in for the `/shape` URL gets a token that `/shape` accepts
   and `/mcp` refuses, and a `POST` to `/shape` with it returns a shaping result.
+- **Scope and registration.** The registration body carries the configured scope. A client
+  registered for one scope that asks for another gets `invalid_scope` on the redirect. A
+  second registration, for the second scope, then signs in.
 - **Classification.** `invalid_grant`, `invalid_client`, a 503 and a closed socket.
 - **No value in a reason.** Every returned reason is searched for the fake code, verifier
   and tokens.
@@ -169,7 +174,8 @@ rule that a failure is a value. The flow keeps no state: Phase 4 owns what is re
 - Phase 2: no shared file. The store holds what `exchange` and `refresh` return.
 - Phase 3: owns the shared `SignInTarget`. The shape here matches the contract.
 - Phase 4: calls all five functions, and owns the pending `state`, the timers and the
-  client's storage. It maps `refresh`'s three answers to its states.
+  client's storage. It maps `refresh`'s three answers to its states, and keeps one
+  registration per authorization server, redirect URI and scope.
 - Phase 5: its `mcp` tests use the fixture's protected `/mcp`, and its `http` tests the
   protected `/shape`.
 - Phases 6 and 7: use the `/authorize` redirect, and Phase 7 the mode that holds it.

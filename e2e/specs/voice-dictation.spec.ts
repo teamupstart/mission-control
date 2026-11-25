@@ -215,24 +215,39 @@ test("contenteditable file editor replaces interim dictation with the final addr
   try {
     const steve = await runningAgent(page, daemon, "Steve");
     const file = "build-notes.md";
-    writeFileSync(join(steve.cwd!, file), "Message for");
+    const path = join(steve.cwd!, file);
+    writeFileSync(path, "Message for\n\n.\nKeep this line");
     await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
     await page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }).click();
     await page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: file }).click();
     await page.getByRole("group", { name: "File view mode" }).getByRole("button", { name: "Editor" }).click();
     const editor = page.getByRole("textbox", { name: "Editor for " + file });
     await expect(editor).toHaveAttribute("contenteditable", "true");
+    const lines = editor.locator(".cm-line");
+    await lines.first().click();
     await editor.press("End");
     await expect(editor).toBeFocused();
 
     const speech = await startSpeech(daemon);
     expect((await (await speech.preview("Steve, ship")).json()).accepted).toBe(true);
-    await expect(editor).toHaveText("Message for Steve, ship");
-    await captureCard(page.locator(".file-content"), "contenteditable-interim");
+    await expect(lines.first()).toHaveText("Message for Steve, ship");
     expect((await (await speech.finish("Steve, check the build")).json()).accepted).toBe(true);
-    await expect(editor).toHaveText("Message for Steve, check the build");
+    const firstLine = "Message for Steve, check the build";
+    await expect(lines.first()).toHaveText(firstLine);
+    await lines.nth(2).click();
+    await editor.press("Home");
+    const next = await startSpeech(daemon);
+    await next.preview("Steve, run");
+    await expect(lines).toHaveText([firstLine, "", "Steve, run.", "Keep this line"]);
+    await next.preview("Steve, run tests");
+    await expect(lines).toHaveText([firstLine, "", "Steve, run tests.", "Keep this line"]);
+    await captureCard(page.locator(".file-content"), "contenteditable-multiline-interim");
+    await next.finish("Steve, review the tests");
+    const expected = [firstLine, "", "Steve, review the tests.", "Keep this line"];
+    await expect(lines).toHaveText(expected);
+    await expect.poll(() => readFileSync(path, "utf8")).toBe(expected.join("\n"));
     expect((await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries).toHaveLength(0);
-    await captureCard(page.locator(".file-content"), "contenteditable-final");
+    await captureCard(page.locator(".file-content"), "contenteditable-multiline-final");
   } finally {
     listener.stop();
   }
@@ -450,10 +465,19 @@ for (const scenario of ["split text nodes", "overlapping phrases", "refocused co
       }));
       const speech = await startSpeech(daemon);
       if (scenario === "split text nodes") {
-        await speech.preview("green apples");
-        await expect(draft).toHaveText("green apples");
-        // Syntax decoration splits the text without moving the logical caret.
         await draft.evaluate(field => {
+          const heading = document.createElement("div");
+          heading.textContent = "Fruit:";
+          const line = document.createElement("div");
+          line.append(document.createElement("br"));
+          field.replaceChildren(heading, line);
+          document.getSelection()!.collapse(line, 0);
+        });
+        const lines = draft.locator(":scope > div");
+        await speech.preview("green apples");
+        await expect(lines).toHaveText(["Fruit:", "green apples"]);
+        // Syntax decoration splits the text without moving the logical caret.
+        await lines.last().evaluate(field => {
           const tail = (field.firstChild as Text).splitText(6);
           const span = document.createElement("span");
           tail.replaceWith(span);
@@ -461,7 +485,7 @@ for (const scenario of ["split text nodes", "overlapping phrases", "refocused co
           document.getSelection()!.collapse(tail, tail.length);
         });
         await speech.finish("red pears");
-        await expect(draft).toHaveText("red pears");
+        await expect(lines).toHaveText(["Fruit:", "red pears"]);
       } else if (scenario === "overlapping phrases") {
         await speech.preview("one");
         await expect(draft).toHaveValue("one");

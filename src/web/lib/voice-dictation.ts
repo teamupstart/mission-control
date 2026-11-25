@@ -1,3 +1,4 @@
+import { EditorView } from "@codemirror/view";
 import type { ServerEvent } from "@shared/types.ts";
 
 const textTypes = new Set(["text", "search", "url", "tel", "email", "password", "number"]);
@@ -17,13 +18,18 @@ function isControl(field: HTMLElement): field is HTMLInputElement | HTMLTextArea
   return field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement;
 }
 
-function valueOf(field: HTMLElement): string {
+function valueOf(field: HTMLElement, view: EditorView | null): string {
+  if (view) return view.state.doc.toString();
   return isControl(field) ? field.value : field.textContent ?? "";
 }
 
 // DOM Range offsets are local to a node. Use text offsets within the editing host
 // so syntax highlighting can split or replace those nodes between transcripts.
-function caret(field: HTMLElement): number | null {
+function caret(field: HTMLElement, view: EditorView | null): number | null {
+  if (view) {
+    const selection = view.state.selection.main;
+    return selection.empty ? selection.head : null;
+  }
   if (isControl(field) && field.selectionStart !== null) {
     return field.selectionStart === field.selectionEnd ? field.selectionStart : null;
   }
@@ -64,7 +70,8 @@ function selectOffsets(field: HTMLElement, start: number, end: number): boolean 
   let foundStart = false;
   for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
     const next = offset + (node as Text).length;
-    if (!foundStart && start <= next) {
+    // At a boundary, a nonempty replacement starts in the following text node.
+    if (!foundStart && (start < next || (start === end && start === next))) {
       range.setStart(node, start - offset);
       foundStart = true;
     }
@@ -96,8 +103,10 @@ export class DictationEditor {
     const previous = this.spans.get(message.capture);
     if (!message.interim) this.spans.delete(message.capture);
     if (previous === null) return;
-    const value = valueOf(field);
-    const cursor = caret(field);
+    const owner = isControl(field) ? null : EditorView.findFromDOM(field);
+    const view = owner?.contentDOM === field ? owner : null;
+    const value = valueOf(field, view);
+    const cursor = caret(field, view);
     // When returning to an unmodified field, an explicit selection is the new insertion range.
     const newSelection = previous && previous.target !== message.target && cursor === null;
     if (value !== this.value || (cursor !== this.cursor && !newSelection)) {
@@ -106,14 +115,22 @@ export class DictationEditor {
     }
     const replacing = newSelection ? undefined : previous;
     if (replacing?.text === message.text) return;
-    if (replacing && !selectOffsets(field, replacing.start, replacing.end)) return;
+    if (!view && replacing && !selectOffsets(field, replacing.start, replacing.end)) return;
 
-    const before = isControl(field) ? value.slice(0, field.selectionStart ?? 0) : value.slice(0, cursor ?? 0);
+    const startOffset = replacing?.start ?? (isControl(field) ? field.selectionStart : view?.state.selection.main.from ?? cursor) ?? 0;
+    const before = value.slice(0, startOffset);
     const space = replacing?.space ?? (/[\p{L}\p{N}.!?]$/u.test(before) && /^[\p{L}\p{N}]/u.test(message.text) ? " " : "");
     const inserted = space + message.text;
-    if (!document.execCommand("insertText", false, inserted)) return;
-    const updated = valueOf(field);
-    const end = caret(field);
+    if (view) {
+      // File positions include newlines and offscreen content. Apply the edit in
+      // the same coordinates as the saved span, through the file's update listener.
+      const selection = view.state.selection.main;
+      const insert = view.state.toText(inserted);
+      view.dispatch({ changes: { from: startOffset, to: replacing?.end ?? selection.to, insert },
+        selection: { anchor: startOffset + insert.length }, userEvent: "input.type" });
+    } else if (!document.execCommand("insertText", false, inserted)) return;
+    const updated = valueOf(field, view);
+    const end = caret(field, view);
     if (end === null || !updated.slice(0, end).endsWith(inserted)) {
       this.interrupt();
       if (message.interim) this.spans.set(message.capture, null);
@@ -132,7 +149,10 @@ export class DictationEditor {
     this.cursor = end;
     if (replacing && cursor !== null && cursor !== replacing.end) {
       const restore = cursor < start ? cursor : cursor + delta;
-      if (selectOffsets(field, restore, restore)) this.cursor = restore;
+      if (view) {
+        view.dispatch({ selection: { anchor: restore } });
+        this.cursor = restore;
+      } else if (selectOffsets(field, restore, restore)) this.cursor = restore;
     }
     this.value = updated;
     if (message.interim) {

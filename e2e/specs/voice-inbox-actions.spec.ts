@@ -1,9 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { APIResponse, Page, Route } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 import type { ReportItem, ReportMute } from "../../src/shared/reports.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
-import type { OpenCardsReport } from "../../src/shared/voice-answers.ts";
+import { VOICE_CALIBRATING_HEADER, type OpenCardsReport } from "../../src/shared/voice-answers.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, postCachePlan, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
@@ -30,7 +30,12 @@ async function openReportCard(page: Page, report: ReportItem) {
   if (!await dialog.isVisible()) await page.locator("button.pulse-seg", { hasText: "to read" }).click();
   await expectContentClearsBorder(dialog);
   const card = dialog.getByRole("article", { name: "Report: " + report.title });
+  // The footer can render before the daemon has accepted the new voice target.
+  const observed = page.waitForResponse(response => response.ok() && response.url().endsWith("/api/voice/open-cards") &&
+    !response.request().headers()[VOICE_CALIBRATING_HEADER] &&
+    (response.request().postDataJSON() as OpenCardsReport).cards.some(c => c.kind === "report" && c.id === report.id));
   await card.getByRole("button", { name: report.title }).click();
+  await observed;
   return card;
 }
 
@@ -291,24 +296,30 @@ test("closing a Report while its accepted Mark read claim is in flight fails the
   const report = await postReport(daemon, steve, "Close during Mark read");
   const card = await openReportCard(page, report);
   await expect(card.locator(".vh-foot")).toContainText("Steve, mark read");
-  const accepted = Promise.withResolvers<{ route: Route; response: APIResponse }>();
-  await page.route("**/api/voice/inbox-actions/*/claim", async route => {
-    // Let the real daemon grant the claim, but hold its response on the way back to the dashboard.
-    accepted.resolve({ route, response: await route.fetch() });
-  }, { times: 1 });
+  // The browser sends both receipts normally. Hold the granted response before the dashboard handles it.
+  await page.evaluate(() => {
+    const send = window.fetch.bind(window);
+    const release = new Promise<void>(resolve => window.addEventListener("release-inbox-claim", () => resolve(), { once: true }));
+    window.fetch = async (input, init) => {
+      const response = await send(input, init);
+      if (response.url.endsWith("/claim")) await release;
+      return response;
+    };
+  });
+  const accepted = page.waitForResponse(res => res.url().includes("/api/voice/inbox-actions/") && res.url().endsWith("/claim"));
   const writes: string[] = [];
   page.on("request", request => {
     if (request.method() === "POST" && request.url().endsWith(`/api/reports/${report.id}/read`)) writes.push(request.url());
   });
   await say(daemon, "Steve, mark read");
-  const { route, response } = await accepted.promise;
+  const response = await accepted;
   expect(response.status()).toBe(200);
   const outcome = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries[0].outcome;
   expect(await outcome()).toBe("pending");
   await page.getByRole("dialog", { name: "Attention inbox" }).getByRole("button", { name: "Close (esc)" }).click();
   await expect(card).toBeHidden();
-  const completion = page.waitForResponse(res => res.url() === route.request().url().replace(/\/claim$/, "/complete"));
-  await route.fulfill({ response });
+  const completion = page.waitForResponse(res => res.url() === response.url().replace(/\/claim$/, "/complete"));
+  await page.evaluate(() => window.dispatchEvent(new Event("release-inbox-claim")));
   const receipt = await completion;
   expect(receipt.status()).toBe(200);
   expect(receipt.request().postDataJSON()).toEqual({ invoked: false });

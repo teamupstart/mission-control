@@ -87,6 +87,22 @@ export async function readInstalledMod(claude: ClaudeCli, deps: SetupDeps): Prom
   return { mod: first };
 }
 
+/** Inspect the registered source before installing from the named marketplace. */
+export async function readModMarketplace(claude: ClaudeCli, deps: SetupDeps): Promise<{ path: string | null } | { error: string }> {
+  const result = await deps.exec(claude.path, ["plugin", "marketplace", "list", "--json"], { timeoutMs: 30_000 });
+  if (result.code !== 0) return { error: `Could not list Claude marketplaces: ${result.stderr.trim() || `exit ${result.code}`}` };
+  try {
+    const rows: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(rows)) throw new Error("not a list");
+    const row = rows.find((entry: unknown) => typeof entry === "object" && entry !== null && (entry as { name?: unknown }).name === MOD_NAME) as { source?: unknown; path?: unknown } | undefined;
+    if (!row) return { path: null };
+    if (row.source !== "directory" || typeof row.path !== "string") return { error: "The mission-control marketplace is not registered as a local directory. Remove it before running setup." };
+    return { path: row.path };
+  } catch {
+    return { error: "Could not parse Claude marketplace list." };
+  }
+}
+
 export async function checkClaude(deps: SetupDeps): Promise<{ check: DoctorCheck; claude: ClaudeCli | null }> {
   const found = await findClaude({ env: deps.env, exec: deps.exec, home: deps.home });
   if (found.claude) {
@@ -193,6 +209,11 @@ export async function checkInstalled(claude: ClaudeCli, deps: SetupDeps): Promis
     staged = await readModVersion(join(deps.stateDir, "mod"));
   } catch {
     return [...checks, { name: "mod-current", status: "fail", message: `no staged mod at ${join(deps.stateDir, "mod")}`, fix: "Run `mctl setup`." }];
+  }
+  const marketplace = await readModMarketplace(claude, deps);
+  if ("error" in marketplace || marketplace.path !== join(deps.stateDir, "mod")) {
+    const detail = "error" in marketplace ? marketplace.error : `the registered marketplace source is ${marketplace.path ?? "missing"}`;
+    return [...checks, { name: "mod-current", status: "fail", message: detail, fix: "Run `mctl setup` after correcting the marketplace registration." }];
   }
   checks.push(
     mod.version === staged

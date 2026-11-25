@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { MOD_NAME } from "../../mod/constants.ts";
 import { findClaude, type ClaudeCli } from "../claude-cli.ts";
 import { readModVersion, refuseCheckoutDestination, stageMod } from "../../server/mod-stage.ts";
-import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, recoveryCommands } from "./checks.ts";
+import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, readModMarketplace, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
 import type { DoctorCheck, SetupStepOptions, SetupStepResult } from "./types.ts";
 
@@ -115,11 +115,16 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   }
 
   if (deps.runCache && certified) deps.runCache.modCalls = certified;
+  const marketplace = await readModMarketplace(claude, deps);
+  if ("error" in marketplace) return failed(marketplace.error);
+  if (marketplace.path !== null && marketplace.path !== modDir) {
+    return failed(`The mission-control marketplace points to ${marketplace.path}, not ${modDir}. Remove it before running setup.`);
+  }
   const before = await readInstalledMod(claude, deps);
   if ("error" in before) return installFailure(before.error, deps.stateDir, bin);
   const installed = before.mod;
   const replacing = installed?.scope === "user";
-  if (installed && installed.enabled && installed.scope === "user" && installed.version === version) {
+  if (marketplace.path === modDir && installed && installed.enabled && installed.scope === "user" && installed.version === version) {
     if (deps.runCache) deps.runCache.installed = before;
     return { id, status: "ok", message: "the mod " + version + " is already installed (claude " + claude.version + ")" };
   }
@@ -129,6 +134,11 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   const add = await deps.exec(claude.path, ["plugin", "marketplace", "add", modDir], { timeoutMs: 120_000 });
   if (add.code !== 0 && !isAlreadyAdded(add.stderr + add.stdout)) {
     return installFailure("`claude plugin marketplace add` failed: " + describe(add), deps.stateDir, bin, replacing);
+  }
+  const registered = await readModMarketplace(claude, deps);
+  if ("error" in registered || registered.path !== modDir) {
+    const detail = "error" in registered ? registered.error : `the registered marketplace source is ${registered.path ?? "missing"}, not ${modDir}`;
+    return installFailure(detail, deps.stateDir, bin, replacing);
   }
   // A stale or disabled user-scope install is replaced by uninstall and install, never `claude plugin
   // update`. An install at another scope is somebody else's and is left alone: the user-scope one is added beside it.

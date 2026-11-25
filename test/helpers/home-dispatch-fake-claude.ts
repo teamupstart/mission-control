@@ -102,6 +102,11 @@ if (argv[0] === "plugin") {
     }
     process.exit(0);
   }
+  if (sub === "marketplace" && argv[2] === "list") {
+    fail("marketplace list");
+    process.stdout.write(JSON.stringify(state.marketplaces.map((p) => ({ name: "mission-control", source: "directory", path: p }))) + "\\n");
+    process.exit(0);
+  }
   if (sub === "marketplace" && argv[2] === "add") {
     fail("marketplace add");
     const source = firstArg(3);

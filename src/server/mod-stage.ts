@@ -80,10 +80,12 @@ async function assertMarketplace(root: string): Promise<void> {
     throw new Error(root + " has a marketplace.json that is missing or not valid JSON; run `npm run build:mod`");
   }
   const m = manifest as { name?: unknown; plugins?: unknown } | null;
-  const lists = Array.isArray(m?.plugins) && m.plugins.some((p) => typeof p === "object" && p !== null && (p as { name?: unknown }).name === PLUGIN_NAME);
+  const listing = Array.isArray(m?.plugins) ? m.plugins.find((p) => typeof p === "object" && p !== null && (p as { name?: unknown }).name === PLUGIN_NAME) as { source?: unknown; version?: unknown } | undefined : undefined;
+  const lists = listing?.source === `./${PLUGIN_NAME}`;
   if (typeof m !== "object" || m === null || m.name !== PLUGIN_NAME || !lists) {
     throw new Error(root + " has a marketplace.json that is not the " + PLUGIN_NAME + " marketplace listing the " + PLUGIN_NAME + " plugin; run `npm run build:mod`");
   }
+  if (listing?.version !== await readModVersion(root)) throw new Error(root + " has inconsistent marketplace and plugin versions; run `npm run build:mod`");
 }
 
 async function assertBuild(source: string): Promise<void> {

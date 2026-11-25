@@ -28,7 +28,7 @@ function writeModBuild(root: string, version: string, bundle = 'fetch("/api/heal
   mkdirSync(join(root, "mission-control", "hooks"), { recursive: true });
   writeFileSync(
     join(root, ".claude-plugin", "marketplace.json"),
-    JSON.stringify({ name: "mission-control", owner: { name: "Mission Control" }, plugins: [{ name: "mission-control", source: "./mission-control" }] }),
+    JSON.stringify({ name: "mission-control", owner: { name: "Mission Control" }, plugins: [{ name: "mission-control", source: "./mission-control", version }] }),
   );
   writeFileSync(join(root, "mission-control", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "mission-control", version }));
   writeFileSync(join(root, "mission-control", "hooks", "register.js"), bundle);
@@ -91,7 +91,7 @@ async function rig(options: { version?: string; flag?: boolean } = {}): Promise<
 const bin = (r: Rig): string => shellArg(r.claude.path);
 
 function pluginCalls(claude: FakeClaude): string[] {
-  return claude.invocations().filter((i) => i.argv[0] === "plugin").map((i) => (i.argv[1] === "marketplace" ? "marketplace add" : i.argv[1]!));
+  return claude.invocations().filter((i) => i.argv[0] === "plugin").map((i) => (i.argv[1] === "marketplace" ? "marketplace " + i.argv[2] : i.argv[1]!));
 }
 
 test("claude detection tries MISSION_CLAUDE_BIN, then PATH, then known places, and accepts only a claude with marketplaces", async () => {
@@ -174,7 +174,7 @@ test("setup on a clean machine stages and installs the mod, runs the other steps
   try {
     const result = await r.run("setup");
     assert.equal(result.code, 0, result.out + result.err);
-    assert.deepEqual(pluginCalls(r.claude).filter((c) => c !== "list" && c !== "validate" && c !== "--help"), ["marketplace add", "install"]);
+    assert.deepEqual(pluginCalls(r.claude).filter((c) => c !== "list" && c !== "validate" && c !== "--help"), ["marketplace list", "marketplace add", "marketplace list", "install", "marketplace list"]);
     assert.deepEqual(r.claude.state().marketplaces, [join(r.state, "mod")]);
     assert.deepEqual(r.claude.state().plugins.map((p) => [p.id, p.scope, p.enabled, p.version]), [[MOD_ID, "user", true, "2.2.0"]]);
     assert.ok(existsSync(join(r.state, "mod", "mission-control", ".claude-plugin", "plugin.json")));
@@ -219,6 +219,23 @@ test("a stale installed build is reinstalled by uninstall and install, never `pl
   }
 });
 
+test("staging refuses inconsistent marketplace and plugin versions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-versions-"));
+  try {
+    const source = join(dir, "build");
+    const dest = join(dir, "state", "mod");
+    writeModBuild(source, "2.3.0");
+    await stageMod({ source, dest });
+    writeModBuild(source, "2.4.0");
+    const manifest = join(source, ".claude-plugin", "marketplace.json");
+    const market = JSON.parse(readFileSync(manifest, "utf8"));
+    market.plugins[0].version = "2.3.0";
+    writeFileSync(manifest, JSON.stringify(market));
+    await assert.rejects(stageMod({ source, dest }), /inconsistent marketplace and plugin versions/);
+    assert.equal(JSON.parse(readFileSync(join(dest, "mission-control", ".claude-plugin", "plugin.json"), "utf8")).version, "2.3.0");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("staging refuses checkout destinations including symlinks", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mission-stage-checkout-"));
   try {
@@ -229,6 +246,19 @@ test("staging refuses checkout destinations including symlinks", async () => {
     await assert.rejects(refuseCheckoutDestination(join(dir, "link", "state", "mod")), /inside a checkout/);
     await refuseCheckoutDestination(join(dir, "safe", "mod"));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("setup refuses a conflicting registered marketplace before uninstalling", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    r.claude.update({ marketplaces: [join(r.home, "elsewhere")] });
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /marketplace points to/);
+    assert.ok(!pluginCalls(r.claude).includes("uninstall"));
+    assert.match((await r.run("doctor")).out, /FAIL {2}mod-current: the registered marketplace source/);
+  } finally { await r.cleanup(); }
 });
 
 test("setup retries an interrupted plugin install", async () => {
@@ -284,8 +314,8 @@ test("doctor passes on an installed machine and changes nothing", async () => {
     const result = await r.run("doctor");
     assert.equal(result.code, 0, result.out + result.err);
     for (const name of ["claude", "daemon", "flag", "mod-enabled", "mod-current", "mod-calls"]) assert.match(result.out, new RegExp("ok {4}" + name + ": "));
-    const added = r.claude.invocations().slice(calls).filter((i) => i.argv[0] === "plugin").map((i) => i.argv[1]);
-    assert.ok(added.every((c) => c === "list" || c === "validate" || c === "--help"), added.join(","));
+    const added = r.claude.invocations().slice(calls).filter((i) => i.argv[0] === "plugin").map((i) => i.argv.slice(1).join(" "));
+    assert.ok(added.every((c) => c === "list --json" || c.startsWith("validate ") || c === "--help" || c === "marketplace list --json"), added.join(","));
     assert.deepEqual(readdirSync(r.state), files);
   } finally {
     await r.cleanup();
@@ -454,7 +484,7 @@ test("a marketplace add that fails stops before any install and prints both reco
 test("a marketplace that is already added is not a failure", async () => {
   const r = await rig();
   try {
-    r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr: "marketplace already added", times: 5 } } });
+    r.claude.update({ marketplaces: [join(r.state, "mod")], failures: { "marketplace add": { exitCode: 1, stderr: "marketplace already added", times: 5 } } });
     const result = await r.run("setup");
     assert.equal(result.code, 0, result.out + result.err);
     assert.equal(r.claude.state().plugins[0]?.version, "2.2.0");
@@ -873,7 +903,7 @@ test("a marketplace add that fails for a reason that merely contains the word al
   for (const stderr of ["Marketplace 'mission-control' already exists", "marketplace already added", "already registered"]) {
     const r = await rig();
     try {
-      r.claude.update({ failures: { "marketplace add": { exitCode: 1, stderr, times: 5 } } });
+      r.claude.update({ marketplaces: [join(r.state, "mod")], failures: { "marketplace add": { exitCode: 1, stderr, times: 5 } } });
       assert.equal((await r.run("setup")).code, 0, stderr);
     } finally {
       await r.cleanup();

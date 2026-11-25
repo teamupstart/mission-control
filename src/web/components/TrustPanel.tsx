@@ -25,6 +25,7 @@ import { useTourTargetRef } from "../tour/target-context.tsx";
 import { filterRepos, repoOptionLabels } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { SessionSettingsAccessToggle } from "./SessionSettingsAccessToggle.tsx";
 
 // Trust: one repository x grant matrix over the four existing allowlists.
 //
@@ -481,6 +482,7 @@ export function TrustPanel({
 
   return (
     <section className="settings-section trust-section">
+      <SessionSettingsAccessToggle />
       <p className="settings-hint">
         Every grant that lets Mission Control act outside this app, in one table. Each column
         is its subsystem's own allowlist - clicking a cell writes there, and the Foreman,

@@ -7,6 +7,7 @@ import {
   type ResidentProfile,
   type ResidentRunSummary,
 } from "@shared/residents.ts";
+import { normalizeSpokenName } from "@shared/voice-names.ts";
 import type { Session, Task } from "@shared/types.ts";
 
 /**
@@ -30,6 +31,8 @@ export interface ResidentChipMark extends ResidentMarker {
  * same answer.
  */
 export interface ResidentSessionMark extends ResidentChipMark {
+  listeningTitle?: string;
+  sharedListeningTitle?: boolean;
   loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction"> & Partial<Pick<ResidentRunSummary, "settings">>;
   runId: string;
   /** The task the run launched, so a control can name it - Restart's completion prompt does. */
@@ -46,6 +49,12 @@ export interface ResidentSessionMark extends ResidentChipMark {
   controlOtherSessions: boolean;
 }
 
+/** Spoken names that collide need the ordinary name on controls that open a conversation. */
+export function residentActionName(mark: ResidentSessionMark | null | undefined, ordinaryName: string): string {
+  if (!mark?.listeningTitle) return ordinaryName;
+  return mark.sharedListeningTitle ? `${mark.listeningTitle} (${ordinaryName})` : mark.listeningTitle;
+}
+
 /**
  * Join each session to its live resident run through the session's task id. Sessions that are
  * not residents are absent, so a fleet with none gets an empty map.
@@ -54,16 +63,29 @@ export function residentMarksBySession(
   sessions: readonly Session[],
   runs: readonly ResidentRunSummary[],
   profiles: readonly ResidentProfile[],
+  listening = false,
 ): ReadonlyMap<string, ResidentSessionMark> {
   const out = new Map<string, ResidentSessionMark>();
   if (runs.length === 0) return out;
   const runByTask = new Map(runs.map((run) => [run.taskId, run]));
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const firstByTitle = new Map<string, ResidentSessionMark>();
   for (const session of sessions) {
     const taskId = session.task?.id;
     const run = taskId ? runByTask.get(taskId) : undefined;
     if (!run) continue;
-    out.set(session.id, residentSessionMark(run, profileById.get(run.profileId) ?? null));
+    const mark = residentSessionMark(run, profileById.get(run.profileId) ?? null, listening);
+    if (mark.listeningTitle) {
+      const key = normalizeSpokenName(mark.listeningTitle);
+      const first = firstByTitle.get(key);
+      if (first) {
+        first.sharedListeningTitle = true;
+        mark.sharedListeningTitle = true;
+      } else {
+        firstByTitle.set(key, mark);
+      }
+    }
+    out.set(session.id, mark);
   }
   return out;
 }
@@ -128,9 +150,12 @@ export function residentReplacementsBySession(
 export function residentSessionMark(
   run: ResidentRunSummary,
   profile: ResidentProfile | null,
+  listening = false,
 ): ResidentSessionMark {
   const marker = residentMarker(run.settings);
+  const referenceName = (profile ?? run).settings.identity.referenceName?.trim();
   return {
+    ...(listening && referenceName ? { listeningTitle: `"${referenceName}"` } : {}),
     runId: run.id,
     taskId: run.taskId,
     loop: run,

@@ -178,6 +178,11 @@ Do not skip the default-on release: it gives operators a way to disable a proble
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
 
+Session settings through MCP starts as an opt-in preview. Even with all previews enabled, the
+operator must turn on **Allow sessions to access Mission Control settings** in **Settings > Trust**
+in the desktop app. Trust starts off when there is no saved choice and remains independent of the
+rollout flag, including after the flag retires.
+
 ## Shipped flags
 
 | Id | Stage | Gates | Guide |
@@ -186,6 +191,7 @@ gates, not by resolving an unknown id as on.
 | `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
+| `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Let a session change the theme](skills-and-settings.md#let-a-session-change-the-theme) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |

@@ -1,4 +1,7 @@
 import { resolve } from "node:path";
+import {
+  SettingsRequestSchema, SettingsToolInputSchema, isBoundedSettingsValue, settingsFailure, type SettingsResult,
+} from "@shared/settings-mcp.ts";
 import { McpCreateScheduleSchema, McpSchedulePreviewSchema } from "@shared/protocol.ts";
 import { ScheduleNextIterationSchema } from "@shared/residents.ts";
 import { requestInputReview } from "@shared/request-input.ts";
@@ -823,6 +826,28 @@ server.registerTool(
     }
   },
 );
+
+server.registerTool("mission_settings", {
+  title: "Read or change Mission Control settings",
+  description: "Find supported settings with operation find and a short query. Get the current value and choices with its exact key. "
+    + "Set a value only on a human's request. Pass a get result's version as expectedVersion when replacing an object or list. "
+    + "Repeat find with nextCursor as cursor, or get with nextChoiceCursor as choiceCursor, to continue.",
+  inputSchema: SettingsToolInputSchema,
+}, async input => {
+  const reply = (result: SettingsResult) => textResult(JSON.stringify(result), !result.ok);
+  const parsed = SettingsRequestSchema.safeParse(input);
+  if (!parsed.success) return reply(settingsFailure("invalid_request"));
+  if (parsed.data.operation === "set" && !isBoundedSettingsValue(parsed.data.value)) {
+    return reply(settingsFailure("value_too_large"));
+  }
+  try {
+    const response = await http("/mcp/settings", "POST", parsed.data, true, AbortSignal.timeout(10_000));
+    if (!response.headers.get("content-type")?.includes("application/json")) return reply(settingsFailure("unavailable"));
+    return reply(await response.json() as SettingsResult);
+  } catch {
+    return reply(settingsFailure("unavailable"));
+  }
+});
 
 // Schedules use the existing daemon service, never local timers or direct database writes.
 const scheduleToolGuidance =

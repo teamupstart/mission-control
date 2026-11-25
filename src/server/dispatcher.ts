@@ -547,6 +547,7 @@ export class Dispatcher {
       const runtime = taskKindForcedRuntime(task.kind)
         ?? (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
+      // oxlint-disable-next-line repository/agent-comparison -- Managed Pi is the only runtime that uses this launch path.
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
       const configured = resolveAgentBin(task.agent);
       const agentBin = await resolveBinPath(configured);
@@ -886,6 +887,7 @@ export class Dispatcher {
         // started and we merely discovered. It returns nothing rather than half its flags on
         // ANY failure - a missing bundle, an unwritable state dir - and says why, and the
         // launch is then refused below with that reason; see `askChannelContribution`.
+        // oxlint-disable-next-line repository/agent-comparison -- This dispatch adapter assembles Codex launch instructions.
         const codexLaunch = task.agent === "codex"
           ? await prepareCodexLaunch(
               getHarnessesConfig().autoModeOnDispatch,
@@ -947,6 +949,7 @@ export class Dispatcher {
       const sdkSessionId = runtime === "sdk" && shapingOn ? newSdkSessionId() : null;
       // Pi's memory pointer, read once: the budget below and the launch message after shaping
       // must prefix the same text, even if the checkout gains an index while shapers run.
+      // oxlint-disable-next-line repository/agent-comparison -- Pi needs an explicit repository memory pointer.
       const piHasMemory = task.agent === "pi" && hasRepoMemory(wt.path);
       // Task shaping, the one awaited call before turn one is built. With the flag off it does
       // nothing at all, and with no shaper that applies it adds nothing, so either launch is
@@ -1050,6 +1053,7 @@ export class Dispatcher {
       // needs it to build the argv, and the launch marker needs to fingerprint the exact
       // text that argv carries. Recomposing it at the second site is how the two answers
       // drift apart.
+      // oxlint-disable-next-line repository/agent-comparison -- Pi consumes memory through the launch prompt.
       const piText = task.agent === "pi" ? withRepoMemoryPointer(wt.path, intent, piHasMemory) : null;
       const piLaunch = piText !== null
         ? preparePiLaunch(piText)
@@ -1971,6 +1975,7 @@ export class Dispatcher {
       return;
     }
 
+    // oxlint-disable-next-line repository/agent-comparison -- This dispatch path validates Claude advisor mode.
     if (task.agent !== "claude") {
       throw new Error(
         "Terminal Pipeline launches are Claude-only; choose Claude or switch the Pipelines launch runtime to Agent SDK",
@@ -2577,6 +2582,7 @@ export class Dispatcher {
   ): Promise<LaunchShaping> {
     const delivery = harnessFor(provisioned.agent).turnOne[runtime === "sdk" ? "sdk" : "terminal"];
     const variants = [unshapedTurnOne(standingPrefix), ...(!standingPrefix && standing.text ? [unshapedTurnOne(standing.text)] : [])];
+    // oxlint-disable-next-line repository/agent-comparison -- Pi terminal input may be delivered at launch.
     const launchArgument = delivery.path === "launch-argument" && provisioned.agent === "pi" && launch.terminal;
     const carried = launchArgument
       // Composed exactly as the terminal arm composes Pi's launch message below.

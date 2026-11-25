@@ -61,6 +61,7 @@ export function selectRolloutIdentity(
 
 /** Enrich Codex discovery with the rollout the exact live process has open. */
 export async function annotateCodexRollouts(sessions: DiscoveredSession[]): Promise<void> {
+  // oxlint-disable-next-line repository/agent-comparison -- This scanner matches sessions to Codex-specific rollout files.
   const codex = sessions.filter((s) => s.agent === "codex");
   if (!codex.length) return;
   const result = await run("lsof", ["-a", "-p", codex.map((s) => s.pid).join(","), "-Fn"], {

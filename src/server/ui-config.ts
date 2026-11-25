@@ -7,7 +7,9 @@ import {
 } from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
-import { isSkinId, skinById, type SkinId } from "@shared/skins.ts";
+import { SKIN_SETTING } from "@shared/session-settings-metadata.ts";
+import type { SettingDescriptor } from "./settings-dispatcher.ts";
+import { SKINS, isSkinId, skinById, type SkinId } from "@shared/skins.ts";
 import { STATE_DIR } from "./config.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
@@ -24,6 +26,13 @@ import { rememberWindowBackground, windowBackgroundPath } from "./window-backgro
 // to keep them somewhere that is actually per-machine - which the daemon already is.
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.ui;
+const skinListeners = new Set<() => void>();
+
+export function onUiSkinChanged(listener: () => void): () => void {
+  skinListeners.add(listener);
+  return () => { skinListeners.delete(listener); };
+}
+
 const indicatorListeners = new Set<(indicators: string[]) => void>();
 const indicatorSource = randomUUID();
 let lastIndicators: string | undefined;
@@ -190,8 +199,25 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
     }
   }
   if (patch.skin !== undefined) syncWindowBackground(next.skin);
+  if (patch.skin !== undefined && stored?.skin !== next.skin) {
+    for (const listener of skinListeners) {
+      try { listener(); }
+      catch { console.warn("[ui-config] could not publish the skin change"); }
+    }
+  }
   return next;
 }
+
+export const uiSkinSetting: SettingDescriptor = {
+  ...SKIN_SETTING,
+  access: "read-write",
+  replacement: "scalar",
+  schema: SkinIdSchema,
+  constraints: { choicesOnly: true },
+  choices: () => SKINS.map(({ id, label }) => ({ value: id, label })),
+  read: () => getUiConfig(false).skin,
+  write: value => setUiConfig({ skin: SkinIdSchema.parse(value) }).skin,
+};
 
 /** The daemon reads and writes synchronously, so independent checkbox edits compose. */
 export function setVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): UiConfig["voice"] | null {

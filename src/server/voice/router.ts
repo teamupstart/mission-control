@@ -61,6 +61,9 @@ const ONSET_TRANSIT_MS = 250;
 const SPEECH_RESULT_TIMEOUT_MS = 35_000;
 
 const HISTORY_LIMIT = 50;
+// At most HISTORY_LIMIT reservations can time out per 35 s. Two batches cover
+// the listener's 55 s held-POST retry budget even under sustained load.
+const EXPIRED_SPEECH_LIMIT = 2 * HISTORY_LIMIT;
 const MAX_ACTIVE_CARDS = 50;
 const MAX_SPLIT_QUESTIONS = 8;
 const MAX_UNSURE_CARDS = 5;
@@ -260,6 +263,7 @@ export class VoiceRouter {
   });
   readonly heard = new RecentlyHeard();
   private readonly speechCaptures = new Map<string, { cardId: string; timeout: ReturnType<typeof setTimeout> }>();
+  private readonly expiredSpeechKeys = new Set<string>();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
   // Keep the last accepted capture until its question settles, even after a Cancel.
@@ -417,7 +421,13 @@ export class VoiceRouter {
       const item = this.open.get(action.id);
       if (!item?.speechDeadlineUs) return;
       if (onsetUs >= item.speechDeadlineUs) continue;
-      const timeout = setTimeout(() => this.speechFinished(key), SPEECH_RESULT_TIMEOUT_MS);
+      const timeout = setTimeout(() => {
+        this.expiredSpeechKeys.add(key);
+        if (this.expiredSpeechKeys.size > EXPIRED_SPEECH_LIMIT) {
+          this.expiredSpeechKeys.delete(this.expiredSpeechKeys.values().next().value!);
+        }
+        this.speechFinished(key);
+      }, SPEECH_RESULT_TIMEOUT_MS);
       timeout.unref();
       this.speechCaptures.set(key, { cardId: action.id, timeout });
       return;
@@ -455,6 +465,7 @@ export class VoiceRouter {
   }
 
   private cancelLatestAt(time: ActionTime, captureKey?: string): string | undefined {
+    if (captureKey && this.expiredSpeechKeys.has(captureKey)) return;
     const reserved = captureKey && this.speechCaptures.get(captureKey);
     if (reserved) {
       // Never fall through to another card if an explicit action already settled this one.
@@ -1284,6 +1295,7 @@ export class VoiceRouter {
     }
     for (const capture of this.speechCaptures.values()) clearTimeout(capture.timeout);
     this.speechCaptures.clear();
+    this.expiredSpeechKeys.clear();
     this.openCards.clear();
     this.open.clear();
     this.lastAnswer.clear();

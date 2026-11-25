@@ -1683,6 +1683,39 @@ test("an explicitly cancelled target cannot redirect its in-flight spoken cancel
   assert.deepEqual(queued("Will"), ["keep the other card"]);
 });
 
+test("a cancel arriving after its reservation times out cannot dismiss an older unsure card", async t => {
+  const { revision } = await setupOnsetCountdown(t);
+  await say("Steven ask Will about the build", "older-choice");
+  await resolved("older-choice");
+  t.mock.timers.tick(10);
+  await say("Will discard by button", "button-target");
+  t.mock.timers.tick(100);
+  const onset = voiceStateStore.hostNowUs();
+  const capturedAt = Date.now();
+  const start = await post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: onset }, token);
+  assert.deepEqual(await start.json(), { accepted: true });
+  assert.equal((await act("button-target", "cancel")).status, 200);
+  t.mock.timers.tick(55_000);
+
+  const postCancel = async (id: string, speechStartUs: number) => {
+    const response = await app.request(utterancePath(revision), { method: "POST", headers: {
+      "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+      "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 1),
+    }, body: JSON.stringify({ ...capture("Cancel.", id), capturedAt }) });
+    assert.deepEqual(await response.json(), { accepted: true });
+  };
+  await postCancel("late-reserved", onset);
+  assert.deepEqual(registry.snapshot().voiceCards?.map(({ id, state }) => [id, state]), [["older-choice", "unsure"]]);
+  assert.equal((await readHeard()).find(entry => entry.id === "late-reserved")?.rule, "nothing-pending");
+  assert.deepEqual(queued("Will"), []);
+
+  // A different onset with no reservation still addresses the older open choice.
+  await postCancel("never-reserved", onset + 1);
+  assert.equal(cards.findLast(card => card.id === "older-choice")?.state, "cancelled");
+  assert.equal((await readHeard()).find(entry => entry.id === "never-reserved")?.detail, "older-choice");
+});
+
 test("an accepted non-cancel transcript after expiry releases the reserved message exactly once", async t => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });

@@ -347,6 +347,7 @@ export const RepositoryQueryAuditMetadataSchema = z
     attemptId: id,
     snapshotDigest: sha,
     operation: z.enum(REPOSITORY_OPERATION_IDS),
+    readLayer: z.enum(["worktree", "index"]).optional(),
     inputHash: sha,
     status: z.enum(["ok", "denied", "failed", "cancelled"]),
     code: z.enum(REPOSITORY_FAILURE_CODES).nullable(),
@@ -358,6 +359,8 @@ export const RepositoryQueryAuditMetadataSchema = z
     handles: z.array(RepositoryEvidenceHandleSchema).max(1000),
   })
   .superRefine((audit, ctx) => {
+    if (audit.readLayer !== undefined && audit.operation !== "read")
+      ctx.addIssue({ code: "custom", message: "Only a read query has a checkout layer" });
     const ids = new Set<string>();
     const ordinals = new Set<number>();
     if (audit.status !== "ok" && audit.handles.length)

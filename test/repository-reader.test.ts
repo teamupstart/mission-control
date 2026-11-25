@@ -119,6 +119,7 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
   assert.equal(a.status, "ok");
   assert.equal(a.truncated, true);
   assert.equal(a.items.length, 2);
+  assert.equal(f.audit[0]!.readLayer, "worktree");
   assert.deepEqual(f.audit[0]!.handles[0]!.range, {
     kind: "line",
     startLine: 1,
@@ -130,6 +131,8 @@ test("reads exact line pages with authenticated cursors and body-free audit", as
   });
   assert.equal(b.items[0]!.text, "three");
   assert.equal(b.truncated, false);
+  await reader.query("read", { path: "src/a.txt", layer: "index" });
+  assert.equal(f.audit.at(-1)!.readLayer, "index");
   assert.equal(
     (await reader.query("read", { path: "link", cursor: a.nextCursor })).code,
     "invalid_cursor",

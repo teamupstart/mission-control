@@ -2,7 +2,7 @@ import { InspectorVerdictSchema, DEFAULT_LOCAL_INSPECTOR_SEVERITY, type LocalIns
 import { approvedPath } from "@shared/repository-policy.ts";
 import { checkBlockedReason, effectiveWorkflowCommandTimeoutMs, emptyWorkflowCommandView, type WorkflowCheckOutcome } from "@shared/workflow.ts";
 import { resolveMaxDiffBytes } from "../inspector/review-core.ts";
-import { planLocalReview } from "../inspector/verdict.ts";
+import { planLocalReview, SEVERITY_RANK } from "../inspector/verdict.ts";
 import { buildLocalReviewPrompt } from "../inspector/prompt.ts";
 import { renderLocalInspectorFindings } from "../inspector/findings-text.ts";
 import { scrubSecrets } from "../inspector/scrub.ts";
@@ -17,7 +17,7 @@ export interface LocalInspectorInput {
   captured: boolean | undefined;
   hasArtifact: () => boolean;
   compare: () => Promise<ReviewComparison>;
-  review: (prompt: string, timeoutMs: number) => Promise<string>;
+  review: (prompt: string, timeoutMs: number, offDiffFindings: ReadonlyMap<string, string>) => Promise<string>;
   retain: (findings: readonly LocalInspectorFinding[]) => WorkflowCheckOutcome["artifacts"];
   goal: string;
   round: number;
@@ -31,29 +31,49 @@ export function localInspectorFindingsText(findings: readonly LocalInspectorFind
 async function submittedDiff(root: string, mergeBase: string, head: string) {
   const cap = resolveMaxDiffBytes();
   if (!Number.isSafeInteger(cap) || cap <= 0) throw new Error("The Inspector diff byte cap is invalid");
-  const gitDiff = async (paths: string[], budget: number) => {
-    const result = await run("git", ["-C", root, "diff", "--no-renames", "--no-ext-diff",
-      "--no-textconv", "--no-color", "--no-relative", mergeBase, head, "--", ...paths],
-    { timeoutMs: 10_000, maxBuffer: budget + 1 });
-    if (result.overflowed || Buffer.byteLength(result.stdout) > budget) {
+  const gitDiff = async (paths: string[], budget: number, filter?: "D" | "ACMTUX") => {
+    // Ask Git for NUL-delimited paths from the same file pairs as the patch. Account for
+    // that metadata separately so only the patch spends the Inspector's byte budget.
+    const result = await run("git", ["-C", root, "diff", "--raw", "-z", "--patch", "--no-renames", "--no-ext-diff",
+      "--no-textconv", "--no-color", "--no-relative", "--submodule=short", ...(filter ? [`--diff-filter=${filter}`] : []),
+      mergeBase, head, "--", ...(filter ? paths.map(path => `:(literal)${path}`) : [])],
+    { timeoutMs: 10_000, maxBuffer: budget + 8 * 1024 * 1024 });
+    if (result.overflowed) {
       throw new Error("The submitted diff exceeds the Inspector byte cap. Narrow the submission and retry");
     }
     if (result.code !== 0 || result.outcomeUnknown || result.stderr.trim()) {
       throw new Error("The submitted diff could not be read. Verify local Git refs and resubmit");
     }
-    return result.stdout;
+    const split = result.stdout.indexOf("\0\0");
+    const fields = split < 0 ? [] : result.stdout.slice(0, split).split("\0");
+    const patch = split < 0 ? "" : result.stdout.slice(split + 2);
+    const expected = new Set(paths);
+    if (fields.length !== paths.length * 2 || !patch.startsWith("diff --git ")
+        || [...patch.matchAll(/(?:^|\n)diff --git /g)].length !== paths.length
+        || fields.some((field, i) => i % 2 === 0 ? !field.startsWith(":") : !expected.delete(field))) {
+      throw new Error("The submitted diff could not be verified against the approved paths. Check local Git refs and retry");
+    }
+    if (Buffer.byteLength(patch) > budget) {
+      throw new Error("The submitted diff exceeds the Inspector byte cap. Narrow the submission and retry");
+    }
+    return patch;
   };
-  const { allowed } = await reviewChangedPaths(root, mergeBase, head);
+  const { allowed, required } = await reviewChangedPaths(root, mergeBase, head);
   const safe = allowed.filter(approvedPath);
-  // Apply the same sensitive-path policy as the workload before giving the provider a diff.
-  // In the common case a single git invocation also enforces the cap for the whole patch.
-  if (safe.length === allowed.length) return { paths: safe, text: scrubSecrets(await gitDiff([], cap)) };
+  if (safe.length === 0) return { paths: safe, text: "" };
+  if (safe.length === allowed.length) return { paths: safe, text: scrubSecrets(await gitDiff(safe, cap)) };
+  // Literal pathspecs also match descendants. A file/directory replacement splits into
+  // deletes and additions, so ask for those groups separately and verify each batch above.
+  const present = new Set(required);
   const parts: string[] = [];
   let remaining = cap;
-  for (let i = 0; i < safe.length; i += 32) {
-    const patch = await gitDiff(safe.slice(i, i + 32).map(path => `:(literal)${path}`), remaining);
-    remaining -= Buffer.byteLength(patch);
-    parts.push(patch);
+  for (const filter of ["D", "ACMTUX"] as const) {
+    const group = safe.filter(path => present.has(path) === (filter !== "D"));
+    for (let i = 0; i < group.length; i += 32) {
+      const patch = await gitDiff(group.slice(i, i + 32), remaining, filter);
+      remaining -= Buffer.byteLength(patch);
+      parts.push(patch);
+    }
   }
   return { paths: safe, text: scrubSecrets(parts.join("")) };
 }
@@ -70,9 +90,9 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
       output: "", truncatedBytes: 0, artifacts: [], timeoutMs: null, note,
       localInspector: { ...provenance, status: "skipped", findingCount: 0 } },
   });
-  const block = (reason: string): CheckResult => ({
+  const block = (reason: string, findingCount = 0): CheckResult => ({
     kind: "action_required", reason,
-    localInspector: { ...provenance, status: "blocked", findingCount: 0 },
+    localInspector: { ...provenance, status: "blocked", findingCount },
   });
 
   if (!local) return block("Local Inspector repository review runtime is unavailable.");
@@ -83,14 +103,15 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
   if (denied) return block(`Local Inspector requires permission to read the submitted worktree. ${denied}`);
 
   const reservation = input.reserveRun?.();
-  if (reservation && !reservation.granted) {
-    const note = `Local Inspector execution allowance is exhausted (${reservation.spent}/${command.maxRuns}).`;
-    return command.onBudgetExhausted === "skip" ? skip(`${note} Review skipped.`, "budget_spent")
-      : block(`${note} Raise the allowance in Library > Commands and retry.`);
-  }
-
   let completed = false;
   try {
+    const previous = local.previous();
+    if (reservation && !reservation.granted) {
+      const note = `Local Inspector execution allowance is exhausted (${reservation.spent}/${command.maxRuns}).`;
+      const knownBlockers = previous.some(finding => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[threshold]);
+      if (command.onBudgetExhausted === "skip" && !knownBlockers) return skip(`${note} Review skipped.`, "budget_spent");
+      return block(`${note}${knownBlockers ? " Earlier blocking findings remain unresolved." : ""} Raise the allowance in Library > Commands and retry.`, previous.length);
+    }
     if (!input.repoRoot) return block("Local Inspector could not locate the submitted repository.");
     const comparison = await local.compare();
     provenance.baseRef = comparison.baseRef;
@@ -103,11 +124,12 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
     }
     const diff = await submittedDiff(input.repoRoot, comparison.mergeBase, comparison.head);
     const changedPaths = new Set(diff.paths);
-    const previous = local.previous();
     const { prompt, prompted } = buildLocalReviewPrompt({
       goal: local.goal, diff: diff.text, changedPaths: diff.paths, open: previous, round: local.round,
     });
-    const raw = await local.review(prompt, timeoutMs);
+    const offDiffFindings = new Map(previous.filter(finding => prompted.has(finding.fingerprint) && !changedPaths.has(finding.path))
+      .map(finding => [finding.fingerprint, finding.path]));
+    const raw = await local.review(prompt, timeoutMs, offDiffFindings);
     const verdict = InspectorVerdictSchema.parse(JSON.parse(raw));
     const plan = planLocalReview({
       verdict, changedPaths, previous, prompted,

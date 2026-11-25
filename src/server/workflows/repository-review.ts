@@ -9,6 +9,7 @@ import { locateExecutable } from "../executables/locator.ts";
 import { repositoryMcpServerPath } from "../config.ts";
 import { ProviderFailure } from "../llm/provider-failure.ts";
 import { canonicalJson } from "@shared/shaping.ts";
+import { checkBlockedReason } from "@shared/workflow.ts";
 import {
   PersonaWorkloadEventSchema, PersonaWorkloadRequestSchema, REPOSITORY_DEFAULT_BUDGETS,
   REPOSITORY_EVIDENCE_CAPABILITY, REPOSITORY_OPERATION_IDS,
@@ -20,6 +21,7 @@ import { LocalPersonaWorkloadExecutor } from "./persona-workload/executor.ts";
 import type { PersonaWorkloadExecutor } from "./persona-workload/contracts.ts";
 import { LocalRepositoryWorkloadOwnership } from "./persona-workload/local-ownership.ts";
 import { workflowLog } from "./log.ts";
+import { getWorkflowPolicy } from "./config.ts";
 
 // A transport may ignore abort while reading or closing its iterator. Its deadline
 // releases the scheduler slot; the durable cancellation row still gates any retry.
@@ -41,13 +43,14 @@ async function binary(id: "node" | "git" | "claude" | "codex") {
 }
 
 type ReviewInput = Pick<PersonaWorkloadRequest, "attemptId" | "submissionId" | "accounting" | "prompt" | "images" | "deadline" | "execution">
-  & { persona?: import("@shared/workflow.ts").PersonaSnapshot };
+  & { persona?: import("@shared/workflow.ts").PersonaSnapshot; offDiffFindings?: ReadonlyMap<string, string> };
 
 export class RepositoryReview {
   private readonly dispatching = new Set<string>();
   private readonly recoveringLocal = new Map<string, Promise<void>>();
   private readonly local: LocalRepositoryWorkloadOwnership;
-  constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor) {
+  constructor(private readonly store: WorkflowStore, private readonly injected?: PersonaWorkloadExecutor,
+    private readonly workflowPolicy = getWorkflowPolicy) {
     this.local = new LocalRepositoryWorkloadOwnership(store, id => Boolean(this.current(id)));
   }
 
@@ -114,7 +117,15 @@ export class RepositoryReview {
     // The materializer calls this before opening the checkout and before returning its lease.
     const owner = this.store.currentRepositoryWorkload(id);
     if (!owner || !featureEnabled(repositoryReviewFlag(owner.purpose))) return undefined;
+    if (owner.purpose === "inspector_review" && this.inspectorCommandsDenial(owner.runId)) return undefined;
     return owner;
+  }
+
+  private inspectorCommandsDenial(runId: string) {
+    const run = this.store.getRun(runId);
+    const binding = run && this.store.getBinding(run.bindingId);
+    return binding ? checkBlockedReason(this.workflowPolicy(), binding.sessionCwd, binding.sessionRepoRoot)
+      : "The Local Inspector workflow no longer has a repository binding.";
   }
 
   interrupt() {
@@ -151,12 +162,13 @@ export class RepositoryReview {
   }
 
   private async dispatch(input: ReviewInput, shutdown: AbortSignal): Promise<string> {
+    const { offDiffFindings, ...workload } = input;
     const service = WorkflowRepositoryArtifactService.forRoot(this.store);
     const snapshot = service.activeSnapshot(input.submissionId);
     if (!snapshot) throw new Error("The submitted repository artifact is unavailable");
     const id = input.accounting.callId;
     const request = PersonaWorkloadRequestSchema.parse({
-      ...input, version: 1, workloadId: id, idempotencyKey: id,
+      ...workload, version: 1, workloadId: id, idempotencyKey: id,
       requiredCapability: REPOSITORY_EVIDENCE_CAPABILITY, cancellationGeneration: 0,
       artifact: { locator: snapshot.locator, digest: snapshot.digest },
       policy: { version: 1, operations: REPOSITORY_OPERATION_IDS }, budgets: REPOSITORY_DEFAULT_BUDGETS,
@@ -164,8 +176,13 @@ export class RepositoryReview {
     service.setActiveRequestLookup(key => this.current(key) ?? null);
     const executor = this.injected ?? await this.localExecutor(service);
     if (executor.repositoryEvidenceCapability !== request.requiredCapability) throw new Error("Repository executor capability mismatch");
-    // Executable lookup can yield after the engine's check. Recheck before granting workload ownership.
+    // Scheduling and executable lookup can yield after the engine's check. Recheck before
+    // dispatch, and keep enforcing the grant through materialization and the provider gate.
     if (!featureEnabled(repositoryReviewFlag(request.accounting.purpose))) throw new Error("Repository review preview is off");
+    if (request.accounting.purpose === "inspector_review") {
+      const denied = this.inspectorCommandsDenial(request.accounting.runId);
+      if (denied) throw new Error(`Local Inspector requires permission to read the submitted worktree. ${denied}`);
+    }
     this.store.startRepositoryWorkload(request, !this.injected);
     const cancel = new AbortController();
     const signal = AbortSignal.any([shutdown, cancel.signal, AbortSignal.timeout(Math.max(1, input.deadline - Date.now()))]);
@@ -200,6 +217,7 @@ export class RepositoryReview {
     let streamFinished = false;
     let sequence = 0;
     let queriedRepository = false;
+    const inspectedPaths = new Set<string>();
     let stage: "new" | "accepted" | "repository_verified" | "persona_started" | "cancelled" = "new";
     try {
       signal.throwIfAborted();
@@ -246,7 +264,12 @@ export class RepositoryReview {
         this.store.recordRepositoryEvent(request, event, hash, () => Boolean(this.current(id)));
         if (event.type === "repository_query" && ["unavailable","audit_unavailable","budget_exhausted","timeout","cancelled"].includes(event.audit.code ?? ""))
           throw new Error(`Repository query failed: ${event.audit.code}`);
-        if (event.type === "repository_query" && event.audit.status === "ok" && event.audit.items > 0) queriedRepository = true;
+        if (event.type === "repository_query" && event.audit.status === "ok" && event.audit.items > 0) {
+          queriedRepository = true;
+          if (offDiffFindings?.size && event.audit.operation === "read" && event.audit.readLayer === "worktree") {
+            for (const handle of event.audit.handles) inspectedPaths.add(handle.path);
+          }
+        }
         if (event.type === "terminal") terminal = event;
       }
       signal.throwIfAborted();
@@ -263,13 +286,17 @@ export class RepositoryReview {
           errorCode = "invalid_verdict";
           throw new Error("Local Inspector did not complete a verified repository query");
         }
+        verdictJson = JSON.stringify({ ...result.verdict, resolved: result.verdict.resolved.filter(fingerprint => {
+          const path = offDiffFindings?.get(fingerprint);
+          return path === undefined || inspectedPaths.has(path);
+        }) });
       } else {
         if (result.kind !== "persona_verdict") throw new Error("Unexpected repository verdict kind");
         const verdict = result.verdict;
         const refs = verdict.verdict === "pass" ? verdict.approvalDetails.evidence : verdict.requestedChanges.flatMap(c => c.evidence);
         this.store.verifyRepositoryCitations(id, refs);
+        verdictJson = JSON.stringify(verdict);
       }
-      verdictJson = JSON.stringify(result.verdict);
     } finally {
       clearInterval(timer);
       // Iterator teardown may itself wait for the provider. Request cancellation before closing it.

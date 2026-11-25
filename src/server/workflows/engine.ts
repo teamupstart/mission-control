@@ -512,7 +512,6 @@ export class WorkflowEngine {
     private readonly onRunChanged: (runId: string) => void = () => {},
     options: WorkflowEngineOptions = {},
   ) {
-    this.repositoryReview = new RepositoryReview(store, options.repositoryExecutor);
     this.commandArtifacts = options.commandArtifacts;
     this.limit = options.schedule
       ?? createReviewScheduler(options.concurrency ?? DEFAULT_REVIEW_CONCURRENCY);
@@ -529,6 +528,7 @@ export class WorkflowEngine {
     this.checkDeps = options.checkDeps ?? (() => ({}));
     this.unresolvedCheckLease = options.unresolvedCheckLease ?? (() => false);
     this.workflowPolicy = options.workflowPolicy ?? getWorkflowPolicy;
+    this.repositoryReview = new RepositoryReview(store, options.repositoryExecutor, this.workflowPolicy);
     this.workflowCommand = options.workflowCommand
       ?? ((slot) => this.store.getWorkflowCommand(slot));
     this.stackDiffBase = options.stackDiffBase ?? (async () => null);
@@ -1668,8 +1668,8 @@ export class WorkflowEngine {
               repoRoot: binding.sessionRepoRoot ?? "", headSha: reviewHead,
               stackBase: () => this.stackDiffBase(binding),
             })),
-          review: (prompt, timeoutMs) => this.limit(() => this.reviewLocally(
-            claimed, submission, run, inspector, prompt, timeoutMs, AbortSignal.any([signal, shutdown]),
+          review: (prompt, timeoutMs, offDiffFindings) => this.limit(() => this.reviewLocally(
+            claimed, submission, run, inspector, prompt, timeoutMs, offDiffFindings, AbortSignal.any([signal, shutdown]),
           )),
           retain: findings => findings.length && this.commandArtifacts ? [this.commandArtifacts.retainFindings(
             { runId: run.id, submissionId: submission.id, attemptId: claimed.id }, Buffer.from(JSON.stringify(findings, null, 2)),
@@ -1813,7 +1813,8 @@ export class WorkflowEngine {
 
   private async reviewLocally(
     attempt: WorkflowNodeAttempt, submission: WorkflowSubmission, run: WorkflowRun,
-    config: ReturnType<typeof getInspectorConfig>, prompt: string, timeoutMs: number, signal: AbortSignal,
+    config: ReturnType<typeof getInspectorConfig>, prompt: string, timeoutMs: number,
+    offDiffFindings: ReadonlyMap<string, string>, signal: AbortSignal,
   ) {
     signal.throwIfAborted();
     await this.repositoryReview.confirmCancellations(run.id, attempt.nodeId);
@@ -1829,7 +1830,7 @@ export class WorkflowEngine {
     });
     try {
       const raw = await this.repositoryReview.run({
-        attemptId: attempt.id, submissionId: submission.id, prompt,
+        attemptId: attempt.id, submissionId: submission.id, prompt, offDiffFindings,
         accounting: { runId: run.id, purpose, attempt: 1, callId },
         execution: { provider: execution.runner.id, model: execution.model.id, effort: execution.effort },
         images: [], deadline: Date.now() + timeoutMs,

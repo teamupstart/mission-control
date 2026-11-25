@@ -602,6 +602,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       };
     calls++;
     let inputHash = hash(null);
+    let readLayer: "worktree" | "index" | undefined;
     const handles: RepositoryEvidenceHandle[] = [];
     try {
       if (options.signal.aborted || callSignal?.aborted)
@@ -614,6 +615,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       const parsed = RepositoryOperationSchemas[operation].safeParse(input);
       if (!parsed.success) throw new Refusal("invalid_request");
       const { cursor, ...shape } = parsed.data;
+      if (operation === "read" && "layer" in shape) readLayer = shape.layer;
       inputHash = hash(shape);
       let offset = 0, scanIndex = 0;
       if (cursor) {
@@ -771,6 +773,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       workloadId: options.workloadId,
       attemptId: options.attemptId,
       snapshotDigest: view.snapshotDigest,
+      ...(readLayer === undefined ? {} : { readLayer }),
       inputHash,
       status: result.status,
       code: result.code,

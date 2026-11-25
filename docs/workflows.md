@@ -3136,13 +3136,15 @@ prompt directs the Inspector to read the repository brief and applicable standar
 checkout and review the changes against the workflow goal. Before accepting a verdict, the stage
 requires a successful repository query that returns at least one item.
 The run records the publication tree, base ref, merge base, threshold and outcome. Open findings
-carry forward on the next submission and are available under **Load findings**.
+carry forward on the next submission and are available under **Load findings**. Closing a
+finding outside the new diff requires reading its file in the submitted worktree.
 
 The defaults in **Library > Commands > Local Inspector** are **Major and above**, **10 executions
 per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity
 findings are advisory. Blocking findings return a repair packet to the session. The session can
 repair and resubmit before the workflow opens a pull request or runs CI. The workflow's repair
-limit applies to those rounds.
+limit applies to those rounds. If the execution allowance runs out with blocking findings
+still open, the stage pauses for operator action even when its exhaustion policy is **Skip**.
 
 Submission capture records whether local review is enabled. When the preview, Inspector or
 local review is off, the stage skips with a note. An enabled stage blocks for operator action

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InspectorVerdictSchema, type LocalInspectorFinding } from "../src/shared/inspector-review.ts";
@@ -74,6 +74,18 @@ test("Local Inspector handles Block and Skip for exhaustion and returns a missin
   assert.equal(blocked.kind, "action_required");
   const skipped = await runCheck({ ...cap, command: { ...input.command!, onBudgetExhausted: "skip" } });
   assert.equal(skipped.kind === "outcome" && skipped.outcome.status, "budget_spent");
+  const finding = { ...major, path: "app.ts", fingerprint: "a".repeat(12) };
+  const skipCommand = { ...input.command!, onBudgetExhausted: "skip" } as const;
+  const knownBlocker = await runCheck({ ...cap, command: skipCommand,
+    localInspector: { ...input.localInspector!, previous: () => [finding] },
+  });
+  assert.equal(knownBlocker.kind, "action_required");
+  assert.match(knownBlocker.reason, /blocking findings remain unresolved/);
+  assert.partialDeepStrictEqual(knownBlocker.localInspector, { status: "blocked", findingCount: 1 });
+  const advisory = await runCheck({ ...cap, command: skipCommand,
+    localInspector: { ...input.localInspector!, previous: () => [{ ...finding, severity: "minor" }] },
+  });
+  assert.equal(advisory.kind === "outcome" && advisory.outcome.status, "budget_spent");
   let released = 0;
   const missing = await runCheck({
     ...input, reserveRun: () => ({ granted: true, spent: 0, release: () => { released++; } }),
@@ -87,10 +99,16 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
   git("init", "-q");
-  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "base");
+  writeFileSync(join(root, "configuration"), "approved file before replacement\n");
+  git("add", "configuration");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base");
   const base = git("rev-parse", "HEAD");
   writeFileSync(join(root, "app.ts"), "submitted code\n");
   writeFileSync(join(root, ".env"), "NEVER_IN_REVIEW_PROMPT");
+  rmSync(join(root, "configuration"));
+  mkdirSync(join(root, "configuration"));
+  writeFileSync(join(root, "configuration", ".env"), "PRIVATE_CHILD_VALUE\n");
+  writeFileSync(join(root, "configuration", "public settings"), "approved replacement child\u2028diff --git is file content\n");
   git("add", "-A");
   git("-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "submitted");
   const head = git("rev-parse", "HEAD");
@@ -113,7 +131,9 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
         assert.match(prompt, /<run-goal>\nFix the workflow\n<\/run-goal>/);
         assert.match(prompt, /\+submitted code/);
         assert.match(prompt, new RegExp(previous[0]!.fingerprint));
-        assert.doesNotMatch(prompt, /NEVER_IN_REVIEW_PROMPT|post-capture content/);
+        assert.match(prompt, /-approved file before replacement/);
+        assert.match(prompt, /\+approved replacement child/);
+        assert.doesNotMatch(prompt, /NEVER_IN_REVIEW_PROMPT|PRIVATE_CHILD_VALUE|configuration\/\.env|post-capture content/);
         return JSON.stringify({ summary: "", resolved: [previous[0]!.fingerprint] });
       },
     },

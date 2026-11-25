@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LlmRunner, LlmRunnerId } from "../src/shared/llm.ts";
+import type { PersonaWorkloadEvent } from "../src/shared/repository-access.ts";
 import type {
   ClaudeSdkMessage,
   ClaudeSdkOneShotDeps,
@@ -3506,6 +3507,7 @@ for (const { id, description, query, severity } of [
   { id: "local-inspector-repair", description: "carries off-diff findings across restart and waits for a verified repair before Pull Request", query: true, severity: "major" },
   { id: "local-inspector-without-query", description: "rejects a terminal verdict without a verified repository query", query: false, severity: "major" },
   { id: "local-inspector-saved-severity", description: "uses the saved minor threshold to fail before Pull Request", query: true, severity: "minor" },
+  { id: "local-inspector-revoked", description: "does not dispatch if Commands permission is revoked while waiting for a review slot", query: false, severity: "major" },
 ] as const) {
   test(`Local Inspector ${description}`, async t => {
     const { execFileSync } = await import("node:child_process");
@@ -3585,12 +3587,19 @@ for (const { id, description, query, severity } of [
 
     const finding = { path: "submitted.txt", line: 1, severity, title: "Remove placeholder", body: "The task still contains a placeholder." } as const;
     const fp = fingerprint(finding.path, finding.title);
+    let allowed = true;
+    let providerCalls = 0;
     const options: ConstructorParameters<typeof WorkflowEngine>[2] = {
       commandArtifacts: new WorkflowCommandArtifactService(),
-      workflowPolicy: () => ({ ...DEFAULT_WORKFLOW_POLICY, checksEnabled: true, repoAllowlist: [repo] }),
+      workflowPolicy: () => ({ ...DEFAULT_WORKFLOW_POLICY, checksEnabled: true, repoAllowlist: allowed ? [repo] : [] }),
+      ...(id === "local-inspector-revoked" ? { schedule: async fn => {
+        allowed = false;
+        return fn();
+      } } : {}),
       repositoryExecutor: {
         repositoryEvidenceCapability: REPOSITORY_EVIDENCE_CAPABILITY,
         async *dispatch(request) {
+          providerCalls++;
           assert.equal(request.accounting.purpose, "inspector_review");
           assert.equal(request.execution.provider, "codex");
           assert.equal(request.persona, undefined);
@@ -3601,14 +3610,24 @@ for (const { id, description, query, severity } of [
           yield { ...event(), type: "accepted" };
           yield { ...event(), type: "repository_verified" };
           yield { ...event(), type: "persona_started" };
-          if (query) yield { ...event(), type: "repository_query", audit: {
-            operationId: randomUUID(), workloadId: request.workloadId, attemptId: request.attemptId,
-            snapshotDigest: request.artifact.digest, operation: "read", inputHash: "a".repeat(64),
-            status: "ok", code: null, bytes: 10, items: 1, durationMs: 1, truncated: false, handles: [],
-          } };
           const subsequent = request.submissionId !== first;
           if (subsequent) assert.match(request.prompt, new RegExp(fp));
-          const resolved = request.submissionId === `${first}-repair` ? [fp] : [];
+          if (query) {
+            const read = (path: string, readLayer: "worktree" | "index"): PersonaWorkloadEvent => {
+              const operationId = randomUUID();
+              const binding = { operationId, workloadId: request.workloadId, attemptId: request.attemptId,
+                snapshotDigest: request.artifact.digest, operation: "read", truncated: false } as const;
+              return { ...event(), type: "repository_query", audit: { ...binding, readLayer, inputHash: "a".repeat(64),
+                status: "ok", code: null, bytes: 10, items: 1, durationMs: 1, handles: [{ ...binding, path,
+                  evidenceHandleId: randomUUID(), itemOrdinal: 0, policyVersion: 1,
+                  range: { kind: "line", startLine: 1, endLineExclusive: 2 },
+                }],
+              } };
+            };
+            yield read(request.submissionId.endsWith("-unrelated") ? "notes.txt" : finding.path, "worktree");
+            if (request.submissionId.endsWith("-unrelated")) yield read(finding.path, "index");
+          }
+          const resolved = subsequent ? [fp] : [];
           yield { ...event(), type: "terminal", capability: REPOSITORY_EVIDENCE_CAPABILITY,
             result: { status: "completed", usage: {}, result: { kind: "inspector_verdict", verdict: {
               summary: "Fixture review", findings: subsequent || !query ? [] : [finding], resolved,
@@ -3634,7 +3653,10 @@ for (const { id, description, query, severity } of [
     if (!query) {
       assert.equal(store.getRun(runId)?.currentPhase, "command_action_required");
       assert.equal(store.checkRunsSpent(runId, "inspector", null), 0);
-      assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "", /verified repository query/);
+      const revoked = id === "local-inspector-revoked";
+      assert.equal(providerCalls, revoked ? 0 : 1);
+      assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "",
+        revoked ? /not on the workflow allowlist/ : /verified repository query/);
       return;
     }
     assert.match(JSON.stringify(store.getRun(runId)?.gateState), /Remove placeholder/);
@@ -3664,7 +3686,12 @@ for (const { id, description, query, severity } of [
     const third = `${first}-repair`;
     store.createRepairSubmission({ id: third, runId, round: 3, triggerSource: "manual",
       triggerKey: `manual:${id}:repair`, context: {}, evidence: {}, now: Date.now() });
-    await capture(third, "fixed");
+    writeFileSync(join(repo, finding.path), "fixed\n");
+    git("add", finding.path);
+    commit("upstream fix");
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    await capture(third, "unrelated revision", "notes.txt");
+    assert.equal(git("diff", "--name-only", "refs/remotes/origin/main", "HEAD"), "notes.txt");
     engine.activateSubmission(third);
     await waitFor(() => store.latestAttemptForNode(third, "pr")?.state === "waiting");
     assert.equal(store.checkRunsSpent(runId, "inspector", null), 3);

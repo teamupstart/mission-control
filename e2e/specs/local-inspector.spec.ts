@@ -107,6 +107,26 @@ test("preview exposes the setting, tuning and stage picker before Pull Request",
   await expect(library.getByRole("button", { name: /Local Inspector/ })).toHaveCount(0);
 });
 
+test("the Graph palette adds the visible Command after the Local Inspector preview turns off", async ({ dashboard, daemon }) => {
+  await flag(daemon, true);
+  const { workflow } = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", { name: "Local Inspector palette fixture" });
+  await dashboard.goto(`${daemon.baseURL}/#/library/workflows/${workflow.id}`);
+  await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
+  const palette = dashboard.getByRole("complementary", { name: "Workflow library and node palette" });
+  const picker = palette.getByLabel("Slot for new Command node");
+  await picker.selectOption("inspector");
+  await expect(palette.getByRole("link", { name: /Configure inspector in Library/ })).toBeVisible();
+
+  await flag(daemon, false);
+  await expect(picker.getByRole("option", { name: "Local Inspector" })).toHaveCount(0);
+  await expect(picker).toHaveValue("test");
+  await expect(palette.getByRole("link", { name: /Configure test in Library/ })).toBeVisible();
+  await palette.getByRole("button", { name: "＋ Command" }).click();
+  await expect(dashboard.getByLabel("Workflow graph")).toContainText("Command · test");
+  await expect(dashboard.getByLabel("Workflow graph")).not.toContainText("Command · inspector");
+  await screenshot(palette, "palette-preview-off-inspector-r4");
+});
+
 async function start(page: Page, daemon: DaemonHandle, options: {
   provider?: "claude" | "codex"; marker?: string; maxRuns?: number; maxRepairRounds?: number; exhaustion?: "skip" | "block";
   allowCommands?: boolean;
@@ -260,7 +280,7 @@ test("an enabled Local Inspector blocks before review when the repository is den
 
 test("after a restart, Claude reopens the captured worktree and a spent allowance blocks the next round", async ({ dashboard, daemon }) => {
   test.setTimeout(120_000);
-  const run = await start(dashboard, daemon, { provider: "claude", maxRuns: 1, marker: "E2E_LOCAL_INSPECTOR_RESTART" });
+  const run = await start(dashboard, daemon, { provider: "claude", maxRuns: 1, exhaustion: "skip", marker: "E2E_LOCAL_INSPECTOR_RESTART" });
   const started = join(daemon.home, "repository-provider-started");
   await expect.poll(() => existsSync(started), { timeout: 25_000 }).toBe(true);
   const oldPid = readFileSync(started, "utf8");
@@ -283,8 +303,8 @@ test("after a restart, Claude reopens the captured worktree and a spent allowanc
     submissionId: repair!.id,
     nodeId: "inspect",
     state: "error",
-    error: expect.stringContaining("allowance is exhausted"),
-    output: expect.objectContaining({ localInspector: expect.objectContaining({ status: "blocked" }) }),
+    error: expect.stringContaining("blocking findings remain unresolved"),
+    output: expect.objectContaining({ localInspector: expect.objectContaining({ status: "blocked", findingCount: 1 }) }),
   }));
   expect(blocked.llmCalls.filter(call => call.purpose === "inspector_review")).toHaveLength(2);
 });

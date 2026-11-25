@@ -394,7 +394,8 @@ export function WorkflowLibrary({
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
   const visibleCommandSlots = useWorkflowCommandSlots();
-  const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const [requestedPaletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const paletteSlot = visibleCommandSlots.find(slot => slot === requestedPaletteSlot) ?? visibleCommandSlots[0]!;
   // Held as a raw id and RESOLVED against the addable list at render, not seeded from it: the
   // catalog and the capability answer both arrive after first paint, so a `useState`
   // initializer would pin an empty string and never recover.

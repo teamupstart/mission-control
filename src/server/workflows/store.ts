@@ -8450,7 +8450,7 @@ export class WorkflowStore {
 
   currentRepositoryWorkload(id: string) {
     return this.transact(db => db.prepare(`SELECT w.id AS workloadId, w.attempt_id AS attemptId,
-      s.id AS submissionId, w.digest, a.locator, l.purpose FROM workflow_repository_workloads w
+      s.id AS submissionId, s.run_id AS runId, w.digest, a.locator, l.purpose FROM workflow_repository_workloads w
       JOIN workflow_llm_calls l ON l.id=w.id
       JOIN workflow_node_attempts n ON n.id=w.attempt_id AND n.state='running'
       JOIN workflow_submissions s ON s.id=n.submission_id AND s.status='running'
@@ -8458,7 +8458,7 @@ export class WorkflowStore {
       JOIN workflow_repository_snapshot_claims c ON c.submission_id=s.id AND c.digest=w.digest AND c.state='active'
       JOIN workflow_repository_artifacts a ON a.digest=c.digest AND a.state='ready'
       WHERE w.id=? AND w.state='running'`).get(id)) as
-      { workloadId: string; attemptId: string; submissionId: string; digest: string; locator: string; purpose: string } | undefined;
+      { workloadId: string; attemptId: string; submissionId: string; runId: string; digest: string; locator: string; purpose: string } | undefined;
   }
 
   interruptRepositoryWorkloads() {

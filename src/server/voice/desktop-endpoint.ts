@@ -7,7 +7,7 @@ import { checkToken } from "../auth.ts";
 import { HOST } from "../../shared/harness-runtime.mjs";
 
 const routes = new Set(["/events", "/api/voice/mute", "/voice/shell-report",
-  "/voice/listener/hello", "/voice/listener/directive", "/voice/utterances"]);
+  "/voice/listener/hello", "/voice/listener/speech", "/voice/listener/directive", "/voice/utterances"]);
 
 export const DESKTOP_VOICE_DAEMON_STOPPING = Symbol("desktop voice daemon stopping");
 

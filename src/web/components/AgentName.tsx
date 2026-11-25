@@ -1,5 +1,6 @@
 import { useContext } from "react";
 import { inboxAction, spokenHintText, type InboxActionId } from "@shared/inbox.ts";
+import { voiceButtonActions } from "../lib/voice-inbox.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { VoiceHintsContext, type AgentNameView } from "../lib/agent-names.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -54,7 +55,7 @@ export function InboxActionButton({
   action,
   name,
   tooltip,
-  onClick,
+  onClick, onDictate, dictateDisabled,
   label,
   className = "btn btn-ghost",
   disabled = false,
@@ -68,6 +69,8 @@ export function InboxActionButton({
   name: string;
   tooltip: string;
   onClick: () => void;
+  onDictate?: (text: string) => void;
+  dictateDisabled?: boolean;
   label?: string;
   className?: string;
   disabled?: boolean;
@@ -89,6 +92,12 @@ export function InboxActionButton({
           aria-expanded={ariaExpanded}
           aria-controls={ariaControls}
           data-inbox-action={spec.id}
+          data-voice-action={spec.spoken && !(onDictate ? dictateDisabled : disabled) ? spec.id : undefined}
+          ref={button => {
+            if (!button || !spec.spoken) return;
+            voiceButtonActions.set(button, onDictate ?? onClick);
+            return () => { voiceButtonActions.delete(button); };
+          }}
           onClick={onClick}
         >
           {label ?? spec.label}

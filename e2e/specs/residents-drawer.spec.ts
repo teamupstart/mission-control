@@ -4,6 +4,7 @@ import type { Locator, Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { beListener, enableVoice } from "../fixtures/voice.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
@@ -39,17 +40,18 @@ async function request<T>(daemon: DaemonHandle, path: string, body?: unknown, me
 }
 
 interface ProfileOptions {
+  referenceName?: string;
   repo?: boolean;
   controlOtherSessions?: boolean;
 }
 
 /** Author a resident profile through the real route, with or without a default repository. */
 async function createProfile(
-  daemon: DaemonHandle, name: string, { repo = true, controlOtherSessions = false }: ProfileOptions = {},
+  daemon: DaemonHandle, name: string, { repo = true, controlOtherSessions = false, referenceName }: ProfileOptions = {},
 ): Promise<ResidentProfile> {
   const personas = await request<Array<{ id: string; name: string }>>(daemon, "/api/personas", undefined, "GET");
   return request<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
-    identity: { name }, persona: { personaId: personas.find((p) => p.name === "Code Risk Reviewer")!.id },
+    identity: { name, referenceName }, persona: { personaId: personas.find((p) => p.name === "Code Risk Reviewer")!.id },
     ...(repo ? { workspace: { defaultRepoRoot: daemon.repo } } : {}),
     authority: { controlOtherSessions },
     execution: { model: "claude-fable-5" },
@@ -174,6 +176,194 @@ async function expectOffFleet(page: Page, name = NAME): Promise<void> {
   await expect(page.locator(".board-col", { hasText: name })).toHaveCount(0);
   await expect(page.locator(".console-rail", { hasText: name })).toHaveCount(0);
 }
+
+test("a listening resident card shows its quoted reference name with spoken names disabled", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  await useDrawer(page, daemon, "board");
+  const listener = await beListener(daemon);
+  try {
+    const indicator = page.locator("button.vi-status-line");
+    await expect(indicator).toHaveAccessibleName("Voice: listening. Mute");
+    const snapshot = await residentSnapshot(daemon);
+    expect(snapshot.voice?.mode).toBe("listening");
+
+    // App resolves spokenNames from the voice flag. Replay the listening snapshot with
+    // that flag disabled so the test controls the two inputs independently.
+    const featureFlags = {
+      ...snapshot.featureFlags,
+      overrides: { ...snapshot.featureFlags.overrides, voice: false },
+    };
+    await page.route("**/events", route => route.fulfill({
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({ ...snapshot, featureFlags })}\n\n`,
+    }));
+    await page.reload();
+    await edgeTab(page).click();
+    await expect(indicator).toHaveCount(0);
+    await expect(drawerOf(page).locator(".residents-drawer-name")).toHaveText('"Marlowe"');
+    await capture(page, "listening-title-spoken-names-disabled");
+  } finally {
+    listener.stop();
+  }
+});
+
+test("resident card titles follow listening mode and the current reference name", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const profile = await launch(daemon);
+  await useDrawer(page, daemon, "board");
+  await edgeTab(page).click();
+  const drawer = drawerOf(page);
+  const title = drawer.locator(".residents-drawer-name");
+  const status = page.locator("button.vi-status-line");
+  const listener = await beListener(daemon);
+  try {
+    await expect(status).toHaveAccessibleName("Voice: listening. Mute");
+    await expect(title).toHaveText(NAME);
+    const updated = await request<ResidentProfile>(daemon, `/api/residents/profiles/${profile.id}`, { expectedRevision: profile.revision, settings: {
+      ...profile.settings, identity: { ...profile.settings.identity, referenceName: "Marlowe" },
+    } }, "PATCH");
+    await expect(title).toHaveText('"Marlowe"');
+    await expect(headOf(drawer, '"Marlowe"')).toBeVisible();
+    await capture(page, "listening-reference-title");
+    await status.click();
+    await expect(status).toHaveAccessibleName("Voice: muted. Unmute");
+    await expect(title).toHaveText(NAME);
+    await capture(page, "muted-resident-title");
+    await status.click();
+    await expect(title).toHaveText('"Marlowe"');
+    await request(daemon, `/api/residents/profiles/${profile.id}`, {
+      expectedRevision: updated.revision,
+      settings: { ...updated.settings, identity: { ...updated.settings.identity, referenceName: "" } },
+    }, "PATCH");
+    await expect(title).toHaveText(NAME);
+    await capture(page, "listening-resident-title");
+  } finally {
+    listener.stop();
+  }
+});
+
+test("listening titles identify and filter resident cards on the Board and in the Console rail", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  const other = "Release sentinel";
+  await launch(daemon, other);
+  const listener = await beListener(daemon);
+  try {
+    await expect(page.locator("button.vi-status-line")).toHaveAccessibleName("Voice: listening. Mute");
+    const rail = page.getByRole("navigation", { name: "Sessions" });
+    for (const name of ['"Marlowe"', other]) {
+      const row = rail.getByRole("button", { name, exact: true });
+      const title = row.locator(".rail-name");
+      await expect(title).toBeVisible();
+      await expect(title).toContainText(name);
+    }
+    await capture(page, "review-listening-rail");
+    await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+    await page.reload();
+    const board = page.locator("main.board");
+    const named = board.getByText('"Marlowe"', { exact: true });
+    const fallback = board.getByText(other, { exact: true });
+    await expect(named).toBeVisible();
+    await expect(fallback).toBeVisible();
+    await capture(page, "review-listening-board");
+    await page.locator(".filter-box").click();
+    await page.getByRole("textbox", { name: /Filter sessions/ }).fill("Marlowe");
+    await expect(board.getByRole("button", { name: 'Open "Marlowe"', exact: true })).toBeVisible();
+    await expect(named).toBeVisible();
+    await expect(fallback).toHaveCount(0);
+    await capture(page, "review-listening-board-filter");
+  } finally {
+    listener.stop();
+  }
+});
+
+test("Console rows distinguish residents sharing a listening title", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  const other = await launch(daemon, "Release sentinel", { referenceName: "Marlowe" });
+  const listener = await beListener(daemon);
+  try {
+    await expect(page.locator("button.vi-status-line")).toHaveAccessibleName("Voice: listening. Mute");
+    const rail = page.getByRole("navigation", { name: "Sessions" });
+    for (const ordinaryName of [NAME, other.name]) {
+      const name = `"Marlowe" (${ordinaryName})`;
+      const title = rail.getByRole("button", { name, exact: true }).locator(".rail-name");
+      await expect(title).toBeVisible();
+      await expect(title).toContainText(name);
+      expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+    await capture(page, "shared-listening-title-console");
+    await request(daemon, `/api/residents/profiles/${other.id}`, {
+      expectedRevision: other.revision,
+      settings: { ...other.settings, identity: { ...other.settings.identity, referenceName: "" } },
+    }, "PATCH");
+    await expect(rail.getByRole("button", { name: '"Marlowe"', exact: true })).toBeVisible();
+    await expect(rail.getByRole("button", { name: other.name, exact: true })).toBeVisible();
+  } finally {
+    listener.stop();
+  }
+});
+
+test("Board and drawer Open buttons distinguish residents sharing a listening title", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  const other = await launch(daemon, "Release sentinel", { referenceName: "Marlowe" });
+  const listener = await beListener(daemon);
+  try {
+    await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+    await page.reload();
+    const board = page.locator("main.board");
+    for (const ordinaryName of [NAME, other.name]) {
+      await expect(board.getByRole("button", { name: `Open "Marlowe" (${ordinaryName})`, exact: true })).toBeVisible();
+    }
+    await useDrawer(page, daemon, "board");
+    await edgeTab(page).click();
+    const drawer = drawerOf(page);
+    for (const ordinaryName of [NAME, other.name]) {
+      await expect(drawer.getByRole("button", { name: `Open "Marlowe" (${ordinaryName})`, exact: true })).toBeVisible();
+    }
+    await capture(page, "shared-listening-title-drawer-actions");
+    await drawer.getByRole("button", { name: `Open "Marlowe" (${other.name})`, exact: true }).click();
+    await expect(band(page, other.name)).toBeVisible();
+  } finally {
+    listener.stop();
+  }
+});
+
+test("listening titles identify a visitor card and filter residents in the drawer", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const profile = await launch(daemon, NAME);
+  await askResident(daemon);
+  const other = "Release sentinel";
+  await launch(daemon, other);
+  await useDrawer(page, daemon, "board");
+  const listener = await beListener(daemon);
+  try {
+    await expect(page.locator("button.vi-status-line")).toHaveAccessibleName("Voice: listening. Mute");
+    const visitorTitle = page.locator(".resident-visitor-name");
+    await expect(visitorTitle).toHaveText(NAME);
+    await capture(page, "review-listening-visitor-fallback");
+    await request(daemon, `/api/residents/profiles/${profile.id}`, {
+      expectedRevision: profile.revision,
+      settings: { ...profile.settings, identity: { ...profile.settings.identity, referenceName: "Marlowe" } },
+    }, "PATCH");
+    await expect(visitorTitle).toHaveText('"Marlowe"');
+    await capture(page, "review-listening-visitor");
+    await edgeTab(page).click();
+    const drawer = drawerOf(page);
+    await expect(cardOf(drawer, other)).toBeVisible();
+    await expect(cardOf(drawer, '"Marlowe"')).toBeVisible();
+    await page.locator(".filter-box").click();
+    const filter = page.getByRole("textbox", { name: /Filter sessions/ });
+    await filter.fill("Marlowe");
+    await expect(cardOf(drawer, '"Marlowe"')).toBeVisible();
+    await expect(cardOf(drawer, other)).toHaveCount(0);
+    await capture(page, "review-listening-drawer-filter");
+  } finally {
+    listener.stop();
+  }
+});
 
 test("a new installation keeps residents in the drawer, off the Board", async ({ page, daemon }) => {
   await launch(daemon);

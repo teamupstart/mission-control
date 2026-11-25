@@ -95,6 +95,7 @@ export function workflowActionTelemetry(store: () => WorkflowStore | null): Midd
       // app context. Read only this bounded field, never retain the body or any rationale.
       try {
         if (c.req.header("content-type")?.includes("application/json")) {
+          // oxlint-disable-next-line repository/parse-request-body -- Middleware reads a request ID after the route responds.
           const body: unknown = await c.req.json();
           if (body && typeof body === "object" && "requestId" in body
             && typeof body.requestId === "string" && body.requestId.length <= 200) operationId = body.requestId;

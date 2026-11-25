@@ -898,6 +898,11 @@ export function useEventStream(): MissionState {
         case "voice_indicators":
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
           break;
+        case "voice_form_fill":
+        case "voice_form_submit":
+        case "voice_inbox_action":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-inbox-event", { detail: msg }));
+          break;
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
           break;

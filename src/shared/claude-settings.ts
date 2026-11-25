@@ -1,5 +1,8 @@
+// oxlint-disable-next-line no-restricted-imports -- Native Claude settings I/O shared by desktop and daemon code.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// oxlint-disable-next-line no-restricted-imports -- Native Claude settings I/O shared by desktop and daemon code.
 import { homedir } from "node:os";
+// oxlint-disable-next-line no-restricted-imports -- Native Claude settings I/O shared by desktop and daemon code.
 import { dirname, join } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
 

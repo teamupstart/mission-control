@@ -32,7 +32,7 @@ async function capture(target: Locator, name: string, page: Page): Promise<void>
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
   await expect(page.locator(".tooltip")).toHaveCount(0, { timeout: 3000 }).catch(() => undefined);
-  await target.screenshot({ path: join(EVIDENCE, `${name}.png`) });
+  await target.screenshot({ path: join(EVIDENCE, `${name}.png`), animations: "disabled" });
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/idle-stalled-actions/${name}.png`);
 }
@@ -355,12 +355,41 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await capture(page.locator(".rail-group.tone-idle").locator(".."), "04-console-rail-fact", page);
   await row.click();
   const band = page.getByRole("region", { name: "Session stalled" });
-  await expect(band).toContainText("Idle with work open");
+  const toggle = band.getByRole("button", { name: /^Stalled\s*Idle with work open/ });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toContainText(task.title);
+  await expect(band.locator("dl")).toBeHidden();
+  await expect(band.getByRole("button")).toHaveText([/^Stalled/, "Nudge", "Message…", "Mark done", "Dismiss"]);
+  await capture(band, "03-console-stalled-band-collapsed", page);
+  await page.setViewportSize({ width: 360, height: 1000 });
+  await expect.poll(() => band.evaluate((el) => el.clientWidth), { intervals: [100] }).toBeLessThan(320);
+  expect(await band.evaluate((el) => el.scrollWidth - el.clientWidth), "the fixes scroll the band sideways").toBeLessThanOrEqual(0);
+  const [narrowBand, dismissAt] = [(await band.boundingBox())!, (await band.getByRole("button", { name: `Dismiss ${name} from Stalled` }).boundingBox())!];
+  expect(dismissAt.x + dismissAt.width, "Dismiss runs past the band's edge").toBeLessThanOrEqual(narrowBand.x + narrowBand.width + 0.5);
+  await capture(band, "03-console-stalled-band-narrow", page);
+  await page.setViewportSize({ width: 1500, height: 1000 });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(band.locator("dt")).toHaveText(["Task", "Last", "Foreman"]);
   await expect(band.locator("dd").first()).toContainText(task.title);
   await expect(band.locator("dd").last()).toHaveText(brief);
-  await expect(band.getByRole("button")).toHaveText(["Nudge", "Message…", "Mark done", "Dismiss"]);
+  await expect(band.getByRole("button", { name: "Nudge", exact: true })).toBeVisible();
   await capture(band, "03-console-stalled-band", page);
+  await toggle.click();
+  await expect(band.locator("dl")).toBeHidden();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  const nudgePath = `**/api/sessions/${encodeURIComponent(session.id)}/inbox-message`;
+  await page.route(nudgePath, route => route.request().method() === "POST"
+    ? route.fulfill({ status: 503, json: { error: "Outbox unavailable" } }) : route.fallback());
+  await band.getByRole("button", { name: "Nudge", exact: true }).click();
+  const refusal = band.getByRole("alert");
+  await expect(refusal).toBeVisible();
+  await expect(refusal).toContainText("Outbox unavailable");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(band.locator("dl")).toBeHidden();
+  await expect(band.getByRole("button", { name: "Nudge", exact: true })).toBeEnabled();
+  await capture(band, "03-console-stalled-band-collapsed-error", page);
+  await page.unroute(nudgePath);
 
   await band.getByRole("button", { name: "Mark done", exact: true }).click();
   const complete = page.getByRole("dialog", { name: "Complete task and close session" });

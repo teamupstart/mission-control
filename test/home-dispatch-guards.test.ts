@@ -81,11 +81,13 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // Persona repository access adds the grant update and per-run repository query audit routes.
   // GET /api/voice/mute and POST /api/voice/hotkey-recording answer 404 with the voice preview off.
   // The synthesis model adds gated POST and DELETE /api/voice/speech/model/download.
+  // Form submit refusal and inbox action claim and completion return 404 with Voice off.
+  // The listener reports speech onset and completion through one additional voice-gated route.
   // Session settings adds the MCP entry point, the operator access pair and the skin refresh read.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 490);
+  assert.equal(others.length, 494);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "6da3047419549a01966640de3fc60e4fc910037433836ee62e7cab3786cbdcb5");
+    "46c6d87b025be754ca1578de59ca4b531ea3640d4d7456dd847af2007a76bfd3");
 });
 
 function sourceFiles(dir: string): string[] {

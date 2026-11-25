@@ -33,6 +33,7 @@ const CodexSettings = z.object({
 }).passthrough();
 
 export function mcpTrustPath(agent: TrustAgent): string {
+  // oxlint-disable-next-line repository/agent-comparison -- The trust adapter selects the native settings path.
   return agent === "claude"
     ? process.env.CLAUDE_SETTINGS_PATH ?? (process.env.CLAUDE_CONFIG_DIR
       ? join(process.env.CLAUDE_CONFIG_DIR, "settings.json") : claudeSettingsPath())
@@ -79,6 +80,7 @@ function codexConfig(text: string) {
 
 /** Only the local default is checked; higher priority policies and explicit overrides still win. */
 export function hasMcpTrust(agent: TrustAgent, text: string): boolean {
+  // oxlint-disable-next-line repository/agent-comparison -- The trust adapter reads the native Claude allowlist.
   if (agent === "claude") {
     return claudeConfig(text).permissions?.allow?.includes(CLAUDE_MCP_ALLOW) ?? false;
   }
@@ -88,6 +90,7 @@ export function hasMcpTrust(agent: TrustAgent, text: string): boolean {
 /** Preserve comments and unrelated bytes. Refuse TOML layouts we cannot edit surgically. */
 export function withMcpTrust(agent: TrustAgent, original: string): string {
   if (hasMcpTrust(agent, original)) return original;
+  // oxlint-disable-next-line repository/agent-comparison -- The trust adapter writes native Claude settings.
   if (agent === "claude") {
     const settings = claudeConfig(original);
     const source = original.trim() ? original : "{}";
@@ -141,6 +144,7 @@ export function mcpTrustStatus(agent: TrustAgent, path = mcpTrustPath(agent)): S
     if (hasMcpTrust(agent, text)) {
       return { state: "satisfied", evidence: `${path}: Mission Control MCP allowed by default; explicit restrictions still apply.` };
     }
+    // oxlint-disable-next-line repository/agent-comparison -- The probe inspects the Codex TOML configuration.
     const config = agent === "codex" ? codexConfig(text) : null;
     const why = config && !registeredCodexServer(config)
       ? config.mcp_servers?.["mission-control"] ? CODEX_MCP_UNUSABLE : CODEX_MCP_NOT_REGISTERED

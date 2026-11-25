@@ -24,6 +24,8 @@ function world(on, { flag, minModApi = 1 }) {
   // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
   mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
+  // The host draws its own surface when the mod delegates a render to next(e).
+  on('ui.render', () => ({ type: 'Text', children: [''] }))
   // A test can hold the session id read (session start is then mid-way) and learn when it was entered.
   on('session.id', async () => { if (seen.holdSessionId) { seen.onSessionIdHeld?.(); await seen.holdSessionId } return { value: seen.ids?.shift() ?? 's1' } })
   // `onReadHeld` fires as a held token read is entered, so a test waits on that instead of a sleep.

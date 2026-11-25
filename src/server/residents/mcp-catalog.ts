@@ -563,7 +563,9 @@ export async function readCodexGlobalMcp(now = Date.now()): Promise<GlobalMcpRea
 
 /** The production readers. */
 export const readGlobalMcp: GlobalMcpReader = async (agent) => {
+  // oxlint-disable-next-line repository/agent-comparison -- This adapter reads the selected native MCP catalog.
   if (agent === "claude") return readClaudeGlobalMcp();
+  // oxlint-disable-next-line repository/agent-comparison -- This adapter reads the selected native MCP catalog.
   if (agent === "codex") return readCodexGlobalMcp();
   // A harness without a reader here has no global servers to offer; never another harness's.
   return { agent, servers: [], problem: null, readAt: Date.now() };

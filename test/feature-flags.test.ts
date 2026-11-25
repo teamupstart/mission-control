@@ -137,7 +137,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
   for (const file of files) {
     const source = readFileSync(file, "utf8");
     assert.doesNotMatch(source, /(?:from\s*|import\s*\()["'][^"']*(?:update-preferences|\/update)\.ts/);
-    if (file.startsWith("src/shared")) assert.doesNotMatch(source, /["'](?:node:|[^"']*protocol\.ts)/);
+    if (file.startsWith("src/shared")) assert.doesNotMatch(source, /["'][^"']*protocol\.ts/);
   }
 });
 

@@ -166,7 +166,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           <Transcript as="q" id={wordsId} text={turn?.spokenWords ?? part.text} />
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
-          {address && <SpokenHint name={address.name} action="answer">Say <q>{address.name}, answer: ...</q> to answer it.</SpokenHint>}
+          {address && <SpokenHint name={address.name} action="answer">Say <q>{address.name}, my answer is …</q> to answer it.</SpokenHint>}
           <div className="vc-right">{button("Open question", "Open the question holding this message", () => question && actions.openQuestion(question.sessionId, question.id), "", !question)}</div></>;
       }
       case "not-running": {

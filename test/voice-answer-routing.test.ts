@@ -232,9 +232,24 @@ test("a closed free-text question accepts an explicit answer through its countdo
   assert.deepEqual(queued("Steve"), []);
 });
 
+test("named dictation works without transcript punctuation and keeps ordinary instructions as messages", async () => {
+  const q = reviews.create("sdk:Steve", "input", "Which database?", "Which database?");
+  await say("Steve answer the email", "email");
+  assert.deepEqual(answers(), []);
+  assert.equal((await act("email", "send-now")).status, 200);
+  assert.deepEqual(queued("Steve"), ["answer the email"]);
+
+  await say("Steve my answer is Postgres", "spoken-prefix");
+  assert.equal(answers()[0]?.reviewId, q.id);
+  assert.equal(answers()[0]?.text, "Postgres");
+  assert.equal((await act("spoken-prefix", "send-now?source=card")).status, 200);
+  assert.equal(registry.getReview(q.id)?.response, "Postgres");
+  assert.deepEqual(queued("Steve"), ["answer the email"]);
+});
+
 test("explicit answers without an eligible question show a notice and cannot send a message", async () => {
   question("Will's question", "sdk:Will");
-  for (const phrase of ["answer: Postgres", "option B", "go with your recommendation"]) {
+  for (const phrase of ["answer: Postgres", "my answer is Postgres", "option B", "go with your recommendation"]) {
     await say("Steve, " + phrase, "no-question-" + phrase.length);
     assert.equal(cards.at(-1)?.reason, "question-notice");
     assert.equal(cards.at(-1)?.detail, "Steve has no open questions");

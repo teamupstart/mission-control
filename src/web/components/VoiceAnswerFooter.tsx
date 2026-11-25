@@ -18,7 +18,7 @@ export function QuestionVoiceHint({ name, decision }: { name?: string; decision?
   if (decision && !decision.allowOther) return <CardVoiceFoot>{prefix}{option} to select an option.</CardVoiceFoot>;
   return <CardVoiceFoot>
     {prefix}{count > 0 && <>{option}{name ? " to answer, or " : " or "}</>}
-    <q>{name ? name + ", answer: …" : "reply, …"}</q>{name ? " to answer in your own words." : "."}
+    <q>{name ? name + ", my answer is …" : "reply, …"}</q>{name ? " to answer in your own words." : "."}
   </CardVoiceFoot>;
 }
 

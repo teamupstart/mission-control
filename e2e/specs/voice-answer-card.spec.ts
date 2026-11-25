@@ -51,7 +51,7 @@ test("answer, correct, cancel and submit through a question card or its countdow
   const a = card.getByRole("radio", { name: /SQLite/ });
   const b = card.getByRole("radio", { name: /Postgres/ });
   await expect(card.locator(".vh-foot")).toContainText("Steve, option B");
-  await expect(card.locator(".vh-foot")).toContainText("Steve, answer: …");
+  await expect(card.locator(".vh-foot")).toContainText("Steve, my answer is …");
   const row = page.locator(".inbox-item").filter({ has: card });
   await expectStyle(card.locator(".vh-foot"), hintStyle);
   const sqliteBadge = card.locator("label").filter({ hasText: "SQLite" }).locator(".av-key");
@@ -136,6 +136,37 @@ test("answer, correct, cancel and submit through a question card or its countdow
   await captureCard(page.locator(".inbox-item").filter({ has: text }), "answer-written");
   await page.getByRole("button", { name: "Submit now" }).click();
   await expect.poll(async () => (await read(free)).selections).toEqual([{ decisionId: "q", selected: [], other: "neither yet" }]);
+});
+
+test("the held message and open question teach named dictation without punctuation", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "Which database should we use?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { kind: "input", env: {}, cwd: steve.cwd, title, body: title },
+  });
+  expect(filed.ok()).toBe(true);
+  const { id } = await filed.json();
+  await say(daemon, "Steve answer the email");
+  await page.getByRole("button", { name: "Send now" }).click();
+  const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
+  await expect(held.locator(".spoken-hint")).toContainText("Steve, my answer is …");
+  await page.mouse.move(0, 0);
+  await expect(page.locator(".tooltip")).toBeHidden();
+  await captureCard(held, "named-dictation-held-r39");
+  await held.getByRole("button", { name: "Open question" }).click();
+  const dialog = page.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(dialog);
+  await expect(dialog.locator(".vh-foot")).toContainText("Steve, my answer is …");
+  await expect(dialog.getByRole("textbox")).toBeEmpty();
+  await captureCard(dialog, "named-dictation-question-r39");
+  await say(daemon, "Steve my answer is Postgres");
+  await expect(dialog.getByRole("textbox")).toHaveValue("Postgres");
+  const footer = dialog.getByRole("status").filter({ hasText: "Submit now" });
+  await expect(footer.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await footer.getByRole("button", { name: "Submit now" }).click();
+  await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("Postgres");
 });
 
 test("the foreground dashboard can cancel an explicit answer to a background question", async ({ dashboard: page, daemon }) => {

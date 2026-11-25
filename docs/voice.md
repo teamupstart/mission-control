@@ -1069,7 +1069,7 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 
 ### Answer a question by voice
 
-With a question card open in the focused dashboard, say “Steve, option B” or “Steve, answer: Postgres”.
+With a question card open in the focused dashboard, say “Steve, option B” or “Steve, my answer is Postgres”.
 “Reply, neither yet” fills the text field of the focused question, including a question from an
 agent without a spoken name. If several cards from one agent are open, focus the one you mean.
 Choice-only cards show an option example in the footer. Cards that accept text also show how to dictate it.
@@ -1078,9 +1078,11 @@ Other wording uses the option matcher. If the lookup fails, the card asks you to
 Asking for an unavailable option or a recommendation without a single recommended choice
 shows “No matching option.” The Other field stays as you left it and no countdown starts.
 
-From anywhere, “Steve, answer: Postgres”, “Steve, option two” and “Steve, go with your
+From anywhere, “Steve, my answer is Postgres”, “Steve, option two” and “Steve, go with your
 recommendation” can select an option on a pending question. For a free-text question,
-“Steve, answer: Postgres” stages “Postgres” even with its card closed. If Steve has no eligible
+“Steve my answer is Postgres” stages “Postgres” even with its card closed and no punctuation
+in the transcript. Transcripts such as “Steve, answer: Postgres” also work. An instruction
+such as “Steve answer the email” goes to Steve as a message. If Steve has no eligible
 question, an explicit answer shows a notice and sends nothing. If an explicit answer matches
 none of a closed question’s options, the dashboard shows “No matching option.” The question
 stays pending and the agent receives no message. With several pending questions

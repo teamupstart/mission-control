@@ -480,7 +480,10 @@ export class VoiceRouter {
     const target = reply ? null : addressed?.target ?? null;
     const body = (reply?.[1] ?? addressed!.text).trim();
     if (!body) return false;
-    const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+    // The spoken prefix survives punctuation-free transcription. Keep the shorter
+    // punctuated form and the bare picker command without capturing "answer the email".
+    const answer = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
+      ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !!target && (!!answer || choiceCommand);
     if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;

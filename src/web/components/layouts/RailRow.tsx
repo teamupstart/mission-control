@@ -165,7 +165,10 @@ export function RailRow({
   const residentMark = useDisplayItems()("residentMarker") ? resident : null;
   // The priority mark is aria-hidden, and the state word says only "working", so the priority
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
-  const cardName = resident?.listeningTitle || session.name || "(unnamed)";
+  const ordinaryName = session.name || resident?.name || "(unnamed)";
+  const cardName = resident?.sharedListeningTitle
+    ? `${resident.listeningTitle} (${ordinaryName})`
+    : resident?.listeningTitle || ordinaryName;
   const description = `${cardName} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;
@@ -197,7 +200,7 @@ export function RailRow({
       >
         <AgentDot agent={session.agent} />
         <Tooltip label={description}>
-          <span className="rail-name">
+          <span className={resident?.sharedListeningTitle ? "rail-name rail-name-shared" : "rail-name"}>
             {residentMark && <ResidentChip mark={residentMark} tooltip={false} />}
             {cardName}
           </span>

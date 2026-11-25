@@ -30446,6 +30446,10 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.rail-name-shared {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .rail-sub {
   grid-column: 2;
   min-width: 0;

@@ -7,6 +7,7 @@ import {
   type ResidentProfile,
   type ResidentRunSummary,
 } from "@shared/residents.ts";
+import { normalizeSpokenName } from "@shared/voice-names.ts";
 import type { Session, Task } from "@shared/types.ts";
 
 /**
@@ -31,6 +32,7 @@ export interface ResidentChipMark extends ResidentMarker {
  */
 export interface ResidentSessionMark extends ResidentChipMark {
   listeningTitle?: string;
+  sharedListeningTitle?: boolean;
   loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction"> & Partial<Pick<ResidentRunSummary, "settings">>;
   runId: string;
   /** The task the run launched, so a control can name it - Restart's completion prompt does. */
@@ -61,11 +63,23 @@ export function residentMarksBySession(
   if (runs.length === 0) return out;
   const runByTask = new Map(runs.map((run) => [run.taskId, run]));
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const firstByTitle = new Map<string, ResidentSessionMark>();
   for (const session of sessions) {
     const taskId = session.task?.id;
     const run = taskId ? runByTask.get(taskId) : undefined;
     if (!run) continue;
-    out.set(session.id, residentSessionMark(run, profileById.get(run.profileId) ?? null, listening));
+    const mark = residentSessionMark(run, profileById.get(run.profileId) ?? null, listening);
+    if (mark.listeningTitle) {
+      const key = normalizeSpokenName(mark.listeningTitle);
+      const first = firstByTitle.get(key);
+      if (first) {
+        first.sharedListeningTitle = true;
+        mark.sharedListeningTitle = true;
+      } else {
+        firstByTitle.set(key, mark);
+      }
+    }
+    out.set(session.id, mark);
   }
   return out;
 }

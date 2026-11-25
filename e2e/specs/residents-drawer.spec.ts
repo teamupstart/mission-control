@@ -247,6 +247,33 @@ test("listening titles identify and filter resident cards on the Board and in th
   }
 });
 
+test("Console rows distinguish residents sharing a listening title", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  const other = await launch(daemon, "Release sentinel", { referenceName: "Marlowe" });
+  const listener = await beListener(daemon);
+  try {
+    await expect(page.locator("button.vi-status-line")).toHaveAccessibleName("Voice: listening. Mute");
+    const rail = page.getByRole("navigation", { name: "Sessions" });
+    for (const ordinaryName of [NAME, other.name]) {
+      const name = `"Marlowe" (${ordinaryName})`;
+      const title = rail.getByRole("button", { name, exact: true }).locator(".rail-name");
+      await expect(title).toBeVisible();
+      await expect(title).toContainText(name);
+      expect(await title.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+    await capture(page, "shared-listening-title-console");
+    await request(daemon, `/api/residents/profiles/${other.id}`, {
+      expectedRevision: other.revision,
+      settings: { ...other.settings, identity: { ...other.settings.identity, referenceName: "" } },
+    }, "PATCH");
+    await expect(rail.getByRole("button", { name: '"Marlowe"', exact: true })).toBeVisible();
+    await expect(rail.getByRole("button", { name: other.name, exact: true })).toBeVisible();
+  } finally {
+    listener.stop();
+  }
+});
+
 test("listening titles identify a visitor card and filter residents in the drawer", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const profile = await launch(daemon, NAME);

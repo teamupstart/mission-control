@@ -250,6 +250,19 @@ test("a session joins its run through its task id; every other session is absent
   assert.equal(residentMarksBySession([resident], [], [profile()]).size, 0);
 });
 
+test("only colliding listening titles are marked as shared across live resident sessions", () => {
+  const runs = ["Marlowe", "MARLOWE", "Robin"].map((referenceName, index) => {
+    const run = summary({ taskId: `task-${index}` });
+    run.settings.identity.referenceName = referenceName;
+    return run;
+  });
+  const sessions = runs.map(run => mkSession({ id: run.id, task: mkTaskSummary({ id: run.taskId, kind: "resident" }) }));
+  const marks = residentMarksBySession(sessions, runs, [], true);
+  assert.deepEqual([...marks.values()].map(mark => Boolean(mark.sharedListeningTitle)), [true, true, false]);
+  const muted = residentMarksBySession(sessions, runs, [], false);
+  assert.ok([...muted.values()].every(mark => !mark.sharedListeningTitle));
+});
+
 test("a profile's marker is a chip mark, with no run fields to fill in", () => {
   const mark = residentProfileMark(profile(revision({ colorId: "amber", label: "REL" }, "Release Watch"), { revision: 3 }));
   assert.deepEqual(mark, { name: "Release Watch", colorId: "amber", label: "REL", pin: true, revision: 3 });

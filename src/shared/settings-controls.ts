@@ -282,7 +282,6 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task type",
       "task kind",
       "kind",
-      // The Resident name with call sign checkboxes.
       "resident name",
       "call sign",
       "reference name",

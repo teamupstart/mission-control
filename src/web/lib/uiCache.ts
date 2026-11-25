@@ -151,7 +151,6 @@ function parseBackgroundAgentsStyle(raw: string | undefined): BackgroundAgentsSt
     : UI_CONFIG_DEFAULTS.backgroundAgentsStyle;
 }
 
-/** The known styles a cached list turns on, exactly as `UiConfigSchema` reads it. */
 function parseResidentCardNameStyles(raw: unknown): UiConfig["residentCardNameStyles"] {
   return Array.isArray(raw) ? residentCardNameStylesOf(raw) : [...UI_CONFIG_DEFAULTS.residentCardNameStyles];
 }

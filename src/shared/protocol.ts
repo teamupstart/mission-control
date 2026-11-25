@@ -4428,7 +4428,6 @@ export const RESIDENT_CARD_NAME_STYLES = ["subtitle", "chip"] as const;
 export const ResidentCardNameStyleSchema = z.enum(RESIDENT_CARD_NAME_STYLES);
 export type ResidentCardNameStyle = (typeof RESIDENT_CARD_NAME_STYLES)[number];
 
-/** The styles a list turns on, once each, in `RESIDENT_CARD_NAME_STYLES` order. */
 export function residentCardNameStylesOf(list: readonly unknown[]): ResidentCardNameStyle[] {
   return RESIDENT_CARD_NAME_STYLES.filter((style) => list.includes(style));
 }

@@ -224,14 +224,12 @@ export const RESIDENT_CARD_NAME_SETTING = {
   options: RESIDENT_CARD_NAME_STYLES.map((id) => ({ id, ...RESIDENT_CARD_NAME_COPY[id] })),
 } as const;
 
-/** None while the preview flag is off, whatever is stored. */
 export function useResidentCardNameStyles(): ReadonlySet<ResidentCardNameStyle> {
   const offered = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID);
   const styles = useUiConfig().residentCardNameStyles;
   return new Set(offered ? styles : []);
 }
 
-/** Turn one resident name style on or off, keeping the other as it is. */
 export function setResidentCardNameStyle(
   current: readonly ResidentCardNameStyle[],
   style: ResidentCardNameStyle,

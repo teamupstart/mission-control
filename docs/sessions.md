@@ -2157,7 +2157,8 @@ under the relationship, and the Goal line's hover names it. Pressing it records 
 instruction as steering, oldest first, with the rationale "Accepted by you: the current
 objective is the completion contract." An instruction whose text was lost before it could be
 stored is recorded as "(not captured)". An `unclear` verdict with nothing left pending records
-its own instruction the same way. The relationship becomes **steer**, the latest revision
+its own instruction the same way. A pending instruction that changes handoff authority must
+reconcile before acceptance can confirm an eligible Goal. The relationship becomes **steer**, the latest revision
 counts as resolved, and Foreman judges completion against the objective on its next tick,
 which can claim a bound Workflow. A run frozen afterwards carries those instructions as
 steering. It confirms the contract and never rewrites it: the objective, its version, the

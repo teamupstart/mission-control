@@ -7889,6 +7889,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = registry.acceptGoalObjective(c.req.param("id"));
     if (!result) return c.json({ error: "no goal for this session" }, 404);
     if (!result.accepted) {
+      if (result.reason === "handoff_pending") {
+        return c.json({ error: "The operator's handoff instruction is still being reconciled." }, 409);
+      }
       return c.json({ error: "this session has no objective to accept yet" }, 409);
     }
     return c.json(result.goal);

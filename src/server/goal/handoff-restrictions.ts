@@ -8,7 +8,7 @@ const DIRECTIVE_JOIN = /(\s*,\s*(?:(?:and|but)\s+)?|\s+(?:and|but)\s+)/i;
 const LIST_MARKER = /^\s*(?:[-+*]|\d+[.)])\s+/;
 
 export const HANDOFF_RESTRICTION_PREFIX = "Operator handoff restriction: ";
-const WORKFLOW_DELEGATION = /^(?:(?:then|please|also)\s+)*(?:let|have)\s+(?:the\s+)?(?:bound\s+)?workflow\s+(?:open|create|make|raise|publish|file|submit)\s+(?:it|(?:the|a)\s+(?:pr|pull request))\b/i;
+const WORKFLOW_DELEGATION = /^(?:(?:then|please|also)\s+)*(?:let|have)\s+(?:the\s+)?(?:bound\s+)?workflow\s+(?:open|create|make|raise|publish|file|submit)\s+(?:it|(?:the|a)\s+(?:pr|pull request))(?:\s+now)?$/i;
 const APPROVAL_CONDITION = /\s+(?:yet|(?:until|before)\s+\S.*|without\s+my\s+approval)$/i;
 export function isStandaloneHandoffRelease(text: string): boolean {
   return /^(?:please\s+)?resume\s+automatic\s+handoff$/i.test(text.trim().replace(/[.!?]+$/, ""));

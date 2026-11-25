@@ -1730,7 +1730,11 @@ test("a fenced item example cannot hide a drained queue's Ship it card", () => {
 
 test("a delivered bulleted no-PR or no-shipping instruction holds until release", () => {
   const intent = { objective: "Implement heading counts.", updatedAt: NOW - 10_000 };
-  for (const instruction of ["- Do not open a PR.", "Do not ship this yet."]) {
+  for (const instruction of [
+    "- Do not open a PR.",
+    "Do not ship this yet.",
+    "Do not open a PR. Let the bound Workflow open it after I approve.",
+  ]) {
     const items = DRAINED().map((item) => ({ ...item, sentAt: NOW - 5_000, intent: instruction }));
     assert.equal(tick({ items, intent, cfg: { wrapup: "ask" } }).kind, "none", instruction);
     assert.equal(tick({

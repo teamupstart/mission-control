@@ -1,4 +1,4 @@
-import { isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
+import { explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -124,7 +124,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { agentActive, hasBlocker, isAwaiting, reportBucket } from "@shared/session.ts";
-import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, hasOperatorHandoffHold, isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
@@ -11173,7 +11173,7 @@ export class Registry extends EventEmitter {
   acceptGoalObjective(
     id: string,
     now = Date.now(),
-  ): { accepted: true; goal: SessionGoal } | { accepted: false } | null {
+  ): { accepted: true; goal: SessionGoal } | { accepted: false; reason?: "handoff_pending" } | null {
     const goal = this.getGoal(id);
     if (!goal) return null;
     if (!goal.objective?.trim()) return { accepted: false };
@@ -11190,6 +11190,13 @@ export class Registry extends EventEmitter {
     const accepted = pending.length > 0
       ? pending
       : [{ revision: goal.promptRevision, prompt: goal.prompt }];
+    const held = hasOperatorHandoffHold(goal.objective) || explicitHandoffRestriction(goal.objective);
+    // Acceptance cannot change the contract. Leave authority-changing instructions
+    // pending for reconciliation so the previous objective cannot ship in the meantime.
+    if (accepted.some(({ prompt }) => prompt &&
+      (isStandaloneHandoffRelease(prompt) || (!held && explicitHandoffRestriction(prompt))))) {
+      return { accepted: false, reason: "handoff_pending" };
+    }
     const notes: WorkflowSteeringNote[] = accepted.map((p) => ({
       revision: p.revision,
       instruction: p.prompt?.trim() ? clampPrompt(p.prompt.trim()) : "(not captured)",

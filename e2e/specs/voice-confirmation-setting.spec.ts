@@ -470,3 +470,27 @@ test("disabled voice links open Fleet and disabling voice closes an active stand
   }
   await captureCard(page, "disabled-route-fleet");
 });
+
+test("one selection retries a committed placement whose reply was lost", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await allowStreamDisconnect(page);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await page.reload();
+  const group = page.getByRole("group", { name: "Confirmation card" });
+  await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
+  await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+  const url = daemon.baseURL + "/api/voice/confirmation";
+  await page.route(url, async route => { expect((await route.fetch()).ok()).toBe(true); }, { times: 1 });
+  // Keep the background reconciliation from observing the new revision before the retry.
+  await page.route("**/api/ui/config", () => {});
+  await group.getByRole("radio", { name: /Floating pill/ }).click();
+  await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
+  const popover = group.getByRole("radio", { name: /Tray popover/ });
+  await popover.click();
+  await expect(popover).toBeEnabled();
+  await expect(popover).toBeChecked();
+  await expect(group.getByRole("alert")).toHaveCount(0);
+  expect((await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation).toBe("popover");
+  await page.mouse.move(0, 0);
+  await captureCard(group, "followup-placement-retry");
+});

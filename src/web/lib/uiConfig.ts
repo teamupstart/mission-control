@@ -245,12 +245,24 @@ async function reconcileVoiceIndicators(): Promise<void> {
   indicatorRetryDelay = Math.min(indicatorRetryDelay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
 }
 
+let placementAttempt = 0;
+let unconfirmedPlacement: VoiceConfirmationPlacement | undefined;
 /** Apply the confirmed pair before the radio group releases its saving state. */
 export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
+  const attempt = ++placementAttempt;
+  const previous = unconfirmedPlacement;
   const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
   const expected = latestIndicatorVersion ?? (await fetchUiConfig(deadline))?.voiceIndicatorVersion;
   if (!expected) return false;
-  const result = await api.setVoicePlacement(placement, expected, deadline);
+  let result = await api.setVoicePlacement(placement, expected, deadline);
+  // A lost reply may be the only reason our revision is stale. Retry this new
+  // operator choice once against that committed write, keeping the same timeout.
+  if (attempt === placementAttempt && !deadline.aborted && previous !== undefined &&
+      result.status === 409 && result.confirmation === previous && result.voiceIndicatorVersion?.source === expected.source) {
+    result = await api.setVoicePlacement(placement, result.voiceIndicatorVersion, deadline);
+  }
+  if (attempt !== placementAttempt) return false;
+  unconfirmedPlacement = !result.ok && result.status === undefined ? placement : undefined;
   if (!result.ok) {
     // The daemon may have committed a write whose response was lost.
     void reconcileVoiceIndicators();

@@ -548,3 +548,33 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
   await expect(card).not.toContainText("0s");
   await captureCard(card, "awaiting-delivery-confirmation");
 });
+
+test("a reconnect shows the delivery receipt missed during the cancel window", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  const tunnel = await forward(daemon.baseURL);
+  try {
+    await page.addInitScript(() => {
+      window.EventSource = class extends EventSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init);
+          this.addEventListener("error", () => { document.documentElement.dataset.streamDropped = "true"; });
+        }
+      };
+    });
+    await page.goto(`http://127.0.0.1:${tunnel.port}/`);
+    await say(daemon, "Steve, check the release", { id: "followup-reconnect" });
+    await expect(page.getByRole("status").filter({ hasText: "To Steve" })).toContainText("Cancel");
+    tunnel.disconnect();
+    await expect(page.locator("html")).toHaveAttribute("data-stream-dropped", "true");
+    expect((await page.request.post(daemon.baseURL + "/api/voice/cards/followup-reconnect/send-now")).ok()).toBe(true);
+    const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
+    await expect(sent).toBeVisible({ timeout: 10000 });
+    await captureCard(sent, "followup-reconnected-receipt");
+    await page.reload();
+    await expect(page.getByRole("navigation", { name: "Pages" })).toBeVisible();
+    await expect(sent).toHaveCount(0);
+  } finally {
+    await tunnel.stop();
+  }
+});

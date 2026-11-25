@@ -183,3 +183,23 @@ test("a split interrupts its second recipient before waiting for the first one's
   assert.equal(cards.at(-1)?.state, "queued");
   assert.match(cards.at(-1)!.detail!, /Part 1 \(Steve\) queued\. Part 2 \(Will\) sent\./);
 });
+
+test("reconnect receipts retain the latest outcome per card within the history bound and clear with heard speech", () => {
+  const history = new RecentlyHeard();
+  const start = history.receiptCursor;
+  const card: VoiceCard = { id: "one", state: "queued", reason: "exact", parts: [], candidates: [], deadline: null, openQuestions: 0 };
+  history.recordCard(card);
+  const queued = history.receiptCursor;
+  history.recordCard({ ...card, state: "held" });
+  assert.deepEqual(history.receiptsAfter(start), []);
+  history.recordCard({ ...card, state: "sent" });
+  assert.deepEqual(history.receiptsAfter(queued).map(row => row.state), ["sent"]);
+  assert.deepEqual(history.receiptsAfter(history.receiptCursor), []);
+  assert.deepEqual(history.receiptsAfter(undefined), []);
+  for (let i = 0; i < 51; i++) history.recordCard({ ...card, id: String(i) });
+  assert.equal(history.receiptsAfter(start).length, 50);
+  assert.equal(history.receiptsAfter(start)[0]?.id, "1");
+  history.clear();
+  history.recordCard(card);
+  assert.deepEqual(history.receiptsAfter(start), []);
+});

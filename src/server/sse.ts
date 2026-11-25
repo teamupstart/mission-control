@@ -28,7 +28,7 @@ function snapshotRepoIndexIdentity(): { repoIndexIdentity: string } {
 
 interface RegistryEventStream {
   readonly aborted: boolean;
-  writeSSE(message: { data: string; event?: string }): Promise<unknown>;
+  writeSSE(message: { data: string; event?: string; id?: string }): Promise<unknown>;
   onAbort(callback: () => void): void;
 }
 
@@ -39,7 +39,7 @@ interface RegistryEventStream {
  */
 export function sseHandler(registry: Registry) {
   return (c: Context) =>
-    streamSSE(c, endedOnShutdown((stream) => streamRegistryEvents(registry, stream)));
+    streamSSE(c, endedOnShutdown((stream) => streamRegistryEvents(registry, stream, c.req.header("Last-Event-ID"))));
 }
 
 /**
@@ -54,13 +54,15 @@ export function sseHandler(registry: Registry) {
 export async function streamRegistryEvents(
   registry: Registry,
   stream: RegistryEventStream,
+  lastEventId?: string,
 ): Promise<void> {
   const streamStartedAt = Date.now();
-  const queue: ServerEvent[] = [];
+  const queue: { event: ServerEvent; id?: string }[] = [];
   let wake: (() => void) | null = null;
   let subscribed = true;
   const unsub = registry.subscribe((event) => {
-    queue.push(event);
+    // Capture the cursor with the frame, before a slow write can let later receipts arrive.
+    queue.push({ event, id: event.type === "voice_card" ? registry.voiceRouter?.heard.receiptCursor : undefined });
     wake?.();
   });
   const cleanup = (): void => {
@@ -78,8 +80,12 @@ export async function streamRegistryEvents(
     // The registry's own objects are never touched; the presenter copies what it changes.
     const titled = taskTitlePresenter(registry);
     const snapshot = titled.snapshot(registry.snapshot());
+    const history = snapshot.voice && snapshot.voice.mode !== "off" ? registry.voiceRouter?.heard : undefined;
+    const recovered = history?.receiptsAfter(lastEventId) ?? [];
     await stream.writeSSE({
+      id: history?.receiptCursor,
       data: JSON.stringify({ type: "snapshot", ...snapshot, ...snapshotRepoIndexIdentity(),
+        ...(recovered.length > 0 && { voiceCards: [...recovered, ...(snapshot.voiceCards ?? [])] }),
         ...(snapshot.voice && { voiceStreamStartedAt: streamStartedAt, voiceServerTime: Date.now() }) } satisfies ServerEvent),
     });
 
@@ -97,12 +103,13 @@ export async function streamRegistryEvents(
         }
       }
       while (queue.length > 0 && !stream.aborted) {
-        const event = titled.event(queue.shift()!);
+        const queued = queue.shift()!;
+        const event = titled.event(queued.event);
         // Queued frames may have waited behind a snapshot write. Stamp them as they leave.
         const frame = event.type === "voice_card"
           ? { ...event, voiceStreamStartedAt: streamStartedAt, voiceServerTime: Date.now() }
           : event;
-        await stream.writeSSE({ data: JSON.stringify(frame) });
+        await stream.writeSSE({ data: JSON.stringify(frame), id: queued.id });
       }
     }
   } finally {

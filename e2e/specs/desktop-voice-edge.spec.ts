@@ -7,20 +7,24 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { beListener, enableVoice } from "../fixtures/voice.ts";
 
+test.skip(process.platform !== "darwin", "Exercises AppKit window hit testing");
+
 test("native window clicks on the edge microphone mute and unmute", async ({ daemon }) => {
-  test.skip(process.platform !== "darwin", "Exercises AppKit window hit testing");
   assertElectronGuiLaunchAllowed();
   const addon = join(daemon.home, "window-click.node");
   execFileSync("xcrun", ["clang++", "-std=c++17", "-bundle", "-undefined", "dynamic_lookup",
     "-framework", "AppKit", "-I", resolve(process.execPath, "../../include/node"),
     "e2e/fixtures/window-click.mm", "-o", addon]);
   await enableVoice(daemon);
-  const listener = await beListener(daemon);
   const app = await _electron.launch({ args: [resolve("."), "--user-data-dir=" + join(daemon.home, "chromium")],
     env: { ...process.env, HOME: daemon.home, MISSION_HOME: daemon.home,
       MISSION_PORT: new URL(daemon.baseURL).port, MISSION_DEV_SERVER_URL: daemon.baseURL } });
+  let listener: Awaited<ReturnType<typeof beListener>> | undefined;
   try {
+    listener = await beListener(daemon);
     const page = await app.firstWindow();
+    // Real call detection on the host must not change the fixture microphone mode.
+    expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { autoMuteDuringCalls: false } })).ok()).toBe(true);
     for (const [id, enabled] of [["edge", true], ["status-line", false]] as const) {
       expect((await page.request.put(daemon.baseURL + "/api/voice/indicators", { data: { id, enabled } })).ok()).toBe(true);
     }
@@ -46,8 +50,38 @@ test("native window clicks on the edge microphone mute and unmute", async ({ dae
         await page.screenshot({ path: join(dir, mode + ".png"), clip: { x: 0, y: 0, width: page.viewportSize()?.width ?? 900, height: 90 } });
       }
     }
+    await test.step("Drag blank title-bar space below the edge tab", async step => {
+      const header = page.locator("header.topbar");
+      const point = await header.evaluate(bar => {
+        const rect = bar.getBoundingClientRect();
+        const y = rect.bottom - 3;
+        for (let x = Math.floor(rect.width / 2); x > 90; x -= 4) {
+          if (document.elementFromPoint(x, y) === bar) return { x, y };
+        }
+        throw new Error("No blank point below the edge microphone");
+      });
+      const before = await win.evaluate(win => win.getPosition());
+      const posted = await win.evaluate((win, { addon, point }) => {
+        const binding = { exports: {} };
+        process.dlopen(binding, addon);
+        const drag = binding.exports as (handle: Buffer, x: number, y: number, drag: true) => boolean;
+        const zoom = win.webContents.getZoomFactor();
+        return drag(win.getNativeWindowHandle(), point.x * zoom, point.y * zoom, true);
+      }, { addon, point });
+      if (!posted) {
+        step.skip(!process.env.MC_E2E_MANUAL_WINDOW_DRAG, "Native hit test passed. Window movement requires desktop input permission or a manual drag.");
+        await header.evaluate((bar, point) => {
+          const rect = bar.getBoundingClientRect();
+          bar.style.backgroundImage = `radial-gradient(circle at ${point.x - rect.left}px ${point.y - rect.top}px, lime 3px, transparent 4px)`;
+        }, point);
+        console.log("Drag the green point in the fixture title bar to move the window.");
+      }
+      const position = () => win.evaluate(win => win.getPosition());
+      await expect.poll(position, { timeout: posted ? 5000 : 90000 }).not.toEqual(before);
+      console.log("Native title-bar drag moved window", before, "to", await position());
+    });
   } finally {
-    listener.stop();
+    listener?.stop();
     await app.close();
   }
 });

@@ -1,16 +1,36 @@
-// Deliver mouse events to the fixture window through AppKit's hit test. Posting to
-// this process leaves the system pointer and other applications alone.
+// Clicks use the fixture process queue. WindowServer handles dragging, so the
+// optional desktop gesture needs permission to post system pointer events.
 #import <AppKit/AppKit.h>
 #include <node_api.h>
 #include <initializer_list>
 
+static void dragWindow(NSWindow *window, NSPoint point) {
+  NSPoint screen = [window convertPointToScreen:point];
+  CGPoint start = CGPointMake(screen.x, NSMaxY(NSScreen.screens.firstObject.frame) - screen.y);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    CGPoint pos = start;
+    for (int step = 0; step <= 6; ++step) {
+      CGEventType type = kCGEventLeftMouseDragged;
+      if (step == 0) type = kCGEventLeftMouseDown;
+      if (step == 6) type = kCGEventLeftMouseUp;
+      if (type == kCGEventLeftMouseDragged) { pos.x += 8; pos.y += 6; }
+      CGEventRef event = CGEventCreateMouseEvent(nullptr, type, pos, kCGMouseButtonLeft);
+      CGEventPost(kCGHIDEventTap, event);
+      CFRelease(event);
+      [NSThread sleepForTimeInterval:0.05];
+    }
+  });
+}
+
 static napi_value click(napi_env env, napi_callback_info info) {
-  size_t argc = 3, size = 0;
-  napi_value args[3];
+  size_t argc = 4, size = 0;
+  napi_value args[4];
   void *bytes = nullptr;
   double x, y;
+  bool drag = false;
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  if (argc != 3 || napi_get_buffer_info(env, args[0], &bytes, &size) != napi_ok ||
+  if ((argc != 3 && argc != 4) || (argc == 4 && napi_get_value_bool(env, args[3], &drag) != napi_ok) ||
+      napi_get_buffer_info(env, args[0], &bytes, &size) != napi_ok ||
       size != sizeof(NSView *) || napi_get_value_double(env, args[1], &x) != napi_ok ||
       napi_get_value_double(env, args[2], &y) != napi_ok) {
     napi_throw_type_error(env, nullptr, "Expected an Electron window handle and content coordinates");
@@ -21,6 +41,25 @@ static napi_value click(napi_env env, napi_callback_info info) {
   NSPoint point = [content convertPoint:NSMakePoint(x, content.isFlipped ? y : NSHeight(content.bounds) - y)
                                  toView:nil];
   NSView *hit = [content hitTest:[content.superview convertPoint:point fromView:nil]];
+  if (drag) {
+    // A rendered control at this point means Chromium lost the drag region.
+    if (hit) {
+      napi_throw_error(env, nullptr, "Blank title bar hit the content view");
+      return nullptr;
+    }
+    bool allowed = CGPreflightPostEventAccess();
+    if (allowed) {
+      NSPoint screen = [window convertPointToScreen:point];
+      if ([NSWindow windowNumberAtPoint:screen belowWindowWithWindowNumber:0] != window.windowNumber) {
+        napi_throw_error(env, nullptr, "Another window covers the fixture drag point");
+        return nullptr;
+      }
+      dragWindow(window, point);
+    }
+    napi_value posted;
+    napi_get_boolean(env, allowed, &posted);
+    return posted;
+  }
   for (NSEventType type : {NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp}) {
     NSEvent *event = [NSEvent mouseEventWithType:type location:point modifierFlags:0
       timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber

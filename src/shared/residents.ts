@@ -835,6 +835,7 @@ export type ResidentLaunchResult =
 export function residentMcpSummary(mcp: ResidentMcpSection, labels?: readonly string[], agent?: ResidentAgent): string {
   const resolved = labels && labels.length === mcp.selected.length ? labels : null;
   if (mcp.nativeSources === "all") {
+    // oxlint-disable-next-line repository/agent-comparison -- This summary describes a Claude-only setting in the resident schema.
     const base = `MCP: all native sources (not pinned)${agent === "claude" && mcp.disableClaudeAiConnectors ? ", claude.ai connectors off" : ""}`;
     const custom = mcp.selected.flatMap((ref, at) => (ref.source === "custom" ? [at] : []));
     if (custom.length === 0) return base;

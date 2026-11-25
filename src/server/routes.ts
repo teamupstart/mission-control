@@ -5185,6 +5185,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- hook ingest (token-guarded) ---
   app.post("/hooks/:event", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    // oxlint-disable-next-line repository/parse-request-body -- Hook ingest preserves its JSON error and adds the event from the path before validation.
     const body = await c.req.json().catch(() => null);
     if (!body) return c.json({ error: "invalid json" }, 400);
     const parsed = HookIngestSchema.safeParse({ ...(body as object), event: c.req.param("event") });

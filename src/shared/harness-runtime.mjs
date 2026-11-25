@@ -12,9 +12,13 @@
 // from ever matching), which is exactly why these must live in one place. A .d.mts
 // alongside gives the TS side types.
 
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { createHash, randomBytes } from "node:crypto";
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { homedir, tmpdir } from "node:os";
+// oxlint-disable-next-line no-restricted-imports -- Native harness provisioning shared with hook and install entry points.
 import { dirname, join, resolve } from "node:path";
 
 /**

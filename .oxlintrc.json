@@ -7,6 +7,7 @@
     "react",
     "jsx-a11y"
   ],
+  "jsPlugins": ["./scripts/oxlint-repository.mjs"],
   "categories": {
     "correctness": "error"
   },
@@ -70,9 +71,43 @@
     "react/rules-of-hooks": "warn",
     "react/void-dom-elements-no-children": "warn"
   },
-  // These sanitizers deliberately remove control bytes from untrusted text/URLs;
-  // the named tests verify that those bytes cannot survive into prompts or output.
   "overrides": [
+    {
+      "files": ["src/shared/**/*"],
+      "rules": {
+        "no-restricted-imports": ["error", { "patterns": [{ "regex": "^node:" }] }]
+      }
+    },
+    {
+      "files": ["test/**/*", "e2e/**/*"],
+      "rules": { "repository/test-imports": "error" }
+    },
+    {
+      "files": ["src/**/*", "test/**/*", "e2e/**/*"],
+      "rules": { "repository/no-test-ids": "error" }
+    },
+    {
+      "files": ["src/**/*"],
+      "rules": {
+        "repository/parse-request-body": "error",
+        "repository/agent-comparison": "error",
+        "repository/registry-eviction": "error"
+      }
+    },
+    {
+      "files": ["src/server/http-body.ts"],
+      "rules": { "repository/parse-request-body": "off" }
+    },
+    {
+      "files": ["src/server/harness/**/*"],
+      "rules": { "repository/agent-comparison": "off" }
+    },
+    {
+      "files": ["src/server/registry.ts"],
+      "rules": { "repository/registry-eviction": "off" }
+    },
+    // These sanitizers deliberately remove control bytes from untrusted text/URLs.
+    // The named tests verify that those bytes cannot survive into prompts or output.
     {
       "files": [
         "src/server/ensembles/reviews/prompt.ts",

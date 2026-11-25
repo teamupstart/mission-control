@@ -18,13 +18,27 @@ function localBinding(context, node) {
   }
 }
 
-function bindingIdentifier(context, node) {
-  return localBinding(context, node)?.defs[0]?.name;
-}
-
 function annotation(identifier) {
   const type = identifier?.typeAnnotation?.typeAnnotation;
   return type?.type === "TSTypeReference" ? name(type.typeName) : undefined;
+}
+
+function initializerApplies(context, node, variable, declaration) {
+  if (declaration.parent.kind === "const") return true;
+  const block = declaration.parent.parent;
+  let statement = node;
+  while (statement.parent && statement.parent !== block) statement = statement.parent;
+  const useScope = context.sourceCode.getScope(node).variableScope;
+  return !variable.references.some((reference) => {
+    if (!reference.isWrite() || reference.init) return false;
+    // A later statement in the same scope cannot change an earlier use of this initializer.
+    const laterInBlock = (block.type === "BlockStatement" || block.type === "Program") && statement.parent === block &&
+      statement.range[1] <= reference.identifier.range[0] &&
+      reference.identifier.range[1] <= block.range[1] &&
+      reference.from.variableScope === useScope &&
+      variable.scope.variableScope === useScope;
+    return !laterInBlock;
+  });
 }
 
 function matchesLocalValue(context, node, matches) {
@@ -37,12 +51,10 @@ function matchesLocalValue(context, node, matches) {
     }
     const variable = localBinding(context, node);
     const binding = variable?.defs[0]?.name;
-    if (matches(node, binding)) return true;
+    if (matches(node, binding, variable)) return true;
     const declaration = binding?.parent;
     if (declaration?.type !== "VariableDeclarator" || declaration.id !== binding) break;
-    // The initializer describes the binding only while there are no later writes.
-    if (declaration.parent.kind !== "const" &&
-        variable.references.some((reference) => reference.isWrite() && !reference.init)) break;
+    if (!initializerApplies(context, node, variable, declaration)) break;
     node = declaration.init;
   }
   return false;
@@ -155,11 +167,24 @@ export default {
         return {
           CallExpression(node) {
             if (!member(node.callee, "delete")) return;
-            const isRegistryMap = matchesLocalValue(context, node.callee.object, (value) => {
-              if (!member(value, "sessions")) return false;
-              const owner = value.object;
-              const ownerType = annotation(bindingIdentifier(context, owner));
-              return ownerType === "Registry" || (!ownerType && (name(owner) === "registry" || member(owner, "registry")));
+            const isRegistryMap = matchesLocalValue(context, node.callee.object, (value, binding, variable) => {
+              let owner;
+              if (member(value, "sessions")) {
+                owner = value.object;
+              } else {
+                const property = binding?.parent;
+                if (property?.type !== "Property" || property.value !== binding ||
+                    name(property.key, property.computed) !== "sessions" || property.parent.type !== "ObjectPattern") return false;
+                const declaration = property.parent.parent;
+                if (declaration.type !== "VariableDeclarator" || declaration.id !== property.parent ||
+                    !initializerApplies(context, value, variable, declaration)) return false;
+                owner = declaration.init;
+              }
+              return matchesLocalValue(context, owner, (candidate, ownerBinding) => {
+                const ownerType = annotation(ownerBinding);
+                return ownerType === "Registry" || (!ownerType &&
+                  (name(candidate) === "registry" || member(candidate, "registry")));
+              });
             });
             if (isRegistryMap) report(node);
           },

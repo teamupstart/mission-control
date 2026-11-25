@@ -30,6 +30,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
 
   write("src/shared/non-agent-values.ts", 'export const model = (provider) => provider === "codex"; export const wire = (form) => form === "claude";');
   write("src/server/independent-map.ts", 'export function prune(id) { const sessions = new Map(); sessions.delete(id); }');
+  write("src/server/independent-destructured-map.ts", 'export function prune(cache, id) { const { sessions } = cache; sessions.delete(id); }');
   write("src/server/independent-json.ts", "export function read({ req }) { return ((req) => req.json())(req); }");
   write("src/server/reassigned.ts", "export function use(c, registry, other, id) { let request = c.req; request = other; request.json(); let sessions = registry.sessions; sessions = new Map(); sessions.delete(id); }");
 
@@ -48,6 +49,10 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "src/server/mutable-request-alias.ts": 'export function read(c) { let request = c.req; return request.json(); }',
     "src/server/mutable-registry-alias.ts": 'export function evict(registry, id) { let sessions = registry.sessions; return sessions.delete(id); }',
     "src/server/event-alias.ts": 'export function evict(emit, id) { const type = "session_remove" as const; emit({ type, id }); }',
+    "src/server/registry-owner-alias.ts": 'export function evict(registry, id) { const owner = registry; owner.sessions.delete(id); }',
+    "src/server/destructured-sessions.ts": 'export function evict(registry, id) { const { sessions } = registry; sessions.delete(id); }',
+    "src/server/request-before-write.ts": 'export function read(c, other) { let request = c.req; request.json(); request = other; }',
+    "src/server/sessions-before-write.ts": 'export function evict(registry, id) { let sessions = registry.sessions; sessions.delete(id); sessions = new Map(); }',
     "src/shared/unowned.ts": 'import "node:fs";',
     "src/shared/nested/unowned.mjs": 'export const builtin = import("node:path");',
     "src/shared/subpath.ts": 'import "node:fs/promises";',
@@ -76,9 +81,9 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "no-restricted-imports": 3,
     "test-imports": 5,
     "no-test-ids": 6,
-    "parse-request-body": 5,
+    "parse-request-body": 6,
     "agent-comparison": 3,
-    "registry-eviction": 7,
+    "registry-eviction": 10,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
@@ -93,6 +98,10 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     ["mutable-request-alias", "parse-request-body"],
     ["mutable-registry-alias", "registry-eviction"],
     ["event-alias", "registry-eviction"],
+    ["registry-owner-alias", "registry-eviction"],
+    ["destructured-sessions", "registry-eviction"],
+    ["request-before-write", "parse-request-body"],
+    ["sessions-before-write", "registry-eviction"],
   ]) {
     assert.ok(output.split("\n").some((line) =>
       line.startsWith(`src/server/${file}.ts:`) && line.endsWith(`[Error/repository(${rule})]`)), output);

@@ -578,6 +578,79 @@ test("two check nodes on one Command share its budget inside a single round", as
   assert.equal(store.getRun("run-shared")?.status, "completed");
 });
 
+test("a sibling CodeRabbit gate waits for the final reservation and its connection retry", async () => {
+  const id = "coderabbit-shared-refund";
+  const submissionId = `submission-${id}`;
+  const graph: PublishedWorkflowGraph = {
+    ...twoGateGraph,
+    nodes: twoGateGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node),
+  };
+  const store = seedSubmission(id, 5, graph);
+  const yaml = { source: ".coderabbit.yaml" as const, enabled: true, state: "enabled" as const, digest: "a".repeat(64), diagnostic: "enabled" };
+  const evidence = { ...context.evidence, coderabbit: yaml };
+  store.updateSubmissionCapture(submissionId, {
+    context: workflowJson({ ...context, evidence }), evidence: workflowJson(evidence),
+    fingerprint: id, status: "running",
+  }, 4);
+  const comparison = store.freezeCodeRabbitComparison(submissionId, {
+    interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
+    baseRef: "main", severity: "major", maxRuns: 1, timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
+  });
+  let release!: () => void;
+  const reservationHeld = new Promise<void>((resolve) => { release = resolve; });
+  const executions: string[] = [];
+  let now = Date.now();
+  const engine = new WorkflowEngine(store, () => {}, {
+    now: () => now,
+    checkConcurrency: 2,
+    runnerFor: scriptedRunner(() => "pass"),
+    resolveExecution: passingExecution,
+    workflowPolicy: () => checkPolicy(),
+    workflowCommand: catalogFor(1),
+    checkDeps: ({ nodeId }) => ({
+      codeRabbitProbe: async () => ({ command: "/fake/coderabbit", env: {}, error: null }),
+      execute: async () => {
+        executions.push(nodeId);
+        const disconnect = executions.length === 1;
+        if (disconnect) await reservationHeld;
+        return {
+          kind: "exited", exitCode: disconnect ? 1 : 0, output: "", truncatedBytes: 0,
+          review: {
+            comparison, status: disconnect ? "incomplete" : "complete",
+            counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 },
+            titles: [], diagnostic: disconnect ? "WebSocket closed" : "Complete review",
+            ...(disconnect ? { retryableConnection: true as const } : {}),
+          },
+        };
+      },
+    }),
+  });
+  engine.start();
+  engine.activateSubmission(submissionId);
+  try {
+    await waitFor(() => executions.length === 1);
+    const first = executions[0]!;
+    const sibling = first === "gate" ? "gate2" : "gate";
+    assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
+    release();
+    await waitFor(() => store.latestAttemptForNode(submissionId, first)?.state === "retry_wait");
+    const retry = store.latestAttemptForNode(submissionId, first)!;
+    assert.equal(store.latestAttemptForNode(submissionId, sibling)?.state, "queued");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
+    now = retry.retryAt!;
+    engine.wake();
+    await waitFor(() => store.getRun(`run-${id}`)?.status === "completed");
+    assert.deepEqual(executions, [first, first]);
+    assert.equal(store.latestAttemptForNode(submissionId, first)?.id, retry.id);
+    assert.equal((store.getAttempt(retry.id)?.output as { status?: string })?.status, "passed");
+    assert.equal(gateOutcome(store, submissionId, sibling).status, "budget_spent");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+  } finally {
+    release();
+    await engine.stop();
+  }
+});
+
 test("an action-required Command blocks without retrying and resumes only after explicit retry", async () => {
   const store = seedSubmission("action-required");
   let authorized = false;
@@ -699,6 +772,95 @@ test("installing a missing executable lets an action-required Command retry unde
 
   assert.equal(executions, 2, "the corrected retry never reached the executor");
   assert.equal(gateOutcome(store, "submission-missing-executable").status, "passed");
+});
+
+
+test("CodeRabbit returns the allowance after hand-back failure and skips only after ten charged executions", { timeout: 300_000 }, async (t) => {
+  const root = realpathSync(mkdtempSync(join(home, "coderabbit-engine-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.com"); git("config", "commit.gpgsign", "false");
+  writeFileSync(join(root, "file"), "base"); git("add", "."); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD"); git("update-ref", "refs/remotes/origin/main", base); git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+  git("checkout", "-qb", "feature"); writeFileSync(join(root, "file"), "changed"); git("commit", "-qam", "change");
+  const graph: PublishedWorkflowGraph = { ...budgetGraph, nodes: budgetGraph.nodes.map((node) => node.kind === "check" ? { ...node, slot: "coderabbit" } : node) };
+  const id = "coderabbit-ten";
+  const store = seedSubmission(id, 20, graph);
+  openDb().prepare("UPDATE workflow_bindings SET session_cwd = ?, session_repo_root = ? WHERE id = ?").run(root, root, `binding-${id}`);
+  const yaml = { source: ".coderabbit.yaml" as const, digest: "a".repeat(64), enabled: true, state: "enabled" as const, diagnostic: "enabled" };
+  const capture = (submissionId: string) => {
+    const next = { ...context, evidence: { ...context.evidence, headSha: git("rev-parse", "HEAD"), coderabbit: yaml } };
+    store.updateSubmissionCapture(submissionId, { context: workflowJson(next), evidence: workflowJson(next.evidence), fingerprint: submissionId, status: "running" }, Date.now());
+  };
+  capture(`submission-${id}`);
+  let executions = 0, probes = 0;
+  let unresolvedLease = true;
+  const comparisons: import("../src/shared/workflow.ts").CodeRabbitComparison[] = [];
+  const registry = new Registry();
+  // A comparison performs five sequential Git reads, each with its own production
+  // deadline. Await the published state instead of imposing a five-second deadline
+  // on their combined duration. The test signal still bounds a stalled engine.
+  const waitForState = async (status: "blocked" | "waiting_for_session") => {
+    const changes = on(registry, "event", { signal: t.signal });
+    try {
+      do {
+        const current = store.getRun(`run-${id}`);
+        if (current?.status === status) return;
+        assert.notEqual(current?.status, "blocked", JSON.stringify(current));
+      } while (!(await changes.next()).done);
+    } finally {
+      await changes.return?.();
+    }
+  };
+  const manager = new WorkflowManager(registry, store, { engine: {
+    workflowPolicy: () => ({ ...checkPolicy(), repoAllowlist: [root] }), workflowCommand: (slot) => emptyWorkflowCommandView(slot),
+    runnerFor: scriptedRunner(() => "fail"), resolveExecution: passingExecution,
+    unresolvedCheckLease: () => unresolvedLease,
+    retryBaseMs: 1,
+    checkDeps: () => ({
+      codeRabbitProbe: async () => { probes++; return { command: "/fake/coderabbit", env: {}, error: null }; },
+      execute: async (request) => {
+        executions++; comparisons.push(request.coderabbit!);
+        if (executions === 1) return { kind: "infrastructure", started: true, reason: "Pooled worktree hand-back timed out" };
+        const incomplete = executions === 2;
+        return { kind: "exited", exitCode: incomplete ? 1 : 2, output: "", truncatedBytes: 0,
+          review: { comparison: request.coderabbit!, status: incomplete ? "incomplete" : "complete", counts: { critical: 0, major: 1, minor: 0, trivial: 0, info: 0, none: 0 }, titles: ["Verify claim"], diagnostic: incomplete ? "Incomplete coverage" : "Complete findings" } };
+      },
+    }),
+  } });
+  manager.engine.start(); manager.engine.activateSubmission(`submission-${id}`);
+  try {
+    await waitForState("blocked");
+    const first = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+    assert.equal(first.verdict, null);
+    assert.match(first.error!, /hand-back timed out/);
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
+    assert.equal(store.getRun(`run-${id}`)!.currentPhase, "check_cleanup_unresolved");
+    assert.equal(manager.retry(`run-${id}`, { requestId: "retry-hand-back", nodeAttemptId: first.id }).ok, false);
+    manager.engine.resumeClearedCheckCleanup();
+    assert.equal(store.latestAttemptForNode(`submission-${id}`, "gate")!.id, first.id);
+    unresolvedLease = false;
+    manager.engine.resumeClearedCheckCleanup();
+    await waitForState("blocked");
+    assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1, "an incomplete vendor execution still spends allowance");
+    const incomplete = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+    assert.equal(incomplete.verdict, null);
+    assert.equal(store.getRun(`run-${id}`)!.currentPhase, "command_action_required");
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"));
+    assert.ok(manager.retry(`run-${id}`, { requestId: "retry-incomplete", nodeAttemptId: incomplete.id }).ok);
+    await waitForState("waiting_for_session");
+    assert.equal(comparisons[2]!.baseTip, base, "retry must ignore moved base ref");
+    assert.equal(comparisons[2]!.head, comparisons[0]!.head);
+    for (let round = 2; round <= 10; round++) {
+      writeFileSync(join(root, "file"), `repair ${round}`); git("commit", "-qam", `repair ${round}`);
+      const next = repairRound(store, id, round); capture(next); manager.engine.activateSubmission(next);
+      await waitForState("waiting_for_session");
+      assert.equal(gateOutcome(store, next).status, round === 10 ? "budget_spent" : "failed");
+    }
+    assert.equal(executions, 11); assert.equal(probes, 11);
+    assert.notEqual(comparisons.at(-1)!.head, comparisons[0]!.head, "new repairs capture their new committed head");
+    assert.equal(comparisons.at(-1)!.baseTip, comparisons[0]!.head, "new submission resolves the moved local ref");
+    assert.ok(String(gateOutcome(store, `submission-${id}-r10`).warning).includes("allowance exhausted"));
+  } finally { await manager.stop(); }
 });
 
 

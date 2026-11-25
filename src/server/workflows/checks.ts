@@ -49,7 +49,7 @@ import {
 export interface CheckRunReservation {
   granted: boolean;
   spent: number;
-  /** Return a granted claim when the executor proves it could not start the Command. */
+  /** Return a granted claim when the attempt does not consume an execution slot. */
   release?: () => void;
 }
 

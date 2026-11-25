@@ -2,7 +2,8 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { HeardEntry } from "@shared/voice-routing.ts";
+import type { HeardEntry, VoiceCard } from "@shared/voice-routing.ts";
+import { VOICE_DASHBOARD_CONFIRM_MS } from "@shared/voice-answers.ts";
 import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceRevision, VoiceState } from "@shared/voice.ts";
 import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
@@ -521,10 +522,10 @@ function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) 
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
 /** A card with an uncertain countdown only needs the daemon clock. Voice settings stay lazy. */
-export async function fetchVoiceCardTime(signal: AbortSignal): Promise<number | null> {
+export async function fetchVoiceCardTime(signal: AbortSignal, header = "X-Voice-Server-Time-Ms"): Promise<number | null> {
   try {
     const res = await fetch("/api/voice/config", { method: "HEAD", signal, cache: "no-store" });
-    const stamp = res.headers.get("X-Voice-Server-Time-Ms");
+    const stamp = res.headers.get(header);
     return res.ok && stamp && Number.isFinite(Number(stamp)) ? Number(stamp) : null;
   } catch {
     return null;
@@ -2552,13 +2553,20 @@ export const api = {
     "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
   setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, writeId: string, signal: AbortSignal) =>
     put<VoiceUiWriteResult & { writeId?: string }>("/api/voice/confirmation", { confirmation, expectedVersion, writeId }, { signal }),
-  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null } = {}) => {
+  voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
+    request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
+      undefined, { signal: AbortSignal.timeout(10_000), ...(editedReview && { headers: { "x-voice-edit-review": editedReview } }) }),
+  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: {
+    candidate?: VoiceCard["candidates"][number]; deadline?: number | null; answerCompanion?: boolean;
+  } = {}) => {
     // Leave the transport alive through the possible delivery window, plus a short
     // grace period for the reply. The card can offer a retry independently.
     const remaining = options.deadline == null ? 0 : Math.max(0, options.deadline - performance.now());
-    const signal = AbortSignal.timeout(Math.ceil(remaining) + 2000);
-    const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`,
-      options.candidateId ? { id: options.candidateId } : undefined, { signal });
+    const confirmation = options.candidate?.kind === "question" ? VOICE_DASHBOARD_CONFIRM_MS : 0;
+    const signal = AbortSignal.timeout(Math.max(Math.ceil(remaining), confirmation) + 2000);
+    const source = options.answerCompanion && action === "send-now" ? "?source=card" : "";
+    const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}${source}`,
+      options.candidate ? { id: options.candidate.id } : undefined, { signal });
     return signal.aborted ? { ok: false, error: "The request timed out." } : result;
   },
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),

@@ -95,6 +95,7 @@ mac:
   # executableName also changes the outer .app filename in electron-builder.
   # Override only the executable plist key to preserve registered satellite commands.
   extendInfo:
+    NSUserNotificationAlertStyle: alert
     NSMicrophoneUsageDescription: Mission Control listens locally for spoken agent names and messages when voice is enabled.
     CFBundleExecutable: Mission Control
   category: public.app-category.developer-tools

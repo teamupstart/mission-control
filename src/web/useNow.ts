@@ -9,13 +9,13 @@ import { useEffect, useState } from "react";
  * clock on screen reads the same second. A clock that only reads minutes or hours asks for a
  * slower tick rather than stopping, so it never freezes at the last value it showed.
  */
-export function useNow(ticking: boolean, everyMs = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
+export function useNow(ticking: boolean, everyMs = 1000, clock: () => number = Date.now): number {
+  const [now, setNow] = useState(clock);
   useEffect(() => {
     if (!ticking) return;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), everyMs);
+    setNow(clock());
+    const id = setInterval(() => setNow(clock()), everyMs);
     return () => clearInterval(id);
-  }, [ticking, everyMs]);
+  }, [ticking, everyMs, clock]);
   return now;
 }

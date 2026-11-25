@@ -39,7 +39,15 @@ interface RegistryEventStream {
  */
 export function sseHandler(registry: Registry) {
   return (c: Context) =>
-    streamSSE(c, endedOnShutdown((stream) => streamRegistryEvents(registry, stream, c.req.header("Last-Event-ID"))));
+    streamSSE(c, endedOnShutdown(async (stream) => {
+      const windowId = crypto.randomUUID();
+      // A dashboard can open its inbox before its first card report arrives.
+      // Native event consumers share this endpoint and cannot confirm dashboard DOM.
+      const browserStream = c.req.header("sec-fetch-site") === "same-origin" && c.req.header("sec-fetch-mode") === "cors";
+      const disconnect = registry.voiceRouter?.openCards.connect(windowId, browserStream);
+      try { await streamRegistryEvents(registry, stream, windowId, c.req.header("Last-Event-ID")); }
+      finally { disconnect?.(); }
+    }));
 }
 
 /**
@@ -54,6 +62,7 @@ export function sseHandler(registry: Registry) {
 export async function streamRegistryEvents(
   registry: Registry,
   stream: RegistryEventStream,
+  windowId?: string,
   lastEventId?: string,
 ): Promise<void> {
   const opened = performance.now();
@@ -89,7 +98,7 @@ export async function streamRegistryEvents(
     const recovered = history?.receiptsAfter(lastEventId) ?? [];
     await stream.writeSSE({
       id: history?.receiptCursor,
-      data: JSON.stringify({ type: "snapshot", ...snapshot, ...snapshotRepoIndexIdentity(),
+      data: JSON.stringify({ type: "snapshot", windowId, ...snapshot, ...snapshotRepoIndexIdentity(),
         ...(recovered.length > 0 && { voiceCards: [...recovered, ...(snapshot.voiceCards ?? [])] }),
         ...(snapshot.voice && voiceTimestamps()) } satisfies ServerEvent),
     });
@@ -111,7 +120,7 @@ export async function streamRegistryEvents(
         const queued = queue.shift()!;
         const event = titled.event(queued.event);
         // Queued frames may have waited behind a snapshot write. Stamp them as they leave.
-        const frame = event.type === "voice_card"
+        const frame = (event.type === "voice_card" || event.type === "voice_answer")
           ? { ...event, ...voiceTimestamps() }
           : event;
         await stream.writeSSE({ data: JSON.stringify(frame), id: queued.id });

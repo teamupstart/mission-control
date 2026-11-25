@@ -1,3 +1,5 @@
+import { OpenCardsSchema, VOICE_CALIBRATING_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
+import type { VoiceQuestions } from "./questions.ts";
 import { verifySupervisorReport, VOICE_SUPERVISOR_PROOF_HEADER } from "./supervisor-auth.ts";
 import { askAloudPossible, askSentence, SpeechInstanceSchema, VOICE_INSTANCE_HEADER } from "@shared/voice-speech.ts";
 import { z } from "zod";
@@ -162,6 +164,7 @@ export function registerVoiceRoutes(
     c.header("Cache-Control", "no-store");
     if (c.req.method === "HEAD") {
       c.header("X-Voice-Server-Time-Ms", String(Date.now()));
+      c.header(VOICE_MONOTONIC_TIME_HEADER, String(performance.now()));
       return c.body(null);
     }
     return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
@@ -426,10 +429,11 @@ export function registerVoiceUtteranceRoutes(
   deliverer: VoiceDeliverer,
   publish: (card: VoiceCard) => void,
   decider: VoiceDecider = defaultVoiceDecider(),
+  questions?: VoiceQuestions,
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
   const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider,
-    () => voiceStateStore.hostNowUs(), {
+    () => voiceStateStore.hostNowUs(), questions, {
       unsure(card) {
         if (!featureEnabled(VOICE_FLAG) || !askAloudPossible(getVoiceConfig(), voiceStateStore.state())) return;
         const sentence = askSentence(card.candidates.map(c => c.title));
@@ -437,6 +441,42 @@ export function registerVoiceUtteranceRoutes(
       },
       stop(cardId) { if (featureEnabled(VOICE_FLAG)) voiceStateStore.speech.stopCard(cardId); },
     });
+  app.put("/api/voice/open-cards", gate, limitBody, async c => {
+    const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const stamp = c.req.header(VOICE_FOCUS_TIME_HEADER);
+    const focusAtUs = stamp === undefined ? undefined : Number(stamp);
+    if (stamp !== undefined && (!/^\d+$/.test(stamp) || !Number.isSafeInteger(focusAtUs))) {
+      return c.json({ error: "Invalid focus timestamp." }, 400);
+    }
+    const version = c.req.header(VOICE_REPORT_REVISION_HEADER);
+    const revision = version === undefined ? undefined : Number(version);
+    if (version !== undefined && (!/^\d+$/.test(version) || !Number.isSafeInteger(revision))) {
+      return c.json({ error: "Invalid report revision." }, 400);
+    }
+    const observed = c.req.header(VOICE_CARDS_OBSERVED_HEADER);
+    const observedAt = observed === undefined ? undefined : Number(observed);
+    if (observed !== undefined && (!/^\d+$/.test(observed) || !Number.isSafeInteger(observedAt))) {
+      return c.json({ error: "Invalid card observation time." }, 400);
+    }
+    const lower = c.req.header(VOICE_CARDS_EARLIEST_HEADER);
+    const earliest = lower === undefined ? observedAt : Number(lower);
+    if (lower !== undefined && (!/^\d+$/.test(lower) || !Number.isSafeInteger(earliest) || observedAt === undefined || earliest! > observedAt)) {
+      return c.json({ error: "Invalid card observation interval." }, 400);
+    }
+    const bounds = observedAt !== undefined && earliest !== undefined ? { earliest, latest: observedAt } : undefined;
+    const id = c.req.header(VOICE_OBSERVATION_ID_HEADER);
+    const observationId = id === undefined ? undefined : Number(id);
+    if (id !== undefined && (!/^\d+$/.test(id) || !Number.isSafeInteger(observationId))) return c.json({ error: "Invalid observation ID." }, 400);
+    const calibrating = c.req.header(VOICE_CALIBRATING_HEADER) === "1";
+    if (calibrating && observationId === undefined) return c.json({ error: "Calibration requires an observation ID." }, 400);
+    const echo = c.req.header(VOICE_CONFIRM_FOCUS_HEADER);
+    const confirmed = echo === undefined ? undefined : Number(echo);
+    if (echo !== undefined && (!/^\d+$/.test(echo) || !Number.isSafeInteger(confirmed))) return c.json({ error: "Invalid focus confirmation." }, 400);
+    const ok = router.openCards.report(parsed.data, { focusAtUs, revision, withdraw: c.req.query("withdraw") === "1",
+      observation: bounds, observationId, calibrating, confirmed });
+    return c.json({ ok }, ok ? 200 : 409);
+  });
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
@@ -501,11 +541,13 @@ export function registerVoiceUtteranceRoutes(
     return c.body(null, 204);
   });
   app.post("/api/voice/cards/:id/cancel", gate, (c) => {
-    const ok = router.cancel(c.req.param("id"));
+    const id = c.req.param("id");
+    const edited = c.req.header("x-voice-edit-review");
+    const ok = edited ? router.cancelEditedAnswer(edited, id) : router.cancel(id);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/send-now", gate, async (c) => {
-    const ok = await router.sendNow(c.req.param("id"));
+    const ok = await router.sendNow(c.req.param("id"), { companion: c.req.query("source") === "card", windowId: c.req.query("windowId") });
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/pick", gate, limitBody, async (c) => {

@@ -23,6 +23,17 @@ function annotation(identifier) {
   return type?.type === "TSTypeReference" ? name(type.typeName) : undefined;
 }
 
+function hasRegistrySessions(binding) {
+  const type = binding?.typeAnnotation?.typeAnnotation;
+  if (type?.type !== "TSTypeReference") return false;
+  if (name(type.typeName) === "Registry") return true;
+  if (name(type.typeName) !== "Pick") return false;
+  const [source, keys] = type.typeArguments?.params ?? [];
+  if (source?.type !== "TSTypeReference" || name(source.typeName) !== "Registry") return false;
+  const members = keys?.type === "TSUnionType" ? keys.types : [keys];
+  return members.some((key) => key?.type === "TSLiteralType" && name(key.literal, true) === "sessions");
+}
+
 function isLaterWrite(node, write, declarationBlock, statement) {
   if (statement.range[1] <= write.range[0]) return true;
   // A nested conditional or plain block executes at most once per entry to
@@ -217,13 +228,14 @@ export default {
                     name(property.key, property.computed) !== "sessions" || property.parent.type !== "ObjectPattern") return false;
                 const pattern = property.parent;
                 const declaration = pattern.parent;
-                if (declaration.type !== "VariableDeclarator") return annotation(pattern) === "Registry";
+                if (hasRegistrySessions(pattern)) return true;
+                if (declaration.type !== "VariableDeclarator") return false;
                 if (declaration.id !== pattern) return false;
                 owner = declaration.init;
               }
               return matchesLocalValue(context, owner, (candidate, ownerBinding) => {
                 const ownerType = annotation(ownerBinding);
-                return ownerType === "Registry" || (!ownerType &&
+                return hasRegistrySessions(ownerBinding) || (!ownerType &&
                   (name(candidate) === "registry" || member(candidate, "registry")));
               });
             });

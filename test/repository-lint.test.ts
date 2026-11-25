@@ -35,6 +35,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   write("src/server/reassigned.ts", "export function use(c, registry, other, id) { let request = c.req; request = other; request.json(); let sessions = registry.sessions; sessions = new Map(); sessions.delete(id); }");
   write("src/server/overwritten-event.ts", 'export function use(emit) { let type = "session_remove"; type = "other"; emit({ type }); }');
   write("src/server/typed-independent-map.ts", "export function prune({ sessions }: Cache, id) { sessions.delete(id); }");
+  write("src/server/picked-independent-map.ts", 'export function prune({ sessions }: Pick<Cache, "sessions">, id) { sessions.delete(id); }');
 
   const testIdAttributes = "data-" + "testid";
   const testIdSeeds = {
@@ -65,6 +66,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "src/server/assigned-sessions.ts": 'export function evict(registry, id) { let sessions = new Map(); sessions = registry.sessions; sessions.delete(id); }',
     "src/server/assigned-event.ts": 'export function evict(emit, id) { let type = "other"; type = "session_remove"; emit({ type, id }); }',
     "src/server/typed-sessions.ts": 'export function evict({ sessions }: Registry, id) { sessions.delete(id); }',
+    "src/server/picked-sessions.ts": 'export function evict({ sessions }: Pick<Registry, "sessions">, id) { sessions.delete(id); }',
     "src/shared/unowned.ts": 'import "node:fs";',
     "src/shared/nested/unowned.mjs": 'export const builtin = import("node:path");',
     "src/shared/subpath.ts": 'import "node:fs/promises";',
@@ -95,7 +97,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "no-test-ids": 6,
     "parse-request-body": 7,
     "agent-comparison": 6,
-    "registry-eviction": 17,
+    "registry-eviction": 18,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
@@ -124,6 +126,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     ["assigned-sessions", "registry-eviction"],
     ["assigned-event", "registry-eviction"],
     ["typed-sessions", "registry-eviction"],
+    ["picked-sessions", "registry-eviction"],
   ]) {
     assert.ok(output.split("\n").some((line) =>
       line.startsWith(`src/server/${file}.ts:`) && line.endsWith(`[Error/repository(${rule})]`)), output);

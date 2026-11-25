@@ -390,13 +390,17 @@ test("a failed reply yields to the next PR and retries pending replies from the 
   });
 
   const calls: string[] = [];
+  const firstOutcomeAt = startedAt + modelDuration;
+  const firstDeadline = firstOutcomeAt + pollMs;
+  const secondOutcomeAt = firstDeadline + modelDuration;
+  const secondDeadline = secondOutcomeAt + 2 * pollMs;
   // Move the clock at the transport outcome. The duration exceeds the initial backoff
   // without relying on how fast a test worker or subprocess is scheduled.
   t.mock.method(claudeRunner, "run", async (prompt: string) => {
     const blocked = prompt.match(/Blocked question \d/);
     if (blocked) {
       calls.push(blocked[0]);
-      if (blocked[0] === "Blocked question 1") {
+      if (blocked[0] === "Blocked question 1" || now >= secondDeadline) {
         return JSON.stringify({ reply: "The guard still applies.", resolved: false });
       }
       now += modelDuration;
@@ -410,9 +414,8 @@ test("a failed reply yields to the next PR and retries pending replies from the 
     return JSON.stringify({ summary: "No additional findings.", findings: [], resolved: [] });
   });
 
-  const firstOutcomeAt = startedAt + modelDuration;
-  const firstDeadline = firstOutcomeAt + pollMs;
   type LedgerRow = NonNullable<ReturnType<typeof getInspectorPr>>;
+  let pendingAfterFailures: ReturnType<typeof loadInspectorComments> = [];
   const sweeps: { failed: LedgerRow; later: LedgerRow; calls: string[] }[] = [];
   const stop = startInspector(registryStub(() => {
     const observed = getInspectorPr(later)!;
@@ -421,10 +424,18 @@ test("a failed reply yields to the next PR and retries pending replies from the 
     sweeps.push({ failed: getInspectorPr(failing)!, later: observed, calls: calls.splice(0) });
     if (sweeps.length === 1) now = firstDeadline - 1;
     if (sweeps.length === 2) now = firstDeadline;
-    if (sweeps.length === 3) stop();
+    if (sweeps.length === 3) {
+      pendingAfterFailures = loadInspectorComments(failing);
+      // Return the remaining threads in the opposite order to their failures.
+      const github = readGithubState();
+      github.threadsByPr[9]!.reverse();
+      writeGithubState(github);
+      now = secondDeadline;
+    }
+    if (sweeps.length === 4) stop();
   }));
   t.after(stop);
-  await waitFor("the initial sweep, a backed-off sweep and a retry", () => sweeps.length === 3);
+  await waitFor("the sweep that retries both deferred replies", () => sweeps.length === 4);
 
   const [initial, backedOff, retry] = sweeps;
   assert.ok(initial && backedOff && retry);
@@ -432,13 +443,14 @@ test("a failed reply yields to the next PR and retries pending replies from the 
     ["Blocked question 0", "healthy reply", "review"],
     [],
     ["Blocked question 1", "Blocked question 2"],
-  ], "the next eligible batch gives the other replies a turn before retrying the failure");
+    ["Blocked question 0", "Blocked question 2", "review"],
+  ], "untried replies go first, then deferred replies retry in failure order");
   assert.deepEqual(
-    sweeps.map(({ failed }) => [failed.failCount, failed.updatedAt, failed.nextAttemptAt]),
+    sweeps.slice(0, 3).map(({ failed }) => [failed.failCount, failed.updatedAt, failed.nextAttemptAt]),
     [
       [1, firstOutcomeAt, firstDeadline],
       [1, firstDeadline - 1, firstDeadline],
-      [2, firstDeadline + modelDuration, firstDeadline + modelDuration + 2 * pollMs],
+      [2, secondOutcomeAt, secondDeadline],
     ],
     "failure timestamps and the doubling retry wait start at the outcome",
   );
@@ -450,15 +462,17 @@ test("a failed reply yields to the next PR and retries pending replies from the 
   assert.equal(retry.failed.lastFailKind, "persistent");
   assert.match(retry.failed.lastError ?? "", /fake reply timeout/);
   assert.equal(retry.failed.headSha, null, "reply failure never certifies a review");
-  assert.deepEqual(readGithubState().actions, ["replied to comment 205", "replied to comment 203"]);
-  const pending = loadInspectorComments(failing);
-  assert.equal(pending.length, 3);
-  for (const finding of pending) {
+  assert.equal(pendingAfterFailures.length, 3);
+  for (const finding of pendingAfterFailures) {
     const answered = finding.id === "prior-1";
     assert.equal(finding.answeredCommentId, answered ? 203 : null);
     assert.equal(finding.replies, answered ? 1 : 0);
     assert.equal(finding.status, "open");
   }
+  assert.deepEqual(readGithubState().actions, [
+    "replied to comment 205", "replied to comment 203", "replied to comment 202", "replied to comment 204",
+  ]);
+  assert.deepEqual(loadInspectorComments(failing).map((row) => row.answeredCommentId).sort(), [202, 203, 204]);
 });
 
 test("a posted reply with failed resolution leaves the next reply pending and yields to the next PR", async (t) => {

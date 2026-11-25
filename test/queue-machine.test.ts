@@ -1734,6 +1734,7 @@ test("a delivered bulleted no-PR or no-shipping instruction holds until release"
     "- Do not open a PR.",
     "Do not ship this yet.",
     "Do not open a PR. Let the bound Workflow open it after I approve.",
+    "Do not submit this for review. Let the bound Workflow open the PR.",
   ]) {
     const items = DRAINED().map((item) => ({ ...item, sentAt: NOW - 5_000, intent: instruction }));
     assert.equal(tick({ items, intent, cfg: { wrapup: "ask" } }).kind, "none", instruction);

@@ -183,6 +183,31 @@ test("replaying an unclear design selection keeps its acceptance time across res
   assert.equal(goal?.resolvedPromptRevision, 3);
 });
 
+test("a pre-upgrade pending Goal keeps the prior cutoff when its acceptance time is unknown", () => {
+  const { s } = withSession("legacy-deliverable-cutoff", "%12");
+  const now = Date.now();
+  const selection = "Implement the selected design.";
+  upsertSessionGoal({
+    ...persistedGoal(s.id, "Output: mockups", "Output: mockups", now),
+    prompt: selection,
+    promptRevision: 2,
+    pendingPrompts: [{ revision: 2, prompt: selection }],
+  });
+  const reopened = new Registry();
+  reopened.applyDiscovery([mkDiscovered({ syntheticId: s.id, cwd: s.cwd! })]);
+  assert.equal(reopened.getGoal(s.id)?.deliverableUpdatedAt, undefined);
+  const resolved = reopened.resolveGoal(s.id, {
+    relationship: "replace",
+    objective: "Implement heading counts in the selected design.",
+    objectiveVersion: 2,
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  }, selection, now + 20);
+  assert.equal(resolved?.updatedAt, now + 20);
+  assert.equal(resolved?.deliverableUpdatedAt, now);
+  assert.equal(getSessionGoal(s.id)?.deliverableUpdatedAt, now);
+});
+
 test("a background task reporting in never overwrites the captured ask", () => {
   // The common path: 200 of 396 real UserPromptSubmit events are task notifications. If
   // these landed, a goal would be replaced by machinery every time a task finished.

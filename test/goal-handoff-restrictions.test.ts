@@ -35,6 +35,7 @@ test("an adjacent affirmative PR assignment is delegation and keeps approval lim
   assert.equal(explicitHandoffRestriction("Do not open a PR until I approve. Let the bound Workflow open it."), "Do not open a PR until I approve");
   assert.equal(explicitHandoffRestriction("Do not open a PR. Do not let the bound Workflow open it."), "Do not open a PR");
   assert.equal(explicitHandoffRestriction("Do not open a PR. Let the bound Workflow open it after I approve."), "Do not open a PR");
+  assert.equal(explicitHandoffRestriction("Do not submit this for review. Let the bound Workflow open the PR."), "Do not submit this for review");
 });
 
 test("delegation cannot remove a prior approval condition", () => {

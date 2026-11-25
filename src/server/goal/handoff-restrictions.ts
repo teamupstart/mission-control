@@ -29,8 +29,8 @@ function restrictionParts(clause: string, listItem: boolean, nextClause = ""): b
     if (index % 2) return false;
     const directive = part.trim().replace(/^also\s+/i, "");
     const unconditional = directive.replace(APPROVAL_CONDITION, "");
-    const holdsPublication = NO_PR_DIRECTIVE.test(unconditional) || NO_REVIEW_DIRECTIVE.test(unconditional);
-    return (holdsPublication && (!delegates || unconditional !== directive))
+    return (NO_PR_DIRECTIVE.test(unconditional) && (!delegates || unconditional !== directive))
+      || NO_REVIEW_DIRECTIVE.test(unconditional)
       || NO_SHIPPING_DIRECTIVE.test(unconditional)
       || KEEP_LOCAL_DIRECTIVE.test(unconditional)
       || PERSONAL_PR.test(directive)

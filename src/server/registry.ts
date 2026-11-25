@@ -11153,7 +11153,7 @@ export class Registry extends EventEmitter {
     const acceptedAt = goal?.pendingPrompts.find((p) => p.revision === revision)?.acceptedAt;
     // Legacy prompts may lack a capture time. Keep the prior
     // deliverable cutoff rather than treating the later model write as a new instruction.
-    return this.mergeGoal(id, patch, now, steering, acceptedAt ?? goal?.deliverableUpdatedAt);
+    return this.mergeGoal(id, patch, now, steering, acceptedAt ?? goal?.deliverableUpdatedAt ?? goal?.updatedAt);
   }
 
   /**

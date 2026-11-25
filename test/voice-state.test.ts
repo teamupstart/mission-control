@@ -255,26 +255,28 @@ test("a hold crossing its cutoff during publication schedules immediate capture 
   assert.equal(h.store.releasedCapture(), undefined);
 });
 
-test("dedicated capture expires a lost native key-up even with continuous desktop heartbeats", () => {
-  const h = harness({ config: { listeningMode: "push-to-talk" } });
-  h.store.acceptHello(listenerId, HELLO);
-  const pressed = h.hostNowUs();
-  const snapshot = { ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
-    capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
-    pushToTalkSession: h.store.state().pushToTalkSession, pushToTalkPressedAtHostUs: pressed };
-  for (let seconds = 0; seconds < 120; seconds += 5) {
+for (const listeningMode of ["always-on", "push-to-talk"] as const) {
+  test(`${listeningMode} expires a lost native key-up even with continuous desktop heartbeats`, () => {
+    const h = harness({ config: { listeningMode } });
     h.store.acceptHello(listenerId, HELLO);
+    const pressed = h.hostNowUs();
+    const snapshot = { ...REPORT, callActive: true, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
+      pushToTalkSession: h.store.state().pushToTalkSession, pushToTalkPressedAtHostUs: pressed };
+    for (let seconds = 0; seconds < 120; seconds += 5) {
+      h.store.acceptHello(listenerId, HELLO);
+      h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
+      assert.equal(h.store.directive().capture, true);
+      h.advance(5000);
+    }
+    assert.equal(h.published.at(-1)?.mode, listeningMode === "always-on" ? "auto-muted" : "waiting-for-key");
+    assert.equal(h.store.directive().capture, false);
+    assert.equal(h.store.releasedCapture(), undefined);
     h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
-    assert.equal(h.store.directive().capture, true);
-    h.advance(5000);
-  }
-  assert.equal(h.published.at(-1)?.mode, "waiting-for-key");
-  assert.equal(h.store.directive().capture, false);
-  assert.equal(h.store.releasedCapture(), undefined);
-  h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
-  assert.equal(h.store.directive().capture, false);
-  h.store.reset();
-});
+    assert.equal(h.store.directive().capture, false);
+    h.store.reset();
+  });
+}
 
 test("with the flag off the state is off, whatever was heard", () => {
   const h = harness({ flags: new Set(["async-input", "inbox", "filed-plan-decisions"]) });

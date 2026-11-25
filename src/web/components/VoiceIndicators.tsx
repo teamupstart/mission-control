@@ -103,12 +103,14 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick, pending, showHo
   const name = `Voice: ${word.toLowerCase()}. ${action}`;
   const tip = `${hint} ${clickAction}.`;
   const cls = `vi vi-${id} vi-${mode}${id === "topbar" ? " pulse-seg pulse-btn" : ""}`;
+  const inlineHoldHint = id === "floating" || id === "status-line";
   const holding = showHoldHint && mode === "push-to-talk";
+  const stateLabel = holding ? "Listening while held" : word;
   const face = <>
     <svg width="14" height="14" aria-hidden="true" viewBox="0 0 16 16"><path d={path} /></svg>
-    <span className={id === "topbar" ? "tb-label" : "vi-word"}>{holding ? "Listening while held" : word}</span>
+    <span className={id === "topbar" ? "tb-label" : "vi-word"}>{stateLabel}</span>
     {id === "status-line" && onClick && <><span className="vi-hint">{hint}</span><span className="vi-action">{actions}</span></>}
-    {showHoldHint && <span className="vi-expanded">{holding ? "Release to finish" : <>Hold {chord
+    {showHoldHint && inlineHoldHint && <span className={id === "floating" ? "vi-expanded" : "vi-action"}>{holding ? "Release to finish" : <>Hold {chord
       ? <><Keycap chord={chord} /><span className="sr-only">{formatChord(chord)}</span></>
       : "the hotkey"} to talk</>}</span>}
     {id === "floating" && onClick && <span className="vi-expanded">· {actions}</span>}
@@ -118,7 +120,11 @@ export function VoiceIndicatorButton({ id, mode, chord, onClick, pending, showHo
     // The floating control expands into its own hint on hover or focus.
     content: id === "floating" ? null : <>{tip}{shortcut && <> {shortcut}. Tap the shortcut to toggle mute.</>}</>,
   }}><button type="button" className={cls} aria-label={name} aria-disabled={pending || undefined} onClick={pending ? undefined : onClick}>{face}</button></Tooltip>
-    : <span className={cls} role={showHoldHint ? "status" : undefined}>{face}</span>;
+    : showHoldHint && !inlineHoldHint
+      ? <Tooltip label={holding ? "Release to finish" : `Hold ${chord ? formatChord(chord) : "the hotkey"} to talk`}>
+        <span className={cls} role="status" aria-label={`Voice: ${stateLabel}`} tabIndex={0}>{face}</span>
+      </Tooltip>
+      : <span className={cls} role={showHoldHint ? "status" : undefined}>{face}</span>;
   return id === "edge" ? <div className={`vi-edge-line vi-${mode}`}>{button}</div> : button;
 }
 
@@ -154,7 +160,7 @@ export function VoiceIndicator({ id }: { id: VoiceIndicatorId }): React.JSX.Elem
     else void setMuted(state.mode !== "muted");
   };
   return <VoiceIndicatorButton id={id} mode={voice.state.mode} chord={chord ?? undefined}
-    showHoldHint={id === "floating" && !!state.pushToTalkSession && state.mode !== "unavailable"}
+    showHoldHint={!!state.pushToTalkSession && state.mode !== "unavailable"}
     onClick={state.pushToTalkSession && state.mode !== "unavailable" ? undefined : activate}
     pending={voice.mutePending && state.mode !== "unavailable"} />;
 }

@@ -400,8 +400,9 @@ export class VoiceStateStore {
       (!report.hotkeyError || report.hotkeyError.chordInForce === config.hotkey);
     if (dedicated && (!confirmed || report?.pushToTalkSession !== this.pushToTalkSession ||
         this.recorder || (trial && now < trial.expiresAt))) reasons.push("shortcut");
-    const press = report?.pushToTalkPressedAtHostUs;
-    const validDedicatedPress = press !== undefined && press === this.report?.keyChangedHostUs &&
+    // A snapshot without a native stamp is dated at the first observed transition.
+    const press = this.report?.keyChangedHostUs;
+    const validPress = press != null && (!dedicated || press === report?.pushToTalkPressedAtHostUs) &&
       this.hostNowUs() - press < VOICE_MAX_HOLD_MS * 1000;
     const mode = voiceMode({
       listeningMode: config.listeningMode,
@@ -411,7 +412,7 @@ export class VoiceStateStore {
       callActive: report?.callActive ?? false,
       autoMuteDuringCalls: config.autoMuteDuringCalls,
       pushToTalk: !!report?.pushToTalk && report.pushToTalkSession === this.pushToTalkSession &&
-        (!dedicated || validDedicatedPress),
+        validPress,
     });
     if (mode !== this.lastMode) {
       // A recovered desktop or listener must observe the new session and a new key-down.
@@ -661,8 +662,8 @@ export class VoiceStateStore {
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,
     ].filter((at): at is number => at != null && at > now);
-    const press = this.report?.report.pushToTalkPressedAtHostUs;
-    if (state.pushToTalkSession && state.mode === "push-to-talk" && press !== undefined) {
+    const press = this.report?.keyChangedHostUs;
+    if (state.mode === "push-to-talk" && press != null) {
       // Publication may have crossed the cutoff. Recompute immediately in that case.
       lapses.push(now + Math.max(0, VOICE_MAX_HOLD_MS - (this.hostNowUs() - press) / 1000));
     }

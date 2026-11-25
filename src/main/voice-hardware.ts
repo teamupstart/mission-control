@@ -137,20 +137,12 @@ export class VoiceHardware {
       if (this.pushToTalkSession) {
         if ((this.mode === "waiting-for-key" || this.mode === "push-to-talk") &&
             !this.trialId && this.registeredHotkey && this.desired === this.registeredHotkey) {
-          const remaining = VOICE_MAX_HOLD_MS - (this.clock() - at) / 1000;
-          if (remaining <= 0) return;
-          this.pushToTalk = true;
-          this.holdTimer = setTimeout(() => {
-            this.cancelPress();
-            this.changed();
-          }, remaining);
-          this.changed();
+          this.startHold(at);
         }
       } else if (this.canTalkThroughCall()) {
         this.holdTimer = setTimeout(() => {
           if (!this.canTalkThroughCall()) return;
-          this.pushToTalk = true;
-          this.changed();
+          this.startHold(at);
         }, Math.max(0, 350 - (this.clock() - at) / 1000));
       }
       return;
@@ -162,6 +154,17 @@ export class VoiceHardware {
     if (tap && !this.pushToTalkSession) this.toggle();
     this.changed();
   };
+
+  private startHold(pressedAtUs: number) {
+    const remaining = VOICE_MAX_HOLD_MS - (this.clock() - pressedAtUs) / 1000;
+    if (remaining <= 0) return;
+    this.pushToTalk = true;
+    this.holdTimer = setTimeout(() => {
+      this.cancelPress();
+      this.changed();
+    }, remaining);
+    this.changed();
+  }
 
   private cancelPress() {
     clearTimeout(this.holdTimer);

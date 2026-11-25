@@ -8,7 +8,7 @@ import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
-test("the floating indicator alone shows Push-to-talk waiting, capture, and the hold hint", async ({ dashboard: page, daemon }) => {
+test("Push-to-talk indicators show hold and release guidance with or without the status line", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const listener = await beListener(daemon);
   try {
@@ -45,6 +45,24 @@ test("the floating indicator alone shows Push-to-talk waiting, capture, and the 
         await indicator.screenshot({ path: join(dir, held ? "held.png" : "waiting.png") });
       }
     }
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await page.getByRole("checkbox", { name: "Status line" }).check();
+    await page.getByRole("checkbox", { name: "Top-bar segment" }).check();
+    await report(false);
+    const status = page.locator(".app > .vi-status-line");
+    await expect(status.locator("kbd")).toHaveText("⌘⌃⌥V");
+    const topbar = page.locator(".pulse .vi-topbar");
+    await topbar.focus();
+    await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" })).toBeVisible();
+    await expect(topbar).toHaveRole("status");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("voice-floating-hold");
+      await status.screenshot({ path: join(dir, "status-shortcut.png") });
+      await page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" }).screenshot({ path: join(dir, "compact-shortcut.png") });
+    }
+    await report(true);
+    await expect(topbar).toHaveAccessibleDescription("Release to finish");
+    await report(false);
   } finally {
     listener.stop();
   }

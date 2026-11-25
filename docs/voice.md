@@ -836,7 +836,7 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator displays the hold hint while waiting and “Release to finish” during capture. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
+The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator and status line display the hold hint while waiting and “Release to finish” during capture. Hover over or focus a compact indicator to read the same guidance. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
 
 If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
 
@@ -1105,7 +1105,8 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 Choose the hotkey row in **Settings > Voice**, then press a chord. Escape cancels recording.
 In Always-on mode, a tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
 the tray opens with the result of a fresh status check. During call auto-mute, hold for 350 ms
-to talk and release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
+to talk and release to resume auto-mute. If key-up is lost, capture closes two minutes after
+the press and the unfinished utterance is discarded. Manual mute takes priority. When macOS refuses a shortcut,
 the warning names the chord still registered, or says when none is in force. Settings saves a
 replacement only after the desktop confirms registration. While waiting, the row shows the
 proposed chord. If confirmation takes longer than 15 seconds, the row identifies the edit

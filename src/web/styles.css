@@ -34393,7 +34393,8 @@ span.line-run-prov {
 }
 /* Wrapped onto a line of their own in a narrow pane, the fixes keep to the right edge. */
 .stalled-band-row > .stalled-actions {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: auto;
 }
 .stalled-band-more {

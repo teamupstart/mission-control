@@ -648,6 +648,41 @@ test("a cancel retried after toggling voice cannot dismiss a new card", async ()
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
 });
 
+test("a dedicated hold opens the separate Cancel window on release while the microphone stays off", async t => {
+  const configure = (listeningMode: string) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ listeningMode }) });
+  assert.equal((await configure("push-to-talk")).status, 200);
+  t.after(async () => { await configure("always-on"); });
+  const headers = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const poll = () => app.request("/voice/listener/directive", { headers });
+  const { pushToTalkSession, configuredHotkey } = voiceStateStore.state();
+  const report = (down: boolean, at: number) => post("/voice/shell-report", {
+    pushToTalkSession, registeredHotkey: configuredHotkey, capabilities: { hotkey: { available: true } },
+    reportedAtHostUs: at, pushToTalk: down,
+    ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }),
+  }, token);
+  assert.equal((await (await poll()).json()).capture, false);
+  await report(true, voiceHostTimeUs());
+  const hold = await poll();
+  const revision = hold.headers.get("x-voice-held-revision");
+  assert.ok(revision);
+  const start = voiceHostTimeUs();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const up = voiceHostTimeUs();
+  await report(false, up);
+  assert.equal((await (await poll()).json()).capture, false);
+  const utterance = await app.request(utterancePath(revision), { method: "POST", headers: {
+    ...headers, host: "localhost", "content-type": "application/json",
+    "x-voice-capture-start-host-us": String(start), "x-voice-capture-end-host-ms": String(Math.floor(up / 1000)),
+  }, body: JSON.stringify(capture("Steve wait for cancel", "held-message")) });
+  assert.deepEqual(await utterance.json(), { accepted: true });
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.equal((await (await poll()).json()).capture, false);
+  await act("held-message", "cancel");
+  assert.equal(cards.at(-1)?.state, "cancelled");
+  assert.deepEqual(queued("Steve"), []);
+});
+
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   await say("Steve check the build", "older");

@@ -1046,7 +1046,7 @@ function SetupRow({
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
-      {hotkey && <p className="setup-source">Tap <kbd>{formatChord(hotkey)}</kbd> to mute voice from any app.</p>}
+      {hotkey && <p className="setup-source">{voice?.pushToTalkSession ? "Hold" : "Tap"} <kbd>{formatChord(hotkey)}</kbd> {voice?.pushToTalkSession ? "to talk" : "to mute voice"} from any app.</p>}
       {row.guide && (
         <div className="setup-guide">
           <Tooltip label={row.guide.label}>

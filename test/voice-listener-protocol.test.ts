@@ -243,41 +243,45 @@ test("sherpa skips a blank decode and posts speech from the next file segment", 
   assert.deepEqual(posts, ["check the build"]);
 });
 
-test("a key release during decoding admits only speech read inside the hold", { timeout: 3000 }, async t => {
-  ensureNativeStateLockAddon();
-  setVoiceConfig({ backend: "sherpa-onnx", muted: false, autoMuteDuringCalls: true });
-  voiceStateStore.reset();
-  t.after(() => voiceStateStore.reset());
-  const pressed = voiceHostTimeUs();
-  voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ reportedAtHostUs: pressed, callActive: true, pushToTalk: true }));
-  let released = 0;
-  let accepted = false;
-  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
-    const response = await app.request(url, init);
-    if (new URL(url).pathname === "/voice/utterances") {
-      const headers = new Headers(init.headers);
-      const start = Number(headers.get(VOICE_CAPTURE_START_HEADER));
-      const end = Number(headers.get(VOICE_CAPTURE_END_HEADER));
-      assert.ok(start >= pressed && start < end * 1000 && end * 1000 <= released);
-      accepted = (await response.clone().json()).accepted;
-    }
-    return response;
+for (const listeningMode of ["always-on", "push-to-talk"] as const) {
+  test(listeningMode + " key release during decoding admits only speech read inside the hold", { timeout: 3000 }, async t => {
+    ensureNativeStateLockAddon();
+    setVoiceConfig({ backend: "sherpa-onnx", listeningMode, muted: false, autoMuteDuringCalls: true });
+    voiceStateStore.reset();
+    t.after(() => { voiceStateStore.reset(); setVoiceConfig({ listeningMode: "always-on" }); });
+    const controls = { callActive: listeningMode === "always-on", capabilities: { hotkey: { available: true } },
+      registeredHotkey: "cmd+ctrl+alt+v", pushToTalkSession: voiceStateStore.state().pushToTalkSession };
+    const pressed = voiceHostTimeUs();
+    voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ ...controls, reportedAtHostUs: pressed, pushToTalkPressedAtHostUs: pressed, pushToTalk: true }));
+    let released = 0;
+    let accepted = false;
+    const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+      const response = await app.request(url, init);
+      if (new URL(url).pathname === "/voice/utterances") {
+        const headers = new Headers(init.headers);
+        const start = Number(headers.get(VOICE_CAPTURE_START_HEADER));
+        const end = Number(headers.get(VOICE_CAPTURE_END_HEADER));
+        assert.ok(start >= pressed && start < end * 1000 && end * 1000 <= released);
+        accepted = (await response.clone().json()).accepted;
+      }
+      return response;
+    });
+    let ready = false;
+    await playRecording(client, signal => recordingSegments(new Float32Array(512 * 70), () => ({
+      acceptWaveform() {}, flush() { ready = true; }, isDetected: () => true, isEmpty: () => !ready,
+      front: () => ({ start: 10 * 512, samples: new Float32Array(60 * 512) }), pop() { ready = false; }, reset() {},
+    }), signal, voiceHostTimeUs), async () => {
+      setVoiceConfig({ endOfSpeechMs: 5000 });
+      await new Promise(resolve => setTimeout(resolve, 4));
+      released = voiceHostTimeUs();
+      voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ ...controls, reportedAtHostUs: released, pushToTalkReleasedAtHostUs: released }));
+      assert.equal(voiceStateStore.state().mode, listeningMode === "always-on" ? "auto-muted" : "waiting-for-key");
+      setVoiceConfig({ endOfSpeechMs: 2000 });
+      return { text: "speech", tokens: [], timestamps: [], durations: [] };
+    });
+    assert.equal(accepted, true);
   });
-  let ready = false;
-  await playRecording(client, signal => recordingSegments(new Float32Array(512 * 70), () => ({
-    acceptWaveform() {}, flush() { ready = true; }, isDetected: () => true, isEmpty: () => !ready,
-    front: () => ({ start: 10 * 512, samples: new Float32Array(60 * 512) }), pop() { ready = false; }, reset() {},
-  }), signal, voiceHostTimeUs), async () => {
-    setVoiceConfig({ endOfSpeechMs: 5000 });
-    await new Promise(resolve => setTimeout(resolve, 4));
-    released = voiceHostTimeUs();
-    voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ reportedAtHostUs: released, callActive: true, pushToTalkReleasedAtHostUs: released }));
-    assert.equal(voiceStateStore.state().mode, "auto-muted");
-    setVoiceConfig({ endOfSpeechMs: 2000 });
-    return { text: "speech", tokens: [], timestamps: [], durations: [] };
-  });
-  assert.equal(accepted, true);
-});
+}
 
 test("a still-held response retries the same capture and leaves subsequent speech playable", async () => {
   const requests: { body: string; at: number; bounds: string[] }[] = [];

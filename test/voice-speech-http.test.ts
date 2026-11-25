@@ -1987,6 +1987,41 @@ test("a backward wall-clock step during playback excludes buffered frames under 
   assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh"))).json(), { accepted: true });
 });
 
+for (const playing of [false, true]) {
+  test(`switching to Push-to-talk stops a ${playing ? "playing" : "ready"} Ask through the holder`, async () => {
+    const p = player();
+    await p.announce(); await p.hello();
+    const configure = async (data: object) => {
+      const response = await app.request("/api/voice/config", { method: "PUT",
+        headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(data) });
+      assert.equal(response.status, 200);
+    };
+    await configure({ whenUnsure: "ask" });
+    const ask = store.speech.open("ask", "Which session?", crypto.randomUUID())!;
+    assert.equal(ask.state, "ready");
+    if (playing) {
+      assert.equal((await p.pickup()).speak.id, ask.id);
+      assert.equal((await p.event(ask.id, "started")).status, 200);
+      assert.equal(ask.state, "speaking");
+    }
+    await configure({ listeningMode: "push-to-talk" });
+    assert.equal(ask.state, "stopping");
+    const { configuredHotkey, pushToTalkSession } = store.state();
+    const press = store.hostNowUs();
+    assert.equal((await post("/voice/shell-report", { registeredHotkey: configuredHotkey, pushToTalkSession,
+      capabilities: { hotkey: { available: true } }, pushToTalk: true, reportedAtHostUs: press,
+      pushToTalkPressedAtHostUs: press }, token)).status, 200);
+    const directive = await p.poll();
+    assert.deepEqual(directive.speak, { id: ask.id, stop: true });
+    assert.equal(directive.capture, false);
+    assert.ok(store.speech.held);
+    assert.equal((await p.event(ask.id, "ended")).status, 200);
+    assert.equal(ask.state, "stopped");
+    assert.equal(store.speech.held, false);
+    assert.equal((await p.poll()).capture, true, "the held shortcut captures once the player confirms silence");
+  });
+}
+
 test("a late start or a stop before pickup waits for the holder; muting permits only an audition", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   t.mock.method(performance, "now", Date.now);

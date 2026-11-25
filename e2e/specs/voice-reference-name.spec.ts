@@ -6,7 +6,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
-import { enableVoice, say } from "../fixtures/voice.ts";
+import { beListener, enableVoice, say } from "../fixtures/voice.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
 
@@ -190,6 +190,39 @@ test("saving with voice off preserves the stored reference name after a hidden e
   expect(identity?.referenceName).toBe("Marlowe");
 });
 
+test("the listening composer quotes a resident reference name and an ordinary name in different places", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const profile = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Sage" }, persona: { personaId: PERSONA_ID },
+  } });
+  await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: profile.id });
+  const listener = await beListener(daemon);
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await page.getByRole("checkbox", { name: "Composer microphone" }).check();
+    await page.goto(daemon.baseURL);
+    await page.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Sage/ }).click();
+    const composer = page.locator(".transcript-compose");
+    const reply = composer.getByRole("textbox");
+    const ordinaryHint = 'Message to send… or say "Sage, …"';
+    await expect(composer.getByText(ordinaryHint, { exact: true })).toBeVisible();
+    await expect(reply).toHaveAccessibleDescription(ordinaryHint);
+    await shoot(composer, "composer-ordinary-name");
+
+    // Keep the spoken word identical so only the name's source changes.
+    await api(daemon, `/api/residents/profiles/${profile.id}`, {
+      expectedRevision: profile.revision,
+      settings: { ...profile.settings, identity: { ...profile.settings.identity, referenceName: "Sage" } },
+    }, "PATCH");
+    const referenceHint = 'Message to send… or say "Sage", …';
+    await expect(composer.getByText(referenceHint, { exact: true })).toBeVisible();
+    await expect(reply).toHaveAccessibleDescription(referenceHint);
+    await shoot(composer, "composer-reference-name");
+  } finally {
+    listener.stop();
+  }
+});
+
 test("Recently Heard quotes the resident reference name after a near miss", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await api(daemon, "/api/residents/profiles", { settings: {
@@ -202,6 +235,37 @@ test("Recently Heard quotes the resident reference name after a near miss", asyn
   await expect(row.getByRole("cell", { name: 'None. Closest is "Cat", a weak match', exact: true })).toBeVisible();
   await expect(row.getByRole("cell", { name: "near miss rejected", exact: true })).toBeVisible();
   await shoot(history, "near-miss-reference");
+});
+
+test("Recently Heard quotes only the reference name after exact resident matches", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await api(daemon, "/api/voice/config", { cancelWindow: { enabled: false, seconds: 30 } }, "PUT");
+  const residents = [
+    { identity: { name: "Release reviewer", referenceName: "Sage" }, utterance: "Sage, check the build", label: '"Sage"' },
+    { identity: { name: "Robin" }, utterance: "Robin, check the tests", label: "Robin" },
+  ];
+  for (const { identity } of residents) {
+    const profile = await api<ResidentProfile>(daemon, "/api/residents/profiles", {
+      settings: { identity, persona: { personaId: PERSONA_ID } },
+    });
+    await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: profile.id });
+  }
+
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const roster = page.getByRole("table", { name: "Agents that answer to a spoken name" });
+  const history = page.getByRole("region", { name: "Recently heard" });
+  for (const { identity, utterance, label } of residents) {
+    const resident = roster.getByRole("row").filter({ hasText: identity.name });
+    await expect(resident.getByRole("cell", { name: "Running", exact: true })).toBeVisible();
+    expect(await (await say(daemon, utterance)).json()).toEqual({ accepted: true });
+    const row = history.getByRole("row").filter({ has: page.getByRole("cell", { name: utterance, exact: true }) });
+    await expect(row.getByRole("cell", { name: `${label}, exactly`, exact: true })).toBeVisible();
+    await expect(row.getByRole("cell", { name: `Routed to ${label}`, exact: true })).toBeVisible();
+  }
+  if (process.env.MC_E2E_EVIDENCE) {
+    await expect(page.getByRole("status").filter({ hasText: "Sent to" })).toHaveCount(0);
+    await shoot(history, "exact-resident-matches");
+  }
 });
 
 test("Reports settings quotes a migrated muted resident reference name", async ({ dashboard: page, daemon }) => {

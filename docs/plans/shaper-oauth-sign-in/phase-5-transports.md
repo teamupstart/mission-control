@@ -5,7 +5,8 @@
 A marked `mcp` or `http` shaper whose connection is signed in is called with the access
 token, sent to its server's origin only. The token is removed from whatever the server
 sends back (S7). A marked shaper that is not signed in is not called and answers
-`unavailable`, and a `401` answers `unavailable` and starts one background refresh (S2). A
+`unavailable`, and a `401` answers `unavailable` and tells the service, which decides when
+the next background refresh runs (S2). A
 shaper with no marker sends exactly what it sends today (S10), and the carriers are
 unchanged on every call (S9).
 

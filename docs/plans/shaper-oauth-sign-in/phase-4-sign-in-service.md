@@ -101,15 +101,18 @@ Not here: routes, the event, the transports, Settings.
    of it (step 2). While either is
    off it reads nothing, fetches nothing and runs no timer. Turning both on loads then.
    Turning one off clears the timers and keeps what is in memory and in the store.
-5. **`accessToken(target)`.** Synchronous, memory only, never the network or the store.
+5. **`accessToken(target)`.** Synchronous. It answers from memory and never waits on the
+   network or the store. What it starts, a refresh or a removal, runs after it has
+   answered.
 
    | State | Answer |
    | --- | --- |
    | Either flag off | No token, `flagOff` |
    | No record, or a sign-in pending | No token, `signedOut` |
-   | A record whose access token has not expired | The token |
-   | A record whose access token has expired, with a refresh token | No token, `renewing`. A refresh starts if none is running. |
-   | A record whose access token has expired, with no refresh token | The record is removed. No token, `signedOut`. |
+   | A record whose token a server refused, until a refresh has replaced that token | No token, `renewing` |
+   | Any other record whose access token has not expired | The token |
+   | A record whose access token has expired, with a refresh token | No token, `renewing`. A refresh is asked for (step 9). |
+   | A record whose access token has expired, with no refresh token | The record is removed (step 8): from memory at once, and from the store in its turn. No token, `signedOut`. |
 
    A target that is asked for counts as in use.
 6. **`begin(target)`.** Needs both flags. One `begin` runs at a time, after the load of
@@ -131,14 +134,44 @@ Not here: routes, the event, the transports, Settings.
    An unknown or expired `state`, an `error` from the server, a missing `code`, or an `iss`
    that is not the pinned issuer ends in a fixed reason. Otherwise it runs `exchange`,
    stores the record, schedules the refresh and reports the change.
-8. **Storing.** Every record is written to the store, with its target and the id of the
-   client that obtained it, before it replaces the one in memory.
-   When the write fails, the record is used from memory, the connection's storage reads
-   `memory`, and its reason says a restart will need a new sign-in.
+8. **Storing and removing, in order.**
+   - Every record is written to the store, with its target and the id of the client that
+     obtained it, before it replaces the one in memory. When the write fails, the record
+     is used from memory, the connection's storage reads `memory`, and its reason says a
+     restart will need a new sign-in.
+   - A removal clears memory at once and then removes the stored record. Every removal in
+     this file works that way: `signOut`, `sign_in_again`, `client_rejected`, and a record
+     with no refresh token that expired or was refused. So `accessToken` can remove a
+     record and still never touch the store itself.
+   - Store calls for one connection run one at a time, in the order they were asked for.
+     A write and the memory change that follows it are one turn.
+   - A new sign-in's write always stands. A removal belongs to the record it was decided
+     for: when its turn comes after a newer record was stored, it does nothing.
+   - A refresh belongs to the record it started from. When its turn at the store comes,
+     and again when its write is done, it checks that this is still the connection's
+     record. If that record was signed out, removed or replaced meanwhile, the refresh
+     lost: it writes nothing more and puts nothing in memory, a removal queued behind it
+     clears what it wrote, and it revokes the pair it received, with the 5 second limit
+     of `signOut`. The service numbers a connection's records, so the check is one
+     comparison.
 9. **Refresh.**
    - Due at 75% of the access token's lifetime. With no `expires_in`, only after
      `noteRefused`. At `start()`, at once for a record that has already expired.
    - One at a time per connection. Whatever asks while one runs shares it.
+   - **Asked for by a call.** `accessToken` on an expired token, and `noteRefused`, ask
+     for a refresh. Neither starts one while one is running or while a later try is
+     already set, by `retry` or by the next bullet. The try that is set stands, so calls
+     made while the token endpoint is down add no request.
+   - **After a refusal.** The first refusal's refresh runs at once. After that, refreshes
+     that refusals ask for are at least 1 minute apart, then 2, 4 and 8, then 15. A
+     refusal that comes sooner sets the refresh for the end of that wait. The connection
+     is `renewing`, and `view()` carries the `refused` reason, until a refresh has
+     replaced the token. So a server that
+     refuses every token it is sent costs one refresh per wait, not one per launch, and
+     Settings shows why. The count starts again when a 75% refresh succeeds, when a
+     sign-in completes, and at `start()`. A refusal ends a sign-in only when the record
+     has no refresh token (step 10). Otherwise only the authorization server's answer
+     does.
    - A refresh uses the client the record names, read from the record itself. While the
      record is held, the service does not drop that client's registration (step 2).
    - `sign_in_again`: the record is removed from the store and from memory, and the
@@ -150,10 +183,13 @@ Not here: routes, the event, the transports, Settings.
      `renewing` once the access token has expired.
    - Only connections in use are refreshed.
 10. **`noteRefused(target)`.** A server refused the current token. The connection is
-    `renewing` and one refresh starts. With no refresh token it is `signed_out`.
-11. **`signOut(id)`.** Drops a pending sign-in and the timers, calls `revoke` with a 5
-    second limit, removes the record from the store and from memory, and reports the
-    change. The registration is kept, and is no longer named unless another record or a
+    `renewing`, `view()` carries the `refused` reason, and a refresh is asked for
+    (step 9). With no refresh token the record is removed (step 8) and the connection is
+    `signed_out`.
+11. **`signOut(id)`.** Drops a pending sign-in and the timers, removes the record
+    (step 8), calls `revoke` for the pair it held, with a 5 second limit, and reports the
+    change. A refresh that is still waiting on the token endpoint then finds its record
+    gone, keeps nothing and revokes what it received (step 8). The registration is kept, and is no longer named unless another record or a
     pending sign-in names it.
 12. **`setInUse(list)`, `view()` and `onChanged`.** `setInUse` takes each target with the
     ids of the shapers that name it. `view()` lists every connection, sorted, as
@@ -192,7 +228,7 @@ Not here: routes, the event, the transports, Settings.
 ## Tests and verification
 
 `test/shaping-sign-in-service.test.ts`, with the Phase 1 fixture, a fake clock and timers,
-the memory store, and a store that can be made to fail.
+the memory store, and a store that can be made to fail or to wait.
 
 - A whole sign-in: `begin`, the fixture's redirect, `complete`, then `accessToken` answers
   the fake token and `view()` says `signed_in`.
@@ -236,6 +272,25 @@ the memory store, and a store that can be made to fail.
   the fixture's token endpoint. The rotated pair is in the store before `accessToken`
   returns it. A failing write leaves `storage` as `memory`, with the reason.
 - The retry schedule and `sign_in_again`.
+- **Sign-out during a refresh.** The fixture holds its `/token` reply. `signOut` runs, and
+  then the reply is released. The connection is `signed_out`, the store holds no record,
+  `accessToken` answers `signedOut`, and the fixture's `/revoke` was called for the
+  record that was signed out and again for the tokens the held reply issued.
+- **A removal and a sign-in that cross.** With the store made to wait, `accessToken`
+  removes an expired record that has no refresh token while a new sign-in for the same
+  connection is being stored. The store ends with the new record, and so does memory.
+- **A token endpoint that is down.** After a `retry` answer, calls to `accessToken` and
+  to `noteRefused` before the next try send no request to the token endpoint. The next
+  request is the scheduled one.
+- **A server that refuses every token.** `noteRefused` is called after every refresh.
+  The token endpoint sees one refresh at once and the next ones 1, 2, 4, 8 and 15
+  minutes apart, however many refusals come in between. During each wait `view()` says
+  `renewing` with the `refused` reason, and `accessToken` hands out no token. After a
+  75% refresh succeeds, the next refusal's refresh runs at once again.
+- **A refresh and a new sign-in that cross.** A refresh's reply is held while a new
+  sign-in for the same connection completes, and is then released. The store and memory
+  hold the new sign-in's record, and the fixture's `/revoke` was called for the tokens
+  the held reply issued.
 - `client_rejected`: two connections share the client, and a third sign-in that reuses it
   is pending. Both records are removed, both connections are `signed_out`, the pending
   sign-in is gone, and the key no longer holds that registration.
@@ -260,6 +315,11 @@ Also `test/settings-backup-coverage.test.ts` for the new key. Run those files,
 
 - A sign-in completes against the fixture, and its record is written before it is used.
 - Concurrent refresh triggers produce exactly one refresh request.
+- A sign-out, a removal or a new sign-in is never undone by a refresh or a store call
+  that started before it. A refresh that loses that way keeps nothing and revokes what
+  it received.
+- A call starts no refresh while a later try is set, and refusals cost at most one
+  refresh per wait of the retry schedule.
 - Two connections with different scopes on one authorization server both sign in, each
   with its own registration, and a third with a scope already registered reuses it.
 - With 16 registrations held, a sign-in that needs another drops only a registration that
@@ -293,7 +353,8 @@ their own status.
   writes the target into every record and reads it back at start.
 - Phase 3: answers with `SIGN_IN_REASONS` and fills `ShapingSignInView`.
 - Phase 5: `accessToken` is synchronous, so a call never waits. A `401` reaches
-  `noteRefused`.
+  `noteRefused`, which a transport may call on every launch: step 9 bounds what that
+  starts.
 - Phase 6: serves the redirect URI built here, and also calls `setInUse` when Settings
   reads the shapers folder, which this phase cannot see. It answers the two refusals of
   step 2 with 409 and their reasons.

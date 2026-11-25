@@ -285,7 +285,7 @@ The token read is a memory read. A call never waits on the network or the Keycha
 | Marker, `signed_in` | Sends `Authorization: Bearer <token>` to the server's origin only. The token joins the call's redaction set under the name `sign-in token`. | By the reply |
 | Marker, `signed_out` or `pending` | No request | `unavailable`: not signed in, sign in at Settings > Task shaping |
 | Marker, `renewing` | No request | `unavailable`: the sign-in is being renewed |
-| Marker, `signed_in`, the server answers `401` | The request was sent. The service is told and starts one background refresh. No retry inside the call. | `unavailable`: the server refused the sign-in |
+| Marker, `signed_in`, the server answers `401` | The request was sent. The service is told and asks for one background refresh, which the rules under "Refresh" may delay. No retry inside the call. | `unavailable`: the server refused the sign-in |
 
 In every row dispatch continues. The dry run in Settings takes the same path, so a dry run
 proves a sign-in end to end.
@@ -297,9 +297,21 @@ proves a sign-in end to end.
   token that has expired.
 - **Single-flight.** One refresh at a time per connection, inside the daemon, which is the
   only process that holds tokens. Anything that asks while one is running shares it.
+- **Asked for by a call.** A call that finds the token expired, and a server that refuses
+  it, each ask for a refresh. Neither starts one while a later try is already set, so
+  calls made while the token endpoint is down add no request. Refreshes that refusals ask
+  for are spaced 1, 2, 4 and 8 minutes apart, then 15. A server that refuses every token
+  therefore costs one refresh per wait and not one per launch, and the connection reads
+  `renewing` with the reason meanwhile. A refusal does not end a sign-in that has a
+  refresh token: only the authorization server's answer does.
 - **Store first.** The rotated pair is written to the store before it replaces the pair in
   memory. If the write fails, the new pair is used from memory, the status says it is kept
   in memory only, and a restart will need a new sign-in.
+- **In order.** For one connection, a removal clears memory at once and the store follows,
+  one store call at a time in the order they were asked for. A refresh that is still
+  waiting on the token endpoint when its sign-in is signed out, removed or replaced keeps
+  nothing when the reply arrives, and revokes the pair it received. A removal never
+  deletes a record that a later sign-in stored.
 - **Failures.** `invalid_grant`: the tokens are deleted and the connection is `signed_out`
   with "sign in again". `invalid_client` or `unauthorized_client`: the server no
   longer accepts the client, so every sign-in that client obtained ends the same way, and
@@ -453,7 +465,7 @@ is that phase's guide.
 | 1. Flow proof | Mission Control's OAuth client core, run end to end against a loopback mock authorization server with fake values: discovery, registration, PKCE, exchange, refresh, rotation, every refusal. Go or no-go for the rest. | 260 to 340 | Planning PR | 2026-12-04 |
 | 2. Token store | The native Keychain addon, the Keychain store and the memory store, behind one interface | 380 to 480 | Planning PR | 2026-12-04 |
 | 3. Flag and marker | The `shaper-sign-in` flag, the `auth` field, the target accessor, the Settings text for a marked shaper, and a marked shaper answering `unavailable` | 170 to 240 | Planning PR | 2026-12-04 |
-| 4. Sign-in service | Start, finish, sign out, background refresh, status, the client registration key and its limit | 400 to 490 | 1, 2, 3 | 2026-12-09 |
+| 4. Sign-in service | Start, finish, sign out, background refresh, status, the client registration key and its limit | 420 to 510 | 1, 2, 3 | 2026-12-09 |
 | 5. Transports | `mcp` and `http` send the token, redact it, and handle a `401` | 170 to 240 | 4 | 2026-12-14 |
 | 6. Routes and wire | The three routes, the callback page, `signIns`, the event and the snapshot field | 300 to 380 | 4 | 2026-12-14 |
 | 7. Settings and docs | The sign-in control, the Playwright spec, the documentation | 240 to 320 | 5, 6 | 2026-12-17 |

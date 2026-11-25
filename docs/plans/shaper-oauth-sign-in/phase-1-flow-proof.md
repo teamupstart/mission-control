@@ -84,8 +84,8 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
      `invalid_grant`, `invalid_client` or 503; a registration that returns a `client_secret`
      or refuses; metadata with a wrong `issuer`, an endpoint on another origin, no S256 or
      no registration endpoint; a stalled reply; an oversized reply; a redirect to another
-     origin; an `iss` parameter on the redirect; an `/authorize` that waits until the test
-     releases it.
+     origin; an `iss` parameter on the redirect; an `/authorize` or a `/token` that waits
+     until the test releases it.
    - Every request is recorded with its method, path, headers and body.
 2. **`signInFetch`.** Given the origins a sign-in may reach, it refuses any other origin and
    any URL that is not HTTPS or loopback HTTP before a request is made. It sends no cookie,

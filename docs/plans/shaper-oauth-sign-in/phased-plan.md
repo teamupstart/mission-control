@@ -95,6 +95,14 @@ and the SDK. These shaped the split:
     A database restore can take the key back to before a registration that a record
     names. That record still refreshes, because it carries its client's id.
     Phase 4 owns the rule and tests the limit.
+18. **One order per connection, and a bound on refreshes that calls ask for.** A removal
+    clears memory at once and the store follows, one call at a time in the order asked
+    for. A refresh that finishes after its sign-in was signed out, removed or replaced
+    keeps nothing and revokes what it received. A call starts no refresh while a later
+    try is set, and refreshes that refusals ask for follow the same 1, 2, 4, 8 and 15
+    minute waits as failed ones. A refusal does not end a sign-in that has a refresh
+    token. Phase 4 owns both rules and tests them, and Phase 1's fixture can hold a
+    `/token` reply for the first.
 
 ## Size and phase count
 
@@ -105,11 +113,11 @@ Estimated non-test production lines, counting native, shared, daemon and dashboa
 | 1. Flow proof | 260 to 340 |
 | 2. Token store | 380 to 480 |
 | 3. Flag and marker | 170 to 240 |
-| 4. Sign-in service | 400 to 490 |
+| 4. Sign-in service | 420 to 510 |
 | 5. Transports | 170 to 240 |
 | 6. Routes and wire | 300 to 380 |
 | 7. Settings and docs | 240 to 320 |
-| Total | 1,920 to 2,490 |
+| Total | 1,940 to 2,510 |
 
 Why each boundary exists, and why its neighbour is not merged into it:
 
@@ -121,7 +129,8 @@ Why each boundary exists, and why its neighbour is not merged into it:
 - **3 is separate from 4, 5 and 6.** It fixes the schema, the tuples and the flag that all
   three consume. Merged into any one of them, the other two would wait behind it.
 - **4 is separate from 5 and 6.** The service is the largest unit and has the hardest tests
-  (time, rotation, single-flight). With either consumer it passes 550 lines.
+  (time, rotation, single-flight). With either consumer it passes 550 lines. Its upper
+  estimate is at the 500-line target, so nothing more is added to it.
 - **5 and 6 are separate.** One edits the transports, the other the routes and the wire.
   They share no file, and together they pass 500 lines.
 - **7 is separate from 6.** Settings has its own tests and its own browser spec, and with

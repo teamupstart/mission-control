@@ -1383,7 +1383,9 @@ A window that cannot confirm its state during a companion submit must answer a f
 Open the plan form in the foreground dashboard. Say “Steve, first one B, second one A”.
 The badges count decisions in display order, including a final approval question when present.
 A blue microphone badge marks a voice selection. Say the position again to change it, or
-edit the same draft by hand. A named command selects that agent’s open plan even when a Report
+edit the same draft by hand. If you change a decision while a spoken choice is being matched,
+your newer choice wins. Other decisions from the same utterance can still be filled.
+A named command selects that agent’s open plan even when a Report
 has focus. If the agent has multiple open plans, focus the one you want. With the form focused, “reply” works in place of the name.
 
 Say “Steve, submit” or click Submit to send the current draft. If a spoken choice is still

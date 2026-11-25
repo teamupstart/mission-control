@@ -2,6 +2,52 @@ import { expect, test } from "../fixtures/test.ts";
 import { captureCard, postCachePlan, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say } from "../fixtures/voice.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER } from "../../src/shared/voice-answers.ts";
+
+test("a delayed voice fill preserves a newer manual choice and submits the other spoken choices", async ({ dashboard: page, daemon }) => {
+  await page.setViewportSize({ width: 1500, height: 1500 });
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", event => {
+          if (!event.isTrusted || JSON.parse(event.data).type !== "voice_form_fill") return;
+          event.stopImmediatePropagation();
+          document.documentElement.dataset.fillBuffered = "true";
+          window.addEventListener("release-plan-fill", () => this.dispatchEvent(new MessageEvent("message", { data: event.data })), { once: true });
+        });
+      }
+    };
+  });
+  await page.reload();
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const plan = await postCachePlan(daemon, steve);
+  const reported = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && r.request().headers()[VOICE_CARDS_OBSERVED_HEADER] !== undefined &&
+    r.request().postDataJSON().cards.some((c: { id: string }) => c.id === plan));
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  const headers = (await reported).request().headers();
+  const dialog = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(dialog);
+  const card = dialog.locator(".review-plan-decisions");
+  await card.getByRole("radio", { name: /No$/ }).check();
+  // The fixture speaks instantly. Put the earlier click outside the measured clock uncertainty.
+  const afterEarlierClick = performance.now() + Number(headers[VOICE_CARDS_OBSERVED_HEADER]) - Number(headers[VOICE_CARDS_EARLIEST_HEADER]) + 2;
+  await expect.poll(() => performance.now()).toBeGreaterThan(afterEarlierClick);
+  await say(daemon, "Steve, first one B, second one A, third one A");
+  await expect(page.locator("html")).toHaveAttribute("data-fill-buffered", "true");
+  await card.getByRole("radio", { name: /SQLite/ }).check();
+  await page.evaluate(() => window.dispatchEvent(new Event("release-plan-fill")));
+  await expect(card.locator(".pd-ord.is-voice")).toHaveText(["2nd", "3rd"]);
+  await expect(card.getByRole("radio", { name: /SQLite/ })).toBeChecked();
+  await page.mouse.move(0, 0);
+  await captureCard(card, "manual-choice-after-capture");
+  await say(daemon, "Steve, submit");
+  await expect.poll(async () => {
+    const review = await (await page.request.get(daemon.baseURL + "/api/reviews/" + plan)).json();
+    return review.selections?.map((answer: { selected: string[] }) => answer.selected);
+  }).toEqual([["a"], ["a"], ["a"]]);
+});
 
 test("ordinal badges mirror fills into the editable draft and only a complete, open form submits", async ({ dashboard: page, daemon }) => {
   test.setTimeout(120_000);

@@ -119,6 +119,7 @@ test("named commands require focus among two matching plans while unnamed replie
 });
 
 test("a spoken submit refuses a complete form during an earlier async fill and a retry uses the new choice", async t => {
+  mockCaptureClock(t);
   const { review, fill } = await form(1);
   await say("Steve, first one A");
   assert.deepEqual(fill()?.selections[0]?.selected, ["a"]);
@@ -132,12 +133,16 @@ test("a spoken submit refuses a complete form during an earlier async fill and a
     return { rung: "job", answers: [{ choice: "b", confidence: 1 }], detail: "delayed match" };
   });
   let submitId = "";
+  let fillCapture: number | undefined;
   t.after(registry.subscribe(event => {
     if (event.type === "voice_form_submit") submitId = event.submitId;
+    if (event.type === "voice_form_fill") fillCapture = event.capturedAtMonotonicMs;
   }));
+  const capture = performance.now();
   const changing = say("Steve, first one the alternative database");
   await started;
   try {
+    t.mock.timers.tick(500);
     await say("Steve, submit");
     assert.equal(submitId, "");
     assert.match(cards.at(-1)?.detail ?? "", /still matching/i);
@@ -146,6 +151,7 @@ test("a spoken submit refuses a complete form during an earlier async fill and a
     release();
     await changing;
   }
+  assert.ok(fillCapture !== undefined && Math.abs(fillCapture - capture) <= 2, "the dashboard receives the time of speech before the slow match");
   assert.deepEqual(fill()?.selections[0]?.selected, ["b"]);
   await say("Steve, submit");
   assert.ok(submitId);

@@ -564,7 +564,8 @@ export class VoiceRouter {
         return !signal.aborted && live?.windowId === windowId && planVoiceTarget(live.cards, address)?.id === form.id &&
           inbox.formsEnabled() && inbox.forms().some(f => f.id === form.id);
       };
-      if (this.openCards.captureTiming(time.openedAt, this.questionTime(time)) === "before") return notice("The open card changed. Say it again.", "question-notice");
+      const capturedAtMonotonicMs = this.questionTime(time);
+      if (this.openCards.captureTiming(time.openedAt, capturedAtMonotonicMs) === "before" || !Number.isFinite(capturedAtMonotonicMs)) return notice("The open card changed. Say it again.", "question-notice");
       entry.rule = submit ? "form-submit" : "form-fill";
       entry.outcome = "control";
       if (submit) {
@@ -578,12 +579,12 @@ export class VoiceRouter {
         inbox.emit({ type: "voice_form_submit", address, windowId, reviewId: form.id, submitId });
         return true;
       }
-      const match = this.forms.beginFill(form.id, this.questionTime(time));
+      const match = this.forms.beginFill(form.id, capturedAtMonotonicMs);
       return formChoices(form, body, this.decider, owner, signal).then(selections => {
         if (!selections || !current()) return notice("No matching decision. Say its position and option letter.", "question-notice");
         const changes = match.apply(selections);
         if (!changes) return notice("Open the plan form and say your selection again.", "question-notice");
-        if (changes.length) inbox.emit({ type: "voice_form_fill", address, windowId, reviewId: form.id, selections: changes });
+        if (changes.length) inbox.emit({ type: "voice_form_fill", address, windowId, reviewId: form.id, selections: changes, capturedAtMonotonicMs });
         return true;
       }).finally(match.finish);
     }

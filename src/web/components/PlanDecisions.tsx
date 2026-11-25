@@ -157,9 +157,16 @@ export function DecisionForm({
     return answers[id] ?? EMPTY;
   }
 
+  function editDecision(id: string, changesChoice: boolean, change: (answer: Answer) => Answer): void {
+    const manualChoiceAt = planAddress && changesChoice ? performance.timeOrigin + performance.now() : undefined;
+    setAnswers(prev => {
+      const answer = change(prev[id] ?? EMPTY);
+      return { ...prev, [id]: manualChoiceAt === undefined ? answer : { ...answer, manualChoiceAt } };
+    });
+  }
+
   function choose(d: PlanDecision, optionId: string, checked: boolean): void {
-    setAnswers((prev) => {
-      const cur = prev[d.id] ?? EMPTY;
+    editDecision(d.id, true, (cur) => {
       let selected: string[];
       if (!checked) {
         selected = cur.selected.filter((x) => x !== optionId);
@@ -168,7 +175,7 @@ export function DecisionForm({
       } else {
         selected = [optionId]; // radio: single choice replaces
       }
-      return { ...prev, [d.id]: { ...cur, selected, chat: false, voice: false } };
+      return { ...cur, selected, chat: false, voice: false };
     });
   }
 
@@ -185,18 +192,14 @@ export function DecisionForm({
   }
 
   function moveToChat(id: string, chat: boolean): void {
-    setAnswers((prev) => {
-      const cur = prev[id] ?? EMPTY;
-      // Moving replaces the picks, as any other row in the group would, but keeps the typed
-      // text: it is context for the conversation, not a competing answer.
-      return { ...prev, [id]: chat ? { ...cur, selected: [], chat: true, voice: false } : { ...cur, chat: false } };
-    });
+    // Moving replaces the picks but keeps the typed context for the conversation.
+    editDecision(id, true, cur => chat ? { ...cur, selected: [], chat: true, voice: false } : { ...cur, chat: false });
   }
 
   function setText(id: string, field: "other" | "note", text: string): void {
     // Typing never changes the pick. The box is an answer of its own only when nothing is
     // picked; beside a pick, or beside "Chat about it", it is context for that choice.
-    setAnswers((prev) => ({ ...prev, [id]: { ...(prev[id] ?? EMPTY), [field]: text } }));
+    editDecision(id, field === "other", cur => ({ ...cur, [field]: text }));
   }
 
   // Built once per render and used for both the completeness test and the submit, so the

@@ -66,7 +66,7 @@ export function planVoiceTarget(cards: DrawnVoiceCard[], address: Address) {
 }
 
 export type VoiceInboxEvent = { address: Address } & (
-  | ({ type: "voice_form_fill"; windowId: string } & VoiceFormFill)
+  | ({ type: "voice_form_fill"; windowId: string; capturedAtMonotonicMs: number } & VoiceFormFill)
   | { type: "voice_form_submit"; reviewId: string; submitId: string; windowId: string }
   | { type: "voice_inbox_action"; windowId: string; cardId: string; kind: "report" | "stuck"; action: InboxActionId; text: string; requestId: string });
 

@@ -1,4 +1,3 @@
-import { receiveInboxEvent } from "./lib/voice-inbox.ts";
 import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
@@ -899,7 +898,7 @@ export function useEventStream(): MissionState {
         case "voice_form_fill":
         case "voice_form_submit":
         case "voice_inbox_action":
-          if (msg.windowId === windowId) void receiveInboxEvent(msg).catch(() => {});
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-inbox-event", { detail: msg }));
           break;
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);

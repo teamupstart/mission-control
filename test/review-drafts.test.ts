@@ -72,6 +72,15 @@ test("clearing one review's draft leaves the others", () => {
   assert.equal(readReviewDraft("r2").note, "keep me");
 });
 
+test("a cleared plan choice retains its manual edit time across a reload until the review settles", () => {
+  const decision = { selected: [], other: "", note: "", manualChoiceAt: 12345 };
+  writeReviewDraft("plan", { ...EMPTY_REVIEW_DRAFT, decisions: { first: decision } });
+  reloadReviewDraftsFromStorage();
+  assert.deepEqual(readReviewDraft("plan").decisions.first, decision);
+  clearReviewDraft("plan");
+  assert.equal(readReviewDraft("plan"), EMPTY_REVIEW_DRAFT);
+});
+
 test("a malformed stored entry is dropped instead of crashing a card", () => {
   backing.set(
     "mission.reviewDrafts",

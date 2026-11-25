@@ -1,7 +1,7 @@
 import { createContext, useEffect, useRef } from "react";
-import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceTimeBounds } from "@shared/voice-answers.ts";
+import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceInboxEvent, type VoiceTimeBounds } from "@shared/voice-answers.ts";
 
-import { drawnVoiceCards } from "./voice-inbox.ts";
+import { drawnVoiceCards, receiveInboxEvent } from "./voice-inbox.ts";
 import { fetchVoiceCardTime } from "./api.ts";
 import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
 
@@ -110,7 +110,13 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       void report();
     };
     window.addEventListener("voice-confirm-focus", confirm);
+    const inboxEvent = (event: Event) => {
+      const message = (event as CustomEvent<VoiceInboxEvent>).detail;
+      if (dashboard && message.windowId === windowId) void receiveInboxEvent(message, cardClock).catch(() => {});
+    };
+    window.addEventListener("voice-inbox-event", inboxEvent);
     return () => {
+      window.removeEventListener("voice-inbox-event", inboxEvent);
       controller.abort();
       clearTimeout(retry);
       clearInterval(heartbeat);

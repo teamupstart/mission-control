@@ -1,6 +1,7 @@
 import type { InboxActionId } from "@shared/inbox.ts";
 import { planVoiceTarget, VOICE_INBOX_ACTION_TIMEOUT_MS, type DrawnVoiceCard, type VoiceInboxEvent } from "@shared/voice-answers.ts";
 import { updateReviewDraft } from "./review-drafts.ts";
+import type { VoiceCardClock } from "./voice-card-clock.ts";
 
 const selector = "[data-voice-question], [data-voice-kind]";
 
@@ -28,7 +29,7 @@ export function drawnVoiceCards() {
 /** Live button callbacks accept dictated text without overwriting the operator's parked draft. */
 export const voiceButtonActions = new WeakMap<HTMLButtonElement, (text: string) => void>();
 
-export async function receiveInboxEvent(event: VoiceInboxEvent) {
+export async function receiveInboxEvent(event: VoiceInboxEvent, clock: VoiceCardClock) {
   if (!document.hasFocus() || document.hidden) return;
   const id = event.type === "voice_inbox_action" ? event.cardId : event.reviewId;
   const findCard = () => drawnCards().find(el => el.dataset.voiceId === id &&
@@ -41,10 +42,16 @@ export async function receiveInboxEvent(event: VoiceInboxEvent) {
   } else if (event.type === "voice_form_fill") {
     updateReviewDraft(id, draft => {
       const decisions = { ...draft.decisions };
-      for (const selection of event.selections) decisions[selection.decisionId] = {
-        ...decisions[selection.decisionId], note: decisions[selection.decisionId]?.note ?? "",
-        other: decisions[selection.decisionId]?.other ?? "", selected: selection.selected, voice: true, chat: false,
-      };
+      for (const selection of event.selections) {
+        const answer = decisions[selection.decisionId];
+        if (answer?.manualChoiceAt !== undefined) {
+          const edited = clock.serverTimeAt(answer.manualChoiceAt - performance.timeOrigin);
+          // Preserve the manual edit when the clocks cannot establish which came first.
+          if (!edited || !(event.capturedAtMonotonicMs > edited.latest)) continue;
+        }
+        decisions[selection.decisionId] = { ...answer, note: answer?.note ?? "",
+          other: answer?.other ?? "", selected: selection.selected, voice: true, chat: false };
+      }
       return { ...draft, decisions };
     });
   } else {

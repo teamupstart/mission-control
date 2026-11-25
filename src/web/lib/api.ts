@@ -2,7 +2,8 @@ import type { ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
-import type { HeardEntry } from "@shared/voice-routing.ts";
+import type { HeardEntry, VoiceCard } from "@shared/voice-routing.ts";
+import { VOICE_DASHBOARD_CONFIRM_MS } from "@shared/voice-answers.ts";
 import type { VoiceConfig, VoiceConfigPatch, VoiceIndicatorId, VoiceInputDevice, VoiceModelState, VoiceProviderIntent, VoiceRevision, VoiceState } from "@shared/voice.ts";
 import type { VoiceDecisionKeyReport, VoiceKeyProvider } from "@shared/voice-decide.ts";
 import {
@@ -2555,14 +2556,17 @@ export const api = {
   voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
     request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
       undefined, editedReview ? { headers: { "x-voice-edit-review": editedReview } } : undefined),
-  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null; answerCompanion?: boolean } = {}) => {
+  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: {
+    candidate?: VoiceCard["candidates"][number]; deadline?: number | null; answerCompanion?: boolean;
+  } = {}) => {
     // Leave the transport alive through the possible delivery window, plus a short
     // grace period for the reply. The card can offer a retry independently.
     const remaining = options.deadline == null ? 0 : Math.max(0, options.deadline - performance.now());
-    const signal = AbortSignal.timeout(Math.ceil(remaining) + 2000);
+    const confirmation = options.candidate?.kind === "question" ? VOICE_DASHBOARD_CONFIRM_MS : 0;
+    const signal = AbortSignal.timeout(Math.max(Math.ceil(remaining), confirmation) + 2000);
     const source = options.answerCompanion && action === "send-now" ? "?source=card" : "";
     const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}${source}`,
-      options.candidateId ? { id: options.candidateId } : undefined, { signal });
+      options.candidate ? { id: options.candidate.id } : undefined, { signal });
     return signal.aborted ? { ok: false, error: "The request timed out." } : result;
   },
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),

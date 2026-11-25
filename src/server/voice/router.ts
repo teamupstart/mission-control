@@ -1,4 +1,4 @@
-import type { VoiceAnswer } from "@shared/voice-answers.ts";
+import { VOICE_DASHBOARD_CONFIRM_MS, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
@@ -493,7 +493,7 @@ export class VoiceRouter {
   }
 
   private confirmationSignal(signal?: AbortSignal): AbortSignal {
-    const signals = [this.lifetime.signal, AbortSignal.timeout(3000)];
+    const signals = [this.lifetime.signal, AbortSignal.timeout(VOICE_DASHBOARD_CONFIRM_MS)];
     if (signal) signals.push(signal);
     return AbortSignal.any(signals);
   }

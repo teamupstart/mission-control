@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { VOICE_DASHBOARD_CONFIRM_MS } from "../../src/shared/voice-answers.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
@@ -646,6 +647,48 @@ test("a bare pick can be retried after the dashboard switches to standalone with
     await expect(modal.locator(".review").filter({ hasText: title })).toBeFocused();
     await expect(picker).toHaveCount(0);
   } finally { release.resolve(); }
+});
+
+test("a bare pick waits for dashboard confirmation beyond two seconds", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "Which benchmark runs first?";
+  await file(page, daemon, steve.cwd, title);
+  await say(daemon, "Steve, answer");
+  // Delay the dashboard's receipt of the daemon challenge. The HTTP pick stays
+  // in flight until the dashboard has both received it and focused the card.
+  const budget = Promise.withResolvers<number>();
+  await page.exposeFunction("observePickBudget", budget.resolve);
+  await page.evaluate(() => {
+    const deadlines = new WeakMap<AbortSignal, number>();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    AbortSignal.timeout = ms => {
+      const signal = timeout(ms);
+      deadlines.set(signal, ms);
+      return signal;
+    };
+    const fetch = window.fetch.bind(window);
+    window.fetch = (url, init) => {
+      if (String(url).endsWith("/pick") && init?.signal) {
+        void (window as Window & { observePickBudget(ms: number): Promise<void> }).observePickBudget(deadlines.get(init.signal) ?? 0);
+      }
+      return fetch(url, init);
+    };
+    window.addEventListener("voice-confirm-focus", event => {
+      event.stopImmediatePropagation();
+      const detail = (event as CustomEvent).detail;
+      window.setTimeout(() => window.dispatchEvent(new CustomEvent("voice-confirm-focus", { detail })), 2200);
+    }, { capture: true, once: true });
+  });
+  const picked = page.waitForRequest(req => req.url().endsWith("/pick"));
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  await picker.getByRole("button", { name: title, exact: false }).click();
+  expect(await budget.promise).toBeGreaterThan(VOICE_DASHBOARD_CONFIRM_MS);
+  expect((await (await picked).response())?.status()).toBe(200);
+  const modal = page.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(modal);
+  await expect(modal.locator(".review").filter({ hasText: title })).toBeFocused();
+  await expect(picker).toHaveCount(0);
 });
 
 test("a suspended dashboard releases a confirmed foreground reply without waiting for the full timeout", async ({ dashboard: background, daemon }) => {

@@ -198,11 +198,11 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         {card.candidates.map(c => {
           if (c.kind === "question") return <Tooltip key={c.id} label="Choose this question for your voice reply">
             <button type="button" className="vc-roster" disabled={busy}
-              onClick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidateId: c.id }))}><span>{c.title}</span><span className="vc-meta">{c.detail}</span></button>
+              onClick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidate: c }))}><span>{c.title}</span><span className="vc-meta">{c.detail}</span></button>
           </Tooltip>;
           const target = actions.roster.find(t => t.key === (c.target?.key ?? c.id)) ?? c.target;
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
-            pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidateId: c.id }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
+            pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidate: c }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
         })}
         <div className="vc-row"><span className="vc-grow vc-hint">{card.candidates[0]?.kind === "question" ? (card.detail ?? "Say the ordinal, or click a question.") : "Say the name again, or click a row."} <q>Cancel</q> drops it.</span>{cancel}</div></>;
       break;

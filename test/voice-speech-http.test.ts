@@ -81,8 +81,8 @@ function player(owner: string = listenerId, server = app) {
   };
 }
 
-async function expectReplacementCapture() {
-  const replacement = player(crypto.randomUUID());
+async function expectReplacementCapture(server = app) {
+  const replacement = player(crypto.randomUUID(), server);
   assert.equal((await replacement.hello()).status, 200);
   assert.equal((await replacement.poll()).capture, true);
 }
@@ -1270,7 +1270,8 @@ test("Linux monitor termination keeps playing capture held in the live superviso
   assert.deepEqual((await peer.poll(instance)).speak, { id, stop: true });
   process.kill(pid, "SIGKILL");
   await t.waitFor(() => assert.deepEqual(exits, [instance]));
-  assert.equal((await peer.poll(instance)).capture, true);
+  assert.equal((await peer.hello(instance)).status, 409);
+  await expectReplacementCapture(server);
 });
 
 test("a same-account signing file is rejected even when owner-only", () => {

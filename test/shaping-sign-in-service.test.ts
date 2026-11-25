@@ -27,7 +27,7 @@ const { connectionId } = await import("../src/server/shaping/sign-in/connection.
 const flow = await import("../src/server/shaping/sign-in/flow.ts");
 const { createMemorySignInStore, SignInStoreError } = await import("../src/server/shaping/sign-in/store.ts");
 const {
-  BEGIN_DEADLINE_MS, PENDING_SIGN_INS, REVOKE_DEADLINE_MS, STOP_DEADLINE_MS, PENDING_SIGN_IN_MS, SIGN_IN_BEGIN_REFUSALS, SIGN_IN_COMPLETE_REFUSALS, createShaperSignInService,
+  BEGIN_DEADLINE_MS, MAX_TIMER_MS, PENDING_SIGN_INS, REVOKE_DEADLINE_MS, STOP_DEADLINE_MS, PENDING_SIGN_IN_MS, SIGN_IN_BEGIN_REFUSALS, SIGN_IN_COMPLETE_REFUSALS, createShaperSignInService,
 } = await import("../src/server/shaping/sign-in/service.ts");
 const { startFakeOAuthServer } = await import("./fixtures/fake-oauth-server.mjs");
 
@@ -1058,6 +1058,42 @@ test("a sign-out while a second, overlapping load is still reading keeps that re
   assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
   assert.equal(viewOf(second, id)?.state, "signed_out");
   assert.equal(await records.read(id), null, "and the stored record is removed");
+});
+
+test("a long-lived token never sets a timer longer than a day, and still refreshes and expires on schedule", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  const DAY = 24 * HOUR;
+  const seeded = (n: number, scope: string, refreshToken: string | null) => {
+    const { id, record } = seededRecord(fake, n, `fake-seeded-client-${n}`, scope);
+    return { id, target: record.target, record: { ...record, refreshToken, expiresAt: NOW + 90 * DAY } };
+  };
+  // Refreshable and in use: due at 75%, day 67.5. No refresh token: removed at expiry, day 90.
+  // Refreshable and unused: never refreshed, but woken to report its expiry.
+  const inUse = seeded(1, "mcp:long-in-use", "fake-seeded-refresh-1");
+  const noRefresh = seeded(2, "mcp:long-no-refresh", null);
+  const unused = seeded(3, "mcp:long-unused", "fake-seeded-refresh-3");
+  for (const entry of [inUse, noRefresh, unused]) await records.write(entry.id, entry.record);
+  const clock = new FakeClock();
+  const h = await harness(t, { fake, clock, store: controlledStore("memory", records), inUse: [use(inUse.target)] });
+  const longest = () => Math.max(0, ...clock.live().map((timer) => timer.at - clock.t));
+  assert.ok(clock.live().length >= 3);
+  assert.ok(longest() <= MAX_TIMER_MS, `a timer of ${longest()} ms`);
+
+  const from = fake.requests.length;
+  await clock.advance(67 * DAY);
+  assert.equal(refreshesSeen(fake, from).length, 0, "nothing before 75% of the lifetime");
+  assert.ok(longest() <= MAX_TIMER_MS);
+  assert.equal(viewOf(h, unused.id)?.state, "signed_in");
+  await clock.advance(DAY);
+  assert.equal(refreshesSeen(fake, from).length, 1, "the in-use connection refreshed at day 67.5");
+  await clock.advance(22 * DAY);
+  assert.equal(viewOf(h, noRefresh.id), undefined, "the record with no refresh token was removed at expiry");
+  assert.equal(await records.read(noRefresh.id), null);
+  assert.equal(viewOf(h, unused.id)?.state, "renewing", "the unused connection's expiry was reported");
+  assert.equal(refreshesSeen(fake, from).length, 1, "the unused connection was never refreshed");
+  assert.ok(longest() <= MAX_TIMER_MS);
 });
 
 test("every row of the accessToken table", async (t) => {

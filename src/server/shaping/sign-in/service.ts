@@ -39,6 +39,11 @@ export const BEGIN_DEADLINE_MS = 20_000;
 export const REVOKE_DEADLINE_MS = 5_000;
 /** How long `stop` waits for work in flight. */
 export const STOP_DEADLINE_MS = 10_000;
+/**
+ * The longest a timer is set for. Node fires any `setTimeout` longer than 2^31-1 ms (about 24.8
+ * days) after 1 ms, so a long-lived token's timer would spin. A timer that wakes early re-plans.
+ */
+export const MAX_TIMER_MS = 24 * 60 * 60_000;
 /** A refresh is due at this share of the access token's lifetime. */
 export const REFRESH_AT = 0.75;
 /** The waits between retried refreshes, and between refreshes that refusals ask for. The last repeats. */
@@ -340,7 +345,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     let wake = conn.nextAt !== null && (removal || isInUse(conn.id)) ? conn.nextAt : Infinity;
     if (record.expiresAt !== null && record.expiresAt > at) wake = Math.min(wake, record.expiresAt);
     if (wake === Infinity) return;
-    conn.timer = setTimer(() => fire(conn), Math.max(0, wake - at));
+    conn.timer = setTimer(() => fire(conn), Math.min(Math.max(0, wake - at), MAX_TIMER_MS));
     conn.timer.unref?.();
   };
 
@@ -357,7 +362,11 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       remove(conn, "signInAgain");
       return;
     }
-    if (!isInUse(conn.id)) return;
+    // Not refreshed while no shaper uses it; still woken to report its expiry.
+    if (!isInUse(conn.id)) {
+      plan(conn);
+      return;
+    }
     runRefresh(conn, conn.held ?? "due");
   };
 

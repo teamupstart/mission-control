@@ -4,8 +4,8 @@ import { getAppConfig, setAppConfig } from "./db.ts";
 
 /**
  * Persist an owner's validated patch result while keeping fields that this build dropped
- * or normalized on read. The owner still decides which fields its patch replaces and
- * which it merges. Full replacements and snapshot restores use their existing writer.
+ * or normalized on read. Pass the keys of the fields the owner merged to retain their
+ * nested siblings. Full replacements and snapshot restores use their existing writer.
  */
 export function persistConfigPatch<Entry extends AppConfigEntry>(
   entry: Entry, before: object, next: AppConfigInput<Entry>,

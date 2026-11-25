@@ -8,8 +8,13 @@ import { ACTIONS } from "../src/shared/keyboard-settings.ts";
 import { ALL_SETTINGS_CONTROLS } from "../src/shared/settings-controls.ts";
 import { SETTINGS_VALUE_MAX_BYTES, settingsFailure } from "../src/shared/settings-mcp.ts";
 import { TOPBAR_ITEMS } from "../src/shared/topbar-items-settings.ts";
+import { getAppConfig, setAppConfig } from "../src/server/db.ts";
+import { setForemanConfig } from "../src/server/foreman/config.ts";
+import { setHarnessesConfig } from "../src/server/harnesses.ts";
+import { setLlmConfig } from "../src/server/llm/config.ts";
 import { dispatchSetting } from "../src/server/settings-dispatcher.ts";
 import { typedSettings } from "../src/server/session-settings-owners.ts";
+import { setTerminalsConfig } from "../src/server/terminals-config.ts";
 import { bindTypedSettings, field } from "../src/server/typed-settings.ts";
 
 const unused = (): never => assert.fail("coverage must inspect declarations without mutating settings");
@@ -120,4 +125,45 @@ test("typed replacement rejects stripped, inherited and oversized input before w
   }
   assert.deepEqual(dispatch({ ...update, value: { density: "x".repeat(SETTINGS_VALUE_MAX_BYTES) } }),
     settingsFailure("value_too_large"));
+});
+
+test("nested owner patches preserve stored siblings from a newer build", async (t) => {
+  await t.test("Harnesses preserves an unknown advisor field and honors an override removal", () => {
+    const entry = APP_CONFIG_ENTRIES.harnesses;
+    setAppConfig(entry, {
+      advisor: { claude: { default: "sonnet", overrides: { "claude-opus-5": "off" }, futureOption: true } },
+    } as never);
+    const next = setHarnessesConfig({ advisor: { claude: { overrides: { "claude-opus-5": null } } } });
+    assert.deepEqual(next.advisor.claude, { default: "sonnet", overrides: {} });
+    assert.deepEqual(getAppConfig(entry)?.advisor.claude, { default: "sonnet", overrides: {}, futureOption: true });
+  });
+
+  await t.test("Foreman preserves an unrecognized effort when another role is edited", () => {
+    const entry = APP_CONFIG_ENTRIES.foreman;
+    setAppConfig(entry, { efforts: { verify: "future-effort" } } as never);
+    const next = setForemanConfig({ efforts: { review: "high" } });
+    assert.deepEqual(next.efforts, { verify: null, review: "high" });
+    assert.deepEqual(getAppConfig(entry)?.efforts, { verify: "future-effort", review: "high" });
+  });
+
+  await t.test("LLM preserves a stored sibling when a runner change pins a job's provider", () => {
+    const entry = APP_CONFIG_ENTRIES.llm;
+    const futureRunner = { provider: "future-runner" };
+    setAppConfig(entry, {
+      runner: "claude", models: { goal: "claude-sonnet-5" }, runners: { "future-job": futureRunner },
+    } as never);
+    const next = setLlmConfig({ runner: "codex" });
+    assert.equal(next.runners.goal, "claude");
+    assert.deepEqual(getAppConfig(entry)?.runners, { "future-job": futureRunner, goal: "claude" });
+  });
+
+  await t.test("Terminals persists a multiplexer added by a newer build beside the edited row", () => {
+    const entry = APP_CONFIG_ENTRIES.terminals;
+    setAppConfig(entry, { multiplexerTerminal: { tmux: "ghostty", "future-mux": "future-emulator" } } as never);
+    const next = setTerminalsConfig({ multiplexerTerminal: { tmux: "wezterm" } });
+    const stored = getAppConfig(entry)?.multiplexerTerminal;
+    assert.equal(next.multiplexerTerminal.tmux, "wezterm");
+    assert.equal(stored?.tmux, "wezterm");
+    assert.equal((stored as Record<string, unknown>)["future-mux"], "future-emulator");
+  });
 });

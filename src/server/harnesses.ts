@@ -70,13 +70,13 @@ export class HarnessesConfigError extends Error {}
 
 export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig {
   const cur = getHarnessesConfig();
-  const merged = mergeKindDefaults(cur.kindDefaults, patch.kindDefaults);
+  const kindDefaults = mergeKindDefaults(cur.kindDefaults, patch.kindDefaults);
   // Judged on the MERGE, which is the only place it can be judged. The patch schema catches
   // the contradiction stated in one write (`agent: null` beside a model), but a patch naming
   // only a model is not contradictory on its own - it depends entirely on what the row it
   // lands on already holds. Refused rather than silently dropped by the read transform: an
   // API client that saved a model and got a 200 back has been told it worked.
-  for (const [kind, row] of Object.entries(merged)) {
+  for (const [kind, row] of Object.entries(kindDefaults)) {
     if (row.model && row.agent === null) {
       throw new HarnessesConfigError(
         `the ${kind} kind inherits its agent, so it cannot pin the model ${row.model}`,
@@ -109,17 +109,16 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
       }
     }
   }
-  const next = HarnessesConfigSchema.parse({
-    ...cur,
-    ...patch,
+  const merged = {
     advisor,
     defaultModel: { ...cur.defaultModel, ...patch.defaultModel },
     defaultEffort: { ...cur.defaultEffort, ...patch.defaultEffort },
     sessionRuntime: { ...cur.sessionRuntime, ...patch.sessionRuntime },
     terminalBackend: { ...cur.terminalBackend, ...patch.terminalBackend },
-    kindDefaults: merged,
-  });
-  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, ["advisor", "defaultModel", "defaultEffort", "sessionRuntime", "terminalBackend", "kindDefaults"]);
+    kindDefaults,
+  };
+  const next = HarnessesConfigSchema.parse({ ...cur, ...patch, ...merged });
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, Object.keys(merged));
   return next;
 }
 

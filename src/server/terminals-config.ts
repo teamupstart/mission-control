@@ -43,12 +43,11 @@ export function getTerminalsConfig(): TerminalsConfig {
  */
 export function setTerminalsConfig(patch: TerminalsConfigPatch): TerminalsConfig {
   const cur = getTerminalsConfig();
-  const next = TerminalsConfigSchema.parse({
-    ...cur,
-    ...patch,
+  const merged = {
     multiplexerTerminal: { ...cur.multiplexerTerminal, ...patch.multiplexerTerminal },
-  });
-  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, ["multiplexerTerminal"]);
+  };
+  const next = TerminalsConfigSchema.parse({ ...cur, ...patch, ...merged });
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, Object.keys(merged));
   return next;
 }
 

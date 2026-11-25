@@ -4,7 +4,7 @@ import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry
 import { featureEnabled } from "../feature-flags/index.ts";
 import { workflowPublicationTree } from "@shared/workflow-publication.ts";
 import { CodeRabbitReviewSummarySchema } from "@shared/protocol.ts";
-import { CODERABBIT_ALLOWANCE_REMEDY, resolveCodeRabbitComparison } from "./coderabbit.ts";
+import { resolveCodeRabbitComparison } from "./coderabbit.ts";
 import { defaultWorkflowCommandMaxRuns, emptyWorkflowCommandView } from "@shared/workflow.ts";
 import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
@@ -488,6 +488,7 @@ export class WorkflowEngine {
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = new Set<Promise<void>>();
   private scheduledAttempts = new Set<string>();
+  private readonly scheduledCodeRabbitRuns = new Set<string>();
   /**
    * One abort controller per check attempt from the moment it is claimed until it settles.
    * Cancelling a run aborts its attempts' controllers, and the dependency claim follows the
@@ -985,14 +986,27 @@ export class WorkflowEngine {
       const ready = this.store.listRunnableAttempts(schedulingNow);
       for (const attempt of ready) {
         if (this.scheduledAttempts.has(attempt.id)) continue;
+        const resolved = this.resolveAttempt(attempt);
+        const target = resolved?.node;
+        // A CodeRabbit reservation can be returned. Let it settle before a sibling in
+        // this run decides the allowance is exhausted, without holding a check slot to wait.
+        const codeRabbitRunId = resolved && target?.kind === "check" && target.slot === "coderabbit"
+          ? resolved.run.id : null;
+        if (codeRabbitRunId && this.scheduledCodeRabbitRuns.has(codeRabbitRunId)) continue;
+        // Honor the persisted retry even during backoff or after restart. Otherwise a
+        // queued sibling could spend the slot that the retry's failed execution returned.
+        if (codeRabbitRunId && resolved && attempt.state === "queued"
+          && this.store.listAttempts(attempt.submissionId).some((pending) =>
+            pending.state === "retry_wait" && resolved.version.graph.nodes.some((node) =>
+              node.id === pending.nodeId && node.kind === "check" && node.slot === "coderabbit"))) continue;
+        if (codeRabbitRunId) this.scheduledCodeRabbitRuns.add(codeRabbitRunId);
         this.scheduledAttempts.add(attempt.id);
         // The limiter is chosen HERE, from the node kind, before either is acquired - not
         // inside `runAttempt`. This gate wraps the whole attempt, so an inner check limiter
         // would still have made every waiting and running check occupy one of the three
         // tool-less model-review slots, which is exactly what a separate budget is for.
-        const target = this.targetNode(attempt);
-        const skipCheckLimit = target?.kind === "check"
-          && this.checkBudgetAlreadySpent(attempt, target);
+        const skipCheckLimit = resolved && target?.kind === "check"
+          && this.checkBudgetAlreadySpent(resolved.run, target);
         const checkLimitHeld = target?.kind === "check" && !skipCheckLimit;
         // The held check slot goes to the attempt, which gives it up while a dependency claim
         // runs and takes one again before its Command spawns.
@@ -1011,6 +1025,7 @@ export class WorkflowEngine {
           .finally(() => {
             this.inFlight.delete(promise);
             this.scheduledAttempts.delete(attempt.id);
+            if (codeRabbitRunId) this.scheduledCodeRabbitRuns.delete(codeRabbitRunId);
             this.wake();
           });
         this.inFlight.add(promise);
@@ -1050,10 +1065,6 @@ export class WorkflowEngine {
     return { submission, run, version, node };
   }
 
-  private targetNode(attempt: WorkflowNodeAttempt): PublishedWorkflowNode | null {
-    return this.resolveAttempt(attempt)?.node ?? null;
-  }
-
   /**
    * Whether this Check can be decided from an allowance a prior attempt already spent.
    *
@@ -1062,16 +1073,14 @@ export class WorkflowEngine {
    * concurrent settings change cannot make an executable Command escape the shared limiter.
    */
   private checkBudgetAlreadySpent(
-    attempt: WorkflowNodeAttempt,
+    run: WorkflowRun,
     node: Extract<PublishedWorkflowNode, { kind: "check" }>,
   ): boolean {
-    const resolved = this.resolveAttempt(attempt);
-    if (!resolved) return false;
     const command = this.workflowCommand(node.slot);
     const spent = this.store.checkRunsSpent(
-      resolved.run.id,
+      run.id,
       node.slot,
-      resolved.run.checkBudgetEpochRound ?? null,
+      run.checkBudgetEpochRound ?? null,
     );
     return checkRunBudgetSpent(
       spent,
@@ -1910,11 +1919,9 @@ export class WorkflowEngine {
       this.onRunChanged(runId);
       return;
     }
-    const exhausted = attempt.attempt >= MAX_INFRA_ATTEMPTS;
-    const allowanceSpent = result.review.remainingRuns === 0;
-    if (exhausted || allowanceSpent) {
+    if (attempt.attempt >= MAX_INFRA_ATTEMPTS) {
       this.handleCheckActionRequired(attempt, runId,
-        `${result.reason}. ${exhausted ? "Automatic connection retry limit reached (3 attempts)" : "CodeRabbit execution allowance exhausted"}. Review remains incomplete. ${allowanceSpent ? CODERABBIT_ALLOWANCE_REMEDY : "Inspect retained output and retry after connectivity recovers"}. No additional credits were authorized.`, result);
+        `${result.reason}. Automatic connection retry limit reached (${MAX_INFRA_ATTEMPTS} attempts). Review remains incomplete. Inspect retained output and retry after connectivity recovers. No additional credits were authorized.`, result);
       return;
     }
     const now = this.now();
@@ -1937,7 +1944,7 @@ export class WorkflowEngine {
     this.wake();
   }
 
-  /** Configuration or consent needs a human correction, never an automatic retry or code fix. */
+  /** Park a check that needs operator action. An unresolved lease takes priority. */
   private handleCheckActionRequired(
     attempt: WorkflowNodeAttempt,
     runId: string,
@@ -1956,6 +1963,7 @@ export class WorkflowEngine {
       ...(details.review ? { review: details.review } : {}),
       ...(details.artifacts ? { artifacts: details.artifacts } : {}),
     }) : undefined }, this.now());
+    if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
     this.store.setSubmissionState(submission.id, "failed", this.now());
     this.store.setRunState(runId, "blocked", "command_action_required", {
       nodeId: attempt.nodeId,

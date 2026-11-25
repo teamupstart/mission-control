@@ -2972,8 +2972,8 @@ for (const [label, firstReply, expected] of [
   assert.equal(store.getRun(`run-${id}`)?.status, "completed");
 });
 
-// A disconnect must retain the review gate across retries, restart and allowance exhaustion.
-for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
+// A disconnect must retain the review gate across retries and restart.
+for (const scenario of ["recover", "limit", "resubmit", "cancel", "vendor-wait", "extended-vendor-wait", "long-vendor-wait"] as const) test(`CodeRabbit connection recovery: ${scenario}`, async (t) => {
   const timerLimit = 2_147_483_647;
   const vendorWaitMs = scenario === "long-vendor-wait" ? timerLimit + 120_000 : 120_000;
   const id = `cr-connection-${scenario}`;
@@ -2982,7 +2982,7 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
   const store = seedSubmission(id, crGraph, { ...context, evidence: { ...context.evidence, coderabbit: yaml } });
   const comparison = store.freezeCodeRabbitComparison(`submission-${id}`, {
     interpreterVersion: 1, yaml, head: "a".repeat(40), baseTip: "b".repeat(40), mergeBase: "c".repeat(40),
-    baseRef: "main", severity: "major", maxRuns: ["allowance", "resubmit"].includes(scenario) ? 1 : 10,
+    baseRef: "main", severity: "major", maxRuns: ["recover", "limit", "resubmit"].includes(scenario) ? 1 : 10,
     timeoutMs: 2700000, ruleRevision: 1, empty: false, error: null,
   });
   let clock = Date.now();
@@ -3001,8 +3001,8 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
         return { kind: "exited", exitCode: recovered ? 0 : 1, output: "", truncatedBytes: 0,
           review: { comparison, status: recovered ? "complete" : "incomplete",
             counts: { critical: 0, major: 0, minor: 0, trivial: 0, info: 0, none: 0 }, titles: [],
-            diagnostic: recovered ? "Complete CodeRabbit review" : "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)",
-            ...(!recovered ? { retryableConnection: true as const } : {}),
+            diagnostic: recovered ? "Complete CodeRabbit review" : scenario === "resubmit" ? "Incomplete coverage" : "CodeRabbit connection failed: WebSocket closed (provider marked recoverable)",
+            ...(!recovered && scenario !== "resubmit" ? { retryableConnection: true as const } : {}),
             ...(["vendor-wait", "long-vendor-wait"].includes(scenario) ? { retryAt: clock + vendorWaitMs } : {}),
           } };
       },
@@ -3011,30 +3011,29 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
   let engine = makeEngine();
   engine.start(); engine.activateSubmission(`submission-${id}`);
   try {
-    if (scenario === "allowance" || scenario === "resubmit") {
+    if (scenario === "resubmit") {
       await waitFor(() => store.getRun(`run-${id}`)?.status === "blocked");
-      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /allowance exhausted/);
+      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /Incomplete coverage/);
       assert.equal(calls, 1);
-      if (scenario === "resubmit") {
-        const repair = store.createRepairSubmission({
-          id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
-          triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
-        });
-        const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
-        store.updateSubmissionCapture(repair.submission.id, {
-          context: workflowJson(captured), evidence: workflowJson(captured.evidence),
-          fingerprint: `${id}-round-2`, status: "running",
-        }, clock);
-        engine.activateSubmission(repair.submission.id);
-        await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
-        assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
-        assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
-        assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
-        assert.equal(calls, 1, "resubmission cannot grant another execution");
-      }
+      const repair = store.createRepairSubmission({
+        id: `submission-${id}-2`, runId: `run-${id}`, round: 2,
+        triggerSource: "manual", triggerKey: `manual:${id}:round-2`, context: {}, evidence: {}, now: clock,
+      });
+      const captured = { ...context, evidence: { ...context.evidence, coderabbit: yaml } };
+      store.updateSubmissionCapture(repair.submission.id, {
+        context: workflowJson(captured), evidence: workflowJson(captured.evidence),
+        fingerprint: `${id}-round-2`, status: "running",
+      }, clock);
+      engine.activateSubmission(repair.submission.id);
+      await waitFor(() => ["blocked", "completed"].includes(store.getRun(`run-${id}`)!.status));
+      assert.equal(store.getRun(`run-${id}`)!.status, "blocked", "a new submission must not skip an incomplete review");
+      assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /review remains incomplete.*allowance is exhausted/);
+      assert.equal(store.listReceipts(repair.submission.id).filter(r => r.edgeId.startsWith("gate-")).length, 0);
+      assert.equal(calls, 1, "resubmission cannot grant another execution");
     } else {
       await waitFor(() => store.latestAttemptForNode(`submission-${id}`, "gate")?.state === "retry_wait");
       const waiting = store.latestAttemptForNode(`submission-${id}`, "gate")!;
+      assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
       assert.ok(waiting.retryAt! >= clock + 30_000);
       assert.ok(waiting.retryAt! <= clock + (["vendor-wait", "long-vendor-wait"].includes(scenario) ? vendorWaitMs + 15_000 : 45_000));
       assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);
@@ -3060,7 +3059,7 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
         assert.equal(deferred.retryAt, extended);
         assert.equal(deferred.startedAt, null);
         assert.equal(calls, 1);
-        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 1);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), 0);
         assert.equal(store.listReceipts(waiting.submissionId).filter(r => r.edgeId.startsWith("gate-")).length, 0);
         clock = extended;
         t.mock.timers.setTime(clock);
@@ -3125,6 +3124,7 @@ for (const scenario of ["recover", "limit", "allowance", "resubmit", "cancel", "
         }
         await waitFor(() => store.getRun(`run-${id}`)?.status === (scenario === "recover" ? "completed" : "blocked"));
         assert.equal(calls, scenario === "recover" ? 2 : 3);
+        assert.equal(store.checkRunsSpent(`run-${id}`, "coderabbit", null), scenario === "recover" ? 1 : 0);
         if (scenario === "limit") {
           assert.match(JSON.stringify(store.getRun(`run-${id}`)?.gateState), /WebSocket closed.*retry limit reached/);
           assert.equal(store.listReceipts(`submission-${id}`).filter(r => r.edgeId.startsWith("gate-")).length, 0);

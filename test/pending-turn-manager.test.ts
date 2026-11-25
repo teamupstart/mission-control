@@ -2409,6 +2409,28 @@ test("a message for a turn stopped inside a question call is never steered, and 
   f.manager.stop();
 });
 
+test("a hand steer refused because a question opened still interrupts when its deadline has passed", async (t) => {
+  // The fallback for a Steer now chosen after three minutes is an interruption whose instant is
+  // already behind it. A refusal re-arms only escalations still ahead, so without arming the due
+  // one the row would wait for some unrelated event while the question stays open.
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  let openQuestion = (): void => {};
+  const f = steeringFixture("late-steer-question", { beforeSteer: async () => openQuestion() });
+  const reviews = new ReviewManager(f.registry);
+  openQuestion = () => { reviews.create(f.id, "input", "Post this?", "Post this?", null, { snoozable: true }); };
+  const key = noteKeyFor(f.registry.getSession(f.id)!);
+  const row = createPendingTurn({ id: "late-steer", noteKey: key, text: "late correction", now: 1_000_000 - 200_000 });
+  f.registry.refreshPendingTurns(key);
+  assert.ok(f.manager.expedite(f.id, row.id, row.revision, "steer"));
+  for (let i = 0; i < 50 && f.sends.length === 0; i++) {
+    t.mock.timers.tick(0);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assert.equal(f.interrupts(), 1, "the overdue interruption was armed after the refused steer");
+  assert.deepEqual(f.sends, ["late correction"]);
+  f.manager.stop();
+});
+
 test("a message a steer could not deliver interrupts at three minutes and keeps the other rows", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 300000 });
   // Steering is refused for as long as the gate is held, which is what a driver that has

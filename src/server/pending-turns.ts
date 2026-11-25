@@ -1150,6 +1150,13 @@ export class PendingTurnManager {
           this.armDrain(key, following.at);
         } else if (recheckAfterWork) {
           this.armDrain(key, this.deps.now() + this.deps.afterWorkRecheckMs);
+        } else if (next.action === "steer" && following?.turn.id === retiredId && following?.action === "interrupt") {
+          // A steer refused because the turn stopped on a question falls back to interruption,
+          // whose instant may already be behind it, and `nextEscalationAt` arms only what is
+          // still ahead. Arming that one interruption is not a retry: the refused steer is no
+          // longer in the schedule, and the attempt is recorded before it is made, so it cannot
+          // repeat.
+          this.armDrain(key, following.at);
         } else {
           const escalation = this.nextEscalationAt(current);
           if (escalation != null) this.armDrain(key, escalation);

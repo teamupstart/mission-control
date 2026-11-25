@@ -31,6 +31,7 @@ export const START_DISPATCH_DESCRIPTION = [
   "Pass the person's words about the task unchanged as `brief`, and what they point to in the conversation (what \"this\" means, files, errors, decisions so far) as `context`. Never put secrets in `context`.",
   "Set `intent` to `now` or `backlog`. Pass `repo` only when the person named one, as a folder name or a path.",
   "If neither the words nor the conversation say what the task should do, ask the person one question first.",
+  "If Claude Code reports that this tool has no handler, tell the person to use /mission-dispatch. Never submit the command for them.",
   "Afterwards, go straight back to the work in progress with no further questions, and never change the session's files, branch or working folder for the dispatch.",
 ].join(" ");
 

@@ -45,7 +45,7 @@ import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feat
 import { parseBody } from "../http-body.ts";
 import { setUiConfig, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
-import { voiceModelManager, type VoiceModelManager } from "./models.ts";
+import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 
 /**
@@ -129,6 +129,7 @@ export function registerVoiceRoutes(
   app: Hono,
   store: VoiceStateStore = voiceStateStore,
   models: VoiceModelManager = voiceModelManager,
+  speechModels: VoiceModelManager = speechModelManager,
 ): void {
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
@@ -240,12 +241,15 @@ export function registerVoiceRoutes(
     if (model && !store.backendSelected(model.backend)) return c.json({ error: "backend_not_selected" }, 409);
     return model ? c.json(model) : c.json({ error: "Select the backend and verify its model in Voice Setup before launching." }, 409);
   });
-  app.post("/api/voice/model/download", gate, (c) => {
-    const result = models.download();
+  const download = (manager: VoiceModelManager) => (c: Context) => {
+    const result = manager.download();
     if (!result.ok) return c.json({ error: "model_unavailable", reason: result.reason, model: result.model }, 409);
     return c.json({ model: result.model }, 202);
-  });
-  app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
+  };
+  app.post("/api/voice/model/download", gate, download(models));
+  app.delete("/api/voice/model/download", gate, async c => c.json({ model: await models.cancel() }));
+  app.post("/api/voice/speech/model/download", gate, download(speechModels));
+  app.delete("/api/voice/speech/model/download", gate, async c => c.json({ model: await speechModels.cancel() }));
 
   const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
   app.get("/api/voice/decision-key", gate, (c) => {
@@ -429,6 +433,7 @@ export function registerVoiceUtteranceRoutes(
   const gate = requireFeature(VOICE_FLAG);
   const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider,
     () => voiceStateStore.hostNowUs(), questions, {
+      resolving() { voiceStateStore.warmForAsk(); },
       unsure(card) {
         if (!featureEnabled(VOICE_FLAG) || !askAloudPossible(getVoiceConfig(), voiceStateStore.state())) return;
         const sentence = askSentence(card.candidates.map(c => c.title));

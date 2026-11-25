@@ -55,6 +55,12 @@ export async function streamRegistryEvents(
   registry: Registry,
   stream: RegistryEventStream,
 ): Promise<void> {
+  const opened = performance.now();
+  const voiceTimestamps = () => {
+    const voiceServerTime = Date.now();
+    // Express both bounds in the current wall-clock epoch even if it changed mid-stream.
+    return { voiceServerTime, voiceStreamStartedAt: voiceServerTime - Math.round(performance.now() - opened) };
+  };
   const queue: ServerEvent[] = [];
   let wake: (() => void) | null = null;
   let subscribed = true;
@@ -78,7 +84,8 @@ export async function streamRegistryEvents(
     const titled = taskTitlePresenter(registry);
     const snapshot = titled.snapshot(registry.snapshot());
     await stream.writeSSE({
-      data: JSON.stringify({ type: "snapshot", ...snapshot, ...snapshotRepoIndexIdentity() } satisfies ServerEvent),
+      data: JSON.stringify({ type: "snapshot", ...snapshot, ...snapshotRepoIndexIdentity(),
+        ...(snapshot.voice && voiceTimestamps()) } satisfies ServerEvent),
     });
 
     while (!stream.aborted) {
@@ -95,8 +102,12 @@ export async function streamRegistryEvents(
         }
       }
       while (queue.length > 0 && !stream.aborted) {
-        const event = queue.shift()!;
-        await stream.writeSSE({ data: JSON.stringify(titled.event(event)) });
+        const event = titled.event(queue.shift()!);
+        // Queued frames may have waited behind a snapshot write. Stamp them as they leave.
+        const frame = event.type === "voice_card"
+          ? { ...event, ...voiceTimestamps() }
+          : event;
+        await stream.writeSSE({ data: JSON.stringify(frame) });
       }
     }
   } finally {

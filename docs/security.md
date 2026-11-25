@@ -77,9 +77,10 @@ be read or parsed, saving and removing keys both fail and preserve its contents.
 
 ## Public product issue reporting
 
-Product reports are public GitHub issues, not private support messages. The agent tool is defined
-for use only after the user explicitly requests a report, shows the daemon-derived public content in an
-`input` review, and calls the mutation route only after a human selects **Submit public issue**.
+Product reports are public GitHub issues. The user can request a draft directly or launch the
+built-in Bug Fix Inspector to request drafts for confirmed defects throughout that run, including
+scheduled passes. The tool shows each daemon-derived draft in an `input` review and calls the
+mutation route only after a human selects **Submit public issue** for that draft.
 Dismissed, orphaned, moved-to-chat, free-form, malformed, and non-human review answers publish
 nothing.
 
@@ -111,10 +112,10 @@ claim prevent double-clicks and replays from creating duplicate issues.
 has no private utility-process channel, so preflight reports that the report must be opened in the
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
-The agent path is separate and token-guarded, and requires an active session. After an explicit
-user request, `report_product_issue` previews through MCP and waits for a human-submitted `input`
+The agent path is separate and token-guarded, and requires an active session. `report_product_issue` previews through MCP and waits for a human-submitted `input`
 review before it publishes. There is no MCP path that publishes without that review. The preview
-does not mint a dashboard grant.
+does not mint a dashboard grant. An agent that has searched a repository for duplicates can pass
+`expectedTarget`. A mismatch with the daemon's preview stops the report before the approval request.
 
 Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
 resolves every locator again immediately before publication, refuses symlinks and paths outside
@@ -254,6 +255,12 @@ its own. It lets the operator's **Launch** or **Restart on new profile** click i
 app give a resident run the grant above. Restart authorizes the replacement launch, never
 copies the old run's grant.
 
+Bug Fix Inspector uses the same trusted launch click with a read-only scope pinned to its profile
+revision. The Registry binds that scope to the same identity and restores it on the same terms.
+It permits cross-session reads of sessions, transcripts, workflow runs and command output.
+Delegated session actions and workflow mutations require a separate full control grant.
+The session control menu shows **Read-only** and **Off** revokes the grant.
+
 - **The click.** Inside the click, before the launch request is sent, the dashboard arms a
   single-use authorization bound to that launch's request id, the profile id and the profile
   revision. It uses the same private preload capability and trusted-click check as the session
@@ -291,8 +298,8 @@ from the standalone browser, the Residents dock and the Console band say so afte
 the session's menu stays the only way to grant control afterwards.
 
 Workflow MCP tools use the same live signed caller identity. Self workflow reads and actions
-are available without the grant; cross-session access requires **Control other sessions** on
-the caller. The daemon checks binding session and conversation identity, filters ownership
+are available without a grant. Cross-session reads accept either read-only inspection or
+**Control other sessions**. Cross-session actions require **Control other sessions**. The daemon checks binding session and conversation identity, filters ownership
 before list pagination, and checks both ends of reattachment plus delivery packet destinations.
 Unknown or historical targets require delegation. The shared machine token alone grants no
 workflow MCP access. Existing manager checks still enforce submission/run matching, replay keys,
@@ -772,3 +779,13 @@ can hold at most two of Node's shared file-I/O threads and never keeps another r
 The gatherer also holds at most one open file at a time, daemon-wide, released only once its
 close finishes, so a stalled close cannot make descriptors pile up.
 [The guide](task-shaping.md#the-built-in-gatherer) states every rule.
+
+## Workflow reviewer repository access
+
+A read-enabled Persona queries a sealed private view over local stdio. Its dedicated Claude or
+Codex adapter verifies the tool inventory before review. Known secret-bearing files are denied.
+The worker can inspect eligible committed, staged, unstaged and nonignored untracked content.
+The deterministic retained history covers at most 2,048 commits and 512 MiB of additional
+historical blobs. The daemon retains the query outcome, sizes and approved citation ranges.
+File bodies and provider-selected excerpts are excluded from the audit.
+[Repository review workloads](repository-review-workloads.md)

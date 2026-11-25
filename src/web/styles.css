@@ -36616,6 +36616,11 @@ span.line-run-prov {
   border-left: 1px solid var(--border);
   cursor: pointer;
 }
+.voice-settings .display-choice-option:has(input:disabled) {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: .65;
+}
 .display-choice-option:first-child {
   border-left: 0;
 }
@@ -43593,3 +43598,14 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   outline: 2px solid var(--select);
   outline-offset: -2px;
 }
+
+.persona-repository-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem 1rem;
+  padding-block: .8rem;
+}
+.persona-repository-access label { display: grid; gap: .35rem; }
+.persona-repository-access details { flex-basis: 100%; max-width: 68ch; }
+.persona-repository-access summary { cursor: pointer; }

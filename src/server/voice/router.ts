@@ -9,6 +9,9 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
+import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
+import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
+import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
 import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
@@ -76,7 +79,7 @@ interface OpenCard {
   resolvingVisible?: boolean;
   remainingSplits?: VoiceSplitPoint[];
   commands?: VoiceSplitPoint["commands"];
-  splitStops?: { delivery: CardDelivery; done: Promise<void[]> };
+  splitStops?: { delivery: CardDelivery; done: Promise<void> };
   timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -90,15 +93,18 @@ interface PartDelivery {
 
 interface CardDelivery {
   card: VoiceCard;
-  entry: WeakRef<HeardEntry>;
+  entry?: WeakRef<HeardEntry>;
   routingDetail: string;
   results: PartDelivery[];
   ready: boolean;
+  published?: VoiceCard;
 }
 
 interface OutboxReceipt {
   delivery: CardDelivery;
   index: number;
+  /** A session update can observe the row before deliver() returns it. */
+  queueState?: "held" | "queued";
 }
 
 type NeedsModel = Extract<VoiceRouteDecision, { kind: "needs-model" }>;
@@ -124,7 +130,7 @@ function splitPickOptions(firstKey: string, splits: VoiceSplitPoint[], prefix: s
 }
 
 function agentRow(target: SpokenName): VoiceCard["candidates"][number] {
-  return { kind: "agent", id: target.key, title: target.name, detail: target.role };
+  return { kind: "agent", id: target.key, title: target.name, detail: target.role, target };
 }
 
 function setSplitPicks(item: OpenCard, card: VoiceCard, first: SpokenName, splits: VoiceSplitPoint[], prefix = ""): void {
@@ -211,6 +217,7 @@ export class VoiceRouter {
     private readonly publish: (card: VoiceCard) => void,
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
+    private readonly speech?: { unsure(card: VoiceCard): void; stop(cardId: string): void },
   ) {}
 
   /** The model step for an utterance, while it runs: settles once its card is resolved. */
@@ -220,7 +227,11 @@ export class VoiceRouter {
 
   activeCards(): VoiceCard[] {
     const visible = [...this.open.values()].filter(item => item.card.state !== "resolving" || item.resolvingVisible);
-    return [...visible.map(item => item.card), ...this.delivering.values()];
+    const held = new Set<VoiceCard>();
+    for (const { delivery } of this.outbox.values()) {
+      if (delivery.published?.parts.some(part => part.outcome === "held")) held.add(delivery.published);
+    }
+    return [...held, ...visible.map(item => item.card), ...this.delivering.values()];
   }
 
   private now(): ActionTime {
@@ -416,7 +427,8 @@ export class VoiceRouter {
       }
       if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
       this.openCard({ ...item, timer: undefined, commands: resolved.commands ?? item.commands,
-        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts } });
+        card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts,
+          ...(resolved.reason === "mention" && decision.reason === "second-name" && { mentions: decision.candidates.filter(t => t.key !== resolved.parts[0]?.target?.key) }) } });
     };
     const done = settle().finally(() => { if (this.resolutions.get(id) === done) this.resolutions.delete(id); });
     this.resolutions.set(id, done);
@@ -442,19 +454,27 @@ export class VoiceRouter {
       const window = this.window();
       card.openQuestions = this.openQuestionCount(card);
       if (card.parts.length > 1 && item.commands?.includes("stop")) {
+        card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
         const delivery = this.newDelivery(item);
         const { signal } = this.lifetime;
         const stops = card.parts.flatMap((_, index) => item.commands?.[index] === "stop"
           ? [this.deliverPart(delivery, index, "stop", () => !signal.aborted)] : []);
-        item.splitStops = { delivery, done: Promise.all(stops) };
+        const done = Promise.all(stops).then(() => {
+          if (this.open.get(card.id) !== item) return;
+          item.card = { ...card, parts: delivery.card.parts.map((part, index) => ({ ...part, ...delivery.results[index] })) };
+          this.publish(item.card);
+        });
+        item.splitStops = { delivery, done };
       }
       if (card.parts.every((_, index) => item.commands?.[index] === "stop") || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
+      card.windowMs = ms;
       card.deadline = Date.now() + ms;
       item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
       item.timer.unref?.();
     }
     this.publish(card);
+    if (card.state === "unsure" && this.open.get(card.id) === item) this.speech?.unsure(card);
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
@@ -470,18 +490,33 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (!item) return false;
     if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
+    this.speech?.stop(id);
     this.take(item, capturedAt);
     item.modelStep?.abort();
     item.entry.outcome = "cancelled";
     if (detail) item.entry.detail = detail;
-    this.publish({ ...item.card, state: "cancelled", deadline: null });
     if (item.splitStops) {
       const { delivery, done } = item.splitStops;
-      const { signal } = this.lifetime;
       for (const index of item.card.parts.keys()) {
         if (item.commands?.[index] !== "stop") delivery.results[index] = { outcome: "cancelled" };
       }
-      void done.then(() => { if (!signal.aborted) this.publishDelivery(delivery); });
+      if (delivery.card.parts.every((_, i) => delivery.results[i])) {
+        delivery.ready = true;
+        this.publishDelivery(delivery);
+      } else {
+        const stopping: VoiceCard = { ...delivery.card, state: "cancelled",
+          parts: delivery.card.parts.map((part, i) => ({ ...part, ...delivery.results[i] })) };
+        this.delivering.set(id, stopping);
+        this.publish(stopping);
+        void done.then(() => {
+          if (this.delivering.get(id) !== stopping) return;
+          this.delivering.delete(id);
+          delivery.ready = true;
+          this.publishDelivery(delivery);
+        });
+      }
+    } else {
+      this.publish({ ...item.card, state: "cancelled", deadline: null });
     }
     return true;
   }
@@ -502,6 +537,7 @@ export class VoiceRouter {
       parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
     if (parts.some(part => !this.checkedTarget(roster, part.target, split ? "deliver" : "single-pick"))) return false;
+    this.speech?.stop(id);
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       this.closeChoices(item, pickedAt);
@@ -517,12 +553,13 @@ export class VoiceRouter {
     item.entry.matchedName = parts[0]!.target.name;
     item.entry.detail = "picked";
     this.openCard({ ...item, time: pickedAt, commands: split ? split.commands : item.commands, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
+      ...(!split && item.splitPicks && { mentions: [...new Set([...item.splitPicks.values()].map(s => s.target))].filter(t => t.key !== target.key) }),
       candidates: [], parts } });
     return true;
   }
 
   private openQuestionCount(card: VoiceCard): number {
-    const ids = new Set(card.parts.map(part => part.target?.sessionId));
+    const ids = new Set(card.parts.map(part => part.target?.sessionId ?? part.restoredSession?.id));
     let count = 0;
     for (const id of ids) if (id) count += this.deliverer.openQuestions?.(id) ?? 0;
     return count;
@@ -550,9 +587,10 @@ export class VoiceRouter {
       });
       detail = [routingDetail, summary.join(" ")].filter(Boolean).join("\n");
     }
-    const entry = delivery.entry.deref();
+    const entry = delivery.entry?.deref();
     if (entry) Object.assign(entry, { outcome: state, detail });
-    this.publish({ ...card, state, ...(detail && { detail }) });
+    delivery.published = { ...card, state, parts: card.parts.map((part, i) => ({ ...part, ...results[i] })), ...(detail && { detail }) };
+    this.publish(delivery.published);
   }
 
   private newDelivery(item: OpenCard): CardDelivery {
@@ -564,7 +602,7 @@ export class VoiceRouter {
     const { id, parts } = delivery.card;
     const part = parts[index]!;
     const target = this.checkedTarget(this.state().roster, part.target);
-    const receipt = { delivery, index };
+    const receipt: OutboxReceipt = { delivery, index };
     let registeredId: string | undefined;
     let result: DeliveryResult = "not-running";
     try {
@@ -591,11 +629,16 @@ export class VoiceRouter {
         ? `${latest.name} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
         : "The selected session is unavailable.";
     }
-    delivery.card.parts[index] = { ...part, target: latest };
+    delivery.card.parts[index] = { ...part, target: latest, ...(command && { command }),
+      ...(typeof result !== "string" && "turnId" in result && { turnId: result.turnId }) };
     // A replay can settle synchronously inside submitSpoken, before deliver returns its row.
     if (!delivery.results[index]) {
-      delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };
-      if (typeof result !== "string" && "turnId" in result) this.outbox.set(result.turnId, receipt);
+      if (typeof result !== "string" && "turnId" in result) {
+        delivery.results[index] = { outcome: receipt.queueState ?? result.outcome };
+        this.outbox.set(result.turnId, receipt);
+      } else {
+        delivery.results[index] = { outcome: typeof result === "string" ? result : result.outcome, detail };
+      }
     }
   }
 
@@ -621,6 +664,54 @@ export class VoiceRouter {
     delivery.card.openQuestions = this.openQuestionCount(delivery.card);
     this.publishDelivery(delivery);
     return true;
+  }
+
+  /** Keep live receipts in sync with blocking reviews and restore held rows after discovery. */
+  syncQueuedTurns(session: Session, blockingReview: boolean): void {
+    const outcome = blockingReview ? "held" : "queued";
+    const changed = new Set<CardDelivery>();
+    const missing: Session["pendingTurns"] = [];
+    for (const turn of session.pendingTurns) {
+      if (turn.state !== "queued" || turn.spokenWords === undefined || !turn.id.startsWith(VOICE_TURN_PREFIX)) continue;
+      const receipt = this.outbox.get(turn.id);
+      if (!receipt) {
+        if (outcome === "held") missing.push(turn);
+        continue;
+      }
+      const { delivery, index } = receipt;
+      receipt.queueState = outcome;
+      const result = delivery.results[index];
+      if (result && result.outcome !== outcome) {
+        delivery.results[index] = { outcome };
+        if (delivery.ready) changed.add(delivery);
+      }
+    }
+    for (const delivery of changed) {
+      delivery.card.openQuestions = this.openQuestionCount(delivery.card);
+      this.publishDelivery(delivery);
+    }
+    if (!missing.length) return;
+    const { mode, roster } = this.state();
+    if (mode === "off") return;
+    const target = roster.find(row => row.sessionId === session.id) ?? null;
+    const restoredSession = target ? undefined : { id: session.id, name: agentDisplayName(sessionDisplayNameInput(session, [])).name };
+    for (const turn of missing) {
+      const id = turn.id.slice(VOICE_TURN_PREFIX.length);
+      // Split parts append # and their index to the URL-unreserved capture ID. The
+      // live delivery owns every part, even before its queue callback registers a receipt.
+      if (this.delivering.has(id.split("#", 1)[0]!)) continue;
+      const card: VoiceCard = { id, state: "held", deadline: null,
+        parts: [{ target, restoredSession, text: turn.spokenWords!, turnId: turn.id }], candidates: [], reason: "outbox",
+        openQuestions: this.deliverer.openQuestions?.(session.id) ?? session.pendingReviews };
+      const delivery: CardDelivery = { card, results: [{ outcome: "held" }], ready: true, routingDetail: "" };
+      this.outbox.set(turn.id, { delivery, index: 0 });
+      this.publishDelivery(delivery);
+    }
+  }
+
+  isHeldTurn(turnId: string): boolean {
+    const receipt = this.outbox.get(turnId);
+    return receipt?.delivery.results[receipt.index]?.outcome === "held";
   }
 
   settleSpoken(turnId: string, outcome: SpokenSettlement): void {

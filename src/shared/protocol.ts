@@ -138,7 +138,8 @@ import {
   DEFAULT_WORKFLOW_POLICY,
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
-  EVIDENCE_REF_KINDS,
+  CONTEXT_EVIDENCE_REF_KINDS,
+  PERSONA_REPOSITORY_ACCESS_MODES,
   PERSONA_FINDING_BASES,
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
@@ -716,6 +717,8 @@ export const CreateReviewSchema = z
      * always told `call`.
      */
     asyncCapable: z.boolean().optional(),
+    /** This caller can also accept a receipt after being told to wait inside the call. */
+    convertible: z.boolean().optional(),
     /** What the agent does while the question is open: one line, `input` only. */
     meanwhile: z.string()
       .transform((line) => oneLine(line))
@@ -6302,7 +6305,14 @@ export const PersonaGuidanceSchema = z
     message: `Persona guidance exceeds ${WORKFLOW_LIMITS.personaGuidanceBytes} UTF-8 bytes`,
   });
 
+
+export const UpdatePersonaRepositoryAccessSchema = z.strictObject({
+  expectedAccessRevision: z.number().int().nonnegative(),
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES),
+});
+
 export const CreatePersonaSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).optional(),
   name: PersonaNameSchema,
   description: PersonaDescriptionSchema.optional().default(""),
   guidanceMarkdown: PersonaGuidanceSchema,
@@ -6415,6 +6425,7 @@ export const WorkflowPointSchema = z.object({
 });
 
 export const PersonaSnapshotSchema = z.object({
+  repositoryAccess: z.enum(PERSONA_REPOSITORY_ACCESS_MODES).default("none"),
   sourcePersonaId: WorkflowIdSchema,
   sourceRevision: z.number().int().positive(),
   name: PersonaNameSchema,
@@ -6804,8 +6815,8 @@ export const WorkflowJsonSchema: z.ZodType<WorkflowJson, WorkflowJson> = z.lazy(
 );
 
 const WorkflowVerdictTextSchema = z.string().trim().min(1);
-export const WorkflowEvidenceRefSchema = z.object({
-  kind: z.enum(EVIDENCE_REF_KINDS),
+export const WorkflowContextEvidenceRefSchema = z.object({
+  kind: z.enum(CONTEXT_EVIDENCE_REF_KINDS),
   quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
   line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
@@ -6826,6 +6837,16 @@ export const WorkflowEvidenceRefSchema = z.object({
     });
   }
 });
+
+export const RepositoryEvidenceReferenceSchema = z.strictObject({
+  kind: z.literal("repository"),
+  operationId: z.uuid(),
+  evidenceHandleId: z.uuid(),
+});
+
+export const WorkflowEvidenceRefSchema = z.discriminatedUnion("kind", [
+  WorkflowContextEvidenceRefSchema, RepositoryEvidenceReferenceSchema,
+]);
 
 /**
  * A string pattern rather than `z.custom`: this schema is part of MCP tool input, and the MCP
@@ -7671,7 +7692,7 @@ export const UpdateBuiltinWorkflowRoundLimitSchema = z.object({
 export type UpdateBuiltinWorkflowRoundLimit = z.infer<typeof UpdateBuiltinWorkflowRoundLimitSchema>;
 
 export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
-export const PublishWorkflowSchema = ValidateWorkflowSchema;
+export const PublishWorkflowSchema = ValidateWorkflowSchema.extend({ requestId: WorkflowIdSchema.optional() });
 export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
 export const UnarchiveWorkflowSchema = ValidateWorkflowSchema;
 export const DeleteWorkflowSchema = ValidateWorkflowSchema;
@@ -9824,9 +9845,18 @@ export interface SessionControlRequestResult {
   detail?: string;
 }
 const ControlIdSchema = z.string().min(1).max(256);
+/** A history cursor comes from the previous page of this live conversation. */
+const SessionHistoryPageSchema = z.union([z.literal("latest"), z.object({
+  before: z.number().int().safe().nonnegative(),
+  remaining: z.number().int().safe().positive().optional(),
+  conversationId: ControlIdSchema,
+  fileId: z.string().min(1).max(256),
+}).strict()]);
+export type SessionHistoryPageRequest = z.infer<typeof SessionHistoryPageSchema>;
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),
   transcript: z.boolean().optional().default(false),
+  history: SessionHistoryPageSchema.optional(),
   /** List form only: true lists only sessions that stand on a blocker. */
   blocked: z.boolean().optional(),
   /** List form only: true lists only sessions that declared a wait on a background process. */

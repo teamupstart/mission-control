@@ -12,6 +12,7 @@ import "@xyflow/react/dist/style.css";
 // is the one surface that actually boots the stylesheet-aware Vite application.
 import "react-diff-view/style/index.css";
 import "./styles.css";
+import "./voice-cards.css";
 // Directly after the base stylesheet, so a skin's `:root[data-skin]` overrides win on order as
 // well as specificity. Every skin ships in this bundle; switching never waits on a fetch.
 import "./skins/index.css";

@@ -203,7 +203,7 @@ export function ResidentsDock(props: ResidentsDockProps): React.JSX.Element {
                       <div className="residents-pop-card-foot">
                         <ResidentLoopControls mark={mark} />
                         <span className="residents-pop-spacer" aria-hidden />
-                        {session && (mark.controlOtherSessions || session.sessionControlEnabled === true) && (
+                        {session && (mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) && (
                           <ResidentControlStatus session={session} name={mark.name} badge />
                         )}
                       </div>

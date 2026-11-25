@@ -18,8 +18,10 @@ import { DAEMON_PROTOCOL_CAPABILITIES, daemonHealthSupports } from "@shared/daem
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import type { ReviewItem, Task } from "@shared/types.ts";
+import type { ReviewWaitResponse } from "@shared/async-input.ts";
+import type { Task } from "@shared/types.ts";
 import {
   SESSION_AWAITING_LIMITS, SESSION_AWAITING_WAKE_SOURCES, SESSION_BLOCKER_KINDS, SESSION_BLOCKER_LIMITS,
 } from "@shared/types.ts";
@@ -163,7 +165,7 @@ async function postReview(input: {
     decisions: input.decisions,
     managedPlan: input.managedPlan,
     ...(input.snoozable ? { snoozable: true } : {}),
-    ...(input.asyncCapable ? { asyncCapable: true } : {}),
+    ...(input.asyncCapable ? { asyncCapable: true, convertible: true } : {}),
     ...(input.meanwhile ? { meanwhile: input.meanwhile } : {}),
     ...(input.revises ? { revises: input.revises } : {}),
   });
@@ -229,6 +231,9 @@ function heartbeat(call?: BlockingCall): () => void {
   };
 }
 
+/** A listening daemon can still be temporarily unavailable while it starts. */
+class WaitServiceUnavailable extends Error {}
+
 /**
  * Long-poll the daemon until the human resolves the review.
  *
@@ -238,14 +243,35 @@ function heartbeat(call?: BlockingCall): () => void {
  * away whatever it returns, so an abandoned ask left a poller hammering the daemon for the
  * rest of the session's life. Aborting the in-flight fetch ends it at the cancellation.
  */
-async function waitForResolution(id: string, call?: BlockingCall): Promise<ReviewItem> {
+async function waitForResolution(id: string, call?: BlockingCall, convertible = false): Promise<ReviewWaitResponse> {
   const beat = heartbeat(call);
+  const retryDelays = [250, 500, 1000, 2000, 4000, 8000];
+  let failures = 0;
   try {
     for (;;) {
       if (call?.signal.aborted) throw new Error("the client cancelled this request");
-      const res = await http(`/mcp/reviews/${id}/wait`, "GET", undefined, false, call?.signal);
-      if (!res.ok) throw new Error(`harness wait ${res.status}`);
-      const review = (await res.json()) as ReviewItem;
+      let review: ReviewWaitResponse;
+      try {
+        const query = convertible ? "?convertible=1" : "";
+        const res = await http(`/mcp/reviews/${id}/wait${query}`, "GET", undefined, false, call?.signal);
+        if (!res.ok) {
+          await res.body?.cancel();
+          if (res.status === 503) throw new WaitServiceUnavailable("harness wait 503");
+          throw new Error(`harness wait ${res.status}`);
+        }
+        review = await res.json() as ReviewWaitResponse;
+        failures = 0;
+      } catch (err) {
+        // The receipt can commit just before daemon shutdown. Allow time to bind the port again.
+        const backoff = retryDelays[failures];
+        const temporarilyUnavailable = err instanceof TypeError || err instanceof WaitServiceUnavailable;
+        if (!temporarilyUnavailable || !convertible || backoff === undefined || call?.signal.aborted) throw err;
+        failures++;
+        beat();
+        await delay(backoff, undefined, { signal: call?.signal });
+        continue;
+      }
+      if (convertible && review.converted && !call?.signal.aborted) return review;
       if (review.status !== "pending") {
         // The host can cancel after the daemon has answered the long poll but before this
         // result crosses the MCP response boundary. Recheck at the fast-path handoff so that
@@ -309,7 +335,7 @@ const server = new McpServer(
 );
 
 server.registerTool("list_workflow_runs", {
-  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires the operator's Control other sessions opt-in on your session. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
+  description: "List your own Mission Control workflow runs, with optional status, workflowId and session filters. Reading other sessions' runs requires a read-only inspection or session-control grant. Follow nextCursor for more results. Use get_workflow_run before changing a run.",
   inputSchema: ListWorkflowRunsSchema,
 }, async (input) => {
   try {
@@ -321,7 +347,7 @@ server.registerTool("list_workflow_runs", {
 });
 
 server.registerTool("get_workflow_run", {
-  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires the operator's Control other sessions opt-in on your session. Returns IDs needed by trigger_workflow_action.",
+  description: "Inspect your own workflow run, including its binding, submissions, deliveries and recovery actions. Reading another session's run requires a read-only inspection or session-control grant. Returns IDs needed by trigger_workflow_action.",
   inputSchema: GetWorkflowRunSchema,
 }, async ({ runId }) => {
   try {
@@ -333,7 +359,7 @@ server.registerTool("get_workflow_run", {
 });
 
 server.registerTool("read_workflow_command_output", {
-  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires Control other sessions.",
+  description: "Read one bounded page of retained stdout, stderr, or provider findings for a Command attempt in your workflow run. Use the opaque ids from get_workflow_run or a repair packet and follow nextCursor until null. Reading another session's run requires a read-only inspection or session-control grant.",
   inputSchema: ReadWorkflowCommandOutputMcpSchema,
 }, async (input) => {
   try {
@@ -393,7 +419,7 @@ server.registerTool(
   "read_sessions",
   {
     title: "Inspect sessions for delegated control",
-    description: "Requires the operator to enable Control other sessions on THIS session (off by default). Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. Use the returned ids, requestIds, labels and revisions when calling control_session.",
+    description: "Requires an operator grant for read-only inspection or Control other sessions on THIS session. Omit sessionId to list other live sessions, each with its blocker summary (set blocked: true to list only blocked sessions) and its awaiting summary: what it declared it is waiting for, how it expects to be woken, when it is due and whether it is overdue (set awaiting: true to list only sessions idle on purpose); supply it to read current state, pending reviews, approval dialogs, queued input and the full work queue (item ids, revisions, states and proposed payloads). Set transcript to include recent conversation. With sessionId, pass history: 'latest' to read a bounded transcript page, then pass history.next as history for older pages until next is null. Without sessionId, history reports that only the current live list is available. Record unavailable intervals when a session has ended. Use the returned ids, requestIds, labels and revisions when calling control_session.",
     inputSchema: SessionControlReadSchema.shape,
   },
   async (args) => {
@@ -585,7 +611,8 @@ server.registerTool(
       // `message`, the plan is filed and the receipt is the whole result - nothing long-polls.
       const created = await postReview({ kind: "plan-decisions", title, body: plan, decisions, managedPlan, asyncCapable: true, revises });
       if (created.wait === "message") return textResult(created.receipt);
-      const review = await waitForResolution(created.id, extra);
+      const review = await waitForResolution(created.id, extra, true);
+      if (review.converted) return textResult(review.converted.receipt);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
@@ -1171,7 +1198,8 @@ server.registerTool(
         snoozable: true, asyncCapable: true, ...(meanwhile?.trim() ? { meanwhile } : {}),
       });
       if (created.wait === "message") return textResult(created.receipt);
-      const review = await waitForResolution(created.id, extra);
+      const review = await waitForResolution(created.id, extra, true);
+      if (review.converted) return textResult(review.converted.receipt);
       const result = reviewToolResult(review);
       return textResult(result.text, result.isError);
     } catch (err) {
@@ -1300,11 +1328,17 @@ server.registerTool(
   {
     title: "Report a Mission Control product issue",
     description:
-      "Prepare a public GitHub issue about Mission Control only after the user explicitly " +
-      "asked you to report it. Mission Control shows the exact public content in the dashboard " +
-      "and BLOCKS until the human selects Submit public issue or dismisses it. Optional screenshot " +
+      "Prepare a public GitHub issue draft when the user explicitly requests a Mission Control report. " +
+      "For the built-in Bug Fix Inspector, the operator's launch is a standing request to prepare drafts " +
+      "for confirmed defects on the first and scheduled passes of that run. Each draft still requires separate " +
+      "human approval: Mission Control shows the exact public content in the dashboard and BLOCKS until " +
+      "the human selects Submit public issue or dismisses it. Optional screenshot " +
       "upload ids must come from Mission Control and require GitHub CLI 2.99.0 or newer.",
-    inputSchema: ProductIssueDraftSchema.shape,
+    inputSchema: {
+      ...ProductIssueDraftSchema.shape,
+      expectedTarget: z.string().min(1).max(140).optional()
+        .describe("GitHub owner/repository already checked for duplicates. A mismatch stops the report before approval."),
+    },
   },
   async (draft, extra) => {
     try {

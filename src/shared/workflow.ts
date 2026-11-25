@@ -996,7 +996,12 @@ export interface PersonaDriftView {
   upstream: PersonaUpstreamState;
 }
 
+export const PERSONA_REPOSITORY_ACCESS_MODES = ["none", "read"] as const;
+export type PersonaRepositoryAccess = (typeof PERSONA_REPOSITORY_ACCESS_MODES)[number];
+
 export interface Persona {
+  repositoryAccess?: PersonaRepositoryAccess;
+  repositoryAccessRevision?: number;
   id: PersonaId;
   name: string;
   normalizedName: string;
@@ -2080,7 +2085,13 @@ export interface WorkflowDraftGraph {
   edges: WorkflowEdge[];
 }
 
+export function workflowRequiresRepositoryCapture(graph: PublishedWorkflowGraph): boolean {
+  return graph.nodes.some((node) => node.kind === "persona" && node.persona.repositoryAccess === "read");
+}
+
 export interface PersonaSnapshot {
+  /** Historical graphs omit this field and resolve to none. */
+  repositoryAccess?: PersonaRepositoryAccess;
   sourcePersonaId: PersonaId;
   sourceRevision: number;
   name: string;
@@ -2105,6 +2116,7 @@ export interface PersonaSnapshot {
  */
 export function personaSnapshotOf(persona: Persona): PersonaSnapshot {
   return {
+    ...(persona.repositoryAccess === "read" ? { repositoryAccess: persona.repositoryAccess } : {}),
     sourcePersonaId: persona.id,
     sourceRevision: persona.revision,
     name: persona.name,
@@ -2123,6 +2135,7 @@ export function personaSnapshotIsOutdated(
   current: Persona | null | undefined,
 ): boolean {
   if (!current) return true;
+  if ((snapshot.repositoryAccess ?? "none") !== (current.repositoryAccess ?? "none")) return true;
   if (current.builtin) return snapshot.guidanceMarkdown !== current.guidanceMarkdown;
   return snapshot.sourceRevision !== current.revision;
 }
@@ -4045,7 +4058,7 @@ export interface WorkflowVersion {
   publishedAt: number;
 }
 
-export type WorkflowVersionMetadata = Omit<WorkflowVersion, "graph">;
+export type WorkflowVersionMetadata = Omit<WorkflowVersion, "graph"> & { readPersonaIds?: string[] };
 
 /** The bounded catalog projection carried over SSE. Graphs and guidance stay on HTTP. */
 export interface WorkflowAssetReferenceSet {
@@ -4942,7 +4955,7 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
  * author whose evidence is machine-produced and exact would weaken the rule for the
  * strongest citation in the system.
  */
-export const EVIDENCE_REF_KINDS = [
+export const CONTEXT_EVIDENCE_REF_KINDS = [
   "diff",
   "transcript",
   "standard",
@@ -4952,10 +4965,18 @@ export const EVIDENCE_REF_KINDS = [
   "image",
   "artifact",
 ] as const;
+export const EVIDENCE_REF_KINDS = [...CONTEXT_EVIDENCE_REF_KINDS, "repository"] as const;
 export type EvidenceRefKind = (typeof EVIDENCE_REF_KINDS)[number];
 
-export interface EvidenceRef {
-  kind: EvidenceRefKind;
+export type EvidenceRef = {
+  kind: "repository";
+  operationId: string;
+  evidenceHandleId: string;
+  quote?: never;
+  path?: never;
+  line?: never;
+} | {
+  kind: (typeof CONTEXT_EVIDENCE_REF_KINDS)[number];
   quote: string;
   path?: string;
   line?: number;
@@ -5164,6 +5185,18 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  repositoryReview?: {
+    queries: number;
+    bytes: number;
+    denied: number;
+    truncated: number;
+    failed: number;
+    cancelled: number;
+    snapshot: { digest: string; state: string; retainedCommits: number; bounded: boolean } | null;
+    citations: Record<string, import("./repository-access.ts").RepositoryEvidenceHandle & { queryId: number }>;
+  };
+  /** Included in a requested export only. */
+  repositoryQueries?: import("./repository-access.ts").RepositoryQueryAuditMetadata[];
   /** Live sibling ownership of the conversation, independent of paginated event history. */
   deliveryHold?: {
     runId: string;

@@ -4,7 +4,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
-import type { Session, Task } from "../../src/shared/types.ts";
+import type { ReviewItem, Session, Task } from "../../src/shared/types.ts";
 import type { VoiceCard } from "../../src/shared/voice-routing.ts";
 import { VOICE_REQUIRED_FLAGS } from "../../src/shared/voice.ts";
 
@@ -128,7 +128,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
   } } });
   expect(resident.ok(), await resident.text()).toBe(true);
   expect(await (await say(daemon, "Marlowe, check the build")).json()).toEqual({ accepted: true });
-  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
+  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running" });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
     await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message-live-flag"), "not-running.png") });
@@ -187,11 +187,98 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
   expect(complete.ok(), await complete.text()).toBe(true);
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/earlier/send-now`)).ok()).toBe(true);
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/newer/cancel`)).ok()).toBe(true);
-  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
+  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running" });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const dir = artifactsDir("voice-overlapping-cards-stopped-during-window");
     mkdirSync(dir, { recursive: true });
     await feedback.screenshot({ path: join(dir, "earlier-failure.png") });
   }
+});
+
+test("a spoken message waiting behind a compatible question moves from the visible queue into the conversation", async ({ dashboard: page, daemon, request }) => {
+  const title = "Which release?";
+  const created = await request.post(`${daemon.baseURL}/api/tasks`, { data: {
+    repoRoot: daemon.repo, title: "Verify the release", intent: "Verify the release", callSign: "Steve",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  } });
+  expect(created.ok(), await created.text()).toBe(true);
+  const task = await created.json() as Task;
+  let session!: Session;
+  await expect.poll(async () => {
+    const sessions = await (await request.get(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    session = sessions.find(s => s.task?.id === task.id)!;
+    return session?.agentSessionId && session.state;
+  }, { timeout: 60_000 }).toBe("idle");
+
+  const headers = { "x-harness-token": voiceToken(daemon) };
+  const flag = (id: string, enabled: boolean) => request.put(`${daemon.baseURL}/api/feature-flags`, {
+    data: { kind: "flag", id, enabled },
+  });
+  expect((await flag("async-input", false)).ok()).toBe(true);
+  const ask = await request.post(`${daemon.baseURL}/mcp/reviews`, { headers, data: {
+    env: {}, sessionId: session.id, kind: "input", title, body: title, snoozable: true, asyncCapable: true, convertible: true,
+  } });
+  expect(ask.ok(), await ask.text()).toBe(true);
+  const review = await ask.json();
+  expect(review.wait).toBe("call");
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) expect((await flag(id, true)).ok()).toBe(true);
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
+
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
+  expect(await (await say(daemon, "Steve, verify the release", { id: "convert-release" })).json()).toEqual({ accepted: true });
+  // Phase 6 owns the confirmation card. This phase exposes the queued turn and delivered payload in the transcript.
+  const queued = page.locator(".pending-turn").filter({ hasText: "verify the release" });
+  await expect(queued.getByRole("status")).toHaveText("queued");
+  await expect(queued.getByText("Spoken", { exact: true })).toBeVisible();
+  const wait = await request.get(`${daemon.baseURL}/mcp/reviews/${review.id}/wait?convertible=1`, { headers });
+  expect((await wait.json()).converted.receipt).toContain(review.id);
+  await expect(queued).toHaveCount(0);
+  const reply = page.getByText(/Mock reply to: verify the release/).first();
+  await expect(reply).toBeVisible({ timeout: 30_000 });
+  const spoken = page.getByRole("article").filter({ has: page.getByText("Spoken", { exact: true }), hasText: "verify the release" });
+  await spoken.getByText("What the agent received", { exact: true }).click();
+  await expect(spoken.locator(".review-received-text")).toContainText(`- ${review.id}: ${title}`);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = artifactsDir("voice-question-conversion");
+    mkdirSync(dir, { recursive: true });
+    await reply.screenshot({ path: join(dir, "delivered-reply.png") });
+  }
+});
+
+test("speech releases the SDK agent's own request_input call and reaches its next turn", async ({ dashboard: page, daemon, request }) => {
+  const flag = (id: string, enabled: boolean) => request.put(`${daemon.baseURL}/api/feature-flags`, {
+    data: { kind: "flag", id, enabled },
+  });
+  expect((await flag("async-input", false)).ok()).toBe(true);
+  const created = await request.post(`${daemon.baseURL}/api/tasks`, { data: {
+    repoRoot: daemon.repo, title: "Choose the toolchain", intent: "Choose the toolchain", callSign: "Steve",
+    kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
+  } });
+  expect(created.ok(), await created.text()).toBe(true);
+  const task = await created.json() as Task;
+  let session!: Session;
+  await expect.poll(async () => {
+    const sessions = await (await request.get(`${daemon.baseURL}/api/sessions`)).json() as Session[];
+    session = sessions.find(s => s.task?.id === task.id)!;
+    return session?.agentSessionId && session.state;
+  }, { timeout: 60_000 }).toBe("idle");
+  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
+  const detail = page.locator(".console-detail");
+  const composer = detail.getByPlaceholder(/^Reply to this session/);
+  await composer.fill("ask me which linter to use");
+  await composer.press("Enter");
+  let question: ReviewItem | undefined;
+  await expect.poll(async () => {
+    const reviews = await (await request.get(`${daemon.baseURL}/api/reviews`)).json() as ReviewItem[];
+    question = reviews.find(r => r.sessionId === session.id && r.title === "Which linter?");
+    return question?.status === "pending" && (question.waitMode ?? "call");
+  }).toBe("call");
+
+  for (const id of [...VOICE_REQUIRED_FLAGS, "voice"]) expect((await flag(id, true)).ok()).toBe(true);
+  expect((await request.put(`${daemon.baseURL}/api/voice/config`, { data: { muted: false, cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  expect(await (await say(daemon, "Steve, inspect the toolchain", { id: "active-sdk-ask" })).json()).toEqual({ accepted: true });
+  const receipt = detail.getByText(/request_input answered: Filed, not answered:/);
+  await expect(receipt.first()).toContainText(`(review ${question!.id})`, { timeout: 30_000 });
+  await expect(detail.getByText(/Mock reply to: inspect the toolchain/).first()).toBeVisible({ timeout: 30_000 });
 });

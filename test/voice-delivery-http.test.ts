@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk } from "./helpers/voice-http.ts";
+import { act, applyFeatureFlagIntent, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk, voiceStateStore } from "./helpers/voice-http.ts";
+import { onFeatureFlagsChanged } from "../src/server/feature-flags/index.ts";
 import { HibernationManager } from "../src/server/hibernation/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { claimNextPendingTurn, clearPendingTurns, listPendingTurns, openDb, recoverSendingPendingTurns, retireDeliveredPendingTurn } from "../src/server/db.ts";
@@ -180,6 +181,95 @@ test("a replay observes a receipt during submission before its queued card can p
     assert.equal(cards.at(-1)?.state, outcome);
     assert.equal(cards.filter(card => card.state === "queued").length, 0);
   }
+});
+
+test("an early session upsert for a held split leg only publishes the live split card", async t => {
+  const id = "split-delivery";
+  const sessionId = "sdk:Will";
+  const ask = reviews.create(sessionId, "input", "Which deployment?", "Choose one.", null);
+  t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+  const submit = pending.submitSpoken.bind(pending);
+  t.mock.method(pending, "submitSpoken", (...[session, words, partId, onQueued]: Parameters<typeof submit>) => {
+    // Make the real queue publish its session upsert before handing the receipt to the router.
+    const result = submit(session, words, partId);
+    if (result.pendingTurn) onQueued?.(result.pendingTurn.id);
+    return result;
+  });
+  await say("Steve, inspect the build, and Will, check the deployment", id);
+  await registry.voiceRouter!.resolution(id);
+  assert.equal((await act(id, "pick", { id: "task:Will" })).status, 200);
+  assert.equal((await act(id, "send-now")).status, 200);
+  const turn = registry.getSession(sessionId)!.pendingTurns.find(row => row.id === "voice:" + id + "#2");
+  assert.ok(turn);
+  assert.deepEqual(cards.filter(card => card.state === "held").map(card => card.id), [id]);
+  assert.deepEqual(registry.voiceRouter!.activeCards().map(card => card.id), [id]);
+  assert.equal(pending.recall(sessionId, turn.id, turn.revision)?.id, turn.id);
+  assert.equal(cards.at(-1)?.parts[1]?.outcome, "cancelled");
+  assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+});
+
+test("a blocking review holds just its queued split part and answering returns that part to the queue", async () => {
+  const id = "split-review-after-queue";
+  const sessionId = "sdk:Will";
+  for (const session of [sessionId, "sdk:Steve"]) registry.applyDriverEvent(session, { kind: "state", state: "working", activity: null });
+  await say("Steve, inspect the build, and Will, check the deployment", id);
+  await registry.voiceRouter!.resolution(id);
+  await act(id, "pick", { id: "task:Will" });
+  await act(id, "send-now");
+  const parts = () => cards.at(-1)?.parts.map(({ turnId, outcome }) => [turnId, outcome]);
+  const first = ["voice:" + id, "queued"];
+  const second = "voice:" + id + "#2";
+  assert.deepEqual(parts(), [first, [second, "queued"]]);
+  const ask = reviews.create(sessionId, "input", "Which deployment?", "Choose one.", null);
+  try {
+    assert.deepEqual(parts(), [first, [second, "held"]]);
+    assert.deepEqual(registry.voiceRouter!.activeCards().map(card => card.id), [id]);
+    assert.equal(registry.voiceRouter!.isHeldTurn(second), true);
+  } finally {
+    await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" });
+  }
+  assert.deepEqual(parts(), [first, [second, "queued"]]);
+  assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+  assert.equal(registry.voiceRouter!.isHeldTurn(second), false);
+});
+
+test("a blocking question opened during submission survives the queued return value", async t => {
+  const sessionId = "sdk:Steve";
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "working", activity: null });
+  const submit = pending.submitSpoken.bind(pending);
+  t.mock.method(pending, "submitSpoken", (...args: Parameters<typeof submit>) => {
+    const result = submit(...args);
+    // The route reads the initial queue state synchronously. Change the receipt
+    // after it has returned queued, before deliverPart handles its resolved promise.
+    queueMicrotask(() => {
+      const ask = reviews.create(sessionId, "input", "Which build?", "Choose one.", null);
+      t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+    });
+    return result;
+  });
+  await say("Steve, inspect the build", "review-during-submit");
+  await act("review-during-submit", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  assert.deepEqual(registry.voiceRouter!.activeCards().map(card => card.id), ["review-during-submit"]);
+});
+
+test("an awaiting-review session label alone cannot turn a queued spoken message into a held card", async t => {
+  const sessionId = "sdk:Will";
+  const ask = reviews.create(sessionId, "input", "Which release?", "Keep working meanwhile.", null, { waitMode: "message", snoozable: true });
+  t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+  const session = registry.getSession(sessionId)!;
+  assert.equal(session.pendingReviews, 0);
+  assert.equal(session.openQuestions, 1);
+  await say("Will, check the release", "still-queued");
+  await act("still-queued", "send-now");
+  assert.equal(cards.at(-1)?.state, "queued");
+  registry.voiceRouter!.reset();
+  const getSession = registry.getSession.bind(registry);
+  const queuedSession = getSession(sessionId)!;
+  assert.ok(queuedSession.pendingTurns.some(turn => turn.id === "voice:still-queued" && turn.state === "queued"));
+  t.mock.method(registry, "getSession", (id: string) => id === sessionId ? { ...queuedSession, state: "awaiting_review" as const } : getSession(id));
+  registry.emitVoiceRoster(roster);
+  assert.deepEqual(registry.voiceRouter!.activeCards(), []);
 });
 
 test("resuming a session with a blocking review reports held on its card and in Recently heard", async t => {
@@ -372,4 +462,260 @@ test("Foreman cannot resolve a held call until cancellation or recall, even past
   const row = registry.getSession(id)!.pendingTurns.at(-1)!;
   assert.ok(pending.recall(id, row.id, row.revision));
   assert.equal((await answer()).status, 200);
+});
+
+for (const kind of ["input", "plan-decisions"] as const) {
+  for (const convertible of [true, false]) {
+    test(`spoken delivery to a ${convertible ? "convertible" : "legacy"} ${kind} is ${convertible ? "queued" : "held"}`, async t => {
+      const id = "sdk:Will";
+      const row = reviews.create(id, kind, "Which target?", "Choose one.", null, { snoozable: kind === "input" });
+      t.after(() => { reviews.resolve(row.id, "dismiss", null); });
+      const poll = reviews.wait(row.id, 5000, undefined, convertible);
+      pending.submit(id, "Typed first");
+      assert.equal(registry.getReview(row.id)?.waitMode, undefined);
+      const captureId = `voice-question-${kind}-${convertible}`;
+      await say("Will, inspect the build", captureId);
+      await act(captureId, "send-now");
+      assert.equal(cards.at(-1)?.state, convertible ? "queued" : "held");
+      assert.equal((await readHeard())[0]?.outcome, convertible ? "queued" : "held");
+      assert.deepEqual(queued("Will"), ["Typed first", "inspect the build"]);
+      if (!convertible) reviews.resolve(row.id, "answer", "main");
+      assert.equal(Boolean((await poll)?.converted), convertible);
+    });
+  }
+}
+
+test("recalling speech held by a legacy call leaves every compatible call attached", async () => {
+  const sessionId = "sdk:Will";
+  const question = reviews.create(sessionId, "input", "Which branch?", "Choose", null, { snoozable: true });
+  const plan = reviews.create(sessionId, "plan-decisions", "Release", "Choose a channel", null);
+  // A legacy poll vetoes the plan durably, even if a capable poll later takes its place.
+  const expired = new AbortController();
+  const legacy = reviews.wait(plan.id, 5000, expired.signal);
+  expired.abort();
+  await legacy;
+  const calls = [question, plan].map(ask => reviews.wait(ask.id, 5000, undefined, true));
+  await say("Will, check the release", "mixed-blockers");
+  await act("mixed-blockers", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  for (const ask of [question, plan]) assert.equal(registry.getReview(ask.id)?.filedByVoiceAt, undefined);
+  const turn = registry.getSession(sessionId)!.pendingTurns.at(-1)!;
+  assert.ok(pending.recall(sessionId, turn.id, turn.revision));
+  for (const ask of [question, plan]) reviews.resolve(ask.id, "answer", "stable");
+  for (const result of await Promise.all(calls)) {
+    assert.equal(result?.response, "stable");
+    assert.equal(result?.converted, undefined);
+  }
+});
+
+test("settling the last legacy call releases held speech through the existing compatible poll", async t => {
+  const sessionId = "sdk:Will";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  const send = t.mock.method(sdk, "sendWhenIdle", async () => "started" as const);
+  const ask = reviews.create(sessionId, "input", "Which tag?", "Choose", null, { snoozable: true });
+  const legacy = reviews.create(sessionId, "input", "Which target?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(ask.id, "dismiss", null); reviews.resolve(legacy.id, "dismiss", null); });
+  const capableCall = reviews.wait(ask.id, 5000, undefined, true);
+  const legacyCall = reviews.wait(legacy.id, 5000);
+  await say("Will, inspect the target", "settled-last-legacy");
+  await act("settled-last-legacy", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+
+  reviews.resolve(legacy.id, "answer", "stable");
+  assert.equal((await legacyCall)?.response, "stable");
+  assert.equal(registry.getReview(ask.id)?.waitMode, "message");
+  assert.ok((await capableCall)?.converted?.receipt.includes(ask.id));
+  assert.equal(cards.at(-1)?.state, "queued");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  assert.equal(cards.at(-1)?.state, "sent");
+});
+
+test("the SDK receives the spoken words with both converted asks in its open-questions note", async t => {
+  const sessionId = "sdk:Will";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  const question = reviews.create(sessionId, "input", "Which build?", "Choose", null, { snoozable: true });
+  const plan = reviews.create(sessionId, "plan-decisions", "Ship plan", "Choose", null);
+  const asks = [question, plan];
+  t.after(() => { for (const ask of asks) reviews.resolve(ask.id, "dismiss", null); });
+  const polls = asks.map(ask => reviews.wait(ask.id, 5000, undefined, true));
+  await say("Will, inspect the build", "convert-and-deliver");
+  await act("convert-and-deliver", "send-now");
+  assert.equal(cards.at(-1)?.state, "queued");
+  for (const response of await Promise.all(polls)) assert.ok(response?.converted);
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  const text = send.mock.calls[0]!.arguments[1].text;
+  assert.ok(text.startsWith("inspect the build\n\nYour open questions:\n"));
+  for (const ask of asks) assert.ok(text.includes(`- ${ask.id}: ${ask.title}`));
+  assert.equal(cards.at(-1)?.state, "sent");
+});
+
+test("replaying a queued utterance keeps a later question in its call", async t => {
+  const sessionId = "sdk:Will";
+  await say("Will, inspect the build", "existing-voice");
+  await act("existing-voice", "send-now");
+  registry.voiceRouter!.reset();
+  const question = reviews.create(sessionId, "input", "New question?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(question.id, "dismiss", null); });
+  const wait = reviews.wait(question.id, 5000, undefined, true);
+  await say("Will, inspect the build", "existing-voice");
+  await act("existing-voice", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  reviews.resolve(question.id, "answer", "Yes");
+  assert.equal((await wait)?.response, "Yes");
+});
+
+test("a retired capture cannot deliver twice or file a question opened after delivery", async t => {
+  const id = "sdk:Will";
+  const captureId = "retired-speech";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  await say("Will, inspect the build", captureId);
+  await act(captureId, "send-now");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(cards.at(-1)?.state, "sent");
+  registry.voiceRouter!.reset();
+  const ask = reviews.create(id, "input", "New question?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(ask.id, "dismiss", null); });
+  const wait = reviews.wait(ask.id, 5000, undefined, true);
+  await say("Will, inspect the build", captureId);
+  await act(captureId, "send-now");
+  assert.equal(cards.at(-1)?.state, "failed");
+  assert.match(cards.at(-1)?.detail ?? "", /already queued/);
+  assert.deepEqual(queued("Will"), []);
+  assert.equal(send.mock.callCount(), 1);
+  reviews.resolve(ask.id, "answer", "Yes");
+  assert.equal((await wait)?.response, "Yes");
+});
+
+test("a plan's first compatible wait releases speech queued in the create-to-poll gap", async t => {
+  const id = "sdk:Will";
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  const plan = reviews.create(id, "plan-decisions", "Release plan", "Choose a channel", null);
+  t.after(() => { reviews.resolve(plan.id, "dismiss", null); });
+  await say("Will, inspect the build", "before-first-poll");
+  await act("before-first-poll", "send-now");
+  assert.equal(cards.at(-1)?.state, "held");
+  assert.equal(registry.getReview(plan.id)?.waitMode, undefined);
+  const call = reviews.wait(plan.id, 5000, undefined, true);
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
+  t.mock.timers.tick(5001);
+  assert.ok((await call)?.converted);
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  assert.ok(send.mock.calls[0]!.arguments[1].text.includes(plan.id));
+  assert.equal(cards.at(-1)?.state, "sent");
+});
+
+test("a filing failure preserves queued speech and its receipt until a compatible poll retries", async t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const sessionId = "sdk:Will";
+  registry.applyDriverEvent(sessionId, { kind: "state", state: "idle", activity: null });
+  const send = t.mock.method(sdk, "sendWhenIdle", async (...args: Parameters<typeof sdk.sendWhenIdle>) => {
+    assert.equal(args[2]?.(), null);
+    return "started" as const;
+  });
+  const question = reviews.create(sessionId, "input", "Which target?", "Choose", null, { snoozable: true });
+  const db = openDb();
+  db.exec(`CREATE TEMP TRIGGER refuse_voice_filing BEFORE UPDATE OF filed_by_voice_at ON reviews
+    BEGIN SELECT RAISE(ABORT, 'injected filing failure'); END`);
+  t.after(() => {
+    db.exec("DROP TRIGGER IF EXISTS refuse_voice_filing");
+    reviews.resolve(question.id, "dismiss", null);
+  });
+  const firstPoll = reviews.wait(question.id, 5000, undefined, true);
+  await say("Will, inspect the build", "retry-filing");
+  await act("retry-filing", "send-now");
+  assert.deepEqual(queued("Will"), ["inspect the build"]);
+  assert.equal(cards.at(-1)?.state, "held");
+  assert.equal((await readHeard())[0]?.outcome, "held");
+  t.mock.timers.tick(5000);
+  assert.equal((await firstPoll)?.converted, undefined);
+  db.exec("DROP TRIGGER refuse_voice_filing");
+  assert.ok((await reviews.wait(question.id, 5000, undefined, true))?.converted);
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
+  t.mock.timers.tick(60_001);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(send.mock.callCount(), 1);
+  assert.equal(cards.at(-1)?.state, "sent");
+  assert.equal((await readHeard())[0]?.outcome, "sent");
+});
+
+test("Voice re-enable restores a held receipt without a call sign or another session event", async () => {
+  const sessionId = "sdk:Will";
+  const id = "restore-unnamed-on-enable";
+  const ask = reviews.create(sessionId, "input", "Which build?", "Choose one.", null);
+  const stopFlags = onFeatureFlagsChanged(config => registry.emitFeatureFlags(config));
+  try {
+    await say("Will, inspect the release", id);
+    await act(id, "send-now");
+    assert.equal(registry.voiceRouter!.activeCards().find(card => card.id === id)?.state, "held");
+    voiceStateStore.useRoster(() => []);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+    assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+    const restored = registry.voiceRouter!.activeCards().find(card => card.id === id);
+    assert.equal(restored?.state, "held");
+    assert.equal(restored.parts[0]?.restoredSession?.id, sessionId);
+    const turn = registry.getSession(sessionId)!.pendingTurns.find(row => row.id === restored.parts[0]?.turnId)!;
+    assert.equal(pending.recall(sessionId, turn.id, turn.revision)?.spokenWords, "inspect the release");
+  } finally {
+    stopFlags();
+    voiceStateStore.useRoster(() => roster);
+    reviews.resolve(ask.id, "answer", "nightly");
+  }
+});
+
+test("recalling held speech removes the reason to file an ask on its next poll", async () => {
+  const id = "sdk:Will";
+  const ask = reviews.create(id, "input", "Which channel?", "Choose", null, { snoozable: true });
+  await say("Will, inspect the build", "recall-before-poll");
+  await act("recall-before-poll", "send-now");
+  const turn = registry.getSession(id)!.pendingTurns.at(-1)!;
+  assert.ok(pending.recall(id, turn.id, turn.revision));
+  const call = reviews.wait(ask.id, 1000, undefined, true);
+  reviews.resolve(ask.id, "answer", "nightly");
+  assert.equal((await call)?.response, "nightly");
+});
+
+test("Send now reports queued when conversion releases the session from awaiting review", async t => {
+  const id = "sdk:Will";
+  registry.applyDriverEvent(id, { kind: "state", state: "idle", activity: null });
+  const ask = reviews.create(id, "input", "Which release?", "Choose", null, { snoozable: true });
+  t.after(() => { reviews.resolve(ask.id, "dismiss", null); });
+  const call = reviews.wait(ask.id, 5000, undefined, true);
+  const getSession = registry.getSession.bind(registry);
+  t.mock.method(registry, "getSession", (key: string) => {
+    const session = getSession(key);
+    return key === id && session?.pendingReviews ? { ...session, state: "awaiting_review" as const } : session;
+  });
+  await say("Will, inspect the build", "release-awaiting-review");
+  assert.equal(registry.getSession(id)?.state, "awaiting_review");
+  await act("release-awaiting-review", "send-now");
+  assert.ok((await call)?.converted);
+  assert.equal(registry.getSession(id)?.state, "idle");
+  assert.equal(cards.at(-1)?.state, "queued");
+  assert.equal((await readHeard())[0]?.outcome, "queued");
 });

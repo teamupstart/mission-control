@@ -23,18 +23,23 @@ export function SessionControlToggle({ session }: { session: Session }): React.J
   const enabled = session.sessionControlEnabled === true;
   const available = canAuthorizeSessionControl();
   return (
-    <SessionToolbarMenu label={`Session control: ${enabled ? "On" : "Off"}`} title="Control other sessions"
+    <SessionToolbarMenu label={`Session control: ${session.sessionInspectionOnly ? "Read-only" : enabled ? "On" : "Off"}`} title="Control other sessions"
       icon={<SessionToolbarIcon kind="control" />} className={enabled ? "session-control-btn is-active" : "session-control-btn"}>
       {() => <>
-        <p className="session-toolbar-note">Allow this session to message and steer other live sessions on your behalf.</p>
+        <p className="session-toolbar-note">{session.sessionInspectionOnly
+          ? "This resident can inspect your other live sessions and workflows."
+          : "Allow this session to message and steer other live sessions on your behalf."}</p>
         {[false, true].map(value => <Tooltip key={String(value)} label={!available ? "Open the desktop app to change session control." : value ? "Allow this session to control other live sessions" : "Revoke this session’s control of other sessions"}><button type="button" role="menuitemradio"
-          aria-label={value ? "On" : "Off"} aria-checked={enabled === value} className="session-toolbar-option"
+          aria-label={value ? "On" : "Off"} aria-checked={!session.sessionInspectionOnly && enabled === value} className="session-toolbar-option"
           disabled={busy || !available} onClick={event => void change(value, event.nativeEvent.isTrusted)}>
-          <span>{value ? "On" : "Off"}</span><span aria-hidden="true">{enabled === value ? "✓" : ""}</span>
+          <span>{value ? "On" : "Off"}</span><span aria-hidden="true">{!session.sessionInspectionOnly && enabled === value ? "✓" : ""}</span>
         </button></Tooltip>)}
-        <p className="session-toolbar-note session-toolbar-foot">{available
+        {session.sessionInspectionOnly && <p className="session-toolbar-note">
+          Inspection can resume after a restart if the same resident run and conversation return. Choose Off in the desktop app to revoke it.
+        </p>}
+        {!session.sessionInspectionOnly && <p className="session-toolbar-note session-toolbar-foot">{available
           ? "Resets when this conversation changes or Mission Control restarts."
-          : "Open the desktop app to change session control."}</p>
+          : "Open the desktop app to change session control."}</p>}
         {error && <p className="session-toolbar-error" role="alert">{error}</p>}
       </>}
     </SessionToolbarMenu>

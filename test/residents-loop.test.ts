@@ -8,7 +8,9 @@ import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { foldAttention } from "../src/web/lib/attention.ts";
 import { residentWakeMarker } from "../src/shared/resident-turn.ts";
 import { mkSession, mkTask, mkTaskSummary, meta } from "./helpers/session-fixture.ts";
-import { openDb } from "../src/server/db.ts";
+import { openDb, recordDriverSessionUsage, sessionSpendSince } from "../src/server/db.ts";
+import { BUILTIN_RESIDENTS, type BuiltinResident } from "../src/server/residents/builtin-residents.ts";
+import { upsertSdkSession } from "../src/server/sdk/store.ts";
 import * as store from "../src/server/residents/store.ts";
 import * as state from "../src/server/residents/loop-store.ts";
 import { ResidentLoop } from "../src/server/residents/loop.ts";
@@ -65,11 +67,13 @@ test("the inbox draws no row for a stale needs-you hold, while a guardrail pause
   assert.equal(row?.kind === "session_blocked" ? row.activity : null, "Spend guardrail reached");
 });
 
-function fixture(options: Partial<ResidentLoopSettings> = {}, launched = true, schedule?: Partial<ResidentScheduleSection>, start = 1_800_000_000_000) {
+function fixture(options: Partial<ResidentLoopSettings> | BuiltinResident = {}, launched = true, schedule?: Partial<ResidentScheduleSection>, start = 1_800_000_000_000) {
   let now = start;
-  const settings = ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options, ...(schedule ? { schedule } : {}) });
-  store.createResidentProfile({ id: "profile", settings, at: now });
-  store.reserveResidentRun({ id: "run", profileId: "profile", profileRevision: 1, taskId: "task", launchRequestId: "request",
+  const profileId = "settings" in options ? options.id : "profile";
+  const settings = "settings" in options ? options.settings : ResidentProfileRevisionSchema.parse({ identity: { name: "Watcher" }, persona: { personaId: "p" }, loop: options, ...(schedule ? { schedule } : {}) });
+  if ("settings" in options) store.reconcileBuiltinResidentProfiles([options], now);
+  else store.createResidentProfile({ id: profileId, settings, at: now });
+  store.reserveResidentRun({ id: "run", profileId, profileRevision: 1, taskId: "task", launchRequestId: "request",
     launchInput: { version: 1, repoRoot: "/repo", additionalRepoRoots: [], instructions: "" }, repoSpelling: "/repo", persona: { personaId: "p", name: "Observer", guidanceMarkdown: "Observe" }, runInstructions: "", at: now });
   if (launched) store.markResidentRunLaunched("run", null, now);
   let session = mkSession({ id: "sdk:resident", runtime: "sdk", state: "idle", terminals: [], task: mkTaskSummary({ id: "task", kind: "resident" }),
@@ -362,6 +366,46 @@ test("rolling iteration window excludes the exact boundary, includes uncertainty
   loop.resume("run"); const released = state.claimResidentWake("run", "run_now", 0, f.now)!; state.settleResidentClaim(released, "released", f.now);
   assert.equal(state.residentGuardrail(f.run(), f.now), null); assert.equal(f.run().iteration, 2); assert.equal(f.run().lastSeq, 3);
   f.advance(1); assert.equal(state.residentGuardrail(f.run(), f.now), null);
+});
+
+test("Bug Fix Inspector lets the current turn finish and blocks subsequent wakes while rolling spend is over $20", async () => {
+  const inspector = BUILTIN_RESIDENTS.find(profile => profile.id === "builtin:bug-fix-inspector")!;
+  const f = fixture(inspector);
+  const model = "claude-sonnet-5-5";
+  const nativeId = "inspector-budget";
+  upsertSdkSession({ id: f.session.id, agent: "claude", agentSessionId: nativeId, cwd: "/repo",
+    taskId: f.run().taskId, model, effort: "xhigh", permissionMode: null, status: "running", turnInProgress: false });
+  function charge(turnId: string, reportedCostUsd: number) {
+    recordDriverSessionUsage({ noteKey: nativeId, sessionId: f.session.id, agent: "claude", turnId, ts: f.now,
+      models: [{ modelId: model, input: 10, output: 20, cacheRead: 0, cacheWrite: 0, reasoningOutput: 0, reportedCostUsd }] });
+  }
+
+  const firstChargeAt = f.now;
+  charge("launch", 19.50);
+  const loop = f.loop();
+  await flush();
+  await loop.runNow("run");
+  assert.equal(f.calls.length, 1, "a turn can start below the cap");
+  f.advance(1000);
+  charge("completed-turn", 1);
+  f.complete();
+  await flush();
+  assert.equal(sessionSpendSince([nativeId], f.now - state.RESIDENT_DAY_MS).costUsd, 20.50);
+
+  // Restore when the next scheduled pass is due, using the persisted charges.
+  await loop.stop();
+  f.advance(45 * 60_000);
+  const restored = f.loop();
+  await flush();
+  assert.equal(f.run().loopState, "paused");
+  assert.match(f.run().pauseReason!, /Spend guardrail reached/);
+  assert.equal(f.calls.length, 1, "the scheduled wake never reached the SDK");
+  f.advance(firstChargeAt + state.RESIDENT_DAY_MS - 1 - f.now);
+  await assert.rejects(restored.runNow("run"), /Spend guardrail reached/);
+  assert.equal(f.calls.length, 1, "Run now also respects the cap");
+  f.advance(1);
+  await restored.runNow("run");
+  assert.equal(f.calls.length, 2, "the first charge has expired and another turn can start");
 });
 
 test("200 counted turns fill the default cap and a pinned profile remains unchanged after editing and restart", async () => {

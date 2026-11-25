@@ -154,6 +154,9 @@ export const FIXED_OS_EXECUTABLES = {
   // The macOS binary-install bootstrap uses the OS-provided Bash before daemon startup.
   bash: "/bin/bash",
   osascript: "/usr/bin/osascript",
+  // The launcher certifies an OS-confined voice process. PATH overrides cannot supply its sandbox.
+  sandboxExec: "/usr/bin/sandbox-exec",
+  bubblewrap: "/usr/bin/bwrap",
   // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal
   // an instance that is already running rather than starting a second one. Not searched, and
   // deliberately not overridable: the desktop shell uses it before `app.whenReady()`, so there

@@ -19,12 +19,34 @@ export const VoiceUtteranceSchema = z.object({
 export type VoiceUtterance = z.infer<typeof VoiceUtteranceSchema>;
 
 export type VoiceDeliveryOutcome = "sent" | "queued" | "held" | "not-running" | "failed";
+export const VoiceCardNoticeSchema = z.object({
+  id: z.string().uuid(), title: z.string().max(256), body: z.string().max(32768),
+  remainingMs: z.number().int().positive(), scope: z.enum(["single", "both", "remaining"]).default("single"),
+}).strict();
+export type VoiceCardNotice = z.input<typeof VoiceCardNoticeSchema>;
+/** A focus race can be retried on blur. A null result ends the request without an action. */
+export type VoiceCardNoticeResult = "cancel" | "send-now" | "window-focused" | null;
 export interface VoiceCard {
   id: string;
   state: "pending" | "resolving" | "unsure" | "cancelled" | VoiceDeliveryOutcome;
-  parts: { target: SpokenName | null; text: string }[];
+  parts: {
+    target: SpokenName | null;
+    /** The outbox owner when a restored turn no longer has a spoken roster entry. */
+    restoredSession?: { id: string; name: string };
+    text: string;
+    outcome?: VoiceDeliveryOutcome | "cancelled";
+    /** The addressed command executed for this receipt. */
+    command?: VoiceAddressedCommand;
+    detail?: string;
+    /** The exact outbox row to recall, including after a two-part delivery. */
+    turnId?: string;
+    /** Addressed stops run as soon as routing resolves, even during a split's countdown. */
+    immediateStop?: boolean;
+  }[];
+  mentions?: SpokenName[];
+  windowMs?: number;
   deadline: number | null;
-  candidates: { kind: "agent" | "question"; id: string; title: string; detail: string }[];
+  candidates: { kind: "agent" | "question"; id: string; title: string; detail: string; target?: SpokenName }[];
   reason: string;
   openQuestions: number;
   detail?: string;
@@ -39,6 +61,11 @@ export interface HeardEntry {
   matchedName: string | null;
   pauseMs: number | null;
   detail: string;
+}
+
+export function voiceCardCanExpire(card: VoiceCard): boolean {
+  return !["pending", "resolving", "unsure", "held"].includes(card.state)
+    && !card.parts.some(part => part.outcome === "held" || (part.immediateStop && !part.outcome));
 }
 
 /**

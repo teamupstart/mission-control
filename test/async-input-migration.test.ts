@@ -14,7 +14,7 @@ process.env.MISSION_HOME = home;
 execFileSync(process.execPath, ["--import", "tsx", "-e", "await import(process.env.DB_MODULE).then(m => m.openDb())"], {
   env: { ...process.env, DB_MODULE: new URL("../src/server/db.ts", import.meta.url).href }, stdio: "pipe",
 });
-const COLUMNS = ["wait_mode", "meanwhile", "closed_reason"];
+const COLUMNS = ["wait_mode", "meanwhile", "closed_reason", "filed_by_voice_at", "voice_conversion_blocked"];
 const old = new DatabaseSync(join(home, "harness.db"));
 old.exec(`${COLUMNS.map((column) => `ALTER TABLE reviews DROP COLUMN ${column};`).join("\n")}
   INSERT INTO reviews (id, session_id, kind, title, body, status, response, snoozable, created_at, resolved_at)
@@ -36,6 +36,8 @@ test("version 38 upgrade adds the async-input columns, and an open question read
   assert.equal(question?.status, "pending");
   assert.equal(question?.snoozable, true);
   assert.equal(question?.waitMode, undefined, "an existing question was waited for inside the call");
+  assert.equal(question?.filedByVoiceAt, undefined);
+  assert.equal(db.fileReviewByVoice("open-question", 200), null, "an older daemon may have promised a call result");
   assert.equal(question?.meanwhile, undefined);
   assert.equal(question?.closedReason, undefined);
   const raw = d.prepare("SELECT mcp_wait_detached_at FROM reviews WHERE id = 'open-question'").get() as { mcp_wait_detached_at: number | null };

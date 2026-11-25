@@ -212,10 +212,10 @@ export function pipelineAgentForKindTransition(
  * than beside the rest of the draft shape because it is the one piece that reads the
  * browser: `lib/task-draft.ts` stays a pure translation between a form and a task.
  */
-function freshDispatchDraft(): DispatchDraft {
+function freshDispatchDraft(repoRoot = readLastDispatchRepo()): DispatchDraft {
   return {
     ...EMPTY_DISPATCH_DRAFT,
-    repoRoot: readLastDispatchRepo(),
+    repoRoot,
     // Secondary repos widen one task's worktree and write scope. They are never a default
     // for the next task, even though the primary repo deliberately remains sticky.
     extraRepoRoots: [],
@@ -303,9 +303,9 @@ type StashedDependencies = DispatchDraft["dependencies"] | typeof NO_STASH;
  * against the seed instead of "" is what keeps Clear greyed out on a form nobody has
  * touched yet.
  */
-function isEmptyDispatchDraft(d: DispatchDraft): boolean {
+function isEmptyDispatchDraft(d: DispatchDraft, seedRepo = readLastDispatchRepo()): boolean {
   return (
-    d.repoRoot.trim() === readLastDispatchRepo() &&
+    d.repoRoot.trim() === seedRepo &&
     d.extraRepoRoots.length === 0 &&
     !d.intent.trim() &&
     !d.title.trim() &&
@@ -646,8 +646,9 @@ export function harnessDefaultsLine(
  * a save that was only meant to fix a typo. So the slot carries the seed it was built
  * from, and a reopen whose row has moved on drops it and starts from the row.
  */
-export function DispatchLayer({
+function DispatchDraftOwner({
   opening,
+  suspended = false,
   tasks = [],
   sessions = [],
   personas = [],
@@ -679,6 +680,8 @@ export function DispatchLayer({
    * applies it.
    */
   opening: DispatchOpening | null;
+  /** A card-only route hides the form while this owner retains its drafts and attachment URLs. */
+  suspended?: boolean;
   tasks?: Task[];
   sessions?: Session[];
   /** Live Personas, for the Ensemble evaluator-guidance selector and the Advanced Persona choice. */
@@ -739,7 +742,8 @@ export function DispatchLayer({
   const requested = openingProblem ? null : opening;
   const editTask = requested?.kind === "edit" ? requested.task : null;
   const tourDemo = requested?.kind === "tour" ? requested.demo : null;
-  const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
+  const seedRepo = requested?.kind === "new" ? requested.followUp?.repoRoot : undefined;
+  const [draft, setDraft] = useState<DispatchDraft>(() => freshDispatchDraft(seedRepo));
   // Lives with the draft, which outlives the modal: a guess left by a closed form is still a guess.
   const draftProvisionalWorkflow = useRef<ProvisionalWorkflow | null>(null);
   // The tour demonstrates the real form without borrowing or erasing the operator's draft.
@@ -790,6 +794,7 @@ export function DispatchLayer({
   const tourDraftRef = useRef(tourSlot?.draft ?? null);
   const ensembleDraftRef = useRef(ensembleDraft);
   draftRef.current = draft;
+  useEffect(() => () => revokeAttachments(draftRef.current.attachments), []);
   tourDraftRef.current = tourSlot?.draft ?? null;
   ensembleDraftRef.current = ensembleDraft;
 
@@ -1022,9 +1027,9 @@ export function DispatchLayer({
 
   /** Clear, for a fresh dispatch: blank but for the seeded repo, as it opened. */
   const onNewRevert = useCallback(() => {
-    setDraft(freshDispatchDraft());
+    setDraft(freshDispatchDraft(seedRepo));
     setGuidedPass(null);
-  }, []);
+  }, [seedRepo]);
 
   /**
    * Clear the Ensemble draft: reset the compose fields AND rotate the request id, so the next
@@ -1032,10 +1037,10 @@ export function DispatchLayer({
    */
   const onEnsembleClear = useCallback(() => {
     revokeAttachments(draftRef.current.attachments);
-    setDraft(freshDispatchDraft());
+    setDraft(freshDispatchDraft(seedRepo));
     setGuidedPass(null);
     setEnsembleDraft(freshEnsembleDraft());
-  }, []);
+  }, [seedRepo]);
 
   /**
    * An Ensemble was accepted. Like a Single dispatch it clears the compose draft and revokes
@@ -1066,7 +1071,7 @@ export function DispatchLayer({
   );
 
   if (openingProblem) return refuse(openingProblem);
-  if (requested === null) return null;
+  if (requested === null || suspended) return null;
   refused.current = null;
 
   /**
@@ -1207,6 +1212,7 @@ export function DispatchLayer({
       onDraftChange={setDraft}
       provisionalWorkflowRef={draftProvisionalWorkflow}
       onAttachmentsChange={onAttachmentsChange}
+      seedRepo={seedRepo}
       onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
@@ -1220,6 +1226,16 @@ export function DispatchLayer({
       personas={personas}
     />
   );
+}
+
+export function DispatchLayer({ repairFollowUpId, ...props }: React.ComponentProps<typeof DispatchDraftOwner> & { repairFollowUpId?: string }) {
+  const followUp = props.opening?.kind === "new" ? props.opening.followUp : undefined;
+  const retainedId = followUp?.id ?? repairFollowUpId;
+  // Keep the regular owner's drafts and guided progress mounted underneath the temporary form.
+  return <>
+    <DispatchDraftOwner {...props} opening={followUp ? null : props.opening} />
+    {retainedId && <DispatchDraftOwner key={retainedId} {...props} opening={followUp ? props.opening : null} />}
+  </>;
 }
 
 /**
@@ -1245,6 +1261,7 @@ function DispatchModal({
   onDraftChange,
   provisionalWorkflowRef,
   onAttachmentsChange,
+  seedRepo,
   onRevert,
   onClose,
   onSubmitted,
@@ -1275,6 +1292,7 @@ function DispatchModal({
   provisionalWorkflowRef?: MutableRefObject<ProvisionalWorkflow | null>;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   /** Discard the working copy - an empty form for a create, the live row for an edit. */
+  seedRepo?: string;
   onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft, savedPinTask?: Task) => void;
@@ -3968,7 +3986,7 @@ function DispatchModal({
             onClick={mode.kind === "ensemble" ? mode.onEnsembleClear : clearDraft}
             disabled={
               busy ||
-              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft))
+              (ensembleMode ? false : editing ? !editDirty : isEmptyDispatchDraft(draft, seedRepo))
             }
           >
             {editing ? "Revert" : "Clear"}

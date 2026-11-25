@@ -493,7 +493,7 @@ export class PendingTurnManager {
     }
     const pendingTurn = createPendingTurn({
       id: `${idPrefix}${utteranceId ?? this.deps.id()}`,
-      ...(utteranceId !== undefined && { spokenWords: text }),
+      ...(utteranceId !== undefined && { spokenWords: text, spokenSessionId: session.id }),
       noteKey: noteKeyFor(session),
       text,
       now: this.deps.now(),
@@ -606,7 +606,8 @@ export class PendingTurnManager {
     const session = this.registry.getSession(sessionId);
     if (!session) return null;
     const key = noteKeyFor(session);
-    const recalled = recallPendingTurn(key, id, revision);
+    const heldVoiceTurn = this.registry.voiceRouter?.isHeldTurn(id) && featureEnabled("voice");
+    const recalled = recallPendingTurn(key, id, revision, heldVoiceTurn);
     if (recalled) {
       if (recalled.spokenWords !== undefined) this.registry.voiceRouter?.settleSpoken(recalled.id, "cancelled");
       this.registry.refreshPendingTurns(key);
@@ -726,14 +727,38 @@ export class PendingTurnManager {
       return;
     }
     if (event.type === "session_upsert") this.observeSession(event.session);
+    if (event.type === "voice_roster") {
+      for (const target of event.roster) {
+        const session = target.sessionId && this.registry.getSession(target.sessionId);
+        if (session) this.syncSpokenReceipts(session);
+      }
+    }
+    if (event.type === "review_upsert" && event.review.status === "pending" && event.review.filedByVoiceAt != null) {
+      // Filing a plan releases the call without changing the session’s pending review count.
+      const session = this.registry.getSession(event.review.sessionId);
+      if (session) {
+        this.syncSpokenReceipts(session);
+        this.scheduleDrain(noteKeyFor(session));
+      }
+    }
     if (event.type === "feature_flags") {
       for (const session of this.registry.liveSessions()) {
-        if (session.pendingTurns.some(row => row.spokenWords !== undefined)) this.scheduleDrain(noteKeyFor(session));
+        if (!session.pendingTurns.some(row => row.spokenWords !== undefined)) continue;
+        // Disabling Voice cleared the receipts. A held turn can outlive its call sign.
+        if (featureEnabled("voice")) this.syncSpokenReceipts(session);
+        this.scheduleDrain(noteKeyFor(session));
       }
     }
   }
 
+  private syncSpokenReceipts(session: Session): void {
+    if (session.pendingTurns.some(turn => turn.state === "queued" && turn.spokenWords !== undefined)) {
+      this.registry.voiceRouter?.syncQueuedTurns(session, this.registry.hasPendingReviewCall(session.id));
+    }
+  }
+
   private observeSession(session: Session): void {
+    this.syncSpokenReceipts(session);
     const key = noteKeyFor(session);
     const previousKey = this.knownKeys.get(session.id);
     this.knownKeys.set(session.id, key);
@@ -937,7 +962,7 @@ export class PendingTurnManager {
   }
 
   private spokenBlocked(session: Session, turn: PendingTurn): boolean {
-    return turn.spokenWords !== undefined && (!featureEnabled("voice") || session.pendingReviews > 0);
+    return turn.spokenWords !== undefined && (!featureEnabled("voice") || this.registry.hasPendingReviewCall(session.id));
   }
 
   private nextDelivery(session: Session): { turn: PendingTurn; at: number; action: "idle" | MessageDeliveryAction } | null {

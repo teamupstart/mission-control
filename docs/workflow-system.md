@@ -109,3 +109,13 @@ the existing orphan policy applies. Unknown launch, ownership conflict or missin
 visible in Sitrep without manufacturing a replacement workflow or agent. Evidence registration
 returns a retryable `handoff_awaiting_discovery` refusal until the live successor is verified;
 then the existing active Persona binding and issued checkout-scope checks apply unchanged.
+
+## Per-Persona repository access
+
+Publication hashes the normalized frozen graph together with the draft revision for idempotence.
+Changing a Persona’s access can therefore produce a new immutable version without editing the
+workflow. An access-free graph follows ordinary prompt capture and review. A read-enabled
+review receives the submitted artifact through its active claim. Node execution overrides,
+review-contract corrections, provider retry windows and token exhaustion use the existing
+Persona engine. Query metadata is paged separately from the run timeline.
+[Repository review workloads](repository-review-workloads.md)

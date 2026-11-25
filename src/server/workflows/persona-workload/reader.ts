@@ -778,6 +778,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       items: result.itemCount,
       durationMs: Date.now() - begin,
       truncated: result.truncated,
+      hasNextPage: result.nextCursor !== null,
       handles,
     });
     try {

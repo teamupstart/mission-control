@@ -223,6 +223,22 @@ process with a parent watchdog and verifies that the helper leaves no timer behi
 
 ## Spoken delivery
 
+Schema 61 reserves each accepted spoken outbox ID in the enqueue transaction. The ID survives
+retirement and recall. The upgrade seeds IDs from live spoken turns and retained delivery records.
+
+Schema 60 adds the nullable `reviews.filed_by_voice_at` timestamp. Filing a blocking ask by
+voice sets the timestamp, message wait mode and MCP detach stamp together. A compatible
+child can recover its receipt on a later poll, including after daemon restart. Existing
+reviews start with a null timestamp. A legacy duplicate receives a conflict once voice has filed the ask, preserving the receipt and its answer delivery.
+The migration also marks existing reviews
+with `voice_conversion_blocked` because an older daemon may already have promised a
+blocking answer. Issuing a call response or receiving a poll without the conversion
+capability sets that marker for the review. The hold lasts between polls and across restarts.
+
+A new spoken outbox row records the pending calls it encountered in `spoken_turn_review_waits`
+in the enqueue transaction. A capable child polling later can file its ask while those words
+are still queued in its conversation. Deleting the turn also deletes its review links.
+
 Schema 55 records the original words, composition time, and receiving work-cycle generation on
 spoken outbox rows. The first claim fixes the delivery text. At handoff the daemon records the conversation key
 and generation on the outbox row, alongside the time the transport reached its write guard.
@@ -308,3 +324,15 @@ unless the daemon can verify distinct earlier occurrences within its 512 KiB syn
 budget. Neither manual settlement nor this arbitration establishes a Spoken disclosure.
 Startup also removes orphan payloads left by earlier builds. An older file of unknown
 size cannot establish which turn was spoken.
+
+## Repository review compatibility
+
+Schema 62 stores Persona grants, frozen graph fingerprints, workload ownership and body-free
+query records. Historical graph JSON is preserved byte for byte. Missing access resolves to
+`none` when read. A daemon encountering a newer schema stops before applying schema changes.
+
+For a writer-disabled deployment or rollback, use a build that understands schema 62 and
+disable the Persona repository access preview. Existing runs and their repository citations
+remain readable. A pre-migration backup predates later operator changes. Restoring it is
+disaster recovery. Downgrading a live database to a build that cannot read its citations is
+unsupported.

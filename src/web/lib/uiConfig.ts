@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
-import type { VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
+import type { VoiceConfirmationPlacement, VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
 import { api, fetchUiConfig } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
@@ -75,7 +75,7 @@ function applyHydratedConfig({ config, voiceIndicatorVersion }: UiConfigView, in
   const overlap = current.voice.indicators !== indicatorsAtRead;
   if (config.voice && (overlap || !acceptIndicatorVersion(voiceIndicatorVersion))) {
     // The snapshot may predate our save or include a peer's later edit.
-    commit({ ...config, voice: { ...voice, indicators: current.voice.indicators } });
+    commit({ ...config, voice: current.voice });
     if (overlap) void reconcileVoiceIndicators();
     return;
   }
@@ -216,12 +216,15 @@ function acceptIndicatorVersion(next?: VoiceRevision, fromStream = false): boole
 }
 
 /** A committed selection from the daemon's ordered stream, including its reconnect snapshot. */
-export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision): void {
-  if (!acceptIndicatorVersion(version, true)) return;
+export function applyVoiceIndicatorSelection(indicators: string[], version?: VoiceRevision, confirmation = current.voice.confirmation): void {
+  if (acceptIndicatorVersion(version, true)) commitVoiceSelection(indicators, confirmation);
+}
+
+function commitVoiceSelection(indicators: string[], confirmation = current.voice.confirmation) {
   indicatorReadGeneration++;
   clearTimeout(indicatorRetryTimer);
   indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
-  commit({ ...current, voice: { ...current.voice, indicators } });
+  commit({ ...current, voice: { ...current.voice, confirmation, indicators } });
 }
 
 /** Retry a failed or superseded read without keeping the settings controls disabled. */
@@ -234,12 +237,32 @@ async function reconcileVoiceIndicators(): Promise<void> {
   if (view && (!view.config.voice || current.voice.indicators === atRead)) {
     indicatorRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
     if (view.config.voice && acceptIndicatorVersion(view.voiceIndicatorVersion)) {
-      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators } });
+      commit({ ...current, voice: { ...current.voice, indicators: view.config.voice.indicators, confirmation: view.config.voice.confirmation } });
     }
     return;
   }
   indicatorRetryTimer = setTimeout(() => void reconcileVoiceIndicators(), indicatorRetryDelay);
   indicatorRetryDelay = Math.min(indicatorRetryDelay * 2, UI_CONFIG_HYDRATE_MAX_RETRY_MS);
+}
+
+/** Apply the confirmed pair before the radio group releases its saving state. */
+export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
+  const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
+  const expected = latestIndicatorVersion ?? (await fetchUiConfig(deadline))?.voiceIndicatorVersion;
+  if (!expected) return false;
+  const result = await api.setVoicePlacement(placement, expected, deadline);
+  if (!result.ok) {
+    // The daemon may have committed a write whose response was lost.
+    void reconcileVoiceIndicators();
+    return false;
+  }
+  if (result.indicators && result.confirmation) {
+    if (acceptIndicatorVersion(result.voiceIndicatorVersion)) commitVoiceSelection(result.indicators, result.confirmation);
+  } else {
+    // Older daemons acknowledged the write without returning the committed selection.
+    await reconcileVoiceIndicators();
+  }
+  return true;
 }
 
 /** Persist one checkbox. Overlapping snapshots are reconciled against the daemon. */
@@ -255,7 +278,7 @@ export async function updateVoiceIndicator(id: VoiceIndicatorId, enabled: boolea
   if (!result.ok || !result.indicators) return "failed";
   const overlap = current.voice.indicators !== atWrite;
   if ((!overlap || result.voiceIndicatorVersion) && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
-    commit({ ...current, voice: { ...current.voice, indicators: result.indicators } });
+    commitVoiceSelection(result.indicators, result.confirmation);
   }
   if (overlap) {
     // The write is confirmed. Refresh the overlapping selection without holding the checkboxes.

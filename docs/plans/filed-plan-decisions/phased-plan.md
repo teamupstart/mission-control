@@ -197,11 +197,11 @@ adds, that addition is the whole of what Phase 2 may do to it.
   operator, Foreman or the daemon acting on its own produce it. Every other closure keeps its
   own status: an answer, `dismissed`, `orphaned` (eviction or merge) and `superseded`. A
   `withdrawn` review was therefore withdrawn by its own agent.
-- **Wait mode: decided at insert, with one conversion in one direction.** The mode is written
-  with the row. No flag change alters it, and no path turns a call-mode form into a filed one.
-  The one conversion is the one filed questions already have: an older MCP child that re-asks an
-  open filed form is handed the row and long-polls it, and `attachCall` clears the stored mode,
-  only while the form is still pending. **A converted form is a call-mode form for every rule in
+- **Wait mode is decided at insert.** No flag change alters it.
+  Voice converts a pending call to a filed ask when its waiting child requests that capability, and the ask then follows every filed-ask rule for listing, withdrawal, completion and merge closure.
+  In the other direction, an older MCP child that re-asks an
+  open form filed at creation is handed the row and long-polls it, and `attachCall` clears the stored mode,
+  only while the form is still pending. **A re-attached form is a call-mode form for every rule in
   this plan**, because nothing stored says it was ever filed:
   - it stays one pending review, and its answer is the call's result, never also a message;
   - `isFiledGate` and `isAgentAsk` are false for it, so it is not listed by

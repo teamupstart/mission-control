@@ -47,6 +47,7 @@ interface ImportedPersona {
   description: string;
   guidanceMarkdown: string;
   revision: number;
+  repositoryAccess: "none" | "read";
   provenance: {
     sourcePath: string;
     sourceRepo: string | null;
@@ -387,17 +388,20 @@ test("re-import adopts the new text as a new revision and clears the drift", asy
   const { request } = fixture();
   const path = writeRole("adopted.md", "# Adopted\n\nFirst edition.\n");
   const persona = (await (await importRole(request, path)).json()) as ImportedPersona;
+  assert.equal(persona.repositoryAccess, "none");
+  assert.ok(new WorkflowStore(db).setPersonaRepositoryAccess(persona.id, persona.revision, "read", Date.now()).ok);
   const firstHash = persona.provenance!.contentSha256;
 
   writeFileSync(path, "# Adopted\r\n\r\nSecond edition, with CRLF.  \r\n", "utf8");
   const reimported = await request(`/api/personas/${persona.id}/reimport`, {
     method: "POST",
-    body: JSON.stringify({ expectedRevision: 1 }),
+    body: JSON.stringify({ expectedRevision: 2 }),
   });
   assert.equal(reimported.status, 200);
   const updated = (await reimported.json()) as ImportedPersona;
   assert.equal(updated.guidanceMarkdown, "# Adopted\r\n\r\nSecond edition, with CRLF.  \r\n");
-  assert.equal(updated.revision, 2);
+  assert.equal(updated.revision, 3);
+  assert.equal(updated.repositoryAccess, "read");
   assert.notEqual(updated.provenance?.contentSha256, firstHash);
   assert.equal(updated.provenance?.sourcePath, path);
 

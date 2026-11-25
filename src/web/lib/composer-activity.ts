@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef } from "react";
+import { newRequestId } from "./request-id.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.ts";
 
 const HEARTBEAT_MS = 10_000;
@@ -14,13 +15,13 @@ export function useComposerActivity(sessionId: string): {
   onInput: () => void;
   release: () => void;
 } {
-  const clientId = useRef(globalThis.crypto.randomUUID());
+  const [clientId] = useState(newRequestId);
   const focused = useRef(false);
   const heartbeat = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const report = useCallback((isFocused: boolean, typed = false): void => {
-    void api.reportComposerActivity(sessionId, clientId.current, isFocused, typed);
-  }, [sessionId]);
+    void api.reportComposerActivity(sessionId, clientId, isFocused, typed);
+  }, [sessionId, clientId]);
 
   const stopHeartbeat = useCallback((): void => {
     if (heartbeat.current) clearInterval(heartbeat.current);

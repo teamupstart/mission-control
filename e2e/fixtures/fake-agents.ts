@@ -1009,6 +1009,7 @@ export function writeFakeAgents(home: string): FakeAgents {
   mkdirSync(binDir, { recursive: true });
   mkdirSync(recordDir, { recursive: true });
 
+  copyFileSync(fileURLToPath(new URL("./fake-repository-review.mjs", import.meta.url)), join(binDir, "fake-repository-review.mjs"));
   const claude = join(binDir, "fake-claude");
   copyFileSync(fileURLToPath(new URL("./fake-claude.mjs", import.meta.url)), claude);
   chmodSync(claude, 0o755);

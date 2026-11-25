@@ -21,6 +21,7 @@ export function ResidentControlStatus({ session, name, badge = false }: {
   name: string;
   badge?: boolean;
 }): React.JSX.Element {
+  if (session.sessionInspectionOnly) return <span className="resident-control-state" role="status">Read-only inspection</span>;
   const granted = session.sessionControlEnabled === true;
   const status = granted ? "control granted" : "control not granted";
   return (

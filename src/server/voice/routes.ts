@@ -378,12 +378,14 @@ export function registerVoiceRoutes(
   app.post("/voice/listener/supervised", allowDrain(true), limitBody, async c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, z.object({ instance: SpeechInstanceSchema, state: z.enum(["started", "exited"]) }));
-    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (!parsed.ok) return disabled ?? c.json({ error: "invalid_supervisor_report" }, 400);
+    if (!parsed.ok) return disabledFeatureResponse(c, VOICE_FLAG) ?? c.json({ error: "invalid_supervisor_report" }, 400);
     const { instance, state } = parsed.data;
     const proof = c.req.header(VOICE_SUPERVISOR_PROOF_HEADER);
+    const needsShellVerifier = instance.startsWith("shell_") && (state === "exited" || featureEnabled(VOICE_FLAG));
+    const verifierReady = !needsShellVerifier || await loadShellVerifier();
+    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
     if (disabled && state !== "exited") return disabled;
-    if (instance.startsWith("shell_") && !await loadShellVerifier()) return c.json({ error: "supervisor_verifier_unavailable" }, 503);
+    if (!verifierReady) return c.json({ error: "supervisor_verifier_unavailable" }, 503);
     if (disabled) {
       // A trusted exit can arrive before its start. Persist it even on a fresh, disabled daemon.
       if (!store.disabledSpeech()?.canRetireLaunch(instance) && !verifySupervisorReport(instance, state, proof, () => false)) return disabled;

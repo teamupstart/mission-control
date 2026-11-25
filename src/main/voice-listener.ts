@@ -55,7 +55,7 @@ export class VoiceListener {
       this.launching = result.then(child => {
         this.launching = undefined;
         this.observe(child, directory);
-        if (this.closed || this.directory !== directory || replacement !== this.replacement) this.terminate();
+        if (this.child === child && (this.closed || this.directory !== directory || replacement !== this.replacement)) this.terminate();
       }, () => {
         this.launching = undefined;
         this.scheduleRetry();
@@ -77,21 +77,25 @@ export class VoiceListener {
     // close follows both a normal exit and a spawn error (including a missing binary).
     let spawnError: string | undefined;
     child.once("error", (error: NodeJS.ErrnoException) => { spawnError = error.code ?? error.name; });
-    this.exited = new Promise(resolve => {
-      const close = (code: number | null, signal: string | null) => {
-        this.log(`Voice listener close pid=${pid} code=${code ?? "none"} signal=${signal ?? "none"} requested=${!!this.stopping}` +
-          (spawnError ? ` error=${spawnError}` : ""));
-        clearTimeout(this.stopping);
-        this.stopping = undefined;
-        this.child = null;
+    const close = (code: number | null, signal: string | null) => {
+      this.log(`Voice listener close pid=${pid} code=${code ?? "none"} signal=${signal ?? "none"} requested=${!!this.stopping}` +
+        (spawnError ? ` error=${spawnError}` : ""));
+      clearTimeout(this.stopping);
+      this.stopping = undefined;
+      this.child = null;
+      if (!this.directory || this.closed) return;
+      if (directory !== this.directory) { this.start(); return; }
+      this.scheduleRetry(pid);
+    };
+    if (child.exitCode != null || child.signalCode != null) {
+      this.exited = Promise.resolve();
+      close(child.exitCode, child.signalCode);
+    } else {
+      this.exited = new Promise(resolve => child.once("close", (code, signal) => {
         resolve();
-        if (!this.directory || this.closed) return;
-        if (directory !== this.directory) { this.start(); return; }
-        this.scheduleRetry(pid);
-      };
-      if (child.exitCode != null || child.signalCode != null) close(child.exitCode, child.signalCode);
-      else child.once("close", close);
-    });
+        close(code, signal);
+      }));
+    }
   }
 
   private terminate(): void {

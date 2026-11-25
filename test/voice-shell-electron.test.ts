@@ -574,11 +574,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     const publishSpeaking = (id: string) => events!.write("data: " + JSON.stringify({ type: "voice_state", state: {
       ...voiceStateOff(), configuredHotkey: chord, mode: "listening", muted: false, speech: {job: {id, state: "speaking"}},
     } }) + "\n\n");
+    const activeJob = () => app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.voice.state.speech?.job?.id);
     await t.test("a tap during playback stops the streamed job without toggling mute", async () => {
       const id = crypto.randomUUID();
-      const before = reports.length;
       publishSpeaking(id);
-      await until(() => reports.length > before);
+      await until(async () => await activeJob() === id);
       const beforeTap = toggles;
       await post(true);
       await post(false);
@@ -617,7 +617,6 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       const oldJob = crypto.randomUUID();
       const newJob = crypto.randomUUID();
       const before = toggles;
-      const activeJob = () => app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.voice.state.speech?.job?.id);
       publishSpeaking(oldJob);
       await until(async () => await activeJob() === oldJob);
       await click("right-click");

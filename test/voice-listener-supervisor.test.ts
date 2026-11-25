@@ -74,6 +74,32 @@ test("the shell owns one granted listener per ready model, retries crashes and d
   assert.equal(models.length, 4);
 });
 
+test("an already-exited asynchronous launch cannot signal its replacement or finish its shutdown", async () => {
+  let deliver!: (child: ChildProcess) => void;
+  const launching = new Promise<ChildProcess>(resolve => { deliver = resolve; });
+  const signals: string[] = [];
+  const replacement = Object.assign(new EventEmitter(), { kill: (signal: string) => signals.push(signal) });
+  const listener = new VoiceListener(directory => directory === "/a" ? launching : replacement as unknown as ChildProcess, () => {});
+  const state = voiceStateOff();
+  state.mode = "listening";
+  state.model = { ...state.model, status: "ready", backend: "fluidaudio", directory: "/a" };
+  listener.update(state, true);
+  state.model.directory = "/b";
+  listener.update(state, true);
+  deliver(Object.assign(new EventEmitter(), { exitCode: 0, signalCode: null }) as ChildProcess);
+  await launching;
+  assert.equal(replacement.listenerCount("close"), 1);
+  assert.deepEqual(signals, []);
+
+  let drained = false;
+  const stopped = listener.stop().then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(drained, false);
+  replacement.emit("close", 0, null);
+  await stopped;
+});
+
 test("switching voice off disarms a pending retry", t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let starts = 0;
@@ -213,28 +239,35 @@ test("recovery stops a verified prior process, preserves a live peer, and handle
   const peer = join(home, "voice/supervised/dev.json");
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
   const dev = createVoiceSupervisor("dev", generateKeyPairSync("ed25519").privateKey);
-  const prior = await signer.launch(home, helper, [], process.env, async () => {}, (instance, pid, startedAt) => {
-    assert.ok(writeVoiceRecord(home, slot, {instance, pid, startedAt}));
-  });
-  const peerChild = await dev.launch(home, helper, [], process.env, async () => {}, (instance, pid, startedAt) => {
-    assert.ok(writeVoiceRecord(home, peer, {instance, pid, startedAt}));
-  });
-  await Promise.all([once(prior.child.stdout, "data"), once(peerChild.child.stdout, "data")]);
-  const peerOriginal = readFileSync(peer, "utf8");
-  signer.pauseExitRetries();
-  dev.pauseExitRetries();
+  const children: ChildProcess[] = [];
   const exits: string[] = [];
   const supervisor = new MacListenerSupervisor(home, "shell", signer, helper, async (id, event) => {
     if (event === "exited") exits.push(id);
   });
   t.after(async () => {
-    prior.child.kill();
-    peerChild.child.kill();
+    await Promise.all(children.map(async child => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const closed = once(child, "close");
+      child.kill();
+      await closed;
+    }));
     await supervisor.close();
     signer.pauseExitRetries();
     dev.pauseExitRetries();
     rmSync(home, {recursive: true, force: true});
   });
+  const prior = await signer.launch(home, helper, [], process.env, async () => {}, (instance, pid, startedAt) => {
+    assert.ok(writeVoiceRecord(home, slot, {instance, pid, startedAt}));
+  });
+  children.push(prior.child);
+  const peerChild = await dev.launch(home, helper, [], process.env, async () => {}, (instance, pid, startedAt) => {
+    assert.ok(writeVoiceRecord(home, peer, {instance, pid, startedAt}));
+  });
+  children.push(peerChild.child);
+  await Promise.all([once(prior.child.stdout, "data"), once(peerChild.child.stdout, "data")]);
+  const peerOriginal = readFileSync(peer, "utf8");
+  signer.pauseExitRetries();
+  dev.pauseExitRetries();
   await t.waitFor(async () => {
     await supervisor.recoverPrevious();
     assert.equal(existsSync(slot), false);
@@ -257,7 +290,7 @@ test("recovery stops a verified prior process, preserves a live peer, and handle
   assert.equal(existsSync(slot), false);
 
   const unrelated = spawn(helper, []);
-  t.after(() => unrelated.kill());
+  children.push(unrelated);
   await once(unrelated, "spawn");
   const stale = JSON.parse(peerOriginal);
   assert.ok(writeVoiceRecord(home, peer, {...stale, pid: unrelated.pid, startedAt: "earlier birth"}));

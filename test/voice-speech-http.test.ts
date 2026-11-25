@@ -10,7 +10,7 @@ import { MessageChannel } from "node:worker_threads";
 import { Socket } from "node:net";
 import { voiceProcessBirth } from "../src/server/voice/process-birth.ts";
 import { text } from "node:stream/consumers";
-import test, { afterEach } from "node:test";
+import test, { afterEach, type TestContext } from "node:test";
 import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -88,7 +88,7 @@ async function expectReplacementCapture(server = app) {
   assert.equal((await replacement.poll()).capture, true);
 }
 
-test("an unanswered desktop verifier request returns 503 without recording a launch, then a verified retry succeeds", { timeout: 10000 }, async t => {
+function deferredVerifierServer(t: TestContext) {
   const { port1: daemonPort, port2: shellPort } = new MessageChannel();
   const server = new Hono();
   // Route registration captures the private port that Electron supplies in a utility process.
@@ -99,6 +99,11 @@ test("an unanswered desktop verifier request returns 503 without recording a lau
   process.env = { ...originalEnv, MISSION_VOICE_DESKTOP_VERIFIER: "1" };
   delete process.env.MISSION_VOICE_SHELL_PUBLIC_KEY;
   t.after(() => { process.env = originalEnv; shellPort.close(); daemonPort.close(); });
+  return { server, shellPort };
+}
+
+test("an unanswered desktop verifier request returns 503 without recording a launch, then a verified retry succeeds", { timeout: 10000 }, async t => {
+  const { server, shellPort } = deferredVerifierServer(t);
   t.mock.timers.enable({ apis: ["setTimeout"] });
 
   const shell = player(listenerId, server);
@@ -130,6 +135,42 @@ test("an unanswered desktop verifier request returns 503 without recording a lau
   assert.equal((await retry).status, 200);
   assert.deepEqual(JSON.parse(readFileSync(receipt, "utf8")), { instance: shell.instance });
   assert.equal((await shell.request("/api/voice/speech/audition", {})).status, 200);
+});
+
+test("enabling Voice during exit verification preserves another helper's speaking job", async t => {
+  store.reset();
+  const { server, shellPort } = deferredVerifierServer(t);
+  const shell = player(listenerId, server);
+  toggle(false);
+  const requested = once(shellPort, "message");
+  const exit = shell.report("exited");
+  const [request] = await requested;
+
+  toggle(true);
+  const peer = player(crypto.randomUUID(), server);
+  await peer.announce();
+  assert.equal((await peer.hello()).status, 200);
+  const job = await audition();
+  assert.equal((await peer.pickup()).speak.id, job);
+  assert.equal((await peer.event(job, "started")).status, 200);
+
+  shellPort.postMessage({ data: { ...request, key: fixtureSupervisorEnv.MISSION_VOICE_SHELL_PUBLIC_KEY } });
+  assert.equal((await exit).status, 200);
+  assert.equal(store.speech.launchExited(shell.instance), true);
+  assert.equal(store.speech.live?.state, "speaking");
+  assert.equal((await peer.event(job, "ended")).status, 200);
+});
+
+test("disabling Voice during start verification refuses the launch", async t => {
+  const { server, shellPort } = deferredVerifierServer(t);
+  const shell = player(listenerId, server);
+  const requested = once(shellPort, "message");
+  const start = shell.report("started");
+  const [request] = await requested;
+  toggle(false);
+  shellPort.postMessage({ data: { ...request, key: fixtureSupervisorEnv.MISSION_VOICE_SHELL_PUBLIC_KEY } });
+  assert.equal((await start).status, 404);
+  assert.equal(store.speech.announced.has(shell.instance), false);
 });
 
 test("a signed exit revokes an outstanding directive and prevents a late hello from restoring capture", async () => {

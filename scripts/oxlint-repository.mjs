@@ -82,20 +82,40 @@ function reachingAssignments(context, node, variable, declaration) {
   return { values, overwritten: latest !== undefined };
 }
 
-function matchesLocalValue(context, initial, matches) {
+function directArguments(context, definition) {
+  if (definition?.type !== "Parameter") return [];
+  const fn = definition.node;
+  const index = fn.params.indexOf(definition.name);
+  if (index < 0) return [];
+  const declarator = fn.parent;
+  const callee = fn.type === "FunctionDeclaration" ? fn.id :
+    declarator.type === "VariableDeclarator" && declarator.parent.kind === "const" ? declarator.id : null;
+  const variable = localBinding(context, callee);
+  const args = [];
+  for (const { identifier } of variable?.references ?? []) {
+    const call = identifier.parent;
+    if (call.type !== "CallExpression" || call.callee !== identifier || index >= call.arguments.length) continue;
+    if (call.arguments.slice(0, index + 1).some((arg) => arg.type === "SpreadElement")) continue;
+    args.push(call.arguments[index]);
+  }
+  return args;
+}
+
+function matchesLocalValue(context, initial, matches, followArguments = false) {
   const seen = new Set();
   const pending = [initial];
   while (pending.length > 0) {
     const node = pending.pop();
     if (!node || seen.has(node)) continue;
     seen.add(node);
-    if (node.type === "TSAsExpression" || node.type === "TSSatisfiesExpression") {
+    if (node.type === "TSAsExpression" || node.type === "TSSatisfiesExpression" || node.type === "TSNonNullExpression") {
       pending.push(node.expression);
       continue;
     }
     const variable = localBinding(context, node);
-    const binding = variable?.defs[0]?.name;
-    const declaration = variable?.defs[0]?.node;
+    const definition = variable?.defs[0];
+    const binding = definition?.name;
+    const declaration = definition?.node;
     if (declaration?.type === "VariableDeclarator" && declaration.parent.kind !== "const") {
       const { values, overwritten } = reachingAssignments(context, node, variable, declaration);
       pending.push(...values);
@@ -103,16 +123,21 @@ function matchesLocalValue(context, initial, matches) {
     }
     if (matches(node, binding)) return true;
     if (declaration?.type === "VariableDeclarator" && declaration.id === binding) pending.push(declaration.init);
+    if (followArguments) pending.push(...directArguments(context, definition));
   }
   return false;
 }
 
 const agentOperands = new Set(["agent", "agentType", "runner"]);
 function selectsAgent(context, node) {
-  return matchesLocalValue(context, node, (value, binding) =>
-    agentOperands.has(name(value)) ||
-    (value.type === "MemberExpression" && agentOperands.has(name(value.property, value.computed))) ||
-    annotation(binding) === "AgentType");
+  return matchesLocalValue(context, node, (value, binding) => {
+    const property = binding?.parent;
+    return agentOperands.has(name(value)) ||
+      (value.type === "MemberExpression" && agentOperands.has(name(value.property, value.computed))) ||
+      (property?.type === "Property" && property.parent.type === "ObjectPattern" &&
+        property.value === binding && agentOperands.has(name(property.key, property.computed))) ||
+      annotation(binding) === "AgentType";
+  });
 }
 
 const agentNames = new Set(["claude", "codex", "pi"]);
@@ -185,7 +210,7 @@ export default {
               return member(value, "req") || (property?.type === "Property" &&
                 property.parent.type === "ObjectPattern" && property.value === binding &&
                 name(property.key, property.computed) === "req");
-            });
+            }, true);
             if (isRequest) {
               context.report({ node, message: "Parse request JSON through src/server/http-body.ts." });
             }
@@ -238,7 +263,7 @@ export default {
                 return hasRegistrySessions(ownerBinding) || (!ownerType &&
                   (name(candidate) === "registry" || member(candidate, "registry")));
               });
-            });
+            }, true);
             if (isRegistryMap) report(node);
           },
           Property(node) {

@@ -641,3 +641,38 @@ test("a stalled preview coalesces new prefixes and lets final addressing finish 
   assert.deepEqual(delivered, ["Steve, check the build"]);
   assert.deepEqual(published, ["first prefix", "Steve, check the build"]);
 });
+
+test("a one-batch recording can publish a pending prefix while final recognition runs", { timeout: 3000 }, async () => {
+  const finalStarted = deferred();
+  const partialPublished = deferred();
+  const phases: string[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/directive")) return Response.json({ revision: "active", capture: true, roster: ["Steve"], inputDevice: "built-in" });
+    const body = JSON.parse(String(init.body));
+    if (path.endsWith("/transcript")) {
+      if (body.phase === "audio") await finalStarted.promise;
+      phases.push(body.text ?? body.phase);
+      if (body.text === "unfinished words") partialPublished.resolve();
+    }
+    if (path.endsWith("/utterances")) phases.push("addressed " + body.text);
+    return Response.json({ accepted: true });
+  });
+  const recognition = (text: string) => ({ text, tokens: [], timestamps: [], durations: [] });
+  const pcm = new Float32Array(512 * 48);
+  let frames = 0;
+  let finished = false;
+  await playRecording(client, signal => recordingSegments(pcm, () => ({
+    acceptWaveform() { frames++; },
+    isDetected: () => frames > 3,
+    isEmpty: () => !finished,
+    flush() { finished = true; }, pop() { finished = false; }, reset() {},
+    front: () => ({ start: 0, samples: pcm }),
+  }), signal, voiceHostTimeUs), async () => {
+    finalStarted.resolve();
+    await partialPublished.promise;
+    return recognition("Steve, check the build");
+  }, async () => recognition("unfinished words"));
+  assert.equal(frames, 48);
+  assert.deepEqual(phases, ["ready", "audio", "unfinished words", "addressed Steve, check the build", "Steve, check the build"]);
+});

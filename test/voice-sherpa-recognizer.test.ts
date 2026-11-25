@@ -1,4 +1,3 @@
-import { deferred } from "./helpers/deferred.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
@@ -57,22 +56,20 @@ test("the published sherpa addon transcribes a recording through the listener an
   const app = new Hono();
   const captures: VoiceUtterance[] = [];
   let posts = 0;
-  const previewPhases: string[] = [];
-  const firstWords = deferred();
+  const readings: { phase: string; posts: number; final: boolean; text: string }[] = [];
   app.use("/voice/listener/transcript", async (c, next) => {
     const sample = await c.req.raw.clone().json();
     await next();
-    if (!posts && !sample.final && (await c.res.clone().json()).accepted) {
+    if ((await c.res.clone().json()).accepted) {
       const preview = voiceStateStore.state().transcript;
-      if (preview && (preview.phase !== "words" || preview.text.trim())) previewPhases.push(preview.phase);
-      if (preview?.phase === "words" && preview.text.trim()) firstWords.resolve();
+      if (preview) readings.push({ phase: preview.phase, posts, final: sample.final === true, text: preview.text });
     }
   });
   let hellos = 0;
   let acceptedAfterRelease = false;
   let onDirectivePoll: (() => void) | undefined;
   app.use("/voice/listener/directive", async (_c, next) => {
-    await onDirectivePoll?.();
+    onDirectivePoll?.();
     await next();
   });
   let onAcceptedCapture: (() => void) | undefined;
@@ -182,18 +179,15 @@ test("the published sherpa addon transcribes a recording through the listener an
     await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
     assert.equal(hellos, 0);
     assert.equal(posts, 0);
-    // This file is read faster than real time. Hold the second batch at the
-    // fixture daemon until recognition publishes the unfinished first batch.
-    let polls = 0;
-    onDirectivePoll = async () => { if (++polls === 2) await firstWords.promise; };
-    try { await play(fixture); }
-    finally { onDirectivePoll = undefined; firstWords.resolve(); }
+    await play(fixture);
     assert.ok(hellos > 0);
     assert.equal(posts, 1);
   });
   assert.equal(captures.length, 1);
-  await t.test("the built listener publishes quiet, detected audio and recognized words before its first utterance", () => {
-    assert.deepEqual([...new Set(previewPhases)], ["ready", "audio", "words"]);
+  await t.test("short WAV playback reports quiet and audio and publishes the accepted final words", () => {
+    // Either decoder can finish first on a short file. Completed addressing has priority.
+    assert.deepEqual(readings.slice(0, 2).map(r => r.phase), ["ready", "audio"]);
+    assert.deepEqual(readings.at(-1), { phase: "words", final: true, posts: 1, text: captures[0]!.text });
   });
   const capture = captures[0]!;
   assert.equal(capture.backend, "sherpa-onnx");
@@ -269,8 +263,12 @@ test("the published sherpa addon transcribes a recording through the listener an
   await t.test("a five-second pause setting still joins recorded speech across Sherpa’s 20-second threshold", async () => {
     voiceStateStore.reset();
     setVoiceConfig({ endOfSpeechMs: 5000 });
+    const before = posts;
+    readings.length = 0;
     const messages = await playPhrases("past-twenty-seconds.wav", ...Array<Buffer>(9).fill(phrase), silence(5000));
     assert.equal(messages.length, 1);
+    assert.ok(readings.some(r => r.posts === before && !r.final && r.phase === "words" && r.text.trim()),
+      "unpaced playback published a recognized prefix before the long utterance reached the router");
     assert.ok(messages[0]!.words.at(-1)!.endMs > 8 * phrase.length / pcmBytesPerMs, "the ninth command belongs to the first capture");
   });
   await t.test("Sherpa drops a recording’s overlong command through its selected pause and admits the next command", async t => {

@@ -85,12 +85,17 @@ export async function playRecording(client: ListenerClient,
       if (segment.done) return;
       if (segment.value === null) continue;
       lifetime.signal.throwIfAborted();
-      discardPreviews();
+      // The final starts immediately. A short recording can still have its first
+      // audio report in flight, so let that preview publish until the final supersedes it.
       const capturedAt = Date.now();
       const result = await decode(segment.value.samples, directive.roster);
       lifetime.signal.throwIfAborted();
-      if (!result.text.trim()) continue;
+      if (!result.text.trim()) {
+        discardPreviews();
+        continue;
+      }
       const response = await client.utterance(result.text, tokenWords(result), captureRevision, capturedAt, lifetime.signal, segment.value.capture);
+      discardPreviews();
       if (!response) {
         console.warn("Voice listener dropped one segment after waiting for push-to-talk release.");
         continue;

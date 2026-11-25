@@ -64,7 +64,7 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         if (!detected) pendingStart = Math.max(pendingStart, offset - LEAD);
         if (offset === samples.length) vad.flush();
         if (observe && pendingStart >= discardedThrough && offset - pendingStart <= MAX_SEGMENT) {
-          if ((detected || !vad.isEmpty()) && (previewOnset === undefined || offset - previewThrough >= PREVIEW_INTERVAL)) {
+          if ((detected || !vad.isEmpty()) && (previewOnset === undefined || (vad.isEmpty() && offset - previewThrough >= PREVIEW_INTERVAL))) {
             previewOnset ??= hostNowUs();
             previewThrough = offset;
             // At the endpoint, playback already has the complete segment to decode.

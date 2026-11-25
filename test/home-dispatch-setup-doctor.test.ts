@@ -1436,3 +1436,36 @@ test("two overlapping setups share one install sequence: the stale build is unin
     await r.cleanup();
   }
 });
+
+test("an unexpected setup argument is reported with usage, and only --service is explained as the Foreman service", async () => {
+  const r = await rig();
+  try {
+    const typo = await r.run("setup", "--of");
+    assert.equal(typo.code, 2);
+    assert.match(typo.err, /unexpected argument --of\nusage: mctl setup/);
+    assert.doesNotMatch(typo.err, /Foreman/, "a typo is not blamed on the Foreman service");
+    const service = await r.run("setup", "--service");
+    assert.equal(service.code, 2);
+    assert.match(service.err, /unexpected argument --service \(the Foreman service is not available in this build\)/);
+    assert.equal((await r.run("setup", "--off", "--of")).code, 2);
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("an install at the right version that failed to load is not called already installed", async () => {
+  const r = await rig();
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    r.claude.update({ plugins: [{ id: MOD_ID, version: "2.2.0", scope: "user", enabled: true, errors: ["hook failed"] }] });
+    const before = pluginCalls(r.claude).length;
+    const mod = await runModStep({ live: false, deps: { env: r.env } });
+    assert.equal(mod.status, "ok", mod.message);
+    assert.doesNotMatch(mod.message, /already installed/, "a plugin that failed to load is not reported as fine");
+    const calls = pluginCalls(r.claude).slice(before);
+    assert.ok(calls.includes("uninstall") && calls.includes("install"), "it is replaced: " + calls.join(","));
+    assert.deepEqual(r.claude.state().plugins[0]?.errors ?? [], []);
+  } finally {
+    await r.cleanup();
+  }
+});

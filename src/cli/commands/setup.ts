@@ -21,7 +21,9 @@ export const command: CommandSpec = {
   implemented: true,
   run: async (args, io) => {
     if (args.length > 1 || (args.length === 1 && args[0] !== "--off")) {
-      io.stderr("mctl setup: unexpected argument " + args[0] + " (the Foreman service is not available in this build)\nusage: " + command.usage + "\n");
+      // Only the flag that asks for the Foreman service gets that explanation; a typo does not.
+      const why = args[0] === "--service" ? " (the Foreman service is not available in this build)" : "";
+      io.stderr("mctl setup: unexpected argument " + args[0] + why + "\nusage: " + command.usage + "\n");
       return 2;
     }
     // The environment comes from the caller, so the steps see what `mctl` was started with.

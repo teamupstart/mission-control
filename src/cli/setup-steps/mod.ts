@@ -136,7 +136,7 @@ async function installLocked(claude: ClaudeCli, bin: string, deps: SetupDeps, mo
   if ("error" in before) return installFailure(before.error, deps.stateDir, bin);
   const installed = before.mod;
   const replacing = installed?.scope === "user";
-  if (marketplace.path === modDir && installed && installed.enabled && installed.scope === "user" && installed.version === version) {
+  if (marketplace.path === modDir && installed && installed.enabled && installed.scope === "user" && installed.version === version && installed.errors.length === 0) {
     if (deps.runCache) deps.runCache.installed = before;
     return { id, status: "ok", message: "the mod " + version + " is already installed (claude " + claude.version + ")" };
   }

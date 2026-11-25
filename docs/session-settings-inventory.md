@@ -98,7 +98,7 @@ follow the dashboard's feature and build gates.
 | `workflow-check-commands` | 3 | Protected | Workflow command definitions in Library affect executable argv and share the workflow trust boundary |
 | `workflow-retention` | 3 | Read/write with confirmation boundary | `rawEvidenceDays`, `completedRunDays` and `maxCompletedRuns` can be extended. Shortening requires dashboard confirmation. |
 | `workflow-health` | 3 | Status | Workflow delivery health and failure views |
-| `task-sources` | 3 | Read/write and protected | Existing source label, interval, refresh, batch cap, task kind, agent, priority, labels and provider search/mapping fields are editable. Enablement is consent. Repository, credentials, automatic dispatch, write-back and Jira query changes while write-back is configured remain operator-controlled. |
+| `task-sources` | 3 | Read/write and protected | Existing source label, interval, refresh, batch cap, task kind, agent, priority, labels and provider search/mapping fields are editable. The operator controls enablement, repository, credentials, automatic dispatch and write-back. GitHub filter and Jira query changes require operator action while write-back is configured because they can select issues outside its approved scope. |
 | `conductor-repos` | 3 | Protected | Pipelines `repos` commissioning policy and repository paths, withheld by this build |
 | `conductor-overview` | 3 | Status and actions | Commissioning and runs, withheld by this build |
 | `conductor-detection` | 3 | Status | Engine environment and availability, withheld by this build |

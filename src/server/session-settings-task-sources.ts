@@ -1,6 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { TaskSourcesConfigPatchSchema } from "@shared/protocol.ts";
-import { JiraConfigSchema, type TaskSourceInstance, type TaskSourcesConfig } from "@shared/task-source.ts";
+import type { TaskSourceInstance, TaskSourcesConfig } from "@shared/task-source.ts";
 import type { SettingsValue } from "@shared/settings-mcp.ts";
 import { appConfigRevision } from "./db.ts";
 import { bindTypedSettings, field } from "./typed-settings.ts";
@@ -12,16 +13,24 @@ const commonFields = [
   "defaults.kind", "defaults.agent", "defaults.priority", "defaults.labels",
 ] as const;
 
-const providerFields = {
+const queryFields: Record<TaskSourceInstance["kind"], readonly string[]> = {
   "github-issues": [
-    "config.labelsAny", "config.assignedToMe", "config.unassignedOnly",
-    "config.milestone", "config.priorityFrom", "config.copyLabels", "config.limit",
+    "config.labelsAny", "config.assignedToMe", "config.unassignedOnly", "config.milestone",
   ],
-  jira: ["config.jql", "config.limit", "config.priorityFromJira"],
+  jira: ["config.jql"],
+};
+
+const providerFields = {
+  "github-issues": [...queryFields["github-issues"], "config.priorityFrom", "config.copyLabels", "config.limit"],
+  jira: [...queryFields.jira, "config.limit", "config.priorityFromJira"],
 } as const satisfies Record<TaskSourceInstance["kind"], readonly string[]>;
 
 function sourceField(source: TaskSourceInstance, path: string) {
   const [parent, leaf] = path.split(".") as [string, string?];
+  const readValue = (row: TaskSourceInstance): SettingsValue => {
+    const value = (row as unknown as Record<string, SettingsValue>)[parent];
+    return (leaf ? (value as Record<string, SettingsValue>)[leaf] : value) ?? null;
+  };
   return field<TaskSourcesConfig>("taskSources", "sources", "task-sources", {
     key: `taskSources.${settingTargetId(source.id)}.${path}`,
     label: `${source.label.slice(0, 64) || "Task source"}: ${path}`,
@@ -29,17 +38,16 @@ function sourceField(source: TaskSourceInstance, path: string) {
     read(config) {
       const current = config.sources.find(row => row.id === source.id && row.kind === source.kind);
       if (!current) throw new Error("Task source no longer exists");
-      const value = (current as unknown as Record<string, SettingsValue>)[parent];
-      return (leaf ? (value as Record<string, SettingsValue>)[leaf] : value) ?? null;
+      return readValue(current);
     },
     patch: (config, value) => ({
       sources: config.sources.map(row => {
         if (row.id !== source.id) return row;
-        // A disabled source can still be swept manually. Jira does not provide a
-        // local way to prove a changed JQL stays within the operator's approved scope.
-        if (path === "config.jql" && row.kind === "jira"
+        // A disabled source can still be swept manually. A changed query can
+        // select issues outside the operator's approved write-back scope.
+        if (queryFields[row.kind].includes(path)
           && (row.writeback.onPrOpened || row.writeback.onCompleted || row.writeback.resolve)
-          && value !== JiraConfigSchema.parse(row.config).jql) {
+          && !isDeepStrictEqual(value, readValue(row))) {
           throw new ProtectedSettingValue(controlMetadata("task-sources").destination);
         }
         return { ...row, ...(leaf ? { [parent]: { ...(row[parent as "config" | "defaults"] as object), [leaf]: value } } : { [parent]: value }) };

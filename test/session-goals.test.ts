@@ -107,6 +107,46 @@ test("accepted prompts share one capture path and refuse a stale conversation ow
   assert.equal(r.getSession(s.id)?.goal?.text, "capture SDK prompts after acknowledgement");
 });
 
+test("a first standalone release records authority without establishing a Goal", () => {
+  const { r, s } = withSession("first-handoff-release", "%12");
+  const now = Date.now();
+  const released = r.captureAcceptedPrompt(s.id, "Resume automatic handoff.", s.id, now);
+  assert.equal(released?.handoffReleasedAt, now);
+  assert.equal(released?.objective, null);
+  assert.equal(released?.promptRevision, 0);
+  assert.deepEqual(released?.pendingPrompts, []);
+  assert.equal(getSessionGoal(s.id)?.handoffReleasedAt, now);
+  assert.equal(r.getSession(s.id)?.goal, null);
+  const captured = r.captureAcceptedPrompt(s.id, "Implement heading counts.", s.id, now + 10);
+  assert.equal(captured?.openingPrompt, "Implement heading counts.");
+  assert.equal(captured?.deliverableUpdatedAt, now + 10);
+  assert.equal(captured?.promptRevision, 1);
+});
+
+test("a reconciled deliverable uses its accepted instruction time after restart", () => {
+  const { r, s } = withSession("delayed-deliverable", "%12");
+  const now = Date.now();
+  r.captureAcceptedPrompt(s.id, "Consider mockups.", s.id, now);
+  r.upsertGoal(s.id, { objective: "Output: mockups", resolvedPromptRevision: 1, pendingPrompts: [] }, now + 1);
+  r.captureAcceptedPrompt(s.id, "Implement heading counts.", s.id, now + 10);
+
+  const reopened = new Registry();
+  reopened.applyDiscovery([mkDiscovered({ syntheticId: s.id, cwd: s.cwd! })]);
+  assert.deepEqual(reopened.getGoal(s.id)?.pendingPrompts, [
+    { revision: 2, prompt: "Implement heading counts.", acceptedAt: now + 10 },
+  ]);
+  const model = reopened.resolveGoal(s.id, {
+    objective: "Implement selected heading counts.",
+    relationship: "replace",
+    objectiveVersion: 2,
+    resolvedPromptRevision: 2,
+    pendingPrompts: [],
+  }, "Implement heading counts.", now + 30);
+  assert.equal(model?.updatedAt, now + 30);
+  assert.equal(model?.deliverableUpdatedAt, now + 10);
+  assert.equal(getSessionGoal(s.id)?.deliverableUpdatedAt, now + 10);
+});
+
 test("a background task reporting in never overwrites the captured ask", () => {
   // The common path: 200 of 396 real UserPromptSubmit events are task notifications. If
   // these landed, a goal would be replaced by machinery every time a task finished.
@@ -166,7 +206,7 @@ test("every rapid pending instruction survives a restart in capture order", () =
   const r2 = new Registry();
   r2.applyDiscovery([mkDiscovered({ syntheticId: s.id, cwd: "/wt/g15" })]);
   r2.applyHook(evt({ event: "Stop", env, sessionId: "agent-rapid" }));
-  assert.deepEqual(r2.getGoal(s.id)?.pendingPrompts, [
+  assert.deepEqual(r2.getGoal(s.id)?.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
     { revision: 2, prompt: "also show the effective objective in the drawer" },
     { revision: 3, prompt: "then add the focused regression test" },
   ]);
@@ -238,7 +278,7 @@ test("a later instruction becomes focus without replacing the durable objective"
   assert.equal(stored.relationship, null, "the relationship is unknown until reconciliation");
   assert.equal(stored.promptRevision, 2);
   assert.equal(stored.resolvedPromptRevision, 1);
-  assert.deepEqual(stored.pendingPrompts, [
+  assert.deepEqual(stored.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
     { revision: 2, prompt: "first add the drawer regression test" },
   ]);
   assert.equal(card.text, "Build objective-aware Foreman completion");
@@ -566,7 +606,7 @@ test("a later prompt re-queues an unclear instruction, so accepting records both
   assert.equal(reopened.resolvedPromptRevision, 1);
   assert.equal(reopened.promptRevision, 3);
   assert.equal(reopened.relationship, null);
-  assert.deepEqual(reopened.pendingPrompts, [
+  assert.deepEqual(reopened.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
     { revision: 2, prompt: "maybe also restyle it" },
     { revision: 3, prompt: "then add the regression test" },
   ]);
@@ -632,7 +672,9 @@ test("only an unclear verdict is re-queued; a settled instruction stays resolved
   r.captureAcceptedPrompt(s.id, "then add the regression test", key);
   const goal = r.getGoal(s.id)!;
   assert.equal(goal.resolvedPromptRevision, 2);
-  assert.deepEqual(goal.pendingPrompts, [{ revision: 3, prompt: "then add the regression test" }]);
+  assert.deepEqual(goal.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
+    { revision: 3, prompt: "then add the regression test" },
+  ]);
 });
 
 test("accepting is idempotent: a settled goal comes back unchanged", () => {

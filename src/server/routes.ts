@@ -397,7 +397,7 @@ import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
-import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
@@ -7683,7 +7683,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return c.json({ error: "Wrap-up mode does not match its route" }, 400);
     }
     const current = registry.getGoal(session.id);
-    if (expected !== undefined && (expected ? !sessionIntentMatches(current, expected) : current !== null)) {
+    if (expected !== undefined && (expected
+      ? !sessionIntentMatches(current, expected)
+      : current !== null && !isHandoffReleaseOnlyGoal(current))) {
       return c.json({ error: "Queue completion intent changed" }, 409);
     }
     const key = registry.ensureQueue(session.id);

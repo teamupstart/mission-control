@@ -20,9 +20,10 @@ export function contextualHandoffRestriction(instruction: string): string {
   return HANDOFF_RESTRICTION_PREFIX + goalLine(instruction, 480);
 }
 
-function restrictionParts(clause: string, listItem: boolean): boolean[] {
+function restrictionParts(clause: string, listItem: boolean, nextClause = ""): boolean[] {
   const parts = clause.split(DIRECTIVE_JOIN);
-  const delegates = parts.some((part, index) => index % 2 === 0 && WORKFLOW_DELEGATION.test(part.trim()));
+  const delegates = WORKFLOW_DELEGATION.test(nextClause.trim())
+    || parts.some((part, index) => index % 2 === 0 && WORKFLOW_DELEGATION.test(part.trim()));
   return parts.map((part, index) => {
     if (index % 2) return false;
     const directive = part.trim().replace(/^also\s+/i, "");
@@ -41,10 +42,10 @@ export function explicitHandoffRestriction(instruction: string | null): string |
     const listMarker = line.match(LIST_MARKER)?.[0] ?? "";
     const trimmed = line.slice(listMarker.length).trim();
     if (trimmed.startsWith(HANDOFF_RESTRICTION_PREFIX)) restrictions.push(trimmed);
-    else for (const clause of trimmed.split(/[.!?;]+/)) {
-      const matches = restrictionParts(clause, Boolean(listMarker));
+    else trimmed.split(/[.!?;]+/).forEach((clause, index, clauses) => {
+      const matches = restrictionParts(clause, Boolean(listMarker), clauses[index + 1]);
       restrictions.push(...clause.split(DIRECTIVE_JOIN).filter((_, index) => matches[index]).map((part) => part.trim()));
-    }
+    });
     return line;
   });
   return restrictions.join(" and ") || undefined;
@@ -56,10 +57,11 @@ export function withoutHandoffRestrictions(objective: string): string {
     const content = line.slice(listMarker.length);
     const trimmed = content.trim();
     if (trimmed === GOAL_OPERATOR_HANDOFF_ONLY || trimmed.startsWith(HANDOFF_RESTRICTION_PREFIX)) return "";
-    const remaining = content.replace(/[^.!?;]+([.!?;]*)/g, (sentence: string, punctuation: string) => {
+    const remaining = content.replace(/[^.!?;]+([.!?;]*)/g, (sentence: string, punctuation: string, offset: number) => {
       const clause = sentence.slice(0, sentence.length - punctuation.length);
       const parts = clause.split(DIRECTIVE_JOIN);
-      const matches = restrictionParts(clause, Boolean(listMarker));
+      const nextClause = content.slice(offset + sentence.length).split(/[.!?;]/, 1)[0];
+      const matches = restrictionParts(clause, Boolean(listMarker), nextClause);
       if (!matches.some(Boolean)) return sentence;
       let retained = "";
       for (let index = 0; index < parts.length; index += 2) {

@@ -124,7 +124,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { agentActive, hasBlocker, isAwaiting, reportBucket } from "@shared/session.ts";
-import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
@@ -11033,6 +11033,10 @@ export class Registry extends EventEmitter {
     if (!text) return null;
     const raw = clampPrompt(text);
     const prev = this.getGoal(id);
+    const releasesHandoff = isStandaloneHandoffRelease(raw);
+    if (releasesHandoff && (!prev || isHandoffReleaseOnlyGoal(prev))) {
+      return this.mergeGoal(id, { handoffReleasedAt: now }, now);
+    }
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
     // An `unclear` verdict resolved its revision without incorporating it anywhere, and this
@@ -11045,7 +11049,7 @@ export class Registry extends EventEmitter {
       ? { revision: prev.promptRevision, prompt: prev.prompt }
       : null;
     return this.mergeGoal(id, {
-      ...(isStandaloneHandoffRelease(raw) ? { handoffReleasedAt: now } : {}),
+      ...(releasesHandoff ? { handoffReleasedAt: now } : {}),
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -11054,7 +11058,7 @@ export class Registry extends EventEmitter {
       ...(unclearHead ? { resolvedPromptRevision: unclearHead.revision - 1 } : {}),
       pendingPrompts: [
         ...(unclearHead ? [unclearHead] : prev?.pendingPrompts ?? []),
-        { revision, prompt: raw },
+        { revision, prompt: raw, acceptedAt: now },
       ],
       ...(firstObjective
         ? {
@@ -11135,7 +11139,11 @@ export class Registry extends EventEmitter {
       ? { revision, instruction: clampPrompt(instruction.trim()), relationship: "steer",
           rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
       : undefined;
-    return this.mergeGoal(id, patch, now, steering);
+    const goal = this.getGoal(id);
+    const acceptedAt = goal?.pendingPrompts.find((p) => p.revision === revision)?.acceptedAt;
+    // Legacy and requeued unclear prompts may lack a capture time. Keep the prior
+    // deliverable cutoff rather than treating the later model write as a new instruction.
+    return this.mergeGoal(id, patch, now, steering, acceptedAt ?? goal?.deliverableUpdatedAt);
   }
 
   /**
@@ -11210,6 +11218,7 @@ export class Registry extends EventEmitter {
     patch: SetGoal & { openingPrompt?: string; handoffReleasedAt?: number },
     now: number,
     steering?: WorkflowSteeringNote | WorkflowSteeringNote[],
+    acceptedAt = now,
   ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
@@ -11247,7 +11256,7 @@ export class Registry extends EventEmitter {
           ? patch.pendingPrompts
           : prev?.pendingPrompts ?? [],
       ...(handoffReleasedAt === undefined ? {} : { handoffReleasedAt }),
-      deliverableUpdatedAt: deliverableChanged ? now : prev?.deliverableUpdatedAt ?? prev?.updatedAt ?? now,
+      deliverableUpdatedAt: deliverableChanged ? acceptedAt : prev?.deliverableUpdatedAt ?? prev?.updatedAt ?? now,
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     if (Array.isArray(steering)) upsertSessionGoalWithSteeringNotes(next, steering);

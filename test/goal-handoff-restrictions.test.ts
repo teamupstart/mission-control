@@ -28,6 +28,14 @@ test("negated workflow delegation keeps the explicit no-PR restriction", () => {
   assert.equal(explicitHandoffRestriction(objective), "Do not open a PR");
 });
 
+test("an adjacent affirmative PR assignment is delegation and keeps approval limits", () => {
+  const delegated = "Don’t open a PR. Let the bound Workflow open it.";
+  assert.equal(explicitHandoffRestriction(delegated), undefined);
+  assert.equal(withoutHandoffRestrictions(delegated), delegated);
+  assert.equal(explicitHandoffRestriction("Do not open a PR until I approve. Let the bound Workflow open it."), "Do not open a PR until I approve");
+  assert.equal(explicitHandoffRestriction("Do not open a PR. Do not let the bound Workflow open it."), "Do not open a PR");
+});
+
 test("delegation cannot remove a prior approval condition", () => {
   for (const restriction of [
     "Do not open a PR until I approve",

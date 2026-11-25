@@ -12,7 +12,7 @@ import { isPaused } from "@shared/pause.ts";
 import { hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
-import { hasOperatorHandoffHold, resolvedSessionIntent } from "@shared/goal.ts";
+import { hasOperatorHandoffHold, isHandoffReleaseOnlyGoal, resolvedSessionIntent } from "@shared/goal.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
@@ -404,7 +404,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
 
     const payload = autoWrapupPayload(cfg.wrapup);
     const intentGuard = resolvedSessionIntent(intent);
-    if (intent && !intentGuard) return { kind: "none" };
+    if (intent && !intentGuard && !isHandoffReleaseOnlyGoal(intent)) return { kind: "none" };
     // Work items can reserve publication until a later explicit release. A
     // different Goal by itself cannot lift that restriction.
     if (items.some((item) => (item.sentAt ?? item.createdAt) >= (intent?.handoffReleasedAt ?? 0) &&
@@ -419,12 +419,12 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     };
     // A resolved Goal supersedes earlier item deliverables. Later items still
     // declare their own outputs, independently of code left by earlier work.
-    const laterItems = intent ? items.filter((item) =>
+    const laterItems = intentGuard && intent ? items.filter((item) =>
       (item.sentAt ?? item.createdAt) > (intent.deliverableUpdatedAt ?? intent.updatedAt)) : [];
     const block = automaticWrapupBlock({
       ...eligibility,
       objective: intentGuard?.objective ?? (
-        [session.task?.title, ...items.map((item) => item.intent)].filter(Boolean).join("\n\n") || null
+        [session.task?.title, ...items.map((item) => withoutHandoffRestrictions(item.intent))].filter(Boolean).join("\n\n") || null
       ),
     }) ?? (laterItems.length ? automaticWrapupBlock({
       ...eligibility,

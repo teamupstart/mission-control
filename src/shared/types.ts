@@ -1506,6 +1506,8 @@ export interface SessionIntentGuard {
 
 export interface GoalPromptRevision {
   revision: number;
+  /** Accepted operator time. Older captured revisions may lack this provenance. */
+  acceptedAt?: number;
   /** Null only for a legacy unresolved revision whose text was already lost before migration. */
   prompt: string | null;
 }

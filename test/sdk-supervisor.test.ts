@@ -923,7 +923,7 @@ test("accepted launch-window follow-ups wait for the native Goal key in order", 
     assert.equal(goal?.noteKey, "agent-launch-window");
     assert.equal(goal?.objective, START.prompt);
     assert.equal(goal?.prompt, "an early human follow-up");
-    assert.deepEqual(goal?.pendingPrompts, [
+    assert.deepEqual(goal?.pendingPrompts.map(({ revision, prompt }) => ({ revision, prompt })), [
       { revision: 1, prompt: START.prompt },
       { revision: 2, prompt: "an early human follow-up" },
     ]);

@@ -13055,11 +13055,12 @@ function pendingGoalPrompts(r: SessionGoalRow): SessionGoal["pendingPrompts"] {
     if (Array.isArray(parsed)) {
       const valid = parsed.flatMap((entry) => {
         if (!entry || typeof entry !== "object") return [];
-        const revision = (entry as { revision?: unknown }).revision;
-        const prompt = (entry as { prompt?: unknown }).prompt;
+        const { revision, prompt, acceptedAt } = entry as { revision?: unknown; prompt?: unknown; acceptedAt?: unknown };
         return Number.isInteger(revision) && Number(revision) > 0 &&
           (typeof prompt === "string" || prompt === null)
-          ? [{ revision: Number(revision), prompt }]
+          ? [{ revision: Number(revision), prompt,
+            ...(typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt) ? { acceptedAt } : {}),
+          }]
           : [];
       });
       const unresolved = valid

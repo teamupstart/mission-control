@@ -533,16 +533,17 @@ async function refine(
         : relationship === "amend"
           ? amended
           : r.value.objective;
-      const text = mayChangeObjective ? r.value.goal : current.text;
+      let text = mayChangeObjective ? r.value.goal : current.text;
       const released = requestsRelease && currentObjective ? withoutHandoffRestrictions(currentObjective) : null;
       let handoffContractChanged = false;
-      if (released) {
+      if (released !== null) {
         handoffContractChanged = released !== objective;
         objective = released;
+        if (!released) text = null;
         relationship = handoffContractChanged ? "replace" : "steer";
         rationale = "The operator explicitly released the completion handoff.";
       }
-      const preserveHold = hadHold && !released;
+      const preserveHold = hadHold && released === null;
       const contextualRestriction = !requestsRelease && !hadHold && hasOperatorHandoffHold(r.value.objective)
         ? contextualHandoffRestriction(prompt.prompt)
         : undefined;

@@ -93,6 +93,13 @@ export function hasOperatorHandoffHold(objective: string | null): boolean {
   return held;
 }
 
+/** A settled release with no deliverable leaves the queue's existing contract in force. */
+export function isHandoffReleaseOnlyGoal(goal: SessionGoal | null): boolean {
+  return Boolean(goal && goal.handoffReleasedAt !== undefined && !goal.objective &&
+    goal.resolvedPromptRevision === goal.promptRevision && goal.pendingPrompts.length === 0 &&
+    (goal.promptRevision === 0 || goal.relationship === "replace"));
+}
+
 export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {
   const objective = goal?.objective?.trim() ?? "";
   if (

@@ -1748,7 +1748,21 @@ test("a delivered mockup item stays artifact-only after release, until the deliv
   assert.equal(tick({ items, intent: { objective, updatedAt: NOW - 10_000 } }).kind, "skip-wrapup");
   const afterRelease = { objective, updatedAt: NOW, handoffReleasedAt: NOW, deliverableUpdatedAt: NOW - 10_000 };
   assert.equal(tick({ items, intent: afterRelease }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: { ...afterRelease, handoffReleasedAt: undefined } }).kind, "skip-wrapup");
   assert.equal(tick({ items, intent: {
     ...afterRelease, objective: "Implement counts for collapsed headings.", deliverableUpdatedAt: NOW,
   } }).kind, "ask-wrapup");
+});
+
+test("a standalone release before the first Goal leaves the drained item contract in force", () => {
+  const items = DRAINED().map((item) => ({
+    ...item, sentAt: NOW - 5_000, intent: "Output: mockups\nDo not open a PR.",
+  }));
+  assert.equal(tick({ items, intent: null }).kind, "none");
+  const releaseOnly = { objective: null, promptRevision: 0, handoffReleasedAt: NOW };
+  assert.equal(tick({ items, intent: { ...releaseOnly, resolvedPromptRevision: 0 } }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: {
+    ...releaseOnly, objective: "", relationship: "replace", promptRevision: 2, resolvedPromptRevision: 2,
+  } }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: { ...releaseOnly, promptRevision: 2 } }).kind, "none");
 });

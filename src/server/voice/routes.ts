@@ -18,6 +18,7 @@ import { createMiddleware } from "hono/factory";
 import {
   VOICE_FLAG,
   VOICE_BACKENDS,
+  VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
   VOICE_CAPTURE_END_HEADER,
   VOICE_CAPTURE_START_HEADER,
   VOICE_DRAINING_REVISIONS_HEADER,
@@ -333,7 +334,7 @@ export function registerVoiceRoutes(
     if (result === "already_exited") return c.json({ error: "launch_exited" }, 409);
     if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
     if (result === "unavailable") return c.json({ error: "supervisor_record_unavailable" }, 503);
-    if (state === "exited") store.retireCapture(instance);
+    if (state === "exited" && store.retireCapture(instance) === false) return c.json({ error: "capture_grant_unavailable" }, 503);
     return c.json({ ok: true });
   });
   app.get("/voice/speech/jobs/:id/audio", gate, c => {
@@ -364,7 +365,10 @@ export function registerVoiceRoutes(
   app.get("/voice/listener/directive", drainGate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
-    store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"));
+    if (c.req.method === "HEAD") return c.body(null, 405, { Allow: "GET" });
+    if (store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision")) === false) {
+      return c.json({ error: "capture_grant_unavailable" }, 503);
+    }
     const refusal = directiveRefusal(c);
     if (refusal) return refusal;
     const instance = c.req.header(VOICE_INSTANCE_HEADER);
@@ -386,17 +390,25 @@ export function registerVoiceRoutes(
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
       c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
     }
-    if (!c.req.raw.signal.aborted) store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next);
+    if (!c.req.raw.signal.aborted) {
+      const served = store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next, c.req.header(VOICE_CAPTURE_PID_HEADER));
+      if (served === "unavailable") return c.json({ error: "capture_grant_unavailable", capture: false, speak: null }, 503);
+      if (served === "exited") return c.json({ error: "listener_exited", capture: false, speak: null }, 409);
+      if (served === false) return c.json({ error: "capture_process_unverified", capture: false, speak: null }, 409);
+    }
     return c.json(next);
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data, c.req.header(VOICE_INSTANCE_HEADER));
+    const pid = z.coerce.number().int().positive().max(0x7fffffff).optional().safeParse(c.req.header(VOICE_CAPTURE_PID_HEADER));
+    if (!pid.success) return c.json({ error: "invalid_capture_process" }, 400);
+    const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data, c.req.header(VOICE_INSTANCE_HEADER), pid.data);
     if (!result.ok) {
-      return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : 409);
+      return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : result.error === "launch_unavailable" ? 503 : 409);
     }
+    if (result.captureOffset !== undefined) c.header(VOICE_CAPTURE_LOCK_HEADER, String(result.captureOffset));
     return c.json({ accepted: true, protocol: result.protocol });
   });
   app.post("/voice/shell-report", gate, limitBody, async (c) => {

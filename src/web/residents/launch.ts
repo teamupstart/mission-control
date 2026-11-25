@@ -1,5 +1,6 @@
 import {
   residentRunControlRecorded,
+  residentGrantScope,
   type LaunchResident,
   type ResidentLaunchResult,
   type ResidentProfile,
@@ -33,7 +34,7 @@ export function residentLaunchCanGrantControl(): boolean {
  * or recorded - the daemon clears the run's record in both cases.
  */
 export function residentRunControlOutcome(run: ResidentRun): "granted" | "pending" | "not-granted" | null {
-  if (!run.settings.authority.controlOtherSessions) return null;
+  if (!residentGrantScope(run.settings.authority)) return null;
   if (residentRunControlRecorded(run.control)) return "granted";
   return run.control.authorizedAt !== null ? "pending" : "not-granted";
 }
@@ -76,7 +77,7 @@ export async function launchResident(
   options: { profile?: ResidentProfile | null } = {},
 ): Promise<ResidentLaunchAnswer> {
   const profile = options.profile;
-  if (profile?.id === profileId && profile.settings.authority.controlOtherSessions) {
+  if (profile?.id === profileId && residentGrantScope(profile.settings.authority)) {
     authorizeResidentLaunch({ requestId: input.requestId, profileId, revision: profile.revision });
   }
   let response: Response;

@@ -20,6 +20,7 @@ if (process.versions.electron || realpathSync(fileURLToPath(import.meta.url)).in
 const { MISSION_VOICE_DAEMON_URL: url, MISSION_VOICE_TOKEN_FILE: token, MISSION_VOICE_MODEL_DIR: directory } = process.env;
 if (!url || !token || !directory) throw new Error("Missing voice listener connection settings");
 const client = new ListenerClient(url, token);
+client.trackProcess(fileURLToPath(new URL("../native/state-lock.node", import.meta.url)));
 const mono = readRecording(file);
 const launchedManifest = process.env.MISSION_VOICE_LISTENER_MANIFEST;
 const manifest = values["test-model"] ? VOICE_TEST_MODEL : launchedManifest

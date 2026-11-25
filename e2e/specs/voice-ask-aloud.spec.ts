@@ -1,7 +1,9 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
-import { beSpeaker, say } from "../fixtures/voice.ts";
+import { beSpeaker, enableVoice, say, sendHello } from "../fixtures/voice.ts";
 
 test.use({ daemonEnv: fixtureSupervisorEnv });
 
@@ -92,6 +94,11 @@ test("a delayed player cannot start after Stop and confirms silence before recap
     await expect(async () => expect(await speaker.start()).toBe(false)).toPass();
     expect(speaker.playing).toBe(false);
     expect((await speaker.poll()).capture).toBe(false);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const status = page.getByRole("status", { name: "Voice mode" });
+    await expect(status).toContainText("the listener did not confirm that speech had stopped", { timeout: 10_000 });
+    await expect(status).not.toContainText("no listener is running");
+    await captureCard(status, "stop-unconfirmed");
     await speaker.end("stopped");
     expect((await speaker.poll()).capture).toBe(true);
   } finally { await speaker.exit(); }
@@ -120,4 +127,12 @@ test("an unrelated audition changes the unsure card hint until silence without a
     await speaker.end("stopped");
     await expect(card).toContainText(usual);
   } finally { await speaker.exit(); }
+});
+
+test("a fixture speaker retires its signed launch when another listener owns capture at setup", async ({ daemon }) => {
+  await enableVoice(daemon);
+  expect(await sendHello(daemon)).toBe(200);
+  await expect(beSpeaker(daemon)).rejects.toThrow("Fixture listener hello was refused.");
+  const launches = await readFile(join(daemon.home, "voice/supervised-instances.json"), "utf8");
+  expect(JSON.parse(launches)).toEqual([]);
 });

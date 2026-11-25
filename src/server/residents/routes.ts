@@ -9,7 +9,7 @@ import type { Registry } from "../registry.ts";
 import type { ResidentManager } from "./manager.ts";
 import type { ResidentLoop } from "./loop.ts";
 import { ResidentLoopRefusal, liveRun } from "./loop-store.ts";
-import { getResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
+import { getAvailableResidentProfile, getResidentRun, residentRunIdentityByRequest } from "./store.ts";
 import { ProposeResidentInstructionChangesSchema } from "@shared/resident-instructions.ts";
 import type { ResidentInstructionChanges } from "./instruction-changes.ts";
 
@@ -107,7 +107,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
           // left the same proof, so their interrupted restarts finish too.
           const endedByRestart = stored.run.endedAt !== null && stored.run.pauseReason === RESIDENT_RESTART_PAUSE_REASON;
           if (!endedByRestart) liveRun(id);
-          const profile = getResidentProfile(stored.run.profileId);
+          const profile = getAvailableResidentProfile(stored.run.profileId);
           if (!profile || profile.archivedAt !== null || profile.revision <= stored.run.profileRevision) throw new ResidentLoopRefusal("No newer live profile revision is available.");
           const problem = deps.residents.settingsProblem(profile.settings);
           if (problem) throw new ResidentLoopRefusal(problem);

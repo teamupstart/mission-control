@@ -436,6 +436,22 @@ test("a placement body that arrives late cannot undo a newer save, including for
   assert.equal((await (await json("/api/ui/config")).json()).config.voice.confirmation, "popover");
 });
 
+test("reaffirming the current placement publishes a new revision and supersedes an older choice", async t => {
+  const path = "/api/voice/confirmation";
+  const toast = await (await json(path, "PUT", { confirmation: "toast" })).json();
+  let announced: ServerEvent | undefined;
+  t.after(onVoiceIndicatorsChanged(indicators => registry.emitVoiceIndicators(indicators)));
+  t.after(registry.subscribe(event => { if (event.type === "voice_indicators") announced = event; }));
+  const reaffirm = await json(path, "PUT", { confirmation: "toast", expectedVersion: toast.voiceIndicatorVersion });
+  assert.equal(reaffirm.status, 200);
+  const saved = await reaffirm.json();
+  assert.ok(saved.voiceIndicatorVersion.revision > toast.voiceIndicatorVersion.revision);
+  assert.deepEqual(announced, { type: "voice_indicators", confirmation: "toast", indicators: toast.indicators, voiceIndicatorVersion: saved.voiceIndicatorVersion });
+  const stale = await json(path, "PUT", { confirmation: "pill", expectedVersion: toast.voiceIndicatorVersion });
+  assert.equal(stale.status, 409);
+  assert.equal((await (await json("/api/ui/config")).json()).config.voice.confirmation, "toast");
+});
+
 test("indicator edits publish the persisted selection in order and preserve unknown ids on reconnect", async (t) => {
   const selections: string[][] = [];
   const revisions: number[] = [];

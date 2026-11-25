@@ -1,21 +1,22 @@
+import { forward } from "../fixtures/port-forward.ts";
 import { expect, test } from "../fixtures/test.ts";
-import { allowStreamDisconnect, captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { allowStreamDisconnect, captureCard, expectCardGeometry, readTranscriptWithKeyboard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say } from "../fixtures/voice.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 test("countdown sends once, click and spoken cancel stop delivery, and disabling the window sends immediately", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon, 4);
+  await setupCards(page, daemon, 10);
   const steve = await runningAgent(page, daemon, "Steve");
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
   const pending = page.getByRole("status").filter({ hasText: "To Steve" }).filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
   await say(daemon, "Steve, check the build");
   await expect(pending).toContainText("check the build");
   await expect(pending).toHaveCSS("width", "300px");
-  await expect(pending).toContainText("3s");
+  await expect(pending.locator(".vc-seconds")).toHaveText(/\d+s/);
   await captureCard(page, "pending");
   await expectCardGeometry(pending, "confirmation-card", "#a .cc-card");
   const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
-  await expect(sent).toBeVisible();
+  await expect(sent).toBeVisible({ timeout: 15_000 });
   await captureCard(sent, "sent");
   await expect(page.getByText(/Mock reply to: check the build/).first()).toBeVisible();
   for (const method of ["click", "speech"]) {
@@ -34,8 +35,12 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
     await expect(pending).toHaveCount(0);
     await expect(page.getByRole("status").filter({ hasText: "Cancelled" }).last()).toBeVisible();
   }
-  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
-  await say(daemon, "Steve, immediate delivery");
+  const changed = await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+  expect(changed.ok()).toBe(true);
+  expect((await changed.json()).config.cancelWindow.enabled).toBe(false);
+  const immediate = await say(daemon, "Steve, immediate delivery");
+  expect((await immediate.json()).accepted).toBe(true);
+  await expect(pending).toHaveCount(0);
   await expect(page.getByText(/Mock reply to: immediate delivery/).first()).toBeVisible();
   await expect(pending).toHaveCount(0);
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
@@ -55,6 +60,31 @@ test("the accessible countdown announces its initial duration without repeating 
   await expect(seconds).not.toHaveText(initial);
   expect(await card.ariaSnapshot()).toBe(announcement);
   await card.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+});
+
+test("a long transcript scrolls while the recipient and countdown controls stay in view", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await page.setViewportSize({ width: 560, height: 420 });
+  const words = "Review the changes to the build. ".repeat(64) + "Start with the final change.";
+  await say(daemon, "Steve, " + words);
+  const card = page.getByRole("status").filter({ hasText: "To Steve" });
+  const recipient = card.getByText("To Steve", { exact: true });
+  const seconds = card.locator(".vc-seconds");
+  const cancel = card.getByRole("button", { name: "Cancel", exact: true });
+  const send = card.getByRole("button", { name: "Send now" });
+  const transcript = card.getByText(words, { exact: true });
+  for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
+  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await transcript.hover();
+  await page.mouse.wheel(0, 40);
+  await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  await page.mouse.move(0, 0);
+  await readTranscriptWithKeyboard(transcript, cancel, "Shift+Tab");
+  for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
+  await captureCard(card, "long-transcript-controls");
+  await cancel.click();
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
 
@@ -102,7 +132,74 @@ test("an in-transit Cancel can reach the daemon after the retry control returns"
   expect(withDaemonDb(daemon, db => db.prepare("SELECT count(*) AS n FROM session_spoken_turns").get()?.n)).toBe(0);
 });
 
-test("an uncertain desktop countdown uses the same configured cap as the card", async ({ dashboard: page, daemon }) => {
+test("an expired pending frame stays silent while a live cancel window chimes", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 3);
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Steve", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const { config } = await (await page.request.get(daemon.baseURL + "/api/ui/config")).json();
+  expect((await page.request.put(daemon.baseURL + "/api/ui/config", { data: { alerts: { ...config.alerts, sound: true } } })).ok()).toBe(true);
+  await page.addInitScript(() => {
+    Object.defineProperty(AudioContext.prototype, "state", { get: () => "running" });
+    const start = OscillatorNode.prototype.start;
+    OscillatorNode.prototype.start = function(time) {
+      if (this.frequency.value === 660) document.documentElement.dataset.infoChimes = String(Number(document.documentElement.dataset.infoChimes ?? 0) + 1);
+      return start.call(this, time);
+    };
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        let offsetUpper = 0;
+        this.addEventListener("message", event => {
+          if (!event.isTrusted) return;
+          const frame = JSON.parse(event.data);
+          if (frame.type === "snapshot") {
+            offsetUpper = performance.now() - frame.voiceServerTime + 1;
+            document.documentElement.dataset.chimeClockReady = "true";
+          }
+          if (frame.type !== "voice_card" || frame.card.id !== "late-chime") return;
+          event.stopImmediatePropagation();
+          if (frame.card.state === "pending" && frame.card.deadline) {
+            document.documentElement.dataset.latestChimeDeadline = String(frame.card.deadline + offsetUpper);
+            window.addEventListener("release-pending-chime", () => this.dispatchEvent(new MessageEvent("message", { data: event.data })), { once: true });
+          }
+          if (frame.card.state === "not-running") document.documentElement.dataset.staleOutcome = "received";
+        });
+      }
+    };
+  });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-chime-clock-ready", "true");
+  await say(daemon, "Steve, deliver before the buffered frame", { id: "late-chime" });
+  await expect(page.locator("html")).toHaveAttribute("data-stale-outcome", "received", { timeout: 8000 });
+  await expect(page.locator("html")).toHaveAttribute("data-latest-chime-deadline", /^\d/, { timeout: 3000 });
+  await page.waitForFunction(() => performance.now() > Number(document.documentElement.dataset.latestChimeDeadline) + 100, undefined, { timeout: 5000 });
+  await page.evaluate(() => window.dispatchEvent(new Event("release-pending-chime")));
+  const late = page.getByRole("status").filter({ hasText: "deliver before the buffered frame" });
+  await expect(late).toContainText("Awaiting delivery confirmation");
+  await expect(page.locator("html")).not.toHaveAttribute("data-info-chimes", /[1-9]/);
+  await captureCard(late, "expired-frame-awaiting-without-chime");
+  await say(daemon, "Steve, open a live cancel window");
+  const live = page.getByRole("status").filter({ hasText: "open a live cancel window" });
+  await expect(page.locator("html")).toHaveAttribute("data-info-chimes", "1");
+  await live.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+test("a directly addressed stop reports the stop receipt without a message countdown", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await say(daemon, "Steve, stop", { id: "direct-stop" });
+  const receipt = page.getByRole("status").filter({ hasText: "Stop sent to Steve" });
+  await expect(receipt).toBeVisible({ timeout: 3000 });
+  await expect(receipt.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+  await captureCard(receipt, "direct-stop-receipt");
+  await say(daemon, "Steve, stop after the build");
+  const pending = page.getByRole("status").filter({ hasText: "stop after the build" });
+  await pending.getByRole("button", { name: "Send now" }).click();
+  await expect(page.getByRole("status").getByText("Sent to Steve", { exact: true })).toBeVisible();
+});
+
+test("a buffered frame caps desktop actions and disconnected card controls at one cancel window", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 4);
   await runningAgent(page, daemon, "Steve");
   const config = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config;
@@ -123,6 +220,7 @@ test("an uncertain desktop countdown uses the same configured cap as the card", 
     window.EventSource = class extends EventSource {
       constructor(url: string | URL, init?: EventSourceInit) {
         super(url, init);
+        window.addEventListener("disconnect-buffered-stream", () => this.close(), { once: true });
         this.addEventListener("message", event => {
           if (!event.isTrusted) return;
           const frame = JSON.parse(event.data);
@@ -145,9 +243,14 @@ test("an uncertain desktop countdown uses the same configured cap as the card", 
     window.dispatchEvent(new Event("blur"));
   });
   await expect(page.locator("html")).toHaveAttribute("data-notice-title", "To Steve · up to 4s to cancel", { timeout: 1000 });
-  expect(Number(await page.locator("html").getAttribute("data-notice-budget"))).toBeGreaterThan(4000);
-  await card.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  const budget = Number(await page.locator("html").getAttribute("data-notice-budget"));
+  expect(budget).toBeGreaterThan(0);
+  expect(budget).toBeLessThanOrEqual(4000);
+  await page.evaluate(() => window.dispatchEvent(new Event("disconnect-buffered-stream")));
+  await expect(card).toContainText("Awaiting delivery confirmation", { timeout: 4500 });
+  await expect(card.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Send now" })).toHaveCount(0);
+  await captureCard(card, "awaiting-buffered-receipt");
 });
 
 test("a desktop Cancel accepted before clock refinement is applied when its reply arrives", async ({ dashboard: page, daemon }) => {
@@ -213,39 +316,54 @@ test("a lost Send now response cannot keep its delivered outcome busy", async ({
 
 for (const connection of ["first", "reconnected"] as const) {
   test(`a delayed ${connection} snapshot cannot extend the daemon cancel window`, async ({ dashboard: page, daemon }) => {
-    await setupCards(page, daemon, 7);
+    await setupCards(page, daemon, connection === "reconnected" ? 12 : 7);
     await runningAgent(page, daemon, "Steve");
-    await say(daemon, "Steve, check the snapshot");
     await page.addInitScript(connection => {
-      const Native = window.EventSource;
-      window.EventSource = class extends Native {
+      window.EventSource = class extends EventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
           super(url, init);
+          let snapshots = 0;
+          this.addEventListener("error", () => { document.documentElement.dataset.streamDropped = "true"; });
           this.addEventListener("message", event => {
             if (!event.isTrusted) return;
             const frame = JSON.parse(event.data);
             if (frame.type === "voice_card") event.stopImmediatePropagation();
             if (frame.type !== "snapshot") return;
-            if (connection === "first") event.stopImmediatePropagation();
-            // Buffer the daemon's exact snapshot. For a reconnect, replay it after
-            // the dashboard already knows this card's original cancel window.
+            snapshots++;
+            if (connection === "reconnected" && snapshots === 1) return;
+            event.stopImmediatePropagation();
             setTimeout(() => {
               this.dispatchEvent(new MessageEvent("message", { data: event.data }));
-              document.documentElement.dataset.snapshotReleased = "true";
+              document.documentElement.dataset.releasedSnapshot = String(snapshots);
             }, 2200);
           });
         }
       };
     }, connection);
-    await page.reload();
-    const card = page.getByRole("status").filter({ hasText: "check the snapshot" });
-    await expect(page.locator("html")).toHaveAttribute("data-snapshot-released", "true");
-    await expect(card.getByRole("button", { name: "Cancel" })).toBeVisible();
-    await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
-      "SELECT count(*) AS n FROM session_spoken_turns WHERE spoken_words = ?",
-    ).get("check the snapshot")?.n), { timeout: 8000, intervals: [50] }).toBe(1);
-    await expect(card.getByRole("button", { name: "Cancel" })).toHaveCount(0, { timeout: 600 });
-    await expect(card).toContainText("Awaiting delivery confirmation");
+    const tunnel = connection === "reconnected" ? await forward(daemon.baseURL) : null;
+    try {
+      await say(daemon, "Steve, check the snapshot");
+      const card = page.getByRole("status").filter({ hasText: "check the snapshot" });
+      const cancel = card.getByRole("button", { name: "Cancel" });
+      if (tunnel) {
+        await page.goto(`http://127.0.0.1:${tunnel.port}/`);
+        await expect(cancel).toBeVisible();
+        tunnel.disconnect();
+        await expect(page.locator("html")).toHaveAttribute("data-stream-dropped", "true");
+      } else {
+        await page.reload();
+      }
+      await expect(page.locator("html")).toHaveAttribute("data-released-snapshot", tunnel ? "2" : "1");
+      await expect(cancel).toBeVisible();
+      await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
+        "SELECT count(*) AS n FROM session_spoken_turns WHERE spoken_words = ?",
+      ).get("check the snapshot")?.n), { timeout: 15_000, intervals: [50] }).toBe(1);
+      await expect(cancel).toHaveCount(0, { timeout: 600 });
+      await expect(card).toContainText("Awaiting delivery confirmation");
+      if (tunnel) await captureCard(card, "native-reconnect-expired-window");
+    } finally {
+      await tunnel?.stop();
+    }
   });
 }
 

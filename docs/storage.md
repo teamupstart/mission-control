@@ -177,6 +177,12 @@ again.
 The limits and the idle-cache budget are the `storage.limits` setting, saved with
 `PUT /api/storage/limits` and carried by settings snapshots in the `storage-limits` domain.
 
+Before serving a capture-enabled directive, the daemon records the microphone owner in
+an owner-only receipt under `voice/capture-grants/`. The receipt carries the launch
+instance or verified process birth when available. A restart restores the pause
+obligation before offering playback. Acknowledging a pause or verifying exit
+removes the receipt.
+
 The daemon atomically replaces `voice/speech-holds.json` in the state home with
 an owner-only (0600) ledger before offering speech to a listener. Its entries
 hold the job ID, purpose and private listener instance. Confirmation removes
@@ -217,8 +223,8 @@ Use the supervisor's `launch(stateHome, executable, args, env, report)` for
 speech-capable children. The report callback receives the instance, event and
 signature, and resolves when the daemon acknowledges that report. It returns
 `false` for a definitive refusal and throws when the outcome is unknown.
-Before sending the start, the launcher durably records its own PID and a signature
-binding it to the launch instance under `voice-retirements/`. It waits up to
+Before sending the start, the launcher resolves the state home and durably records its
+own PID, boot identity and process start time. A signature binds these to the launch instance under `voice-retirements/`. It waits up to
 five seconds for acknowledgement. On success it starts a confined shell that
 waits on the launcher's pipe. The launcher records the sandbox child's PID and
 signature before releasing the shell to exec the listener. Losing the launcher
@@ -227,10 +233,10 @@ the gate the launcher also subscribes to the child's OS exit event. That event
 queues its signed retirement immediately. During a disconnect the exit stays
 on disk for the next connection.
 
-A replacement supervisor checks the recorded PID with the OS, rereads the
-record after observing that PID gone, and verifies its signature before signing
-an exit. A live or reused PID or an inconclusive OS result keeps the launch
-pending. The child can read the voice models and write to its own owner-only
+A replacement supervisor checks the recorded process with the OS. A missing process
+or a different verified birth at the same PID establishes exit. It rereads the watch
+and verifies the signature before reporting exit. A live process or an inconclusive
+read keeps the launch pending. Older PID-only watches wait for that PID to disappear. The child can read the voice models and write to its own owner-only
 `voice-retirements/scratch-announced-<digest>/` directory. The digest comes
 from the recorded launch instance. On normal close the launcher removes its
 scratch. After a launcher crash, retirement removes the same directory after

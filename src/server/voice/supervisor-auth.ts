@@ -1,6 +1,6 @@
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
-import { closeSync, fstatSync, readSync } from "node:fs";
-import { resolve } from "node:path";
+import { closeSync, fstatSync, readSync, realpathSync } from "node:fs";
+import { voiceProcessBirth } from "./process-birth.ts";
 import { confinedVoiceListener } from "./supervised-listener.ts";
 import { reportBeforeDeadline, SupervisorRetirements } from "./supervisor-retirements.ts";
 
@@ -51,15 +51,15 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
     sign(null, payload(instance, state), privateKey).toString("hex");
   // Older Linux watches identified only the outer monitor. They cannot attest namespace exit.
   const watchProtocol = process.platform === "linux" ? "mission-voice-launch-pid/linux-v2" : "mission-voice-launch-pid/v1";
-  const watchProof = (instance: string, pid: number) =>
-    sign(null, Buffer.from([watchProtocol, instance, pid].join("\n")), privateKey).toString("hex");
+  const watchProof = (instance: string, pid: number, birth?: string) =>
+    sign(null, Buffer.from((birth ? [watchProtocol, instance, pid, birth] : [watchProtocol, instance, pid]).join("\n")), privateKey).toString("hex");
   const queues = new Map<string, SupervisorRetirements>();
   const retirements = (home: string) => {
-    const path = resolve(home);
+    const path = realpathSync(home);
     let queue = queues.get(path);
     if (!queue) {
       queue = new SupervisorRetirements(path, name, exit => supervisorIssuer(exit.instance, "exited", exit.proof)?.name === name,
-        ({ instance, pid, proof }) => instance.startsWith(prefix) && proof === watchProof(instance, pid)
+        ({ instance, pid, proof, birth }) => instance.startsWith(prefix) && proof === watchProof(instance, pid, birth)
           ? { instance, proof: signature(instance, "exited") } : null);
       queues.set(path, queue);
     }
@@ -72,15 +72,16 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
     async launch(stateHome: string, executable: string, args: string[], env: NodeJS.ProcessEnv,
       report: SupervisorReporter) {
       const instance = prefix + randomBytes(32).toString("hex");
-      const start = confinedVoiceListener(stateHome, instance);
-      const queue = retirements(stateHome);
+      const home = realpathSync(stateHome);
+      const start = confinedVoiceListener(home, instance);
+      const queue = retirements(home);
       queue.connect(report);
       const retire = () => queue.enqueue({ instance, proof: signature(instance, "exited") });
       const startProof = signature(instance, "started");
       const announce = () => reportBeforeDeadline(report, instance, "started", startProof);
-      const watch = (pid: number) => queue.watch({ instance, pid, proof: watchProof(instance, pid) });
+      const watch = (pid: number, birth: string) => queue.watch({ instance, pid, birth, proof: watchProof(instance, pid, birth) });
       // Until a child PID replaces this entry, no listener can pass the startup gate.
-      watch(process.pid);
+      watch(process.pid, voiceProcessBirth(process.pid));
       let refused = false;
       let released = false;
       try {
@@ -90,7 +91,7 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
           throw new Error("Voice supervisor start was refused.");
         }
         const { child, lifetime } = await start(executable, args, env);
-        try { watch(lifetime.pid); }
+        try { watch(lifetime.pid, lifetime.birth); }
         catch (error) { child.stdin.destroy(); throw error; }
         // Install the observer before release, including for the first child on a fresh home.
         void lifetime.exited.then(retire);
@@ -98,7 +99,12 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
         released = true;
         const onBrokenGate = () => {};
         child.stdin.once("error", onBrokenGate);
-        child.stdin.write("go\n", error => { if (!error) child.stdin.off("error", onBrokenGate); });
+        await new Promise<void>((resolve, reject) => {
+          child.stdin.write("go\n", error => {
+            if (error) { child.stdin.destroy(); reject(error); }
+            else { child.stdin.off("error", onBrokenGate); resolve(); }
+          });
+        });
         return { instance, child, reannounce: async () => {
           if (!lifetime.running()) return false;
           return announce();

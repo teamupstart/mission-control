@@ -4,8 +4,10 @@ import { announcementName } from "../src/server/voice/speech-holds.ts";
 import { playerScratchDirectory, retirementDirectory } from "../src/server/voice/recovery-files.ts";
 import assert from "node:assert/strict";
 import { fork, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { once } from "node:events";
+import { Socket } from "node:net";
+import { voiceProcessBirth } from "../src/server/voice/process-birth.ts";
 import { text } from "node:stream/consumers";
 import test, { afterEach } from "node:test";
 import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -15,6 +17,8 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { sandboxLifetime } from "../src/server/voice/supervised-listener.ts";
 import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
+import { createServer } from "node:http";
+import { getRequestListener } from "@hono/node-server";
 import { Hono } from "hono";
 import { act, app, applyFeatureFlagIntent, capture, home, listenerId, post, readHeard, registry, token, utterancePath, voiceStateStore as store } from "./helpers/voice-http.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
@@ -76,6 +80,70 @@ function player(owner: string = listenerId, server = app) {
     },
   };
 }
+
+async function expectReplacementCapture(server = app) {
+  const replacement = player(crypto.randomUUID(), server);
+  assert.equal((await replacement.hello()).status, 200);
+  assert.equal((await replacement.poll()).capture, true);
+}
+
+test("a signed exit revokes an outstanding directive and prevents a late hello from restoring capture", async () => {
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  const { capture, revision } = await holder.poll();
+  assert.equal(capture, true);
+  const pending = holder.request("/voice/listener/directive?revision=" + revision);
+  await new Promise(resolve => setImmediate(resolve));
+  renameSync(supervised, supervised + ".saved");
+  writeFileSync(supervised, "unavailable");
+  try {
+    assert.equal((await holder.report("exited")).status, 503);
+    const stale = await holder.request("/voice/listener/directive");
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).capture, false);
+  } finally {
+    rmSync(supervised);
+    renameSync(supervised + ".saved", supervised);
+  }
+  assert.equal((await holder.report("exited")).status, 200);
+  assert.equal((await pending).status, 409);
+  for (const restart of [false, true]) {
+    if (restart) store.reset();
+    const hello = await holder.hello();
+    assert.equal(hello.status, 409);
+    assert.equal((await hello.json()).error, "listener_exited");
+    assert.equal((await holder.request("/voice/listener/directive")).status, 409);
+    assert.equal(store.capturePausePending, false);
+  }
+  await expectReplacementCapture();
+});
+
+test("an authenticated exit retries capture grant retirement while Voice is off and the verifier has rotated", async () => {
+  const holder = player();
+  await holder.announce(); await holder.hello();
+  assert.equal((await holder.poll()).capture, true);
+  const dir = join(home, "voice/capture-grants");
+  renameSync(dir, dir + ".saved");
+  writeFileSync(dir, "unavailable");
+  try {
+    toggle(false);
+    for (const rotate of [false, true]) {
+      if (rotate) Object.assign(process.env, newFixtureSupervisor("shell").daemonEnv);
+      const exit = await holder.report("exited");
+      assert.equal(exit.status, 503);
+      assert.deepEqual(await exit.json(), { error: "capture_grant_unavailable" });
+      assert.equal(store.capturePausePending, true);
+    }
+    assert.equal((await holder.report("exited", holder.instance, "invalid")).status, 403);
+    rmSync(dir);
+    renameSync(dir + ".saved", dir);
+    assert.equal((await holder.report("exited")).status, 200);
+    assert.equal(store.capturePausePending, false);
+    assert.deepEqual(readdirSync(dir), []);
+  } finally {
+    Object.assign(process.env, fixtureSupervisorEnv);
+  }
+});
 
 test("timers request a stop, only the capture owner logs playback-time utterances, and only the holder can end playback", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
@@ -241,11 +309,16 @@ test("the speech holder can acknowledge its own microphone pause after its heart
 });
 
 for (const proof of ["pause", "exit"] as const) {
-  test(`an expired microphone grant still needs its original owner's ${proof} proof after takeover`, async t => {
+  test(`a capture-only listener's expired microphone grant needs its own ${proof} proof before its replacement can play`, async t => {
     let steady = Math.ceil(performance.now());
     t.mock.method(performance, "now", () => steady);
     const original = player(), replacement = player(crypto.randomUUID());
-    await original.announce(); await original.hello();
+    if (proof === "exit") await original.announce();
+    const captureOnly = await original.request("/voice/listener/hello", { version: VOICE_LISTENER_PROTOCOL_VERSION,
+      backend: "fluidaudio", devices: [], modelLoaded: true, microphone: "granted" },
+    proof === "exit" ? original.instance : null);
+    assert.equal(captureOnly.status, 200);
+    assert.equal((await post("/api/voice/speech/audition")).status, 409);
     assert.equal((await original.poll()).capture, true);
     steady += VOICE_HELLO_LAPSE_MS;
     await replacement.announce();
@@ -276,6 +349,111 @@ for (const proof of ["pause", "exit"] as const) {
     assert.equal((await replacement.poll()).capture, true);
   });
 }
+
+for (const restarted of [false, true]) test("a capture-only client killed without a final report releases only its kernel-verified microphone grant " +
+  (restarted ? "after daemon restart" : "on the live daemon"), async t => {
+  let steady = Math.ceil(performance.now());
+  t.mock.method(performance, "now", () => steady);
+  store.reset();
+  const server = createServer(getRequestListener(app.fetch));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+    import { ListenerClient } from "./src/voice-listener/client.ts";
+    import { resolve } from "node:path";
+    let headers, unverified;
+    const client = new ListenerClient(process.argv[2], process.argv[1], async (url, request) => {
+      headers = request.headers;
+      const response = await fetch(url, request);
+      if (url.endsWith("/hello")) {
+        unverified = (await fetch(process.argv[2] + "/voice/listener/directive", { headers })).status;
+      }
+      return response;
+    });
+    client.trackProcess(resolve("dist/native/state-lock.node"));
+    if (!(await client.hello()).ok) throw new Error("Capture hello was refused.");
+    const denied = await fetch(process.argv[2] + "/voice/listener/directive", {
+      headers: { ...headers, "x-voice-capture-pid": String(process.ppid) }
+    });
+    const directive = await client.poll();
+    process.stdout.write(JSON.stringify([unverified, denied.status, directive.capture]));
+    process.stdin.resume();
+  `, join(home, "token"), "http://127.0.0.1:" + address.port], { stdio: ["pipe", "pipe", "inherit"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const [data] = await Promise.race([once(child.stdout, "data"), once(child, "exit").then(() => {
+    throw new Error("The capture-only fixture exited before receiving capture.");
+  })]);
+  assert.deepEqual(JSON.parse(data.toString()), [409, 409, true]);
+  rmSync(join(home, "voice-capture.lock")); // Losing the path cannot release the pinned process.
+  if (restarted) store.reset();
+  steady += VOICE_HELLO_LAPSE_MS;
+  const holder = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  const pause = await holder.poll();
+  assert.equal(pause.capture, false);
+  assert.equal(pause.speak, null);
+  assert.equal((await holder.event(id, "started")).status, 409);
+  const waiting = holder.request("/voice/listener/directive?revision=" + pause.revision);
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+  const playable = (await (await waiting).json()).speak;
+  assert.equal(playable.kind, "system");
+  assert.equal(playable.id, id);
+  assert.equal((await holder.event(id, "started")).status, 200);
+  assert.equal((await holder.poll()).capture, false);
+  assert.equal((await holder.event(id, "ended")).status, 200);
+  assert.equal((await holder.poll()).capture, true);
+});
+
+test("capture is served only after its private grant is saved and a failed pause acknowledgement can retry", async () => {
+  const dir = join(home, "voice/capture-grants");
+  mkdirSync(join(home, "voice"), { recursive: true });
+  writeFileSync(dir, "busy");
+  const owner = player();
+  const denied = await owner.request("/voice/listener/directive", undefined, null);
+  assert.equal(denied.status, 503);
+  assert.equal((await denied.json()).capture, false);
+  rmSync(dir);
+  assert.equal((await owner.poll(null)).capture, true);
+  assert.equal(statSync(join(dir, listenerId + ".json")).mode & 0o777, 0o600);
+  store.reset();
+  const holder = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  const pause = await owner.poll(null);
+  renameSync(dir, dir + "-saved"); writeFileSync(dir, "busy");
+  const ack = () => owner.request("/voice/listener/directive?revision=" + pause.revision, undefined, null);
+  assert.equal((await ack()).status, 503);
+  assert.equal((await holder.poll()).speak, null);
+  rmSync(dir); renameSync(dir + "-saved", dir);
+  await ack();
+  assert.equal((await holder.poll()).speak.id, id);
+});
+
+test("HEAD never grants capture or acknowledges a pause across a daemon restart", async () => {
+  const original = player();
+  const head = (revision = "") => app.request("/voice/listener/directive" + revision,
+    { method: "HEAD", headers: { "x-harness-token": token, "x-voice-listener-id": listenerId } });
+  assert.equal((await head()).status, 405);
+  assert.equal(store.capturePausePending, false);
+  assert.equal((await original.poll(null)).capture, true);
+  store.reset();
+  const holder = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  assert.equal((await holder.poll()).speak, null);
+  const pause = await original.poll(null);
+  assert.equal(pause.capture, false);
+  assert.equal((await head("?revision=" + pause.revision)).status, 405);
+  assert.equal((await holder.poll()).speak, null);
+  await original.request("/voice/listener/directive?revision=" + pause.revision, undefined, null);
+  assert.equal((await holder.poll()).speak.id, id);
+});
 
 test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
@@ -535,7 +713,7 @@ test("a signed exit returns 503 and holds capture until a retry removes the laun
   assert.equal((await holder.report("exited")).status, 200);
   assert.deepEqual(readdirSync(supervised), []);
   assert.deepEqual(entries(), []);
-  assert.equal((await holder.poll()).capture, true);
+  await expectReplacementCapture();
 });
 
 test("a linked state home permits fresh capture and recovers playback in its configured target", async t => {
@@ -604,7 +782,7 @@ test("linked recovery parents refuse signed retirement and keep capture held unt
     }
   }
   assert.equal((await holder.report("exited")).status, 200);
-  assert.equal((await holder.poll()).capture, true);
+  await expectReplacementCapture();
 });
 
 for (const inventoryState of ["missing", "unreadable"] as const) {
@@ -698,7 +876,7 @@ test("a surviving peer receipt cannot account for a missing player when the inve
   assert.equal(stop.capture, false);
   assert.equal(stop.speak.stop, true);
   assert.equal((await holder.event(stop.speak.id, "ended")).status, 200);
-  assert.equal((await peer.poll()).capture, true);
+  await expectReplacementCapture();
 });
 
 test("a delayed signed start cannot revive a launch after exit, including across restart", async () => {
@@ -709,11 +887,11 @@ test("a delayed signed start cannot revive a launch after exit, including across
   // The supervisor may still have its old process record when a retry arrives.
   writeFileSync(join(supervised, "shell.json"), JSON.stringify({ instance: holder.instance }));
   for (const restart of [false, true]) {
-    if (restart) { rmSync(ledger); store.reset(); await holder.hello(); }
+    if (restart) { rmSync(ledger); store.reset(); }
     assert.equal((await holder.report("started")).status, 409);
     assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
     assert.deepEqual(readdirSync(supervised), ["shell.json"]);
-    assert.equal((await holder.poll()).capture, true);
+    assert.equal((await holder.hello()).status, 409);
     assert.equal((await post("/api/voice/speech/audition")).status, 409);
     assert.equal((await holder.report("exited")).status, 200);
   }
@@ -746,13 +924,18 @@ for (const proof of ["ended", "exited"] as const) {
       renameSync(ledger + ".saved", ledger);
     }
     assert.deepEqual(entries(), [{ jobId: id, instance: holder.instance, purpose: "audition" }]);
-    store.reset(); await holder.hello();
-    assert.equal((await holder.poll()).capture, proof === "exited");
-    if (proof === "exited") assert.deepEqual(entries(), []);
+    store.reset();
+    if (proof === "exited") {
+      assert.equal((await holder.hello()).status, 409);
+      assert.deepEqual(entries(), []);
+    } else {
+      await holder.hello();
+      assert.equal((await holder.poll()).capture, false);
+    }
     assert.equal((await confirm()).status, 200);
     assert.deepEqual(entries(), []);
-    store.reset(); await holder.hello();
-    assert.equal((await holder.poll()).capture, true);
+    store.reset();
+    await expectReplacementCapture();
   });
 }
 
@@ -811,9 +994,9 @@ test("recovery requires the original issuer's signed exit for the exact persiste
   const stale = readFileSync(ledger, "utf8");
   assert.equal((await holder.report("exited")).status, 200);
   writeFileSync(ledger, stale);
-  store.reset(); await peer.hello();
+  store.reset();
+  await expectReplacementCapture();
   assert.deepEqual(entries(), []);
-  assert.equal((await peer.poll()).capture, true);
 });
 
 test("repairing an unreadable launch receipt requests silence from the recovered instance", async () => {
@@ -856,7 +1039,7 @@ test("a disappeared launch receipt can be cleared by the exact signed exit", asy
   assert.equal((await holder.poll()).capture, false);
   assert.equal((await holder.report("exited")).status, 200);
   assert.deepEqual(entries(), []);
-  assert.equal((await holder.poll()).capture, true);
+  await expectReplacementCapture();
 });
 
 for (const proof of ["ended", "exited"] as const) {
@@ -909,7 +1092,7 @@ for (const proof of ["ended", "exited"] as const) {
     assert.deepEqual((await holder.poll()).speak, { id, stop: true });
     assert.equal((await holder.report("exited")).status, 200);
     assert.deepEqual(entries(), []);
-    assert.equal((await holder.poll()).capture, true);
+    await expectReplacementCapture();
   });
 }
 
@@ -938,7 +1121,7 @@ test("only the launching supervisor can attest exit, including after daemon rest
   }
   assert.equal((await holder.report("exited")).status, 200);
   assert.deepEqual(entries(), []);
-  assert.equal((await holder.poll()).capture, true);
+  await expectReplacementCapture();
 });
 
 test("the daemon verifies supervisor reports with public material and binds launches to the original signing key", async () => {
@@ -961,7 +1144,7 @@ test("the daemon verifies supervisor reports with public material and binds laun
     assert.equal((await holder.poll()).capture, false);
     assert.equal((await holder.report("started")).status, 403);
     assert.equal((await holder.report("exited")).status, 200);
-    assert.equal((await holder.poll()).capture, true);
+    await expectReplacementCapture();
   } finally { Object.assign(process.env, fixtureSupervisorEnv); }
 });
 
@@ -1009,7 +1192,7 @@ test("a restarted launcher can confirm the original player's exit using its prov
   assert.equal(typeof proof, "string");
   assert.equal((await p.report("exited", start.instance, proof)).status, 200);
   assert.deepEqual(entries(), []);
-  assert.equal((await p.poll(start.instance)).capture, true);
+  await expectReplacementCapture();
 });
 
 test("a sandbox lifetime follows the reported namespace PID across monitor termination", { timeout: 10_000 }, async t => {
@@ -1087,7 +1270,8 @@ test("Linux monitor termination keeps playing capture held in the live superviso
   assert.deepEqual((await peer.poll(instance)).speak, { id, stop: true });
   process.kill(pid, "SIGKILL");
   await t.waitFor(() => assert.deepEqual(exits, [instance]));
-  assert.equal((await peer.poll(instance)).capture, true);
+  assert.equal((await peer.hello(instance)).status, 409);
+  await expectReplacementCapture(server);
 });
 
 test("a same-account signing file is rejected even when owner-only", () => {
@@ -1223,6 +1407,59 @@ test("start acknowledgements respect monotonic elapsed time even before the time
   }
 });
 
+test("a signed process birth retires a reused PID and a changed birth cannot retire the live process", async t => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const issuer = createPublicKey(privateKey).export({ type: "spki", format: "der" }).toString("hex");
+  const supervisor = createVoiceSupervisor("shell", privateKey);
+  t.after(() => supervisor.pauseExitRetries());
+  const dir = retirementDirectory(home);
+  mkdirSync(dir, { recursive: true });
+  const protocol = process.platform === "linux" ? "mission-voice-launch-pid/linux-v2" : "mission-voice-launch-pid/v1";
+  const birth = voiceProcessBirth(process.pid);
+  function receipt(recorded: string, attested = recorded) {
+    const instance = "shell_" + issuer + "_" + randomBytes(32).toString("hex");
+    const proof = sign(null, Buffer.from([protocol, instance, process.pid, attested].join("\n")), privateKey).toString("hex");
+    writeFileSync(join(dir, "shell-" + announcementName(instance) + ".json"), JSON.stringify({ instance, pid: process.pid, birth: recorded, proof }));
+    return instance;
+  }
+  receipt(birth);
+  receipt("different-boot", birth);
+  const gone = receipt("previous-boot");
+  const exited: string[] = [];
+  supervisor.retryPendingExits(home, async instance => { exited.push(instance); });
+  await t.waitFor(() => assert.deepEqual(exited, [gone]));
+  await t.waitFor(() => assert.equal(readdirSync(dir).filter(file => file.endsWith(".json")).length, 2));
+});
+
+test("a failed gate write rejects launch and the OS exit retires it in the original state home", {
+  skip: process.platform !== "darwin",
+}, async t => {
+  const supervisor = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => supervisor.pauseExitRetries());
+  const root = mkdtempSync(join(home, "gate-"));
+  const alias = join(root, "current");
+  const first = join(root, "first"), replacement = join(root, "second");
+  mkdirSync(first); mkdirSync(replacement); symlinkSync(first, alias);
+  const write = Socket.prototype.write;
+  t.mock.method(Socket.prototype, "write", function(this: Socket, ...args: Parameters<typeof write>) {
+    if (args[0] === "go\n") {
+      this.destroy();
+      const callback = args[1] as unknown as (error: Error) => void;
+      queueMicrotask(() => callback(new Error("fixture gate closed")));
+      return false;
+    }
+    return Reflect.apply(write, this, args);
+  });
+  const reports: string[] = [];
+  await assert.rejects(supervisor.launch(alias, process.execPath, ["--version"], {}, async (_instance, state) => {
+    reports.push(state);
+    if (state === "started") { rmSync(alias); symlinkSync(replacement, alias); }
+  }), /fixture gate closed/);
+  await t.waitFor(() => assert.deepEqual(reports, ["started", "exited"]));
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(first)), []));
+  assert.deepEqual(readdirSync(replacement), []);
+});
+
 for (const disconnected of [false, true]) test("the first supervised same-account child protects recovery files and retires on OS exit " +
   (disconnected ? "after reconnect" : "while connected"), async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
@@ -1279,6 +1516,7 @@ for (const disconnected of [false, true]) test("the first supervised same-accoun
   const { instance, child } = launched;
   const guarded = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
   if (child.exitCode === null && child.signalCode === null) {
+    assert.equal(guarded.birth, voiceProcessBirth(guarded.pid));
     if (process.platform === "linux") assert.notEqual(guarded.pid, child.pid);
     else assert.equal(guarded.pid, child.pid);
   }
@@ -1345,7 +1583,7 @@ for (const disconnected of [false, true]) test("the first supervised same-accoun
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
   assert.equal(exitAttempts, disconnected ? 0 : 1);
   assert.equal(replayed, disconnected ? 1 : 0);
-  assert.equal((await peer.poll(instance)).capture, true);
+  await expectReplacementCapture();
 });
 
 test("a symlinked voice directory cannot receive a signed start or replace the sandbox target during announcement", async t => {
@@ -1564,7 +1802,7 @@ test("a stalled scratch removal and its retry cannot block another launch's sign
   const stalled = new Promise<void>(resolve => { unblock = resolve; });
   const rm = fsPromises.rm;
   const hook = t.mock.method(fsPromises, "rm", async (...args: Parameters<typeof rm>) => {
-    if (started[0] && args[0] === playerScratchDirectory(home, started[0]) && ++cleanupAttempts === 1) {
+    if (started[0] && args[0] === playerScratchDirectory(fs.realpathSync(home), started[0]) && ++cleanupAttempts === 1) {
       await stalled;
       throw new Error("Scratch temporarily busy");
     }
@@ -1801,8 +2039,7 @@ test("a missing ledger with no outstanding launches keeps capture available", as
   await listener.announce();
   assert.equal((await listener.report("exited")).status, 200);
   store.reset();
-  await listener.hello();
-  assert.equal((await listener.poll()).capture, true);
+  await expectReplacementCapture();
 });
 
 test("a missing ledger with an unreadable launch history keeps capture off", async () => {
@@ -1928,8 +2165,8 @@ for (const proof of ["ended", "exited"] as const) {
     assert.equal(end.status, 200);
     assert.deepEqual(entries(), []);
     assert.equal((await holder.request("/voice/listener/directive")).status, 404);
-    toggle(true); await peer.hello();
-    assert.equal((await peer.poll()).capture, true);
+    toggle(true);
+    await expectReplacementCapture();
   });
 }
 
@@ -1971,8 +2208,8 @@ test("with Voice off a signed exit retires a recorded launch after its last play
   assert.deepEqual(JSON.parse(readFileSync(inventory, "utf8")), []);
   assert.equal((await holder.report("exited")).status, 200);
   rmSync(ledger);
-  store.reset(); toggle(true); await peer.hello();
-  assert.equal((await peer.poll()).capture, true);
+  store.reset(); toggle(true);
+  await expectReplacementCapture();
 });
 
 test("a trusted exit received first with Voice off survives restart and rejects the delayed start", async () => {
@@ -1986,13 +2223,13 @@ test("a trusted exit received first with Voice off survives restart and rejects 
   assert.equal(statSync(marker).mode & 0o777, 0o600);
   assert.equal((await listener.report("exited")).status, 200);
   assert.throws(() => statSync(inventory), { code: "ENOENT" });
-  store.reset(); toggle(true); await listener.hello();
+  store.reset(); toggle(true);
   const late = await listener.report("started");
   assert.equal(late.status, 409);
   assert.deepEqual(await late.json(), { error: "launch_exited" });
   assert.equal((await post("/api/voice/speech/audition")).status, 409);
-  store.reset(); await listener.hello();
-  assert.equal((await listener.poll()).capture, true);
+  store.reset();
+  await expectReplacementCapture();
 });
 
 for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof of ["ended", "exited"] as const) {
@@ -2031,9 +2268,9 @@ for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof 
       await second.event(other.speak.id, "ended");
     } else assert.equal(other.speak, null);
     assert.equal((await second.event(stop.id, "ended")).status, 409);
-    assert.equal((await second.report("exited")).status, 200);
     assert.equal((await second.request("/voice/utterances", { ...capture("Steve old"), capturedAt: 0 })).status, 200);
     assert.equal((await readHeard())[0]?.rule, "while-speaking");
+    assert.equal((await second.report("exited")).status, 200);
     await post("/api/voice/mute", { muted: true }); toggle(false);
     assert.equal((await holder.event(stop.id, "started")).status, 404);
     toggle(true); await post("/api/voice/mute", { muted: false });
@@ -2044,7 +2281,7 @@ for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof 
     else await holder.event(stop.id, "ended");
     assert.equal(job.state, "failed");
     assert.deepEqual(entries(), []);
-    assert.equal((await second.poll()).capture, true);
+    await expectReplacementCapture();
   });
 }
 

@@ -36,6 +36,12 @@ export interface BuiltinResident {
 type BuiltinResidentSettings = Omit<ResidentProfileRevisionInput, "identity" | "persona" | "instructions">;
 
 const BUILTIN_RESIDENT_SETTINGS: Record<string, BuiltinResidentSettings> = {
+  "bug-fix-inspector": {
+    mcp: { nativeSources: "pinned" },
+    execution: { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" },
+    loop: { delaySeconds: 2700, minDelaySeconds: 2700, maxDelaySeconds: 2700, spendCapUsd: 20 },
+    authority: { inspectOtherSessions: true },
+  },
   "agent-shepherd": {
     // Preserve this shipped profile’s existing server set when reconciling an upgrade.
     mcp: { nativeSources: "pinned" },

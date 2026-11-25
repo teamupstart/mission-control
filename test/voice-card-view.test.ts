@@ -15,7 +15,7 @@ const actions = {
 const operation = { busy: false, feedback: "", run: async () => {} };
 const copy = {
   pending: "Send now", resolving: "Working out who this is for", unsure: "Who is this for?",
-  sent: "Sent to", queued: "current turn", held: "Held for", "not-running": "Relaunch Steve",
+  sent: "Sent to", queued: "Queued for", held: "Held for", "not-running": "Relaunch Steve",
   cancelled: "Cancelled", failed: "Failed to send",
 } satisfies Record<VoiceCard["state"], string>;
 for (const state of Object.keys(copy) as VoiceCard["state"][]) {

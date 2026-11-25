@@ -1,23 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { text } from "node:stream/consumers";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { playerScratchDirectory, removePlayerScratch, retirementDirectory } from "./recovery-files.ts";
 
-export function voiceProcessGone(pid: number) {
-  try {
-    process.kill(pid, 0);
-    if (process.platform !== "linux") return false;
-    // A dead namespace init can await reaping by a different parent after monitor loss.
-    const stat = readFileSync("/proc/" + pid + "/stat", "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ");
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
-  }
-}
+import { voiceProcessBirth, voiceProcessGone } from "./process-birth.ts";
 
 /** Bubblewrap writes its namespace init's host PID to --info-fd and closes it before the gate runs. */
 export async function sandboxLifetime(monitor: ChildProcess, info?: Readable) {
@@ -30,8 +20,9 @@ export async function sandboxLifetime(monitor: ChildProcess, info?: Readable) {
     }
     pid = sandboxPid;
   }
+  const birth = voiceProcessBirth(pid);
   const monitorRunning = () => monitor.exitCode === null && monitor.signalCode === null;
-  const running = info ? () => !voiceProcessGone(pid) : monitorRunning;
+  const running = info ? () => !voiceProcessGone(pid, birth) : monitorRunning;
   const exited = new Promise<void>(resolve => {
     const check = () => {
       if (running()) setTimeout(check, 250).unref();
@@ -40,7 +31,7 @@ export async function sandboxLifetime(monitor: ChildProcess, info?: Readable) {
     if (monitorRunning()) monitor.once("exit", check);
     else check();
   });
-  return { pid, running, exited };
+  return { pid, birth, running, exited };
 }
 
 // The launcher announces the launch before calling spawn. Only ordinary listener

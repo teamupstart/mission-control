@@ -227,8 +227,8 @@ export type DispatchResolution =
  * The request is a single value, so the only other thing that can claim the form is the See the
  * work tour. While the tour runs its dispatch preview it owns the FRESH-dispatch form - its
  * spotlight is on the topbar Dispatch button, and pressing it is how the tour is taken - so an
- * ordinary new request is the tour's opening then. That is a claim, not a tie-break: the tour
- * does not claim the backlog editor, which is a different form over a row that already exists.
+ * ordinary new request is the tour's opening then. A voice follow-up opens the draft for its
+ * repository, and the backlog editor continues to open the requested row during the tour.
  *
  * What it does refuse is the one real collision left. A Library strategy card pressed while the
  * tour holds the fresh-dispatch form asks for an Ensemble on the form the tour has fixed to a
@@ -272,7 +272,7 @@ export function resolveDispatchOpening(
           }
         : { opening: { kind: "resident", profileId: request.profileId }, problem: null };
     case "new":
-      return world.tourDemo
+      return world.tourDemo && !request.followUp
         ? { opening: { kind: "tour", demo: world.tourDemo }, problem: null }
         : { opening: request, problem: null };
   }

@@ -8,15 +8,19 @@ The daemon accepts text captures from a token-authenticated listener. It resolve
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
 recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
-and Linux. The corner confirmation card names the recipient and shows the spoken words. Its bar and
+and Linux. The corner confirmation card names the recipient and shows the spoken words.
+Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now.
+Tab to an overflowing transcript and use the arrow keys or End to read it. The countdown bar and
 seconds count down together. On a slow connection, `≤` marks the longest time that could
 remain. You can still try Cancel, and the daemon confirms whether it arrived in time.
+When several cards share the corner, open cancel windows stay nearest the corner, ahead of delivery results.
 Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answer, the card offers a retry while the original request can still reach it. A split offers
 “Send both now” when both messages are waiting. With a mention or an already-issued stop,
 the send button names the agent who will receive the remaining message. With the cancel
-window off, delivery begins immediately. Sent and queued cards show the open question count.
+window off, delivery begins immediately. Sent and queued cards show the open question count. A queued receipt names the recipient. It mentions a current turn when the session is working and unpaused.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
-The Sound preference controls the pending chime. During the cancel window, an unfocused
+With Sound enabled, the pending chime plays only while the card still offers Cancel.
+A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
 notifications. If you switch away while the card is counting down, the notification shows
@@ -29,6 +33,8 @@ the reason. Its controls remain available for a retry while the cancel window is
 The desktop measures the remaining interval on its own monotonic clock. Reloading or
 closing the dashboard dismisses the native notice for that page.
 The browser closes its notification at the cancel deadline even if its connection to the daemon drops.
+If the clock estimate is uncertain, the card and notification allow at most one configured
+cancel window from the first time the dashboard receives that pending delivery.
 At the deadline the card removes its delivery controls. If the outcome has yet to arrive,
 it shows “Awaiting delivery confirmation”.
 
@@ -38,7 +44,10 @@ gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
-The card names a question that still blocks delivery. A plan already filed for a later answer
+If you remove the task’s call sign, its held turn remains recallable after a daemon restart or after you switch Voice off and back on.
+The restored card uses the session’s display name. **Open question** opens the question named on the card, even when the session has several pending requests.
+Each Held card shows the spoken words its **Cancel message** button recalls and names
+a question that still blocks delivery. A plan already filed for a later answer
 can remain open while the agent receives the message.
 If the daemon takes more than two seconds to confirm a held message’s recall, the card
 shows that recall is unconfirmed and lets you retry or open the blocking question.
@@ -49,8 +58,9 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default preference. The dashboard shows a corner toast for all three
 choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. If a save times out, you can select another placement. A delayed request
-cannot replace the newer saved choice. Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
+for those windows. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
+cannot replace the newer saved choice, even when that save reaffirms the current placement.
+Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
 countdown expires, it switches to another open window even if the event stream is disconnected.
@@ -58,11 +68,13 @@ With no countdown open or message selected, an address awaiting a recipient choi
 ahead of delivery results, including messages held behind a question.
 When several messages remain, the Voice message selector lets you revisit their cards,
 including individual turns held for the same agent. A new countdown takes priority even
-when you selected another pending delivery. When the new window closes, the surface
-returns to your selection if its card is still available and eligible.
+when you selected another pending delivery. A stop receipt updates its own card and keeps
+the current countdown selected. When the new window closes, the surface returns to your
+selection if its card is still available and eligible.
 If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
-while hidden. Returning to the card starts a fresh eight-second reading interval. Retrying uses
-the same launch request.
+while hidden. Returning to the card starts a fresh eight-second reading interval. Switching
+between the dashboard and either standalone route preserves the relaunch progress and feedback.
+Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
 With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect
@@ -477,7 +489,9 @@ commit the queue update. After three failed preparations it reports the failure,
 Foreman, and lets the following message proceed.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
-follow-up task.
+follow-up task. A follow-up opens a separate Dispatch draft for the finished task’s repository.
+If you exit the See the work tour during the repository lookup, the draft opens when the lookup
+finishes. An already open follow-up stays available after tour exit.
 
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation
@@ -1112,6 +1126,23 @@ offer the holder playback and serve its audio. Expiry or transfer of the lease
 leaves the pause obligation with each listener that received a grant. During a
 speech hold a former owner can receive a pause with an empty roster and
 acknowledge it, and a verified supervisor exit retires its launch's grants.
+A paused listener retries a 503 on the same directive revision with backoff.
+A supervisor retries its signed exit on 503 until grant retirement succeeds.
+Once the daemon records that exit, the launch can no longer renew its hello or
+receive another capture grant.
+The shipped capture-only clients also lock one byte of the empty, owner-only
+`voice-capture.lock` beside the daemon token. The daemon assigns a fresh, random
+byte offset to the listener's lease at hello. Before granting capture, it checks
+that the kernel names
+the reported process as the lock owner and opens a process-exit watch (kqueue
+on macOS, pidfd on Linux). A mismatched owner or unavailable watch returns 409.
+Before serving capture, the daemon saves the grant in an owner-only receipt under
+`voice/capture-grants/`. On restart it restores each owner's pause obligation. A
+standalone grant records the kernel-verified process birth and boot identity. A
+different birth at the same PID, or a confirmed process exit, retires that grant.
+A supervised grant can also be retired by its launcher's authenticated exit.
+A missing heartbeat, unlocked file or reused PID cannot signal that watch.
+An anonymous grant still requires the original listener's pause acknowledgement.
 With every grant accounted for the holder can receive the job immediately.
 Stop bypasses this wait. The directive
 poll checks the capture lease or playback holder both on arrival and after

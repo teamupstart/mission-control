@@ -8,6 +8,12 @@
 #include <node_api.h>
 #include <stdio.h>
 #include <sys/file.h>
+#include <poll.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <sys/event.h>
+#endif
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -60,6 +66,94 @@ napi_value ThrowSystemError(napi_env env, const char* code, const std::string& m
   }
   napi_throw(env, error);
   return nullptr;
+}
+
+// The kernel records the process birth before exec. Neither a changed executable
+// nor a recycled PID can masquerade as an exit of the original process.
+napi_value VoiceProcessBirth(napi_env env, napi_callback_info info) {
+#if defined(__APPLE__)
+  size_t argc = 1;
+  napi_value arg, result;
+  int32_t pid;
+  if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, arg, &pid) != napi_ok || pid <= 0)
+    return ThrowTypeError(env, "Expected listener PID");
+  int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+  struct kinfo_proc process = {};
+  size_t size = sizeof(process);
+  char boot[64] = {};
+  size_t boot_size = sizeof(boot);
+  if (sysctl(mib, 4, &process, &size, nullptr, 0) < 0 || size != sizeof(process) ||
+      sysctlbyname("kern.bootsessionuuid", boot, &boot_size, nullptr, 0) < 0)
+    return ThrowSystemError(env, "EPROCESSIDENTITY", "Cannot read process birth");
+  const auto start = process.kp_proc.p_starttime;
+  const std::string identity = std::string(boot) + "/" + std::to_string(start.tv_sec) + "/" + std::to_string(start.tv_usec);
+  napi_create_string_utf8(env, identity.c_str(), identity.size(), &result);
+  return result;
+#else
+  return ThrowTypeError(env, "Read the Linux process birth from procfs");
+#endif
+}
+
+// A capture-only listener locks one byte for its private lease. The daemon obtains
+// the owner's PID from the kernel and pins that process before handing out capture.
+napi_value CaptureProcessLock(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value argv[3], result;
+  int32_t fd, pid;
+  int64_t offset;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 3 ||
+      napi_get_value_int32(env, argv[0], &fd) != napi_ok || fd < 0 ||
+      napi_get_value_int64(env, argv[1], &offset) != napi_ok || offset < 0 ||
+      napi_get_value_int32(env, argv[2], &pid) != napi_ok || pid < 0)
+    return ThrowTypeError(env, "Expected descriptor, lock offset and listener PID");
+  struct flock lock = {};
+  lock.l_type = F_WRLCK;
+  lock.l_whence = SEEK_SET;
+  lock.l_start = offset;
+  lock.l_len = 1;
+  if (!pid) {
+    if (fcntl(fd, F_SETLK, &lock) < 0) return ThrowSystemError(env, "ECAPTURELOCK", "Cannot claim capture lifetime lock");
+    return Undefined(env);
+  }
+  auto owns_lock = [&]() {
+    lock.l_type = F_WRLCK;
+    return fcntl(fd, F_GETLK, &lock) == 0 && lock.l_type == F_WRLCK &&
+      lock.l_pid == pid && lock.l_start == offset && lock.l_len == 1;
+  };
+  if (!owns_lock()) return ThrowSystemError(env, "ECAPTURELOCK", "Capture lifetime lock owner mismatch");
+  int watch = -1;
+#if defined(__APPLE__)
+  watch = kqueue();
+  if (watch >= 0) {
+    struct kevent change;
+    EV_SET(&change, pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
+    if (fcntl(watch, F_SETFD, FD_CLOEXEC) < 0 || kevent(watch, &change, 1, nullptr, 0, nullptr) < 0) {
+      close(watch);
+      watch = -1;
+    }
+  }
+#elif defined(__linux__) && defined(SYS_pidfd_open)
+  watch = syscall(SYS_pidfd_open, pid, 0);
+#endif
+  if (watch < 0 || !owns_lock()) {
+    if (watch >= 0) close(watch);
+    return ThrowSystemError(env, "ECAPTUREWATCH", "Cannot verify capture process lifetime");
+  }
+  napi_create_int32(env, watch, &result);
+  return result;
+}
+
+napi_value CaptureProcessExited(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value arg, result;
+  int32_t fd;
+  if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, arg, &fd) != napi_ok || fd < 0)
+    return ThrowTypeError(env, "Expected process watch descriptor");
+  struct pollfd pfd = {fd, POLLIN, 0};
+  napi_get_boolean(env, poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLIN), &result);
+  return result;
 }
 
 bool ReadString(napi_env env, napi_value value, std::string* output) {
@@ -722,6 +816,9 @@ napi_value HostTimeUs(napi_env env, napi_callback_info) {
 
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
+      {"voiceProcessBirth", nullptr, VoiceProcessBirth, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"captureProcessLock", nullptr, CaptureProcessLock, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"captureProcessExited", nullptr, CaptureProcessExited, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"hostTimeUs", nullptr, HostTimeUs, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"acquire", nullptr, AcquireStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"release", nullptr, ReleaseStateLock, nullptr, nullptr, nullptr, napi_default, nullptr},

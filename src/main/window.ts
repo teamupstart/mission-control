@@ -6,6 +6,9 @@
 // Closing the window HIDES it (the app stays resident in the menu bar so alerts
 // keep firing); only a real quit destroys it.
 
+import { join, dirname } from "node:path";
+import { attachVoiceWindow, voiceWindowOptions } from "./voice-windows.ts";
+import { voiceTrayBounds } from "./tray.ts";
 import { logMain } from "./main-log.ts";
 import { BrowserWindow, screen, shell, type Event as ElectronEvent } from "electron";
 import { setTimeout as delay } from "node:timers/promises";
@@ -167,7 +170,31 @@ export function createWindow(preloadPath: string, launchWarning: string | null =
 
   // External links (PR pages, docs, …) open in the system browser; in-app
   // navigation stays pinned to the daemon/Vite origin.
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  const voiceSurface = (name: string, target: string) => {
+    for (const surface of ["pill", "popover"] as const) {
+      if (process.platform === "darwin" && name === "mission-voice-" + surface &&
+          target === new URL("/#/voice/" + surface, url).href) return surface;
+    }
+  };
+  win.webContents.on("did-create-window", (child, details) => {
+    const surface = voiceSurface(details.frameName, details.url);
+    if (!surface) return;
+    attachVoiceWindow(child, surface, voiceTrayBounds, details.url);
+    // A replacement dashboard document owns a new React tree. Retire the old portal
+    // even if its renderer crashed before React could run its cleanups.
+    const contents = window.webContents;
+    const retire = () => child.destroy();
+    contents.once("did-navigate", retire);
+    contents.once("render-process-gone", retire);
+    child.once("closed", () => {
+      contents.off("did-navigate", retire);
+      contents.off("render-process-gone", retire);
+    });
+  });
+  win.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    const surface = voiceSurface(frameName, url);
+    if (surface) return { action: "allow", overrideBrowserWindowOptions:
+      voiceWindowOptions(surface, join(dirname(preloadPath), "voice-surface.cjs")) };
     if (!isInternal(url)) {
       void shell.openExternal(url);
       return { action: "deny" };

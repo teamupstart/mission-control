@@ -16,10 +16,14 @@ final class Segment {
     let label: String
     let endedAt: Int64
     let startedAtHostUs: Int64 = 125
-    let speechStartHostUs: Int64 = 625
-    init(_ label: String, endedAt: Int64 = 1) { self.label = label; self.endedAt = endedAt }
+    let speechStartHostUs: Int64
+    init(_ label: String, endedAt: Int64 = 1, onset: Int64 = 625) {
+        self.label = label
+        self.endedAt = endedAt
+        speechStartHostUs = onset
+    }
     func through(_ release: Int64) -> Segment? {
-        endedAt > release ? Segment(label + "-clipped", endedAt: release) : self
+        endedAt > release ? Segment(label + "-clipped", endedAt: release, onset: speechStartHostUs) : self
     }
     deinit { observe("released " + label) }
 }
@@ -35,7 +39,8 @@ final class Segment {
     private var heldPhrases: [Segment] = []
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String, held: Bool, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
+    init(selection: String, held: Bool, endOfSpeechMs: Int, onSpeechStart: @escaping (Int64) -> Void,
+         onSegmentDropped: @escaping (Int64) -> Void, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         exclusive = selection == "exclusive"
         if exclusive, Self.exclusiveOwner?.isRunning == true {
             observe("overlapping microphones")
@@ -46,6 +51,7 @@ final class Segment {
         if selection == "unplugged" && opening > 1 { throw CaptureError.device }
         (segments, source) = AsyncStream.makeStream()
         if exclusive { Self.exclusiveOwner = self }
+        observe("silence interval \(endOfSpeechMs) ms")
         observe("opened \(opening)")
         if ["reconfigured", "unplugged"].contains(selection) && opening == 1 {
             signal(SIGUSR1, SIG_IGN)
@@ -59,7 +65,12 @@ final class Segment {
             source.resume()
         }
         if held {
-            if (selection == "rapid-press" || exclusive) && opening == 1 {
+            if selection == "partial-hold" {
+                let complete = Segment("completed hold")
+                heldPhrases = [complete]
+                onSpeechStart(complete.speechStartHostUs)
+                onSpeechStart(complete.speechStartHostUs + 1)
+            } else if (selection == "rapid-press" || exclusive) && opening == 1 {
                 heldPhrases = [Segment("first hold")]
             } else {
                 heldPhrases = (1...4).map { Segment("phrase \($0)") }
@@ -69,6 +80,16 @@ final class Segment {
                 Recognizer.pendingDecode = nil
             }
             observe("holding audio")
+        } else if selection == "stalled-onset" {
+            for segment in [Segment("Cancel."), Segment("next", endedAt: 2, onset: 1625)] {
+                onSpeechStart(segment.speechStartHostUs)
+                source.yield(segment)
+            }
+        } else if selection == "dropped-segment" {
+            onSpeechStart(123_456)
+            onSegmentDropped(123_456)
+        } else if selection == "unfinished-segment" {
+            onSpeechStart(123_456)
         } else if selection == "two-segments" {
             source.yield(Segment("undecodable"))
             source.yield(Segment("next"))
@@ -83,6 +104,12 @@ final class Segment {
             Recognizer.pendingDecode?.resume()
             Recognizer.pendingDecode = nil
         }
+    }
+
+    func updateEndOfSpeechMs(_ duration: Int) {
+        observe("silence interval \(duration) ms")
+        Recognizer.pendingDecode?.resume()
+        Recognizer.pendingDecode = nil
     }
 
     func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) {

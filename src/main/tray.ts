@@ -20,6 +20,7 @@ interface ReportCounts {
 
 export interface TrayHandlers {
   setMuted: (muted: boolean) => Promise<boolean>;
+  onRecentlyHeard: () => void;
   onOpen: () => void;
   onCheckForUpdates: () => void;
   onInstallIntegrations: () => void;
@@ -33,6 +34,13 @@ let muteConfirmation: NodeJS.Timeout | undefined;
 let muteError = "";
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
+
+export function showVoiceMuteError(message: string): void {
+  if (!presentation) return;
+  muteError = message;
+  refreshMenu?.();
+  if (menu) tray?.popUpContextMenu(menu);
+}
 
 export function setTrayVoice(state: TrayVoiceState): void {
   const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
@@ -50,6 +58,8 @@ export function setTrayVoice(state: TrayVoiceState): void {
 let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
+
+export function voiceTrayBounds() { return tray?.getBounds(); }
 
 function trayImage(iconPath: string): Electron.NativeImage {
   if (iconPath && existsSync(iconPath)) {
@@ -80,9 +90,7 @@ async function requestMute(handlers: TrayHandlers, muted: boolean): Promise<void
     if (muteConfirmation !== deadline) return;
     clearTimeout(deadline);
     muteConfirmation = undefined;
-    muteError = `${muted ? "Mute" : "Unmute"} not confirmed. Try again.`;
-    render(handlers);
-    if (menu) tray?.popUpContextMenu(menu);
+    showVoiceMuteError(`${muted ? "Mute" : "Unmute"} not confirmed. Try again.`);
   }
 }
 
@@ -117,6 +125,7 @@ function render(handlers: TrayHandlers): void {
       { label: status, enabled: false },
       ...(muteError ? [{ label: muteError, enabled: false }] : []),
       { label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) },
+      { label: "Recently Heard", click: handlers.onRecentlyHeard },
       { type: "separator" },
     );
   }

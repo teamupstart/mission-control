@@ -42,6 +42,9 @@ export type VoiceBackend = (typeof VOICE_BACKENDS)[number];
 export const VOICE_BACKEND_CHOICES = ["auto", ...VOICE_BACKENDS] as const;
 export type VoiceBackendChoice = (typeof VOICE_BACKEND_CHOICES)[number];
 
+export const VOICE_END_OF_SPEECH_MS = [500, 800, 1000, 1500, 2000, 3000, 5000] as const;
+const EndOfSpeechMsSchema = z.literal(VOICE_END_OF_SPEECH_MS);
+
 /** The bounds on the cancel window's length, in whole seconds. */
 export const VOICE_CANCEL_WINDOW_SECONDS = { min: 1, max: 30 } as const;
 
@@ -81,10 +84,11 @@ export const VoiceConfigSchema = z.object({
    * none. Nothing registers it before Phase 11, and nothing names it before the shell reports
    * the `hotkey` capability.
    */
-  hotkey: ChordSchema.nullable().default("ctrl+alt+m"),
+  hotkey: ChordSchema.nullable().default("cmd+ctrl+alt+v"),
   autoMuteDuringCalls: z.boolean().default(true),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
+  endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
   speech: z.object({ voice: SpeechVoiceSchema.nullable().default(null) }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
@@ -107,6 +111,7 @@ export const VoiceConfigPatchSchema = z.object({
   muted: z.boolean(),
   hotkey: ChordSchema.nullable(),
   autoMuteDuringCalls: z.boolean(),
+  endOfSpeechMs: EndOfSpeechMsSchema,
   cancelWindow: z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
@@ -146,7 +151,10 @@ export function applyVoiceConfigPatch(config: VoiceConfig, patch: VoiceConfigPat
 }
 
 /** `POST /api/voice/mute`. */
-export const VoiceMuteRequestSchema = z.object({ muted: z.boolean() }).strict();
+export const VoiceMuteRequestSchema = z.union([
+  z.object({ muted: z.boolean() }).strict(),
+  z.object({ toggle: z.literal(true) }).strict(),
+]);
 
 /** Where a routed message's confirmation card appears (Phases 6 and 12). */
 export const VOICE_CONFIRMATION_PLACEMENTS = ["pill", "toast", "popover"] as const;
@@ -205,7 +213,9 @@ export const VoiceListenerDirectiveSchema = z.object({
   capture: z.boolean(),
   roster: z.array(z.string()),
   inputDevice: z.string(),
+  endOfSpeechMs: EndOfSpeechMsSchema.optional(),
   pauseMs: z.number().nullable().optional(),
+  captureRevision: z.string().min(1).optional(),
   revision: z.string().min(1),
 });
 export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
@@ -241,6 +251,9 @@ export interface VoiceCapability {
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
 export type VoiceCapabilities = Partial<Record<VoiceCapabilityId, VoiceCapability>>;
+
+/** A failed sample is unavailable until the next poll. Its preference is still editable. */
+export const VOICE_CALL_POLL_RETRY = "Retrying microphone check. ";
 
 export const VOICE_MODEL_STATUSES = ["missing", "downloading", "verifying", "ready", "failed"] as const;
 export type VoiceModelStatus = (typeof VOICE_MODEL_STATUSES)[number];
@@ -290,6 +303,8 @@ export const VOICE_MODEL_STATE_NONE: VoiceModelState = Object.freeze({
 export interface VoiceHotkeyError {
   reason: string;
   chordInForce: string | null;
+  /** Set only when this refusal came from an attempt to register a proposed shortcut. */
+  trialId?: string;
 }
 
 /**
@@ -299,6 +314,7 @@ export interface VoiceHotkeyError {
 export interface VoiceState {
   /** Manual mute can also be set while the mode reads unavailable. */
   muted?: boolean;
+  planFormsByVoice?: boolean;
   speech: VoiceSpeechState;
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
@@ -310,6 +326,15 @@ export interface VoiceState {
   capabilities: VoiceCapabilities;
   /** The persisted shortcut, observed in the same snapshot as the shell's registration. */
   configuredHotkey: string | null;
+  /** A replacement to try while the persisted shortcut remains the fallback. */
+  pendingHotkey?: string;
+  pendingHotkeyId?: string;
+  /** The desktop missed the confirmation deadline for this replacement. */
+  expiredHotkey?: string;
+  /** A focused Settings recorder is waiting for the desktop to release its reservation. */
+  recordingHotkey?: true;
+  recordingHotkeyId?: string;
+  recordingHotkeyReady?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
   registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
@@ -422,11 +447,18 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.modeVersion?.source,
     state.modeVersion?.revision,
     state.muted ?? false,
+    state.planFormsByVoice ?? true,
     state.reasons,
     capabilities,
     state.configuredHotkey,
+    state.pendingHotkey,
+    state.pendingHotkeyId,
+    state.expiredHotkey,
+    state.recordingHotkey,
+    state.recordingHotkeyId,
+    state.recordingHotkeyReady,
     state.registeredHotkey,
-    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
+    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce, state.hotkeyError.trialId] : null,
     canonicalVoiceModel(state.model),
     voice && [voice.engine, voice.id], reason, job && [job.id, job.purpose, job.state, job.cardId],
     entries(catalog.neural), entries(catalog.system), canonicalVoiceModel(model), lastAudition && [lastAudition.id, lastAudition.state],
@@ -465,7 +497,9 @@ export function voiceStateOff(): VoiceState {
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
-export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+// Starting with 4.1, listeners apply timing-only directives to an open capture in place.
+export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.1`;
+export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** A capture-only listener's process and the byte it must lock before opening the microphone. */
 export const VOICE_CAPTURE_PID_HEADER = "x-voice-capture-pid";
@@ -503,6 +537,7 @@ export const VoiceListenerHelloSchema = z.object({
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),
   modelLoaded: z.boolean(),
   primingAvailable: z.boolean().optional(),
+  reportsSpeechOnset: z.literal(true).optional(),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS),
 });
 export type VoiceListenerHello = z.infer<typeof VoiceListenerHelloSchema>;
@@ -513,6 +548,8 @@ export function voiceProtocolMajor(version: string): number {
 }
 
 const VoiceCapabilityReportSchema = z.object({
+  /** The hotkey producer released its reservation for this recorder. */
+  recordingId: z.uuid().optional(),
   available: z.boolean(),
   reason: z.string().max(VOICE_LIMITS.reasonChars).nullable().default(null),
 });
@@ -538,6 +575,7 @@ export const VoiceShellReportSchema = z.object({
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),
+    trialId: z.uuid().optional(),
   }).nullable().default(null),
 });
 export type VoiceShellReport = z.infer<typeof VoiceShellReportSchema>;

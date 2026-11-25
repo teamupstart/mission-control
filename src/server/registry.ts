@@ -1685,7 +1685,7 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
   }
 
-  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 
@@ -1701,6 +1701,7 @@ export class Registry extends EventEmitter {
    */
   emitVoiceState(state: VoiceState): void {
     if (state.mode === "off") this.voiceRouter?.clearActionsAndHistory();
+    if (state.planFormsByVoice === false) this.voiceRouter?.forms.clear();
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;

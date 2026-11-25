@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer, type ServerResponse } from "node:http";
@@ -14,9 +15,10 @@ import { voiceStateOff, type VoiceMode, type VoiceShellReport } from "../src/sha
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
+import { formatChord } from "../src/shared/keyboard-chords.ts";
 
 test("Electron keeps one template tray in sync while minimized, handles both clicks and restores the off menu", {
-  skip: process.platform !== "darwin", timeout: 60_000,
+  skip: process.platform !== "darwin", timeout: 75_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
   const root = mkdtempSync(join(tmpdir(), "voice-shell-"));
@@ -32,6 +34,17 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     process.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(join(root, "stopped"))}, "stopped"); process.exit(0); });
     setInterval(() => {}, 1000);
   `, {mode: 0o755});
+  execFileSync(process.execPath, ["scripts/build-voice-hardware.mjs"], { stdio: "pipe" });
+  for (const name of ["voice-hotkey", "mic-activity"]) {
+    symlinkSync(resolve("dist/native", name + ".node"), join(root, name + ".node"));
+  }
+  const eventFixture = join(root, "queue.node");
+  execFileSync("xcrun", ["clang++", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
+    "-I", resolve(process.execPath, "../../include/node"), "-framework", "AppKit", "test/fixtures/voice-hotkey-event.mm", "-o", eventFixture]);
+  const layoutAddon = join(root, "layout-hotkey.node");
+  execFileSync("xcrun", ["clang++", "-std=c++17", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
+    "-framework", "CoreFoundation", "-I", resolve(process.execPath, "../../include/node"),
+    "-framework", "AppKit", "-DMCVoiceOverObserver=MCLayoutTestVoiceOverObserver", "native/voice-hotkey/hotkey.mm", "test/fixtures/voice-hotkey-layout.cc", "-o", layoutAddon]);
   let events: ServerResponse | undefined;
   let connects = 0;
   let unavailableHandshakes = 1;
@@ -39,12 +52,16 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let reconnectSnapshot: string | undefined;
   const heartbeatMs = 750;
   let keepalive: "ping" | "registry" | "silent" = "ping";
+  let toggles = 0;
+  let muteReadbacks = 0;
+  let readbackMuted = false;
   const requests: boolean[] = [];
   let muteResponse: "ok" | "refused" | "timeout" = "ok";
   const reports: VoiceShellReport[] = [];
   let holdReport = false;
   let refuseReport = false;
   let heldReport: ServerResponse | undefined;
+  let interceptRelease: ((report: VoiceShellReport, res: ServerResponse) => boolean) | undefined;
   const publicRequests: { path?: string; credential: boolean }[] = [];
   const server = createServer((req, res) => {
     publicRequests.push({ path: req.url, credential: !!req.headers["x-harness-token"] });
@@ -82,13 +99,26 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url === "/api/voice/mute") {
-      requests.push(JSON.parse(body).muted);
-      if (muteResponse === "timeout") return;
+      if (req.method === "GET") {
+        muteReadbacks++;
+        res.end(JSON.stringify({ state: { ...voiceStateOff(), muted: readbackMuted,
+          mode: readbackMuted ? "muted" : "listening", configuredHotkey: "cmd+ctrl+shift+F10" } }));
+        return;
+      }
+      const command = JSON.parse(body);
+      if (command.toggle) toggles++;
+      else requests.push(command.muted);
+      if (muteResponse === "timeout") {
+        if (command.toggle) readbackMuted = !readbackMuted;
+        return;
+      }
       if (muteResponse === "refused") res.statusCode = 503;
     }
     if (req.url === "/voice/shell-report" && req.headers["x-harness-token"] === ensureToken()) {
       if (refuseReport) { res.writeHead(503).end(); return; }
-      reports.push(JSON.parse(body));
+      const report: VoiceShellReport = JSON.parse(body);
+      if (!report.pushToTalk && report.pushToTalkReleasedAtHostUs !== undefined && interceptRelease?.(report, res)) return;
+      reports.push(report);
       if (holdReport) {
         holdReport = false;
         heldReport = res;
@@ -142,8 +172,24 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         let labels = [];
         let lastMenu;
         tray.popUpContextMenu = menu => { lastMenu = menu; labels = menu.items.map(item => item.label); };
+        // Exercise distributed notification delivery without announcing a layout change to other apps.
+        const layoutEvent = "com.missioncontrol.test.input-source." + process.pid;
+        const subscribe = systemPreferences.subscribeNotification.bind(systemPreferences);
+        systemPreferences.subscribeNotification = (name, cb) => subscribe(
+          name === "com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged" ? layoutEvent : name, cb);
+        // Count actual input queries, including polls whose result produces no shell report.
+        const nativeRequire = require("node:module").createRequire(__filename);
+        const activityPath = nativeRequire.resolve("./mic-activity.node");
+        const activity = nativeRequire(activityPath);
+        let polls = 0;
+        let testCall = false;
+        nativeRequire.cache[activityPath].exports = {
+          running(pid) { polls++; return testCall || activity.running(pid); }
+        };
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
-        global.fixture = { tray, voice, captures, calls, configurePermission, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; } };
+        const { post, releaseReservation } = nativeRequire(${JSON.stringify(eventFixture)});
+        const freeKeyAndNotify = () => { releaseReservation(); systemPreferences.postNotification(layoutEvent, {}, true); };
+        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, setTestCall: value => { testCall = value; }, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; }, get polls() { return polls; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -153,7 +199,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number };
+  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; setTestCall(value: boolean): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -185,6 +231,305 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   assert.equal(reports.length, 0);
   await click("click");
   assert.equal((await read()).opens, 1);
+  await t.test("Electron dispatches Carbon down and up from its application queue and reports replacement failures", async t => {
+    const publish = (configuredHotkey: string | null, mode: VoiceMode = "listening", pendingHotkey?: string, pendingHotkeyId?: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode, configuredHotkey, pendingHotkey, pendingHotkeyId },
+    }) + "\n\n");
+    const chord = "cmd+ctrl+shift+F9";
+    const startUs = voiceHostTimeUs();
+    publish(chord);
+    await until(() => reports.at(-1)?.registeredHotkey === chord);
+    for (const key of ["v", "7", "+", "Space", "Enter", "shift+v"]) {
+      publish(key);
+      await until(() => reports.at(-1)?.hotkeyError?.reason ===
+        `macOS refused ${formatChord(key)}: Use Command, Control, or Option with a typing key.`);
+      assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, chord);
+    }
+    for (const key of ["ArrowLeft", "shift+ArrowRight", "Home", "End", "PageUp", "PageDown"]) {
+      publish(key);
+      await until(() => reports.at(-1)?.hotkeyError?.reason ===
+        `macOS refused ${formatChord(key)}: Use Command, Control, or Option with a navigation key.`);
+      assert.equal(reports.at(-1)?.registeredHotkey, chord);
+    }
+    const reserved = "cmd+ctrl+shift+F10";
+    const firstTrial = crypto.randomUUID();
+    publish(chord, "listening", reserved, firstTrial);
+    await until(() => reports.at(-1)?.hotkeyError?.reason.includes("another app already owns it.") === true);
+    assert.equal(reports.at(-1)?.registeredHotkey, chord);
+    assert.equal(reports.at(-1)?.hotkeyError?.trialId, firstTrial);
+    const nextTrial = crypto.randomUUID();
+    publish(chord, "listening", reserved, nextTrial);
+    await until(() => reports.at(-1)?.hotkeyError?.trialId === nextTrial);
+    const beforeRestore = reports.length;
+    publish(chord);
+    await until(() => reports.length > beforeRestore);
+    assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, chord);
+    for (const down of [true, false]) {
+      await app.evaluate((_, pressed) => (globalThis as unknown as { fixture: Fixture }).fixture.post(pressed), down);
+    }
+    await until(() => toggles === 1 && !!reports.at(-1)?.pushToTalkReleasedAtHostUs);
+    const released = reports.at(-1)!;
+    assert.ok(startUs <= released.pushToTalkReleasedAtHostUs!);
+    assert.ok(released.pushToTalkReleasedAtHostUs! <= released.reportedAtHostUs!);
+    assert.ok(released.reportedAtHostUs! <= voiceHostTimeUs());
+
+    const call = (value: boolean) => app.evaluate((_, value) =>
+      (globalThis as unknown as {fixture: Fixture}).fixture.setTestCall(value), value);
+    const post = (down: boolean) => app.evaluate((_, down) =>
+      (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
+    await t.test("key-up reaches the daemon while both the press and routine report responses are stalled", async t => {
+      if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
+      await call(true);
+      publish(reserved, "auto-muted");
+      await until(async () => !!reports.at(-1)?.callActive && (await read()).mode === "auto-muted");
+      holdReport = true;
+      const check = app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.checkMicrophone());
+      await until(() => !!heldReport);
+      const routine = heldReport!;
+      heldReport = undefined;
+      try {
+        const start = reports.length;
+        holdReport = true;
+        await post(true);
+        await until(() => !!heldReport && reports.slice(start).some(r => r.pushToTalk));
+        const press = reports.at(-1)!;
+        const pressResponse = heldReport!;
+        await post(false);
+        const isRelease = (r: VoiceShellReport) => !r.pushToTalk && !!r.pushToTalkReleasedAtHostUs;
+        await until(() => reports.slice(start + 1).some(isRelease), 1500);
+        const release = reports.slice(start + 1).find(isRelease)!;
+        assert.ok(press.reportedAtHostUs! < release.reportedAtHostUs!);
+        assert.ok(press.pushToTalkPressedAtHostUs! < release.pushToTalkReleasedAtHostUs!);
+        for (const response of [routine, pressResponse]) {
+          assert.equal(response.writableEnded, false);
+          assert.equal(response.destroyed, false, "release arrived before either request timed out");
+        }
+      } finally {
+        holdReport = false;
+        const pending = heldReport as ServerResponse | undefined;
+        if (pending && !pending.writableEnded) pending.end();
+        heldReport = undefined;
+        routine.end();
+        await check;
+        await call(false);
+      }
+    });
+
+    await t.test("a lost key-up retries the same snapshot promptly, with a bound and supersession by a new hold", async t => {
+      if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
+      await call(true);
+      publish(reserved, "auto-muted");
+      await until(async () => !!reports.at(-1)?.callActive && (await read()).mode === "auto-muted");
+      async function press() {
+        const start = reports.length;
+        await post(true);
+        await until(() => reports.slice(start).some(r => r.pushToTalk));
+      }
+      async function loseRelease(drop: (attempt: number, res: ServerResponse) => boolean) {
+        await press();
+        const attempts: VoiceShellReport[] = [];
+        interceptRelease = (report, res) => {
+          // Count retries of this observation only. A fresh heartbeat has its own timestamp.
+          if (attempts.length && report.reportedAtHostUs !== attempts[0]!.reportedAtHostUs) return false;
+          attempts.push(report);
+          return drop(attempts.length, res);
+        };
+        await post(false);
+        await until(() => attempts.length > 0);
+        return attempts;
+      }
+      try {
+        // Lose the original request before applying it and leave its connection unanswered.
+        const recovered = await loseRelease(attempt => attempt === 1);
+        await until(() => reports.some(r => r.reportedAtHostUs === recovered[0]!.reportedAtHostUs), 1500);
+        assert.deepEqual(recovered, [recovered[0], recovered[0]]);
+
+        const exhausted = await loseRelease((_, res) => { res.destroy(); return true; });
+        await until(() => exhausted.length === 3, 1500);
+        await new Promise(resolve => setTimeout(resolve, 700));
+        assert.deepEqual(exhausted, [exhausted[0], exhausted[0], exhausted[0]]);
+
+        let unanswered: ServerResponse | undefined;
+        const superseded = await loseRelease((_, res) => { unanswered = res; return true; });
+        await press();
+        // Let the failed response reach the shell only after it has reported the new hold.
+        unanswered!.destroy();
+        await new Promise(resolve => setTimeout(resolve, 700));
+        assert.equal(superseded.length, 1);
+        await post(false);
+      } finally {
+        interceptRelease = undefined;
+        await call(false);
+      }
+    });
+
+    await t.test("a refused hotkey opens tray feedback; a lost reply reconciles the applied mute without toggling twice", async () => {
+      const before = toggles;
+      try {
+        for (const outcome of ["refused", "timeout"] as const) {
+          muteResponse = outcome;
+          for (const down of [true, false]) {
+            await app.evaluate((_, down) => (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
+          }
+          const message = outcome === "refused" ? "Manual mute is off." : "Voice is muted.";
+          await until(async () => (await read()).labels.includes("Mute shortcut not confirmed. " + message));
+          assert.equal((await read()).mode, outcome === "refused" ? "listening" : "muted");
+        }
+        assert.equal(toggles, before + 2, "exactly one toggle per tap, even when its response times out");
+        assert.equal(muteReadbacks, 2);
+      } finally {
+        muteResponse = "ok";
+        publish(reserved);
+      }
+    });
+    await t.test("fresh desktop hardware reserves the durable shortcut before trying a refused replacement", async () => {
+      publish(chord, "off");
+      await until(async () => (await read()).mode === "off");
+      const start = reports.length;
+      publish(chord, "listening", reserved);
+      await until(() => reports.slice(start).some(r => r.hotkeyError?.chordInForce === chord));
+      assert.equal(reports.at(-1)?.registeredHotkey, chord);
+      assert.equal(await app.evaluate(({ globalShortcut }) => {
+        const key = "Command+Control+Shift+F9";
+        if (!globalShortcut.register(key, () => {})) return false;
+        globalShortcut.unregister(key);
+        return true;
+      }), false, "Carbon still reserves the saved binding for Voice after restarting");
+    });
+    await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.freeKeyAndNotify());
+    await until(() => reports.at(-1)?.registeredHotkey === reserved && reports.at(-1)?.hotkeyError === null);
+
+    publish(null);
+    await until(() => reports.at(-1)?.registeredHotkey === null && reports.at(-1)?.hotkeyError === null);
+    publish("UnknownKey");
+    await until(() => !!reports.at(-1)?.hotkeyError);
+    assert.equal(reports.at(-1)?.hotkeyError?.chordInForce, null);
+  });
+  await t.test("disabling Voice releases its active system-wide shortcut and stops microphone queries", async () => {
+    const chord = "cmd+ctrl+shift+F9";
+    const polls = () => app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.polls);
+    const canAcquireShortcut = () => app.evaluate(({ globalShortcut }) => {
+      const accelerator = "Command+Control+Shift+F9";
+      if (!globalShortcut.register(accelerator, () => {})) return false;
+      globalShortcut.unregister(accelerator);
+      return true;
+    });
+    events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey: chord },
+    }) + "\n\n");
+    await until(() => reports.at(-1)?.registeredHotkey === chord);
+    assert.equal(await canAcquireShortcut(), false, "Voice owns the shortcut while listening");
+    const record = (recordingHotkeyId?: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey: chord, recordingHotkey: recordingHotkeyId ? true : undefined, recordingHotkeyId },
+    }) + "\n\n");
+    const recordingId = crypto.randomUUID();
+    record(recordingId);
+    await until(() => reports.at(-1)?.capabilities.hotkey?.recordingId === recordingId);
+    assert.equal(reports.at(-1)?.registeredHotkey, null);
+    assert.equal(await canAcquireShortcut(), true, "the focused recorder can receive the active chord");
+    record();
+    await until(() => reports.at(-1)?.registeredHotkey === chord);
+    assert.equal(await canAcquireShortcut(), false, "finishing capture restores the reservation");
+    const [major, minor] = (await app.evaluate(() => process.getSystemVersion())).split(".").map(Number);
+    const listeningPolls = await polls();
+    if (major! > 14 || (major === 14 && minor! >= 2)) {
+      await until(async () => (await polls()) > listeningPolls);
+    }
+
+    events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
+    await until(async () => (await read()).mode === "off");
+    const stoppedPolls = await polls();
+    assert.equal(await canAcquireShortcut(), true, "a second owner can acquire the shortcut once Voice is off");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    assert.equal(await polls(), stoppedPolls, "no native input query across two polling intervals while off");
+  });
+  await t.test("Voice yields its default to VoiceOver at startup and on live changes, and accepts a different shortcut", async () => {
+    const chord = "cmd+ctrl+alt+v";
+    const publish = (configuredHotkey: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey },
+    }) + "\n\n");
+    const voiceOver = (enabled?: boolean) => app.evaluate((_, { path, enabled }) => {
+      const fixture = process.getBuiltinModule("node:module").createRequire(path)(path);
+      if (enabled === undefined) fixture.setVoiceOver();
+      else fixture.setVoiceOver(enabled);
+    }, { path: eventFixture, enabled });
+    const defaultIsFree = () => app.evaluate(({ globalShortcut }) => {
+      const accelerator = "Command+Control+Alt+V";
+      if (!globalShortcut.register(accelerator, () => {})) return false;
+      globalShortcut.unregister(accelerator);
+      return true;
+    });
+    const yielded = () => reports.at(-1)?.registeredHotkey === null &&
+      !!reports.at(-1)?.hotkeyError?.reason.includes("VoiceOver uses this shortcut");
+    try {
+      await voiceOver(true);
+      publish(chord);
+      await until(yielded);
+      assert.equal(await defaultIsFree(), true);
+      await voiceOver(false);
+      await until(() => reports.at(-1)?.registeredHotkey === chord);
+      assert.equal(await defaultIsFree(), false);
+      await voiceOver(true);
+      await until(yielded);
+      assert.equal(await defaultIsFree(), true);
+      publish("cmd+ctrl+shift+F9");
+      await until(() => reports.at(-1)?.registeredHotkey === "cmd+ctrl+shift+F9");
+      assert.equal(reports.at(-1)?.hotkeyError, null);
+    } finally {
+      events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
+      await until(async () => (await read()).mode === "off");
+      await voiceOver();
+    }
+  });
+  await t.test("Carbon moves the same V shortcut from US to Dvorak and reuses an unchanged physical binding", async () => {
+    const changes = await app.evaluate((_, paths) => {
+      const require = process.getBuiltinModule("node:module").createRequire(paths.layout);
+      const registrar = require(paths.layout);
+      const { layoutKeysAvailable } = require(paths.events);
+      const chord = "cmd+ctrl+alt+shift+v";
+      try {
+        delete process.env.MC_TEST_VOICE_DVORAK;
+        const us = registrar.register(chord, () => {});
+        const usKeys = layoutKeysAvailable();
+        process.env.MC_TEST_VOICE_DVORAK = "1";
+        const moved = registrar.register(chord, () => {});
+        const repeated = registrar.register(chord, () => {});
+        const dvorakKeys = layoutKeysAvailable();
+        delete process.env.MC_TEST_VOICE_DVORAK;
+        // Dvorak V is on the main US period key. Probe its physical Carbon code
+        // directly: Shift+Option+period need not produce the period character.
+        return [us, usKeys, moved, repeated, dvorakKeys, registrar.register(chord, () => {})];
+      } finally {
+        delete process.env.MC_TEST_VOICE_DVORAK;
+        registrar.unregister();
+      }
+    }, { layout: layoutAddon, events: eventFixture });
+    assert.deepEqual(changes, [true, [false, true], true, false, [true, false], true]);
+  });
+  await t.test("Control+Shift+Plus reserves the main US Equals key and leaves keypad Plus free", async () => {
+    const keys = await app.evaluate((_, paths) => {
+      const require = process.getBuiltinModule("node:module").createRequire(paths.layout);
+      const registrar = require(paths.layout);
+      const { plusKeysAvailable } = require(paths.events);
+      try {
+        registrar.register("ctrl+shift++", () => {});
+        return plusKeysAvailable();
+      } finally { registrar.unregister(); }
+    }, { layout: layoutAddon, events: eventFixture });
+    assert.deepEqual(keys, [false, true]);
+  });
+  await t.test("Control+Shift+7 reserves the main US number row and leaves keypad 7 free", async () => {
+    const keys = await app.evaluate((_, paths) => {
+      const require = process.getBuiltinModule("node:module").createRequire(paths.layout);
+      const registrar = require(paths.layout);
+      const { sevenKeysAvailable } = require(paths.events);
+      try {
+        registrar.register("ctrl+shift+7", () => {});
+        return sevenKeysAvailable();
+      } finally { registrar.unregister(); }
+    }, { layout: layoutAddon, events: eventFixture });
+    assert.deepEqual(keys, [false, true]);
+  });
   const images: string[] = [];
   for (const mode of ["listening", "muted", "auto-muted", "push-to-talk", "unavailable", "off"] satisfies VoiceMode[]) {
     events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode } }) + "\n\n");
@@ -193,6 +538,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     await click("right-click");
     const {labels, title, captures} = await read();
     assert.equal(title, " 2");
+    assert.ok(labels.includes("Recently Heard"));
     assert.match(labels[3]!, /^Voice: /);
     assert.equal(labels[4], mode === "muted" ? "Unmute Voice" : "Mute Voice");
     images.push(captures.at(-1)!);
@@ -201,8 +547,10 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await until(() => requests.length === 2);
   assert.deepEqual(requests, [true, false]);
   assert.ok(reports.length);
-  assert.ok(reports.every(({ reportedAtHostUs }, index) => reportedAtHostUs !== undefined &&
-    reportedAtHostUs > (reports[index - 1]?.reportedAtHostUs ?? -1) && reportedAtHostUs <= voiceHostTimeUs()));
+  assert.ok(reports.every(report => report.capabilities["floating-windows"]?.available && !report.capabilities["speech-output"]));
+  const stamps = reports.map(report => report.reportedAtHostUs);
+  assert.ok(stamps.every(us => us !== undefined && us <= voiceHostTimeUs()));
+  assert.equal(new Set(stamps).size, reports.length);
   assert.equal(new Set(images).size, 4);
   await click("click");
   assert.equal((await read()).opens, 2);

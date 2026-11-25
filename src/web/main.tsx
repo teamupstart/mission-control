@@ -37,7 +37,12 @@ installExperienceReporting();
 const root = document.getElementById("root");
 const planQuery = new URLSearchParams(window.location.search);
 if (!root) throw new Error("missing #root");
-createRoot(root, {
+if (window.opener && ["pill", "popover"].some(surface =>
+  window.name === "mission-voice-" + surface && location.hash === "#/voice/" + surface)) {
+  root.replaceChildren();
+  document.documentElement.classList.add("voice-window");
+  window.opener.postMessage("mission-voice-ready", location.origin);
+} else createRoot(root, {
   onUncaughtError(error, info) {
     console.error("[dashboard] Uncaught rendering error", error, info.componentStack);
     reportBrowserError(error, "exception", undefined, false);

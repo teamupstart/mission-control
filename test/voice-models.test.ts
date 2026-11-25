@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   parsePinnedModelUrl,
   VOICE_TEST_MODEL,
+  VOICE_SPEECH_MODELS,
+  VOICE_SPEECH_NEURAL_VOICES,
   VOICE_MODEL_ORIGIN,
   VOICE_MODELS,
   voiceModelBytes,
@@ -35,6 +37,17 @@ test("the manifest is keyed by every backend, and fluidaudio's entry parses unde
   assert.deepEqual(VoiceModelManifestSchema.parse(fluidaudio), fluidaudio);
   assert.match(fluidaudio.revision, /^[a-z0-9][a-z0-9.-]*$/);
   assert.ok(fluidaudio.sources.every((source) => source.license === "CC-BY-4.0"));
+});
+
+test("all ten voices share the pinned Supertonic 3 download within the 150 MB budget", () => {
+  const model = VoiceModelManifestSchema.parse(VOICE_SPEECH_MODELS["supertonic-3"]);
+  assert.equal(model.files.length, 7);
+  assert.equal(voiceModelBytes(model), 145_295_768);
+  assert.equal(model.sources[0]?.license, "OpenRAIL-M");
+  assert.deepEqual(VOICE_SPEECH_NEURAL_VOICES.map(({ name, index }) => [name, index]), [
+    ["F1", 0], ["F2", 1], ["F3", 2], ["F4", 3], ["F5", 4],
+    ["M1", 5], ["M2", 6], ["M3", 7], ["M4", 8], ["M5", 9],
+  ]);
 });
 
 test("every file is the spike's: the Parakeet TDT v2 Core ML model and the CTC model FluidAudio primes with", () => {

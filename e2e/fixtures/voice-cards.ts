@@ -5,7 +5,7 @@ import type { Session } from "../../src/shared/types.ts";
 import type { DaemonHandle } from "./daemon.ts";
 import { expect } from "./test.ts";
 import { artifactsDir } from "./artifacts.ts";
-import { enableVoice } from "./voice.ts";
+import { enableVoice, voiceToken } from "./voice.ts";
 
 export async function setupCards(page: Page, daemon: DaemonHandle, seconds = 30) {
   await enableVoice(daemon);
@@ -42,6 +42,19 @@ export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: s
     return session?.agentSessionId && session.state;
   }, { timeout: 60_000 }).toBe("idle");
   return session;
+}
+
+export async function postCachePlan(daemon: DaemonHandle, session: Session): Promise<string> {
+  const response = await fetch(daemon.baseURL + "/mcp/reviews", { method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+    body: JSON.stringify({ kind: "plan-decisions", env: {}, cwd: session.cwd, title: "Cache layer plan", body: "Choose the cache settings.",
+      decisions: [["Where does the cache live?", "SQLite", "Postgres"], ["How are entries invalidated?", "TTL only", "Write-through"],
+        ["Ship it behind a preview flag?", "Yes", "No"]].map(([question, a, b], i) => ({
+        id: "d" + i, question, options: [{ id: "a", label: a }, { id: "b", label: b }],
+      })) }),
+  });
+  expect(response.ok, await response.clone().text()).toBe(true);
+  return (await response.json()).id;
 }
 
 export async function captureCard(target: Page | Locator, name: string) {

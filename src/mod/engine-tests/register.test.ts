@@ -24,6 +24,8 @@ function world(on, { flag, minModApi = 1 }) {
   // A token file, so every daemon call reads it through `$.fs.read` (a test can hold that read).
   mock.env(on, { MISSION_API_TOKEN_FILE: '/tmp/mission-token' })
   seen.clock = mock.clock(on)
+  // The host draws its own surface when the mod delegates a render to next(e).
+  on('ui.render', () => ({ type: 'Text', children: [''] }))
   // A test can hold the session id read (session start is then mid-way) and learn when it was entered.
   on('session.id', async () => { if (seen.holdSessionId) { seen.onSessionIdHeld?.(); await seen.holdSessionId } return { value: seen.ids?.shift() ?? 's1' } })
   // `onReadHeld` fires as a held token read is entered, so a test waits on that instead of a sleep.
@@ -47,10 +49,10 @@ function world(on, { flag, minModApi = 1 }) {
   on('state.set', async (_, e) => { (seen.setKeys ??= []).push(e.key); if (seen.holdSetKey === e.key && seen.holdSet) { const hold = seen.holdSet; seen.holdSet = null; await hold } seen.state[e.key] = e.value; return { value: { isSet: true, version: 2 } } })
   on('ui.open', async (_, e) => { if (seen.failOpen) throw new Error('the engine refused the open'); seen.order.push('open'); seen.opened.push(e.id); seen.openArgs.push(e); if (seen.holdOpen) { const hold = seen.holdOpen; seen.holdOpen = null; await hold }; if (seen.holdOpens?.length) await seen.holdOpens.shift(); if (seen.holdFirstOpen && seen.opened.length === 1) await seen.holdFirstOpen; return { value: { isPlaced: true } } })
   on('ui.close', async (_, e) => { seen.order.push('close:start'); seen.closed.push(e.id); if (seen.holdClose) await seen.holdClose; seen.order.push('close:end'); return { value: undefined } })
+  // When the plugin yields a surface, the test host supplies its empty underlying view.
+  on('ui.render', ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('ui.toast', (_, e) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', (_, e) => { seen.statuses.push(e.text); return { value: undefined } })
-  // Stand in for the host when the mod yields a render, such as while a survey owns the prompt.
-  on('ui.render', ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId ?? 's1' }))
   return seen
@@ -275,7 +277,7 @@ test('the glance layer as drawn: banner, band with its 1 button, status, pane, a
 // The command, the tool and the intent nudge reach the flows through the real hooks module. Dialogs
 // (`$.ui.ask`) ride the engine's AskUserQuestion tool call, which this kit answers through a `tool.call`
 // hook; the tests near the end of this file complete a dispatch that way (a pick, and text typed under
-// Other) through both the registered command and the registered tool. The flows' many branches are
+// Other) through the registered command. Tool execution on a post-permission host and the flows are
 // covered with the fake host in `test/home-dispatch-mod-flows.test.ts`.
 
 function dispatchWorld(on) {
@@ -306,21 +308,37 @@ test('the command and the tool are registered, and the inbox argument opens the 
   expect(seen.openArgs.at(-1).focus).toBe(true)
 })
 
-test('the tool refuses a call with no brief', async ($, on) => {
+test('a denied start_dispatch sends no draft or context to the daemon', async ($, on) => {
   const seen = dispatchWorld(on)
+  const tool = 'mcp__mission-control__start_dispatch'
+  on('tool.check', { tool }, () => ({ decision: 'deny', reason: 'Dispatch is blocked by policy' }))
+  // The test host supplies the permission stage that follows the mod's tool.call hook.
+  on('tool.call', { tool }, async ($, e) => {
+    const { tool: name, ...input } = e
+    const decision = await $.tool.check({ tool: name, input })
+    return { deny: decision.reason }
+  })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
-  const empty = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: ' ' })
-  expect(JSON.stringify(empty)).toMatch(/needs a brief/)
+  const outcome = await $.tool.call({ tool: seen.tools[0].tool, brief: 'a private brief', context: 'private conversation context' })
+  expect(seen.urls.some(url => url.includes('/dispatch/drafts'))).toBe(false)
+  expect(JSON.stringify(outcome)).toMatch(/blocked by policy/)
 })
 
-test('the tool says headless mode is not available while the flag is off', async ($, on) => {
+test('a host without tool.run directs the person to the slash command without creating a draft', async ($, on) => {
   const seen = dispatchWorld(on)
-  seen.flag = false
+  const tool = 'mcp__mission-control__start_dispatch'
+  on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
+  const text = 'mission-control registered the tool start_dispatch but no tool.call hook answered this call'
+  on('tool.call', { tool }, () => ({ isError: true, text, result: text }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await settle(() => seen.urls.length >= 1)
-  const refused = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: 'x' })
-  expect(JSON.stringify(refused)).toMatch(/not available in this session/)
+  await settle(() => seen.statuses.length > 0)
+  const outcome = await $.tool.call({ tool: seen.tools[0].tool, brief: 'private brief', context: 'private context' })
+  expect(JSON.stringify(outcome)).toMatch(/person to run \/mission-dispatch/)
+  const nextPrompt = await $.prompt.submit({ text: 'run this in mission control', origin: { kind: 'composer' } })
+  expect(nextPrompt.context.join(' ')).toContain('/mission-dispatch')
+  expect(nextPrompt.context.join(' ')).not.toContain('start_dispatch')
+  expect(seen.urls.some(url => url.includes('/dispatch/drafts'))).toBe(false)
 })
 
 test('the intent nudge is attached only when the prompt names Mission Control with a verb', async ($, on) => {
@@ -494,8 +512,6 @@ test('a second dispatch while one is open is refused, so only one draft is made'
   const drafts = () => seen.urls.filter((u) => u.endsWith('/dispatch/drafts')).length
   await $.command.run(COMMAND('ship add retries'))
   await settle(() => drafts() >= 1)
-  const second = await $.tool.call({ tool: 'mcp__mission-control__start_dispatch', brief: 'another task' })
-  expect(JSON.stringify(second)).toMatch(/already open/)
   await $.command.run(COMMAND('ship a third'))
   await new Promise((resolve) => setTimeout(resolve, 100))
   expect(drafts()).toBe(1)
@@ -685,22 +701,6 @@ test('the registered command completes a dispatch: the dialog answer is a pick, 
   expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
   expect(logs.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
   expect(seen.toasts.some((t) => t.startsWith('Started mc-9: '))).toBe(true)
-})
-
-test('the host tool.call routes the registered dispatch tool and returns its receipt', async ($, on) => {
-  const seen = dispatchWorld(on)
-  dispatchRoutes(seen)
-  answerDialogs(on, seen, (q) => q.header === 'Confirm' ? 'Start now' : q.options[0].label)
-  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await settle(() => seen.statuses.length > 0)
-  expect(seen.tools.map(({ name }) => name)).toEqual(['start_dispatch'])
-  const result = await $.tool.call({ tool: seen.tools[0].tool, brief: 'add retries to the webhook client', context: 'client.ts throws on a 502', intent: 'now' })
-  expect(JSON.stringify(result)).toMatch(/Started mc-9: /)
-  const draft = seen.bodies.find((b) => b.url.endsWith('/dispatch/drafts'))
-  expect(draft.body.words).toBe('add retries to the webhook client')
-  expect(draft.body.context).toBe('client.ts throws on a 502')
-  expect(draft.body.words).not.toContain('502')
-  expect(seen.bodies.find((b) => b.url.endsWith('/confirm')).body.choice).toBe('start')
 })
 
 test('text typed under Other reaches the draft as the description, through the real dialog adapter', async ($, on) => {

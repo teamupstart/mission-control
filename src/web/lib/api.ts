@@ -1,4 +1,4 @@
-import type { ReportItem } from "@shared/reports.ts";
+import { markReportRead, type ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
@@ -2222,7 +2222,7 @@ export const api = {
   /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
   openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
   /** Mark an agent report read. Idempotent; the first time and way are kept. */
-  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
+  markReportRead: (id: string) => markReportRead(id, post),
   /** Reply to an agent report: delivered as the operator's message, and marks it read. */
   replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
   /**
@@ -2287,8 +2287,9 @@ export const api = {
     response?: string | null,
     selections?: PlanDecisionAnswer[] | null,
     approveFutureBundles = false,
+    voiceSubmitId?: string,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles, voiceSubmitId }),
   /**
    * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
    * with what to do meanwhile. The daemon adds the delay to its own clock.
@@ -2551,8 +2552,8 @@ export const api = {
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
   voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
     "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
-  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, signal: AbortSignal) =>
-    put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation, expectedVersion }, { signal }),
+  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, writeId: string, signal: AbortSignal) =>
+    put<VoiceUiWriteResult & { writeId?: string }>("/api/voice/confirmation", { confirmation, expectedVersion, writeId }, { signal }),
   voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
     request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
       undefined, { signal: AbortSignal.timeout(10_000), ...(editedReview && { headers: { "x-voice-edit-review": editedReview } }) }),

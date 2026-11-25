@@ -8,10 +8,11 @@ import { after, beforeEach, mock, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
 process.env.MISSION_HOME = home;
-const { closeDb, getAppConfig, deleteAppConfig, openDb, upsertTask } = await import("../src/server/db.ts");
+const { closeDb, setAppConfig, getAppConfig, deleteAppConfig, openDb, upgradeDatabaseToCurrentSchema, upsertTask } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -76,7 +77,9 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
     await json("/api/voice/config"),
     await json("/api/voice/config", "PUT", { muted: true }),
     await json("/api/voice/config/provider-intent", "POST"),
+    await json("/api/voice/hotkey-recording", "POST"),
     await json("/api/voice/mute", "POST", { muted: true }),
+    await json("/api/voice/mute"),
     await json("/api/voice/indicators", "PUT", { id: "edge", enabled: true }),
     await hello(),
     await report({}),
@@ -106,6 +109,119 @@ test("GET returns every contract A field with its default", async () => {
   const response = await json("/api/voice/config");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
+});
+
+test("new and existing voice profiles default to two seconds and preserve independent Cancel settings", async () => {
+  const config = async () => (await (await json("/api/voice/config")).json()).config;
+  assert.equal((await config()).endOfSpeechMs, 2000);
+  setAppConfig(APP_CONFIG_ENTRIES.voice, { cancelWindow: { enabled: false, seconds: 7 } });
+  assert.equal((await config()).endOfSpeechMs, 2000);
+  for (const endOfSpeechMs of [500, 5000]) {
+    assert.equal((await json("/api/voice/config", "PUT", { endOfSpeechMs })).status, 200);
+    assert.equal((await config()).endOfSpeechMs, endOfSpeechMs);
+    assert.deepEqual((await config()).cancelWindow, { enabled: false, seconds: 7 });
+  }
+  assert.equal((await json("/api/voice/config", "PUT", { endOfSpeechMs: 0 })).status, 400);
+  assert.equal((await config()).endOfSpeechMs, 5000);
+});
+
+test("reading mute after a toggle returns the authoritative state without another write", async () => {
+  await json("/api/voice/mute", "POST", { toggle: true });
+  const applied = voiceStateStore.state();
+  assert.equal(applied.muted, true);
+  const readback = await json("/api/voice/mute");
+  assert.equal(readback.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await readback.json(), { state: applied });
+  assert.deepEqual(voiceStateStore.state(), applied);
+});
+
+test("a recorder owns the shortcut only until disconnect and cannot be opened by a foreign origin", async () => {
+  const path = "/api/voice/hotkey-recording";
+  assert.equal((await json(path, "POST", undefined, { origin: "https://example.org" })).status, 403);
+  const res = await json(path, "POST");
+  assert.equal(res.status, 200);
+  assert.equal(voiceStateStore.state().recordingHotkey, true);
+  assert.equal((await json(path, "POST")).status, 409);
+  await json("/api/voice/mute", "POST", { toggle: true });
+  assert.equal(voiceStateStore.state().muted, false, "a key queued before unregistration does not mute");
+  const end = new Promise<void>(resolve => {
+    const stop = voiceStateStore.onChange(state => { if (!state.recordingHotkey) { stop(); resolve(); } });
+  });
+  await res.body!.cancel();
+  await end;
+  await json("/api/voice/mute", "POST", { toggle: true });
+  assert.equal(voiceStateStore.state().muted, true);
+});
+
+test("only a confirmed replacement becomes the saved hotkey, including across a restart after refusal", async t => {
+  let nowUs = 1_000_000;
+  t.mock.method(voiceStateStore, "hostNowUs", () => nowUs);
+  const propose = (hotkey: string | null) => json("/api/voice/config", "PUT", { hotkey });
+  const snapshot = (registeredHotkey: string, reason?: string, reportedAtHostUs = ++nowUs, trialId?: string) =>
+    report({ capabilities: { hotkey: { available: true } }, registeredHotkey, reportedAtHostUs,
+      hotkeyError: reason ? { reason, chordInForce: registeredHotkey, trialId } : null });
+  const saved = async () => (await (await json("/api/voice/config")).json()).config.hotkey;
+  await propose("ctrl+k");
+  assert.equal(await saved(), VOICE_CONFIG_DEFAULTS.hotkey);
+  assert.equal(voiceStateStore.state().pendingHotkey, "ctrl+k");
+  await snapshot("ctrl+k");
+  assert.equal(await saved(), "ctrl+k");
+  assert.equal(voiceStateStore.state().pendingHotkey, undefined);
+
+  const beforeEdit = ++nowUs;
+  nowUs++;
+  await propose("alt+Space");
+  const previousTrial = voiceStateStore.state().pendingHotkeyId;
+  assert.ok(previousTrial);
+  await snapshot("alt+Space", undefined, beforeEdit);
+  assert.equal(await saved(), "ctrl+k", "a snapshot taken before the edit cannot approve it");
+  await propose("alt+Space");
+  const currentTrial = voiceStateStore.state().pendingHotkeyId;
+  assert.ok(currentTrial && currentTrial !== previousTrial);
+  await snapshot("ctrl+k", "Reserved.", ++nowUs, previousTrial);
+  assert.equal(voiceStateStore.state().pendingHotkeyId, currentTrial, "a heartbeat may repeat an earlier refusal for the same chord");
+  await snapshot("ctrl+k", "Reserved.");
+  assert.equal(voiceStateStore.state().pendingHotkeyId, currentTrial, "a legacy refusal cannot identify this trial");
+  await snapshot("ctrl+k", "Reserved.", ++nowUs, currentTrial);
+  assert.equal(voiceStateStore.state().pendingHotkey, undefined);
+  assert.equal(voiceStateStore.state().hotkeyError?.chordInForce, "ctrl+k");
+  const reopened = new DatabaseSync(join(home, "harness.db"), { readOnly: true });
+  try {
+    const row = reopened.prepare("SELECT value FROM app_config WHERE key = ?").get(APP_CONFIG_ENTRIES.voice.key);
+    assert.equal(JSON.parse(String(row?.value)).hotkey, "ctrl+k");
+  } finally { reopened.close(); }
+  voiceStateStore.reset();
+  assert.equal(voiceStateStore.state().configuredHotkey, "ctrl+k");
+  assert.equal(await saved(), "ctrl+k");
+
+  await propose("ctrl+p");
+  await propose("ctrl+j");
+  await snapshot("ctrl+p");
+  assert.equal(await saved(), "ctrl+k", "a superseded proposal cannot commit");
+  await snapshot("ctrl+j");
+  assert.equal(await saved(), "ctrl+j");
+  await propose("alt+Space");
+  await propose(null);
+  await snapshot("alt+Space");
+  assert.equal(await saved(), null);
+});
+
+test("the schema upgrade replaces only the stored legacy default and preserves later explicit selections", t => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  upgradeDatabaseToCurrentSchema(db);
+  const save = db.prepare("INSERT OR REPLACE INTO app_config(key, value) VALUES ('voice', ?)");
+  const read = () => db.prepare("SELECT value FROM app_config WHERE key = 'voice'").get()!.value;
+  for (const config of [{ hotkey: "ctrl+alt+m", muted: true, future: 4 }, { hotkey: "ctrl+k" }, { hotkey: null }, {}]) {
+    save.run(JSON.stringify(config));
+    db.exec("PRAGMA user_version = 62");
+    upgradeDatabaseToCurrentSchema(db);
+    assert.deepEqual(JSON.parse(String(read())), config.hotkey === "ctrl+alt+m"
+      ? { ...config, hotkey: VOICE_CONFIG_DEFAULTS.hotkey } : config);
+  }
+  save.run('{"hotkey":"ctrl+alt+m"}');
+  upgradeDatabaseToCurrentSchema(db);
+  assert.equal(read(), '{"hotkey":"ctrl+alt+m"}', "selecting the old chord after upgrading survives restart");
 });
 
 const readProviderRevision = async () => {
@@ -621,6 +737,10 @@ test("a hello makes voice listen, mute mutes it, and every change reaches the ev
   assert.equal((getAppConfig(APP_CONFIG_ENTRIES.voice) as { muted: boolean }).muted, true);
   await json("/api/voice/mute", "POST", { muted: false });
   assert.equal(frames.at(-1)?.mode, "listening");
+  for (const mode of ["muted", "listening"]) {
+    const toggled = await json("/api/voice/mute", "POST", { toggle: true });
+    assert.equal((await toggled.json() as { state: VoiceState }).state.mode, mode);
+  }
   assert.equal((await json("/api/voice/mute", "POST", { muted: "yes" })).status, 400);
 });
 

@@ -201,7 +201,7 @@ body.mk {
       <span class="mk-cap"><b>3</b> Click and hotkey</span>
       <div class="di-aff">
         <div class="pulse di-solo"><button type="button" class="pulse-seg pulse-btn di-voice di-s-listen is-hover"><svg class="mk-ico"><use href="#i-mic"/></svg><span class="tb-label">Listening</span></button></div>
-        <span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌘⌃⌥V</kbd></span>
         <span class="di-note">At the bar's narrow rungs the label drops and the glyph alone remains, as the other segments' labels already do.</span>
       </div>
     </div>
@@ -228,7 +228,7 @@ body.mk {
           <button type="button" class="di-word" aria-label="Voice: listening. Mute"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</button>
           <span class="v-hint">Say a name, then your message.</span>
           <span class="di-sp"></span>
-          <button type="button">Mute <kbd class="kb-hint">⌃⌥M</kbd></button>
+          <button type="button">Mute <kbd class="kb-hint">⌘⌃⌥V</kbd></button>
         </div>
       </div>
     </div>
@@ -237,7 +237,7 @@ body.mk {
       <div class="di-states">
         <span>Listening</span><div class="di-status is-crop di-s-listen"><span class="di-word"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</span></div>
         <span>Muted</span><div class="di-status is-crop di-s-muted"><span class="di-word"><svg class="mk-ico sm"><use href="#i-mic-off"/></svg>Muted</span></div>
-        <span>Auto-muted for a call</span><div class="di-status is-crop di-s-call"><span class="di-word"><svg class="mk-ico sm"><use href="#i-phone"/></svg>On a call</span><span>hold <kbd class="kb-hint">⌃⌥M</kbd></span></div>
+        <span>Auto-muted for a call</span><div class="di-status is-crop di-s-call"><span class="di-word"><svg class="mk-ico sm"><use href="#i-phone"/></svg>On a call</span><span>hold <kbd class="kb-hint">⌘⌃⌥V</kbd></span></div>
         <span>Push-to-talk held</span><div class="di-status is-crop di-s-ptt"><span class="di-word"><svg class="mk-ico sm"><use href="#i-ptt"/></svg>Talk</span><span>listening</span></div>
       </div>
     </div>
@@ -247,14 +247,14 @@ body.mk {
         <div class="di-status di-s-call" style="border:1px solid var(--border-soft);border-radius:7px;width:288px;box-sizing:border-box">
           <span class="di-word"><svg class="mk-ico sm"><use href="#i-phone"/></svg>On a call</span>
           <span class="di-sp"></span>
-          <button type="button">Hold <kbd class="kb-hint">⌃⌥M</kbd> to talk</button>
+          <button type="button">Hold <kbd class="kb-hint">⌘⌃⌥V</kbd> to talk</button>
         </div>
         <span class="di-note">The state word is the mute button. The right end always says what the hotkey does next: Mute, Unmute, or Hold to talk during a call.</span>
       </div>
     </div>
   </div>
   <ul class="mk-notes">
-    <li>Room for words, so the call state can say what to do about it ("hold ⌃⌥M to talk") instead of only changing colour.</li>
+    <li>Room for words, so the call state can say what to do about it ("hold ⌘⌃⌥V to talk") instead of only changing colour.</li>
     <li class="con">The dashboard has no window-wide status line today. This is new chrome on every page, and it takes a row of height from the surfaces that size themselves against the measured top bar.</li>
     <li>Leaves the top bar and its pinned ladder alone.</li>
     <li class="con">The bottom edge is the least looked-at part of the window, and the residents dock and the background-agents tray already live near it.</li>
@@ -287,8 +287,8 @@ body.mk {
     <div class="mk-state">
       <span class="mk-cap"><b>3</b> Hover or focus</span>
       <div class="di-aff">
-        <span class="di-fabpill di-s-listen"><svg class="mk-ico lg di-ico"><use href="#i-mic"/></svg><span><b>Listening</b> · click to mute</span><kbd class="kb-hint">⌃⌥M</kbd></span>
-        <span class="di-fabpill di-s-call"><svg class="mk-ico lg di-ico"><use href="#i-phone"/></svg><span><b>On a call</b> · hold to talk</span><kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-fabpill di-s-listen"><svg class="mk-ico lg di-ico"><use href="#i-mic"/></svg><span><b>Listening</b> · click to mute</span><kbd class="kb-hint">⌘⌃⌥V</kbd></span>
+        <span class="di-fabpill di-s-call"><svg class="mk-ico lg di-ico"><use href="#i-phone"/></svg><span><b>On a call</b> · hold to talk</span><kbd class="kb-hint">⌘⌃⌥V</kbd></span>
         <span class="di-note">The pill opens toward the middle of the window and closes on blur. A click anywhere on it toggles mute.</span>
       </div>
     </div>
@@ -327,7 +327,7 @@ body.mk {
       <span class="mk-cap"><b>3</b> Click and hotkey</span>
       <div class="di-aff">
         <div class="di-edgecrop" style="width:288px;height:36px"><div class="di-edge di-s-listen"><span class="di-tab" style="background:color-mix(in oklab, var(--idle) 14%, var(--panel))"><svg class="mk-ico sm"><use href="#i-mic"/></svg>Listening</span></div></div>
-        <span class="di-tip">Click the tab to mute <kbd class="kb-hint">⌃⌥M</kbd></span>
+        <span class="di-tip">Click the tab to mute <kbd class="kb-hint">⌘⌃⌥V</kbd></span>
         <span class="di-note">The line is decoration; the tab is the control and the accessible name. Muted has no glow at all.</span>
       </div>
     </div>
@@ -362,14 +362,14 @@ body.mk {
       <div class="di-states">
         <span>Listening</span><span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-fake">or say "Steve, …"</span></span>
         <span>Muted</span><span class="di-microw"><button type="button" class="di-mic di-s-muted" aria-label="Voice: muted. Unmute"><svg class="mk-ico"><use href="#i-mic-off"/></svg></button><span class="di-fake">Voice is muted</span></span>
-        <span>Auto-muted for a call</span><span class="di-microw"><button type="button" class="di-mic di-s-call" aria-label="Voice: auto-muted for a call. Hold the hotkey to talk"><svg class="mk-ico"><use href="#i-phone"/></svg></button><span class="di-fake">On a call · hold ⌃⌥M</span></span>
+        <span>Auto-muted for a call</span><span class="di-microw"><button type="button" class="di-mic di-s-call" aria-label="Voice: auto-muted for a call. Hold the hotkey to talk"><svg class="mk-ico"><use href="#i-phone"/></svg></button><span class="di-fake">On a call · hold ⌘⌃⌥V</span></span>
         <span>Push-to-talk held</span><span class="di-microw"><button type="button" class="di-mic di-s-ptt" aria-label="Voice: push-to-talk is held"><svg class="mk-ico"><use href="#i-ptt"/></svg></button><span class="di-fake">Listening while held</span></span>
       </div>
     </div>
     <div class="mk-state">
       <span class="mk-cap"><b>3</b> Click and hotkey</span>
       <div class="di-aff">
-        <span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute" style="box-shadow:0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent)"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌃⌥M</kbd></span></span>
+        <span class="di-microw"><button type="button" class="di-mic di-s-listen" aria-label="Voice: listening. Mute" style="box-shadow:0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent)"><svg class="mk-ico"><use href="#i-mic"/></svg></button><span class="di-tip">Listening for names. Click to mute <kbd class="kb-hint">⌘⌃⌥V</kbd></span></span>
         <span class="di-note">The button mutes Mission Control everywhere, not just for this session. It does not dictate into the box: speech is routed by name, as anywhere else.</span>
       </div>
     </div>

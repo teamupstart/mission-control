@@ -2274,12 +2274,11 @@ instead.
 
 ## Voice in the dashboard
 
-With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
-
+With Voice addressing enabled, the bottom status line shows the live mode. Settings > Voice lets you record a system-wide mute hotkey and enable Auto-mute on calls. If macOS refuses a shortcut, the warning names the previous shortcut that still works. If no shortcut was registered, the warning reads “No hotkey is in force.” Hold the shortcut during call auto-mute to talk. The panel also offers four additional indicator styles, previews of all four active modes, and the Recently heard diagnostics. Each indicator controls the same daemon mute state across windows. See [Voice](voice.md).
 
 ### Voice confirmation cards
 
-With the Voice preview enabled, routed speech appears in a corner card. Click a candidate
+With the Voice preview enabled, routed speech appears in the selected confirmation placement. Browsers use the corner toast. Click a candidate
 row or say its name to resolve an ambiguous address. A stopped resident can be relaunched
 from its card. A finished session opens a follow-up dispatch on its repository. A held card
 opens the blocking question or recalls the queued words. Settings > Voice > Confirmation card

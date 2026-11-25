@@ -1,8 +1,11 @@
-import { VOICE_DASHBOARD_CONFIRM_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
+import { namedInboxCommand, spokenInboxAction } from "@shared/voice-inbox.ts";
+import { VoicePlanForms, formChoices, isFormChoice } from "./plan-forms.ts";
+import { addressedCards, focusedVoiceCard, planVoiceTarget, spokenOrdinal, VOICE_DASHBOARD_CONFIRM_MS, VOICE_INBOX_ACTION_TIMEOUT_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
-import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
+import { explicitAnswerText, matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
   routeUtterance,
+  voiceCardCanExpire,
   type HeardEntry,
   type VoiceAddressedCommand,
   type VoiceCard,
@@ -11,6 +14,7 @@ import {
   type VoiceSplitPoint,
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
+import { randomUUID } from "node:crypto";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
 import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
@@ -53,7 +57,15 @@ export interface PendingVoiceAction extends ActionTime {
   cancel(): void;
 }
 
+// Allow a final Core Audio tap, its 20 ms VAD frame and a loopback POST to arrive.
+const ONSET_TRANSIT_MS = 250;
+// The microphone drops unfinished segments at 30 s. Leave a bounded decoder budget.
+const SPEECH_RESULT_TIMEOUT_MS = 35_000;
+
 const HISTORY_LIMIT = 50;
+// At most HISTORY_LIMIT reservations can time out per 35 s. Two batches cover
+// the listener's 55 s held-POST retry budget even under sustained load.
+const EXPIRED_SPEECH_LIMIT = 2 * HISTORY_LIMIT;
 const MAX_ACTIVE_CARDS = 50;
 const MAX_SPLIT_QUESTIONS = 8;
 const MAX_UNSURE_CARDS = 5;
@@ -61,13 +73,32 @@ const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
+  private readonly epoch = randomUUID();
+  private revision = 0;
+  private receipts = new Map<string, { revision: number; card: VoiceCard }>();
+  get receiptCursor(): string { return this.epoch + ":" + this.revision; }
+  recordCard(card: VoiceCard): void {
+    this.receipts.delete(card.id);
+    if (!voiceCardCanExpire(card)) return;
+    this.receipts.set(card.id, { revision: ++this.revision, card });
+    if (this.receipts.size > HISTORY_LIMIT) this.receipts.delete(this.receipts.keys().next().value!);
+  }
+  receiptsAfter(cursor?: string): VoiceCard[] {
+    if (!cursor?.startsWith(this.epoch + ":")) return [];
+    const revision = Number(cursor.slice(this.epoch.length + 1));
+    if (!Number.isSafeInteger(revision) || revision < 0 || cursor !== this.epoch + ":" + revision) return [];
+    return [...this.receipts.values()].filter(entry => entry.revision > revision).map(entry => entry.card);
+  }
   list(): readonly HeardEntry[] { return this.entries; }
   record(entry: HeardEntry): void {
     const index = this.entries.findIndex((existing) => existing.time <= entry.time);
     this.entries.splice(index < 0 ? this.entries.length : index, 0, entry);
     if (this.entries.length > HISTORY_LIMIT) this.entries.pop();
   }
-  clear(): void { this.entries = []; }
+  clear(): void {
+    this.entries = [];
+    this.receipts.clear();
+  }
 }
 
 interface AnswerCapture extends ActionTime {
@@ -85,7 +116,15 @@ function compareAnswerCaptures(a: AnswerCapture, b: AnswerCapture): number {
   return delta || a.sequence - b.sequence;
 }
 
+const inboxActionDetails = {
+  invoked: "Inbox action invoked.",
+  unavailable: "The inbox action is no longer available.",
+  unconfirmed: "The dashboard did not confirm the inbox action.",
+};
+type InboxActionResult = keyof typeof inboxActionDetails;
+
 interface OpenCard {
+  inboxAction?: () => Promise<InboxActionResult>;
   answer?: VoiceAnswer;
   /** Daemon monotonic deadline. The wire deadline is in wall time for dashboard calibration. */
   answerExpiresAt?: number;
@@ -94,6 +133,8 @@ interface OpenCard {
   answerAttempt?: AnswerAttempt;
   recipientAnswer?: { words: string; choiceCommand: boolean };
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
+  speechDeadlineUs?: number;
+  awaitingSpeech?: boolean;
   time: ActionTime;
   card: VoiceCard;
   entry: HeardEntry;
@@ -217,6 +258,8 @@ export function resolveVoiceDecision(
 }
 
 export class VoiceRouter {
+  readonly forms = new VoicePlanForms();
+  private readonly inboxRequests = new Map<string, { claimed: boolean; timer: NodeJS.Timeout; finish(result: InboxActionResult): void }>();
   readonly openCards = new VoiceOpenCards(() => {
     for (const item of this.open.values()) {
       if (!item.answer) continue;
@@ -229,8 +272,12 @@ export class VoiceRouter {
       if (!owner) this.publish(item.card);
       else if (hadCompanion) this.questions!.removeCompanion(item.card.id);
     }
+  }, report => {
+    for (const card of report.cards) if (card.kind === "plan") this.forms.observed(card.id);
   });
   readonly heard = new RecentlyHeard();
+  private readonly speechCaptures = new Map<string, { cardId: string; timeout: ReturnType<typeof setTimeout> }>();
+  private readonly expiredSpeechKeys = new Set<string>();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
   // Keep the last accepted capture until its question settles, even after a Cancel.
@@ -263,15 +310,21 @@ export class VoiceRouter {
   private readonly resolutions = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null },
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
-    private readonly publish: (card: VoiceCard) => void,
+    private readonly emitCard: (card: VoiceCard) => void,
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
     private readonly questions?: VoiceQuestions,
-    private readonly speech?: { unsure(card: VoiceCard): void; stop(cardId: string): void },
+    private readonly speech?: { resolving?(): void; unsure(card: VoiceCard): void; stop(cardId: string): void },
+    private readonly onCancelWindowChange?: (open: boolean) => void,
   ) {}
+
+  private publish(card: VoiceCard): void {
+    this.heard.recordCard(card);
+    this.emitCard(card);
+  }
 
   /** The model step for an utterance, while it runs: settles once its card is resolved. */
   resolution(id: string): Promise<void> | undefined {
@@ -321,6 +374,7 @@ export class VoiceRouter {
   }
 
   reviewSettled(reviewId: string): void {
+    this.forms.settled(reviewId);
     this.lastAnswer.delete(reviewId);
     for (const item of this.open.values()) {
       if (item.answerAttempt?.reviewId !== reviewId) continue;
@@ -368,11 +422,73 @@ export class VoiceRouter {
     return [...this.open.values()].find(item => item.answer && item.answerCapture?.sequence === target.slot);
   }
 
-  private cancelLatestAt(time: ActionTime): string | undefined {
+  private actionsAt(time: ActionTime) {
     // Captures can arrive out of order. For equal timestamps, the last action opened wins.
-    const eligible = this.pendingVoiceActions.filter((action) => offsetUs(action, time) <= 0)
+    return this.pendingVoiceActions.filter((action) => offsetUs(action, time) <= 0)
       .reverse().sort((a, b) => offsetUs(b, time) - offsetUs(a, time));
-    for (const action of eligible) {
+  }
+
+  /** Reserve only the action that a cancel at this physical onset could address. */
+  speechStarted(key: string, onsetUs: number): void {
+    const ageMs = (this.hostNowUs() - onsetUs) / 1000;
+    if (ageMs < 0 || ageMs > ONSET_TRANSIT_MS || this.speechCaptures.has(key) || this.speechCaptures.size >= HISTORY_LIMIT) return;
+    const time = { openedAt: Date.now() - ageMs, openedAtHostUs: onsetUs };
+    for (const action of this.actionsAt(time)) {
+      const item = this.open.get(action.id);
+      if (!item?.speechDeadlineUs) return;
+      if (onsetUs >= item.speechDeadlineUs) continue;
+      const timeout = setTimeout(() => {
+        this.expiredSpeechKeys.add(key);
+        if (this.expiredSpeechKeys.size > EXPIRED_SPEECH_LIMIT) {
+          this.expiredSpeechKeys.delete(this.expiredSpeechKeys.values().next().value!);
+        }
+        this.speechFinished(key);
+      }, SPEECH_RESULT_TIMEOUT_MS);
+      timeout.unref();
+      this.speechCaptures.set(key, { cardId: action.id, timeout });
+      return;
+    }
+  }
+
+  speechFinished(key: string): void {
+    const capture = this.speechCaptures.get(key);
+    if (!capture) return;
+    this.speechCaptures.delete(key);
+    clearTimeout(capture.timeout);
+    const item = this.open.get(capture.cardId);
+    if (item?.awaitingSpeech) this.sendAfterSpeech(capture.cardId);
+  }
+
+  private sendAfterSpeech(id: string): void {
+    const item = this.open.get(id);
+    if (!item) return;
+    for (const capture of this.speechCaptures.values()) {
+      if (capture.cardId === id) {
+        item.awaitingSpeech = true;
+        return;
+      }
+    }
+    void this.sendNow(id);
+  }
+
+  private armCountdown(item: OpenCard, duration: number): void {
+    item.speechDeadlineUs = this.hostNowUs() + duration * 1000;
+    item.awaitingSpeech = false;
+    const transit = this.state().reportsSpeechOnset ? ONSET_TRANSIT_MS : 0;
+    const id = item.card.id;
+    item.timer = setTimeout(() => this.sendAfterSpeech(id), duration + transit);
+    item.timer.unref();
+    this.onCancelWindowChange?.(true);
+  }
+
+  private cancelLatestAt(time: ActionTime, captureKey?: string): string | undefined {
+    if (captureKey && this.expiredSpeechKeys.has(captureKey)) return;
+    const reserved = captureKey && this.speechCaptures.get(captureKey);
+    if (reserved) {
+      // Never fall through to another card if an explicit action already settled this one.
+      return this.cancel(reserved.cardId, undefined, time, captureKey) ? reserved.cardId : undefined;
+    }
+    for (const action of this.actionsAt(time)) {
       if (action.kind === "card" && this.open.has(action.id)) {
         if (!this.cancel(action.id, undefined, time)) continue;
       } else {
@@ -400,7 +516,7 @@ export class VoiceRouter {
     }
   }
 
-  async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number; speechStartHostUs?: number } = {}): Promise<boolean> {
+  async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number; speechStartHostUs?: number; captureKey?: string } = {}): Promise<boolean> {
     const { heldBeforeRelease, startHostUs, speechStartHostUs } = timing;
     const onsetUs = speechStartHostUs ?? startHostUs;
     const { mode, roster, backend } = this.state();
@@ -441,6 +557,8 @@ export class VoiceRouter {
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
     if (this.questions) {
+      const inbox = this.routeInbox(utterance, decision, entry, time);
+      if (inbox !== false) return inbox;
       const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards);
       if (routed !== false) return routed;
     }
@@ -453,7 +571,7 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const cancelled = this.cancelLatestAt(time);
+        const cancelled = this.cancelLatestAt(time, timing.captureKey);
         if (cancelled) entry.detail = cancelled;
         else entry.rule = "nothing-pending";
       } else if (!await this.pick(decision.cardId, decision.candidateId, time)) {
@@ -474,6 +592,154 @@ export class VoiceRouter {
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
     this.openCard({ card, entry, time, message: decision.text, commands: [decision.command] });
+    return true;
+  }
+
+  private routeInbox(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry, time: ActionTime): boolean | Promise<boolean> {
+    const inbox = this.questions?.inbox;
+    if (!inbox || decision.kind === "control") return false;
+    const reply = /^reply(?:,\s*|\s+)(.+)$/iu.exec(utterance.text.trim());
+    const named = decision.kind === "addressed" && !decision.command ? decision : null;
+    if (!reply && !named) return false;
+    const body = (reply?.[1] ?? named!.text).trim();
+    const target = reply ? null : named!.target;
+    const report = this.openCards.current;
+    const address = target && { key: target.key, sessionId: target.sessionId };
+    const candidates = addressedCards(report?.cards ?? [], address);
+    const card = focusedVoiceCard(candidates);
+    const owner = target ?? (card && this.state().roster.find(r => r.sessionId === card.sessionId || (card.kind !== "question" && r.key === card.agentKey))) ?? null;
+    const item: OpenCard = { time, entry, message: body, card: { id: utterance.id, state: "pending", reason: "inbox-action",
+      parts: [{ target: owner, text: body }], deadline: null, openQuestions: 0, candidates: [] } };
+    const notice = (detail: string, reason: string) => {
+      entry.rule = reason;
+      entry.outcome = "cancelled";
+      entry.detail = detail;
+      this.publish({ ...item.card, state: "cancelled", reason, detail });
+      return true;
+    };
+    const submit = /^submit[.!?]*$/iu.test(body);
+    const eligibleCapture = (at: number) => Number.isFinite(at) && this.openCards.captureTiming(time.openedAt, at) === "eligible";
+    const planCommand = (submit || isFormChoice(body)) && inbox.formsEnabled();
+    const plan = planCommand && report ? planVoiceTarget(report.cards, address) : undefined;
+    const forms = planCommand ? inbox.forms() : [];
+    const form = plan && forms.find(f => f.id === plan.id);
+    const windowId = report?.windowId;
+    const name = owner?.name ?? "reply";
+    const notOpen = () => {
+      const formName = owner ? name + "'s plan form" : "the plan form";
+      return notice("Open " + formName + (submit ? " to submit it" : " and say your choice again"), "form-not-open");
+    };
+    if (planCommand && target && !plan && candidates.some(c => c.kind === "plan")) {
+      return notice("Focus the plan form you want and say it again.", "question-notice");
+    }
+    if (planCommand && target && !form && forms.some(f => f.sessionId === target.sessionId)) return notOpen();
+    if (form && windowId) {
+      const signal = this.lifetime.signal;
+      const current = () => {
+        const live = this.openCards.current;
+        return !signal.aborted && live?.windowId === windowId && planVoiceTarget(live.cards, address)?.id === form.id &&
+          inbox.formsEnabled() && inbox.forms().some(f => f.id === form.id);
+      };
+      const capturedAtMonotonicMs = this.questionTime(time);
+      if (!eligibleCapture(capturedAtMonotonicMs)) return notice("The open card changed. Say it again.", "question-notice");
+      entry.rule = submit ? "form-submit" : "form-fill";
+      entry.outcome = "control";
+      if (submit) {
+        const retry = () => notice("Still matching a plan choice. When the selection appears, say “" + name + ", submit” again.", "question-notice");
+        if (this.forms.isMatching(form.id)) return retry();
+        const submitId = this.forms.request(form.id, capturedAtMonotonicMs, missing => {
+          if (missing === undefined) notOpen();
+          else if (missing === "matching") retry();
+          else notice("Not sent. The " + spokenOrdinal(missing) + " one has no answer yet. Say “" + name + ", " + spokenOrdinal(missing) + " one A”.", "form-incomplete");
+        });
+        inbox.emit({ type: "voice_form_submit", address, windowId, reviewId: form.id, submitId });
+        return true;
+      }
+      const match = this.forms.beginFill(form.id, capturedAtMonotonicMs);
+      return formChoices(form, body, this.decider, owner, signal).then(selections => {
+        if (signal.aborted) return true;
+        if (!selections || !current()) return notice("No matching decision. Say its position and option letter.", "question-notice");
+        const changes = match.apply(selections);
+        if (!changes) return notice("Open the plan form and say your selection again.", "question-notice");
+        if (changes.length) inbox.emit({ type: "voice_form_fill", address, windowId, reviewId: form.id, selections: changes, capturedAtMonotonicMs });
+        return true;
+      }).finally(match.finish);
+    }
+    // Explicit question-answer phrases retain their phase 13 meaning even beside an inbox reply box.
+    if (target && (requestedChoice(body) !== undefined || explicitAnswerText(body) !== undefined)) return false;
+    let actionCard = card;
+    if (target) {
+      // A named command identifies its control across the agent's open cards. Plain
+      // dictation is contextual, and an unnamed "reply" always stays with the focused card.
+      const command = namedInboxCommand(body);
+      // routeUtterance already classified interrupts. A remaining "stop" is message text.
+      if (command?.action === "stop") return false;
+      const offering = candidates.filter(c => (c.kind === "report" || c.kind === "stuck") &&
+        (command ? c.actions?.includes(command.action) : spokenInboxAction(c.actions ?? [], body, false)));
+      const selected = focusedVoiceCard(offering);
+      if (command?.action === "mark-read") {
+        if (!selected && candidates.some(c => c.kind === "report")) return notice("Open the report first.", "question-notice");
+        const id = inbox.markReadTarget(target, selected?.id ?? null);
+        if (!id) return notice("Open the report first.", "question-notice");
+        actionCard = candidates.find(c => c.kind === "report" && c.id === id);
+        if (!actionCard) {
+          // A sole unread report can be addressed even without a dashboard. Recheck the
+          // target before running the button's operator action after the cancel window.
+          item.inboxAction = async () => {
+            const invoked = inbox.markReadTarget(target, null) === id && await inbox.markUndrawnReportRead(id);
+            return invoked ? "invoked" : "unavailable";
+          };
+        }
+      } else if (command && !offering.length) {
+        return notice(inboxActionDetails.unavailable, "inbox-action");
+      } else if (offering.length && (command || !card || card.kind === "report" || card.kind === "stuck")) {
+        actionCard = selected;
+        if (!actionCard && command) return notice("Focus the card you want and say it again.", "question-notice");
+      }
+    }
+    if (!item.inboxAction) {
+      if (!actionCard || !windowId || (actionCard.kind !== "report" && actionCard.kind !== "stuck")) return false;
+      if (!eligibleCapture(this.questionTime(time))) return notice("The open card changed. Say it again.", "question-notice");
+      const action = spokenInboxAction(actionCard.actions ?? [], body, !!reply);
+      if (!action || action.action === "stop") return false;
+      const { kind, id } = actionCard;
+      item.inboxAction = () => {
+        const live = this.openCards.current;
+        if (live?.windowId !== windowId || !live.cards.some(c => c.kind === kind && c.id === id && c.actions?.includes(action.action))) return Promise.resolve("unavailable");
+        const requestId = crypto.randomUUID();
+        return new Promise(resolve => {
+          const finish = (result: InboxActionResult) => {
+            clearTimeout(request.timer);
+            this.inboxRequests.delete(requestId);
+            resolve(result);
+          };
+          const timer = setTimeout(finish, VOICE_INBOX_ACTION_TIMEOUT_MS, "unavailable").unref();
+          const request = { claimed: false, timer, finish };
+          this.inboxRequests.set(requestId, request);
+          inbox.emit({ type: "voice_inbox_action", address, windowId, kind, cardId: id, ...action, requestId });
+        });
+      };
+    }
+    if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
+    entry.rule = "inbox-action";
+    entry.matchedName = owner?.name ?? null;
+    this.openCard(item);
+    return true;
+  }
+
+  claimInbox(id: string) {
+    const request = this.inboxRequests.get(id);
+    if (!request || request.claimed) return false;
+    request.claimed = true;
+    clearTimeout(request.timer);
+    request.timer = setTimeout(request.finish, VOICE_INBOX_ACTION_TIMEOUT_MS, "unconfirmed").unref();
+    return true;
+  }
+
+  completeInbox(id: string, invoked: boolean) {
+    const request = this.inboxRequests.get(id);
+    if (!request?.claimed) return false;
+    request.finish(invoked ? "invoked" : "unavailable");
     return true;
   }
 
@@ -512,16 +778,13 @@ export class VoiceRouter {
     const target = reply ? null : addressed?.target ?? null;
     const body = (reply?.[1] ?? addressed?.text ?? ambiguous!.text).trim();
     if (!body) return false;
-    // The spoken prefix survives punctuation-free transcription. Keep the shorter
-    // punctuated form and the bare picker command without capturing "answer the email".
-    const answer = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
-      ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+    const answer = explicitAnswerText(body);
     const choiceCommand = requestedChoice(body) !== undefined;
-    const explicit = !reply && (!!answer || choiceCommand);
+    const explicit = !reply && (answer !== undefined || choiceCommand);
     if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
     const monotonicMs = this.questionTime(time);
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
-    const content = explicit && answer ? answer[1]!.trim() : body;
+    const content = explicit ? answer ?? body : body;
     const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
@@ -718,11 +981,10 @@ export class VoiceRouter {
       parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
+    if (windowMs) this.armCountdown(item, Math.max(0, Math.ceil(expiresAt - performance.now())));
     this.questions!.publish(review.id, item.answer);
     if (!item.answer.footerWindowId) this.publish(item.card);
-    if (!windowMs) { await this.sendNow(id); return; }
-    item.timer = setTimeout(() => { void this.sendNow(id); }, Math.ceil(expiresAt - performance.now()));
-    item.timer.unref();
+    if (!windowMs) await this.sendNow(id);
   }
 
   /**
@@ -751,6 +1013,7 @@ export class VoiceRouter {
         parts: [{ target: decision.reason === "second-name" ? decision.target : null, text: utterance.text }] },
     };
     this.open.set(id, item);
+    this.speech?.resolving?.();
     this.pendingVoiceActions.push({ id, kind: "card", ...time, cancel: () => this.cancel(id) });
     item.timer = setTimeout(() => {
       if (this.open.get(id) !== item) return;
@@ -856,8 +1119,7 @@ export class VoiceRouter {
       const ms = window.seconds * 1000;
       card.windowMs = ms;
       card.deadline = Date.now() + ms;
-      item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
-      item.timer.unref?.();
+      this.armCountdown(item, ms);
     }
     this.publish(card);
     if (card.state === "unsure" && !item.questionPick && this.open.get(card.id) === item) this.speech?.unsure(card);
@@ -874,6 +1136,9 @@ export class VoiceRouter {
     }
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
+    if (item.card.deadline !== null) {
+      this.onCancelWindowChange?.([...this.open.values()].some(({ card }) => card.state === "pending" && !!card.windowMs));
+    }
   }
 
   cancelEditedAnswer(reviewId: string, originId: string): boolean {
@@ -881,10 +1146,14 @@ export class VoiceRouter {
     return !!item && this.cancel(item.card.id);
   }
 
-  cancel(id: string, detail?: string, capturedAt?: ActionTime): boolean {
+  cancel(id: string, detail?: string, capturedAt?: ActionTime, captureKey?: string): boolean {
     const item = this.open.get(id);
     if (!item) return false;
-    if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
+    if (capturedAt?.openedAtHostUs !== undefined && item.speechDeadlineUs !== undefined &&
+        capturedAt.openedAtHostUs >= item.speechDeadlineUs) return false;
+    if (item.card.deadline !== null && Date.now() >= item.card.deadline) {
+      if (!captureKey || this.speechCaptures.get(captureKey)?.cardId !== id) return false;
+    }
     this.speech?.stop(id);
     this.take(item, capturedAt);
     item.modelStep?.abort();
@@ -1103,6 +1372,15 @@ export class VoiceRouter {
     }
     this.take(item);
     if (this.state().mode === "off") return false;
+    if (item.inboxAction) {
+      const signal = this.lifetime.signal;
+      const result = await item.inboxAction().catch(() => "unavailable" as const);
+      if (signal.aborted) return false;
+      const ok = result === "invoked";
+      item.entry.outcome = ok ? "sent" : "failed";
+      this.publish({ ...item.card, state: item.entry.outcome, deadline: null, detail: inboxActionDetails[result] });
+      return ok;
+    }
     if (item.answer) {
       const ok = this.questions!.pending().some(q => q.id === item.answer!.reviewId)
         && await this.questions!.resolve(item.answer).catch(() => false);
@@ -1187,10 +1465,15 @@ export class VoiceRouter {
   }
 
   clearActionsAndHistory(): void {
+    this.forms.clear();
+    for (const request of this.inboxRequests.values()) request.finish(request.claimed ? "unconfirmed" : "unavailable");
     for (const item of this.open.values()) {
       clearTimeout(item.timer);
       item.modelStep?.abort();
     }
+    for (const capture of this.speechCaptures.values()) clearTimeout(capture.timeout);
+    this.speechCaptures.clear();
+    this.expiredSpeechKeys.clear();
     this.openCards.clear();
     this.open.clear();
     this.lastAnswer.clear();
@@ -1205,6 +1488,7 @@ export class VoiceRouter {
     this.heard.clear();
     this.priorChoices.length = 0;
     this.picksLostThrough = undefined;
+    this.onCancelWindowChange?.(false);
   }
 
   reset(): void {

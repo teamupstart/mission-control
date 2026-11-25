@@ -70,8 +70,9 @@ test("voiceUnavailableReasons names every reason that holds, in order", () => {
 test("the config schema holds every contract A field with its default", () => {
   assert.deepEqual(VoiceConfigSchema.parse({}), {
     muted: false,
-    hotkey: "ctrl+alt+m",
+    hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
+    endOfSpeechMs: 2000,
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show", speech: { voice: null },
     planFormsByVoice: true,
@@ -142,6 +143,25 @@ test("with the flag off the state is off, whatever was heard", () => {
   assert.equal(h.timers.length, 0, "nothing is scheduled while voice is off");
 });
 
+test("an unconfirmed hotkey publishes an expiry outcome and a new edit clears it", () => {
+  const h = harness();
+  h.setConfig({ hotkey: null });
+  h.store.proposeHotkey("ctrl+j");
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS - 1);
+  assert.equal(h.store.state().pendingHotkey, "ctrl+j");
+  h.advance(1);
+  const expired = h.published.at(-1)!;
+  assert.equal(expired.expiredHotkey, "ctrl+j");
+  assert.equal(expired.configuredHotkey, null);
+  assert.equal(expired.pendingHotkey, undefined);
+  assert.equal(expired.pendingHotkeyId, undefined);
+  h.store.acceptShellReport({ ...REPORT, reportedAtHostUs: h.hostNowUs(), registeredHotkey: "ctrl+j" });
+  assert.equal(h.store.state().expiredHotkey, "ctrl+j", "late confirmation cannot revive an expired edit");
+  h.store.proposeHotkey("ctrl+k");
+  assert.equal(h.store.state().expiredHotkey, undefined);
+  assert.equal(h.store.state().pendingHotkey, "ctrl+k");
+});
+
 test("mute replies and published modes share a revision ordered within one daemon", () => {
   const h = harness();
   h.store.acceptHello(listenerId, HELLO);
@@ -201,7 +221,7 @@ test("a hello with an unknown major version is refused, and the state says why",
   h.store.acceptHello(listenerId, HELLO);
   const refused = h.store.acceptHello(listenerId, { ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.0/);
+  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.1/);
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);
@@ -223,6 +243,10 @@ test("mute, a call with auto-mute, and push-to-talk come from the config and the
   assert.equal(h.store.state().mode, "muted");
   h.setConfig({ muted: false });
   h.store.acceptShellReport({ ...REPORT, callActive: true });
+  assert.equal(h.store.state().mode, "auto-muted");
+  h.setConfig({ muted: true }); // a hotkey tap during the call
+  assert.equal(h.store.state().mode, "muted");
+  h.setConfig({ muted: false });
   assert.equal(h.store.state().mode, "auto-muted");
   h.store.acceptShellReport({ ...REPORT, callActive: true, pushToTalk: true, reportedAtHostUs: h.hostNowUs() });
   assert.equal(h.store.state().mode, "push-to-talk");
@@ -261,21 +285,21 @@ test("a shell report's capabilities and hotkey error are copied, and lapse with 
       // A capability this build does not know is dropped, not refused.
       "teleport": { available: true, reason: null },
     },
-    registeredHotkey: "ctrl+alt+m",
-    hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" },
+    registeredHotkey: "cmd+ctrl+alt+v",
+    hotkeyError: { reason: "Another app owns ⌥Space.", chordInForce: "cmd+ctrl+alt+v" },
   });
   const state = h.store.state();
   assert.ok(voiceCapable(state, "hotkey"));
-  assert.equal(state.registeredHotkey, "ctrl+alt+m");
-  assert.equal(state.configuredHotkey, "ctrl+alt+m");
+  assert.equal(state.registeredHotkey, "cmd+ctrl+alt+v");
+  assert.equal(state.configuredHotkey, "cmd+ctrl+alt+v");
   h.setConfig({ hotkey: "ctrl+alt+k" });
   assert.equal(h.store.state().configuredHotkey, "ctrl+alt+k");
-  assert.equal(h.store.state().registeredHotkey, "ctrl+alt+m");
+  assert.equal(h.store.state().registeredHotkey, "cmd+ctrl+alt+v");
   assert.notEqual(canonicalVoiceState(state), canonicalVoiceState(h.store.state()));
   assert.ok(!voiceCapable(state, "call-detection"));
   assert.equal(state.capabilities["call-detection"]?.reason, "Needs macOS 14.2 or later.");
   assert.equal(Object.hasOwn(state.capabilities, "teleport"), false);
-  assert.deepEqual(state.hotkeyError, { reason: "Another app owns ⌥Space.", chordInForce: "ctrl+alt+m" });
+  assert.deepEqual(state.hotkeyError, { reason: "Another app owns ⌥Space.", chordInForce: "cmd+ctrl+alt+v" });
 
   h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
   assert.equal(h.published.at(-1)?.capabilities.hotkey, undefined, "the lapse is published");

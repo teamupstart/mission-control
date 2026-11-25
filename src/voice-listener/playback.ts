@@ -8,7 +8,7 @@ type Step = IteratorResult<Segment | null, void>;
 /** EOF can be checked even while muted, without asking the detector to read any more audio. */
 export interface RecordingSegments {
   readonly exhausted: boolean;
-  next(directive: { revision: string; held?: true }): Step | Promise<Step>;
+  next(directive: { revision: string; captureRevision?: string; endOfSpeechMs?: number; held?: true }): Step | Promise<Step>;
   return?(): unknown;
 }
 
@@ -41,7 +41,8 @@ export async function playRecording(client: ListenerClient,
       const result = await decode(segment.value.samples, directive.roster);
       lifetime.signal.throwIfAborted();
       if (!result.text.trim()) continue;
-      const response = await client.utterance(result.text, tokenWords(result), directive.revision, capturedAt, lifetime.signal, segment.value.capture);
+      const captureRevision = directive.captureRevision ?? directive.revision;
+      const response = await client.utterance(result.text, tokenWords(result), captureRevision, capturedAt, lifetime.signal, segment.value.capture);
       if (!response) {
         console.warn("Voice listener dropped one segment after waiting for push-to-talk release.");
         continue;
@@ -57,7 +58,7 @@ export async function playRecording(client: ListenerClient,
       if (typeof acknowledgment?.accepted !== "boolean") throw new Error("Invalid voice utterance acknowledgment");
       if (!acknowledgment.accepted) {
         const current = await client.poll(undefined, lifetime.signal);
-        if (current.revision === directive.revision) throw new Error("Daemon refused the capture");
+        if ((current.captureRevision ?? current.revision) === captureRevision) throw new Error("Daemon refused the capture");
         // Capture changed during decoding. Discard this segment and continue from the next one.
       }
     }

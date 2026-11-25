@@ -32,16 +32,8 @@ Prerequisites:
   `ASDF_NODEJS_VERSION=24.18.0 npm test`. With Homebrew, run `brew install node@24` and put
   `$(brew --prefix node@24)/bin` first on `PATH`. Confirm with `node --version` before you
   run the suite.
-- The complete desktop build includes the voice listener on Apple silicon (macOS 14+). To build it alone, run
-  `npm run build:voice-listener` with Swift 6.2 or newer and the macOS SDK. SwiftPM resolves the pinned FluidAudio
-  dependency on first build. The build uses `curl` to seed a checkout-local SwiftPM cache with the
-  SHA-256-verified NeMo archive, which SwiftPM requests even with the NeMo trait disabled.
-  Update the archive URL and checksum in `scripts/build-voice-listener.mjs` if the FluidAudio pin
-  changes its binary target. Other platforms skip the Swift listener build.
-  After building, run `swift test -c release --package-path native/voice-listener` for the native tests.
-  For the recognizer check generate clips with `python3 scripts/voice-spike/corpus.py`,
-  set `VOICE_TEST_CORPUS` to the absolute path of `.tmp/voice-spike/audio`, and set
-  `MISSION_VOICE_MODEL_DIR` to the downloaded model revision directory.
+- On Apple silicon, see [macOS voice build and tests](#macos-voice-build-and-tests) for the
+  toolchain used by the complete desktop build.
 - Playwright Chromium for browser tests. It is a one-time download per machine and
   is intentionally not installed by `npm install`.
 
@@ -66,6 +58,46 @@ smaller compatibility path for dependencies, build, and hooks only.
 
 For the fuller first-run walkthrough, including state, desktop, hooks, and demo
 mode, see [docs/setup.md](docs/setup.md).
+
+### macOS voice build and tests
+
+On Apple silicon running macOS 14 or newer, `npm run build` includes the Swift voice
+listener. Confirm that the selected developer tools provide Swift 6.2 or newer and the macOS SDK.
+The [Command Line Tools for Xcode](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)
+are sufficient when they meet those requirements. Microphone permission is needed when capturing
+audio at runtime.
+
+```sh
+xcode-select --print-path
+swift --version
+xcrun --sdk macosx --show-sdk-path
+npm run build:voice-listener
+```
+
+On the first build, `curl` downloads the NeMo archive to a checkout-local SwiftPM cache and
+verifies its SHA-256. SwiftPM requests the archive even with the NeMo trait disabled. If a new
+FluidAudio pin changes the binary target, update the URL and checksum in
+`scripts/build-voice-listener.mjs`. Other platforms skip the Swift listener build.
+
+The standalone Swift test suite uses XCTest. If it reports `no such module 'XCTest'`, install
+[full Xcode](https://developer.apple.com/xcode/) with Swift 6.2 or newer and select it for the
+test command with `DEVELOPER_DIR`. This keeps the machine-wide toolchain selection intact. Use the
+actual installation path if Xcode is installed elsewhere. Build the listener first so the tests
+can reuse the verified archive.
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -version
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test -c release \
+  --package-path native/voice-listener \
+  --cache-path "$PWD/native/voice-listener/.build/swift-cache"
+```
+
+For the recognizer test, generate clips with `python3 scripts/voice-spike/corpus.py`, set
+`VOICE_TEST_CORPUS` to the absolute path of `.tmp/voice-spike/audio`, and set
+`MISSION_VOICE_MODEL_DIR` to the downloaded model revision directory.
+
+For dashboard and daemon development, `npm run dev` skips the Swift voice listener build and
+the FluidAudio download. Leave the `voice` preview off when working without voice.
 
 ## Commands
 

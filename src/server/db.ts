@@ -6488,15 +6488,6 @@ export function loadPendingReviews(): ReviewItem[] {
   return withStandingApprovalEligibility(rows.map(rowToReview));
 }
 
-/** Questions that could still be answered at capture but have since closed or been snoozed. */
-export function loadQuestionsClosedSince(sessionId: string, capturedAt: number): ReviewItem[] {
-  const rows = openDb().prepare(`SELECT * FROM reviews
-    WHERE session_id = ? AND kind = 'input' AND created_at <= ? AND status <> 'pending'
-      AND (CASE WHEN status = 'snoozed' THEN snoozed_at ELSE resolved_at END) >= ?`)
-    .all(sessionId, capturedAt, capturedAt) as unknown as ReviewRow[];
-  return rows.map(rowToReview);
-}
-
 /** Re-derive which pending reviews can grant a standing plan-bundle approval: bound to a task. */
 function withStandingApprovalEligibility(reviews: ReviewItem[]): ReviewItem[] {
   const eligible = openDb().prepare("SELECT 1 FROM managed_plan_reviews WHERE review_id = ? AND task_id IS NOT NULL");

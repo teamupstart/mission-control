@@ -647,7 +647,6 @@ import {
   retryWritebacks,
   getSkillsAcks,
   loadConversationResolvedReviews,
-  loadQuestionsClosedSince,
   loadReviewsByIds,
   blockReviewVoiceConversion,
   loadReview,
@@ -9473,7 +9472,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider, {
     pending: () => registry.pendingReviews().filter(voiceQuestion),
-    closedSince: (sessionId, at) => loadQuestionsClosedSince(sessionId, at).filter(voiceQuestion),
+    forSession: sessionId => registry.reviewsFor(sessionId).filter(voiceQuestion),
     publish: (reviewId, answer) => registry.emitQuestionEvent({ type: "voice_answer", reviewId, answer }),
     removeCompanion: id => registry.emitQuestionEvent({ type: "voice_card_remove", id }),
     open: (windowId, review) => registry.emitQuestionEvent({ type: "voice_open_question", windowId, sessionId: review.sessionId, reviewId: review.id }),

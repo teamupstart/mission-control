@@ -3,8 +3,6 @@ import { afterEach, beforeEach } from "node:test";
 import type { OpenCardsReport } from "../../src/shared/voice-answers.ts";
 import { app, registry, reviews } from "./voice-http.ts";
 
-const { openDb } = await import("../../src/server/db.ts");
-
 const windowId = "voice-question-test";
 export function question(title = "Which database?", sessionId = "sdk:Steve") {
   return reviews.create(sessionId, "input", title, title, [{ id: "q", question: title, allowOther: true,
@@ -17,9 +15,8 @@ const confirmations = new Map<string, number>();
 beforeEach(() => {
   drawn.clear();
   confirmations.clear();
-  // Each test owns its capture clock. A settlement from another test's simulated
-  // future cannot be part of this test's question history.
-  openDb().prepare("DELETE FROM reviews WHERE kind = 'input' AND status NOT IN ('pending', 'snoozed')").run();
+  // The previous fixture may have settled questions under a different simulated clock.
+  registry.voiceRouter!.reset();
 });
 registry.subscribe(event => {
   if (event.type === "voice_open_question") {

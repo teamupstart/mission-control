@@ -7804,15 +7804,23 @@ export class Registry extends EventEmitter {
 
   /** Make the whole committed batch visible before synchronous listeners can answer any member. */
   upsertReviews(reviews: ReviewItem[]): void {
-    for (const review of reviews) this.reviews.set(review.id, review);
+    for (const review of reviews) this.storeReview(review);
     for (const review of reviews) {
       if (this.reviews.get(review.id) === review) this.publishReview(review);
     }
   }
 
   upsertReview(review: ReviewItem): void {
-    this.reviews.set(review.id, review);
+    this.storeReview(review);
     this.publishReview(review);
+  }
+
+  private storeReview(review: ReviewItem): void {
+    const previous = this.reviews.get(review.id);
+    this.reviews.set(review.id, review);
+    if (this.voiceRouter && review.kind === "input" && featureEnabled(VOICE_FLAG)) {
+      this.voiceRouter.observeQuestion(review, previous);
+    }
   }
 
   private publishReview(review: ReviewItem): void {
@@ -7913,9 +7921,8 @@ export class Registry extends EventEmitter {
   /**
    * Every review this daemon holds for one session, settled ones included.
    *
-   * A read for the one caller that must see an ANSWER rather than an open question: a
-   * session-configured workflow Command is accepted only when its operator picked that exact
-   * argv on one of this session's `request_input` cards (`workflows/commands.ts`).
+   * Workflow commands read the operator's answer. Voice routing also needs questions
+   * that settled after the operator started speaking.
    */
   reviewsFor(sessionId: string): ReviewItem[] {
     const out: ReviewItem[] = [];

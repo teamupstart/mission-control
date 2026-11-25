@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { act, cards, model, queued, registry, say, reviews } from "./helpers/voice-http.ts";
+import test, { type TestContext } from "node:test";
+import { act, cards, model, queued, registry, say, reviews, voiceStateStore } from "./helpers/voice-http.ts";
 import { optionLetter } from "../src/shared/voice-answers.ts";
 import { answers, put, question, show } from "./helpers/voice-question.ts";
+
+function mockCaptureClock(t: TestContext): number {
+  const now = Date.now();
+  const elapsed = performance.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  t.mock.method(performance, "now", () => elapsed + (Date.now() - now));
+  return now;
+}
 
 test("only an addressed open card, reply, or explicit answer can fill a question", async t => {
   const q = question();
@@ -100,8 +108,7 @@ test("answer and companion share a cancel slot, correction keeps its place even 
 });
 
 test("a named answer captured before its question settles cannot target the remaining question", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  mockCaptureClock(t);
   const first = question();
   const remaining = question("Which cache?");
   await show([first.id, remaining.id], first.id);
@@ -128,8 +135,55 @@ test("a named answer captured before its question settles cannot target the rema
   assert.equal(answers()[0]?.reviewId, remaining.id);
 });
 
+test("an explicit answer after a wall-clock rollback only targets questions already open at capture", async t => {
+  const now = Date.now();
+  let elapsed = performance.now();
+  t.mock.method(performance, "now", () => elapsed);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const first = question("Which database?");
+  await say("Steve, option A", "before-rollback");
+  await say("cancel");
+  assert.equal(registry.getReview(first.id)?.status, "pending");
+  elapsed += 50;
+  t.mock.timers.setTime(now - 60_000);
+  const capturedAt = Date.now();
+  elapsed += 20;
+  t.mock.timers.tick(20);
+  const later = question("Which cache?");
+
+  await registry.voiceRouter!.accept({ id: "after-rollback", text: "Steve, option B", capturedAt, backend: "fluidaudio", words: [] });
+  assert.equal(answers()[0]?.reviewId, first.id);
+  assert.deepEqual(answers()[0]?.selections?.[0]?.selected, ["postgres"]);
+  assert.equal(cards.at(-1)?.reason, "voice-answer");
+  assert.equal((await act("after-rollback", "send-now?source=card")).status, 200);
+  assert.equal(registry.getReview(first.id)?.status, "answered");
+  assert.equal(registry.getReview(later.id)?.status, "pending");
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("a question that settles during transcription after a rollback cannot redirect the answer", async t => {
+  const now = Date.now();
+  let elapsed = performance.now();
+  t.mock.method(performance, "now", () => elapsed);
+  t.mock.method(voiceStateStore, "hostNowUs", () => Math.round(elapsed * 1000));
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const first = question();
+  const remaining = question("Which cache?");
+  elapsed += 50;
+  t.mock.timers.setTime(now - 60_000);
+  const capturedAt = Date.now();
+  const startHostUs = voiceStateStore.hostNowUs();
+  elapsed += 20;
+  t.mock.timers.setTime(now - 120_000);
+  reviews.resolve(first.id, "dismiss", null);
+  await registry.voiceRouter!.accept({ id: "settled-after-rollback", text: "Steve, option B", capturedAt, backend: "fluidaudio", words: [] }, { startHostUs });
+  assert.deepEqual(answers(), []);
+  assert.deepEqual(cards.at(-1)?.candidates.map(c => c.id), [remaining.id]);
+  assert.equal(cards.at(-1)?.deadline, null);
+});
+
 test("a reminder that wakes during transcription requires a fresh answer", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const title = "Which deployment?";
   const q = reviews.create("sdk:Steve", "input", title, title, [{ id: "deploy", question: title,
     options: [{ id: "old", label: "Existing" }, { id: "new", label: "New" }] }], { snoozable: true });
@@ -744,8 +798,7 @@ test("a late report from a timed-out request cannot reinstate a closed card on t
 });
 
 test("an unchanged report retry preserves a captured reply but a changed focus rejects it", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const now = mockCaptureClock(t);
   const first = question();
   const second = question("Which cache?");
   const router = registry.voiceRouter!;
@@ -769,8 +822,7 @@ test("an unchanged report retry preserves a captured reply but a changed focus r
 });
 
 test("late and concurrent corrections keep the newest captured choice and its countdown", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const now = mockCaptureClock(t);
   const q = question();
   const correct = (choice: string, id: string, capturedAt: number) => registry.voiceRouter!.accept({
     id, capturedAt, backend: "fluidaudio", text: "no, " + choice, words: [],
@@ -791,8 +843,7 @@ test("late and concurrent corrections keep the newest captured choice and its co
 });
 
 test("a slow match cannot revive a cancelled newer answer or take a different question's slot", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const now = mockCaptureClock(t);
   const q = question();
   const other = question("Which cache?", "sdk:Will");
   const router = registry.voiceRouter!;
@@ -825,8 +876,7 @@ test("a slow match cannot revive a cancelled newer answer or take a different qu
 });
 
 test("a correction captured before the newest answer settled cannot switch the remaining question", async t => {
-  const now = Date.now();
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const now = mockCaptureClock(t);
   const first = question();
   const second = question("Which cache?", "sdk:Will");
   await say("Steve, option B", "older-answer");

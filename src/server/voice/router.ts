@@ -1,4 +1,4 @@
-import { VOICE_DASHBOARD_CONFIRM_MS, type VoiceAnswer } from "@shared/voice-answers.ts";
+import { VOICE_DASHBOARD_CONFIRM_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
@@ -70,13 +70,19 @@ export class RecentlyHeard {
   clear(): void { this.entries = []; }
 }
 
-interface AnswerAttempt extends ActionTime {
-  reviewId: string;
+interface AnswerCapture extends ActionTime {
   sequence: number;
+  monotonicMs: number;
 }
 
-function compareAnswerCaptures(a: AnswerAttempt, b: AnswerAttempt): number {
-  return offsetUs(a, b) || a.sequence - b.sequence;
+interface AnswerAttempt extends AnswerCapture {
+  reviewId: string;
+}
+
+function compareAnswerCaptures(a: AnswerCapture, b: AnswerCapture): number {
+  const delta = a.openedAtHostUs !== undefined && b.openedAtHostUs !== undefined
+    ? a.openedAtHostUs - b.openedAtHostUs : a.monotonicMs - b.monotonicMs;
+  return delta || a.sequence - b.sequence;
 }
 
 interface OpenCard {
@@ -84,7 +90,7 @@ interface OpenCard {
   /** Daemon monotonic deadline. The wire deadline is in wall time for dashboard calibration. */
   answerExpiresAt?: number;
   /** The original answer's speech order survives a picker click and later corrections. */
-  answerCapture?: ActionTime & { sequence: number };
+  answerCapture?: AnswerCapture;
   answerAttempt?: AnswerAttempt;
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
   time: ActionTime;
@@ -228,6 +234,9 @@ export class VoiceRouter {
   private readonly open = new Map<string, OpenCard>();
   // Keep the last accepted capture until its question settles, even after a Cancel.
   private readonly lastAnswer = new Map<string, AnswerAttempt>();
+  // Keep the monotonic boundaries for as long as the registry holds the review.
+  private questionTimes = new WeakMap<ReviewItem, { created?: number; reminded?: number; closed?: number }>();
+  private questionClockOffsetMs = 0;
   private answerSequence = 0;
   // Which answer a correction could address at capture. Retiring an answer leaves
   // its interval in history, so a delayed correction cannot fall back to a neighbor.
@@ -261,6 +270,25 @@ export class VoiceRouter {
   /** The model step for an utterance, while it runs: settles once its card is resolved. */
   resolution(id: string): Promise<void> | undefined {
     return this.resolutions.get(id);
+  }
+
+  private questionTime(capture?: ActionTime): number {
+    if (capture?.openedAtHostUs !== undefined) {
+      return performance.now() + (capture.openedAtHostUs - this.hostNowUs()) / 1000;
+    }
+    this.questionClockOffsetMs = voiceFocusClockSkewMs(this.questionClockOffsetMs);
+    return (capture?.openedAt ?? Date.now()) - performance.timeOrigin + this.questionClockOffsetMs;
+  }
+
+  observeQuestion(review: ReviewItem, previous?: ReviewItem): void {
+    let times = previous && this.questionTimes.get(previous);
+    if (review.status === "pending" && previous?.status !== "pending") {
+      const at = this.questionTime();
+      times = previous ? { created: times?.created, reminded: at } : { created: at };
+    } else if (review.status !== "pending" && previous?.status === "pending") {
+      times = { ...times, closed: this.questionTime() };
+    }
+    if (times) this.questionTimes.set(review, times);
   }
 
   reviewSettled(reviewId: string): void {
@@ -450,17 +478,26 @@ export class VoiceRouter {
       (decision.kind === "needs-model" && decision.reason === "second-name") ? decision : null;
     if (!reply && !addressed) return false;
     const target = reply ? null : addressed?.target ?? null;
-    const pending = this.questions!.pending().filter(q => q.createdAt <= time.openedAt && (!target || q.sessionId === target.sessionId))
-      .sort((a, b) => a.createdAt - b.createdAt);
     const body = (reply?.[1] ?? addressed!.text).trim();
     if (!body) return false;
     const answer = /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
     const choiceCommand = requestedChoice(body) !== undefined;
     const explicit = !!target && (!!answer || choiceCommand);
-    if (!explicit && !(reply && pending.length && this.openCards.reportingWindows().length)) return false;
+    if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
+    const monotonicMs = this.questionTime(time);
+    const reviews = target ? (target.sessionId ? this.questions!.forSession(target.sessionId) : []) : this.questions!.pending();
+    const candidates = reviews.filter(review => {
+      const times = this.questionTimes.get(review);
+      // Restored pending questions predate this listener. A question that closed
+      // during transcription still counts, so its answer cannot move to a neighbor.
+      return (times?.created === undefined || times.created <= monotonicMs) &&
+        (review.status === "pending" || (times?.closed !== undefined && times.closed >= monotonicMs));
+    });
+    const pending = candidates.filter(q => q.status === "pending");
+    if (reply && !pending.length) return false;
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit && answer ? answer[1]!.trim() : body;
-    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, sequence: ++this.answerSequence },
+    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
     entry.matchedName = target?.name ?? null;
@@ -472,9 +509,6 @@ export class VoiceRouter {
       this.offerQuestions(item, pending, target, content, choiceCommand);
       return true;
     }
-    // A question that closed during transcription still counts when interpreting
-    // whom the operator addressed. Only a live question can be picked or answered.
-    const candidates = target?.sessionId ? pending.concat(this.questions!.closedSince(target.sessionId, time.openedAt)) : pending;
     return this.routeAnswerContent(item, candidates, content, choiceCommand, target).then(() => true);
   }
 
@@ -487,11 +521,6 @@ export class VoiceRouter {
     this.openCard(item);
   }
 
-  private questionCaptureTiming(time: ActionTime) {
-    const monotonic = time.openedAtHostUs === undefined ? undefined : performance.now() + (time.openedAtHostUs - this.hostNowUs()) / 1000;
-    return this.openCards.captureTiming(time.openedAt, monotonic);
-  }
-
   private confirmationSignal(signal?: AbortSignal): AbortSignal {
     const signals = [this.lifetime.signal, AbortSignal.timeout(VOICE_DASHBOARD_CONFIRM_MS)];
     if (signal) signals.push(signal);
@@ -499,8 +528,8 @@ export class VoiceRouter {
   }
 
   private prepareQuestionReply(item: OpenCard, review: ReviewItem, words: string, choiceCommand: boolean, open?: ReviewItem) {
-    const woke = review.snooze?.remindedAt;
-    if (woke != null && item.time.openedAt <= woke) {
+    const woke = this.questionTimes.get(review)?.reminded;
+    if (woke !== undefined && item.answerCapture!.monotonicMs <= woke) {
       if (this.open.get(item.card.id) === item) this.take(item);
       this.questionNotice(item, "This question reopened after you spoke. Say your answer again.");
       return;
@@ -550,7 +579,8 @@ export class VoiceRouter {
     const focused = this.openCards.target(candidates, !!target);
     // Picking sets a new time for cancellation priority. Only the original
     // speech can establish whether the operator dictated into an open card.
-    const timing = this.questionCaptureTiming(item.answerCapture!);
+    const capture = item.answerCapture!;
+    const timing = this.openCards.captureTiming(capture.openedAt, capture.monotonicMs);
     const changedDuringCalibration = windowId === previousWindow && calibratingTarget && calibratingTarget !== focused?.id;
     const open = windowId && focused && timing === "eligible" && this.openCards.footerOwner(focused.id) === windowId &&
       !changedDuringCalibration ? focused : undefined;
@@ -574,7 +604,9 @@ export class VoiceRouter {
     correction?: { id: string; time: ActionTime }): Promise<void> {
     const id = correction?.id ?? item.card.id;
     const signal = this.lifetime.signal;
-    const capture = correction ? { ...correction.time, sequence: ++this.answerSequence } : item.answerCapture!;
+    const capture = correction
+      ? { ...correction.time, monotonicMs: this.questionTime(correction.time), sequence: ++this.answerSequence }
+      : item.answerCapture!;
     const attempt = { ...capture, reviewId: review.id };
     const accepted = this.lastAnswer.get(review.id);
     if (accepted && compareAnswerCaptures(attempt, accepted) < 0) {
@@ -1098,6 +1130,7 @@ export class VoiceRouter {
     this.openCards.clear();
     this.open.clear();
     this.lastAnswer.clear();
+    this.questionTimes = new WeakMap();
     this.correctionTargets.length = 0;
     this.resolutions.clear();
     this.lifetime.abort();

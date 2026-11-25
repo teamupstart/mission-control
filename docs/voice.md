@@ -1279,6 +1279,19 @@ word can occur with no playback. Its source in the original trials remains unkno
 and the default setting missed too many controls to establish silence. Mac playback
 therefore remains unavailable.
 
+In a quiet-room repeat on November 25, an isolated test sent the release helper the
+actual question “Steve or Will?” with the same 250 ms playback delay and 500 ms
+end-of-speech setting. The open microphone recognized the full question in all
+three F4 and all three Samantha trials. After the normal pause, neither name was
+recognized in any of the six trials. Other words appeared in one F4 trial, one
+Samantha trial and four of the six matched silent controls. The resumed listener
+recognized “Purple bicycle” in all twelve probe trials. In two Samantha trials
+the probe appeared in a segment that began during the preceding silent observation
+window. The source of the other words remains uncertain. The run did not qualify
+playback. With Samantha explicitly selected, the unmodified daemon and release
+helper offered Steve and Will on screen, accepted the Steve selection and issued
+zero playback directives.
+
 In a separate hands-on check the Mac asked “Steve or Will?” once and the operator’s
 spoken “Steve” selected the card.
 In a follow-up using AirPods and an isolated test daemon, both samples started and ended

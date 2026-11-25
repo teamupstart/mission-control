@@ -229,11 +229,14 @@ with the same token and listener ID. It reports `ready` while the input is open 
 current recognized text. Each update for an unfinished phrase replaces its previous words.
 The daemon publishes the configured word window in voice state. Muting, disabling the overlay,
 or losing the capture grant clears it. Six seconds without a fresh reading also clears it.
+Quiet readings discard unfinished words and keep finalized words. In a short window, tab to
+the overflowing text and scroll to read it while the status stays visible.
 Only the completed utterance goes to the address router.
 
 The Sherpa listener uses the same overlay protocol while reading its supported WAV input on
 Linux and macOS. Quiet input reports ready. During detected speech it decodes growing PCM
-prefixes for the display, then decodes the completed segment with the spoken roster for addressing.
+prefixes for the display in the background, keeping only the latest waiting prefix.
+The completed segment goes directly to recognition with the spoken roster for addressing.
 Its final `words` update carries `final: true` to replace the last partial and retain those
 words when the next phrase starts.
 

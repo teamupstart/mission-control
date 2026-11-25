@@ -5,7 +5,7 @@ import { tokenWords, type Recognition } from "./words.ts";
 
 type Segment = { samples: Float32Array; capture?: CaptureBounds; onset?: number };
 type Preview = { preview: "ready" } | { preview: "audio"; onset: number; samples?: Float32Array };
-export type ObserveRecording = (sample: Preview) => Promise<void>;
+export type ObserveRecording = (sample: Preview) => void;
 type Step = IteratorResult<Segment | null, void>;
 /** EOF can be checked even while muted, without asking the detector to read any more audio. */
 export interface RecordingSegments {
@@ -32,26 +32,60 @@ export async function playRecording(client: ListenerClient,
       await hello();
     }
   }
+  // A detector batch may offer many growing prefixes. Keep only the newest waiting
+  // prefix and at most one active decode, even across a final or a capture change.
+  let pending: { sample: Preview; revision: string; signal: AbortSignal } | undefined;
+  let previewRunning = false;
+  let previewCapture: AbortController | undefined;
+  let previewRevision: string | undefined;
+  function discardPreviews() {
+    pending = undefined;
+    previewCapture?.abort();
+    previewCapture = undefined;
+  }
+  async function drainPreviews() {
+    if (previewRunning || !decodePreview) return;
+    previewRunning = true;
+    try {
+      while (pending) {
+        const { sample, revision, signal } = pending;
+        pending = undefined;
+        try {
+          if (sample.preview === "ready") {
+            await client.transcript({ phase: "ready" }, revision, signal);
+          } else if (await client.transcript({ phase: "audio", onset: sample.onset }, revision, signal)
+              && sample.samples && !signal.aborted) {
+            const words = await decodePreview(sample.samples);
+            if (words.text.trim() && !signal.aborted) {
+              await client.transcript({ phase: "words", onset: sample.onset, text: transcriptTail(words.text) }, revision, signal);
+            }
+          }
+        } catch {
+          // Revocation, a refused preview or an undecodable prefix cannot interrupt addressing.
+        }
+      }
+    } finally {
+      previewRunning = false;
+    }
+  }
   async function play() {
     while (!segments.exhausted) {
       let directive = await client.poll(undefined, lifetime.signal);
+      if (!directive.capture) discardPreviews();
       while (!directive.capture) directive = await client.poll(directive.revision, lifetime.signal);
       const captureRevision = directive.captureRevision ?? directive.revision;
-      const observe: ObserveRecording | undefined = decodePreview && (async sample => {
-        if (sample.preview === "ready") {
-          await client.transcript({ phase: "ready" }, captureRevision, lifetime.signal);
-        } else if (await client.transcript({ phase: "audio", onset: sample.onset }, captureRevision, lifetime.signal)) {
-          if (!sample.samples) return;
-          const words = await decodePreview(sample.samples).catch(() => undefined);
-          if (words?.text.trim()) {
-            await client.transcript({ phase: "words", onset: sample.onset, text: transcriptTail(words.text) }, captureRevision, lifetime.signal);
-          }
-        }
+      if (captureRevision !== previewRevision) discardPreviews();
+      previewRevision = captureRevision;
+      const observe: ObserveRecording | undefined = decodePreview && (sample => {
+        previewCapture ??= new AbortController();
+        pending = { sample, revision: captureRevision, signal: previewCapture.signal };
+        void drainPreviews();
       });
       const segment = await segments.next({ ...directive, observe });
       if (segment.done) return;
       if (segment.value === null) continue;
       lifetime.signal.throwIfAborted();
+      discardPreviews();
       const capturedAt = Date.now();
       const result = await decode(segment.value.samples, directive.roster);
       lifetime.signal.throwIfAborted();
@@ -85,6 +119,7 @@ export async function playRecording(client: ListenerClient,
     await hello();
     await Promise.race([heartbeat(), play()]);
   } finally {
+    discardPreviews();
     lifetime.abort();
     await segments.return?.();
   }

@@ -257,27 +257,29 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor func runTranscriptPreview(
-    isRunning: () -> Bool, snapshot: () -> Segment?, pendingOnset: () -> Int64?,
-    decode: (Segment) async throws -> String?,
-    report: (String, Int64?, String?) async -> Bool,
+    isRunning: @escaping () -> Bool, snapshot: @escaping () -> Segment?, pendingOnset: () -> Int64?,
+    decode: @escaping (Segment) async throws -> String?,
+    report: @escaping (String, Int64?, String?) async -> Bool,
     pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
 ) async {
-    var lastOnset: Int64?
+    var decoding: Task<Void, Never>?
+    defer { decoding?.cancel() }
     while !Task.isCancelled && isRunning() {
         if let segment = snapshot() {
             let onset = segment.speechStartHostUs
-            let accepted = lastOnset == onset ? true : await report("audio", onset, nil)
-            if accepted {
-                lastOnset = onset
-                if let words = try? await decode(segment), !Task.isCancelled && isRunning() {
+            // Renew capture independently of recognition, even while a slow decode is in flight.
+            if await report("audio", onset, nil), decoding == nil, !Task.isCancelled {
+                decoding = Task { @MainActor in
+                    defer { decoding = nil }
+                    guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
+                          snapshot()?.speechStartHostUs == onset else { return }
                     let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
-                    if !(await report("words", onset, tail)) { lastOnset = nil }
+                    if !tail.isEmpty { _ = await report("words", onset, tail) }
                 }
             }
         } else if let onset = pendingOnset() {
             _ = await report("audio", onset, nil)
         } else {
-            lastOnset = nil
             _ = await report("ready", nil, nil)
         }
         await pause()

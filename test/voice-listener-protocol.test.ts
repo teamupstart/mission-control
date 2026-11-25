@@ -1,3 +1,4 @@
+import { deferred } from "./helpers/deferred.ts";
 import assert from "node:assert/strict";
 import test, { before, after, describe } from "node:test";
 import { Hono } from "hono";
@@ -546,7 +547,7 @@ test("Sherpa publishes quiet, onset and growing partials from unfinished PCM bef
   const finals: string[] = [];
   const decoded: number[] = [];
   const quietFrames = 16;
-  const frames = 72;
+  const frames = 180;
   const pcm = new Float32Array(frames * 512);
   pcm.fill(0.25, quietFrames * 512);
   let scanned = 0;
@@ -585,4 +586,58 @@ test("Sherpa publishes quiet, onset and growing partials from unfinished PCM bef
   assert.ok(decoded.length >= 2 && decoded.every((n, i) => i === 0 || n > decoded[i - 1]!));
   assert.equal(states.at(-1), "words Steve, check the build");
   assert.deepEqual(finals, ["Steve, check the build"]);
+});
+
+test("a stalled preview coalesces new prefixes and lets final addressing finish first", { timeout: 3000 }, async () => {
+  const started = deferred();
+  const release = deferred();
+  const decoded: number[] = [];
+  const delivered: string[] = [];
+  const published: string[] = [];
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/directive")) return Response.json({ revision: "active", capture: true, roster: ["Steve"], inputDevice: "built-in" });
+    const body = JSON.parse(String(init.body));
+    if (path.endsWith("/utterances")) delivered.push(body.text);
+    if (path.endsWith("/transcript") && body.text) published.push(body.text);
+    return Response.json({ accepted: true });
+  });
+  const recognition = (text: string) => ({ text, tokens: [], timestamps: [], durations: [] });
+  const pcm = new Float32Array(25);
+  let exhausted = false;
+  const secondPreview = deferred();
+  const finish = deferred();
+  try {
+    await playRecording(client, () => ({
+      get exhausted() { return exhausted; },
+      async next({ observe }) {
+        assert.ok(observe);
+        const offer = (length: number) => observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, length) });
+        offer(1);
+        await started.promise;
+        for (let length = 2; length <= 24; length++) offer(length);
+        release.resolve();
+        await secondPreview.promise;
+        offer(25);
+        exhausted = true;
+        return { done: false, value: { samples: pcm, onset: 1 } };
+      },
+    }), async () => recognition("Steve, check the build"), async samples => {
+      decoded.push(samples.length);
+      if (samples.length === 1) {
+        started.resolve();
+        await release.promise;
+        return recognition("first prefix");
+      }
+      secondPreview.resolve();
+      await finish.promise;
+      return recognition("stale prefix");
+    });
+  } finally {
+    finish.resolve();
+  }
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(decoded, [1, 24]);
+  assert.deepEqual(delivered, ["Steve, check the build"]);
+  assert.deepEqual(published, ["first prefix", "Steve, check the build"]);
 });

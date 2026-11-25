@@ -92,3 +92,34 @@ test("live capture shows readiness, onset and rolling words in the saved overlay
     })).status()).toBe(404);
   } finally { listener.stop(); }
 });
+
+test("all 100 long words remain readable in a short window with the status in view", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const limit = page.getByLabel("Maximum transcript words");
+  await limit.fill("100");
+  await limit.press("Enter");
+  const listener = await beListener(daemon);
+  try {
+    await page.setViewportSize({ width: 800, height: 360 });
+    const words = Array.from({ length: 100 }, (_, i) => "acknowledgement" + (i + 1)).join(" ");
+    expect(await transcriptSample(daemon, { phase: "words", onset: 1, text: words })).toBe(true);
+    const overlay = page.getByRole("complementary", { name: "Live voice transcript" });
+    const body = overlay.locator("span");
+    await expect(body).toHaveText(words);
+    const box = (await overlay.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(16);
+    expect(box.y + box.height).toBeLessThanOrEqual(360);
+    await expect(overlay.locator("strong")).toBeInViewport({ ratio: 1 });
+    expect(await body.evaluate(el => el.scrollHeight)).toBeGreaterThan((await body.boundingBox())!.height);
+    await body.click();
+    await page.keyboard.press("End");
+    await expect.poll(() => body.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
+    await expect(overlay.locator("strong")).toBeInViewport({ ratio: 1 });
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("live-transcript");
+      mkdirSync(dir, { recursive: true });
+      await page.screenshot({ path: join(dir, "short-window.png") });
+    }
+  } finally { listener.stop(); }
+});

@@ -31,13 +31,14 @@ final class ListenerTests: XCTestCase {
                 if let onset { onsets.append(onset) }
                 return true
             }, pause: {
+                while decodedLengths.count < ticks { await Task.yield() }
                 ticks += 1
                 if ticks <= 3 {
                     endNs += 20_000_000
                     XCTAssertNil(gate.feed(frame, active: true, endNs: endNs, toUnixMs: { $0 / 1_000_000 }))
                 }
             })
-        XCTAssertEqual(phases, ["ready", "audio", "words", "words"])
+        XCTAssertEqual(phases, ["ready", "audio", "audio", "words", "audio", "words"])
         XCTAssertEqual(texts, ["ordinary", "ordinary words"])
         XCTAssertEqual(decodedLengths, [320, 640, 960])
         var completed: Segment?
@@ -47,8 +48,30 @@ final class ListenerTests: XCTestCase {
                                   toUnixMs: { $0 / 1_000_000 })
         }
         let final = try XCTUnwrap(completed)
-        XCTAssertEqual(onsets, Array(repeating: final.speechStartHostUs, count: 3))
+        XCTAssertEqual(onsets, Array(repeating: final.speechStartHostUs, count: 5))
         XCTAssertEqual(Array(final.samples.prefix(960)), frame + frame + frame)
+    }
+
+    @MainActor func testAudioHeartbeatContinuesWhilePreviewDecodeIsSuspended() async {
+        var gate = SpeechGate(endOfSpeechMs: 500)
+        _ = gate.feed(Array(repeating: Float(0.25), count: 320), active: true, endNs: 1_000_000_000,
+                      toUnixMs: { $0 / 1_000_000 })
+        var resume: CheckedContinuation<Void, Never>?
+        var beats = 0
+        var attempts = 0
+        await runTranscriptPreview(isRunning: { beats < 10 }, snapshot: { gate.preview }, pendingOnset: { nil },
+            decode: { _ in
+                attempts += 1
+                await withCheckedContinuation { resume = $0 }
+                return nil
+            }, report: { phase, _, _ in
+                XCTAssertEqual(phase, "audio")
+                beats += 1
+                return true
+            }, pause: { while resume == nil { await Task.yield() } })
+        resume?.resume()
+        XCTAssertEqual(beats, 10)
+        XCTAssertEqual(attempts, 1)
     }
 
     func testHeldPostDeadlineCancelsAnUnansweredRequest() async throws {

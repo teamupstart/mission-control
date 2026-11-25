@@ -193,6 +193,7 @@ export class VoiceStateStore {
     const previousText = previous?.text;
     const previousPhase = previous?.phase;
     if (sample.phase === "ready") {
+      preview.interim = "";
       preview.phase = "ready";
     } else if (sample.onset <= preview.finalOnset) {
       return true;
@@ -216,7 +217,7 @@ export class VoiceStateStore {
     preview.text = transcriptTail(preview.committed + " " + preview.interim);
     preview.at = now;
     this.preview = preview;
-    if (previousText === preview.text && previousPhase === preview.phase) this.arm();
+    if (previousText === preview.text && previousPhase === preview.phase) this.arm(this.state());
     else this.publish();
     return true;
   }

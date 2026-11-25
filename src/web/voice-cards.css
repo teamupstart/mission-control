@@ -183,11 +183,13 @@ html.voice-window, html.voice-window body, html.voice-window #root { background:
   bottom: 48px;
   z-index: 20;
   pointer-events: none;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 5px;
   box-sizing: border-box;
   width: max-content;
   max-width: min(250px, calc(100vw - 32px));
+  max-height: calc(100dvh - 64px);
   padding: 10px 15px;
   color: var(--fg, #edf2f7);
   background: var(--panel, #20262c);
@@ -198,7 +200,9 @@ html.voice-window, html.voice-window body, html.voice-window #root { background:
   font-size: 14px;
   line-height: 1.4;
 }
-.voice-transcript strong { font-size: 12px; }
+.vt-text { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.vt-text[tabindex] { pointer-events: auto; }
+.voice-transcript strong { flex: none; font-size: 12px; }
 .voice-transcript strong::before {
   content: "";
   display: inline-block;

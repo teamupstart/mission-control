@@ -1,3 +1,4 @@
+import { VoiceTranscriptText } from "./VoiceTranscriptText.tsx";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   voiceCaptures, voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
@@ -64,7 +65,7 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
     {enabled && state?.transcript && voiceCaptures(state.mode) && <aside aria-label="Live voice transcript"
       className={`voice-transcript vt-${state.transcript.style} vt-${state.transcript.corner} vt-${state.transcript.phase}`}>
       <strong>{{ ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[state.transcript.phase]}</strong>
-      {state.transcript.text && <span>{state.transcript.text}</span>}
+      {state.transcript.text && <VoiceTranscriptText as="span" className="vt-text" text={state.transcript.text} />}
     </aside>}
     {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status">
       {pendingMute !== null && (pendingMute ? "Muting voice…" : "Unmuting voice…")}

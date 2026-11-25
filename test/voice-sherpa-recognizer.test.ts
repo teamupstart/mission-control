@@ -1,3 +1,4 @@
+import { deferred } from "./helpers/deferred.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
@@ -57,19 +58,21 @@ test("the published sherpa addon transcribes a recording through the listener an
   const captures: VoiceUtterance[] = [];
   let posts = 0;
   const previewPhases: string[] = [];
+  const firstWords = deferred();
   app.use("/voice/listener/transcript", async (c, next) => {
     const sample = await c.req.raw.clone().json();
     await next();
     if (!posts && !sample.final && (await c.res.clone().json()).accepted) {
       const preview = voiceStateStore.state().transcript;
       if (preview && (preview.phase !== "words" || preview.text.trim())) previewPhases.push(preview.phase);
+      if (preview?.phase === "words" && preview.text.trim()) firstWords.resolve();
     }
   });
   let hellos = 0;
   let acceptedAfterRelease = false;
   let onDirectivePoll: (() => void) | undefined;
   app.use("/voice/listener/directive", async (_c, next) => {
-    onDirectivePoll?.();
+    await onDirectivePoll?.();
     await next();
   });
   let onAcceptedCapture: (() => void) | undefined;
@@ -179,7 +182,12 @@ test("the published sherpa addon transcribes a recording through the listener an
     await assert.rejects(play(path), /Expected a 16 kHz mono WAV/);
     assert.equal(hellos, 0);
     assert.equal(posts, 0);
-    await play(fixture);
+    // This file is read faster than real time. Hold the second batch at the
+    // fixture daemon until recognition publishes the unfinished first batch.
+    let polls = 0;
+    onDirectivePoll = async () => { if (++polls === 2) await firstWords.promise; };
+    try { await play(fixture); }
+    finally { onDirectivePoll = undefined; firstWords.resolve(); }
     assert.ok(hellos > 0);
     assert.equal(posts, 1);
   });

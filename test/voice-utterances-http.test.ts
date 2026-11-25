@@ -1,3 +1,4 @@
+import { deferred } from "./helpers/deferred.ts";
 import { VOICE_HELLO_LAPSE_MS, VOICE_SHELL_REPORT_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } from "../src/shared/voice.ts";
 import type { HeardEntry } from "../src/shared/voice-routing.ts";
 import assert from "node:assert/strict";
@@ -1858,13 +1859,15 @@ test("a failed preview decode still delivers the completed message to its addres
   assert.equal(config.status, 200);
   const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => app.request(url, init));
   const pcm = Float32Array.of(0.1, 0.2);
+  const attempted = deferred();
   let previewAttempts = 0;
   let exhausted = false;
   await playRecording(client, () => ({
     get exhausted() { return exhausted; },
     async next({ observe }) {
       assert.ok(observe);
-      await observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      await attempted.promise;
       assert.equal(voiceStateStore.state().transcript?.phase, "audio");
       assert.deepEqual(queued("Steve"), []);
       exhausted = true;
@@ -1875,6 +1878,7 @@ test("a failed preview decode still delivers the completed message to its addres
     return { text: "Steve, check the build", tokens: [], durations: [], timestamps: [] };
   }, async () => {
     previewAttempts++;
+    attempted.resolve();
     throw new Error("fixture partial decoder failed");
   });
   assert.equal(previewAttempts, 1);
@@ -1888,11 +1892,13 @@ test("a rejected transcript request still delivers the completed phrase once to 
     body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
   assert.equal(config.status, 200);
 
+  const rejected = deferred();
   const requests: string[] = [];
   const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => {
     const path = new URL(url).pathname;
     if (path === "/voice/listener/transcript" && JSON.parse(String(init.body)).text === "unfinished") {
       requests.push("preview rejected");
+      rejected.resolve();
       return new Response("Preview temporarily unavailable", { status: 503 });
     }
     if (path === "/voice/utterances") requests.push("final utterance");
@@ -1904,7 +1910,8 @@ test("a rejected transcript request still delivers the completed phrase once to 
     get exhausted() { return exhausted; },
     async next({ observe }) {
       assert.ok(observe);
-      await observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      await rejected.promise;
       assert.deepEqual(requests, ["preview rejected"]);
       assert.deepEqual(queued("Steve"), []);
       exhausted = true;

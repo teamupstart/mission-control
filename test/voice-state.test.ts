@@ -610,6 +610,12 @@ test("live transcript is ephemeral, grant-bound and replaces partial hypotheses 
   h.setConfig({ transcriptWords: 4 });
   h.store.reportTranscript(listenerId, revision, { ...sample, onset: 2, text: "from another phrase" });
   assert.equal(h.store.state().transcript?.text, "words from another phrase");
+  for (let i = 0; i < 2; i++) {
+    h.store.reportTranscript(listenerId, revision, { phase: "ready" });
+    assert.equal(h.store.state().transcript?.phase, "ready");
+    assert.equal(h.store.state().transcript?.text, "the final words");
+    h.advance(800);
+  }
   h.advance(6100);
   assert.equal(h.store.state().transcript, undefined);
   h.store.reportTranscript(listenerId, revision, sample);

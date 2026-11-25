@@ -68,12 +68,12 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
             previewOnset ??= hostNowUs();
             previewThrough = offset;
             // At the endpoint, playback already has the complete segment to decode.
-            await observe({ preview: "audio", onset: previewOnset,
+            observe({ preview: "audio", onset: previewOnset,
               samples: vad.isEmpty() ? samples.subarray(pendingStart, offset) : undefined });
           }
           if (!detected && previewOnset === undefined && performance.now() - lastReady >= 2000) {
             lastReady = performance.now();
-            await observe({ preview: "ready" });
+            observe({ preview: "ready" });
           }
         }
       }

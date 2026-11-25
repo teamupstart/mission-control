@@ -5,6 +5,7 @@ import type { Locator } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { enableVoice, say } from "../fixtures/voice.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
@@ -238,4 +239,18 @@ test("Reports settings quotes a migrated muted resident reference name", async (
     await expect(row.getByText(label, { exact: true })).toBeVisible();
   }
   await shoot(page.locator("section").filter({ has: page.getByRole("heading", { name: "Muted agents" }) }).last(), "migrated-muted-residents");
+
+  await list.getByRole("button", { name: 'Unmute "Sage"', exact: true }).click();
+  await expect(list.getByText('"Sage"', { exact: true })).toHaveCount(0);
+  await page.goto(daemon.baseURL + "/#/fleet");
+  await page.locator("button.pulse-seg", { hasText: "to read" }).click();
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const card = inbox.getByRole("article", { name: "Report: Reviewed" });
+  await card.getByRole("button", { name: "Reviewed", exact: true }).click();
+  await expect(card.getByRole("button", { name: "Reviewed", exact: true })).toHaveAttribute("aria-expanded", "true");
+  await expect(card.locator(".agent-report-meta strong")).toHaveText('"Sage"');
+  await expect(card.locator(".vh-foot")).toHaveText('Say "Sage", mark read or "Sage", mute reports.');
+  await expect(card.locator(".vh-foot q")).toHaveCount(0);
+  await shoot(card, "quoted-report-author");
 });

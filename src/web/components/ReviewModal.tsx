@@ -1,4 +1,3 @@
-import { spokenNameLabel } from "@shared/voice-names.ts";
 import { useCallback, useContext, useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
@@ -207,7 +206,6 @@ export function ReviewCard({
   const voiceQuestion = drawnQuestion && (decisions?.length ?? 0) <= 1;
   const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
   const speaker = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId);
-  const spokenName = speaker && spokenNameLabel(speaker);
   // The daemon owns the deadline. Once the operator edits this preview, the draft
   // owns the inputs immediately, including while the cancel request is in flight.
   const [editCancel, setEditCancel] = useState<{ id: string; status: "requested" | "failed" } | null>(null);
@@ -415,7 +413,7 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
-          planAddress={voicePlan ? spokenName ?? "reply" : undefined}
+          planAddress={voicePlan ? speaker ?? "reply" : undefined}
           voiceLetters={voiceQuestion}
           voicePending={!!preview}
           footer={footer}
@@ -508,7 +506,7 @@ export function ReviewCard({
           </Tooltip>
         </div>
       )}
-      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} decision={decisions?.[0]} />}
+      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={speaker} decision={decisions?.[0]} />}
       {voiceError && voiceError.id === revision && <p className="review-err">{voiceError.message}</p>}
       {err && <p className="review-err">{err}</p>}
       {foremanOpen && foremanAvailable && foremanNote && (

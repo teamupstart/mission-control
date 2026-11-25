@@ -172,7 +172,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
           <Transcript as="q" id={wordsId} text={turn?.spokenWords ?? part.text} />
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
-          {address && <SpokenHint name={spokenNameLabel(address)} action="answer">Say <q>{spokenNameLabel(address)}, my answer is …</q> to answer it.</SpokenHint>}
+          {address && <SpokenHint name={address} action="answer" command="{name}, my answer is …" instruction="to answer it." />}
           <div className="vc-right">{button("Open question", "Open the question holding this message", () => question && actions.openQuestion(question.sessionId, question.id), "", !question)}</div></>;
       }
       case "not-running": {
@@ -269,7 +269,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
       body = card.detail && ["question-notice", "form-not-open", "form-incomplete", "inbox-action", "voice-answer"].includes(card.reason) ? <b>{card.detail}</b> : <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
         {(card.state === "sent" || card.state === "queued") && card.openQuestions > 0 && <>
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
-          <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target && spokenNameLabel(first.target)}, answer</q> to reply to one.</SpokenHint></>}</>;
+          <SpokenHint action="answer" name={first?.target ?? ""} command="{name}, answer" instruction="to reply to one." /></>}</>;
   }
   return <article ref={article} role="status" tabIndex={surface ? -1 : undefined} aria-label={pill && card.state === "pending" ? `To ${first?.target && spokenNameLabel(first.target)}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}

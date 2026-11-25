@@ -91,7 +91,9 @@ export function quotedReferenceName(name: string): string {
   return `"${inner}"`;
 }
 
-export function spokenNameLabel(entry: Pick<SpokenName, "name" | "isReferenceName">): string {
+export type SpokenNameIdentity = Pick<SpokenName, "name" | "isReferenceName">;
+
+export function spokenNameLabel(entry: SpokenNameIdentity): string {
   return entry.isReferenceName ? quotedReferenceName(entry.name) : entry.name;
 }
 

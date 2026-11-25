@@ -7,7 +7,7 @@
 // holds a completion, never counts toward the open-question limit, and Foreman never reads it.
 // It lives in its own table (`reports`) and outlives the session that posted it.
 
-import { quotedReferenceName } from "./voice-names.ts";
+import { spokenNameLabel, type SpokenNameIdentity } from "./voice-names.ts";
 import { canMessage, type Messageable } from "./pane.ts";
 import { isShippingTaskKind } from "./task.ts";
 import type { ResidentRunSummary } from "./residents.ts";
@@ -74,10 +74,14 @@ export function reportAuthorName(author: ReportAuthor, voice: boolean): string {
   return author.labels ? (voice ? author.labels.spoken : author.labels.fallback) : author.name;
 }
 
-export function reportAuthorLabel(author: ReportAuthor, voice?: boolean): string {
+export function reportAuthorIdentity(author: ReportAuthor, voice?: boolean): SpokenNameIdentity {
   const name = voice === undefined ? author.name : reportAuthorName(author, voice);
   const reference = author.referenceNameActive !== undefined && (voice ?? author.referenceNameActive);
-  return reference ? quotedReferenceName(name) : name;
+  return reference ? { name, isReferenceName: true } : { name };
+}
+
+export function reportAuthorLabel(author: ReportAuthor, voice?: boolean): string {
+  return spokenNameLabel(reportAuthorIdentity(author, voice));
 }
 
 export interface ReportItem {

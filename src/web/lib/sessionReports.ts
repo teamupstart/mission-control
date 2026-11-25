@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { VOICE_FLAG } from "@shared/voice.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
-import { reportAuthorLabel, type ReportAuthor, type ReportItem } from "@shared/reports.ts";
+import { reportAuthorIdentity, type ReportAuthor, type ReportItem } from "@shared/reports.ts";
 import { api } from "./api.ts";
 import { historyRetryDelay } from "./timelineReviews.ts";
 
 /** Historical cards can stay open across a flag change after their report leaves the inbox. */
-export function useReportAuthorName(author: ReportAuthor): string {
-  return reportAuthorLabel(author, useFeatureFlag(VOICE_FLAG));
+export function useReportAuthorIdentity(author: ReportAuthor) {
+  return reportAuthorIdentity(author, useFeatureFlag(VOICE_FLAG));
 }
 
 /**

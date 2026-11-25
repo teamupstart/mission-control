@@ -96,13 +96,18 @@ test("a schema 47 database, from before the digest mark, gains counted_in_digest
 test("schema 64 report labels and historical mutes recover the name source at post and mute time", () => {
   const store = db.openDb();
   const revision = store.prepare("INSERT INTO resident_profile_revisions VALUES (?, ?, ?, ?)");
-  revision.run("historic-sage", 1, JSON.stringify({ identity: { name: "Captain", referenceName: "Sage" } }), 10);
+  revision.run("historic-sage", 1, JSON.stringify({ identity: { name: "Captain", referenceName: "\t Sage \u00a0" } }), 10);
   revision.run("historic-sage", 2, JSON.stringify({ identity: { name: "Sage" } }), 20);
   const report = store.prepare(`INSERT INTO reports (id, session_id, author_key, author_resident_profile_id,
     author_name, author_spoken_name, title, body, root_id, version, created_at, root_created_at)
     VALUES (?, 'old-session', 'resident:historic-sage', 'historic-sage', 'Captain', 'Sage', 'Review', 'Done', ?, 1, ?, ?)`);
   report.run("old-reference", "old-reference", 15, 15);
   report.run("old-profile-name", "old-profile-name", 25, 25);
+  // A later report recorded in the same millisecond as the mute has a different spoken label.
+  store.prepare(`INSERT INTO reports (id, session_id, author_key, author_resident_profile_id,
+    author_name, title, body, root_id, version, created_at, root_created_at)
+    VALUES ('same-tick-report', 'same-tick', 'resident:historic-sage', 'historic-sage',
+      'Captain', 'Review', 'Done', 'same-tick-report', 1, 18, 18)`).run();
   revision.run("historic-linter", 1, JSON.stringify({ identity: { name: "Linter" } }), 10);
   store.prepare(`INSERT INTO reports (id, session_id, author_key, author_resident_profile_id,
     author_name, title, body, root_id, version, created_at, root_created_at)
@@ -125,7 +130,7 @@ test("schema 64 report labels and historical mutes recover the name source at po
   ]);
   upgraded.exec(`
     DELETE FROM report_mutes WHERE author_key IN ('resident:historic-linter', 'resident:historic-sage');
-    DELETE FROM reports WHERE session_id IN ('ordinary-session', 'old-session');
+    DELETE FROM reports WHERE session_id IN ('ordinary-session', 'old-session', 'same-tick');
     DELETE FROM resident_profile_revisions WHERE profile_id IN ('historic-linter', 'historic-sage');
   `);
 });

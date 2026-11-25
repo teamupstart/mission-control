@@ -5456,16 +5456,22 @@ function migrate(d: DatabaseSync): void {
   // Recover the source using the profile revision at post time. A profile rename alone
   // can also make the stored spoken and pinned fallback names differ.
   if (databaseSchemaVersion(d) < 65) {
+    d.function("normalized_spoken_name", { deterministic: true }, value => {
+      const parsed = SpokenNameSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    });
     d.exec(`
       UPDATE reports SET author_is_reference_name = 1,
         author_spoken_name = COALESCE(author_spoken_name, author_name)
       WHERE author_resident_profile_id IS NOT NULL AND COALESCE(author_spoken_name, author_name) = (
-        SELECT CASE WHEN json_valid(settings_json) THEN json_extract(settings_json, '$.identity.referenceName') END
+        SELECT CASE WHEN json_valid(settings_json) THEN normalized_spoken_name(json_extract(settings_json, '$.identity.referenceName')) END
         FROM resident_profile_revisions WHERE profile_id = reports.author_resident_profile_id
           AND created_at <= reports.created_at ORDER BY revision DESC LIMIT 1
       );
       UPDATE report_mutes SET author_is_reference_name = 1
       WHERE (SELECT author_is_reference_name FROM reports WHERE reports.author_key = report_mutes.author_key
+        AND reports.author_name = report_mutes.author_name
+        AND COALESCE(reports.author_spoken_name, reports.author_name) = COALESCE(report_mutes.author_spoken_name, report_mutes.author_name)
         AND created_at <= report_mutes.muted_at ORDER BY seq DESC LIMIT 1) = 1;
     `);
   }

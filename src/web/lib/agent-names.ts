@@ -20,6 +20,7 @@ export const ResidentNamesContext = createContext<readonly ResidentNameSource[]>
 
 /** A name as a surface draws it: the text, and the board colour it is drawn in, if any. */
 export interface AgentNameView {
+  isReferenceName?: true;
   name: string;
   colorId: ResidentMarkerColorId | null;
 }
@@ -44,7 +45,7 @@ export function agentNameView(
   if (!enabled) return { name: legacy, colorId: null };
   const input = sessionDisplayNameInput(session, runs, spokenNames);
   const display = agentDisplayName(input);
-  return { name: agentNameLabel(display), colorId: agentNameColor(input, display) };
+  return { ...(display.source === "reference-name" && { isReferenceName: true }), name: agentNameLabel(display), colorId: agentNameColor(input, display) };
 }
 
 /** `agentNameView` for a component, from the `inbox` and `voice` flags and `ResidentNamesContext`. */

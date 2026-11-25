@@ -173,6 +173,16 @@ test("a parked card expires when its run leaves that session, waiting state or r
   }
 });
 
+test("a live workflow hold hides a cached stall before the next poll", () => {
+  const task = mkTaskSummary();
+  const session = { ...idleSession("s-idle"), task };
+  const cached: Stall[] = [{ ...IDLE_WORK, facts: { kind: "unfinished-work", task, queueOpen: 0 } }];
+  const run = { ...LADDER_SUMMARY, sessionId: session.id, status: "running" as const };
+  assert.deepEqual(currentStalls(cached, [session], [run]), []);
+  assert.equal(currentStalls(cached, [session], [{ ...run, status: "completed" }]), cached);
+  assert.equal(currentStalls(cached, [session], [{ ...run, sessionId: "other" }]), cached);
+});
+
 test("a queue-only stall expires when the last open item leaves the session", () => {
   const cached: Stall[] = [{ ...IDLE_WORK, facts: { kind: "unfinished-work", task: null, queueOpen: 1 } }];
   assert.deepEqual(currentStalls(cached, [idleSession("s-idle")]), []);

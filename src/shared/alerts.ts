@@ -25,7 +25,7 @@ import {
   reportBucket,
 } from "./session.ts";
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
-import type { Stall } from "./stall.ts";
+import { workflowOwnsNextMove, type Stall } from "./stall.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "./workflow.ts";
 import { blockedPhaseClause } from "./workflow-lifecycle.ts";
 import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
@@ -560,6 +560,13 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
+    // A parked stall can reach the browser before the run update that parked it.
+    // Its sample time is quietSince + the elapsed time the daemon measured.
+    const runs = st.kind === "workflow-parked"
+      ? next.workflowRuns?.filter((run) => run.id !== st.workflowRunId
+        || (st.since !== undefined && run.updatedAt > st.since + st.forMs))
+      : next.workflowRuns;
+    if (workflowOwnsNextMove(st.sessionId, runs)) continue;
     alerts.push(stuckAlert(st, next.sessions, next.names, next.spokenNames));
   }
 

@@ -1202,7 +1202,8 @@ available:
   *free*, and the column used to count it as capacity. It now sorts below a **held by a
   workflow** rule. On the Board, the Free and Held sections each display their count. Each
   held tile wears a purple spine and a **held** tag so it stays legible once the rule has
-  scrolled away. The tile's
+  scrolled away. The session is exempt from stall detection while the workflow owns the next
+  move. The tile's
   [active-rung preview](workflows.md#watching-a-run) already says *which* run and *where
   it is*; the rule answers the question that preview cannot, which is whether you may give this
   agent anything. Held-ness is a join, not a session state - a run whose status has reached

@@ -1,26 +1,7 @@
 // Clicks use the fixture process queue. WindowServer handles dragging, so the
 // optional desktop gesture needs permission to post system pointer events.
-#import <AppKit/AppKit.h>
-#include <node_api.h>
+#include "window-drag.h"
 #include <initializer_list>
-
-static void dragWindow(NSWindow *window, NSPoint point) {
-  NSPoint screen = [window convertPointToScreen:point];
-  CGPoint start = CGPointMake(screen.x, NSMaxY(NSScreen.screens.firstObject.frame) - screen.y);
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    CGPoint pos = start;
-    for (int step = 0; step <= 6; ++step) {
-      CGEventType type = kCGEventLeftMouseDragged;
-      if (step == 0) type = kCGEventLeftMouseDown;
-      if (step == 6) type = kCGEventLeftMouseUp;
-      if (type == kCGEventLeftMouseDragged) { pos.x += 8; pos.y += 6; }
-      CGEventRef event = CGEventCreateMouseEvent(nullptr, type, pos, kCGMouseButtonLeft);
-      CGEventPost(kCGHIDEventTap, event);
-      CFRelease(event);
-      [NSThread sleepForTimeInterval:0.05];
-    }
-  });
-}
 
 static napi_value click(napi_env env, napi_callback_info info) {
   size_t argc = 4, size = 0;
@@ -54,7 +35,8 @@ static napi_value click(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "Another window covers the fixture drag point");
         return nullptr;
       }
-      dragWindow(window, point);
+      screen.y = NSMaxY(NSScreen.screens.firstObject.frame) - screen.y;
+      return dragWindow(env, screen, CGEventPost);
     }
     napi_value posted;
     napi_get_boolean(env, allowed, &posted);

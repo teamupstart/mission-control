@@ -19,6 +19,7 @@ test("native window clicks on the edge microphone mute and unmute", async ({ dae
   const app = await _electron.launch({ args: [resolve("."), "--user-data-dir=" + join(daemon.home, "chromium")],
     env: { ...process.env, HOME: daemon.home, MISSION_HOME: daemon.home,
       MISSION_PORT: new URL(daemon.baseURL).port, MISSION_DEV_SERVER_URL: daemon.baseURL } });
+  let dragReleased: Promise<boolean> | undefined;
   let listener: Awaited<ReturnType<typeof beListener>> | undefined;
   try {
     listener = await beListener(daemon);
@@ -61,13 +62,15 @@ test("native window clicks on the edge microphone mute and unmute", async ({ dae
         throw new Error("No blank point below the edge microphone");
       });
       const before = await win.evaluate(win => win.getPosition());
-      const posted = await win.evaluate((win, { addon, point }) => {
+      dragReleased = win.evaluate((win, { addon, point }) => {
         const binding = { exports: {} };
         process.dlopen(binding, addon);
-        const drag = binding.exports as (handle: Buffer, x: number, y: number, drag: true) => boolean;
+        const drag = binding.exports as (handle: Buffer, x: number, y: number, drag: true) => false | Promise<true>;
         const zoom = win.webContents.getZoomFactor();
+        // The native promise settles after the worker posts mouse-up.
         return drag(win.getNativeWindowHandle(), point.x * zoom, point.y * zoom, true);
       }, { addon, point });
+      const posted = await dragReleased;
       if (!posted) {
         step.skip(!process.env.MC_E2E_MANUAL_WINDOW_DRAG, "Native hit test passed. Window movement requires desktop input permission or a manual drag.");
         await header.evaluate((bar, point) => {
@@ -82,6 +85,10 @@ test("native window clicks on the edge microphone mute and unmute", async ({ dae
     });
   } finally {
     listener?.stop();
-    await app.close();
+    try {
+      await dragReleased;
+    } finally {
+      await app.close();
+    }
   }
 });

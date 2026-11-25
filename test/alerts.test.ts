@@ -602,6 +602,18 @@ test("a workflow parked on the stalled session raises a stuck alert linked to th
   assert.equal(stuck[0]?.body, parked.reason);
 });
 
+test("a parked stall can arrive before its run update, but a newer running update suppresses it", () => {
+  const s = mkSession({ id: "a", state: "idle" });
+  const run = workflowRun({ sessionId: s.id, status: "running", updatedAt: 10 });
+  const parked = stall({ kind: "workflow-parked", since: 0, forMs: 60_000, workflowRunId: run.id });
+  const stuck = (runs: WorkflowRunSummary[]) => detectAlerts(
+    scope([s], [], [], runs), scope([s], [], [parked], runs),
+  ).filter((alert) => alert.kind === "stuck");
+  assert.equal(stuck([run])[0]?.workflowRunId, run.id);
+  assert.deepEqual(stuck([{ ...run, updatedAt: 60_001 }]), []);
+  assert.deepEqual(stuck([run, { ...run, id: "sibling" }]), []);
+});
+
 test("a running workflow on another session leaves the stuck alert eligible", () => {
   const s = mkSession({ id: "a", state: "idle" });
   const other = mkSession({ id: "other", state: "idle" });

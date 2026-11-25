@@ -744,19 +744,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     onChange={(next) => setColumnWidth(c.id, next)}
                   />
                 )}
-                {/* One number when the column is one kind of thing, two when it is not. A
-                    column holding three agents an open run owns and two that are genuinely free
-                    has no honest single count: "5" is the number a dispatch decision reads, and
-                    only two of those five can take work.
-
-                    The free pill is dropped when there are no free agents, matching `fleetRows`
-                    dropping the free RULE in the same case. "0 free · 1 held" counts a side of
-                    the split that is not there, and the pair then disagreed with the single
-                    rule below it about whether this column had two halves at all. */}
-                {/* A placeholder is a visible row and counts in the unsplit Working column.
-                    It is not included in the free/held split because no session exists yet. */}
-                {/* Awaiting agents first, in the order the column draws them: idle on purpose,
-                    so neither free to take work nor stuck. */}
+                {/* The Awaiting count includes pinned residents waiting outside that section. */}
                 {!idleRail && head && head.awaiting > 0 && (
                   <Tooltip label="Idle on purpose until a background process they started reports back">
                     <span className="board-col-n n-awaiting">{head.awaiting} awaiting</span>
@@ -776,7 +764,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                         <span className="board-col-n n-blocked">{c.blocked.length} blocked</span>
                       </Tooltip>
                     )}
-                    {head!.free! > 0 && (
+                    {/* The overview's section headings already count Free, Stalled and Held. */}
+                    {isRail && head!.free! > 0 && (
                       <Tooltip
                         label={`${head!.free} of ${g.sessions.length} idle agents can take work`}
                       >
@@ -784,13 +773,13 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       </Tooltip>
                     )}
                     {/* Between free and held, in the order the column draws them. */}
-                    {head!.stalled !== null && (
+                    {isRail && head!.stalled !== null && (
                       <Tooltip label="Went quiet with work still open - each card says what is open and what would move it">
                         <span className="board-col-n n-stalled">{head!.stalled} stalled</span>
                       </Tooltip>
                     )}
                     {/* Split by a wait alone, with nothing held, there is no held side. */}
-                    {head!.held !== null && (
+                    {isRail && head!.held !== null && (
                       <Tooltip label="Held by a workflow run that is still open - the run owns the next turn">
                         <span className="board-col-n n-held">
                           {head!.held} held

@@ -9,11 +9,12 @@ const MAX_SEGMENT = 30 * SAMPLE_RATE;
 // Half a second covers Silero's 150 ms onset confirmation and its overlapping analysis windows.
 const LEAD = 16 * WINDOW;
 const DISCARD_LOOKBACK = LEAD + Math.ceil(Math.max(...VOICE_END_OF_SPEECH_MS) * 16 / WINDOW) * WINDOW;
-const PREVIEW_INTERVAL = 0.8 * SAMPLE_RATE;
 const BATCH = 64 * WINDOW;
+const PREVIEW_INTERVAL = 0.75 * SAMPLE_RATE;
 
 /** One capture directive authorizes at most one batch. A null result asks playback to poll again. */
 export function recordingSegments(samples: Float32Array, createVad: (endOfSpeechMs: number) => Vad, signal: AbortSignal, hostNowUs: () => number) {
+  let speechStartUs: number | undefined;
   let vad: Vad | undefined;
   let duration: number | undefined;
   let offset = 0;
@@ -30,12 +31,13 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
   const windowTimes: number[] = [];
   return {
     get exhausted() { return offset === samples.length && (vad?.isEmpty() ?? true); },
-    async next({ revision, captureRevision: current = revision, endOfSpeechMs, held, observe }: Parameters<RecordingSegments["next"]>[0]) {
+    async next({ revision, captureRevision: current = revision, endOfSpeechMs, held, preview, observe }: Parameters<RecordingSegments["next"]>[0]) {
       await setImmediate(undefined, { signal });
       const ms = endOfSpeechMs ?? (held ? 800 : VOICE_CONFIG_DEFAULTS.endOfSpeechMs);
       if (current !== captureRevision) {
         // Even a missed mute/unmute revokes every sample seen under the old capture.
         previewOnset = undefined;
+        speechStartUs = undefined;
         previewThrough = readThrough;
         lastReady = -Infinity;
         offset = readThrough;
@@ -63,15 +65,19 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         const detected = vad.isDetected();
         if (!detected) pendingStart = Math.max(pendingStart, offset - LEAD);
         if (offset === samples.length) vad.flush();
-        if (observe && pendingStart >= discardedThrough && offset - pendingStart <= MAX_SEGMENT) {
+        if ((preview || observe) && pendingStart >= discardedThrough && offset - pendingStart <= MAX_SEGMENT) {
           if ((detected || !vad.isEmpty()) && (previewOnset === undefined || (vad.isEmpty() && offset - previewThrough >= PREVIEW_INTERVAL))) {
-            previewOnset ??= hostNowUs();
+            previewOnset ??= windowTimes.at(-1) ?? hostNowUs();
             previewThrough = offset;
             // At the endpoint, playback already has the complete segment to decode.
-            observe({ preview: "audio", onset: previewOnset,
+            if (preview && detected) {
+              speechStartUs = previewOnset;
+              await preview.update(speechStartUs, samples.subarray(pendingStart, offset));
+            }
+            observe?.({ preview: "audio", onset: previewOnset,
               samples: vad.isEmpty() ? samples.subarray(pendingStart, offset) : undefined });
           }
-          if (!detected && previewOnset === undefined && performance.now() - lastReady >= 2000) {
+          if (observe && !detected && previewOnset === undefined && performance.now() - lastReady >= 2000) {
             lastReady = performance.now();
             observe({ preview: "ready" });
           }
@@ -84,19 +90,29 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         vad.pop();
         const onset = detectorBase + start;
         const transcriptOnset = previewOnset;
+        const speechOnset = speechStartUs;
+        speechStartUs = undefined;
         previewOnset = undefined;
         lastReady = -Infinity;
-        if (onset < discardedThrough || offset - onset > MAX_SEGMENT) return { done: false, value: null };
-        if (!held) return { done: false, value: { samples, onset: transcriptOnset } };
-        const startUs = windowTimes[Math.floor(start / WINDOW)];
-        const lastUs = windowTimes[Math.floor((start + samples.length - 1) / WINDOW)];
+        if (onset < discardedThrough || offset - onset > MAX_SEGMENT) {
+          await preview?.finish();
+          return { done: false, value: null };
+        }
+        if (!held && speechOnset === undefined) return { done: false, value: { samples, onset: transcriptOnset } };
+        const startUs = held ? windowTimes[Math.floor(start / WINDOW)] : speechOnset;
+        const lastUs = held ? windowTimes[Math.floor((start + samples.length - 1) / WINDOW)] : hostNowUs();
         if (startUs === undefined || lastUs === undefined) throw new Error("Missing playback time for a held speech segment");
-        return { done: false, value: { samples, onset: transcriptOnset, capture: { startUs, endMs: Math.ceil((lastUs + 1) / 1000) } } };
+        // A delay edit can replay the first window after we already reported onset.
+        const capture = { startUs: Math.min(startUs, speechOnset ?? startUs), speechStartUs: speechOnset,
+          endMs: Math.ceil((lastUs + 1) / 1000) };
+        return { done: false, value: { samples, onset: transcriptOnset, capture } };
       }
       // Bound the native buffer while an overlong command is still in progress.
       // Replay enough context to recognize even the longest allowed pause. A segment
       // starting in the discarded command is ineligible, including after another delay edit.
       if (offset - pendingStart > MAX_SEGMENT + LEAD) {
+        await preview?.finish();
+        speechStartUs = undefined;
         previewOnset = undefined;
         discardedThrough = offset;
         pendingStart = offset - DISCARD_LOOKBACK;

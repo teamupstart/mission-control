@@ -1,5 +1,5 @@
 import type { OpenCardsReport, VoiceAnswer, VoiceTimeBounds } from "@shared/voice-answers.ts";
-import { optionLetter, voiceFocusClockSkewMs, voiceReplyState } from "@shared/voice-answers.ts";
+import { optionLetter, VOICE_DASHBOARD_CONFIRM_MS, voiceFocusClockSkewMs, voiceReplyState } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceDecider } from "./decide.ts";
@@ -18,6 +18,8 @@ export interface VoiceQuestions {
   publish(reviewId: string, answer: VoiceAnswer | null): void;
   removeCompanion(id: string): void;
   open(windowId: string, review: ReviewItem): void;
+  dictate?(windowId: string, target: string, text: string, capture: string, interim: boolean): void;
+  probeDictation?(windowId: string, sequence: number): void;
   confirmFocus(windowId: string, sequence: number): void;
 }
 
@@ -55,7 +57,7 @@ export class VoiceOpenCards {
   private readonly reports = new Map<string, { report: OpenCardsReport | null; focusAtUs: number; revision: number; clockOffsetUs: number;
     observation?: VoiceTimeBounds; observationId?: number; receivedAt: number; calibrating?: boolean }>();
   private confirmationSequence = 0;
-  private readonly confirmations = new Map<number, { windowId: string; finish: (ok: boolean) => void }>();
+  private readonly confirmations = new Map<number, { windowId: string; finish: (ok: boolean) => void; dictation?: (target?: string) => void }>();
   private readonly openingQuestions = new Set<() => void>();
 
   constructor(private readonly changed: () => void = () => {}, private readonly observed?: (report: OpenCardsReport) => void) {}
@@ -121,7 +123,7 @@ export class VoiceOpenCards {
       observation?.earliest !== last?.observation?.earliest || !!calibrating !== !!last?.calibrating);
     if (!calibrating && timing.confirmed && timing.confirmed <= this.confirmationSequence) {
       for (const [sequence, request] of this.confirmations) {
-        if (request.windowId === report.windowId && sequence <= timing.confirmed) request.finish(true);
+        if (!request.dictation && request.windowId === report.windowId && sequence <= timing.confirmed) request.finish(true);
       }
     }
     return true;
@@ -140,7 +142,7 @@ export class VoiceOpenCards {
   }
 
   /** Only a report read from the DOM after this request can confirm the surface. */
-  private confirmReport(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
+  private confirmReport(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal, dictation?: (target?: string) => void): Promise<boolean> {
     if (signal.aborted || !this.streams.has(windowId)) return Promise.resolve(false);
     const sequence = ++this.confirmationSequence;
     return new Promise(resolve => {
@@ -150,10 +152,49 @@ export class VoiceOpenCards {
         signal.removeEventListener("abort", stop);
         resolve(ok);
       };
-      this.confirmations.set(sequence, { windowId, finish });
+      this.confirmations.set(sequence, { windowId, finish, dictation });
       signal.addEventListener("abort", stop, { once: true });
       request(windowId, sequence);
     });
+  }
+
+  acknowledgeDictation(windowId: string, sequence: number, target?: string): boolean {
+    const pending = this.confirmations.get(sequence);
+    if (!pending?.dictation || pending.windowId !== windowId) return false;
+    pending.dictation(target);
+    pending.finish(true);
+    return true;
+  }
+
+  /** One live editor can accept dictation. Routing to a session requires an
+   * explicit no-editor reply from every probed browser. */
+  async dictationField(request: VoiceQuestions["confirmFocus"], signal: AbortSignal) {
+    const streams = new Map([...this.streams].filter(([, stream]) => stream.browser));
+    if (!streams.size) {
+      const report = this.current;
+      return report?.dictationTarget ? { windowId: report.windowId, target: report.dictationTarget } : undefined;
+    }
+    const fields: Array<{ windowId: string; target: string }> = [];
+    const background = new AbortController();
+    const probe = AbortSignal.any([signal, AbortSignal.timeout(VOICE_DASHBOARD_CONFIRM_MS), background.signal]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const replied = await Promise.all([...streams.keys()].map(windowId =>
+        this.confirmReport(windowId, request, probe, target => {
+          if (!target) return;
+          fields.push({ windowId, target });
+          // Give other windows a chance to report conflicting focus without
+          // holding a live preview for the full dashboard confirmation deadline.
+          if (streams.size > 1) timer ??= setTimeout(() => background.abort(), BACKGROUND_CONFIRM_MS);
+        })));
+      if (signal.aborted || fields.length > 1 ||
+          [...this.streams].some(([id, stream]) => stream.browser && streams.get(id) !== stream)) return false;
+      const field = fields[0];
+      if (field) return this.streams.get(field.windowId) === streams.get(field.windowId) ? field : false;
+      return replied.includes(false) ? false : undefined;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async confirmFocus(windowId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {

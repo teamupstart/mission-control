@@ -11,6 +11,51 @@ private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
 }
 
 final class ListenerTests: XCTestCase {
+    func testNativePreviewDiscoversFocusAfterSpeechOnset() async throws {
+        // Only a mid-phrase focus check gets a positive response. Preview delivery
+        // models a subsequent blur, so the same capture must be able to check again.
+        final class FocusProtocol: URLProtocol {
+            override class func canInit(with request: URLRequest) -> Bool { true }
+            override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+            override func startLoading() {
+                var body = request.httpBody ?? Data()
+                if let stream = request.httpBodyStream {
+                    stream.open()
+                    defer { stream.close() }
+                    var buffer = [UInt8](repeating: 0, count: 1024)
+                    let size = stream.read(&buffer, maxLength: buffer.count)
+                    if size > 0 { body = Data(buffer.prefix(size)) }
+                }
+                struct Phase: Decodable { let phase: String }
+                let focused = (try? JSONDecoder().decode(Phase.self, from: body).phase) == "focus"
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                               headerFields: focused ? ["x-voice-dictation": "1"] : [:])!
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            override func stopLoading() {}
+        }
+        let token = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("test".utf8).write(to: token)
+        defer { try? FileManager.default.removeItem(at: token) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FocusProtocol.self]
+        let daemon = Daemon(environment: ["MISSION_VOICE_DAEMON_URL": "http://127.0.0.1",
+                                          "MISSION_VOICE_TOKEN_FILE": token.path, "MISSION_VOICE_MODEL_DIR": token.deletingLastPathComponent().path],
+                            configuration: configuration)
+        _ = try await daemon.request("voice/listener/hello")
+        daemon.startSpeech(10, revision: "test")
+        let gained = await daemon.shouldPreview(10, revision: "test")
+        XCTAssertTrue(gained)
+        try await daemon.preview("Steve", onset: 10, revision: "test")
+        XCTAssertFalse(daemon.isDictating(10, revision: "test"))
+        let regained = await daemon.shouldPreview(10, revision: "test")
+        XCTAssertTrue(regained)
+        daemon.settleSpeech(10, revision: "test", accepted: true)
+        let finished = await daemon.shouldPreview(10, revision: "test")
+        XCTAssertFalse(finished)
+    }
+
     @MainActor func testPreviewLoopPublishesGrowingWordsBeforeFinalSpeech() async throws {
         var gate = SpeechGate(endOfSpeechMs: 500)
         var ticks = 0
@@ -221,6 +266,22 @@ final class ListenerTests: XCTestCase {
             XCTAssertEqual(words.map(\.startMs), decoded.map(\.startMs))
             XCTAssertEqual(words.map(\.endMs), decoded.map(\.endMs))
         }
+    }
+
+    func testDictationSnapshotGrowsBeforeSilenceWithoutConsumingFinalAudio() throws {
+        var gate = SpeechGate(endOfSpeechMs: 500)
+        let frame = Array(repeating: Float(0.2), count: 320)
+        XCTAssertNil(gate.preview)
+        XCTAssertNil(gate.feed(frame, active: true, endNs: 20_000_000))
+        let first = try XCTUnwrap(gate.preview)
+        XCTAssertNil(gate.feed(frame, active: true, endNs: 40_000_000))
+        XCTAssertEqual(first.samples, frame)
+        XCTAssertEqual(gate.preview?.samples, frame + frame)
+        let silence = Array(repeating: Float(0), count: 8000)
+        let final = try XCTUnwrap(gate.feed(silence, active: false, endNs: 540_000_000))
+        XCTAssertEqual(first.speechStartHostUs, final.speechStartHostUs)
+        XCTAssertEqual(final.samples, frame + frame + silence)
+        XCTAssertNil(gate.preview)
     }
 
     func testFirstVoicedSampleOrdersSpeechIndependentlyOfThePCMLeadIn() throws {
@@ -741,6 +802,40 @@ final class ListenerTests: XCTestCase {
             input.consume(frame, at: when)
         }
         return (input, pcm.count)
+    }
+
+    @MainActor func testMicrophonePreviewsUnfinishedRecordedSpeechInBothCaptureModes() async throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../../..")
+        let speech = try samples(from: root.appending(path: "test/fixtures/voice/steve-check-the-build.wav"))
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        for held in [false, true] {
+            let engine = TapFixtureEngine()
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+            XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+            engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+            let mic = try Microphone(selection: "system-default", held: held, devices: [], engine: engine)
+            defer { mic.stop() }
+            let frame = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12_005))
+            frame.frameLength = frame.frameCapacity
+            frame.floatChannelData![0].update(from: speech, count: Int(frame.frameLength))
+            mic.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1), sampleTime: 0, atRate: 16_000))
+            var received: String?
+            var attempts = 0
+            let deadline = ContinuousClock.now + .seconds(3)
+            await runTranscriptPreview(isRunning: { received == nil && ContinuousClock.now < deadline },
+                snapshot: { mic.preview }, pendingOnset: { nil }, decode: { segment in
+                    XCTAssertFalse(segment.samples.isEmpty)
+                    return "Steve"
+                }, report: { _, _, _ in false }, editorFocused: { _ in true },
+                updateEditor: { _, text in
+                    attempts += 1
+                    if attempts == 1 { throw URLError(.timedOut) }
+                    received = text
+                }, pause: { await Task.yield() })
+            XCTAssertEqual(attempts, 2)
+            XCTAssertEqual(received, "Steve")
+            XCTAssertTrue(mic.isRunning)
+        }
     }
 
     func testHeldMicrophoneKeepsFourPhrasesInOrderUntilRelease() throws {

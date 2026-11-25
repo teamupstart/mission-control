@@ -9502,6 +9502,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     publish: (reviewId, answer) => registry.emitQuestionEvent({ type: "voice_answer", reviewId, answer }),
     removeCompanion: id => registry.emitQuestionEvent({ type: "voice_card_remove", id }),
     open: (windowId, review) => registry.emitQuestionEvent({ type: "voice_open_question", windowId, sessionId: review.sessionId, reviewId: review.id }),
+    dictate: (windowId, target, text, capture, interim) => registry.emitQuestionEvent({ type: "voice_dictation", windowId, target, text, capture, interim }),
+    probeDictation: (windowId, sequence) => registry.emitQuestionEvent({ type: "voice_dictation_probe", windowId, sequence }),
     confirmFocus: (windowId, sequence) => registry.emitQuestionEvent({ type: "voice_confirm_focus", windowId, sequence }),
     async resolve(answer) {
       const review = registry.getReview(answer.reviewId);

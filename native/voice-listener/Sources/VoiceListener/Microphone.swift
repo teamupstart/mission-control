@@ -141,7 +141,7 @@ struct SpeechGate {
     }
 
     // A copy-on-write snapshot of this unfinished phrase. Preview decoding never drains the gate.
-    var preview: Segment? { samples.isEmpty ? nil : segment(samples) }
+    var preview: Segment? { samples.isEmpty || discarding ? nil : segment(samples) }
 
     func canRecover(with pending: [Float]) -> Bool {
         overflowPrefix != nil || !samples.isEmpty || (!discarding && pending.contains { abs($0) > Self.activityFloor })

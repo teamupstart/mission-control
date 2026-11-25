@@ -1852,6 +1852,230 @@ test("an accepted non-cancel transcript after expiry releases the reserved messa
   assert.deepEqual(queued("Will"), ["check the logs"]);
 });
 
+test("a claimed phrase stays out of session routing after blur", async () => {
+  const router = registry.voiceRouter!;
+  const disconnect = router.openCards.connect("dashboard", true);
+  const target = randomUUID();
+  const events: string[] = [];
+  const unsubscribe = registry.subscribe(event => {
+    if (event.type === "voice_dictation") {
+      assert.equal(event.target, target);
+      assert.equal(event.windowId, "dashboard");
+      events.push((event.interim ? "preview " : "final ") + event.text);
+    }
+  });
+  try {
+    router.openCards.report({ windowId: "dashboard", focused: true, dictationTarget: target, cards: [] });
+    const revision = voiceStateStore.directive().revision;
+    const path = "/voice/listener/speech?revision=" + revision;
+    const speechStartUs = voiceHostTimeUs();
+    const preview = { phase: "preview", speechStartUs, text: "Steve" };
+    assert.deepEqual(await (await post(path, preview, token)).json(), { accepted: false });
+    const start = await post(path, { phase: "start", speechStartUs }, token);
+    assert.equal(start.headers.get("x-voice-dictation"), "1");
+    assert.deepEqual(await (await post(path, preview, token)).json(), { accepted: true });
+    router.openCards.report({ windowId: "dashboard", focused: false, cards: [] });
+    assert.deepEqual(await (await post(path, preview, token)).json(), { accepted: false });
+    const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+      "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+      "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+      "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000)),
+    }, body: JSON.stringify(capture("Steve check the build")) });
+    assert.deepEqual(await result.json(), { accepted: true });
+    assert.deepEqual(events, ["preview Steve", "final Steve check the build"]);
+    assert.deepEqual(await readHeard(), []);
+    assert.deepEqual(cards, []);
+    assert.deepEqual(queued("Steve"), []);
+  } finally {
+    unsubscribe();
+    disconnect();
+  }
+});
+
+test("an active phrase discovers focus after onset and rechecks the editor for each preview and final", async t => {
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("dashboard", true));
+  const first = randomUUID(), second = randomUUID();
+  let field: string | undefined;
+  const frames: Array<[string, boolean, string]> = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") {
+      router.openCards.acknowledgeDictation(event.windowId, event.sequence, field);
+    } else {
+      if (event.type === "voice_dictation") frames.push([event.target, event.interim, event.text]);
+      publish(event);
+    }
+  });
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const path = "/voice/listener/speech?revision=" + revision;
+  const phase = (phase: string, text?: string) => post(path, { phase, speechStartUs, text }, token);
+  assert.equal((await phase("start")).headers.get("x-voice-dictation"), null);
+  field = first;
+  assert.equal((await phase("focus")).headers.get("x-voice-dictation"), "1");
+  assert.deepEqual(await (await phase("preview", "Steve")).json(), { accepted: true });
+  field = second;
+  assert.deepEqual(await (await phase("preview", "Steve")).json(), { accepted: true });
+  field = first;
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(await (await phase("preview", "late")).json(), { accepted: false });
+  assert.deepEqual(frames, [[first, true, "Steve"], [second, true, "Steve"], [first, false, "Steve check the build"]]);
+  assert.deepEqual(await readHeard(), []);
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("a delayed onset cannot supersede a newer preview binding", async t => {
+  const router = registry.voiceRouter!;
+  const started = deferred(), release = deferred();
+  const first = { windowId: "dashboard", target: randomUUID() };
+  const second = { ...first, target: randomUUID() };
+  let probes = 0;
+  t.mock.method(router, "resolveDictation", async () => {
+    if (++probes === 1) { started.resolve(); await release.promise; return first; }
+    return probes === 2 ? second : undefined;
+  });
+  const frames: string[] = [];
+  t.after(registry.subscribe(event => { if (event.type === "voice_dictation") frames.push(event.target); }));
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const path = "/voice/listener/speech?revision=" + revision;
+  const start = post(path, { phase: "start", speechStartUs }, token);
+  await started.promise;
+  assert.equal((await post(path, { phase: "preview", speechStartUs, text: "Steve" }, token)).headers.get("x-voice-dictation"), "1");
+  release.resolve();
+  await start;
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(frames, [second.target, second.target]);
+});
+
+test("a revoked owner cannot claim a field while an onset probe is pending", async t => {
+  const started = deferred(), release = deferred();
+  t.mock.method(registry.voiceRouter!, "resolveDictation", async () => {
+    started.resolve();
+    await release.promise;
+    return { windowId: "dashboard", target: randomUUID() };
+  });
+  const revision = voiceStateStore.directive().revision;
+  const start = post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: voiceHostTimeUs() }, token);
+  await started.promise;
+  t.mock.method(voiceStateStore, "ownsCapture", () => false);
+  release.resolve();
+  const response = await start;
+  assert.equal(response.headers.get("x-voice-dictation"), null);
+  assert.deepEqual(await response.json(), { accepted: false });
+});
+
+test("new onsets preserve an active dictation claim and abandoned onsets expire", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const router = registry.voiceRouter!;
+  const revision = voiceStateStore.directive().revision;
+  const path = "/voice/listener/speech?revision=" + revision;
+  const onset = voiceHostTimeUs();
+  const key = JSON.stringify([listenerId, revision, onset]);
+  t.mock.method(router, "resolveDictation", async () => ({ windowId: "dashboard", target: "draft" }));
+  assert.equal((await post(path, { phase: "start", speechStartUs: onset }, token)).headers.get("x-voice-dictation"), "1");
+  for (let i = 1; i <= 51; i++) router.speechStarted("other-" + i, onset + i);
+  assert.equal(router.hasSpeechOnset(key), true);
+  assert.equal((await post(path, { phase: "preview", speechStartUs: onset, text: "Steve" }, token)).headers.get("x-voice-dictation"), "1");
+  t.mock.timers.tick(5 * 60_000);
+  assert.equal(router.hasSpeechOnset(key), false);
+  assert.equal(router.hasSpeechOnset("other-51"), false);
+  router.speechStarted(key, onset); // A delayed retry cannot revive an expired claim as a session command.
+  const lateFinal = { ...capture("Steve check the build"), words: [], backend: "fluidaudio" as const };
+  assert.equal(await router.accept(lateFinal, { captureKey: key, speechStartHostUs: onset, dictation: null }), false);
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("an unresponsive browser cannot authorize routing from its last non-editing report", async t => {
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("unresponsive", true));
+  router.openCards.report({ windowId: "unresponsive", focused: true, cards: [] });
+  const publish = registry.emitQuestionEvent.bind(registry);
+  let probed = false;
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") probed = true;
+    else publish(event);
+  });
+  assert.deepEqual(await (await say("Steve check the build")).json(), { accepted: false });
+  assert.ok(probed);
+  assert.deepEqual(queued("Steve"), []);
+  assert.deepEqual(cards, []);
+  assert.deepEqual(await readHeard(), []);
+});
+
+test("a stalled dashboard cannot veto a confirmed editor or authorize session routing", async t => {
+  const { openCards } = registry.voiceRouter!;
+  for (const id of ["foreground", "background"]) t.after(openCards.connect(id, true));
+  const target = randomUUID();
+  let editor: string | undefined = target;
+  let conflict = false;
+  let backgroundProbe = 0;
+  const drafts: string[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") {
+      if (event.windowId === "foreground") openCards.acknowledgeDictation(event.windowId, event.sequence, editor);
+      else if (conflict) openCards.acknowledgeDictation(event.windowId, event.sequence, randomUUID());
+      else backgroundProbe = event.sequence;
+    } else {
+      if (event.type === "voice_dictation") {
+        assert.equal(event.windowId, "foreground");
+        assert.equal(event.target, target);
+        drafts.push(event.text);
+      }
+      publish(event);
+    }
+  });
+  assert.deepEqual(await (await say("Steve check the build")).json(), { accepted: true });
+  assert.ok(backgroundProbe > 0);
+  assert.equal(openCards.acknowledgeDictation("background", backgroundProbe, randomUUID()), false);
+  editor = undefined;
+  assert.deepEqual(await (await say("Steve check the logs")).json(), { accepted: false });
+  editor = target;
+  conflict = true;
+  assert.deepEqual(await (await say("Steve run the tests")).json(), { accepted: false });
+  assert.deepEqual(drafts, ["Steve check the build"]);
+  assert.deepEqual(await readHeard(), []);
+  assert.deepEqual(queued("Steve"), []);
+  assert.deepEqual(cards, []);
+});
+
+test("a fresh no-editor probe overrides a stale focused report at speech onset", async t => {
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("dashboard", true));
+  router.openCards.report({ windowId: "dashboard", focused: true, dictationTarget: randomUUID(), cards: [] });
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_dictation_probe") {
+      router.openCards.acknowledgeDictation(event.windowId, event.sequence);
+    } else publish(event);
+  });
+
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const start = await post("/voice/listener/speech?revision=" + revision, { speechStartUs, phase: "start" }, token);
+  assert.equal(start.headers.get("x-voice-dictation"), null);
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build", "after-blur")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.equal(cards.at(-1)?.id, "after-blur");
+  assert.equal(cards.at(-1)?.state, "pending");
+});
+
 for (const failure of ["synchronous", "asynchronous"] as const) {
   test(`${failure} preview decode failure still delivers the completed message once to its addressed resident`, async () => {
     voiceStateStore.reset();

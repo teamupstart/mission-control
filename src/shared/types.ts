@@ -1628,6 +1628,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** First accepted delivery. Later retries do not renew the item's handoff authority. */
+  firstDeliveredAt?: number;
   /** Runtime captured for this delivery attempt; absent on rows predating this field. */
   deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;

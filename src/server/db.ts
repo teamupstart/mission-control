@@ -338,7 +338,7 @@ let db: DatabaseSync | undefined;
 // 61: remember accepted spoken outbox IDs after retirement.
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
 // 63: replace the previously materialized Voice mute shortcut default once.
-// 64: retain the times of explicit operator handoff releases and deliverable changes.
+// 64: retain handoff release, deliverable change and initial queue delivery times.
 export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
@@ -2437,6 +2437,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL,
       sent_at           INTEGER,
+      first_delivered_at INTEGER,
       delivery_runtime  TEXT,              -- runtime that accepted this delivery attempt
       completed_at      INTEGER
     );
@@ -4733,6 +4734,11 @@ function migrate(d: DatabaseSync): void {
   // Capture the attempt's runtime before delivery. Legacy rows have no acknowledgement
   // evidence and retain the conservative pickup-verification path.
   addColumn(d, "foreman_queue_items", "delivery_runtime", "TEXT");
+  addColumn(d, "foreman_queue_items", "first_delivered_at", "INTEGER");
+  if (databaseSchemaVersion(d) < 64) {
+    // Older queues only retain the latest known send. Keep that stamp across future retries.
+    d.exec("UPDATE foreman_queue_items SET first_delivered_at = sent_at WHERE first_delivered_at IS NULL AND sent_at IS NOT NULL");
+  }
 
   // `prompted_goal`: the historical resolved-intent guard used before prompted
   // completion consumed work-cycle generations. It remains readable for one-time
@@ -16417,6 +16423,7 @@ interface QueueItemRow {
   created_at: number;
   updated_at: number;
   sent_at: number | null;
+  first_delivered_at: number | null;
   delivery_runtime: "terminal" | "sdk" | null;
   completed_at: number | null;
 }
@@ -16443,6 +16450,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     sentAt: r.sent_at,
+    ...(r.first_delivered_at === null ? {} : { firstDeliveredAt: r.first_delivered_at }),
     ...(r.delivery_runtime ? { deliveryRuntime: r.delivery_runtime } : {}),
     completedAt: r.completed_at,
   };
@@ -17138,8 +17146,8 @@ export function upsertQueueItem(i: WorkItem): void {
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
          proposed_payload, recovered_at, revision, created_at, updated_at, sent_at,
-         completed_at, delivery_runtime
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         completed_at, delivery_runtime, first_delivered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
@@ -17149,13 +17157,17 @@ export function upsertQueueItem(i: WorkItem): void {
          approved_at=excluded.approved_at, proposed_payload=excluded.proposed_payload,
          recovered_at=excluded.recovered_at, revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
-         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime`,
+         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime,
+         first_delivered_at=CASE WHEN foreman_queue_items.intent = excluded.intent
+           THEN COALESCE(foreman_queue_items.first_delivered_at, excluded.first_delivered_at)
+           ELSE excluded.first_delivered_at END`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
       i.lastVerdict, i.approvedAt, i.proposedPayload, i.recoveredAt, i.revision,
       i.createdAt, i.updatedAt, i.sentAt, i.completedAt, i.deliveryRuntime ?? null,
+      i.firstDeliveredAt ?? null,
     );
 }
 

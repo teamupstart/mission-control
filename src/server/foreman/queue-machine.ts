@@ -407,7 +407,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     if (intent && !intentGuard && !isHandoffReleaseOnlyGoal(intent)) return { kind: "none" };
     // Work items can reserve publication until a later explicit release. A
     // different Goal by itself cannot lift that restriction.
-    if (items.some((item) => (item.sentAt ?? item.createdAt) >= (intent?.handoffReleasedAt ?? 0) &&
+    if (items.some((item) => (item.firstDeliveredAt ?? item.sentAt ?? item.createdAt) >= (intent?.handoffReleasedAt ?? 0) &&
       (hasOperatorHandoffHold(item.intent) || explicitHandoffRestriction(item.intent)))) {
       return { kind: "none" };
     }
@@ -420,7 +420,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     // A resolved Goal supersedes earlier item deliverables. Later items still
     // declare their own outputs, independently of code left by earlier work.
     const laterItems = intentGuard && intent ? items.filter((item) =>
-      (item.sentAt ?? item.createdAt) > (intent.deliverableUpdatedAt ?? intent.updatedAt)) : [];
+      (item.firstDeliveredAt ?? item.sentAt ?? item.createdAt) > (intent.deliverableUpdatedAt ?? intent.updatedAt)) : [];
     const block = automaticWrapupBlock({
       ...eligibility,
       objective: intentGuard?.objective ?? (

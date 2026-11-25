@@ -138,6 +138,7 @@ export class QueueManager {
     const next: WorkItem = {
       ...item,
       intent,
+      firstDeliveredAt: intent === item.intent ? item.firstDeliveredAt : undefined,
       approvedAt: null,
       proposedPayload: null,
       revision: item.revision + 1,
@@ -263,6 +264,8 @@ export class QueueManager {
       // The row is written before the tmux write, which makes it the only timestamp
       // a crash is guaranteed to leave behind - and `recover` adjudicates against it.
       sentAt: state === "sending" ? now : item.sentAt,
+      ...(state === "in_progress" && item.state === "awaiting_pickup" && item.sentAt !== null &&
+        item.firstDeliveredAt === undefined ? { firstDeliveredAt: item.sentAt } : {}),
       // A later acknowledgement belongs to this attempt even if its session exits or
       // hands off to another runtime while the worker is awaiting delivery.
       deliveryRuntime: state === "sending" && item.state !== "sending"
@@ -354,6 +357,7 @@ export class QueueManager {
       // delivery), and treating it as absent would re-anchor past round 0's turns.
       transcriptAnchor: item.transcriptAnchor ?? transcriptAnchor,
       sentAt: now,
+      ...(acknowledged && item.firstDeliveredAt === undefined ? { firstDeliveredAt: now } : {}),
       approvedAt: null, // consent is spent; a later round needs a fresh one
       proposedPayload: null, // and so is the draft it consented to - it's typed now
       // This send WAS watched all the way through the inject, so the resend

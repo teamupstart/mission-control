@@ -1766,3 +1766,16 @@ test("a standalone release before the first Goal leaves the drained item contrac
   } }).kind, "skip-wrapup");
   assert.equal(tick({ items, intent: { ...releaseOnly, promptRevision: 2 } }).kind, "none");
 });
+
+test("a retry of an earlier queue instruction does not renew its handoff authority", () => {
+  const oldDelivery = { firstDeliveredAt: NOW - 10_000, sentAt: NOW - 1_000 };
+  const intent = {
+    objective: "Implement heading counts.",
+    deliverableUpdatedAt: NOW - 5_000,
+    handoffReleasedAt: NOW - 5_000,
+  };
+  for (const restriction of ["Output: mockups", "Do not open a PR."]) {
+    const items = DRAINED().map((item) => ({ ...item, ...oldDelivery, intent: restriction }));
+    assert.equal(tick({ items, intent }).kind, "ask-wrapup");
+  }
+});

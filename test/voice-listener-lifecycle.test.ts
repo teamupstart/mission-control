@@ -125,6 +125,17 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
   }
 
   for (const backend of ["fluidaudio", "sherpa-onnx"]) {
+    it(backend + " retries the identical pause acknowledgement after transient 503s", async t => {
+      const { nextPoll, apply, instanceIds } = await launch(t, { sherpa: backend === "sherpa-onnx", initialCapture: false });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const ack = await nextPoll("first");
+        ack.writeHead(503).end();
+      }
+      apply(await nextPoll("first"), "recovered", false);
+      await nextPoll("recovered");
+      assert.equal(instanceIds.size, 1);
+    });
+
     it(backend + " waits through mute, primes the resumed roster and posts under the new capture revision", async t => {
       const { nextPoll, apply, events, posted, hellos, instanceIds } = await launch(t, {
         sherpa: backend === "sherpa-onnx", initialCapture: false, inputDevice: "two-utterances",

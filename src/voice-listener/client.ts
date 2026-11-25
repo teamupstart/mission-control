@@ -66,7 +66,13 @@ export class ListenerClient {
   }
 
   async poll(revision?: string, signal?: AbortSignal): Promise<VoiceListenerDirective & { held?: true }> {
-    const response = await this.request("/voice/listener/directive" + (revision ? "?revision=" + encodeURIComponent(revision) : ""), undefined, signal);
+    const path = "/voice/listener/directive" + (revision ? "?revision=" + encodeURIComponent(revision) : "");
+    let response = await this.request(path, undefined, signal);
+    for (let backoff = 100; response.status === 503; backoff = Math.min(2000, backoff * 2)) {
+      await response.body?.cancel();
+      await sleep(backoff, undefined, { signal });
+      response = await this.request(path, undefined, signal);
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error("Directive HTTP " + response.status);

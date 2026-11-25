@@ -58,7 +58,7 @@ export interface VoiceStateDeps {
 
 export type VoiceHelloResult =
   | { ok: true; protocol: string; captureOffset?: number }
-  | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected"; reason: string; protocol: string };
+  | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected" | "listener_exited" | "launch_unavailable"; reason: string; protocol: string };
 
 /**
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
@@ -195,6 +195,10 @@ export class VoiceStateStore {
   }
 
   retireCapture(instance: string) {
+    if (this.hello?.speechInstance === instance) {
+      this.hello = null;
+      this.publish(); // Wake outstanding directive polls to recheck the lease.
+    }
     if (!this.captureGrants.load()) return false;
     for (const [owner, grant] of this.captureGrants.entries) {
       if (grant.instance === instance && !this.captureGrants.release(owner)) return false;
@@ -217,6 +221,12 @@ export class VoiceStateStore {
     const proof = this.liveHello()?.captureProof;
     if (pid !== proof?.pid) return false;
     const instance = this.liveHello()?.speechInstance;
+    // Retirement can be waiting on storage after its signed exit is already durable.
+    if (instance) {
+      const exited = this.speech.launchExited(instance);
+      if (exited === undefined) return "unavailable";
+      if (exited) return "exited";
+    }
     if (grant && (grant.process?.pid !== pid || grant.instance !== instance)) return false;
     if (grant && (!proof || grant.watch)) {
       grant.pauseRevision = undefined;
@@ -386,6 +396,11 @@ export class VoiceStateStore {
     }
     if (!id || !VoiceListenerIdSchema.safeParse(id).success) {
       return { ok: false, error: "invalid_listener_id", reason: "Send a UUID for this listener process.", protocol };
+    }
+    if (speechInstance) {
+      const exited = this.speech.launchExited(speechInstance);
+      if (exited === undefined) return { ok: false, error: "launch_unavailable", reason: "The launch record is unavailable.", protocol };
+      if (exited) return { ok: false, error: "listener_exited", reason: "The supervisor reported this launch exited.", protocol };
     }
     if (!this.backendSelected(hello.backend)) {
       return { ok: false, error: "backend_not_selected", reason: "A different voice backend is selected.", protocol };

@@ -113,6 +113,9 @@ export class VoiceSpeechManager {
     for (const { job } of this.items().reverse()) if (!purpose || job.purpose === purpose) this.stop(job.id);
   }
   get held() { return this.items().some(i => i.hold); }
+  launchExited(instance: string) {
+    return this.ledger.exitRecorded(announcementName(instance));
+  }
   canRetireLaunch(instance: string) {
     return this.knowsLaunch(instance) || this.holds().some(hold => "supervisor" in hold);
   }

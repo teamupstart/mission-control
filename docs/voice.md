@@ -1095,6 +1095,10 @@ offer the holder playback and serve its audio. Expiry or transfer of the lease
 leaves the pause obligation with each listener that received a grant. During a
 speech hold a former owner can receive a pause with an empty roster and
 acknowledge it, and a verified supervisor exit retires its launch's grants.
+A paused listener retries a 503 on the same directive revision with backoff.
+A supervisor retries its signed exit on 503 until grant retirement succeeds.
+Once the daemon records that exit, the launch can no longer renew its hello or
+receive another capture grant.
 The shipped capture-only clients also lock one byte of the empty, owner-only
 `voice-capture.lock` beside the daemon token. The daemon assigns a fresh, random
 byte offset to the listener's lease at hello. Before granting capture, it checks

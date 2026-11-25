@@ -96,6 +96,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
+    private enum ServiceError: Error { case unavailable }
+
     func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil) async throws -> Response {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
@@ -122,8 +124,21 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
            (try? JSONDecoder().decode([String: String].self, from: data))?["error"] == "listener_in_use" {
             throw CaptureError.listenerInUse
         }
+        if (response as? HTTPURLResponse)?.statusCode == 503 { throw ServiceError.unavailable }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
         return (data, http)
+    }
+
+    func directive(revision: String?, microphonePaused: Bool) async throws -> Response {
+        var backoff = 100
+        while true {
+            try Task.checkCancellation()
+            do { return try await request("voice/listener/directive", revision: revision) }
+            catch ServiceError.unavailable where microphonePaused {
+                try await Task.sleep(for: .milliseconds(backoff))
+                backoff = min(2000, backoff * 2)
+            }
+        }
     }
 
     func postUtterance(revision: String, capture: CaptureTimes, body: Data) async throws -> Response {
@@ -246,7 +261,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         try await hello()
         var revision: String?
         while true {
-            let poll = Task { [revision] in try await daemon.request("voice/listener/directive", revision: revision) }
+            // A pause acknowledgement may retry while storage recovers. An active
+            // microphone must close on failure, including a tap draining its last frames.
+            let paused = current?.mic == nil && !draining.contains { $0.mic != nil }
+            let poll = Task { [revision] in try await daemon.directive(revision: revision, microphonePaused: paused) }
             directivePoll = poll
             let response = await poll.result
             directivePoll = nil

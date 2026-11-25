@@ -389,6 +389,7 @@ export function registerVoiceRoutes(
     if (!c.req.raw.signal.aborted) {
       const served = store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next, c.req.header(VOICE_CAPTURE_PID_HEADER));
       if (served === "unavailable") return c.json({ error: "capture_grant_unavailable", capture: false, speak: null }, 503);
+      if (served === "exited") return c.json({ error: "listener_exited", capture: false, speak: null }, 409);
       if (served === false) return c.json({ error: "capture_process_unverified", capture: false, speak: null }, 409);
     }
     return c.json(next);
@@ -401,7 +402,7 @@ export function registerVoiceRoutes(
     if (!pid.success) return c.json({ error: "invalid_capture_process" }, 400);
     const result = store.acceptHello(c.req.header(VOICE_LISTENER_ID_HEADER), parsed.data, c.req.header(VOICE_INSTANCE_HEADER), pid.data);
     if (!result.ok) {
-      return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : 409);
+      return c.json({ error: result.error, reason: result.reason, protocol: result.protocol }, result.error === "invalid_listener_id" ? 400 : result.error === "launch_unavailable" ? 503 : 409);
     }
     if (result.captureOffset !== undefined) c.header(VOICE_CAPTURE_LOCK_HEADER, String(result.captureOffset));
     return c.json({ accepted: true, protocol: result.protocol });

@@ -1514,9 +1514,16 @@ export function App(): React.JSX.Element {
    * for the drawer's cards, the jump keys and the palette's resident rows.
    */
   const listening = voice?.mode === "listening";
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles, listening),
+    [sessions, residentRuns, residentProfiles, listening],
+  );
   const residentEntries = useMemo(
-    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, listening),
-    [residentRuns, residentProfiles, sessions, listening],
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, listening, residentBySession),
+    [residentRuns, residentProfiles, sessions, listening, residentBySession],
   );
   // The filter and both card surfaces share each run's feedback across menu and card unmounts.
   const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
@@ -2984,13 +2991,6 @@ export function App(): React.JSX.Element {
   // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
   // the one ordering rather than a decision a view makes while drawing.
   const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
-  // Which sessions are residents, joined through their task to the live run that launched
-  // them: the marker and pin from that run's pinned revision. One join, handed to every
-  // layout, and its pins reach `orderSessions` here and in both views from the same map.
-  const residentBySession = useMemo(
-    () => residentMarksBySession(sessions, residentRuns, residentProfiles, listening),
-    [sessions, residentRuns, residentProfiles, listening],
-  );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
   const residentReplacementBySession = useMemo(
     () => residentReplacementsBySession(sessions, tasks, residentRuns),

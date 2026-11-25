@@ -62,7 +62,7 @@ import { PipelinePhaseMeter } from "../../pipelines/PipelinePhaseMeter.tsx";
 import type { WorkflowDisclosureHandle } from "./types.ts";
 import { useIsTourTask, useTourTaskTargetRef } from "../../tour/target-context.tsx";
 import { ResidentChip } from "../../residents/ResidentChip.tsx";
-import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
+import { residentAccentStyle, residentActionName, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
 /**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
@@ -231,7 +231,7 @@ export function SessionTile({
   // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
   // refusal cannot disagree about one tile.
   const droppable = canAcceptTask(session, draggingRepo, workflowRuns);
-  const openName = resident?.listeningTitle ?? (session.name ? sessionTitleDetail(session) : "unnamed session");
+  const openName = residentActionName(resident, session.name ? sessionTitleDetail(session) : "unnamed session");
 
   // Which optional items this operator asked the card to draw. ONE registry
   // (`lib/board-card.ts`) owns the ids and the prose the settings panel prints, and this

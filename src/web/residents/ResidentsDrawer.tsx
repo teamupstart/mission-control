@@ -22,7 +22,7 @@ import { ResidentControlStatus, residentControlBadge } from "./ResidentControlSt
 import { ResidentLoopControls, ResidentLoopStatusLine, type ResidentLoopFeedback, type ResidentLoopFeedbackBinding } from "./ResidentLoopControls.tsx";
 import { residentLoopActions, residentLoopSearchFields } from "./loop-presentation.ts";
 import { ResidentProfileLaunchList } from "./ResidentProfileLaunchList.tsx";
-import { residentAccentStyle, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
+import { residentAccentStyle, residentActionName, residentMarksBySession, residentSessionMark, type ResidentSessionMark } from "./marker.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 import type { ResidentLaunches } from "./useResidentLaunches.ts";
@@ -47,16 +47,21 @@ export function residentDrawerEntries(
   profiles: readonly ResidentProfile[],
   sessions: readonly Session[],
   listening = false,
+  marksBySession = residentMarksBySession(sessions, runs, profiles, listening),
 ): ResidentDrawerEntry[] {
   const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
   const sessionByTask = new Map<string, Session>();
   for (const session of sessions) if (session.task) sessionByTask.set(session.task.id, session);
-  return runs.map((run, index) => ({
-    run,
-    mark: residentSessionMark(run, profileById.get(run.profileId) ?? null, listening),
-    session: sessionByTask.get(run.taskId) ?? null,
-    shortcut: index < 9 ? index + 1 : null,
-  }));
+  return runs.map((run, index) => {
+    const session = sessionByTask.get(run.taskId) ?? null;
+    const mark = session && marksBySession.get(session.id);
+    return {
+      run,
+      mark: mark ?? residentSessionMark(run, profileById.get(run.profileId) ?? null, listening),
+      session,
+      shortcut: index < 9 ? index + 1 : null,
+    };
+  });
 }
 
 /**
@@ -439,7 +444,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
   loopFeedback: ResidentLoopFeedbackBinding;
 }): React.JSX.Element {
   const { mark, session, run, shortcut } = entry;
-  const name = mark.listeningTitle ?? mark.name;
+  const name = residentActionName(mark, mark.name);
   const state = session ? stateDisplay(session) : { label: "starting", tone: "neutral" as const };
   const needsYou = residentEntryAmber(entry);
   // The tone the Board files this session under, so a working resident's card is edged in the

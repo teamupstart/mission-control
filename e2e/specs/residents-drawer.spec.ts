@@ -274,6 +274,32 @@ test("Console rows distinguish residents sharing a listening title", async ({ da
   }
 });
 
+test("Board and drawer Open buttons distinguish residents sharing a listening title", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  const other = await launch(daemon, "Release sentinel", { referenceName: "Marlowe" });
+  const listener = await beListener(daemon);
+  try {
+    await request(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+    await page.reload();
+    const board = page.locator("main.board");
+    for (const ordinaryName of [NAME, other.name]) {
+      await expect(board.getByRole("button", { name: `Open "Marlowe" (${ordinaryName})`, exact: true })).toBeVisible();
+    }
+    await useDrawer(page, daemon, "board");
+    await edgeTab(page).click();
+    const drawer = drawerOf(page);
+    for (const ordinaryName of [NAME, other.name]) {
+      await expect(drawer.getByRole("button", { name: `Open "Marlowe" (${ordinaryName})`, exact: true })).toBeVisible();
+    }
+    await capture(page, "shared-listening-title-drawer-actions");
+    await drawer.getByRole("button", { name: `Open "Marlowe" (${other.name})`, exact: true }).click();
+    await expect(band(page, other.name)).toBeVisible();
+  } finally {
+    listener.stop();
+  }
+});
+
 test("listening titles identify a visitor card and filter residents in the drawer", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const profile = await launch(daemon, NAME);

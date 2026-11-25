@@ -49,6 +49,12 @@ export interface ResidentSessionMark extends ResidentChipMark {
   controlOtherSessions: boolean;
 }
 
+/** Spoken names that collide need the ordinary name on controls that open a conversation. */
+export function residentActionName(mark: ResidentSessionMark | null | undefined, ordinaryName: string): string {
+  if (!mark?.listeningTitle) return ordinaryName;
+  return mark.sharedListeningTitle ? `${mark.listeningTitle} (${ordinaryName})` : mark.listeningTitle;
+}
+
 /**
  * Join each session to its live resident run through the session's task id. Sessions that are
  * not residents are absent, so a fleet with none gets an empty map.

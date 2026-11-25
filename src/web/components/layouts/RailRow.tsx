@@ -31,7 +31,7 @@ import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
 import { ResidentChip } from "../../residents/ResidentChip.tsx";
-import { residentAccentStyle, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
+import { residentAccentStyle, residentActionName, residentMarkTitle, type ResidentSessionMark } from "../../residents/marker.ts";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -166,9 +166,7 @@ export function RailRow({
   // The priority mark is aria-hidden, and the state word says only "working", so the priority
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
   const ordinaryName = session.name || resident?.name || "(unnamed)";
-  const cardName = resident?.sharedListeningTitle
-    ? `${resident.listeningTitle} (${ordinaryName})`
-    : resident?.listeningTitle || ordinaryName;
+  const cardName = residentActionName(resident, ordinaryName);
   const description = `${cardName} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;

@@ -449,6 +449,9 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
+export const fetchSessionSettingsAccess = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<import("@shared/settings-mcp.ts").SessionSettingsAccess>("/api/session-settings-access", signal);
+export const fetchUiSkin = (signal?: AbortSignal) => fetchJsonWithSignal<{ skin: UiConfigView["config"]["skin"] }>("/api/ui/skin", signal);
 export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
@@ -2689,6 +2692,7 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
+  setSessionSettingsAccess: (enabled: boolean) => put("/api/session-settings-access", { enabled }),
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 

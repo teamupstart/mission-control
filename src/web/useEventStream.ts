@@ -49,7 +49,7 @@ import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 import { fetchVoiceCardTime, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
-import { applyVoiceIndicatorSelection } from "./lib/uiConfig.ts";
+import { applyVoiceIndicatorSelection, refreshUiSkin } from "./lib/uiConfig.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -541,6 +541,7 @@ export function useEventStream(): MissionState {
         case "snapshot":
           windowId = msg.windowId;
           setVoiceWindowId(windowId);
+          void refreshUiSkin();
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -982,7 +983,11 @@ export function useEventStream(): MissionState {
         case "archive_changed":
           setArchivesRevision((n) => n + 1);
           break;
+        case "ui_skin_changed":
+          void refreshUiSkin();
+          break;
         case "settings_restored":
+          void refreshUiSkin();
           // A restore can replace the indexed directories along with everything else.
           forgetCachedRepos();
           latestSettingsRestoreRequestIdRef.current = msg.requestId;

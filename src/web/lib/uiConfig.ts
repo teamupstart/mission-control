@@ -2,7 +2,7 @@ import { newRequestId } from "./request-id.ts";
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import type { VoiceConfirmationPlacement, VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
-import { api, fetchUiConfig } from "./api.ts";
+import { api, fetchUiConfig, fetchUiSkin } from "./api.ts";
 import { isSkinId } from "@shared/skins.ts";
 import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
 
@@ -23,7 +23,7 @@ import { readCache, readLegacySettings, writeCache } from "./uiCache.ts";
  * Deliberately not polled, unlike `useHarnesses` / `useForeman`: those hooks are alive
  * only while a rarely-opened modal is, whereas this one is alive for the life of the app,
  * and a request every 4s forever to notice an edit made in a second dashboard tab is a
- * bad trade. Voice indicator edits arrive through their own bounded event.
+ * bad trade. Skin invalidations and voice indicator edits arrive through bounded events.
  */
 
 /**
@@ -50,6 +50,23 @@ const listeners = new Set<() => void>();
 let hydrated = false;
 let hydrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
 const writeGeneration = new Map<keyof UiConfig, number>();
+let confirmedSkin = current.skin;
+let skinReadGeneration = 0;
+let skinRefreshPending = false;
+let pendingSkinWrites = 0;
+let skinWriteTail = Promise.resolve();
+
+/** Fetch just the skin into the live store after a daemon invalidation or reconnect. */
+export async function refreshUiSkin(): Promise<void> {
+  const generation = ++skinReadGeneration;
+  skinRefreshPending = true;
+  if (!hydrated || pendingSkinWrites > 0) return;
+  skinRefreshPending = false;
+  const view = await fetchUiSkin(AbortSignal.timeout(5000));
+  if (!view || generation !== skinReadGeneration || !isSkinId(view.skin)) return;
+  confirmedSkin = view.skin;
+  if (current.skin !== confirmedSkin) commit({ ...current, skin: confirmedSkin });
+}
 
 export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
 export const UI_CONFIG_HYDRATE_MAX_RETRY_MS = 30_000;
@@ -71,7 +88,12 @@ function commit(next: UiConfig): void {
  * (`UiConfigViewSchema`); this window then keeps the value it already holds, cached or default,
  * so the record it draws from stays whole.
  */
-function applyHydratedConfig({ config, voiceIndicatorVersion }: UiConfigView, indicatorsAtRead: string[]): void {
+function applyHydratedConfig(
+  { config, voiceIndicatorVersion }: UiConfigView, indicatorsAtRead: string[], skinGenerationAtRead: number,
+): void {
+  // A stream invalidation or an optimistic write may already have superseded this read.
+  if (!pendingSkinWrites && skinGenerationAtRead === skinReadGeneration) confirmedSkin = config.skin;
+  else config = { ...config, skin: current.skin };
   const voice = config.voice ?? current.voice;
   const overlap = current.voice.indicators !== indicatorsAtRead;
   if (config.voice && (overlap || !acceptIndicatorVersion(voiceIndicatorVersion))) {
@@ -114,6 +136,7 @@ function retryHydration(): void {
 export async function hydrateUiConfig(): Promise<void> {
   if (hydrated) return;
   const indicatorsAtRead = current.voice.indicators;
+  const skinGenerationAtRead = skinReadGeneration;
   const view = await fetchUiConfig();
   if (!view) {
     retryHydration();
@@ -131,19 +154,21 @@ export async function hydrateUiConfig(): Promise<void> {
       // adopted profile predates every announced tour, so it is owed each of them once.
       // Legacy storage never held `voice`: `coerce` filled its default, and a patch naming it is
       // refused while the voice flag is off, which would fail the whole adoption.
-      const { voice: _filledDefault, ...adopted } = legacy;
+      // Nor did it hold a skin. Leave the current skin alone if a session chose it during hydration.
+      const { voice: _filledDefault, skin: _legacySkin, ...adopted } = legacy;
       if (!await updateUiConfig({ ...adopted, guidedTour: false, announcedTours: [] })) {
         retryHydration();
         return;
       }
     } else {
-      applyHydratedConfig(view, indicatorsAtRead);
+      applyHydratedConfig(view, indicatorsAtRead, skinGenerationAtRead);
     }
   } else {
-    applyHydratedConfig(view, indicatorsAtRead);
+    applyHydratedConfig(view, indicatorsAtRead, skinGenerationAtRead);
   }
   hydrated = true;
   emit();
+  if (skinRefreshPending) void refreshUiSkin();
 }
 
 /**
@@ -160,8 +185,21 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     writeGeneration.set(key, generation);
     generations.set(key, generation);
   }
+  const skin = patch.skin;
+  if (skin !== undefined) {
+    pendingSkinWrites++;
+    skinReadGeneration++;
+  }
   commit(optimistic);
-  const res = await api.setUiConfig(patch);
+  // Serialize skin writes from this window so rapid clicks save in the order they were made.
+  const request = skin === undefined ? api.setUiConfig(patch) : skinWriteTail.then(() => api.setUiConfig(patch));
+  if (skin !== undefined) skinWriteTail = request.then(() => {});
+  const res = await request;
+  if (skin !== undefined) {
+    pendingSkinWrites--;
+    if (res.ok) confirmedSkin = skin;
+    if (!pendingSkinWrites && (skinRefreshPending || !res.ok)) void refreshUiSkin();
+  }
   if (!res.ok) {
     // A later optimistic patch, including one setting this field to the same value, may have
     // already superseded this request. Roll back only fields this request still owns, never
@@ -170,7 +208,7 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     for (const field of Object.keys(patch) as Array<keyof UiConfigPatch>) {
       const key = field as keyof UiConfig;
       if (writeGeneration.get(key) === generations.get(key) && Object.is(current[key], optimistic[key])) {
-        Object.assign(rollback, { [key]: before[key] });
+        Object.assign(rollback, { [key]: key === "skin" ? confirmedSkin : before[key] });
       }
     }
     commit(rollback);
@@ -182,8 +220,8 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
 /**
  * Re-read `announcedTours` from the daemon and adopt it, for the one automatic decision that
  * must not act on a stale copy: opening the startup picker on account of a new-tour
- * announcement. Preferences do not live-sync between windows, so a window that waited behind a
- * dialog can still hold a record another window has since announced the tour into.
+ * announcement. A window that waited behind a dialog can still hold an announcement state
+ * another window has since updated.
  *
  * Only this field is adopted, and not when a write of it from this window began meanwhile -
  * that write is newer than the read. Resolves to whether the daemon answered.

@@ -35,7 +35,16 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
+export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: SESSION_SETTINGS_FLAG_ID,
+    label: "Session settings through MCP",
+    description: "Let registered sessions read and change supported Mission Control settings on your request.",
+    stage: "default-on",
+    keywords: ["settings", "access", "mcp", "mission_settings"],
+  },
   {
     id: BUG_FIX_INSPECTOR_FLAG_ID,
     label: "Bug Fix Inspector",

@@ -12,7 +12,7 @@ import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
-import { onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
+import { onUiSkinChanged, onVoiceIndicatorsChanged, storedSkin, syncWindowBackground } from "./ui-config.ts";
 import { renderDashboardDocument } from "./dashboard-document.ts";
 import { ResidentLoop } from "./residents/loop.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
@@ -274,6 +274,7 @@ const voiceNames = new VoiceNameRegistry(registry, {
 const stopVoiceNames = wireVoiceNameEvents(voiceNames, (roster) => registry.emitVoiceRoster(roster));
 // The voice state reaches open windows and the shell the same way, behind its flag.
 const stopVoiceState = wireVoiceStateEvents((state) => registry.emitVoiceState(state));
+const stopUiSkin = onUiSkinChanged(() => registry.emitUiSkinChanged());
 const stopVoiceIndicators = onVoiceIndicatorsChanged((indicators) => registry.emitVoiceIndicators(indicators));
 // The shapers folder is read at start, and again at every shaping run: never watched.
 if (featureEnabled("task-shaping")) void announceShaperFolder();
@@ -1179,6 +1180,7 @@ async function shutdown(): Promise<void> {
   registry.voiceRouter?.reset();
   stopDesktopVoice();
   stopVoiceState();
+  stopUiSkin();
   stopVoiceIndicators();
   stopVoiceNames();
   const stoppingWorkflows = workflows.stop();

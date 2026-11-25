@@ -771,3 +771,16 @@ The
 This catalog is read-only with respect to the skills themselves. It currently offers no profile
 selection because neither harness has a verified frozen-isolation mechanism. See
 [Residents](residents.md#skill-sources) for the launch policy and current limitation.
+
+## Let a session change the theme
+
+Ask a registered session **“Switch Mission Control to Daylight.”** The session can use
+`mission_settings` to find “theme”, read `ui.skin` and its choices, and set it to `daylight`.
+Ask **“Which theme am I using?”** for a read. The result applies to this installation and
+open dashboards repaint as soon as the change is saved.
+
+The skin is the first editable setting available through this tool. Access starts enabled
+when the installation has no saved preference. To revoke access, turn off **Allow sessions to access Mission Control settings** in **Settings > Trust**. The next
+request from any session, including one already running, is refused. This choice survives
+restart and settings snapshot restores. You can re-enable it in Trust. The rollout switch
+in **Settings > Feature flags** can also disable the tool. Both must be on to use it.

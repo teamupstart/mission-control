@@ -11054,10 +11054,12 @@ export class Registry extends EventEmitter {
     const unclearHead = prev && prev.relationship === "unclear" && prev.prompt &&
       prev.promptRevision >= 1 && prev.resolvedPromptRevision === prev.promptRevision &&
       prev.pendingPrompts.length === 0
-      ? { revision: prev.promptRevision, prompt: prev.prompt }
+      ? { revision: prev.promptRevision, prompt: prev.prompt,
+          ...(prev.latestPromptAcceptedAt === undefined ? {} : { acceptedAt: prev.latestPromptAcceptedAt }) }
       : null;
     return this.mergeGoal(id, {
       ...(releasesHandoff ? { handoffReleasedAt: now } : {}),
+      latestPromptAcceptedAt: now,
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -11149,7 +11151,7 @@ export class Registry extends EventEmitter {
       : undefined;
     const goal = this.getGoal(id);
     const acceptedAt = goal?.pendingPrompts.find((p) => p.revision === revision)?.acceptedAt;
-    // Legacy and requeued unclear prompts may lack a capture time. Keep the prior
+    // Legacy prompts may lack a capture time. Keep the prior
     // deliverable cutoff rather than treating the later model write as a new instruction.
     return this.mergeGoal(id, patch, now, steering, acceptedAt ?? goal?.deliverableUpdatedAt);
   }
@@ -11230,7 +11232,7 @@ export class Registry extends EventEmitter {
   /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
   private mergeGoal(
     id: string,
-    patch: SetGoal & { openingPrompt?: string; handoffReleasedAt?: number },
+    patch: SetGoal & { openingPrompt?: string; handoffReleasedAt?: number; latestPromptAcceptedAt?: number },
     now: number,
     steering?: WorkflowSteeringNote | WorkflowSteeringNote[],
     acceptedAt = now,
@@ -11243,6 +11245,8 @@ export class Registry extends EventEmitter {
     const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
     const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
     const handoffReleasedAt = patch.handoffReleasedAt ?? prev?.handoffReleasedAt;
+    const latestPromptAcceptedAt = patch.latestPromptAcceptedAt
+      ?? (patch.prompt === undefined || patch.prompt === prev?.prompt ? prev?.latestPromptAcceptedAt : undefined);
     const deliverableChanged = objective !== (prev?.objective ?? null)
       && withoutHandoffRestrictions(objective ?? "") !== withoutHandoffRestrictions(prev?.objective ?? "");
     const next: SessionGoal = {
@@ -11271,6 +11275,7 @@ export class Registry extends EventEmitter {
           ? patch.pendingPrompts
           : prev?.pendingPrompts ?? [],
       ...(handoffReleasedAt === undefined ? {} : { handoffReleasedAt }),
+      ...(latestPromptAcceptedAt === undefined ? {} : { latestPromptAcceptedAt }),
       deliverableUpdatedAt: deliverableChanged ? acceptedAt : prev?.deliverableUpdatedAt ?? prev?.updatedAt ?? now,
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };

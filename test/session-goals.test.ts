@@ -147,6 +147,42 @@ test("a reconciled deliverable uses its accepted instruction time after restart"
   assert.equal(getSessionGoal(s.id)?.deliverableUpdatedAt, now + 10);
 });
 
+test("replaying an unclear design selection keeps its acceptance time across restart", () => {
+  const { r, s } = withSession("replayed-design-selection", "%12");
+  const now = Date.now();
+  r.captureAcceptedPrompt(s.id, "Output: mockups", s.id, now);
+  r.resolveGoal(s.id, {
+    relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [],
+  }, "Output: mockups", now + 1);
+  const selection = "Implement the selected design.";
+  r.captureAcceptedPrompt(s.id, selection, s.id, now + 10);
+  r.resolveGoal(s.id, {
+    relationship: "unclear", resolvedPromptRevision: 2, pendingPrompts: [],
+  }, selection, now + 20);
+
+  const reopened = new Registry();
+  reopened.applyDiscovery([mkDiscovered({ syntheticId: s.id, cwd: s.cwd! })]);
+  const clarification = "The second mockup.";
+  const replay = reopened.captureAcceptedPrompt(s.id, clarification, s.id, now + 30);
+  assert.deepEqual(replay?.pendingPrompts, [
+    { revision: 2, prompt: selection, acceptedAt: now + 10 },
+    { revision: 3, prompt: clarification, acceptedAt: now + 30 },
+  ]);
+  reopened.resolveGoal(s.id, {
+    objective: "Implement heading counts in the second design.",
+    relationship: "replace",
+    objectiveVersion: 2,
+    resolvedPromptRevision: 2,
+    pendingPrompts: replay?.pendingPrompts.slice(1),
+  }, selection, now + 40);
+  reopened.resolveGoal(s.id, {
+    relationship: "steer", resolvedPromptRevision: 3, pendingPrompts: [],
+  }, clarification, now + 50);
+  const goal = getSessionGoal(s.id);
+  assert.equal(goal?.deliverableUpdatedAt, now + 10);
+  assert.equal(goal?.resolvedPromptRevision, 3);
+});
+
 test("a background task reporting in never overwrites the captured ask", () => {
   // The common path: 200 of 396 real UserPromptSubmit events are task notifications. If
   // these landed, a goal would be replaced by machinery every time a task finished.

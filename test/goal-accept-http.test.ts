@@ -130,7 +130,7 @@ test("200 resolves the pending instruction as steering, emits once, and is idemp
 for (const [scope, restriction] of [
   ["no-pr", "Do not open a PR."],
   ["keep-local", "Keep this local until I review it."],
-]) test(`accepting the objective leaves a pending ${scope} instruction unresolved`, async () => {
+] as const) test(`accepting the objective leaves a pending ${scope} instruction unresolved`, async () => {
   const registry = new Registry();
   const app = mkApp(registry);
   const s = sdkSession(registry, `accept-handoff-pending-${scope}`);

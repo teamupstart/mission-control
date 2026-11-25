@@ -1490,6 +1490,8 @@ export interface SessionGoal {
    * never denormalized onto session cards.
    */
   pendingPrompts: GoalPromptRevision[];
+  /** Acceptance time for the latest prompt, retained if an unclear verdict is replayed. */
+  latestPromptAcceptedAt?: number;
   /** Accepted standalone release timestamp. Queue instructions started later still apply. */
   handoffReleasedAt?: number;
   /** When the actual deliverable last changed, excluding handoff restrictions. */

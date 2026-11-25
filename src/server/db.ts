@@ -338,7 +338,7 @@ let db: DatabaseSync | undefined;
 // 61: remember accepted spoken outbox IDs after retirement.
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
 // 63: replace the previously materialized Voice mute shortcut default once.
-// 64: retain handoff release, deliverable change and initial queue delivery times.
+// 64: retain handoff release, accepted Goal instruction and initial queue delivery times.
 export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
@@ -929,6 +929,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       deliverable_updated_at  INTEGER,
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
+      latest_prompt_accepted_at INTEGER,
       focus                   TEXT,              -- compact latest instruction
       relationship            TEXT,              -- initial | steer | amend | replace | unclear
       rationale               TEXT,              -- why the latest relationship was chosen
@@ -5293,6 +5294,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_goals", "opening_prompt", "TEXT");
   addColumn(d, "session_goals", "handoff_released_at", "INTEGER");
   addColumn(d, "session_goals", "deliverable_updated_at", "INTEGER");
+  addColumn(d, "session_goals", "latest_prompt_accepted_at", "INTEGER");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -13036,6 +13038,7 @@ export function loadSessionNotes(): SessionNote[] {
 interface SessionGoalRow {
   handoff_released_at: number | null;
   deliverable_updated_at: number | null;
+  latest_prompt_accepted_at: number | null;
   opening_prompt: string | null;
   note_key: string;
   text: string | null;
@@ -13116,6 +13119,7 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     resolvedPromptRevision:
       r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
     pendingPrompts: pendingGoalPrompts(r),
+    ...(r.latest_prompt_accepted_at === null ? {} : { latestPromptAcceptedAt: r.latest_prompt_accepted_at }),
     ...(r.handoff_released_at === null ? {} : { handoffReleasedAt: r.handoff_released_at }),
     ...(r.deliverable_updated_at === null ? {} : { deliverableUpdatedAt: r.deliverable_updated_at }),
     updatedAt: r.updated_at,
@@ -13128,8 +13132,8 @@ export function upsertSessionGoal(g: SessionGoal): void {
       `INSERT INTO session_goals
          (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
           objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at,
-          handoff_released_at, deliverable_updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          handoff_released_at, deliverable_updated_at, latest_prompt_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
          opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
@@ -13139,13 +13143,14 @@ export function upsertSessionGoal(g: SessionGoal): void {
          resolved_prompt_revision=excluded.resolved_prompt_revision,
          pending_prompts=excluded.pending_prompts,
          handoff_released_at=excluded.handoff_released_at,
-         deliverable_updated_at=excluded.deliverable_updated_at, updated_at=excluded.updated_at`,
+         deliverable_updated_at=excluded.deliverable_updated_at,
+         latest_prompt_accepted_at=excluded.latest_prompt_accepted_at, updated_at=excluded.updated_at`,
     )
     .run(
       g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
       JSON.stringify(g.pendingPrompts), g.updatedAt, g.handoffReleasedAt ?? null,
-      g.deliverableUpdatedAt ?? null,
+      g.deliverableUpdatedAt ?? null, g.latestPromptAcceptedAt ?? null,
     );
 }
 

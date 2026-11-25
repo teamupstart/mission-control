@@ -48,6 +48,7 @@ export interface InstalledMod {
   version: string;
   scope: string;
   enabled: boolean;
+  errors: string[];
 }
 
 /** The mod as `claude plugin list --json` shows it, `null` when absent, or an error string. */
@@ -69,14 +70,17 @@ export async function readInstalledMod(claude: ClaudeCli, deps: SetupDeps): Prom
   let first: InstalledMod | null = null;
   for (const row of rows) {
     if (typeof row !== "object" || row === null) continue;
-    const entry = row as { id?: unknown; name?: unknown; version?: unknown; scope?: unknown; enabled?: unknown };
+    const entry = row as { id?: unknown; name?: unknown; version?: unknown; scope?: unknown; enabled?: unknown; errors?: unknown };
     if ((entry.id ?? entry.name) !== MOD_PLUGIN_ID) continue;
     // Readiness is never inferred from a missing field: an entry without its scope or enabled state
     // says nothing about either, so it is reported rather than treated as installed.
     if (typeof entry.version !== "string" || typeof entry.scope !== "string" || typeof entry.enabled !== "boolean") {
       return { error: "`claude plugin list --json` lists " + MOD_PLUGIN_ID + " without its version, scope or enabled state" };
     }
-    const mod = { version: entry.version, scope: entry.scope, enabled: entry.enabled };
+    if (entry.errors !== undefined && (!Array.isArray(entry.errors) || !entry.errors.every((error: unknown) => typeof error === "string"))) {
+      return { error: "`claude plugin list --json` lists " + MOD_PLUGIN_ID + " with invalid load errors" };
+    }
+    const mod = { version: entry.version, scope: entry.scope, enabled: entry.enabled, errors: (entry.errors ?? []) as string[] };
     if (mod.scope === "user") return { mod };
     first ??= mod;
   }
@@ -177,7 +181,9 @@ export async function checkInstalled(claude: ClaudeCli, deps: SetupDeps): Promis
   const mod = listed.mod;
   if (!mod) return [{ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} is not installed`, fix: "Run `mctl setup`." }, cannotCheck("the mod is not installed")];
   const checks: DoctorCheck[] = [];
-  if (mod.enabled && mod.scope === "user") {
+  if (mod.enabled && mod.scope === "user" && mod.errors.length > 0) {
+    checks.push({ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} failed to load: ${mod.errors.join("; ")}`, fix: "Run `mctl setup`." });
+  } else if (mod.enabled && mod.scope === "user") {
     checks.push({ name: "mod-enabled", status: "ok", message: `${MOD_PLUGIN_ID} is installed and enabled at user scope` });
   } else {
     checks.push({ name: "mod-enabled", status: "fail", message: `${MOD_PLUGIN_ID} is ${mod.enabled ? "enabled" : "disabled"} at ${mod.scope} scope, not enabled at user scope`, fix: "Run `mctl setup` (disabling the mod in /plugin lasts only until then)." });

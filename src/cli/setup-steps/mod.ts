@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MOD_NAME } from "../../mod/constants.ts";
 import { findClaude, type ClaudeCli } from "../claude-cli.ts";
-import { readModVersion, stageMod } from "../../server/mod-stage.ts";
+import { readModVersion, refuseCheckoutDestination, stageMod } from "../../server/mod-stage.ts";
 import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
 import type { DoctorCheck, SetupStepOptions, SetupStepResult } from "./types.ts";
@@ -90,6 +90,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   // the publish has succeeded: until then the published mod may still be the old build, or absent.
   let certified: DoctorCheck | null = null;
   try {
+    await refuseCheckoutDestination(modDir);
     if (await publishedIsCurrent(deps.modSource, modDir)) {
       // Already published and certified when it was staged: nothing to copy, validate or swap.
       version = await readModVersion(modDir);
@@ -135,7 +136,8 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
     const gone = await claudeStep(claude, deps, ["plugin", "uninstall", MOD_PLUGIN_ID, "--scope", "user"]);
     if (gone) return installFailure(gone, deps.stateDir, bin, true);
   }
-  const install = await claudeStep(claude, deps, ["plugin", "install", MOD_PLUGIN_ID, "--scope", "user"]);
+  let install = await claudeStep(claude, deps, ["plugin", "install", MOD_PLUGIN_ID, "--scope", "user"]);
+  if (install) install = await claudeStep(claude, deps, ["plugin", "install", MOD_PLUGIN_ID, "--scope", "user"]);
   if (install) return installFailure(install, deps.stateDir, bin);
 
   // Re-read in a fresh `claude` invocation: the install must show the staged version.

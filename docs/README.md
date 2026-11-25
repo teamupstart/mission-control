@@ -54,6 +54,7 @@ Mission Control's product reference is organized by feature below.
 - [Database and migrations](database-and-migrations.md)
 - [Event stream](event-stream.md)
 - [Feature flags](feature-flags.md): flag core, live gates and the three-release lifecycle.
+- [Claude-session control](headless-mode.md): setup, diagnostics and recovery for the headless preview.
 - [Desktop shell and packaging](desktop-and-packaging.md)
 - [Owned runtimes and integration repair](owned-runtimes.md)
 - [Signed release production and verification](release-verification.md)

@@ -16,18 +16,19 @@ export function formatCheck(check: DoctorCheck): string {
 export const command: CommandSpec = {
   name: "setup",
   summary: "Install and check headless mode",
-  usage: "mctl setup",
+  usage: "mctl setup [--off]",
   owner: "P14",
   implemented: true,
   run: async (args, io) => {
-    if (args.length > 0) {
-      io.stderr("mctl setup: unexpected argument " + args[0] + " (the Foreman service and --off are not available in this build)\nusage: " + command.usage + "\n");
+    if (args.length > 1 || (args.length === 1 && args[0] !== "--off")) {
+      io.stderr("mctl setup: unexpected argument " + args[0] + " (the Foreman service is not available in this build)\nusage: " + command.usage + "\n");
       return 2;
     }
     // The environment comes from the caller, so the steps see what `mctl` was started with.
-    const options: SetupStepOptions = { live: false, deps: { env: io.env, runCache: {} } };
+    const options: SetupStepOptions = { live: false, off: args.includes("--off"), deps: { env: io.env, runCache: {} } };
     let failed = 0;
     for (const step of SETUP_STEPS) {
+      if (options.off && step.id !== "daemon" && step.id !== "flag") continue;
       if (!step.implemented) {
         io.stdout("- " + step.id + ": " + STEP_UNAVAILABLE_TEXT + "\n");
         continue;

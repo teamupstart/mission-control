@@ -8,6 +8,7 @@ export type SetupStepId = (typeof SETUP_STEP_IDS)[number];
 /** What a step is run with. `live` is `mctl doctor --live`, the only run that spends tokens. */
 export interface SetupStepOptions {
   live: boolean;
+  off?: boolean;
   /** What the step touches outside itself; tests inject fakes, the commands use the real ones. */
   deps?: Partial<import("./context.ts").SetupDeps>;
 }

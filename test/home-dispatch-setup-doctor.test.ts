@@ -2,7 +2,7 @@
 // a temporary state directory. No model tokens, no real Claude Code, no real state home.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,7 +16,7 @@ import { defaultModSource, resolveDeps } from "../src/cli/setup-steps/context.ts
 import { calledPaths, recoveryCommands, shellArg } from "../src/cli/setup-steps/checks.ts";
 import { run as runDoctorStep } from "../src/cli/setup-steps/doctor.ts";
 import { run as runModStep } from "../src/cli/setup-steps/mod.ts";
-import { stageMod } from "../src/server/mod-stage.ts";
+import { refuseCheckoutDestination, stageMod } from "../src/server/mod-stage.ts";
 import { createFakeClaude, createFakeDaemon, type FakeClaude, type FakeDaemon } from "./helpers/home-dispatch-fakes.ts";
 
 const MOD_ID = "mission-control@mission-control";
@@ -67,6 +67,7 @@ async function rig(options: { version?: string; flag?: boolean } = {}): Promise<
     MISSION_PORT: String(port),
     MISSION_CLAUDE_BIN: claude.path,
     MISSION_MOD_SOURCE: source,
+    MISSION_API_TOKEN: "fake-token",
   };
   return {
     home, state, source, claude, daemon, env,
@@ -218,6 +219,29 @@ test("a stale installed build is reinstalled by uninstall and install, never `pl
   }
 });
 
+test("staging refuses checkout destinations including symlinks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-stage-checkout-"));
+  try {
+    const checkout = join(dir, "checkout");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+    symlinkSync(checkout, join(dir, "link"));
+    await assert.rejects(refuseCheckoutDestination(join(dir, "link", "state", "mod")), /inside a checkout/);
+    await refuseCheckoutDestination(join(dir, "safe", "mod"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("setup retries an interrupted plugin install", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    r.claude.update({ failures: { install: { exitCode: 1, stderr: "temporary failure", times: 1 } } });
+    const result = await r.run("setup");
+    assert.equal(result.code, 0, result.out + result.err);
+    assert.equal(pluginCalls(r.claude).filter((call) => call === "install").length, 2);
+  } finally { await r.cleanup(); }
+});
+
 test("a reinstall that fails twice prints the cause and both recovery commands, still runs the other steps, and exits 1", async () => {
   const r = await rig({ version: "2.3.0" });
   try {
@@ -266,6 +290,47 @@ test("doctor passes on an installed machine and changes nothing", async () => {
   } finally {
     await r.cleanup();
   }
+});
+
+test("setup enables the preview and setup --off disables it without uninstalling", async () => {
+  const r = await rig({ flag: false });
+  try {
+    const setup = await r.run("setup");
+    assert.equal(setup.code, 0, setup.out + setup.err);
+    assert.equal((await r.run("doctor")).code, 0);
+    const before = pluginCalls(r.claude).length;
+    const off = await r.run("setup", "--off");
+    assert.equal(off.code, 0, off.out + off.err);
+    assert.match(off.out, /flag is off/);
+    assert.equal(pluginCalls(r.claude).length, before);
+    assert.equal((await r.run("doctor")).code, 1);
+  } finally { await r.cleanup(); }
+});
+
+test("setup reports an unauthorized preview flag change", async () => {
+  const r = await rig({ flag: false });
+  try {
+    r.env.MISSION_API_TOKEN = "wrong-token";
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /FAIL {2}flag: could not change the headless-mode flag: HTTP 401/);
+    assert.equal((await r.run("doctor")).code, 1);
+  } finally { await r.cleanup(); }
+});
+
+test("doctor and setup report enabled plugin load errors", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    r.claude.update({ plugins: [{ id: MOD_ID, version: "2.3.0", scope: "user", enabled: true, errors: ["hook failed"] }] });
+    for (const command of ["doctor", "setup"] as const) {
+      const result = await r.run(command);
+      assert.equal(result.code, 1, result.out + result.err);
+      assert.match(result.out, /FAIL {2}mod-enabled: .*failed to load: hook failed/);
+    }
+    r.claude.update({ plugins: [{ id: MOD_ID, version: "2.3.0", scope: "user", enabled: true, errors: [] }] });
+    assert.equal((await r.run("doctor")).code, 0);
+  } finally { await r.cleanup(); }
 });
 
 test("doctor names each failing check with its fix and exits 1", async () => {
@@ -338,7 +403,7 @@ test("mod-calls fails on a staged bundle that reaches a daemon path outside the 
 test("setup and doctor take no unknown arguments", async () => {
   const r = await rig();
   try {
-    assert.equal((await r.run("setup", "--off")).code, 2);
+    assert.equal((await r.run("setup", "--frobnicate")).code, 2);
     assert.equal((await r.run("doctor", "--frobnicate")).code, 2);
     // `--live` is accepted; nothing is installed in this rig, so the run itself reports failures.
     assert.equal((await r.run("doctor", "--live")).code, 1);

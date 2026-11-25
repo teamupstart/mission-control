@@ -1,7 +1,34 @@
 import { randomBytes } from "node:crypto";
-import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { MOD_NAME as PLUGIN_NAME } from "../mod/constants.ts";
+
+/** A state-home override must not register a pooled checkout, including through a symlink. */
+export async function refuseCheckoutDestination(path: string): Promise<void> {
+  const missing: string[] = [];
+  let ancestor = resolve(path);
+  while (true) {
+    try { ancestor = join(await realpath(ancestor), ...missing); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      missing.unshift(basename(ancestor));
+      ancestor = dirname(ancestor);
+    }
+  }
+  while (true) {
+    let checkout = false;
+    try {
+      const metadata = await stat(join(ancestor, ".git"));
+      // An empty .git directory is not a checkout (some managed temp roots carry one).
+      checkout = metadata.isFile() || (metadata.isDirectory() && (await lstat(join(ancestor, ".git/HEAD"))).isFile());
+    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (checkout) throw new Error("Refusing to register a mod stage inside a checkout. Set MISSION_HOME to a persistent state directory outside the checkout.");
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return;
+    ancestor = parent;
+  }
+}
 
 /**
  * Stages the built mod folder marketplace at `{stateDir}/mod` (spec 7.10a).
@@ -227,6 +254,7 @@ async function acquireLock(dest: string, timeoutMs: number): Promise<() => Promi
 }
 
 export async function stageMod(options: StageOptions): Promise<StagedMod> {
+  await refuseCheckoutDestination(options.dest);
   const release = await acquireLock(options.dest, options.lockTimeoutMs ?? 30_000);
   try {
     return await stageModLocked(options);

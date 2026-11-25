@@ -15,6 +15,7 @@ export interface FakeClaudePlugin {
   version: string;
   scope: string;
   enabled: boolean;
+  errors?: string[];
 }
 
 /** A failure the fake plays for one `claude plugin` subcommand, then stops playing. */
@@ -95,7 +96,7 @@ if (argv[0] === "plugin") {
   if (sub === "list") {
     fail("list");
     if (argv.includes("--json")) {
-      process.stdout.write(JSON.stringify(state.plugins.map((p) => ({ id: p.id, version: p.version, scope: p.scope, enabled: p.enabled }))) + "\\n");
+      process.stdout.write(JSON.stringify(state.plugins.map((p) => ({ id: p.id, version: p.version, scope: p.scope, enabled: p.enabled, errors: p.errors }))) + "\\n");
     } else {
       process.stdout.write(state.plugins.map((p) => p.id + " (" + p.version + ", " + p.scope + ", " + (p.enabled ? "enabled" : "disabled") + ")").join("\\n") + (state.plugins.length ? "\\n" : ""));
     }

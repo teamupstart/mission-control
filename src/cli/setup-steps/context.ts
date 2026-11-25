@@ -13,7 +13,7 @@ export interface SetupDeps {
   env: Readonly<Record<string, string | undefined>>;
   exec: Exec;
   /** `fetch` for the daemon's `/api/health`. */
-  fetch: (url: string, init?: { signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+  fetch: (url: string, init?: { signal?: AbortSignal; method?: string; headers?: Record<string, string>; body?: string; redirect?: RequestRedirect }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
   /** The state directory (`MISSION_HOME` and its older names, else `~/.mission-control`). */
   stateDir: string;
   /** The built mod folder marketplace to stage (`dist/mod`). */

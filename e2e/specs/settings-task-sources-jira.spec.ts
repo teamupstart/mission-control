@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { taskSourcesRevision } from "../fixtures/task-sources.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
@@ -92,12 +93,6 @@ async function shoot(
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
   console.log(`CAPTURED e2e/.artifacts/jira-task-source/${name}.png`);
-}
-
-async function taskSourcesRevision(page: Page, baseURL: string): Promise<string> {
-  const response = await page.request.get(`${baseURL}/api/task-sources/config`);
-  expect(response.ok()).toBe(true);
-  return (await response.json()).revision;
 }
 
 test("a Jira source is addable, files parked tasks, and keeps the defaults it is given", async ({
@@ -290,7 +285,7 @@ test("a config read that left before an edit cannot revert the field, or be save
   // open, which is how `harness-defaults-propagate.spec.ts` pins the same class of bug.
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
-      revision: await taskSourcesRevision(page, daemon.baseURL),
+      revision: await taskSourcesRevision(page, daemon),
       sources: [{ id: "jira-race", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
     },
   });
@@ -400,7 +395,7 @@ test("a slow save cannot land after a newer one and put the older value back", a
   // reverts, and a request already on the wire is neither.
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
-      revision: await taskSourcesRevision(page, daemon.baseURL),
+      revision: await taskSourcesRevision(page, daemon),
       sources: [{ id: "jira-writes", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
     },
   });
@@ -467,7 +462,7 @@ test("a save's confirming read cannot wipe an edit that is queued behind it", as
   // and that blob - queued last - overwrites it on the daemon for good.
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
-      revision: await taskSourcesRevision(page, daemon.baseURL),
+      revision: await taskSourcesRevision(page, daemon),
       sources: [{ id: "jira-confirm", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
     },
   });
@@ -555,7 +550,7 @@ test("a poll that left before a write landed cannot undo the write's own confirm
   // second of those, and it is why `writeGen` exists.
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
-      revision: await taskSourcesRevision(page, daemon.baseURL),
+      revision: await taskSourcesRevision(page, daemon),
       sources: [{ id: "jira-poll", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
     },
   });
@@ -666,7 +661,7 @@ test("an unusable Jira source names the fix, and a healthy one names Jira rather
   // freshly added source is in.
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
-      revision: await taskSourcesRevision(page, daemon.baseURL),
+      revision: await taskSourcesRevision(page, daemon),
       sources: [{ id: "jira-e2e", kind: "jira", label: "platform queue", repoRoot: daemon.repo }],
     },
   });
@@ -727,7 +722,7 @@ test("Check it works accepts the Claude.ai Rovo Jira registration", async ({ pag
   installUpstartClaw(daemon);
   const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
     data: {
-      revision: await taskSourcesRevision(page, daemon.baseURL),
+      revision: await taskSourcesRevision(page, daemon),
       sources: [{
         id: "jira-rovo-e2e",
         kind: "jira",
@@ -770,7 +765,7 @@ test.describe("acli read method", () => {
     };
     writeFileSync(stateFile, JSON.stringify({ issues: [issue] }));
     const seeded = await page.request.put(`${daemon.baseURL}/api/task-sources/config`, {
-      data: { revision: await taskSourcesRevision(page, daemon.baseURL), sources: [{
+      data: { revision: await taskSourcesRevision(page, daemon), sources: [{
         id: "jira-acli", kind: "jira", label: "Atlassian queue", repoRoot: daemon.repo, enabled: false,
         config: { site: "example.atlassian.net", jql: "project = MC" },
       }] },

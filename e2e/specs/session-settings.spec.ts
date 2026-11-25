@@ -522,6 +522,7 @@ test("a stale retention confirmation is refused and the operator can confirm aga
 test("Voice refreshes from a session and a reaffirmation refuses an older dashboard placement write", async ({ dashboard: page, daemon }) => {
   await enableSettingsPreview(daemon);
   await enableVoice(daemon);
+  await api(daemon, "/api/voice/confirmation", { confirmation: "toast" }, "PUT");
   withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
     SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
   ));

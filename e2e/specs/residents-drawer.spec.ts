@@ -249,7 +249,7 @@ test("listening titles identify and filter resident cards on the Board and in th
 
 test("listening titles identify a visitor card and filter residents in the drawer", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  const profile = await launch(daemon, NAME, { referenceName: "Marlowe" });
+  const profile = await launch(daemon, NAME);
   await askResident(daemon);
   const other = "Release sentinel";
   await launch(daemon, other);
@@ -258,6 +258,12 @@ test("listening titles identify a visitor card and filter residents in the drawe
   try {
     await expect(page.locator("button.vi-status-line")).toHaveAccessibleName("Voice: listening. Mute");
     const visitorTitle = page.locator(".resident-visitor-name");
+    await expect(visitorTitle).toHaveText(NAME);
+    await capture(page, "review-listening-visitor-fallback");
+    await request(daemon, `/api/residents/profiles/${profile.id}`, {
+      expectedRevision: profile.revision,
+      settings: { ...profile.settings, identity: { ...profile.settings.identity, referenceName: "Marlowe" } },
+    }, "PATCH");
     await expect(visitorTitle).toHaveText('"Marlowe"');
     await capture(page, "review-listening-visitor");
     await edgeTab(page).click();
@@ -270,14 +276,6 @@ test("listening titles identify a visitor card and filter residents in the drawe
     await expect(cardOf(drawer, '"Marlowe"')).toBeVisible();
     await expect(cardOf(drawer, other)).toHaveCount(0);
     await capture(page, "review-listening-drawer-filter");
-    await filter.press("Escape");
-    await closeDrawer(page);
-    await request(daemon, `/api/residents/profiles/${profile.id}`, {
-      expectedRevision: profile.revision,
-      settings: { ...profile.settings, identity: { ...profile.settings.identity, referenceName: "" } },
-    }, "PATCH");
-    await expect(visitorTitle).toHaveText(NAME);
-    await capture(page, "review-listening-visitor-fallback");
   } finally {
     listener.stop();
   }

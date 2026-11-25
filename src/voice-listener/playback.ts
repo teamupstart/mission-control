@@ -112,7 +112,12 @@ export async function playRecording(client: ListenerClient,
             }
             if (result.text.trim()) {
               // Unchanged words can belong to a newly focused field.
-              speech.dictating = await client.speech(captureRevision, onset, { phase: "preview", text: result.text }, lifetime.signal);
+              try {
+                speech.dictating = await client.speech(captureRevision, onset, { phase: "preview", text: result.text }, lifetime.signal);
+              } catch {
+                lifetime.signal.throwIfAborted();
+                console.warn("Voice listener could not deliver a dictation preview.");
+              }
             }
           }
         },

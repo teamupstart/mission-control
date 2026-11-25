@@ -588,7 +588,7 @@ test("Sherpa publishes quiet, onset and growing partials from unfinished PCM bef
   assert.deepEqual(finals, ["Steve, check the build"]);
 });
 
-for (const failure of ["start acknowledgement", "prefix decode"] as const) {
+for (const failure of ["start acknowledgement", "prefix decode", "preview POST"] as const) {
   test("Sherpa recovers the onset after a failed " + failure, async () => {
     const phases: string[] = [];
     const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
@@ -598,6 +598,7 @@ for (const failure of ["start acknowledgement", "prefix decode"] as const) {
       if (path.endsWith("/speech")) {
         phases.push(body.phase);
         if (failure === "start acknowledgement" && body.phase === "start") throw new Error("lost acknowledgement");
+        if (failure === "preview POST" && body.phase === "preview" && body.text === "first") return new Response(null, { status: 503 });
       } else if (path.endsWith("/utterances")) phases.push(body.text);
       return Response.json({ accepted: true }, { headers: { "x-voice-dictation": "1" } });
     });
@@ -612,15 +613,15 @@ for (const failure of ["start acknowledgement", "prefix decode"] as const) {
         return { done: false, value: { samples: new Float32Array(3) } };
       },
     }), async samples => {
-      if (samples.length === 1) throw new Error("incomplete prefix");
-      return { text: samples.length === 2 ? "interim" : "final", tokens: [], timestamps: [], durations: [] };
+      if (failure === "prefix decode" && samples.length === 1) throw new Error("incomplete prefix");
+      return { text: ["first", "interim", "final"][samples.length - 1]!, tokens: [], timestamps: [], durations: [] };
     });
     if (failure === "start acknowledgement") {
       await assert.rejects(play, /lost acknowledgement/);
       assert.deepEqual(phases, ["start", "finish"]);
     } else {
       await play;
-      assert.deepEqual(phases, ["start", "preview", "final"]);
+      assert.deepEqual(phases, failure === "preview POST" ? ["start", "preview", "preview", "final"] : ["start", "preview", "final"]);
     }
   });
 }

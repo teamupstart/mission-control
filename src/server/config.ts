@@ -134,6 +134,10 @@ export function skillsDir(): string {
   return envVar("SKILLS_DIR") ?? fileURLToPath(new URL("../../skills", import.meta.url));
 }
 
+export function speechHelperPath(): string {
+  return fileURLToPath(new URL("../../dist/voice-speaker/synth.mjs", import.meta.url));
+}
+
 /**
  * The SEED for Foreman's instructions setting: `personas/FOREMAN.md` under the app root.
  *

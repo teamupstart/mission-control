@@ -95,6 +95,19 @@ test("native voice windows follow content, the pointer display and tray anchor w
     await expect.poll(async () => (await read())?.hitTests.at(-1)).toBe(true);
     if (surface === "popover") {
       const { area, bounds } = shown;
+      await t.test("page zoom scales native bounds and keeps the CSS tray pointer anchored", async () => {
+        const dashboard = app.windows().find(page => page.url().endsWith("/Dashboard"))!;
+        const nativeDashboard = await app.browserWindow(dashboard);
+        await nativeDashboard.evaluate(win => win.webContents.setZoomFactor(1.5));
+        const zoomedWidth = Math.min(area.width, Math.ceil(bounds.width * 1.5));
+        await expect.poll(async () => (await read())?.bounds.width).toBe(zoomedWidth);
+        await expect.poll(async () => (await read())?.bounds.height).toBe(122);
+        const zoomed = (await read())!.bounds;
+        const anchorRight = await found.evaluate(() => parseFloat(document.documentElement.style.getPropertyValue("--voice-anchor-right")));
+        assert.equal(zoomed.x + zoomed.width - anchorRight * 1.5, area.x + 432);
+        await nativeDashboard.evaluate(win => win.webContents.setZoomFactor(1));
+        await expect.poll(async () => (await read())?.bounds).toEqual(bounds);
+      });
       for (const edge of ["left", "right"] as const) {
         await t.test(`oversized popover fits the work area at the ${edge} tray edge`, async () => {
           await app.evaluate((_, { area, edge }) => {

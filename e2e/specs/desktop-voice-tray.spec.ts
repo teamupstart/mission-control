@@ -143,6 +143,8 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     expect((await dashboard.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
       identity: { name: "Steve", description: "Builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
     } } })).ok()).toBe(true);
+    const dashboardWindow = await app.browserWindow(dashboard);
+    await dashboardWindow.evaluate(win => win.webContents.setZoomFactor(1.5));
     expect((await dashboard.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "popover" } })).ok()).toBe(true);
     await expect.poll(() => app.windows().some(win => win.url().endsWith("#/voice/popover"))).toBe(true);
     const popover = app.windows().find(win => win.url().endsWith("#/voice/popover"))!;
@@ -150,9 +152,13 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     expect((await say(daemon, "Steve, " + words)).ok).toBe(true);
     const card = popover.getByRole("status");
     await expect(card).toContainText(words);
+    const nativePopover = await app.browserWindow(popover);
+    await expect.poll(() => nativePopover.evaluate(win => win.webContents.getZoomFactor())).toBe(1.5);
+    await expect(card.getByRole("button", { name: "Cancel" })).toBeInViewport({ ratio: 1 });
     const countdown = card.getByRole("button", { name: "Send now" });
     await expect(countdown).toHaveText(/^\d+s$/);
     const initialSeconds = parseInt(await countdown.innerText(), 10);
+    await captureCard(popover, "tray-confirmation-at-150-percent");
 
     await selectRecentlyHeard(app);
     const history = popover.getByRole("region", { name: "Recently heard" });
@@ -168,7 +174,7 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     }
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
       .some(win => win.webContents.getURL().endsWith("#/voice/popover") && win.isVisible()))).toBe(true);
-    await captureCard(popover, "tray-history-during-confirmation");
+    await captureCard(popover, "tray-history-at-150-percent");
     const age = await row.locator("time").innerText();
     await expect(row.locator("time")).not.toHaveText(age);
     await popover.keyboard.press("Escape");
@@ -180,7 +186,6 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     await card.getByRole("button", { name: "Cancel" }).click();
     await expect(card).toContainText("Cancelled");
 
-    const nativePopover = await app.browserWindow(popover);
     await nativePopover.evaluate(win => win.close());
     await expect.poll(() => popover.isClosed()).toBe(true);
     const replacement = app.waitForEvent("window");

@@ -34391,7 +34391,6 @@ span.line-run-prov {
 .stalled-band.is-open .stalled-band-chevron {
   transform: rotate(180deg);
 }
-/* Wrapped onto a line of their own in a narrow pane, the fixes keep to the right edge. */
 .stalled-band-row > .stalled-actions {
   flex: 0 1 auto;
   min-width: 0;

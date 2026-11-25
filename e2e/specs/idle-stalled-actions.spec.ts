@@ -361,8 +361,6 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await expect(band.locator("dl")).toBeHidden();
   await expect(band.getByRole("button")).toHaveText([/^Stalled/, "Nudge", "Message…", "Mark done", "Dismiss"]);
   await capture(band, "03-console-stalled-band-collapsed", page);
-  // At phone width the pane is narrower than the row of fixes: they wrap inside the band rather
-  // than scrolling it sideways, so Dismiss is reachable without a horizontal scroll.
   await page.setViewportSize({ width: 360, height: 1000 });
   await expect.poll(() => band.evaluate((el) => el.clientWidth), { intervals: [100] }).toBeLessThan(320);
   expect(await band.evaluate((el) => el.scrollWidth - el.clientWidth), "the fixes scroll the band sideways").toBeLessThanOrEqual(0);

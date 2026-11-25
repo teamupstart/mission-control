@@ -57,7 +57,15 @@ export interface PendingVoiceAction extends ActionTime {
   cancel(): void;
 }
 
+// Allow a final Core Audio tap, its 20 ms VAD frame and a loopback POST to arrive.
+const ONSET_TRANSIT_MS = 250;
+// The microphone drops unfinished segments at 30 s. Leave a bounded decoder budget.
+const SPEECH_RESULT_TIMEOUT_MS = 35_000;
+
 const HISTORY_LIMIT = 50;
+// At most HISTORY_LIMIT reservations can time out per 35 s. Two batches cover
+// the listener's 55 s held-POST retry budget even under sustained load.
+const EXPIRED_SPEECH_LIMIT = 2 * HISTORY_LIMIT;
 const MAX_ACTIVE_CARDS = 50;
 const MAX_SPLIT_QUESTIONS = 8;
 const MAX_UNSURE_CARDS = 5;
@@ -125,6 +133,8 @@ interface OpenCard {
   answerAttempt?: AnswerAttempt;
   recipientAnswer?: { words: string; choiceCommand: boolean };
   questionPick?: { target: SpokenName; words: string; choiceCommand: boolean };
+  speechDeadlineUs?: number;
+  awaitingSpeech?: boolean;
   time: ActionTime;
   card: VoiceCard;
   entry: HeardEntry;
@@ -266,6 +276,8 @@ export class VoiceRouter {
     for (const card of report.cards) if (card.kind === "plan") this.forms.observed(card.id);
   });
   readonly heard = new RecentlyHeard();
+  private readonly speechCaptures = new Map<string, { cardId: string; timeout: ReturnType<typeof setTimeout> }>();
+  private readonly expiredSpeechKeys = new Set<string>();
   readonly pendingVoiceActions: PendingVoiceAction[] = [];
   private readonly open = new Map<string, OpenCard>();
   // Keep the last accepted capture until its question settles, even after a Cancel.
@@ -298,7 +310,7 @@ export class VoiceRouter {
   private readonly resolutions = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null },
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly emitCard: (card: VoiceCard) => void,
@@ -409,11 +421,72 @@ export class VoiceRouter {
     return [...this.open.values()].find(item => item.answer && item.answerCapture?.sequence === target.slot);
   }
 
-  private cancelLatestAt(time: ActionTime): string | undefined {
+  private actionsAt(time: ActionTime) {
     // Captures can arrive out of order. For equal timestamps, the last action opened wins.
-    const eligible = this.pendingVoiceActions.filter((action) => offsetUs(action, time) <= 0)
+    return this.pendingVoiceActions.filter((action) => offsetUs(action, time) <= 0)
       .reverse().sort((a, b) => offsetUs(b, time) - offsetUs(a, time));
-    for (const action of eligible) {
+  }
+
+  /** Reserve only the action that a cancel at this physical onset could address. */
+  speechStarted(key: string, onsetUs: number): void {
+    const ageMs = (this.hostNowUs() - onsetUs) / 1000;
+    if (ageMs < 0 || ageMs > ONSET_TRANSIT_MS || this.speechCaptures.has(key) || this.speechCaptures.size >= HISTORY_LIMIT) return;
+    const time = { openedAt: Date.now() - ageMs, openedAtHostUs: onsetUs };
+    for (const action of this.actionsAt(time)) {
+      const item = this.open.get(action.id);
+      if (!item?.speechDeadlineUs) return;
+      if (onsetUs >= item.speechDeadlineUs) continue;
+      const timeout = setTimeout(() => {
+        this.expiredSpeechKeys.add(key);
+        if (this.expiredSpeechKeys.size > EXPIRED_SPEECH_LIMIT) {
+          this.expiredSpeechKeys.delete(this.expiredSpeechKeys.values().next().value!);
+        }
+        this.speechFinished(key);
+      }, SPEECH_RESULT_TIMEOUT_MS);
+      timeout.unref();
+      this.speechCaptures.set(key, { cardId: action.id, timeout });
+      return;
+    }
+  }
+
+  speechFinished(key: string): void {
+    const capture = this.speechCaptures.get(key);
+    if (!capture) return;
+    this.speechCaptures.delete(key);
+    clearTimeout(capture.timeout);
+    const item = this.open.get(capture.cardId);
+    if (item?.awaitingSpeech) this.sendAfterSpeech(capture.cardId);
+  }
+
+  private sendAfterSpeech(id: string): void {
+    const item = this.open.get(id);
+    if (!item) return;
+    for (const capture of this.speechCaptures.values()) {
+      if (capture.cardId === id) {
+        item.awaitingSpeech = true;
+        return;
+      }
+    }
+    void this.sendNow(id);
+  }
+
+  private armCountdown(item: OpenCard, duration: number): void {
+    item.speechDeadlineUs = this.hostNowUs() + duration * 1000;
+    item.awaitingSpeech = false;
+    const transit = this.state().reportsSpeechOnset ? ONSET_TRANSIT_MS : 0;
+    const id = item.card.id;
+    item.timer = setTimeout(() => this.sendAfterSpeech(id), duration + transit);
+    item.timer.unref();
+  }
+
+  private cancelLatestAt(time: ActionTime, captureKey?: string): string | undefined {
+    if (captureKey && this.expiredSpeechKeys.has(captureKey)) return;
+    const reserved = captureKey && this.speechCaptures.get(captureKey);
+    if (reserved) {
+      // Never fall through to another card if an explicit action already settled this one.
+      return this.cancel(reserved.cardId, undefined, time, captureKey) ? reserved.cardId : undefined;
+    }
+    for (const action of this.actionsAt(time)) {
       if (action.kind === "card" && this.open.has(action.id)) {
         if (!this.cancel(action.id, undefined, time)) continue;
       } else {
@@ -441,7 +514,7 @@ export class VoiceRouter {
     }
   }
 
-  async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number; speechStartHostUs?: number } = {}): Promise<boolean> {
+  async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number; speechStartHostUs?: number; captureKey?: string } = {}): Promise<boolean> {
     const { heldBeforeRelease, startHostUs, speechStartHostUs } = timing;
     const onsetUs = speechStartHostUs ?? startHostUs;
     const { mode, roster, backend } = this.state();
@@ -496,7 +569,7 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const cancelled = this.cancelLatestAt(time);
+        const cancelled = this.cancelLatestAt(time, timing.captureKey);
         if (cancelled) entry.detail = cancelled;
         else entry.rule = "nothing-pending";
       } else if (!await this.pick(decision.cardId, decision.candidateId, time)) {
@@ -908,8 +981,7 @@ export class VoiceRouter {
     this.questions!.publish(review.id, item.answer);
     if (!item.answer.footerWindowId) this.publish(item.card);
     if (!windowMs) { await this.sendNow(id); return; }
-    item.timer = setTimeout(() => { void this.sendNow(id); }, Math.ceil(expiresAt - performance.now()));
-    item.timer.unref();
+    this.armCountdown(item, Math.max(0, Math.ceil(expiresAt - performance.now())));
   }
 
   /**
@@ -1044,8 +1116,7 @@ export class VoiceRouter {
       const ms = window.seconds * 1000;
       card.windowMs = ms;
       card.deadline = Date.now() + ms;
-      item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
-      item.timer.unref?.();
+      this.armCountdown(item, ms);
     }
     this.publish(card);
     if (card.state === "unsure" && !item.questionPick && this.open.get(card.id) === item) this.speech?.unsure(card);
@@ -1069,10 +1140,14 @@ export class VoiceRouter {
     return !!item && this.cancel(item.card.id);
   }
 
-  cancel(id: string, detail?: string, capturedAt?: ActionTime): boolean {
+  cancel(id: string, detail?: string, capturedAt?: ActionTime, captureKey?: string): boolean {
     const item = this.open.get(id);
     if (!item) return false;
-    if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
+    if (capturedAt?.openedAtHostUs !== undefined && item.speechDeadlineUs !== undefined &&
+        capturedAt.openedAtHostUs >= item.speechDeadlineUs) return false;
+    if (item.card.deadline !== null && Date.now() >= item.card.deadline) {
+      if (!captureKey || this.speechCaptures.get(captureKey)?.cardId !== id) return false;
+    }
     this.speech?.stop(id);
     this.take(item, capturedAt);
     item.modelStep?.abort();
@@ -1390,6 +1465,9 @@ export class VoiceRouter {
       clearTimeout(item.timer);
       item.modelStep?.abort();
     }
+    for (const capture of this.speechCaptures.values()) clearTimeout(capture.timeout);
+    this.speechCaptures.clear();
+    this.expiredSpeechKeys.clear();
     this.openCards.clear();
     this.open.clear();
     this.lastAnswer.clear();

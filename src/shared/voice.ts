@@ -529,6 +529,7 @@ export const VoiceListenerHelloSchema = z.object({
   devices: z.array(VoiceInputDeviceSchema).max(VOICE_LIMITS.devices),
   modelLoaded: z.boolean(),
   primingAvailable: z.boolean().optional(),
+  reportsSpeechOnset: z.literal(true).optional(),
   microphone: z.enum(VOICE_MICROPHONE_PERMISSIONS),
 });
 export type VoiceListenerHello = z.infer<typeof VoiceListenerHelloSchema>;

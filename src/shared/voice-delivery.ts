@@ -1,5 +1,3 @@
-import { POST_REPORT_LINE } from "./reports.ts";
-
 export const VOICE_TURN_PREFIX = "voice:";
 
 export function openQuestionsNote(asks: readonly { id: string; title: string }[]): string | null {
@@ -12,5 +10,5 @@ export function openQuestionsNote(asks: readonly { id: string; title: string }[]
 }
 
 export function spokenMessageText(words: string, notes: { openQuestions: string | null; unseenReports: string | null }): string {
-  return [words, notes.openQuestions, notes.unseenReports, POST_REPORT_LINE].filter(part => part !== null).join("\n\n");
+  return [words, notes.openQuestions, notes.unseenReports].filter(part => part !== null).join("\n\n");
 }

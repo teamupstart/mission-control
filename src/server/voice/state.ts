@@ -390,7 +390,7 @@ export class VoiceStateStore {
     const { mode, roster } = this.state();
     const reported = this.liveHello()?.hello.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
-    return { mode, roster, backend };
+    return { mode, roster, backend, reportsSpeechOnset: this.liveHello()?.hello.reportsSpeechOnset === true };
   }
 
   /**

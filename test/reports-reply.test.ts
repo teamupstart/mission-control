@@ -3,15 +3,10 @@
  * restates it, so the agent can act on the reply without remembering the report; the card offers
  * the answer the agent can take now; and every version of every report has an entry in its
  * conversation where it was posted.
- *
- * The four text builders here are a fixed contract the voice plan calls (`reportReplyText`,
- * `unseenReportsNote`, `POST_REPORT_LINE`, `resolveMarkReadTarget`), so their words and their
- * signatures are pinned. `replyTarget` is the one rule the card and the reply route both read.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  POST_REPORT_LINE,
   followUpIntent,
   followUpKind,
   followUpTitle,
@@ -82,10 +77,6 @@ test("the unseen-reports note names only reports still waiting to be read, or is
     ]),
     "Your operator has not read 2 of your reports yet: r-2 'Done', r-3 'Also done'.",
   );
-});
-
-test("the post-a-report line is the one voice appends", () => {
-  assert.equal(POST_REPORT_LINE, "When you have finished this, post a report.");
 });
 
 test("mark read means the open report, else the author's only unread report, else none", () => {

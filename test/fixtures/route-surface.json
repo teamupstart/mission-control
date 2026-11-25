@@ -455,6 +455,7 @@
   "POST /statusline": "401 {\"error\":\"unauthorized\"}",
   "POST /v1/metrics": "401 {\"error\":\"unauthorized\"}",
   "POST /voice/listener/hello": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
+  "POST /voice/listener/speech": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /voice/listener/supervised": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /voice/shell-report": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",
   "POST /voice/speech/jobs/:id/events": "404 {\"error\":\"This feature is disabled.\",\"feature\":\"voice\"}",

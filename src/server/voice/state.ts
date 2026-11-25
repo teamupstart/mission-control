@@ -112,6 +112,7 @@ export class VoiceStateStore {
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
   private cancelWindowOpen = false;
+  private timingRevision = 0;
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   // Heartbeat expiry transfers the lease but cannot close a previous owner's microphone.
@@ -198,9 +199,12 @@ export class VoiceStateStore {
     if (sameCapture && last.directive.endOfSpeechMs === endOfSpeechMs) return last.directive;
     // A timing edit wakes pollers but keeps the same authorization for automatic audio already captured.
     const automatic = capture && state.mode === "listening";
+    const previousGrant = sameCapture ? last.directive.captureRevision : undefined;
+    const captureRevision = automatic ? previousGrant ?? randomUUID() : undefined;
+    this.timingRevision = sameCapture ? this.timingRevision + 1 : 0;
     const directive = { capture, speak: null, inputDevice, endOfSpeechMs, roster: state.roster.map(entry => entry.name),
-      pauseMs: null, revision: randomUUID(),
-      ...(automatic && { captureRevision: sameCapture ? last.directive.captureRevision : randomUUID() }) };
+      pauseMs: null, revision: captureRevision ? `${captureRevision}:${this.timingRevision}` : randomUUID(),
+      ...(captureRevision && { captureRevision }) };
     // Only successive key presses and releases share pending delivery rights.
     const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
       (last?.mode === "push-to-talk" && state.mode === "auto-muted");
@@ -218,6 +222,18 @@ export class VoiceStateStore {
     const base = this.directive(state);
     return speak && ("stop" in speak || !this.capturePausePending)
       ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
+  }
+
+  /** Older listeners submit the poll revision. Timing edits share one capture grant until capture is revoked. */
+  resolveCaptureRevision(submitted: string | undefined, directive: VoiceListenerDirective): string | undefined {
+    const grant = directive.captureRevision;
+    if (!submitted || !grant) return submitted;
+    if (submitted === grant) return directive.revision;
+    const index = Number(submitted.slice(grant.length + 1));
+    if (submitted === `${grant}:${index}` && Number.isSafeInteger(index) && index >= 0 && index <= this.timingRevision) {
+      return directive.revision;
+    }
+    return submitted;
   }
 
   drainingRevisions() { return [...this.releases.keys()]; }
@@ -405,7 +421,7 @@ export class VoiceStateStore {
     const { mode, roster } = this.state();
     const reported = this.liveHello()?.hello.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
-    return { mode, roster, backend };
+    return { mode, roster, backend, reportsSpeechOnset: this.liveHello()?.hello.reportsSpeechOnset === true };
   }
 
   /**

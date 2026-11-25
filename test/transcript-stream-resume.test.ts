@@ -203,7 +203,7 @@ for (const reconnect of [false, true]) {
     t.mock.method(registry, "getSession", () => current);
     const transcript = sessionMessages(current)!;
     const words = "check the receipt";
-    const payload = words + "\n\nWhen you have finished this, post a report.";
+    const payload = words + "\n\nYour operator has not read your report r 'Build status' yet.";
     const now = Date.now();
     const row = db.createPendingTurn({ id: key, noteKey: key, spokenWords: words, text: words, now });
     const claim = db.claimNextPendingTurn(key, now, row, () => payload)!;
@@ -242,7 +242,7 @@ test("a byte resume after a missed text-only receipt refreshes existing words an
   t.after(() => { applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
   const key = noteKeyFor(session);
   const words = "inspect the build";
-  const payload = words + "\n\nWhen you have finished this, post a report.";
+  const payload = words + "\n\nYour operator has not read your report r 'Build status' yet.";
   const now = Date.now();
   const queued = db.createPendingTurn({ id: "stream-receipt", noteKey: key, spokenWords: words, text: words, now });
   const claim = db.claimNextPendingTurn(key, now, queued, () => payload)!;

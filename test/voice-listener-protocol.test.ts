@@ -77,12 +77,15 @@ for (const [backend, Client] of [["fluidaudio", FakeVoiceListener], ["sherpa-onn
         assert.equal(next.captureRevision, captureRevision);
         directive = next;
       }
-      assert.deepEqual(await (await listener.utterance("hello", words, previousPoll)).json(), { accepted: false });
+      assert.deepEqual(await (await listener.utterance("hello", words, previousPoll)).json(), { accepted: true });
+      assert.deepEqual(await (await listener.utterance("hello", words, captureRevision + ":99999")).json(), { accepted: false });
+      assert.deepEqual(await (await listener.utterance("hello", words, named.revision)).json(), { accepted: false });
       // A decode started before the timing edits may finish afterward.
       assert.deepEqual(await (await listener.utterance("hello", words, captureRevision)).json(), { accepted: true });
       setVoiceConfig({ muted: true });
       setVoiceConfig({ endOfSpeechMs: 500, muted: false });
       assert.deepEqual(await (await listener.utterance("hello", words, captureRevision)).json(), { accepted: false });
+      assert.deepEqual(await (await listener.utterance("hello", words, previousPoll)).json(), { accepted: false });
       setVoiceConfig({ endOfSpeechMs: 2000 });
     });
 

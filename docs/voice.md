@@ -201,7 +201,10 @@ on every poll. Use the same listener UUID that the daemon accepted at hello. The
 After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
 Automatic capture directives also include a `captureRevision` that stays valid across
-silence delay edits. Both listeners send that revision with automatic utterances. The Swift listener
+silence delay edits. Both listeners send that revision with automatic utterances. Older listeners
+can submit a previously issued poll revision from the same automatic capture grant, including
+when a countdown changes the delay during decoding. Muting or changing the input or roster revokes
+all revisions of that grant. The Swift listener
 updates the open microphone's silence boundary in place. When a shorter delay closes a phrase
 immediately, up to 150 ms of quiet audio after the new boundary supplies the next phrase's lead-in.
 Sherpa reprocesses unfinished recording audio with the new delay. During silence it retains
@@ -286,8 +289,9 @@ transcripts and logs no recognized words.
 
 A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...`
 with both `x-harness-token` and `x-voice-listener-id`. Set the latter to the UUID from that
-listener's accepted hello. Send the directive revision under which the segment was captured. The daemon
-returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
+listener's accepted hello. For automatic speech, use the segment's `captureRevision` or its original
+poll revision. Use the held directive revision for push-to-talk. The daemon
+returns `{ accepted: false }` for a missing or revoked capture grant before the utterance reaches
 Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
 Reassigning a spoken name or changing its target task or session issues a fresh revision,
 even when the list of names sent to the recognizer stays the same.
@@ -341,7 +345,16 @@ The listener posts captures in spoken order, waiting for each response before po
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
 has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
-The cancel window closes at that deadline even if the delivery timer runs late.
+The Cancel button and new speech onsets close at that deadline. The native microphone
+listener reports the first voiced sample before waiting for silence or decoding. The
+daemon allows 250 ms for the final microphone buffer and its loopback onset report.
+If speech began during the countdown, delivery of the selected message waits for
+that segment's result. A bare “cancel” cancels that message even if recognition
+finishes after the countdown. Other speech releases the message for delivery.
+If the listener drops a segment or capture closes before the segment is complete,
+the listener promptly reports completion so the daemon can release that reservation.
+If no completion arrives, the reservation expires 35 seconds after the daemon
+creates it. Send now still claims the message immediately.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
@@ -370,8 +383,9 @@ When a later name could start a second message, or the first name is in doubt, t
 side of it (“Steve and Will, check the build”, “Steve, ping Will”) leaves the whole
 message with the first agent.
 
-During the cancel window, the message stays in memory. At the deadline, or immediately with
-the window off, the daemon submits the remaining text as a spoken turn. The card and Recently heard show the delivery outcome.
+During the cancel window, the message stays in memory. After the countdown and any
+in-window speech have settled, the daemon submits the remaining text as a spoken turn.
+Turning the window off makes submission immediate. The card and Recently heard show the delivery outcome.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`. Only one comma separates the address from the message,
 so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
@@ -524,9 +538,10 @@ follow-up task. A follow-up opens a separate Dispatch draft for the finished tas
 If you exit the See the work tour during the repository lookup, the draft opens when the lookup
 finishes. An already open follow-up stays available after tour exit.
 
-At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
-and “When you have finished this, post a report.” A retry uses that exact text. The conversation
-labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
+At the first delivery attempt, the daemon sends your words with any open questions and
+unseen-report reminders for the agent. Retries keep those words and the same context.
+To request a report, include the request in your message. The conversation labels your words
+**Spoken**. Open **What the agent received** to read the delivered payload.
 After an SDK send is acknowledged, or an uncertain send is abandoned after a crash, the daemon
 allows 24 hours for the client message ID and matching words to appear. Hourly cleanup checks live and persisted
 conversations and the custom transcript paths saved at handoff. If the harness cannot discover a
@@ -1045,10 +1060,17 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 
 - `POST /voice/listener/supervised` records a supervisor’s start or confirmed exit.
 - `GET /voice/speech/jobs/:id/audio` and `POST /voice/speech/jobs/:id/events` serve the holder’s WAV and accept its playback reports. These routes, listener hellos and directive polls use the private `x-mission-voice-instance` header. The hello body lists playback capabilities. Only its header identifies a speech target. The capture lease still uses `x-voice-listener-id`.
-- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone, speech? }`, sent by a
+- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone, speech?, reportsSpeechOnset? }`, sent by a
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
+- `POST /voice/listener/speech?revision=…` accepts `{ phase, speechStartUs }` from the
+  listener that owns capture. A `start` reports the first voiced sample. After push-to-talk
+  release, the daemon still accepts an onset from that hold's revision if the sample falls
+  between key-down (inclusive) and the release cutoff (exclusive). The listener waits up to
+  one second for the onset acknowledgment before posting its transcript with the same onset and revision.
+  A `finish` releases a segment that produced no accepted transcript, including overlong
+  audio once it can no longer be recovered at key-up.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build

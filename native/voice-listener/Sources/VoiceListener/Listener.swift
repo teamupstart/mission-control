@@ -16,6 +16,7 @@ struct Directive: Decodable {
 
 struct Hello: Encodable {
     let version = "4.0"
+    let reportsSpeechOnset = true
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
     let modelLoaded: Bool
@@ -132,6 +133,68 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         return (data, http)
     }
 
+    private struct SpeechKey: Hashable {
+        let revision: String
+        let onset: Int64
+    }
+    private let speechLock = NSLock()
+    private var starts: [SpeechKey: Task<Void, Never>] = [:]
+    private var finishes: [SpeechKey: Task<Void, Never>] = [:]
+
+    private func sendSpeech(_ key: SpeechKey, phase: String) async {
+        struct Event: Encodable { let speechStartUs: Int64; let phase: String }
+        do {
+            let body = try JSONEncoder().encode(Event(speechStartUs: key.onset, phase: phase))
+            _ = try await request("voice/listener/speech", revision: key.revision, body: body)
+        } catch {
+            fputs("Voice listener could not report a speech boundary.\n", stderr)
+        }
+    }
+
+    // Register synchronously on the tap. Each segment waits only for its own onset POST.
+    func startSpeech(_ onset: Int64, revision: String) {
+        let key = SpeechKey(revision: revision, onset: onset)
+        speechLock.withLock {
+            guard starts[key] == nil, finishes[key] == nil else { return }
+            // A loopback request may reach the router even if its acknowledgment stalls.
+            // Cancel and join the request at the deadline before sending a result or finish.
+            let deadline = ContinuousClock.now + .seconds(1)
+            starts[key] = Task {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await self.sendSpeech(key, phase: "start") }
+                    group.addTask { try? await Task.sleep(until: deadline, clock: .continuous) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
+        }
+    }
+
+    func settleSpeech(_ onset: Int64, revision: String, accepted: Bool = false) {
+        let key = SpeechKey(revision: revision, onset: onset)
+        speechLock.withLock {
+            guard let start = starts.removeValue(forKey: key), !accepted else { return }
+            finishes[key] = Task {
+                await start.value
+                await sendSpeech(key, phase: "finish")
+                speechLock.withLock { finishes[key] = nil }
+            }
+        }
+    }
+
+    // stop() has synchronously closed the tap. A released hold can still yield
+    // clipped segments for decoding; keep exactly those reservations alive.
+    func closeSpeech(revision: String, keeping segments: [Segment] = []) {
+        let keep = Set(segments.map(\.speechStartHostUs))
+        let discarded = speechLock.withLock { starts.keys.filter { $0.revision == revision && !keep.contains($0.onset) } }
+        for key in discarded { settleSpeech(key.onset, revision: revision) }
+    }
+
+    func drainSpeechFinishes() async {
+        let pending = speechLock.withLock { Array(finishes.values) }
+        for finish in pending { await finish.value }
+    }
+
     func directive(revision: String?, microphonePaused: Bool) async throws -> Response {
         var backoff = 100
         while true {
@@ -145,7 +208,11 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     func postUtterance(revision: String, capture: CaptureTimes, body: Data) async throws -> Response {
-        try await Self.postWithHeldRetries(revision: revision) {
+        let key = SpeechKey(revision: revision, onset: capture.speechStartUs)
+        let start = speechLock.withLock { starts[key] }
+        await start?.value
+        try Task.checkCancellation()
+        return try await Self.postWithHeldRetries(revision: revision) {
             try await self.request("voice/utterances", revision: revision, capture: capture, body: body)
         }
     }
@@ -184,7 +251,12 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     var releasedSegments: [Segment] = []
     var onInputClosed: (() -> Void)?
 
-    init(_ revision: String) { self.revision = revision }
+    let daemon: Daemon
+
+    init(_ revision: String, daemon: Daemon) {
+        self.revision = revision
+        self.daemon = daemon
+    }
 
     func release(at time: Int64) {
         guard releasedAt == nil else { return }
@@ -192,6 +264,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         mic?.whenCaptured(through: time) { [weak self] in
             guard let self, let mic else { return }
             releasedSegments = mic.stop(releasedAt: time)
+            daemon.closeSpeech(revision: revision, keeping: releasedSegments)
             self.mic = nil
             onInputClosed?()
             onInputClosed = nil
@@ -202,6 +275,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         onInputClosed = nil
         decoding?.cancel()
         mic?.stop()
+        daemon.closeSpeech(revision: revision)
         mic = nil
         releasedSegments.removeAll()
     }
@@ -227,7 +301,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     private func sendHello(first: Bool) async throws {
         let status = permission()
-        if status != "granted" { close() }
+        if status != "granted" { close(); await daemon.drainSpeechFinishes() }
         if first && status == "not-determined" {
             fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
         }
@@ -255,7 +329,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             while !Task.isCancelled {
                 try await Task.sleep(for: .seconds(10))
                 do { try await hello() }
-                catch { close(); exit(1) }
+                catch { close(); await daemon.drainSpeechFinishes(); exit(1) }
             }
         }
         defer { heartbeat.cancel(); close() }
@@ -313,16 +387,20 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     // its final frames. Keep polling so a mute can still cancel it.
                     closing.onInputClosed = { [weak self] in self?.directivePoll?.cancel() }
                 } else if capture {
-                    let batch = Capture(held ? next.revision : next.captureRevision ?? next.revision)
-                    let microphone = try Microphone(selection: next.inputDevice, held: held,
-                        endOfSpeechMs: duration, onStopped: { [weak self] stopped in
+                    let captureRevision = held ? next.revision : next.captureRevision ?? next.revision
+                    let batch = Capture(captureRevision, daemon: daemon)
+                    current = batch
+                    let microphone = try Microphone(selection: next.inputDevice, held: held, endOfSpeechMs: duration, onSpeechStart: { [daemon] onset in
+                        daemon.startSpeech(onset, revision: captureRevision)
+                    }, onSegmentDropped: { [daemon] onset in
+                        daemon.settleSpeech(onset, revision: captureRevision)
+                    }, onStopped: { [weak self] stopped in
                         guard let self, self.current?.mic === stopped else { return }
                         self.current?.cancel()
                         self.current = nil
                         self.directivePoll?.cancel()
                     })
                     batch.mic = microphone
-                    current = batch
                     let previous = draining.last?.decoding
                     batch.decoding = Task { [segments = microphone.segments] in
                         defer {
@@ -333,6 +411,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         guard !Task.isCancelled else { return }
                         let boosting = try? await recognizer.prime(next.roster)
                         @MainActor func deliver(_ buffered: Segment) async {
+                            var accepted = false
+                            defer {
+                                daemon.settleSpeech(buffered.speechStartHostUs, revision: batch.revision, accepted: accepted)
+                            }
                             do {
                                 var segment = buffered
                                 var daemonCutoff: Int64?
@@ -357,7 +439,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                         daemonCutoff = cutoff
                                         continue
                                     }
-                                    if try !JSONDecoder().decode(Daemon.Acknowledgement.self, from: data).accepted {
+                                    accepted = try JSONDecoder().decode(Daemon.Acknowledgement.self, from: data).accepted
+                                    if !accepted {
                                         fputs("Voice daemon declined an utterance.\n", stderr)
                                     }
                                     return
@@ -388,9 +471,16 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
 @main struct VoiceListener {
     @MainActor static func main() async {
-        do { try await Listener().run() }
-        catch CaptureError.listenerInUse { fputs("Another voice listener is active.\n", stderr); exit(1) }
-        catch CaptureError.device { fputs("The selected microphone input is unavailable.\n", stderr); exit(1) }
-        catch { fputs("Voice listener stopped. Check the daemon, local models and selected input.\n", stderr); exit(1) }
+        let listener = Listener()
+        do { try await listener.run() }
+        catch {
+            await listener.daemon.drainSpeechFinishes()
+            switch error {
+            case CaptureError.listenerInUse: fputs("Another voice listener is active.\n", stderr)
+            case CaptureError.device: fputs("The selected microphone input is unavailable.\n", stderr)
+            default: fputs("Voice listener stopped. Check the daemon, local models and selected input.\n", stderr)
+            }
+            exit(1)
+        }
     }
 }

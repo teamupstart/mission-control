@@ -74,7 +74,8 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       if (req.method === "POST" && url.pathname === "/voice/listener/speech") {
         const report = JSON.parse(body);
         speechReports.push({ ...report, revision: url.searchParams.get("revision") });
-        if (report.phase === "start" && ["dropped-segment", "unfinished-segment"].includes(inputDevice)) await startAck;
+        if (report.phase === "start" && (["dropped-segment", "unfinished-segment"].includes(inputDevice) ||
+            (inputDevice === "stalled-onset" && report.speechStartUs === 625))) await startAck;
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
         if (repeatedHeld && JSON.parse(body).text === "first") {
@@ -150,6 +151,16 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       assert.deepEqual(posted, []);
     });
   }
+
+  it("a stalled onset acknowledgment lets the decoded cancel and queued utterance post in spoken order", async t => {
+    const { speechReports, posted, captureBounds, events } = await launch(t, { inputDevice: "stalled-onset" });
+    await until(() => speechReports.some(report => report.speechStartUs === 625) && events.includes("decode Cancel."), "recorded onset and decoded cancel");
+    assert.equal(posted.length, 0);
+    // The fixture withholds the first acknowledgment until teardown.
+    await until(() => posted.length === 2, "both transcripts despite the stalled acknowledgment", 3000);
+    assert.deepEqual(posted.map(post => post.text), ["Cancel.", "next"]);
+    assert.deepEqual(captureBounds.map(bound => bound.onset), ["625", "1625"]);
+  });
 
   it("key-up releases only the abandoned onset while completed held speech drains", async t => {
     const { speechReports, posted, nextPoll, apply } = await launch(t, { held: true, inputDevice: "partial-hold" });

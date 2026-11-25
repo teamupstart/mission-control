@@ -1043,9 +1043,12 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
 - `POST /voice/listener/speech?revision=…` accepts `{ phase, speechStartUs }` from the
-  listener that owns capture. A `start` reports first voiced audio under the active directive.
-  The utterance POST carries the same onset. A `finish` releases a segment that produced
-  no accepted transcript.
+  listener that owns capture. A `start` reports the first voiced sample. After push-to-talk
+  release, the daemon still accepts an onset from that hold's revision if the sample falls
+  between key-down (inclusive) and the release cutoff (exclusive). The listener waits up to
+  one second for the onset acknowledgment before posting its transcript with the same onset.
+  A `finish` releases a segment that produced no accepted transcript, including overlong
+  audio once it can no longer be recovered at key-up.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build

@@ -153,7 +153,17 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         let key = SpeechKey(revision: revision, onset: onset)
         speechLock.withLock {
             guard starts[key] == nil, finishes[key] == nil else { return }
-            starts[key] = Task { await sendSpeech(key, phase: "start") }
+            // A loopback request may reach the router even if its acknowledgment stalls.
+            // Cancel and join the request at the deadline before sending a result or finish.
+            let deadline = ContinuousClock.now + .seconds(1)
+            starts[key] = Task {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask { await self.sendSpeech(key, phase: "start") }
+                    group.addTask { try? await Task.sleep(until: deadline, clock: .continuous) }
+                    await group.next()
+                    group.cancelAll()
+                }
+            }
         }
     }
 

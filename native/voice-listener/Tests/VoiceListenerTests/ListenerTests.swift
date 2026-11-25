@@ -158,7 +158,8 @@ final class ListenerTests: XCTestCase {
     }
 
     func testOverlongSpeechIsDiscardedUntilACompleteSilenceBoundary() throws {
-        var gate = SpeechGate()
+        var dropped: [Int64] = []
+        var gate = SpeechGate(onSegmentDropped: { dropped.append($0) })
         let speech = Array(repeating: Float(0.1), count: 320)
         let quiet = Array(repeating: Float(0), count: 320)
         var now: Int64 = 0
@@ -167,6 +168,7 @@ final class ListenerTests: XCTestCase {
             return gate.feed(frame, active: frame[0] != 0, endNs: now * 1_000_000)
         }
         for _ in 0..<1500 { XCTAssertTrue(feed(speech) == nil) } // 30 seconds
+        XCTAssertEqual(dropped, [0])
         for _ in 0..<39 { XCTAssertTrue(feed(quiet) == nil) } // 780 ms is still inside the utterance.
         for _ in 0..<1510 { XCTAssertTrue(feed(speech) == nil) }
         for _ in 0..<40 { XCTAssertTrue(feed(quiet) == nil) }
@@ -178,6 +180,7 @@ final class ListenerTests: XCTestCase {
         let segment = try XCTUnwrap(feed(quiet))
         XCTAssertEqual(segment.startedAtHostMs, freshStart)
         XCTAssertEqual(segment.samples, fresh + Array(repeating: 0, count: 12_800))
+        XCTAssertEqual(dropped, [0])
     }
 
     func testSilenceMustCompleteWithinTheSegmentLimit() {
@@ -198,8 +201,9 @@ final class ListenerTests: XCTestCase {
         let start: Int64 = 1_000_000_000
         let samples = Array(repeating: Float(0.3), count: limit - 160)
         let crossing = Array(repeating: Float(0.8), count: 320)
+        var dropped: [Int64] = []
         func overflow() -> SpeechGate {
-            var gate = SpeechGate(held: true)
+            var gate = SpeechGate(held: true, onSegmentDropped: { dropped.append($0) })
             XCTAssertNil(gate.feed(samples, active: true, endNs: start + Int64(samples.count) * Segment.sampleNs))
             XCTAssertNil(gate.feed(crossing, active: true, endNs: 31_010_000_000))
             return gate
@@ -210,6 +214,7 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(recovered.samples.count, limit - 80)
         XCTAssertEqual(recovered.samples.suffix(80), crossing.prefix(80))
         XCTAssertEqual(recovered.endedAt, 30_995)
+        XCTAssertTrue(dropped.isEmpty)
         gate = overflow()
         XCTAssertNil(gate.finish(at: 31_001))
         gate = overflow()
@@ -217,6 +222,7 @@ final class ListenerTests: XCTestCase {
         for i in 1...100 {
             XCTAssertNil(gate.feed(quiet, active: false, endNs: 31_010_000_000 + Int64(i) * 20_000_000))
         }
+        XCTAssertEqual(dropped, [start / 1000])
         XCTAssertNil(gate.finish(at: 30_995))
     }
 
@@ -589,6 +595,22 @@ final class ListenerTests: XCTestCase {
         XCTAssertFalse(input.isRunning)
         XCTAssertEqual(phrases.count, 4)
         XCTAssertTrue(phrases.allSatisfy { $0.endedAt <= Int64((start + 15) / 16) })
+    }
+
+    func testOpenMicrophoneReportsEachOverlongSegmentAsDropped() async throws {
+        var onsets: [Int64] = []
+        var dropped: [Int64] = []
+        let tone = (0..<(31 * 16_000)).map { 0.2 * sin(Float($0) * .pi / 20) }
+        let (input, _) = try captureFourPhrases(held: false, speech: tone, onSpeechStart: { onsets.append($0) },
+                                              onSegmentDropped: { dropped.append($0) }) { XCTFail("Overlong segments reached the decoder queue") }
+        XCTAssertEqual(onsets.count, 4)
+        XCTAssertFalse(dropped.isEmpty, "Overlong speech must be released while capture is open")
+        input.stop()
+        // The adaptive detector can end a tone early. Only segments it actually
+        // yields to the decoder may keep their reservations.
+        var queued: [Int64] = []
+        for await segment in input.segments { queued.append(segment.speechStartHostUs) }
+        XCTAssertEqual(dropped, onsets.filter { !queued.contains($0) })
     }
 
     func testBackloggedMicrophoneKeepsOldestPhrasesAndReportsDrops() async throws {

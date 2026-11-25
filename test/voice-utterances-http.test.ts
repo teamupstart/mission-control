@@ -1535,6 +1535,44 @@ test("speech onset pins the in-window message across segmentation and a later ca
   assert.deepEqual(cards.filter(card => card.state === "cancelled").map(card => card.id), ["onset-target"]);
 });
 
+test("a pre-release cancel onset arriving after key-up reserves the countdown until the held transcript arrives", async t => {
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  const baseUs = Math.floor(voiceHostTimeUs() / 1000) * 1000;
+  t.mock.method(voiceStateStore, "hostNowUs", () => baseUs + (Date.now() - now) * 1000);
+  await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
+    devices: [], microphone: "granted", modelLoaded: true, reportsSpeechOnset: true }, token);
+  await say("Will check the build", "held-target");
+  t.mock.timers.tick(850);
+  const press = voiceStateStore.hostNowUs();
+  await post("/voice/shell-report", { callActive: true, pushToTalk: true, reportedAtHostUs: press, pushToTalkPressedAtHostUs: press }, token);
+  const revision = voiceStateStore.directive().revision;
+  t.mock.timers.tick(120);
+  const release = voiceStateStore.hostNowUs();
+  await post("/voice/shell-report", { callActive: true, pushToTalk: false, reportedAtHostUs: release, pushToTalkReleasedAtHostUs: release }, token);
+  assert.equal(voiceStateStore.directive().capture, false);
+  t.mock.timers.tick(70); // The timer expired while the final microphone buffer was in transit.
+  const start = async (speechStartUs: number, rev = revision) =>
+    (await post("/voice/listener/speech?revision=" + rev, { phase: "start", speechStartUs }, token)).json();
+  const onset = release - 1;
+  assert.deepEqual(await start(press - 1), { accepted: false });
+  assert.deepEqual(await start(release), { accepted: false });
+  assert.deepEqual(await start(release + 1), { accepted: false });
+  assert.deepEqual(await start(onset, "unknown"), { accepted: false });
+  assert.deepEqual(await start(onset), { accepted: true });
+  t.mock.timers.tick(5500);
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.deepEqual(queued("Will"), []);
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(press), "x-voice-speech-start-host-us": String(onset),
+    "x-voice-capture-end-host-ms": String(release / 1000),
+  }, body: JSON.stringify(capture("Cancel.")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(cards.filter(c => c.state === "cancelled").map(c => c.id), ["held-target"]);
+  assert.deepEqual(queued("Will"), []);
+});
+
 test("the last microphone buffer can arrive after expiry, but speech starting at expiry cannot reserve delivery", async t => {
   const now = Date.now();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });

@@ -63,6 +63,10 @@ function speechCaptureKey(owner: string | undefined, revision: string | undefine
   return JSON.stringify([owner, revision, onsetUs]);
 }
 
+function withinReleasedHold(timeUs: number, release: { pressedAtUs: number; at: number }): boolean {
+  return timeUs >= release.pressedAtUs && timeUs < release.at * 1000;
+}
+
 function writeExpired(value?: string): boolean {
   if (value === undefined) return false;
   const expiry = Number(value);
@@ -537,7 +541,11 @@ export function registerVoiceUtteranceRoutes(
     if (parsed.data.phase === "finish") router.speechFinished(key);
     else {
       const directive = voiceStateStore.directive();
-      if (!featureEnabled(VOICE_FLAG) || !directive.capture || revision !== directive.revision) return c.json({ accepted: false });
+      if (!featureEnabled(VOICE_FLAG)) return c.json({ accepted: false });
+      if (!directive.capture || revision !== directive.revision) {
+        const release = revision && voiceStateStore.releasedCapture(revision);
+        if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
+      }
       router.speechStarted(key, parsed.data.speechStartUs);
     }
     return c.json({ accepted: true });
@@ -587,7 +595,7 @@ export function registerVoiceUtteranceRoutes(
     if (onsetUs !== undefined && (!onsetHeader?.trim() || !Number.isSafeInteger(onsetUs) || startUs === undefined ||
         onsetUs < startUs || !Number.isSafeInteger(end) || onsetUs >= end * 1000)) return c.json({ accepted: false });
     if (heldBeforeRelease) {
-      if (startUs === undefined || startUs < release.pressedAtUs ||
+      if (startUs === undefined || !withinReleasedHold(startUs, release) ||
           !Number.isSafeInteger(end) || end > release.at || startUs >= end * 1000) {
         c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
         c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));

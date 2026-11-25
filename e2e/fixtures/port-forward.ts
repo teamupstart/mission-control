@@ -4,7 +4,12 @@ import { connect, createServer, type Socket } from "node:net";
 export async function forward(baseURL: string) {
   const target = new URL(baseURL);
   const sockets = new Set<Socket>();
+  let paused = false;
   const server = createServer((client) => {
+    if (paused) {
+      client.destroy();
+      return;
+    }
     const upstream = connect(Number(target.port), "127.0.0.1");
     for (const socket of [client, upstream]) {
       sockets.add(socket);
@@ -25,6 +30,8 @@ export async function forward(baseURL: string) {
   return {
     port: address.port,
     disconnect,
+    pause() { paused = true; disconnect(); },
+    resume() { paused = false; },
     stop: async () => {
       disconnect();
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

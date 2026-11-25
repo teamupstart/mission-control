@@ -478,3 +478,57 @@ test("disabled voice links open Fleet and disabling voice closes an active stand
   }
   await captureCard(page, "disabled-route-fleet");
 });
+
+for (const [scenario, title] of [
+  ["lost", "one selection retries a committed placement whose reply was lost"],
+  ["reaffirmed", "a delayed retry preserves another dashboard’s reaffirmed placement"],
+  ["offline", "a retry remembers the committed placement after an intervening network failure"],
+] as const) {
+  test(title, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await allowStreamDisconnect(page);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await page.reload();
+    const group = page.getByRole("group", { name: "Confirmation card" });
+    await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
+    await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));
+    const url = daemon.baseURL + "/api/voice/confirmation";
+    await page.route(url, async route => { expect((await route.fetch()).ok()).toBe(true); }, { times: 1 });
+    // Keep the background reconciliation from observing the new revision before the retry.
+    await page.route("**/api/ui/config", () => {});
+    await group.getByRole("radio", { name: /Floating pill/ }).click();
+    await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
+    const popover = group.getByRole("radio", { name: /Tray popover/ });
+    if (scenario === "offline") {
+      await page.route(url, route => route.abort("connectionfailed"), { times: 1 });
+      const failed = page.waitForEvent("requestfailed", request => request.url() === url);
+      await popover.click();
+      await failed;
+      await expect(popover).toBeEnabled();
+    }
+    if (scenario === "reaffirmed") {
+      await page.route(url, async route => {
+        // Another dashboard saves the same value after the retry has already left this one.
+        const other = await page.request.put(url, { data: { confirmation: "pill" } });
+        expect(other.ok()).toBe(true);
+        await route.continue();
+      }, { times: 1 });
+    }
+    await popover.click();
+    await expect(popover).toBeEnabled();
+    const persisted = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation;
+    if (scenario === "reaffirmed") {
+      expect(persisted).toBe("pill");
+      await expect(group.getByRole("radio", { name: /Floating pill/ })).toBeChecked();
+      await expect(group.getByRole("alert")).toContainText("Could not save");
+      await page.mouse.move(0, 0);
+      await captureCard(group, "followup-reaffirmed-placement");
+      return;
+    }
+    await expect(popover).toBeChecked();
+    await expect(group.getByRole("alert")).toHaveCount(0);
+    expect(persisted).toBe("popover");
+    await page.mouse.move(0, 0);
+    await captureCard(group, "followup-placement-retry");
+  });
+}

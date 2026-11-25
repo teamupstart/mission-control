@@ -19,6 +19,8 @@ Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answ
 the send button names the agent who will receive the remaining message. With the cancel
 window off, delivery begins immediately. Sent and queued cards show the open question count. A queued receipt names the recipient. It mentions a current turn when the session is working and unpaused.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
+When the dashboard reconnects, it recovers missed delivery outcomes from the daemon’s latest 50 receipts. A freshly opened dashboard starts with active cards. Clearing Recently heard, disabling Voice or restarting the daemon clears the receipt history.
+A dashboard disconnected during a history clear can still recover deliveries that settle afterward on the same daemon.
 With Sound enabled, the pending chime plays only while the card still offers Cancel.
 A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
@@ -71,6 +73,7 @@ Closing a floating window leaves its card in the toast. The next confirmation or
 request can open the window again. Switching placement keeps the selected message and any action in progress.
 An unsure card opens the same history from **Recently heard**, or the Voice settings table in a browser. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
 cannot replace the newer saved choice, even when that save reaffirms the current placement.
+If the daemon saved the first choice but its reply was lost, choosing again uses the confirmed revision to finish the new save.
 Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed

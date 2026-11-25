@@ -22,7 +22,7 @@ async function capture(window: Page, name: string): Promise<void> {
   await window.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
 }
 
-async function voiceConfig(daemon: DaemonHandle): Promise<{ cancelWindow: { enabled: boolean; seconds: number }; whenUnsure: string; planFormsByVoice: boolean }> {
+async function voiceConfig(daemon: DaemonHandle): Promise<{ endOfSpeechMs: number; cancelWindow: { enabled: boolean; seconds: number }; whenUnsure: string; planFormsByVoice: boolean }> {
   const response = await fetch(`${daemon.baseURL}/api/voice/config`);
   expect(response.status).toBe(200);
   return ((await response.json()) as { config: Awaited<ReturnType<typeof voiceConfig>> }).config;
@@ -37,6 +37,30 @@ const rail = (window: Page) => window.getByRole("tablist", { name: "Settings cat
 const voiceTab = (window: Page) => rail(window).getByRole("tab", { name: "Voice" });
 const modeLine = (window: Page) => window.getByRole("status", { name: "Voice mode" });
 const flagToggle = (window: Page) => window.getByRole("button", { name: /^Voice addressing:/ });
+
+test("end-of-speech delay saves shorter and longer choices independently and survives a daemon restart", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const delay = page.getByRole("combobox", { name: "End-of-speech delay" });
+  const cancel = page.getByRole("combobox", { name: "Cancel window" });
+  await expect(delay).toHaveValue("2000");
+  await expect(delay).toBeEnabled();
+  if (EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await delay.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(EVIDENCE, "end-of-speech.png") });
+  }
+  for (const ms of [500, 5000]) {
+    await delay.selectOption(String(ms));
+    await expect.poll(async () => (await voiceConfig(daemon)).endOfSpeechMs).toBe(ms);
+    await expect(cancel).toHaveValue("4");
+  }
+  await daemon.shutdown();
+  await daemon.restart();
+  await page.reload();
+  await expect(delay).toHaveValue("5000");
+  await expect(cancel).toHaveValue("4");
+});
 
 test("reopening Voice settings preserves pending Clear and indicator saves, their errors, and retry", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);

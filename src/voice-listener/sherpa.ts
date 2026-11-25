@@ -39,11 +39,14 @@ const recognizer = new OfflineRecognizer({
     tokens, numThreads: 2, provider: "cpu", modelType: "nemo_transducer" },
   decodingMethod: "modified_beam_search",
 });
-const vad = new Vad({ sileroVad: { model: modelFile("onnx/model.onnx"), windowSize: 512, minSilenceDuration: 0.8,
-  minSpeechDuration: 0.15 }, numThreads: 1, sampleRate: 16000 }, 60);
+const detectorModel = modelFile("onnx/model.onnx");
+const createVad = (endOfSpeechMs: number) => new Vad({
+  sileroVad: { model: detectorModel, windowSize: 512, minSilenceDuration: endOfSpeechMs / 1000, minSpeechDuration: 0.15 },
+  numThreads: 1, sampleRate: 16000,
+}, 60);
 
 const hostNowUs = loadVoiceHostClock(fileURLToPath(new URL("../native/state-lock.node", import.meta.url)));
-await playRecording(client, signal => recordingSegments(mono, vad, signal, hostNowUs), async (samples, roster) => {
+await playRecording(client, signal => recordingSegments(mono, createVad, signal, hostNowUs), async (samples, roster) => {
   const stream = recognizer.createStream(rosterHotwords(roster, vocabulary));
   stream.acceptWaveform({ samples, sampleRate: 16000 });
   return recognizer.decodeAsync(stream);

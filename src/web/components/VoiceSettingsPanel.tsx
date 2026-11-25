@@ -7,6 +7,8 @@ import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
 import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
   VOICE_CANCEL_WINDOW_SECONDS,
+  VOICE_END_OF_SPEECH_MS,
+  VOICE_CONFIG_DEFAULTS,
   VOICE_CALL_POLL_RETRY,
   VOICE_INPUT_DEVICE_BUILT_IN,
   VOICE_INPUT_DEVICE_SYSTEM_DEFAULT,
@@ -503,6 +505,22 @@ export function VoiceSettingsPanel({
                 {inputs.map((input) => <option key={input.id} value={input.id}>{input.label}</option>)}
               </select>
             </Tooltip>
+          </div>
+        </div>
+        <div className="kb-row" data-anchor="voice/end-of-speech">
+          <div className="kb-row-text">
+            <label className="kb-row-label" htmlFor="voice-end-of-speech">End-of-speech delay</label>
+            <span className="kb-row-desc">How long to wait for more speech before submitting an automatic capture.</span>
+          </div>
+          <div className="kb-row-controls">
+            <select className="settings-select" id="voice-end-of-speech" disabled={!config}
+              value={config?.endOfSpeechMs ?? VOICE_CONFIG_DEFAULTS.endOfSpeechMs}
+              onChange={event => {
+                const duration = VOICE_END_OF_SPEECH_MS.find(ms => ms === Number(event.target.value));
+                if (duration !== undefined) void update({ endOfSpeechMs: duration });
+              }}>
+              {VOICE_END_OF_SPEECH_MS.map(ms => <option key={ms} value={ms}>{ms / 1000} s</option>)}
+            </select>
           </div>
         </div>
       </div>

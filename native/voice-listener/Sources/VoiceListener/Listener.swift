@@ -5,8 +5,11 @@ import Security
 enum CaptureError: Error { case device, format, listenerInUse }
 
 struct Directive: Decodable {
+    static let defaultEndOfSpeechMs = 2000
     let revision: String
+    let captureRevision: String?
     let capture: Bool
+    let endOfSpeechMs: Int?
     let inputDevice: String
     let roster: [String]
 }
@@ -286,6 +289,17 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     previous.cancel()
                     return true
                 }
+                let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
+                let duration = next.endOfSpeechMs ?? (held ? 800 : Directive.defaultEndOfSpeechMs)
+                if capture {
+                    guard (1...30_000).contains(duration) else { throw CaptureError.format }
+                    if !held, let authorization = next.captureRevision, current?.revision == authorization,
+                       let mic = current?.mic, mic.isRunning {
+                        mic.updateEndOfSpeechMs(duration)
+                        revision = next.revision
+                        continue
+                    }
+                }
                 if let current, permission() == "granted", releasedRevision == current.revision,
                    let time = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init) {
                     current.release(at: time)
@@ -299,9 +313,9 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     // its final frames. Keep polling so a mute can still cancel it.
                     closing.onInputClosed = { [weak self] in self?.directivePoll?.cancel() }
                 } else if capture {
-                    let held = http.value(forHTTPHeaderField: "x-voice-held-revision") == next.revision
-                    let batch = Capture(next.revision)
-                    let microphone = try Microphone(selection: next.inputDevice, held: held, onStopped: { [weak self] stopped in
+                    let batch = Capture(held ? next.revision : next.captureRevision ?? next.revision)
+                    let microphone = try Microphone(selection: next.inputDevice, held: held,
+                        endOfSpeechMs: duration, onStopped: { [weak self] stopped in
                         guard let self, self.current?.mic === stopped else { return }
                         self.current?.cancel()
                         self.current = nil
@@ -332,12 +346,12 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                     // Key-up may have arrived during this very decode.
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }
                                     guard let words else { return }
-                                    let (data, http) = try await daemon.postUtterance(revision: next.revision,
+                                    let (data, http) = try await daemon.postUtterance(revision: batch.revision,
                                         capture: (segment.startedAtHostUs, segment.speechStartHostUs, segment.endedAt),
                                         body: JSONEncoder().encode(words))
                                     try Task.checkCancellation()
                                     // The POST can also beat the key-up directive back to the helper.
-                                    if http.value(forHTTPHeaderField: "x-voice-release-revision") == next.revision,
+                                    if http.value(forHTTPHeaderField: "x-voice-release-revision") == batch.revision,
                                        let cutoff = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init),
                                        segment.endedAt > cutoff {
                                         daemonCutoff = cutoff

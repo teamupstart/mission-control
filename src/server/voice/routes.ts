@@ -533,7 +533,8 @@ export function registerVoiceUtteranceRoutes(
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const state = voiceStateStore.state();
     let directive = voiceStateStore.directive(state);
-    const revision = c.req.query("revision");
+    const submitted = c.req.query("revision");
+    const revision = submitted && submitted === directive.captureRevision ? directive.revision : submitted;
     const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt, voiceStateStore.captureGrantTime(revision));
     if (conflict === "stale") return c.json({ accepted: false });
     if (conflict === "while-speaking") {

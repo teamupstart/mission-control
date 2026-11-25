@@ -57,6 +57,11 @@ Each follow-up opens a fresh draft on the finished task’s repository. The regu
 draft stays available when the follow-up closes. If you leave the follow-up through a setup
 or launch repair link, reopening Dispatch restores its instructions and attachments.
 
+In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long the listener
+waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
+the words in the same utterance. Changes take effect while listening and persist after restart.
+Push-to-talk ends on key release. The separate **Cancel window** starts after routing.
+
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default. On macOS it appears under the menu bar on the display with
 the pointer, including while the dashboard is minimized. A floating card appears without taking
@@ -190,9 +195,14 @@ With only the TDT repository present, transcription continues with priming off.
 
 Fetch `GET /voice/listener/directive` with both `x-harness-token` and `x-voice-listener-id`
 on every poll. Use the same listener UUID that the daemon accepted at hello. The first poll returns
-`{ capture, roster, inputDevice, pauseMs, revision }`. The roster is an array of spoken names.
+`{ capture, roster, inputDevice, endOfSpeechMs, pauseMs, revision }`. The roster is an array of spoken names.
 After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
+Automatic capture directives also include a `captureRevision` that stays valid across
+silence delay edits. Both listeners send that revision with automatic utterances. The Swift listener
+updates the open microphone's silence boundary in place. Sherpa reprocesses unfinished recording
+audio with the new delay. A change in capture
+authorization discards that audio, including a mute and unmute between polls.
 `pauseMs` is optional and unused. This daemon sends null.
 
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
@@ -249,7 +259,7 @@ a hold. Legacy Unix key timestamps are accepted as input and have no delivery au
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
 steady background noise can continue between utterances. Parakeet transcribes each segment
-after 800 ms of frames classified as non-speech. If the 30-second buffer fills
+after the silence interval specified by the directive’s `endOfSpeechMs`. If the 30-second buffer fills
 before that boundary, the listener discards the whole utterance, including any further
 speech before the next silence boundary. During a key hold, the prefix remains recoverable
 for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
@@ -261,7 +271,7 @@ divides the measured span evenly among the corrected words. Interior boundaries 
 While listening, two completed phrases can wait in capture order behind a busy recognizer
 or a pending POST. If that queue fills, the listener drops the incoming phrase and reports
 the backlog on stderr. Only text, relative word timings and capture metadata reach the daemon. Samples and pending
-utterances stay in memory. Except for a matching push-to-talk release, a changed directive
+utterances stay in memory. A directive that revokes capture without a matching push-to-talk release
 discards buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
 If a hardware change stops the engine, the helper refreshes its directive and opens a new
 input if capture is still enabled. Losing an explicitly selected UID produces an input error.
@@ -772,6 +782,7 @@ never wrote needs no migration.
 | `muted` | `false` | Mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
 | `hotkey` | `cmd+ctrl+alt+v` | The mute chord in the format the Keyboard panel records, or null for none |
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
+| `endOfSpeechMs` | `2000` | Silence before automatic submission, in milliseconds (500, 800, 1000, 1500, 2000, 3000 or 5000) |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
 | `speech` | `{ voice: null }` | Automatic voice, or a saved engine and voice ID |

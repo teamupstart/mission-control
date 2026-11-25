@@ -44,7 +44,8 @@ for (const [backend, Client] of [["fluidaudio", FakeVoiceListener], ["sherpa-onn
       assert.ok((await listener.hello()).ok);
       setVoiceConfig({ muted: false });
       const initial = await listener.poll();
-      assert.deepEqual(initial, { revision: initial.revision, speak: null, capture: true, inputDevice: "built-in", roster: [], pauseMs: null });
+      assert.ok(initial.captureRevision && initial.captureRevision !== initial.revision);
+      assert.deepEqual(initial, { revision: initial.revision, captureRevision: initial.captureRevision, speak: null, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 2000, pauseMs: null });
       const words = [{ text: "hello", startMs: 0, endMs: 320 }];
       assert.deepEqual(await (await listener.utterance("hello", words, initial.revision)).json(), { accepted: true });
       const pending = listener.poll(initial.revision);
@@ -62,7 +63,27 @@ for (const [backend, Client] of [["fluidaudio", FakeVoiceListener], ["sherpa-onn
       assert.deepEqual(named.roster, ["Luna"]);
       const device = listener.poll(named.revision);
       setVoiceConfig({ inputDevice: "system-default" });
-      assert.equal((await device).inputDevice, "system-default");
+      let directive = await device;
+      assert.equal(directive.inputDevice, "system-default");
+      const captureRevision = directive.captureRevision;
+      assert.ok(captureRevision);
+      const previousPoll = directive.revision;
+      for (const endOfSpeechMs of [500, 5000, 2000] as const) {
+        const waiting = listener.poll(directive.revision);
+        setVoiceConfig({ endOfSpeechMs });
+        const next = await waiting;
+        assert.notEqual(next.revision, directive.revision);
+        assert.equal(next.endOfSpeechMs, endOfSpeechMs);
+        assert.equal(next.captureRevision, captureRevision);
+        directive = next;
+      }
+      assert.deepEqual(await (await listener.utterance("hello", words, previousPoll)).json(), { accepted: false });
+      // A decode started before the timing edits may finish afterward.
+      assert.deepEqual(await (await listener.utterance("hello", words, captureRevision)).json(), { accepted: true });
+      setVoiceConfig({ muted: true });
+      setVoiceConfig({ endOfSpeechMs: 500, muted: false });
+      assert.deepEqual(await (await listener.utterance("hello", words, captureRevision)).json(), { accepted: false });
+      setVoiceConfig({ endOfSpeechMs: 2000 });
     });
 
     test("poll holds through identical hellos then returns unchanged at 25 seconds", async (t) => {
@@ -240,14 +261,16 @@ test("a key release during decoding admits only speech read inside the hold", { 
     return response;
   });
   let ready = false;
-  await playRecording(client, signal => recordingSegments(new Float32Array(512 * 70), {
+  await playRecording(client, signal => recordingSegments(new Float32Array(512 * 70), () => ({
     acceptWaveform() {}, flush() { ready = true; }, isEmpty: () => !ready,
     front: () => ({ start: 10 * 512, samples: new Float32Array(60 * 512) }), pop() { ready = false; }, reset() {},
-  }, signal, voiceHostTimeUs), async () => {
+  }), signal, voiceHostTimeUs), async () => {
+    setVoiceConfig({ endOfSpeechMs: 5000 });
     await new Promise(resolve => setTimeout(resolve, 4));
     released = voiceHostTimeUs();
     voiceStateStore.acceptShellReport(VoiceShellReportSchema.parse({ reportedAtHostUs: released, callActive: true, pushToTalkReleasedAtHostUs: released }));
     assert.equal(voiceStateStore.state().mode, "auto-muted");
+    setVoiceConfig({ endOfSpeechMs: 2000 });
     return { text: "speech", tokens: [], timestamps: [], durations: [] };
   });
   assert.equal(accepted, true);
@@ -313,7 +336,7 @@ test("a mute during speech detection pauses the file scan and resumes at the nex
   const samples = new Float32Array(512 * windows);
   let detected = 0;
   let partial = 0;
-  await playRecording(client, signal => recordingSegments(samples, {
+  await playRecording(client, signal => recordingSegments(samples, () => ({
     acceptWaveform(batch) {
       assert.equal(batch.byteOffset / 4, scanned * 512);
       scanned++;
@@ -325,7 +348,7 @@ test("a mute during speech detection pauses the file scan and resumes at the nex
     pop() { detected = 0; },
     reset() { partial = 0; detected = 0; },
     flush() {},
-  }, signal, voiceHostTimeUs), async segment => {
+  }), signal, voiceHostTimeUs), async segment => {
     decoded.push(segment[0]!);
     return { text: "speech", tokens: [], timestamps: [], durations: [] };
   });
@@ -333,6 +356,26 @@ test("a mute during speech detection pauses the file scan and resumes at the nex
   assert.equal(scanned, windows);
   assert.deepEqual(decoded, [windows], "only speech captured under the resumed directive is decoded");
   assert.deepEqual(posts, [true]);
+});
+
+test("a revoked capture skips previously read samples even partway through Sherpa reprocessing", async () => {
+  const samples = new Float32Array(512 * 256);
+  const offsets: number[] = [];
+  const segments = recordingSegments(samples, () => ({
+    acceptWaveform(frame) { offsets.push(frame.byteOffset / Float32Array.BYTES_PER_ELEMENT); },
+    isEmpty: () => true, flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
+  }), new AbortController().signal, voiceHostTimeUs);
+  const original = { revision: "first", endOfSpeechMs: 2000 };
+  await segments.next(original);
+  await segments.next(original);
+  const firstUnread = offsets.at(-1)! + 512;
+  offsets.length = 0;
+  await segments.next({ revision: "edited", captureRevision: original.revision, endOfSpeechMs: 5000 });
+  assert.equal(offsets[0], 0);
+  assert.ok(offsets.at(-1)! + 512 < firstUnread);
+  offsets.length = 0;
+  await segments.next({ revision: "after mute and unmute", endOfSpeechMs: 5000 });
+  assert.equal(offsets[0], firstUnread);
 });
 
 test("muting during the last decode discards it and ends playback while capture stays muted", async () => {
@@ -347,10 +390,10 @@ test("muting during the last decode discards it and ends playback while capture 
     return response;
   });
   let ready = false;
-  await playRecording(client, signal => recordingSegments(Float32Array.of(1), {
+  await playRecording(client, signal => recordingSegments(Float32Array.of(1), () => ({
     acceptWaveform() {}, flush() { ready = true; }, isEmpty: () => !ready,
     front: () => ({ start: 0, samples: Float32Array.of(1) }), pop() { ready = false; }, reset() { ready = false; },
-  }, signal, voiceHostTimeUs), async () => {
+  }), signal, voiceHostTimeUs), async () => {
     setVoiceConfig({ muted: true });
     return { text: "last", tokens: [], timestamps: [], durations: [] };
   });
@@ -369,11 +412,11 @@ test("completed speech is delivered before the scanner reads any trailing silenc
     if (new URL(url).pathname === "/voice/utterances" && (await response.clone().json()).accepted) deliveredAt.push(scanned);
     return response;
   });
-  await playRecording(client, signal => recordingSegments(new Float32Array(512 * windows), {
+  await playRecording(client, signal => recordingSegments(new Float32Array(512 * windows), () => ({
     acceptWaveform() { ready = ++scanned === 3; },
     isEmpty: () => !ready, front: () => ({ start: 0, samples: Float32Array.of(1) }),
     pop() { ready = false; }, reset() { ready = false; }, flush() {},
-  }, signal, voiceHostTimeUs), async () => ({ text: "command", tokens: [], timestamps: [], durations: [] }));
+  }), signal, voiceHostTimeUs), async () => ({ text: "command", tokens: [], timestamps: [], durations: [] }));
   assert.deepEqual(deliveredAt, [3]);
   assert.equal(scanned, windows);
 });
@@ -447,13 +490,13 @@ test("scanning a silent recording lets the event loop run before reaching EOF", 
   const lifetime = new AbortController();
   const windows = 256;
   let scanned = 0;
-  const segments = recordingSegments(new Float32Array(512 * windows), {
+  const segments = recordingSegments(new Float32Array(512 * windows), () => ({
     acceptWaveform() {
       if (++scanned === 1) setImmediate(() => lifetime.abort());
     },
     isEmpty: () => true,
     flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
-  }, lifetime.signal, voiceHostTimeUs);
+  }), lifetime.signal, voiceHostTimeUs);
   assert.deepEqual(await segments.next({ revision: "active" }), { done: false, value: null });
   await assert.rejects(segments.next({ revision: "active" }), { name: "AbortError" });
   assert.ok(scanned > 0 && scanned < windows);

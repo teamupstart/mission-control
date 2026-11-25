@@ -180,19 +180,27 @@ export class VoiceStateStore {
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
-    const inputDevice = this.deps.config().inputDevice;
+    const { inputDevice, endOfSpeechMs: automaticDelay } = this.deps.config();
+    // An automatic timing edit must not interrupt a hold or revoke its pending key-up delivery.
+    const endOfSpeechMs = state.mode === "push-to-talk" || state.mode === "auto-muted" ? 800 : automaticDelay;
     const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
     const last = this.lastDirective;
-    if (last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
-      last.recipients === recipients && last.press === press) return last.directive;
-    const directive = { capture, speak: null, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
+    const sameCapture = last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted &&
+      last.directive.capture === capture && last.directive.inputDevice === inputDevice && last.recipients === recipients && last.press === press;
+    if (sameCapture && last.directive.endOfSpeechMs === endOfSpeechMs) return last.directive;
+    // A timing edit wakes pollers but keeps the same authorization for automatic audio already captured.
+    const automatic = capture && state.mode === "listening";
+    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, roster: state.roster.map(entry => entry.name),
+      pauseMs: null, revision: randomUUID(),
+      ...(automatic && { captureRevision: sameCapture ? last.directive.captureRevision : randomUUID() }) };
     // Only successive key presses and releases share pending delivery rights.
     const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
       (last?.mode === "push-to-talk" && state.mode === "auto-muted");
     if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
+    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press,
+      issuedAt: automatic && sameCapture ? last.issuedAt : undefined };
     return directive;
   }
 

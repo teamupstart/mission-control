@@ -152,6 +152,39 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     });
   }
 
+  it("applies revised end-of-speech timing to the running Swift microphone listener", async t => {
+    const captureRevision = "automatic-capture";
+    const { events, posted, nextPoll } = await launch(t, { initialCapture: false });
+    let revision = "active";
+    (await nextPoll("first")).end(JSON.stringify({ revision, captureRevision, capture: true, inputDevice: "built-in", roster: [] }));
+    await until(() => events.includes("decode in-flight"), "decode to start before the edit");
+    for (const endOfSpeechMs of [500, 5000]) {
+      const poll = await nextPoll(revision);
+      revision = String(endOfSpeechMs);
+      poll.end(JSON.stringify({ revision, captureRevision, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs }));
+    }
+    const replacement = await nextPoll(revision);
+    await until(() => events.includes("silence interval 5000 ms") && posted.length === 2, "final setting and buffered speech");
+    assert.deepEqual(events.filter(e => /^(opened|stopped) /.test(e)), ["opened 1"]);
+    assert.deepEqual(posted, [{ text: "in-flight", revision: captureRevision }, { text: "buffered", revision: captureRevision }]);
+    assert.deepEqual(events.filter(e => e.startsWith("silence interval")), [
+      "silence interval 2000 ms", "silence interval 500 ms", "silence interval 5000 ms",
+    ]);
+    replacement.end(JSON.stringify({ revision: "resumed", captureRevision: "new-capture", capture: true, inputDevice: "built-in", roster: [] }));
+    await until(() => events.includes("opened 2"), "new capture authorization to open a fresh microphone");
+    assert.deepEqual(events.filter(e => /^(opened|stopped) /.test(e)), ["opened 1", "stopped 1", "opened 2"]);
+  });
+
+  it("rejects an invalid end-of-speech duration before opening the microphone", async t => {
+    const { events, diagnostics, nextPoll, child, closed } = await launch(t, { initialCapture: false });
+    const poll = await nextPoll("first");
+    poll.end(JSON.stringify({ revision: "invalid", capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 0 }));
+    await until(() => child.exitCode !== null, "invalid capture directive to stop the listener");
+    assert.deepEqual(await closed, [1, null]);
+    assert.ok(diagnostics.includes("Voice listener stopped. Check the daemon, local models and selected input."));
+    assert.deepEqual(events.filter(e => e.startsWith("opened ") || e.startsWith("silence interval ")), []);
+  });
+
   it("the managed Swift listener authenticates its daemon before delivering its first hello", async t => {
     const endpointFile = join(dir, "desktop.json");
     const tokenFile = join(dir, "desktop-token");

@@ -72,6 +72,7 @@ test("the config schema holds every contract A field with its default", () => {
     muted: false,
     hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
+    endOfSpeechMs: 2000,
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show", speech: { voice: null },
     planFormsByVoice: true,

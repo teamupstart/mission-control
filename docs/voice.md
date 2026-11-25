@@ -625,6 +625,14 @@ a 40-character commit does not parse. The `fluidaudio` entry holds two models, 5
 | Parakeet TDT 0.6B v2, Core ML | `FluidInference/parakeet-tdt-0.6b-v2-coreml` at `ee09c569f73759e6d44c9bd16766f477b2b36d39`: the Encoder, Decoder, JointDecision and Preprocessor models and `parakeet_vocab.json` | The recognizer |
 | Parakeet TDT-CTC 110M, Core ML | `FluidInference/parakeet-ctc-110m-coreml` at `accdafd8cf8a2ff1cabe3c11e54416b405d409aa` | FluidAudio primes the roster's names with a vocabulary-boosting pass over this model |
 
+The daemon verifies Hugging Face's certificate against Node's bundled roots, any
+`NODE_EXTRA_CA_CERTS` it inherited, and the operating system's certificate store, so a download
+through a TLS-inspecting proxy whose root the machine already trusts succeeds even when the daemon
+was started from the Finder. Verification is never turned off. Adding the system store needs Node
+24.5 or newer (the desktop app's runtime qualifies). On an older Node the daemon logs
+`[tls] the system certificate store was not added` at startup and trusts only Node's own roots and
+`NODE_EXTRA_CA_CERTS`.
+
 On Apple silicon running macOS 14 or newer, `auto` selects FluidAudio.
 Elsewhere it selects sherpa-onnx. Select either backend with `PUT /api/voice/config`
 or set `MISSION_VOICE_BACKEND` when starting the daemon. Switching keeps the other

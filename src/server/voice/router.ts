@@ -292,6 +292,7 @@ export class VoiceRouter {
     private readonly hostNowUs: () => number = voiceHostTimeUs,
     private readonly questions?: VoiceQuestions,
     private readonly speech?: { resolving?(): void; unsure(card: VoiceCard): void; stop(cardId: string): void },
+    private readonly onCancelWindowChange?: (open: boolean) => void,
   ) {}
 
   private publish(card: VoiceCard): void {
@@ -744,11 +745,10 @@ export class VoiceRouter {
       parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
+    if (windowMs) this.scheduleSend(item, Math.ceil(expiresAt - performance.now()));
     this.questions!.publish(review.id, item.answer);
     if (!item.answer.footerWindowId) this.publish(item.card);
-    if (!windowMs) { await this.sendNow(id); return; }
-    item.timer = setTimeout(() => { void this.sendNow(id); }, Math.ceil(expiresAt - performance.now()));
-    item.timer.unref();
+    if (!windowMs) await this.sendNow(id);
   }
 
   /**
@@ -883,11 +883,17 @@ export class VoiceRouter {
       const ms = window.seconds * 1000;
       card.windowMs = ms;
       card.deadline = Date.now() + ms;
-      item.timer = setTimeout(() => { void this.sendNow(card.id); }, ms);
-      item.timer.unref?.();
+      this.scheduleSend(item, ms);
     }
     this.publish(card);
     if (card.state === "unsure" && !item.questionPick && this.open.get(card.id) === item) this.speech?.unsure(card);
+  }
+
+  private scheduleSend(item: OpenCard, ms: number): void {
+    const { id } = item.card;
+    item.timer = setTimeout(() => { void this.sendNow(id); }, ms);
+    item.timer.unref?.();
+    this.onCancelWindowChange?.(true);
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
@@ -901,6 +907,9 @@ export class VoiceRouter {
     }
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
+    if (item.card.deadline !== null) {
+      this.onCancelWindowChange?.([...this.open.values()].some(({ card }) => card.state === "pending" && !!card.windowMs));
+    }
   }
 
   cancelEditedAnswer(reviewId: string, originId: string): boolean {
@@ -1232,6 +1241,7 @@ export class VoiceRouter {
     this.heard.clear();
     this.priorChoices.length = 0;
     this.picksLostThrough = undefined;
+    this.onCancelWindowChange?.(false);
   }
 
   reset(): void {

@@ -111,6 +111,7 @@ export class VoiceStateStore {
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private cancelWindowOpen = false;
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   // Heartbeat expiry transfers the lease but cannot close a previous owner's microphone.
@@ -172,6 +173,12 @@ export class VoiceStateStore {
     return id !== undefined && this.liveHello()?.ownerId === id;
   }
 
+  setCancelWindowOpen(open: boolean): void {
+    if (this.cancelWindowOpen === open) return;
+    this.cancelWindowOpen = open;
+    this.publish();
+  }
+
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
     const granted = this.liveHello()?.hello.microphone === "granted";
@@ -180,7 +187,8 @@ export class VoiceStateStore {
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
-    const { inputDevice, endOfSpeechMs: automaticDelay } = this.deps.config();
+    const { inputDevice, endOfSpeechMs: configuredDelay } = this.deps.config();
+    const automaticDelay = this.cancelWindowOpen ? 500 : configuredDelay;
     // An automatic timing edit must not interrupt a hold or revoke its pending key-up delivery.
     const endOfSpeechMs = state.mode === "push-to-talk" || state.mode === "auto-muted" ? 800 : automaticDelay;
     const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
@@ -581,6 +589,7 @@ export class VoiceStateStore {
     this.latestRelease = undefined;
     this.lastDirective = undefined;
     this.grants?.close();
+    this.cancelWindowOpen = false;
     this.grants = undefined;
     this.hello = null;
     this.refused = null;

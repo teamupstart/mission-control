@@ -61,6 +61,8 @@ In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long 
 waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
 the words in the same utterance. Changes take effect while listening and persist after restart.
 Push-to-talk ends on key release. The separate **Cancel window** starts after routing.
+While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
+“cancel” can reach the router before delivery. The selected delay resumes when the last countdown closes.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default. On macOS it appears under the menu bar on the display with

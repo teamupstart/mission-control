@@ -485,7 +485,7 @@ export function registerVoiceUtteranceRoutes(
         if (sentence) voiceStateStore.speech.open("ask", sentence, card.id);
       },
       stop(cardId) { if (featureEnabled(VOICE_FLAG)) voiceStateStore.speech.stopCard(cardId); },
-    });
+    }, open => voiceStateStore.setCancelWindowOpen(open));
   app.put("/api/voice/open-cards", gate, limitBody, async c => {
     const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
     if (!parsed.ok) return parsed.res;

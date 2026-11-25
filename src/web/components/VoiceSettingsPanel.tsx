@@ -532,7 +532,7 @@ export function VoiceSettingsPanel({
       </div>
 
       <FasterRoutingGroup state={state} keys={keys} />
-      <VoiceCardPlacement state={voice} />
+      <VoiceCardPlacement />
       <VoiceIndicatorSettings />
       <RecentlyHeard roster={voice?.roster ?? []} />
     </section>

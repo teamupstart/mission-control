@@ -8,7 +8,7 @@ test("three placement previews persist across reload, with a toast fallback and 
   await page.goto(daemon.baseURL + "/#/settings/voice");
   const choices = page.getByRole("group", { name: "Confirmation card" });
   await expect(choices.getByRole("radio")).toHaveCount(3);
-  await expect(choices.getByText("Needs the desktop app")).toHaveCount(2);
+  await expect(choices.getByText("Needs the desktop app")).toHaveCount(0);
   for (const placement of ["Corner toast", "Tray popover", "Floating pill"]) {
     const radio = choices.getByRole("radio", { name: new RegExp(placement) });
     await expect(radio).toHaveAccessibleDescription(`Save ${placement} as your preferred confirmation card placement`);
@@ -293,7 +293,7 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     } } });
     expect(resident.ok(), await resident.text()).toBe(true);
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
-    await expect(choices.getByText("Needs the desktop app")).toHaveCount(2);
+    await expect(choices.getByText("Needs the desktop app")).toHaveCount(0);
     const report = await page.request.post(daemon.baseURL + "/voice/shell-report", {
       headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { "floating-windows": { available: true } } },
     });

@@ -6,8 +6,8 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
-  card: DashboardVoiceCard; actions: VoiceCardActions; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
+function Card({ card, actions, surface, hidden, fading, notify, sound, notifications }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ state: DashboardVoiceCard["state"]; message: string } | null>(null);
@@ -129,7 +129,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       dismiss?.();
     };
   }, [cardId, wireDeadline, deadline, card.windowMs, card.provisionalDeadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
+  return <VoiceCardView surface={surface} card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 
 export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, notifications }: {
@@ -164,7 +164,7 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     return () => window.clearTimeout(timer);
   }, [nextDeadline]);
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
-    {pending.concat(others).map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
+    {pending.concat(others).map(card => <Card surface={surface} key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
     {choices.length > 1 && selected && <label className="vc-switch">Voice message
       <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>

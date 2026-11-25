@@ -14,6 +14,7 @@ export interface VoiceCardActions {
   reviews: readonly ReviewItem[];
   roster: readonly SpokenName[];
   setVoiceCardRetention(id: string, retention: VoiceCardRetention): void;
+  openRecentlyHeard?(): void;
   openQuestion(sessionId: string, questionId: string): void;
   followUp(taskId: string): Promise<ActionResult> | ActionResult;
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
@@ -83,8 +84,8 @@ function CountdownAnnouncement({ card, deadline }: { card: DashboardVoiceCard; d
   return <span className="sr-only">{message}</span>;
 }
 
-export function VoiceCardView({ card, actions, operation, hidden = false, fading = false }: {
-  card: DashboardVoiceCard; actions: VoiceCardActions; hidden?: boolean; fading?: boolean;
+export function VoiceCardView({ card, actions, operation, surface, hidden = false, fading = false }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden?: boolean; fading?: boolean;
   operation: { busy: boolean; feedback: string; run(perform: () => Promise<ActionResult>, success?: string, failure?: string, retryAfterMs?: number): Promise<void> };
 }) {
   const [now, setNow] = useState(() => performance.now());
@@ -97,7 +98,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
   const { setVoiceCardRetention } = actions;
   useLayoutEffect(() => {
     // Replacing or disabling a focused button can remove it without a blur event.
-    if (focused && (hidden || !article.current?.contains(document.activeElement))) setFocused(false);
+    if (focused && (hidden || !article.current?.contains(article.current.ownerDocument.activeElement))) setFocused(false);
   }, [card, focused, busy, feedback, hidden]);
   const retention = busy || (focused && !hidden) ? "in-use" : hidden && feedback ? "hidden-feedback" : "reading";
   useLayoutEffect(() => {
@@ -189,6 +190,16 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
     }
   }
 
+  const simple = !split && !card.mentions?.length;
+  const pill = surface === "pill" && simple;
+  const seconds = voiceCountdownSeconds(remaining, card.windowMs);
+  const progress = Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%";
+  const time = <>{card.provisionalDeadline ? "≤" : ""}{seconds}{pill ? "" : "s"}</>;
+  const timerButton = <Tooltip label="Deliver this message before the countdown ends">
+    <button type="button" aria-label="Send now" disabled={busy} onClick={() => act("send-now")}
+      className={pill ? "vc-ring" : "vc-time-button vc-seconds"}
+      style={pill ? { background: `conic-gradient(var(--working) ${progress}, var(--border) ${progress})` } : undefined}><span>{time}</span></button>
+  </Tooltip>;
   let body: ReactNode;
   switch (card.state) {
     case "resolving": body = <b>Working out who this is for</b>; break;
@@ -200,9 +211,17 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
             pick={() => void run(() => api.voiceCardAction(card.id, "pick", { candidateId: c.id }), "", "Recipient selection was not confirmed. ")} disabled={busy} />;
         })}
-        <div className="vc-row"><span className="vc-grow vc-hint">Say the name again, or click a row. <q>Cancel</q> drops it.</span>{cancel}</div></>;
+        <div className="vc-row"><span className="vc-grow vc-hint">Say the name again, or click a row. <q>Cancel</q> drops it.</span>{cancel}</div>
+        {actions.openRecentlyHeard && button("Recently heard", "Open recently heard utterances", actions.openRecentlyHeard, "vc-history-link")}</>;
       break;
     case "pending": {
+      if (pill && deadline !== null && remaining > 0) {
+        body = <>{timerButton}<span className="vc-pill-message">
+          To {named(first?.target)}: {first?.text}</span>{cancel}
+          <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />
+          <span className="vc-pill-hint">Say <q>cancel</q> to stop.</span></>;
+        break;
+      }
       const mention = !!card.mentions?.length;
       const remainingParts = card.parts.filter(part => !part.immediateStop);
       const recipient = remainingParts[0]?.target?.name;
@@ -211,8 +230,8 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
       else if ((split || mention) && recipient) sendLabel = "Send to " + recipient + " now";
       const sendHint = split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
         : "Deliver this message before the countdown ends";
-      body = <><div className="vc-row"><Icon name="mic" /><span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
-        {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, card.windowMs)}s</span>}</div>
+      body = <><div className="vc-row">{(!surface || !simple) && <Icon name="mic" />}<span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
+        {remaining > 0 && (surface && simple ? timerButton : <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, card.windowMs)}s</span>)}</div>
         {card.parts.map((p, i) => {
           if (!split && !mention) return <Transcript key={i} text={p.text} />;
           const text = p.immediateStop ? p.detail ?? p.text : p.text;
@@ -225,17 +244,19 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />
           <div className="vc-count" aria-hidden="true"><i style={{ width: Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%" }} /></div>
           <div className="vc-row"><span className="vc-hint vc-grow">Say <q>cancel</q> to stop{split ? card.parts.some(p => p.immediateStop) ? " the remaining message" : " both" : ""}.</span>
-            {cancel}{button(sendLabel, sendHint, () => act("send-now"), "btn-send")}</div></>}</>;
+            {cancel}{(!surface || !simple) && button(sendLabel, sendHint, () => act("send-now"), "btn-send")}</div></>}</>;
       break;
     }
     default:
       body = <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
         {(card.state === "sent" || card.state === "queued") && card.openQuestions > 0 && <>
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
-          <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;
+          {surface ? <span className="spoken-hint">Say <q>{first?.target?.name}, answer</q> to reply to one.</span> :
+            <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint>}</>}</>;
   }
-  return <article ref={article} role="status" data-fading={(fading && !focused && !busy) || undefined}
+  return <article ref={article} role="status" aria-label={pill && card.state === "pending" ? `To ${first?.target?.name}: ${first?.text}` : undefined} data-fading={(fading && !focused && !busy) || undefined}
     onFocus={() => setFocused(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
+    data-pill={pill && ((card.state === "pending" && remaining > 0) || card.state === "sent" || card.state === "queued") || undefined}
     className={`voice-card vc-${card.state}${split || card.mentions?.length ? " vc-multiple" : ""}`}
     style={first?.target?.colorId ? residentAccentStyle(first.target.colorId) : undefined}>
     {body}{feedback && <span className="vc-meta">{feedback}</span>}

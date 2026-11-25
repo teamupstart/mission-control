@@ -14,6 +14,8 @@ declare global {
     isDesktop: boolean;
     showVoiceCardNotice?(input: VoiceCardNotice): Promise<VoiceCardNoticeResult>;
     dismissVoiceCardNotice?(id: string): void;
+    onRecentlyHeard?(callback: () => void): () => void;
+    revealVoiceDashboard?(): void;
     fixVoiceMicrophone?(): Promise<"checked" | "unavailable">;
     checkVoiceMicrophone?(): Promise<"checked" | "unavailable">;
     version(): Promise<string>;

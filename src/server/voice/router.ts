@@ -591,6 +591,8 @@ export class VoiceRouter {
       // A named command identifies its control across the agent's open cards. Plain
       // dictation is contextual, and an unnamed "reply" always stays with the focused card.
       const command = namedInboxCommand(body);
+      // routeUtterance already classified interrupts. A remaining "stop" is message text.
+      if (command?.action === "stop") return false;
       const offering = candidates.filter(c => (c.kind === "report" || c.kind === "stuck") &&
         (command ? c.actions?.includes(command.action) : spokenInboxAction(c.actions ?? [], body, false)));
       const selected = focusedVoiceCard(offering);

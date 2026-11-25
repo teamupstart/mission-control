@@ -414,13 +414,13 @@ app.whenReady().then(async () => {
   const launchWarning = runningBundle && process.platform === "darwin" ? await unmanagedLaunchMessage(runningBundle) : null;
   if (launchWarning) logMain(`unmanaged app launch: ${launchWarning}`);
 
-  const voiceSigner = process.platform === "darwin" ? shellVoiceSigner() : undefined;
+  let voiceSigner: Awaited<ReturnType<typeof shellVoiceSigner>>;
   backgroundStart = ownElectronBackgroundStart(
     process.env.MISSION_DEV_SERVER_URL,
     () =>
       startDaemon({
         serverEntry: paths.serverEntry,
-        voiceVerifier: voiceSigner?.daemonEnv,
+        voiceVerifier: process.platform === "darwin" ? () => voiceSigner?.daemonEnv.MISSION_VOICE_SHELL_PUBLIC_KEY : undefined,
         webDir: paths.webDir,
         // Logs live beside the daemon's own state (honors MISSION_HOME), matching where
         // it keeps its db + token.
@@ -494,7 +494,8 @@ app.whenReady().then(async () => {
     },
   });
   if (process.platform === "darwin" && !isQuitting()) {
-    voice = startShellVoice(join(appRoot, "dist", "native", "voice-listener"), setTrayVoice, undefined, voiceSigner);
+    voice = startShellVoice(join(appRoot, "dist", "native", "voice-listener"), setTrayVoice, undefined,
+      async () => voiceSigner = await shellVoiceSigner());
   }
   void updaterStart;
 

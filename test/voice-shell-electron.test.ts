@@ -47,29 +47,33 @@ test("packaged shell reloads the same encrypted supervisor key on restart and su
   const entry = buildVoiceShellFixture(root, `
       import { safeStorage } from "electron";
       import { createPrivateKey, createPublicKey } from "node:crypto";
-      import { readFileSync } from "node:fs";
+      import { readFileSync, writeFileSync } from "node:fs";
       import { shellVoiceSigner } from "./src/main/voice-signing.ts";
-      globalThis.readShellCredential = () => {
-        const signer = shellVoiceSigner();
+      globalThis.readShellCredential = async (legacy) => {
+        const signer = await shellVoiceSigner();
         if (!signer) return null;
         const sealed = Buffer.from(JSON.parse(readFileSync(${JSON.stringify(credential)}, "utf8")), "base64");
-        const key = Buffer.from(safeStorage.decryptString(sealed), "base64");
+        const key = Buffer.from((await safeStorage.decryptStringAsync(sealed)).result, "base64");
         try {
+          if (legacy) {
+            const previousFormat = safeStorage.encryptString(key.toString("base64"));
+            writeFileSync(${JSON.stringify(credential)}, JSON.stringify(previousFormat.toString("base64")));
+          }
           const stored = createPrivateKey({ key, format: "der", type: "pkcs8" });
           const verifier = createPublicKey(stored).export({ format: "der", type: "spki" }).toString("base64");
           return { verifier, daemonEnv: signer.daemonEnv };
         } finally { key.fill(0); }
       };
   `);
-  const launch = async (locked: boolean) => {
+  const launch = async (locked: boolean, legacy = false) => {
     const shell = await launchVoiceShellFixture(root, entry);
     try {
-      return await shell.evaluate(async ({ app, safeStorage }, locked) => {
+      return await shell.evaluate(async ({ app, safeStorage }, { locked, legacy }) => {
         await app.whenReady();
-        if (locked) safeStorage.isEncryptionAvailable = () => false;
+        if (locked) safeStorage.isAsyncEncryptionAvailable = async () => false;
         type Credential = { verifier: string; daemonEnv: Record<string, string> };
-        return (globalThis as unknown as {readShellCredential(): Credential | null}).readShellCredential();
-      }, locked);
+        return (globalThis as unknown as {readShellCredential(legacy: boolean): Promise<Credential | null>}).readShellCredential(legacy);
+      }, { locked, legacy });
     } finally { await shell.close(); }
   };
   assert.equal(await launch(true), null);
@@ -77,13 +81,62 @@ test("packaged shell reloads the same encrypted supervisor key on restart and su
   const first = await launch(false);
   assert.ok(first?.verifier);
   assert.deepEqual(first.daemonEnv, { MISSION_VOICE_SHELL_PUBLIC_KEY: first.verifier });
+  assert.deepEqual(await launch(false, true), first);
   const sealed = readFileSync(credential);
-  assert.deepEqual(await launch(false), first);
+  assert.deepEqual(await launch(false), first, "previously sealed key retains its identity");
   assert.equal(await launch(true), null);
   assert.deepEqual(readFileSync(credential), sealed);
 });
 
-test("a refused shell start launches only a capture-only Swift listener", {
+test("an owned daemon reads the deferred verifier over its private Electron port and pins it for later reports", {
+  skip: process.platform !== "darwin", timeout: 30_000,
+}, async t => {
+  assertElectronGuiLaunchAllowed();
+  const root = mkdtempSync(join(tmpdir(), "voice-verifier-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const childEntry = join(root, "daemon.cjs");
+  buildSync({ stdin: { resolveDir: resolve("."), contents: `
+    import { desktopVoiceVerifier } from "./src/server/voice/desktop-verifier.ts";
+    const load = desktopVoiceVerifier();
+    process.parentPort.on("message", async ({ data }) => {
+      if (data !== "probe") return;
+      if (await load()) process.parentPort.postMessage({ verifier: process.env.MISSION_VOICE_SHELL_PUBLIC_KEY ?? null });
+    });
+  ` }, bundle: true, platform: "node", format: "cjs", outfile: childEntry });
+  const entry = buildVoiceShellFixture(root, `
+    import { app, utilityProcess } from "electron";
+    import { serveDesktopVoiceVerifier } from "./src/server/voice/desktop-verifier.ts";
+    app.whenReady().then(() => {
+      const child = utilityProcess.fork(${JSON.stringify(childEntry)}, [], { env: { ...process.env, MISSION_VOICE_DESKTOP_VERIFIER: "1" } });
+      let publicKey;
+      let reads = 0;
+      serveDesktopVoiceVerifier(child, () => { reads++; return publicKey; });
+      globalThis.probe = key => new Promise(resolve => {
+        publicKey = key;
+        const receive = message => {
+          if (!("verifier" in message)) return;
+          child.off("message", receive);
+          resolve({ key: message.verifier, reads });
+        };
+        child.on("message", receive);
+        child.postMessage("probe");
+      });
+      app.on("before-quit", () => child.kill());
+    });
+  `);
+  const shell = await launchVoiceShellFixture(root, entry);
+  try {
+    const probe = (key: string | null) => shell.evaluate(async ({ app }, key) => {
+      await app.whenReady();
+      return (globalThis as unknown as { probe(key: string | null): Promise<{ key: string | null; reads: number }> }).probe(key);
+    }, key);
+    assert.deepEqual(await probe(null), { key: null, reads: 1 });
+    assert.deepEqual(await probe("first verifier"), { key: "first verifier", reads: 2 });
+    assert.deepEqual(await probe("different verifier"), { key: "first verifier", reads: 2 });
+  } finally { await shell.close(); }
+});
+
+for (const refusalStatus of [403, 404]) test(`an adopted daemon returning ${refusalStatus} launches one capture-only listener after deferred Keychain access`, {
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
@@ -92,12 +145,23 @@ test("a refused shell start launches only a capture-only Swift listener", {
   writeFileSync(join(root, "token"), ensureToken());
   const binary = join(root, "dist", "native", "voice-listener");
   const entry = buildVoiceShellFixture(root, `
-    import { app, systemPreferences } from "electron";
+    import { app, BrowserWindow, safeStorage, systemPreferences } from "electron";
     import { startShellVoice } from "./src/main/voice-state.ts";
     import { shellVoiceSigner } from "./src/main/voice-signing.ts";
     app.whenReady().then(() => {
       systemPreferences.getMediaAccessStatus = () => "granted";
-      const service = startShellVoice(${JSON.stringify(binary)}, () => {}, undefined, shellVoiceSigner());
+      const available = safeStorage.isAsyncEncryptionAvailable.bind(safeStorage);
+      const access = Promise.withResolvers();
+      globalThis.allowAccess = access.resolve;
+      globalThis.keyRequests = 0;
+      safeStorage.isAsyncEncryptionAvailable = async () => {
+        globalThis.keyRequests++;
+        await access.promise;
+        return available();
+      };
+      const service = startShellVoice(${JSON.stringify(binary)}, state => { globalThis.voiceMode = state.mode; }, undefined, shellVoiceSigner);
+      const window = new BrowserWindow({ show: false });
+      void window.loadURL("about:blank");
       globalThis.stopVoice = () => service.stop();
     });
   `);
@@ -116,13 +180,15 @@ test("a refused shell start launches only a capture-only Swift listener", {
   let captureGranted = false;
   let signedStart = false;
   let refusal: ServerResponse | undefined;
+  let events: ServerResponse | undefined;
   const lifetime = new AbortController();
   t.after(() => lifetime.abort());
   await serveDesktopVoice(async (req, res) => {
     const url = new URL(req.url!, "https://localhost");
     if (url.pathname === "/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.write("data: " + JSON.stringify({ type: "snapshot", voice }) + "\n\n");
+      events = res;
+      res.write('data: {"type":"snapshot"}\n\n');
       return;
     }
     let body = "";
@@ -154,10 +220,24 @@ test("a refused shell start launches only a capture-only Swift listener", {
   const shell = await launchVoiceShellFixture(root, entry);
   let fallbackPid = 0;
   try {
+    const page = await shell.firstWindow();
+    type Desktop = { keyRequests: number; allowAccess(): void; voiceMode?: string };
+    const desktop = () => shell.evaluate(() => {
+      const { keyRequests, voiceMode } = globalThis as unknown as Desktop;
+      return { keyRequests, voiceMode };
+    });
+    await t.waitFor(async () => assert.deepEqual(await desktop(), { keyRequests: 0, voiceMode: "off" }));
+    assert.ok(events);
+    events.write("data: " + JSON.stringify({ type: "voice_state", state: voice }) + "\n\n");
+    await t.waitFor(async () => assert.deepEqual(await desktop(), { keyRequests: 1, voiceMode: "listening" }));
+    assert.equal(await page.evaluate(() => document.readyState), "complete");
+    assert.deepEqual(reports, []);
+    assert.equal(helperPids.size, 0);
+    await shell.evaluate(() => (globalThis as unknown as Desktop).allowAccess());
     const start = await t.waitFor(() => { assert.ok(refusal); return refusal; }, { timeout: 10_000 });
     assert.ok(signedStart);
     assert.equal(helperPids.size, 0);
-    start.writeHead(403).end();
+    start.writeHead(refusalStatus).end();
     await t.waitFor(() => assert.ok(captureGranted), { timeout: 10_000 });
     assert.equal(helperPids.size, 1);
     const [pid] = helperPids;
@@ -169,7 +249,7 @@ test("a refused shell start launches only a capture-only Swift listener", {
     assert.equal(instanceHeaderSent, false);
     assert.equal(existsSync(join(root, "voice", "supervised", "shell.json")), false);
   } finally {
-    if (refusal && !refusal.writableEnded) refusal.writeHead(403).end();
+    if (refusal && !refusal.writableEnded) refusal.writeHead(refusalStatus).end();
     try { await shell.evaluate(() => (globalThis as unknown as { stopVoice?(): Promise<void> }).stopVoice?.()); }
     finally { await shell.close(); }
   }
@@ -215,6 +295,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   let toggles = 0;
   const speechStops: string[] = [];
   let refusedSpeechJob: string | undefined;
+  let deferSpeechStop = false;
+  let heldSpeechStop: ServerResponse | undefined;
   let muteReadbacks = 0;
   let readbackMuted = false;
   const requests: boolean[] = [];
@@ -263,6 +345,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     if (req.url === "/api/voice/speech/stop") {
       const { id } = JSON.parse(body);
       speechStops.push(id);
+      if (deferSpeechStop) { heldSpeechStop = res; return; }
       if (id === refusedSpeechJob) { res.writeHead(503).end(); return; }
     }
     if (req.url === "/api/voice/mute") {
@@ -463,7 +546,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       assert.equal(toggles, beforeTap);
       publish(chord);
     });
-    await t.test("a rejected hotkey speech stop leaves the streamed job speaking and manual mute off", async () => {
+    const stopWarning = "Speech stop not confirmed. Try the shortcut again.";
+    await t.test("a rejected hotkey speech stop opens tray feedback and leaves the streamed job speaking and manual mute off", async () => {
       const job = { id: crypto.randomUUID(), state: "speaking" };
       const tapState = () => app.evaluate(() => {
         const { voice, stopResponses } = (globalThis as unknown as { fixture: Fixture }).fixture;
@@ -477,6 +561,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         await post(true);
         await post(false);
         await until(async () => (await tapState()).status === 503);
+        await until(async () => (await read()).labels.includes(stopWarning));
         // Complete a subsequent shell/daemon round trip before checking for a stray mute write.
         await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.voice.checkMicrophone());
         assert.deepEqual(await tapState(), { job, muted: false, status: 503 });
@@ -485,6 +570,35 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         assert.equal(requests.length, before.sets);
       } finally {
         refusedSpeechJob = undefined;
+        publish(chord);
+      }
+    });
+    await t.test("a late stop refusal for the preceding job leaves the tray and manual mute alone", async () => {
+      const oldJob = crypto.randomUUID();
+      const newJob = crypto.randomUUID();
+      const before = toggles;
+      const activeJob = () => app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.voice.state.speech?.job?.id);
+      publishSpeaking(oldJob);
+      await until(async () => await activeJob() === oldJob);
+      await click("right-click");
+      assert.ok(!(await read()).labels.includes(stopWarning), "previous job's warning was cleared");
+      deferSpeechStop = true;
+      try {
+        await post(true);
+        await post(false);
+        await until(() => !!heldSpeechStop);
+        publishSpeaking(newJob);
+        await until(async () => await activeJob() === newJob);
+        const received = await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.stopResponses.length);
+        heldSpeechStop!.writeHead(503).end();
+        await until(async () => await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.stopResponses.length) > received);
+        await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.voice.checkMicrophone());
+        await click("right-click");
+        assert.ok(!(await read()).labels.includes(stopWarning));
+        assert.equal(toggles, before);
+      } finally {
+        deferSpeechStop = false;
+        if (heldSpeechStop && !heldSpeechStop.writableEnded) heldSpeechStop.end();
         publish(chord);
       }
     });

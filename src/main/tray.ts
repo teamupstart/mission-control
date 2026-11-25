@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 
 import { join } from "node:path";
+import { hotkeySpeechJob } from "./voice-hotkey-tap.ts";
 import { voiceTray, type TrayVoiceState } from "./voice-tray.ts";
 
 interface ReportCounts {
@@ -32,11 +33,13 @@ let presentation: ReturnType<typeof voiceTray> = null;
 let menu: Menu | null = null;
 let muteConfirmation: NodeJS.Timeout | undefined;
 let muteError = "";
+let stopErrorJob: string | undefined;
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
 
-export function showVoiceMuteError(message: string): void {
+export function showVoiceMuteError(message: string, speechJob?: string): void {
   if (!presentation) return;
+  stopErrorJob = speechJob;
   muteError = message;
   refreshMenu?.();
   if (menu) tray?.popUpContextMenu(menu);
@@ -44,13 +47,18 @@ export function showVoiceMuteError(message: string): void {
 
 export function setTrayVoice(state: TrayVoiceState): void {
   const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
+  const stopExpired = !!stopErrorJob && stopErrorJob !== hotkeySpeechJob(state);
   if (next?.nextMuted !== presentation?.nextMuted) {
     clearTimeout(muteConfirmation);
     muteConfirmation = undefined;
     muteError = "";
   }
+  if (stopExpired) {
+    muteError = "";
+    stopErrorJob = undefined;
+  }
   if (presentation?.image !== next?.image) updateImage?.(next?.image);
-  if (presentation?.status === next?.status && presentation?.action === next?.action) return;
+  if (!stopExpired && presentation?.status === next?.status && presentation?.action === next?.action) return;
   presentation = next;
   refreshMenu?.();
 }
@@ -178,6 +186,7 @@ export function destroyTray(): void {
   clearTimeout(muteConfirmation);
   muteConfirmation = undefined;
   muteError = "";
+  stopErrorJob = undefined;
   presentation = null;
   updateImage = refreshMenu = null;
   tray?.destroy();

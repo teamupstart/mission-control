@@ -6,7 +6,7 @@ import { z } from "zod";
 import { SpeechInstanceSchema } from "../../shared/voice-speech.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { loadNativeStateLockBinding } from "../state-ownership-native.ts";
-import { announcementName, readVoiceRecord, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
+import { announcementName, listVoiceRecords, readVoiceRecord, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
 import { voiceProcessBirth, voiceProcessGone } from "./process-birth.ts";
 import { createVoiceSupervisor, supervisorIssuer, type SupervisorReporter } from "./supervisor-auth.ts";
 
@@ -14,6 +14,18 @@ export type VoiceSigner = ReturnType<typeof createVoiceSupervisor>;
 type Slot = "shell" | "dev";
 const entry = z.object({ instance: SpeechInstanceSchema, pid: z.number().int().positive().optional(), startedAt: z.string().min(1).optional() });
 const recordPath = (home: string, slot: Slot) => join(home, "voice", "supervised", slot + ".json");
+
+export function hasPendingMacListenerRecovery(home: string): boolean {
+  try {
+    if (lstatSync(recordPath(home, "shell"), { throwIfNoEntry: false }) ||
+        lstatSync(recordPath(home, "dev"), { throwIfNoEntry: false })) return true;
+    const pending = retirementDirectory(home);
+    if (!lstatSync(pending, { throwIfNoEntry: false })) return false;
+    return listVoiceRecords(home, pending).some(name => name.startsWith("shell-announced-") && name.endsWith(".json"));
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
 
 function helperProcesses(executable: string) {
   // comm contains executable names only. Never inspect process arguments or environments.

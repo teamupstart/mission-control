@@ -1,5 +1,6 @@
 import { OpenCardsSchema, VOICE_CALIBRATING_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
+import { desktopVoiceVerifier } from "./desktop-verifier.ts";
 import { verifySupervisorReport, VOICE_SUPERVISOR_PROOF_HEADER } from "./supervisor-auth.ts";
 import { askAloudPossible, askSentence, SpeechInstanceSchema, VOICE_INSTANCE_HEADER } from "@shared/voice-speech.ts";
 import { z } from "zod";
@@ -144,6 +145,7 @@ export function registerVoiceRoutes(
   models: VoiceModelManager = voiceModelManager,
   speechModels: VoiceModelManager = speechModelManager,
 ): void {
+  const loadShellVerifier = desktopVoiceVerifier();
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
   const allowDrain = (supervisorReport = false): MiddlewareHandler => async (c, next) => {
@@ -380,8 +382,9 @@ export function registerVoiceRoutes(
     if (!parsed.ok) return disabled ?? c.json({ error: "invalid_supervisor_report" }, 400);
     const { instance, state } = parsed.data;
     const proof = c.req.header(VOICE_SUPERVISOR_PROOF_HEADER);
+    if (disabled && state !== "exited") return disabled;
+    if (instance.startsWith("shell_") && !await loadShellVerifier()) return c.json({ error: "supervisor_verifier_unavailable" }, 503);
     if (disabled) {
-      if (state !== "exited") return disabled;
       // A trusted exit can arrive before its start. Persist it even on a fresh, disabled daemon.
       if (!store.disabledSpeech()?.canRetireLaunch(instance) && !verifySupervisorReport(instance, state, proof, () => false)) return disabled;
       store.speech.setEnabled(false);

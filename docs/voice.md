@@ -1226,7 +1226,8 @@ Accessibility > Read & Speak and manage system voices. The helper closes input a
 its recognition segment before playback. It holds capture through the player’s completion
 or stop callback and another 250 ms before reporting the end. The next capture directive
 starts a fresh segment. During a live job the mute shortcut requests a stop and preserves
-the manual mute setting.
+the manual mute setting. If the daemon fails to acknowledge the stop while the same job
+is active, the tray prompts you to try the shortcut again.
 
 The original [S9 trials](voice-spike-findings.md#s9-system-speech-feedback) measured the
 exit of `say`. On November 24, 2026, the new players repeated the comparison on a Mac mini

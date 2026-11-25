@@ -128,7 +128,7 @@ test("confined launch records its OS identity and replays its exit before it can
   const { mkdtempSync, statSync, readFileSync, existsSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { MacListenerSupervisor } = await import("../src/server/voice/macos-supervisor.ts");
+  const { MacListenerSupervisor, hasPendingMacListenerRecovery } = await import("../src/server/voice/macos-supervisor.ts");
   const { createVoiceSupervisor, supervisorIssuer } = await import("../src/server/voice/supervisor-auth.ts");
   const { voiceProcessBirth } = await import("../src/server/voice/process-birth.ts");
   const { ensureNativeStateLockAddon } = await import("./helpers/native-state-lock.ts");
@@ -161,6 +161,7 @@ test("confined launch records its OS identity and replays its exit before it can
     signer.pauseExitRetries();
     rmSync(home, {recursive: true, force: true});
   });
+  assert.equal(hasPendingMacListenerRecovery(home), false);
   const first = await supervisor.start(process.env);
   t.after(() => first.kill());
   assert.equal(read().pid, first.pid);
@@ -175,11 +176,13 @@ test("confined launch records its OS identity and replays its exit before it can
   await close;
   await t.waitFor(() => assert.ok(exitAttempts > 0));
   assert.ok(existsSync(slot));
+  assert.equal(hasPendingMacListenerRecovery(home), true, "a deferred signer is needed to recover the earlier run");
   await assert.rejects(supervisor.start(process.env));
   assert.equal(starts, 1);
   online = true;
   supervisor.reconnect();
   await t.waitFor(() => assert.equal(existsSync(slot), false));
+  assert.equal(hasPendingMacListenerRecovery(home), false);
   const second = await supervisor.start(process.env);
   assert.equal(starts, 2);
   const done = once(second, "close");

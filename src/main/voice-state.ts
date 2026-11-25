@@ -6,12 +6,12 @@ import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
-import { desktopVoiceEndpointPath } from "../shared/harness-runtime.mjs";
+import { desktopVoiceEndpointPath, stateDir } from "../shared/harness-runtime.mjs";
 import type { TrayVoiceState } from "./voice-tray.ts";
 import { showVoiceMuteError } from "./tray.ts";
 import { logMain } from "./main-log.ts";
 import { voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
-import type { VoiceSigner } from "../server/voice/macos-supervisor.ts";
+import { hasPendingMacListenerRecovery, type VoiceSigner } from "../server/voice/macos-supervisor.ts";
 import { VOICE_SUPERVISOR_PROOF_HEADER } from "../server/voice/supervisor-auth.ts";
 import { hotkeySpeechJob } from "./voice-hotkey-tap.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
@@ -19,19 +19,21 @@ import { nativeVoiceListener } from "./voice-listener.ts";
 import { ShellVoiceStateSchema, type ShellVoiceState } from "./voice-state-schema.ts";
 
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
-export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS, signer?: VoiceSigner) {
+export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS, loadSigner?: () => Promise<VoiceSigner | undefined>) {
   let connection: ReturnType<typeof desktopVoiceConnection>;
-  const listener = nativeVoiceListener(binary, () => {
+  const createListener = (signer?: VoiceSigner) => nativeVoiceListener(binary, () => {
     if (!connection) throw new Error("Voice listener has no daemon connection");
     return connection;
   }, signer, async (instance, state, proof, signal) => {
     const res = await connection?.postStatus("/voice/listener/supervised", {instance, state},
       signal ?? AbortSignal.timeout(5000), { [VOICE_SUPERVISOR_PROOF_HEADER]: proof });
     if (!res?.ok) {
-      if (state === "started" && (res?.status === 403 || res?.status === 409)) return false;
+      if (state === "started" && (res?.status === 403 || res?.status === 404 || res?.status === 409)) return false;
       throw new Error("Voice supervisor report unacknowledged.");
     }
   });
+  let listener = loadSigner ? undefined : createListener();
+  let loading = false;
   let stream: EventSource | undefined;
   let hasSnapshot = false;
   let streamDeadline: NodeJS.Timeout | undefined;
@@ -147,7 +149,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   async function sync() {
     if (state.mode === "off") {
       stopHardware();
-      listener.update(state, false);
+      listener?.update(state, false);
       reportRequested = false;
       nextPromptAt = 0;
       retryDelay = 5000;
@@ -155,7 +157,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     }
     const microphone = systemPreferences.getMediaAccessStatus("microphone");
     if (!hardware) {
-      hardware = macVoiceHardware(dirname(binary), () => listener.pid,
+      hardware = macVoiceHardware(dirname(binary), () => listener?.pid ?? -1,
         () => void toggleFromHotkey(), () => void requestReport());
       layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
         () => hardware?.refreshRegistration());
@@ -163,7 +165,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
-    listener.update(state, installed && microphone === "granted");
+    listener?.update(state, installed && microphone === "granted");
     if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
       void ask().then(sync).catch(() => {});
     }
@@ -171,6 +173,15 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   }
   function update(next: ShellVoiceState) {
     state = next;
+    if (hasSnapshot && !listener && !loading && loadSigner && (next.mode !== "off" || hasPendingMacListenerRecovery(stateDir()))) {
+      loading = true;
+      void loadSigner().then(signer => {
+        if (lifetime.signal.aborted) return;
+        listener = createListener(signer);
+        if (hasSnapshot) listener.reconnect();
+        void sync();
+      });
+    }
     if (next.mode === "off") hotkeyAttempt++;
     lastEnabledMute = next.mode === "off" ? undefined : (next.muted ?? next.mode === "muted");
     onState(state);
@@ -219,7 +230,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     if (!parsed.success) { requestSnapshot(); return; }
     if (!hasSnapshot) {
       if (message.type !== "snapshot") return;
-      listener.reconnect();
+      listener?.reconnect();
       hasSnapshot = true;
       clearTimeout(streamDeadline);
       streamDeadline = setTimeout(requestSnapshot, 3 * heartbeatMs);
@@ -255,7 +266,10 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     if (!current || disabled()) return;
     const id = hotkeySpeechJob(state);
     if (id) {
-      await current.postStatus("/api/voice/speech/stop", {id}, AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      const response = await current.postStatus("/api/voice/speech/stop", {id}, AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      if (!response?.ok && current === connection && attempt === hotkeyAttempt && !lifetime.signal.aborted && hotkeySpeechJob(state) === id) {
+        showVoiceMuteError("Speech stop not confirmed. Try the shortcut again.", id);
+      }
       return;
     }
     if (await sendMute({ toggle: true })) return;
@@ -304,7 +318,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       lifetime.abort();
       clearInterval(heartbeat);
       state = voiceStateOff();
-      try { await listener.stop(); } finally { disconnect(); }
+      try { await listener?.stop(); } finally { disconnect(); }
     },
   };
 }

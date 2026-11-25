@@ -34,6 +34,16 @@ function fixture(...behaviors: Behavior[]) {
   return { synth, children };
 }
 
+test("rejects synthesis without a verified model before starting a helper", async t => {
+  const start = t.mock.fn(() => assert.fail("unexpected speech helper launch"));
+  const synth = new NeuralSynthesizer(() => null, start);
+  t.after(() => synth.stop());
+  await assert.rejects(synth.synthesize("Steve?", voice), {
+    name: "Error", message: "No verified neural voice",
+  });
+  assert.equal(start.mock.callCount(), 0);
+});
+
 test("starts lazily and releases the warm helper ten minutes after the last work", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { synth, children } = fixture();

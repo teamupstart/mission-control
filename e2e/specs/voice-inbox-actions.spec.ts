@@ -15,7 +15,7 @@ import { INBOX_MESSAGES } from "../../src/shared/inbox.ts";
 async function postReport(daemon: DaemonHandle, session: Session, title: string, file?: string): Promise<ReportItem> {
   const response = await fetch(daemon.baseURL + "/mcp/reports", { method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
-    body: JSON.stringify({ cwd: session.cwd, env: {}, title, body: "Build the native addon before the tests.", file }),
+    body: JSON.stringify({ sessionId: session.id, cwd: session.cwd, env: {}, title, body: "Build the native addon before the tests.", file }),
   });
   expect(response.status, await response.clone().text()).toBe(200);
   return (await response.json()).report;
@@ -94,6 +94,7 @@ test("Steve's Nudge runs from Report focus, Open report runs from Stuck focus, a
 });
 
 test("named plan fills and submit use the visible plan while Steve's Report has focus", async ({ dashboard: page, daemon }) => {
+  await page.setViewportSize({ width: 1600, height: 1800 });
   await setupCards(page, daemon, 1);
   const steve = await runningAgent(page, daemon, "Steve");
   const planId = await postCachePlan(daemon, steve);
@@ -114,7 +115,8 @@ test("named plan fills and submit use the visible plan while Steve's Report has 
   await say(daemon, "Steve, first one B, second one A, third one A");
   await expect(form.locator(".pd-ord.is-voice")).toHaveCount(3);
   await expect(card.getByRole("textbox")).toBeFocused();
-  await captureCard(form, "named-plan-from-report-focus");
+  await expect(form.locator(".pd-ord").first()).toBeInViewport();
+  await captureCard(dialog, "named-plan-from-report-focus");
   await say(daemon, "Steve, first one A");
   await say(daemon, "Steve, submit");
   await expect.poll(async () => {
@@ -317,6 +319,7 @@ test("the floating pill keeps the Run now control for an inbox action", async ({
   await say(daemon, "Steve, mark read");
   const card = page.getByRole("status").filter({ hasText: "Steve" });
   await expect(page.getByRole("region", { name: "Voice countdown" })).toContainText("cancel or run now");
+  await captureCard(card, "floating-inbox-confirmation");
   await card.getByRole("button", { name: "Run now" }).click();
   await expect.poll(async () => (await storedReport(daemon, report.id)).readBy).toBe("mark-read");
 });

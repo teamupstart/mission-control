@@ -608,8 +608,8 @@ export function useEventStream(): MissionState {
           setShaping(msg.shaping ?? null);
           for (const listener of shapingListeners.current) listener(msg.shaping ?? null);
           if (msg.voice && msg.voice.mode !== "off") {
-            // The daemon snapshots active deliveries and held turns. Keep settled cards
-            // on their local timers, including timers paused for focus or a recovery action.
+            // A reconnect also carries receipts missed since this stream's last event ID.
+            // Previously seen outcomes keep their local timers and any in-use recovery action.
             const active = msg.voiceCards ?? [];
             const answers = msg.voiceAnswers ?? [];
             const sample = sampleCardClock(msg, answers.length > 0 || active.some(card => card.state === "pending" && card.deadline !== null));

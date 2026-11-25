@@ -461,6 +461,7 @@ test("a background or disconnected question keeps its countdown on the companion
 });
 
 test("delayed focus and blur reports cannot steal or clear the newer dashboard's reply target", async t => {
+  mockCaptureClock(t);
   const first = question();
   const second = question("Which cache?");
   const windows = registry.voiceRouter!.openCards;
@@ -469,6 +470,8 @@ test("delayed focus and blur reports cannot steal or clear the newer dashboard's
   const report = async (windowId: string, id: string, focused: boolean, stamp: number) => {
     assert.equal((await put("/api/voice/open-cards", { windowId, focused, cards: [{ kind: "question", id, focused: true }] },
       { "x-voice-focus-at-us": String(stamp) })).status, 200);
+    // The reply is captured after this observation, regardless of host clock precision.
+    t.mock.timers.tick(10);
   };
   await report("second", second.id, true, 30);
   await report("first", first.id, true, 10);

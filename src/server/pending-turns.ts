@@ -743,7 +743,10 @@ export class PendingTurnManager {
     }
     if (event.type === "feature_flags") {
       for (const session of this.registry.liveSessions()) {
-        if (session.pendingTurns.some(row => row.spokenWords !== undefined)) this.scheduleDrain(noteKeyFor(session));
+        if (!session.pendingTurns.some(row => row.spokenWords !== undefined)) continue;
+        // Disabling Voice cleared the receipts. A held turn can outlive its call sign.
+        if (featureEnabled("voice")) this.syncSpokenReceipts(session);
+        this.scheduleDrain(noteKeyFor(session));
       }
     }
   }

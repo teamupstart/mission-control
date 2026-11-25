@@ -9,14 +9,15 @@ settles ambiguous sentences with a model, holds each message for the configured 
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
 recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
 and Linux. The corner confirmation card names the recipient and shows the spoken words.
-Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now. Its bar and
+Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now.
+Tab to an overflowing transcript and use the arrow keys or End to read it. The countdown bar and
 seconds count down together. On a slow connection, `≤` marks the longest time that could
 remain. You can still try Cancel, and the daemon confirms whether it arrived in time.
 When several cards share the corner, open cancel windows stay nearest the corner, ahead of delivery results.
 Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answer, the card offers a retry while the original request can still reach it. A split offers
 “Send both now” when both messages are waiting. With a mention or an already-issued stop,
 the send button names the agent who will receive the remaining message. With the cancel
-window off, delivery begins immediately. Sent and queued cards show the open question count.
+window off, delivery begins immediately. Sent and queued cards show the open question count. A queued receipt names the recipient. It mentions a current turn when the session is working and unpaused.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
 With Sound enabled, the pending chime plays only while the card still offers Cancel.
 A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
@@ -43,7 +44,7 @@ gives you another eight seconds to read the result or retry.
 When a queued message changes to Sent, its reading interval starts again before the card fades.
 If a blocking question opens while the message is still queued, the dashboard shows a Held
 card with **Open question** and **Cancel message**, even if the Queued card has already faded.
-If you remove the task’s call sign, its held turn remains recallable after a daemon restart.
+If you remove the task’s call sign, its held turn remains recallable after a daemon restart or after you switch Voice off and back on.
 The restored card uses the session’s display name. **Open question** opens the question named on the card, even when the session has several pending requests.
 Each Held card shows the spoken words its **Cancel message** button recalls and names
 a question that still blocks delivery. A plan already filed for a later answer

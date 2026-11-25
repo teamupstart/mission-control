@@ -1,6 +1,6 @@
 import { forward } from "../fixtures/port-forward.ts";
 import { expect, test } from "../fixtures/test.ts";
-import { allowStreamDisconnect, captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { allowStreamDisconnect, captureCard, expectCardGeometry, readTranscriptWithKeyboard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say } from "../fixtures/voice.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
@@ -74,8 +74,10 @@ test("a long transcript scrolls while the recipient and countdown controls stay 
   for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
   expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
   await transcript.hover();
-  await page.mouse.wheel(0, 10000);
-  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  await page.mouse.wheel(0, 40);
+  await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  await page.mouse.move(0, 0);
+  await readTranscriptWithKeyboard(transcript, cancel, "Shift+Tab");
   for (const control of [recipient, seconds, cancel, send]) await expect(control).toBeInViewport({ ratio: 1 });
   await captureCard(card, "long-transcript-controls");
   await cancel.click();

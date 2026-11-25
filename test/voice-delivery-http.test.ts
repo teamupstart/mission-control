@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk } from "./helpers/voice-http.ts";
+import { act, applyFeatureFlagIntent, cards, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk, voiceStateStore } from "./helpers/voice-http.ts";
+import { onFeatureFlagsChanged } from "../src/server/feature-flags/index.ts";
 import { HibernationManager } from "../src/server/hibernation/manager.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
 import { claimNextPendingTurn, clearPendingTurns, listPendingTurns, openDb, recoverSendingPendingTurns, retireDeliveredPendingTurn } from "../src/server/db.ts";
@@ -654,6 +655,31 @@ test("a filing failure preserves queued speech and its receipt until a compatibl
   assert.equal(send.mock.callCount(), 1);
   assert.equal(cards.at(-1)?.state, "sent");
   assert.equal((await readHeard())[0]?.outcome, "sent");
+});
+
+test("Voice re-enable restores a held receipt without a call sign or another session event", async () => {
+  const sessionId = "sdk:Will";
+  const id = "restore-unnamed-on-enable";
+  const ask = reviews.create(sessionId, "input", "Which build?", "Choose one.", null);
+  const stopFlags = onFeatureFlagsChanged(config => registry.emitFeatureFlags(config));
+  try {
+    await say("Will, inspect the release", id);
+    await act(id, "send-now");
+    assert.equal(registry.voiceRouter!.activeCards().find(card => card.id === id)?.state, "held");
+    voiceStateStore.useRoster(() => []);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false });
+    assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+    applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+    const restored = registry.voiceRouter!.activeCards().find(card => card.id === id);
+    assert.equal(restored?.state, "held");
+    assert.equal(restored.parts[0]?.restoredSession?.id, sessionId);
+    const turn = registry.getSession(sessionId)!.pendingTurns.find(row => row.id === restored.parts[0]?.turnId)!;
+    assert.equal(pending.recall(sessionId, turn.id, turn.revision)?.spokenWords, "inspect the release");
+  } finally {
+    stopFlags();
+    voiceStateStore.useRoster(() => roster);
+    reviews.resolve(ask.id, "answer", "nightly");
+  }
 });
 
 test("recalling held speech removes the reason to file an ask on its next poll", async () => {

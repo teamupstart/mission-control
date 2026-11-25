@@ -2,7 +2,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
-import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { captureCard, expectCardGeometry, readTranscriptWithKeyboard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { Session } from "../../src/shared/types.ts";
@@ -144,15 +144,16 @@ test("a held transcript scrolls inside a split with a failed sibling", async ({ 
   await say(daemon, "Steve, " + words + ", and Will, review the release", { id: "mixed-long" });
   const card = page.getByRole("status");
   await card.getByRole("button", { name: /Will/ }).click();
+  const splitTranscript = card.getByRole("region", { name: "Spoken message" });
+  await expect(splitTranscript).toContainText("Start at the final check");
+  await readTranscriptWithKeyboard(splitTranscript, card.getByRole("button", { name: "Cancel", exact: true }), "Shift+Tab");
   await card.getByRole("button", { name: "Send both now" }).click();
   const mixed = card.filter({ hasText: "Held for Steve" });
   await expect(mixed).toContainText("Failed to send to Will");
   const recall = mixed.getByRole("button", { name: "Cancel message" });
-  const transcript = mixed.locator("q").filter({ hasText: "Start at the final check" });
-  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
-  await transcript.hover();
-  await page.mouse.wheel(0, 10000);
-  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  const transcript = mixed.getByRole("region", { name: "Spoken message" });
+  await expect(transcript).toContainText("Start at the final check");
+  await readTranscriptWithKeyboard(transcript, recall, "Tab");
   for (const control of [recall, mixed.getByRole("button", { name: "Open question" }), mixed.getByText("Failed to send to Will")]) {
     await expect(control).toBeInViewport({ ratio: 1 });
   }
@@ -576,33 +577,47 @@ test("Open question opens and answers the exact blocker named by the Held card",
   await expect(held).toHaveCount(0);
 });
 
-test("a held turn restores its question and recall after its call sign is removed", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon);
-  const steve = await runningAgent(page, daemon, "Steve");
-  const question = "Which release needs review?";
-  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
-    headers: { "x-harness-token": voiceToken(daemon) },
-    data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
-  })).ok()).toBe(true);
-  await say(daemon, "Steve, inspect the held release", { id: "removed-call-sign" });
-  await page.getByRole("button", { name: "Send now" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Held for Steve" })).toContainText(question);
-  const changed = await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/update", { data: { callSign: null } });
-  expect(changed.ok(), await changed.text()).toBe(true);
-  await daemon.crash();
-  await daemon.restart();
-  await page.reload();
-  const restored = page.getByRole("status").filter({ hasText: "inspect the held release" });
-  await expect(restored).toContainText("Held for Steve on builds", { timeout: 6000 });
-  await expect(restored).toContainText(question);
-  await expect(restored.getByRole("button", { name: "Open question" })).toBeEnabled();
-  await expect(restored.getByText(/Say .*answer/)).toHaveCount(0);
-  await captureCard(restored, "held-without-call-sign");
-  const recall = page.waitForResponse(r => r.url().endsWith("/pending-turns/voice%3Aremoved-call-sign/recall"));
-  await restored.getByRole("button", { name: "Cancel message" }).click();
-  expect(await (await recall).json()).toEqual({ ok: true, text: "inspect the held release" });
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
-});
+for (const transition of ["restart", "Voice re-enable"] as const) {
+  test(`a held turn restores its question and recall after its call sign is removed on ${transition}`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    const steve = await runningAgent(page, daemon, "Steve");
+    const question = "Which release needs review?";
+    expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+    })).ok()).toBe(true);
+    await say(daemon, "Steve, inspect the held release", { id: "removed-call-sign" });
+    await page.getByRole("button", { name: "Send now" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Held for Steve" })).toContainText(question);
+    const changed = await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/update", { data: { callSign: null } });
+    expect(changed.ok(), await changed.text()).toBe(true);
+    if (transition === "restart") {
+      await daemon.crash();
+      await daemon.restart();
+      await page.reload();
+    } else {
+      for (const enabled of [false, true]) {
+        const response = await page.request.put(daemon.baseURL + "/api/feature-flags", {
+          data: { kind: "flag", id: "voice", enabled },
+        });
+        expect(response.ok(), await response.text()).toBe(true);
+        if (!enabled) await expect(page.getByRole("status").filter({ hasText: "inspect the held release" })).toHaveCount(0);
+      }
+    }
+    const restored = page.getByRole("status").filter({ hasText: "inspect the held release" });
+    await expect(restored).toContainText("Held for Steve on builds", { timeout: 6000 });
+    await expect(restored).toContainText(question);
+    await expect(restored.getByRole("button", { name: "Open question" })).toBeEnabled();
+    await expect(restored.getByText(/Say .*answer/)).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await expectCardGeometry(restored, "routing-exceptions", ".rx-card.is-held");
+    await captureCard(restored, transition === "restart" ? "held-without-call-sign" : "held-after-voice-reenabled");
+    const recall = page.waitForResponse(r => r.url().endsWith("/pending-turns/voice%3Aremoved-call-sign/recall"));
+    await restored.getByRole("button", { name: "Cancel message" }).click();
+    expect(await (await recall).json()).toEqual({ ok: true, text: "inspect the held release" });
+    await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  });
+}
 
 test("a nonblocking question after daemon restart leaves the spoken turn queued without a held card", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
@@ -617,7 +632,10 @@ test("a nonblocking question after daemon restart leaves the spoken turn queued 
   expect((await page.request.post(sessionURL + "/pause", { data: { mode: "now" } })).ok()).toBe(true);
   await say(daemon, "Steve, check the release", { id: "still-queued" });
   await page.getByRole("button", { name: "Send now" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Queued behind Steve" })).toBeVisible();
+  const queued = page.getByRole("status").filter({ hasText: "Queued for Steve" });
+  await expect(queued).toBeVisible();
+  await expect(queued).not.toContainText("current turn");
+  await captureCard(queued, "paused-queued-receipt");
   await daemon.crash();
   await daemon.restart();
   await page.reload();

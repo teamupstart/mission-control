@@ -498,12 +498,14 @@ export function VoiceSettingsPanel({
               : "Listen for spoken names while Voice is unmuted."}</span>
           </div>
           <div className="kb-row-controls">
-            <select className="settings-select" id="voice-listening-mode" disabled={!config}
-              value={config?.listeningMode ?? VOICE_CONFIG_DEFAULTS.listeningMode}
-              onChange={event => void update({ listeningMode: event.target.value === "push-to-talk" ? "push-to-talk" : "always-on" })}>
-              <option value="always-on">Always-on</option>
-              <option value="push-to-talk">Push-to-talk</option>
-            </select>
+            <Tooltip label="Choose when Voice opens the microphone">
+              <select className="settings-select" id="voice-listening-mode" disabled={!config}
+                value={config?.listeningMode ?? VOICE_CONFIG_DEFAULTS.listeningMode}
+                onChange={event => void update({ listeningMode: event.target.value === "push-to-talk" ? "push-to-talk" : "always-on" })}>
+                <option value="always-on">Always-on</option>
+                <option value="push-to-talk">Push-to-talk</option>
+              </select>
+            </Tooltip>
           </div>
         </div>
         <div className="kb-row" data-anchor="voice/input-device">

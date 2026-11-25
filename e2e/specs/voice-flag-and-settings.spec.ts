@@ -47,6 +47,7 @@ test("Push-to-talk persists across restart and preserves Always-on settings and 
   const calls = page.getByRole("checkbox", { name: "Auto-mute on calls" });
   const cancel = page.getByRole("combobox", { name: "Cancel window" });
   await expect(mode).toHaveValue("always-on");
+  await expect(mode).toHaveAccessibleDescription("Choose when Voice opens the microphone");
   await delay.selectOption("5000");
   await expect(calls).toBeChecked();
   await calls.press("Space");

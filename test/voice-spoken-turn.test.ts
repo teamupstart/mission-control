@@ -67,7 +67,7 @@ test("upgrade from 54 leaves typed rows untouched, and spoken composition surviv
   assert.deepEqual(db.listPendingTurns(key), [queued]);
   asks = [{ id: "new", title: "New question" }];
   const claimed = db.claimNextPendingTurn(key, 5, queued, compose)!;
-  assert.equal(claimed.text, compose(words));
+  assert.equal(claimed.text, words + "\n\nYour open questions:\n- new: New question\nWithdraw any question this message settles, with a reason.");
   assert.equal(claimed.spokenWords, words);
   db.closeDb();
   const replay = { id: queued.id, noteKey: key, spokenWords: words, text: words, now: 6 };
@@ -89,6 +89,24 @@ test("upgrade from 54 leaves typed rows untouched, and spoken composition surviv
   assert.equal(claimHumanEcho("sdk:test", key, retry.text, 8).kind, "capture");
   db.closeDb();
 });
+
+for (const note of ["", "\n\nYour operator has not read your report r 'Yesterday' yet."]) {
+  test(`retrying an older spoken payload keeps the spoken report request ${note ? "with" : "without"} frozen notes`, () => {
+    const key = "legacy-spoken-retry-" + (note ? "notes" : "plain");
+    const request = "When you have finished this, post a report.";
+    const words = "Check the build.\n\n" + request;
+    const expected = words + note;
+    const queued = db.createPendingTurn({ id: key, noteKey: key, spokenWords: words, text: words, now: 1 });
+    let claim = db.claimNextPendingTurn(key, 2, queued, () => expected + "\n\n" + request)!;
+    for (const now of [3, 5]) {
+      const released = db.releasePendingTurn(claim.id, claim.revision, "transport refused", now)!;
+      db.closeDb();
+      claim = db.claimNextPendingTurn(key, now + 1, released, () => assert.fail("retry recomposed"))!;
+      assert.equal(claim.text, expected);
+      assert.equal(claim.spokenWords, words);
+    }
+  });
+}
 
 test("preparation settlement cannot spend a replacement spoken claim's retry budget", () => {
   const key = "reused-preparation-claim";
@@ -235,6 +253,7 @@ test("a separate Codex client receipt follows the first native conversation key,
   const { parseCodexMessages } = await import("../src/server/harness/codex/transcript.ts");
   const synthetic = "sdk:cold-codex";
   const key = "codex-native";
+  // An older daemon delivered these bytes. Its native receipt must still bind after restart.
   const received = "check the build\n\nWhen you have finished this, post a report.";
   const row = reserveSpokenTurn({ key: synthetic, transcript: null }, "check the build", received, true,
     claimSpoken(synthetic, "check the build", received));

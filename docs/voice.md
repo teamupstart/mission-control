@@ -510,9 +510,10 @@ follow-up task. A follow-up opens a separate Dispatch draft for the finished tas
 If you exit the See the work tour during the repository lookup, the draft opens when the lookup
 finishes. An already open follow-up stays available after tour exit.
 
-At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
-and “When you have finished this, post a report.” A retry uses that exact text. The conversation
-labels the operator’s words **Spoken**. Open **What the agent received** to read the payload.
+At the first delivery attempt, the daemon sends your words with any open questions and
+unseen-report reminders for the agent. Retries keep those words and the same context.
+To request a report, include the request in your message. The conversation labels your words
+**Spoken**. Open **What the agent received** to read the delivered payload.
 After an SDK send is acknowledged, or an uncertain send is abandoned after a crash, the daemon
 allows 24 hours for the client message ID and matching words to appear. Hourly cleanup checks live and persisted
 conversations and the custom transcript paths saved at handoff. If the harness cannot discover a

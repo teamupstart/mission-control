@@ -18,6 +18,22 @@ export interface SessionControlAuthorizationReply {
   granted: boolean;
 }
 
+/** One operator click for one exact session-settings access choice. */
+export const SessionSettingsAuthorizationSchema = SessionControlAuthorizationSchema.omit({ sessionId: true });
+export type SessionSettingsAuthorization = z.infer<typeof SessionSettingsAuthorizationSchema>;
+
+export interface SessionSettingsAuthorizationMessage extends SessionSettingsAuthorization {
+  type: "mission:session-settings-authorization";
+  id: string;
+}
+export interface SessionSettingsAuthorizationReply {
+  type: "mission:session-settings-authorization-reply";
+  id: string;
+  granted: boolean;
+}
+
+export const SESSION_SETTINGS_DESKTOP_REQUIRED = "Use Settings → Trust in the Mission Control desktop app to change session settings access.";
+
 /**
  * The exact resident Launch the operator clicked: one launch request of one profile revision.
  * A profile whose pinned revision turns **Control other sessions** on gives its run the existing

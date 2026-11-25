@@ -105,7 +105,12 @@ finalizations**, so the inbox's own **Snoozed** heading always comes right after
 
 ### Answering questions by voice
 
-See [Answer a question by voice](voice.md#answer-a-question-by-voice).
+With voice enabled, the foot of an open report or Stuck row lists the phrases for its
+available controls. Plan forms show ordinal badges and option letters. Voice selections
+stay in the draft until Submit, and an unanswered decision is marked when a spoken submit
+is refused. See [answering questions](voice.md#answer-a-question-by-voice),
+[filling plan forms](voice.md#fill-a-plan-form-by-voice), and
+[spoken inbox actions](voice.md#act-on-an-inbox-card-by-voice).
 
 ### Agent reports
 

@@ -111,6 +111,8 @@ export class VoiceStateStore {
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
   private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private cancelWindowOpen = false;
+  private timingRevision = 0;
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   // Heartbeat expiry transfers the lease but cannot close a previous owner's microphone.
@@ -172,27 +174,48 @@ export class VoiceStateStore {
     return id !== undefined && this.liveHello()?.ownerId === id;
   }
 
+  setCancelWindowOpen(open: boolean): void {
+    if (this.cancelWindowOpen === open) return;
+    this.cancelWindowOpen = open;
+    this.publish();
+  }
+
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
-    const granted = this.liveHello()?.hello.microphone === "granted";
+    const hello = this.liveHello()?.hello;
+    const granted = hello?.microphone === "granted";
     const speechKey = this.manager?.directiveKey ?? "";
     const capture = voiceCaptures(state.mode) && granted && !this.manager?.held;
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
-    const inputDevice = this.deps.config().inputDevice;
+    const { inputDevice, endOfSpeechMs: configuredDelay } = this.deps.config();
+    const automaticDelay = this.cancelWindowOpen ? 500 : configuredDelay;
+    // An automatic timing edit must not interrupt a hold or revoke its pending key-up delivery.
+    const endOfSpeechMs = state.mode === "push-to-talk" || state.mode === "auto-muted" ? 800 : automaticDelay;
     const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
     const last = this.lastDirective;
-    if (last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
-      last.recipients === recipients && last.press === press) return last.directive;
-    const directive = { capture, speak: null, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
+    const sameCapture = last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted &&
+      last.directive.capture === capture && last.directive.inputDevice === inputDevice && last.recipients === recipients && last.press === press;
+    // Protocol 4.0 reopens its microphone on every revision, dropping the unfinished phrase.
+    const canUpdateTiming = Number(hello?.version.split(".")[1] ?? 0) >= 1;
+    if (sameCapture && (!canUpdateTiming || last.directive.endOfSpeechMs === endOfSpeechMs)) return last.directive;
+    // A timing edit wakes pollers but keeps the same authorization for automatic audio already captured.
+    const automatic = capture && state.mode === "listening";
+    const previousGrant = sameCapture ? last.directive.captureRevision : undefined;
+    const captureRevision = automatic ? previousGrant ?? randomUUID() : undefined;
+    this.timingRevision = sameCapture ? this.timingRevision + 1 : 0;
+    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, roster: state.roster.map(entry => entry.name),
+      pauseMs: null, revision: captureRevision ? `${captureRevision}:${this.timingRevision}` : randomUUID(),
+      ...(captureRevision && { captureRevision }) };
     // Only successive key presses and releases share pending delivery rights.
     const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
       (last?.mode === "push-to-talk" && state.mode === "auto-muted");
     if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
+    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press,
+      issuedAt: automatic && sameCapture ? last.issuedAt : undefined };
     return directive;
   }
 
@@ -202,6 +225,18 @@ export class VoiceStateStore {
     const base = this.directive(state);
     return speak && ("stop" in speak || !this.capturePausePending)
       ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
+  }
+
+  /** Older listeners submit the poll revision. Timing edits share one capture grant until capture is revoked. */
+  resolveCaptureRevision(submitted: string | undefined, directive: VoiceListenerDirective): string | undefined {
+    const grant = directive.captureRevision;
+    if (!submitted || !grant) return submitted;
+    if (submitted === grant) return directive.revision;
+    const index = Number(submitted.slice(grant.length + 1));
+    if (submitted === `${grant}:${index}` && Number.isSafeInteger(index) && index >= 0 && index <= this.timingRevision) {
+      return directive.revision;
+    }
+    return submitted;
   }
 
   drainingRevisions() { return [...this.releases.keys()]; }
@@ -364,6 +399,7 @@ export class VoiceStateStore {
       this.modeRevision++;
     }
     return {
+      planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
       mode,
       speech: { ...resolved, job, lastAudition: manager.lastAudition, catalog, model },
@@ -389,7 +425,7 @@ export class VoiceStateStore {
     const { mode, roster } = this.state();
     const reported = this.liveHello()?.hello.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
-    return { mode, roster, backend };
+    return { mode, roster, backend, reportsSpeechOnset: this.liveHello()?.hello.reportsSpeechOnset === true };
   }
 
   /**
@@ -573,6 +609,7 @@ export class VoiceStateStore {
     this.latestRelease = undefined;
     this.lastDirective = undefined;
     this.grants?.close();
+    this.cancelWindowOpen = false;
     this.grants = undefined;
     this.hello = null;
     this.refused = null;

@@ -204,6 +204,13 @@ test('stable distribution is gated by exactly the CI jobs that also gate main', 
   assert.match(ci.concurrency.group, /github\.ref/);
 });
 
+test('both macOS package jobs select Xcode with Swift 6.2 support for the voice listener', () => {
+  for (const workflow of ['distribution.yml', 'ci.yml']) {
+    const job = parseWorkflow(workflow).jobs.package;
+    assert.equal(job.env?.DEVELOPER_DIR, '/Applications/Xcode_26.3.app/Contents/Developer', workflow);
+  }
+});
+
 test('the developer dmg builds on the signing producer image, and tag CI still checks versions', () => {
   const ci = parseWorkflow('ci.yml');
   const distribution = parseWorkflow('distribution.yml');

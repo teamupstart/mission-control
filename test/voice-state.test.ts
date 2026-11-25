@@ -72,6 +72,7 @@ test("the config schema holds every contract A field with its default", () => {
     muted: false,
     hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
+    endOfSpeechMs: 2000,
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show", speech: { voice: null },
     planFormsByVoice: true,
@@ -220,7 +221,7 @@ test("a hello with an unknown major version is refused, and the state says why",
   h.store.acceptHello(listenerId, HELLO);
   const refused = h.store.acceptHello(listenerId, { ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.0/);
+  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.1/);
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);

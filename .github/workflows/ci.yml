@@ -125,6 +125,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v5
@@ -143,6 +145,13 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Check documentation links
+        run: node scripts/check-doc-links.mjs
+
+      - name: Check pull request policy
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-pull-request-policy.mjs "$GITHUB_EVENT_PATH"
 
       # The packaged app's `package.json` version is what the updater compares against a
       # release tag, so a tag that disagrees produces a release the updater either never offers
@@ -384,6 +393,9 @@ jobs:
   package:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
+    # The voice-listener manifest requires Swift tools 6.2.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     name: package (macOS arm64)
     timeout-minutes: 60
     steps:

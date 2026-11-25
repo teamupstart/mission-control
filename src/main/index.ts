@@ -39,7 +39,7 @@ import { shellVoiceSigner } from "./voice-signing.ts";
 import { startShellVoice } from "./voice-state.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
-import { armResidentLaunchAuthorization, armSessionControlAuthorization } from "./session-control-authorization.ts";
+import { armResidentLaunchAuthorization, armSessionControlAuthorization, armSessionSettingsAuthorization } from "./session-control-authorization.ts";
 import { serveDashboardClick } from "./dashboard-click-ipc.ts";
 import { registerWindowBackgroundIpc } from "../server/window-background.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
@@ -239,6 +239,10 @@ function registerIpc(updateController: UpdateController): void {
     }
     return "unavailable";
   });
+  ipcMain.on("mission:voice-reveal-dashboard", event => {
+    const owner = getMainWindow()?.webContents;
+    if (owner && event.sender === owner && event.senderFrame === owner.mainFrame) showWindow(paths.preload);
+  });
   ipcMain.handle("mission:version", () => app.getVersion());
   ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("mission:install-integrations", () => {
@@ -254,6 +258,7 @@ function registerIpc(updateController: UpdateController): void {
   const dashboard = () => getMainWindow()?.webContents;
   serveDashboardClick(ipcMain, "mission:product-issue-report-click", dashboard, armProductIssueAuthorization);
   serveDashboardClick(ipcMain, "mission:session-control-click", dashboard, armSessionControlAuthorization);
+  serveDashboardClick(ipcMain, "mission:session-settings-click", dashboard, armSessionSettingsAuthorization);
   serveDashboardClick(ipcMain, "mission:resident-launch-click", dashboard, armResidentLaunchAuthorization);
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
@@ -471,6 +476,7 @@ app.whenReady().then(async () => {
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
   createTray(paths.trayIcon, join(appRoot, "dist", "main"), {
+    onRecentlyHeard: () => getMainWindow()?.webContents.send("mission:recently-heard"),
     setMuted: async muted => voice?.mute(muted) ?? false,
     onOpen: () => showWindow(paths.preload),
     onCheckForUpdates,

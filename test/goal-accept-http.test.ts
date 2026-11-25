@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerEvent, Session, SessionGoal } from "../src/shared/types.ts";
+import { resolvedSessionIntent } from "../src/shared/goal.ts";
 
 // POST /api/sessions/:id/goal/accept - a person's exit from a paused goal
 // (docs/plans/foreman-stuck-goal-recovery/phase-3-accept-objective.md). The route's answers
@@ -124,4 +125,27 @@ test("200 resolves the pending instruction as steering, emits once, and is idemp
   assert.deepEqual(await again.json(), goal);
   assert.equal(seen.length, 1, "an idempotent accept changes nothing, so emits nothing");
   assert.equal(readSessionGoalSteering(key, 2).length, 1);
+});
+
+for (const [scope, restriction] of [
+  ["no-pr", "Do not open a PR."],
+  ["keep-local", "Keep this local until I review it."],
+] as const) test(`accepting the objective leaves a pending ${scope} instruction unresolved`, async () => {
+  const registry = new Registry();
+  const app = mkApp(registry);
+  const s = sdkSession(registry, `accept-handoff-pending-${scope}`);
+  const key = `agent:accept-handoff-pending-${scope}`;
+  registry.captureAcceptedPrompt(s.id, "Implement heading counts.", key);
+  registry.resolveGoal(s.id, {
+    relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [],
+  }, "Implement heading counts.");
+  registry.captureAcceptedPrompt(s.id, restriction, key);
+  registry.captureAcceptedPrompt(s.id, "Run focused tests.", key);
+  const pending = registry.getGoal(s.id);
+  const response = await accept(app, s.id);
+  assert.equal(response.status, 409);
+  assert.match((await response.json() as { error: string }).error, /handoff instruction is still being reconciled/);
+  assert.deepEqual(registry.getGoal(s.id), pending);
+  assert.deepEqual(readSessionGoalSteering(key, 3), []);
+  assert.equal(resolvedSessionIntent(registry.getGoal(s.id)), null);
 });

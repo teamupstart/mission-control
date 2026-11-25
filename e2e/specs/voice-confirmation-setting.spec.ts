@@ -8,7 +8,7 @@ test("three placement previews persist across reload, with a toast fallback and 
   await page.goto(daemon.baseURL + "/#/settings/voice");
   const choices = page.getByRole("group", { name: "Confirmation card" });
   await expect(choices.getByRole("radio")).toHaveCount(3);
-  await expect(choices.getByText("Needs the desktop app")).toHaveCount(2);
+  await expect(choices.getByText("Needs the desktop app")).toHaveCount(0);
   for (const placement of ["Corner toast", "Tray popover", "Floating pill"]) {
     const radio = choices.getByRole("radio", { name: new RegExp(placement) });
     await expect(radio).toHaveAccessibleDescription(`Save ${placement} as your preferred confirmation card placement`);
@@ -115,6 +115,50 @@ test("a stalled placement save releases the controls and can be retried", async 
   await expect(pill).toBeEnabled();
   await page.reload();
   await expect(pill).toBeChecked();
+});
+
+test("tray popover gives long routing and message transcripts room to scroll", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Will");
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "popover" } })).ok()).toBe(true);
+  await page.goto(daemon.baseURL + "/#/voice/popover");
+  await page.setViewportSize({ width: 356, height: 580 });
+  const words = "Review the deployment notes. ".repeat(60).trim();
+  const card = page.getByRole("status");
+  async function readTranscript(index = 0, minimumHeight = 200) {
+    const transcript = card.getByRole("region", { name: "Spoken message" }).nth(index);
+    await expect(transcript).toBeVisible();
+    expect(await transcript.evaluate(el => el.clientHeight)).toBeGreaterThan(minimumHeight);
+    await transcript.hover();
+    await page.mouse.wheel(0, 160);
+    await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  }
+  await say(daemon, "Steven ask Will about the deployment. " + words);
+  await readTranscript();
+  await captureCard(card, "tray-long-routing");
+  await card.getByRole("button", { name: /Steve/ }).click();
+  await expect(card).toContainText("One message");
+  await readTranscript();
+  await captureCard(card, "tray-long-single");
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await say(daemon, "Steve, " + words + ", and Will, " + words);
+  await card.getByRole("button", { name: /Will/ }).click();
+  await expect(card).toContainText("Two messages");
+  await readTranscript(0, 140);
+  await readTranscript(1, 140);
+  await expect(card.getByRole("button", { name: "Send both now" })).toBeInViewport({ ratio: 1 });
+  await captureCard(card, "tray-long-split");
+  await page.setViewportSize({ width: 356, height: 380 });
+  await expect(card.getByRole("button", { name: "Send both now" })).toBeInViewport({ ratio: 1, timeout: 2000 });
+  for (const transcript of await card.getByRole("region", { name: "Spoken message" }).all()) {
+    await expect(transcript).toBeInViewport({ ratio: 1 });
+    await transcript.press("Home");
+    await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBe(0);
+  }
+  await readTranscript(0, 50);
+  await readTranscript(1, 50);
+  await captureCard(card, "tray-long-split-380");
 });
 
 for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner toast/]] as const) {
@@ -298,7 +342,7 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
     } } });
     expect(resident.ok(), await resident.text()).toBe(true);
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: true, seconds: 30 } } })).ok()).toBe(true);
-    await expect(choices.getByText("Needs the desktop app")).toHaveCount(2);
+    await expect(choices.getByText("Needs the desktop app")).toHaveCount(0);
     const report = await page.request.post(daemon.baseURL + "/voice/shell-report", {
       headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: { "floating-windows": { available: true } } },
     });

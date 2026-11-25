@@ -2278,7 +2278,7 @@ With Voice addressing enabled, the bottom status line shows the live mode. Setti
 
 ### Voice confirmation cards
 
-With the Voice preview enabled, routed speech appears in a corner card. Click a candidate
+With the Voice preview enabled, routed speech appears in the selected confirmation placement. Browsers use the corner toast. Click a candidate
 row or say its name to resolve an ambiguous address. A stopped resident can be relaunched
 from its card. A finished session opens a follow-up dispatch on its repository. A held card
 opens the blocking question or recalls the queued words. Settings > Voice > Confirmation card

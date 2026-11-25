@@ -1,4 +1,4 @@
-import { optionLetter } from "@shared/voice-answers.ts";
+import { optionLetter, spokenOrdinal } from "@shared/voice-answers.ts";
 import type { PlanDecision, PlanDecisionOption } from "@shared/types.ts";
 import { type DashboardVoiceAnswer, voiceCardDeadline, voiceCountdownSeconds } from "../lib/voice-card-clock.ts";
 import { useNow } from "../useNow.ts";
@@ -20,6 +20,26 @@ export function QuestionVoiceHint({ name, decision }: { name?: string; decision?
     {prefix}{count > 0 && <>{option}{name ? " to answer, or " : " or "}</>}
     <q>{name ? name + ", my answer is …" : "reply, …"}</q>{name ? " to answer in your own words." : "."}
   </CardVoiceFoot>;
+}
+
+export function PlanVoiceHint({ address, decisions, answered, missing, refused }: {
+  address: string; decisions: PlanDecision[]; answered: number; missing: number; refused: boolean;
+}) {
+  const submit = <q>{address}, submit</q>;
+  const phrase = (index: number, letter: string) => address + ", " + spokenOrdinal(index + 1) + " one " + letter;
+  let hint;
+  if (missing < 0) {
+    hint = <>All {answered === 3 ? "three" : answered} answered. Say {submit}, or click Submit.</>;
+  } else if (refused) {
+    hint = <>Say <q>{phrase(missing, "A")}</q>{decisions[missing]!.options.length > 1 &&
+      <> or <q>{phrase(missing, "B")}</q></>}, then {submit}.</>;
+  } else if (answered > 0) {
+    hint = <>Filled in, not sent. Say <q>{phrase(missing, "A")}</q> for the {answered === decisions.length - 1 ? "last" : "next"} one.</>;
+  } else {
+    const first = phrase(0, decisions[0]!.options.length > 1 ? "B" : "A");
+    hint = <>Say <q>{first}{decisions.length > 1 && ", second one A"}</q> to fill it in. Nothing is sent until you say {submit}.</>;
+  }
+  return <CardVoiceFoot>{hint}</CardVoiceFoot>;
 }
 
 const monotonicNow = () => performance.now();

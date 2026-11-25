@@ -1,4 +1,4 @@
-import type { ReportItem } from "@shared/reports.ts";
+import { markReportRead, type ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
@@ -449,6 +449,9 @@ export const startSetupService = (body: SetupServiceStartBody) =>
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
  */
+export const fetchSessionSettingsAccess = (signal?: AbortSignal) =>
+  fetchJsonWithSignal<import("@shared/settings-mcp.ts").SessionSettingsAccess>("/api/session-settings-access", signal);
+export const fetchUiSkin = (signal?: AbortSignal) => fetchJsonWithSignal<{ skin: UiConfigView["config"]["skin"] }>("/api/ui/skin", signal);
 export const fetchUiConfig = (signal?: AbortSignal) => fetchJsonWithSignal<UiConfigView>("/api/ui/config", signal);
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
@@ -1331,6 +1334,7 @@ async function request<T extends ActionResult = ActionResult>(
       signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
+    options.signal?.throwIfAborted();
     if (!res.ok) {
       return { ...data, ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
@@ -2222,7 +2226,7 @@ export const api = {
   /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
   openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
   /** Mark an agent report read. Idempotent; the first time and way are kept. */
-  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
+  markReportRead: (id: string) => markReportRead(id, post),
   /** Reply to an agent report: delivered as the operator's message, and marks it read. */
   replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
   /**
@@ -2287,8 +2291,9 @@ export const api = {
     response?: string | null,
     selections?: PlanDecisionAnswer[] | null,
     approveFutureBundles = false,
+    voiceSubmitId?: string,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles, voiceSubmitId }),
   /**
    * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
    * with what to do meanwhile. The daemon adds the delay to its own clock.
@@ -2689,7 +2694,9 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
-  setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
+  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization, signal: AbortSignal) =>
+    put("/api/session-settings-access", input, { signal }),
+  setUiConfig: (cfg: UiConfigPatch, signal?: AbortSignal) => put(`/api/ui/config`, cfg, { signal }),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- First-run setup reminder ---

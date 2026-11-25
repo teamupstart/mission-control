@@ -1038,5 +1038,9 @@ and event routes. The development FluidAudio launcher uses the same supervision 
 its launch service provides a credential. [Credential provisioning](storage.md#voice-supervisor-credentials)
 
 The native tray retains the need-you count. While voice is on, left click toggles manual mute
-and right click opens the existing menu with voice status and a mute action. Switching voice
+and right click opens the menu with voice status, mute and Recently Heard. The shell reports
+`floating-windows` on macOS. The dashboard renders its existing card into a same-origin
+window on the reserved pill or popover route. Its card clock and action handlers stay live
+through minimize. The shell positions the pill on the pointer display and the popover under
+the tray icon. Switching voice
 off restores the standard image and click behavior. See [Voice addressing](voice.md).

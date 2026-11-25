@@ -49,7 +49,8 @@ import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 import { fetchVoiceCardTime, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
-import { applyVoiceIndicatorSelection } from "./lib/uiConfig.ts";
+import { applyVoiceIndicatorSelection, refreshUiSkin } from "./lib/uiConfig.ts";
+import { invalidateSessionSettingsAccess } from "./lib/session-settings-access.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
   observeSettingsRestored,
@@ -541,6 +542,8 @@ export function useEventStream(): MissionState {
         case "snapshot":
           windowId = msg.windowId;
           setVoiceWindowId(windowId);
+          void refreshUiSkin();
+          invalidateSessionSettingsAccess();
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -895,6 +898,11 @@ export function useEventStream(): MissionState {
         case "voice_indicators":
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
           break;
+        case "voice_form_fill":
+        case "voice_form_submit":
+        case "voice_inbox_action":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-inbox-event", { detail: msg }));
+          break;
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
           break;
@@ -982,7 +990,14 @@ export function useEventStream(): MissionState {
         case "archive_changed":
           setArchivesRevision((n) => n + 1);
           break;
+        case "ui_skin_changed":
+          void refreshUiSkin();
+          break;
+        case "session_settings_access_changed":
+          invalidateSessionSettingsAccess();
+          break;
         case "settings_restored":
+          void refreshUiSkin();
           // A restore can replace the indexed directories along with everything else.
           forgetCachedRepos();
           latestSettingsRestoreRequestIdRef.current = msg.requestId;

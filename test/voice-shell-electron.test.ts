@@ -749,6 +749,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     await click("right-click");
     const {labels, title, captures} = await read();
     assert.equal(title, " 2");
+    assert.ok(labels.includes("Recently Heard"));
     assert.match(labels[3]!, /^Voice: /);
     assert.equal(labels[4], mode === "muted" ? "Unmute Voice" : "Mute Voice");
     images.push(captures.at(-1)!);
@@ -757,6 +758,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await until(() => requests.length === 2);
   assert.deepEqual(requests, [true, false]);
   assert.ok(reports.length);
+  assert.ok(reports.every(report => report.capabilities["floating-windows"]?.available && !report.capabilities["speech-output"]));
   const stamps = reports.map(report => report.reportedAtHostUs);
   assert.ok(stamps.every(us => us !== undefined && us <= voiceHostTimeUs()));
   assert.equal(new Set(stamps).size, reports.length);

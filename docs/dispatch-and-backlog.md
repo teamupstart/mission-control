@@ -1988,9 +1988,10 @@ a self-hosted Jira reached through the CLI needs no allowlist entry at all.
 
 Two operational notes. The environment is the **daemon's**, read when it sweeps - exporting
 the variables in a shell after the daemon started does not reach it, so restart the daemon
-(`make restart`) after adding them. And behind a TLS-inspecting VPN the REST rung needs the
-proxy's CA in `NODE_EXTRA_CA_CERTS` in that same environment; certificate verification is
-never disabled to work around it.
+(`make restart`) after adding them. Behind a TLS-inspecting VPN the REST rung trusts the
+proxy's CA when it is in the operating system's certificate store (the macOS keychain), which the
+daemon adds to Node's roots at start, or in `NODE_EXTRA_CA_CERTS` in that same environment;
+certificate verification is never disabled to work around it.
 
 **A broken credential never reads as "no issues".** That is the whole reason `preflight`
 exists, and **Check it works** distinguishes, each naming one thing to go and do:
@@ -2005,7 +2006,7 @@ exists, and **Check it works** distinguishes, each naming one thing to go and do
 | `the jira CLI is installed but not configured … run jira init` | installed, never pointed at a site |
 | `the jira CLI is not authenticated` / `Jira rejected the JIRA_API_TOKEN / JIRA_EMAIL credential (HTTP 401)` | the credential is wrong or expired |
 | `Jira could not run this query (HTTP 400) - <what Jira said>` | the JQL is the problem, not the credential |
-| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is `NODE_EXTRA_CA_CERTS` |
+| `could not reach Jira at <host> (ECONNREFUSED)` | wrong host, or the VPN/CA above. The code in brackets is the cause - `ENOTFOUND` is a typo'd host, a certificate error is the proxy's CA missing from the system store and `NODE_EXTRA_CA_CERTS` |
 | `the jira CLI did not answer within 20s - it may be waiting for input` | the CLI is prompting, which a background sweep cannot answer. Run it once by hand to see what it wants |
 | `the Jira site must be a host, not a URL carrying a credential` | the site names one server and would send the token to another - set it to the host on its own |
 | `refusing to send JIRA_API_TOKEN to <host>` | that host is not Jira Cloud and is not in `JIRA_ALLOWED_HOSTS`. Name it there if it really is your Jira; the CLI rung keeps working regardless |

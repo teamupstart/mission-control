@@ -338,7 +338,8 @@ let db: DatabaseSync | undefined;
 // 61: remember accepted spoken outbox IDs after retirement.
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
 // 63: replace the previously materialized Voice mute shortcut default once.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 63;
+// 64: retain handoff release, accepted Goal instruction and initial queue delivery times.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -924,8 +925,11 @@ function createSchemaObjects(d: DatabaseSync): void {
       text                    TEXT,              -- compact durable objective for the card
       source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
       opening_prompt          TEXT,              -- first accepted human instruction, write-once
+      handoff_released_at     INTEGER,
+      deliverable_updated_at  INTEGER,
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
+      latest_prompt_accepted_at INTEGER,
       focus                   TEXT,              -- compact latest instruction
       relationship            TEXT,              -- initial | steer | amend | replace | unclear
       rationale               TEXT,              -- why the latest relationship was chosen
@@ -2434,6 +2438,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL,
       sent_at           INTEGER,
+      first_delivered_at INTEGER,
       delivery_runtime  TEXT,              -- runtime that accepted this delivery attempt
       completed_at      INTEGER
     );
@@ -4730,6 +4735,11 @@ function migrate(d: DatabaseSync): void {
   // Capture the attempt's runtime before delivery. Legacy rows have no acknowledgement
   // evidence and retain the conservative pickup-verification path.
   addColumn(d, "foreman_queue_items", "delivery_runtime", "TEXT");
+  addColumn(d, "foreman_queue_items", "first_delivered_at", "INTEGER");
+  if (databaseSchemaVersion(d) < 64) {
+    // Older queues only retain the latest known send. Keep that stamp across future retries.
+    d.exec("UPDATE foreman_queue_items SET first_delivered_at = sent_at WHERE first_delivered_at IS NULL AND sent_at IS NOT NULL");
+  }
 
   // `prompted_goal`: the historical resolved-intent guard used before prompted
   // completion consumed work-cycle generations. It remains readable for one-time
@@ -5282,6 +5292,9 @@ function migrate(d: DatabaseSync): void {
   // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
   addColumn(d, "session_goals", "objective", "TEXT");
   addColumn(d, "session_goals", "opening_prompt", "TEXT");
+  addColumn(d, "session_goals", "handoff_released_at", "INTEGER");
+  addColumn(d, "session_goals", "deliverable_updated_at", "INTEGER");
+  addColumn(d, "session_goals", "latest_prompt_accepted_at", "INTEGER");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -13023,6 +13036,9 @@ export function loadSessionNotes(): SessionNote[] {
 // ---- session goals ----
 
 interface SessionGoalRow {
+  handoff_released_at: number | null;
+  deliverable_updated_at: number | null;
+  latest_prompt_accepted_at: number | null;
   opening_prompt: string | null;
   note_key: string;
   text: string | null;
@@ -13048,11 +13064,12 @@ function pendingGoalPrompts(r: SessionGoalRow): SessionGoal["pendingPrompts"] {
     if (Array.isArray(parsed)) {
       const valid = parsed.flatMap((entry) => {
         if (!entry || typeof entry !== "object") return [];
-        const revision = (entry as { revision?: unknown }).revision;
-        const prompt = (entry as { prompt?: unknown }).prompt;
+        const { revision, prompt, acceptedAt } = entry as { revision?: unknown; prompt?: unknown; acceptedAt?: unknown };
         return Number.isInteger(revision) && Number(revision) > 0 &&
           (typeof prompt === "string" || prompt === null)
-          ? [{ revision: Number(revision), prompt }]
+          ? [{ revision: Number(revision), prompt,
+            ...(typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt) ? { acceptedAt } : {}),
+          }]
           : [];
       });
       const unresolved = valid
@@ -13102,6 +13119,9 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     resolvedPromptRevision:
       r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
     pendingPrompts: pendingGoalPrompts(r),
+    ...(r.latest_prompt_accepted_at === null ? {} : { latestPromptAcceptedAt: r.latest_prompt_accepted_at }),
+    ...(r.handoff_released_at === null ? {} : { handoffReleasedAt: r.handoff_released_at }),
+    ...(r.deliverable_updated_at === null ? {} : { deliverableUpdatedAt: r.deliverable_updated_at }),
     updatedAt: r.updated_at,
   };
 }
@@ -13111,8 +13131,9 @@ export function upsertSessionGoal(g: SessionGoal): void {
     .prepare(
       `INSERT INTO session_goals
          (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
-          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at,
+          handoff_released_at, deliverable_updated_at, latest_prompt_accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
          opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
@@ -13121,12 +13142,15 @@ export function upsertSessionGoal(g: SessionGoal): void {
          prompt_revision=excluded.prompt_revision,
          resolved_prompt_revision=excluded.resolved_prompt_revision,
          pending_prompts=excluded.pending_prompts,
-         updated_at=excluded.updated_at`,
+         handoff_released_at=excluded.handoff_released_at,
+         deliverable_updated_at=excluded.deliverable_updated_at,
+         latest_prompt_accepted_at=excluded.latest_prompt_accepted_at, updated_at=excluded.updated_at`,
     )
     .run(
       g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
-      JSON.stringify(g.pendingPrompts), g.updatedAt,
+      JSON.stringify(g.pendingPrompts), g.updatedAt, g.handoffReleasedAt ?? null,
+      g.deliverableUpdatedAt ?? null, g.latestPromptAcceptedAt ?? null,
     );
 }
 
@@ -15746,6 +15770,13 @@ export function claimNextPendingTurn(
       if (!composeSpoken) throw new Error("Missing spoken delivery composer");
       row.text = composeSpoken(row.spoken_words);
       row.composed_at = now;
+    } else if (row.spoken_words !== null) {
+      // A pre-upgrade claim froze this suffix after the words and routing notes.
+      // Change only the next send, leaving any earlier delivery receipt intact.
+      const legacySuffix = "\n\nWhen you have finished this, post a report.";
+      if (row.text.slice(row.spoken_words.length).endsWith(legacySuffix)) {
+        row.text = row.text.slice(0, -legacySuffix.length);
+      }
     }
     const spokenClaimId = row.spoken_words === null ? null : randomUUID();
     const changed = d
@@ -16397,6 +16428,7 @@ interface QueueItemRow {
   created_at: number;
   updated_at: number;
   sent_at: number | null;
+  first_delivered_at: number | null;
   delivery_runtime: "terminal" | "sdk" | null;
   completed_at: number | null;
 }
@@ -16423,6 +16455,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     sentAt: r.sent_at,
+    ...(r.first_delivered_at === null ? {} : { firstDeliveredAt: r.first_delivered_at }),
     ...(r.delivery_runtime ? { deliveryRuntime: r.delivery_runtime } : {}),
     completedAt: r.completed_at,
   };
@@ -17118,8 +17151,8 @@ export function upsertQueueItem(i: WorkItem): void {
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
          proposed_payload, recovered_at, revision, created_at, updated_at, sent_at,
-         completed_at, delivery_runtime
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         completed_at, delivery_runtime, first_delivered_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
@@ -17129,13 +17162,17 @@ export function upsertQueueItem(i: WorkItem): void {
          approved_at=excluded.approved_at, proposed_payload=excluded.proposed_payload,
          recovered_at=excluded.recovered_at, revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
-         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime`,
+         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime,
+         first_delivered_at=CASE WHEN foreman_queue_items.intent = excluded.intent
+           THEN COALESCE(foreman_queue_items.first_delivered_at, excluded.first_delivered_at)
+           ELSE excluded.first_delivered_at END`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
       i.lastVerdict, i.approvedAt, i.proposedPayload, i.recoveredAt, i.revision,
       i.createdAt, i.updatedAt, i.sentAt, i.completedAt, i.deliveryRuntime ?? null,
+      i.firstDeliveredAt ?? null,
     );
 }
 

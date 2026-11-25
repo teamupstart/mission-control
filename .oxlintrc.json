@@ -75,7 +75,7 @@
     {
       "files": ["src/shared/**/*"],
       "rules": {
-        "no-restricted-imports": ["error", { "patterns": ["node:*"] }]
+        "no-restricted-imports": ["error", { "patterns": [{ "regex": "^node:" }] }]
       }
     },
     {

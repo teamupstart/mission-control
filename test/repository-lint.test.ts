@@ -28,6 +28,10 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   write("test/allowed.ts", 'import "node:test"; import "node:assert/strict";');
   write("e2e/allowed.ts", 'import "@playwright/test";');
 
+  write("src/shared/non-agent-values.ts", 'export const model = (provider) => provider === "codex"; export const wire = (form) => form === "claude";');
+  write("src/server/independent-map.ts", 'export function prune(id) { const sessions = new Map(); sessions.delete(id); }');
+  write("src/server/independent-json.ts", "export function read({ req }) { return ((req) => req.json())(req); }");
+
   const testIdAttributes = "data-" + "testid";
   const testIdSeeds = {
     "e2e/direct-locator.ts": 'export const locate = (getByTestId) => getByTestId("view");',
@@ -39,8 +43,10 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     ...testIdSeeds,
     "src/shared/unowned.ts": 'import "node:fs";',
     "src/shared/nested/unowned.mjs": 'export const builtin = import("node:path");',
+    "src/shared/subpath.ts": 'import "node:fs/promises";',
+    "src/server/destructured-request.ts": 'export const read = ({ req: request }) => request.json(); export function readLocal(c) { const { req } = c; return req.json(); }',
     "src/server/route.ts": 'export const read = (context) => context["req"]?.json();',
-    "src/server/agent.ts": 'export const isPi = (id) => "pi" === id; export const branch = (id) => { switch (id) { case "codex": return true; default: return false; } };',
+    "src/server/agent.ts": 'export const isPi = (agent) => "pi" === agent; export const branch = (agent) => { switch (agent) { case "codex": return true; default: return false; } };',
     "src/server/eviction.ts": 'export const evict = (registry, id, emit) => { registry.sessions["delete"](id); emit({ ["type"]: "session_remove", id }); };',
     "src/server/asserted-event.ts": 'export const evict = (id, emit) => emit({ type: "session_remove" as const, id });',
     "src/server/satisfies-event.ts": 'export const evict = (id, emit) => emit({ type: "session_remove" satisfies string, id });',
@@ -60,10 +66,10 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   const output = blocked.stdout + blocked.stderr;
   assert.equal(blocked.status, 1, output);
   for (const [rule, count] of Object.entries({
-    "no-restricted-imports": 2,
+    "no-restricted-imports": 3,
     "test-imports": 5,
     "no-test-ids": 6,
-    "parse-request-body": 1,
+    "parse-request-body": 3,
     "agent-comparison": 2,
     "registry-eviction": 4,
   })) {

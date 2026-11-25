@@ -10,6 +10,26 @@ function member(node, property) {
   return node?.type === "MemberExpression" && name(node.property, node.computed) === property;
 }
 
+function bindingIdentifier(context, node) {
+  if (node?.type !== "Identifier") return;
+  for (let scope = context.sourceCode.getScope(node); scope; scope = scope.upper) {
+    const binding = scope.set.get(node.name);
+    if (binding) return binding.defs[0]?.name;
+  }
+}
+
+function annotation(identifier) {
+  const type = identifier?.typeAnnotation?.typeAnnotation;
+  return type?.type === "TSTypeReference" ? name(type.typeName) : undefined;
+}
+
+const agentOperands = new Set(["agent", "agentType", "runner"]);
+function selectsAgent(context, node) {
+  return agentOperands.has(name(node)) ||
+    (node?.type === "MemberExpression" && agentOperands.has(name(node.property, node.computed))) ||
+    annotation(bindingIdentifier(context, node)) === "AgentType";
+}
+
 const agentNames = new Set(["claude", "codex", "pi"]);
 const equalityOperators = new Set(["===", "!==", "==", "!="]);
 const testLibraries = /^(?:jsdom|@testing-library|vitest|@vitest|jest|@jest)(?:\/|$)|^jest-/;
@@ -70,7 +90,14 @@ export default {
       create(context) {
         return {
           CallExpression(node) {
-            if (member(node.callee, "json") && member(node.callee.object, "req")) {
+            if (!member(node.callee, "json")) return;
+            const request = node.callee.object;
+            const binding = bindingIdentifier(context, request);
+            const property = binding?.parent;
+            const destructuredRequest = property?.type === "Property" &&
+              property.parent.type === "ObjectPattern" && property.value === binding &&
+              name(property.key, property.computed) === "req";
+            if (member(request, "req") || destructuredRequest) {
               context.report({ node, message: "Parse request JSON through src/server/http-body.ts." });
             }
           },
@@ -84,11 +111,12 @@ export default {
         }
         return {
           BinaryExpression(node) {
-            if (equalityOperators.has(node.operator) &&
-                (agentNames.has(name(node.left, true)) || agentNames.has(name(node.right, true)))) report(node);
+            if (!equalityOperators.has(node.operator)) return;
+            if ((agentNames.has(name(node.left, true)) && selectsAgent(context, node.right)) ||
+                (agentNames.has(name(node.right, true)) && selectsAgent(context, node.left))) report(node);
           },
           SwitchCase(node) {
-            if (agentNames.has(name(node.test, true))) report(node.test);
+            if (agentNames.has(name(node.test, true)) && selectsAgent(context, node.parent.discriminant)) report(node.test);
           },
         };
       },
@@ -100,8 +128,12 @@ export default {
         }
         return {
           CallExpression(node) {
-            if (member(node.callee, "delete") &&
-                (name(node.callee.object) === "sessions" || member(node.callee.object, "sessions"))) report(node);
+            if (!member(node.callee, "delete") || !member(node.callee.object, "sessions")) return;
+            const owner = node.callee.object.object;
+            const ownerType = annotation(bindingIdentifier(context, owner));
+            if (ownerType === "Registry" || (!ownerType && (name(owner) === "registry" || member(owner, "registry")))) {
+              report(node);
+            }
           },
           Property(node) {
             if (node.parent.type !== "ObjectExpression" || name(node.key, node.computed) !== "type") return;

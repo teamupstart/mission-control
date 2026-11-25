@@ -204,7 +204,6 @@ export function providerModelDefault(
   provider: LlmRunnerId,
   tier: "deep" | "balanced" | "cheap",
 ): string {
-  // oxlint-disable-next-line repository/agent-comparison -- The model catalog supplies provider-specific defaults.
   if (provider === "codex") {
     return tier === "cheap" ? "gpt-6-luna" : "gpt-6-sol";
   }

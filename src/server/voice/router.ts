@@ -2,7 +2,7 @@ import { namedInboxCommand, spokenInboxAction } from "@shared/voice-inbox.ts";
 import { VoicePlanForms, formChoices, isFormChoice } from "./plan-forms.ts";
 import { addressedCards, focusedVoiceCard, planVoiceTarget, spokenOrdinal, VOICE_DASHBOARD_CONFIRM_MS, VOICE_INBOX_ACTION_TIMEOUT_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
-import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
+import { explicitAnswerText, matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
   routeUtterance,
   voiceCardCanExpire,
@@ -585,7 +585,7 @@ export class VoiceRouter {
       }).finally(match.finish);
     }
     // Explicit question-answer phrases retain their phase 13 meaning even beside an inbox reply box.
-    if (target && (requestedChoice(body) !== undefined || /^(?:my\s+answer\s+is\b|answer\s*[:,])/iu.test(body))) return false;
+    if (target && (requestedChoice(body) !== undefined || explicitAnswerText(body) !== undefined)) return false;
     let actionCard = card;
     if (target) {
       // A named command identifies its control across the agent's open cards. Plain
@@ -697,16 +697,13 @@ export class VoiceRouter {
     const target = reply ? null : addressed?.target ?? null;
     const body = (reply?.[1] ?? addressed?.text ?? ambiguous!.text).trim();
     if (!body) return false;
-    // The spoken prefix survives punctuation-free transcription. Keep the shorter
-    // punctuated form and the bare picker command without capturing "answer the email".
-    const answer = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
-      ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+    const answer = explicitAnswerText(body);
     const choiceCommand = requestedChoice(body) !== undefined;
-    const explicit = !reply && (!!answer || choiceCommand);
+    const explicit = !reply && (answer !== undefined || choiceCommand);
     if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
     const monotonicMs = this.questionTime(time);
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
-    const content = explicit && answer ? answer[1]!.trim() : body;
+    const content = explicit ? answer ?? body : body;
     const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };

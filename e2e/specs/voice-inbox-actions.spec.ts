@@ -150,6 +150,27 @@ test("an unavailable named Publish action leaves the focused report unread and s
   expect(replies).toEqual([]);
 });
 
+test("a bare answer command opens Steve's question picker while his Report has focus", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const report = await postReport(daemon, steve, "Build notes");
+  const title = "Which tests should run?";
+  const review = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { kind: "input", sessionId: steve.id, cwd: steve.cwd, env: {}, title, body: title },
+  });
+  expect(review.ok(), await review.text()).toBe(true);
+  const focused = page.waitForResponse(r => r.ok() && r.url().endsWith("/api/voice/open-cards") &&
+    (r.request().postDataJSON() as OpenCardsReport).cards.some(c => c.id === report.id && c.focused));
+  const card = await openReportCard(page, report);
+  await card.getByRole("textbox").focus();
+  await focused;
+  await say(daemon, "Steve, answer");
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  await expect(picker.getByRole("button", { name: /Which tests should run/ })).toBeVisible();
+  expect((await storedReport(daemon, report.id)).readAt).toBeNull();
+});
+
 test("a named Publish command with the inbox closed is refused before starting an agent turn", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 1);
   const steve = await runningAgent(page, daemon, "Steve");

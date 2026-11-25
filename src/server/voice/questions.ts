@@ -366,6 +366,13 @@ export function spokenIndex(words: string, explicitLetters = false, allowLetters
   return position - 1;
 }
 
+/** Empty text opens the picker. "Answer the email" is ordinary dictation. */
+export function explicitAnswerText(body: string): string | undefined {
+  const match = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
+    ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+  return match?.[1]?.trim();
+}
+
 /** These commands request a particular option and cannot supply a written answer. */
 export function requestedChoice(words: string): number | "recommended" | undefined {
   if (/^go with your recommendation[.!?]*$/iu.test(words)) return "recommended";

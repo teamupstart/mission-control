@@ -403,19 +403,19 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
 
     const payload = autoWrapupPayload(cfg.wrapup);
     const intentGuard = resolvedSessionIntent(intent);
+    if (intent && !intentGuard) return { kind: "none" };
     const block = automaticWrapupBlock({
       taskKind: session.task?.kind ?? null,
       workflowId: session.task?.workflowId ?? null,
-      // Queue items are completion contracts too. Include them beside the durable session
-      // objective so `Output: mockups` cannot disappear merely because it was added as an
-      // item rather than as the session's opening prompt. A task title is the last compact
-      // clue available when a source filed a terse structured task.
-      objective: [intentGuard?.objective, session.task?.title, ...items.map((item) => item.intent)]
-        .filter((part): part is string => Boolean(part?.trim()))
-        .join("\n\n") || null,
+      // Completed items and the title can describe an earlier outcome. Use them as
+      // completion contracts only when there is no reconciled session objective.
+      objective: intentGuard?.objective ?? (
+        [session.task?.title, ...items.map((item) => item.intent)].filter(Boolean).join("\n\n") || null
+      ),
       skipScoutWrapup: cfg.skipScoutWrapup,
       skipReviewArtifactWrapup: cfg.skipReviewArtifactWrapup,
     });
+    if (block?.kind === "operator_hold") return { kind: "none" };
     const blockedAction: QueueAction | null = block
       ? { kind: "skip-wrapup", queue, reason: block.reason }
       : null;

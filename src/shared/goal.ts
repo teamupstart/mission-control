@@ -63,6 +63,13 @@ export const GOAL_ACCEPTED_RATIONALE =
 export const GOAL_KEPT_AS_STEERING_RATIONALE =
   "Kept as steering: a newer instruction arrived before this one was clear.";
 
+/** A standalone objective clause reserved for a human's explicit stop or publication restriction. */
+export const GOAL_OPERATOR_HANDOFF_ONLY = "Automatic handoff: operator only";
+
+export function hasOperatorHandoffHold(objective: string | null): boolean {
+  return objective?.split("\n").some((line) => line.trim() === GOAL_OPERATOR_HANDOFF_ONLY) ?? false;
+}
+
 export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {
   const objective = goal?.objective?.trim() ?? "";
   if (

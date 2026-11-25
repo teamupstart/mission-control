@@ -364,6 +364,22 @@ finished work never reaches an automatic completion action:
 The safeguards are independent. A task matching either one is retired while that switch is
 on; turn a switch off to let that class of work use the ordinary **Trigger on → Then** action.
 
+When you authorize implementing a selected mockup, the reconciled [Goal](sessions.md#goal)
+describes the product change. Foreman applies the same artifact-only diff safeguard and then
+verifies the implementation before claiming the bound Workflow. A drained work queue uses
+the current Goal to decide what is eligible for handoff. The completed items and task title
+supply the contract when there is no Goal. A pending or ambiguous Goal pauses the drain decision.
+
+To recover an implementation that Foreman already retired as a review artifact, first check the
+session's completion entry in `foreman.log` for the retired generation and artifact reason. Verify
+that the session still owns the checkout, the intended Foreman-complete binding has no submission,
+and no PR or direct shipping handoff already owns the work. Send a new human instruction naming
+the selected design and making the product implementation the deliverable, and ask the agent to
+check the existing change and prepare it for the bound Workflow. Once the new Goal resolves and
+the turn settles, Foreman verifies the new generation with the ordinary evidence and review
+requirements. The earlier retirement stays recorded in the log. Use this recovery only for a
+confirmed misclassification and honor any outstanding stop or no-PR instruction.
+
 **A `chat` task with no explicit Workflow always stays human-ended.** Foreman may recognize
 its completion boundary, but it retires that automatic pass without offering or sending a
 shipping action. The agent remains available for another conversational turn until you choose

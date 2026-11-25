@@ -735,19 +735,21 @@ test("5. an unticked drain trigger does not CONSUME the ask - re-ticking it stil
 });
 
 
-test("5. automatic wrap-up waits while the latest intent is unresolved", () => {
-  assert.equal(
-    tick({
-      items: DRAINED(),
-      cfg: { wrapup: "pr" },
-      intent: { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
-    }).kind,
-    "none",
-  );
-  assert.equal(
-    tick({ items: DRAINED(), cfg: { wrapup: "pr" }, intent: { relationship: "unclear" } }).kind,
-    "none",
-  );
+test("5. a drain waits while the latest intent is unresolved, even with an artifact task title", () => {
+  for (const wrapup of ["pr", "ask"] as const) {
+    for (const intent of [
+      { promptRevision: 2, resolvedPromptRevision: 1, relationship: null },
+      { relationship: "unclear" as const },
+    ]) {
+      const action = tick({
+        items: DRAINED(),
+        session: { task: mkTaskSummary({ title: "Create mockups for the viewer" }) },
+        cfg: { wrapup },
+        intent,
+      });
+      assert.equal(action.kind, "none");
+    }
+  }
 });
 
 test("5. a scout drain retires without a Straight-to-PR action", () => {
@@ -861,6 +863,43 @@ test("5. an implementation that cites mockups keeps the configured automatic act
       cfg: { wrapup: "pr" },
     });
     assert.equal(action.kind, "auto-wrapup", objective);
+  }
+});
+
+test("5. a resolved implementation supersedes a stale title and completed artifact item", () => {
+  const action = tick({
+    items: DRAINED().map((item) => ({ ...item, intent: "Output: mockups" })),
+    session: { task: mkTaskSummary({ title: "Output: mockups" }) },
+    intent: { objective: "Heading counts in the Idle rail are live in the product.", relationship: "replace", objectiveVersion: 2 },
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "auto-wrapup");
+  assert.equal(action.kind === "auto-wrapup" && action.intentGuard.objective, "Heading counts in the Idle rail are live in the product.");
+});
+
+test("5. old implementation items and title cannot authorize shipping under a current artifact-only objective", () => {
+  const action = tick({
+    items: DRAINED().map((item) => ({ ...item, intent: "Output: source code" })),
+    session: { task: mkTaskSummary({ title: "Implement the navigation feature" }) },
+    intent: { objective: "Output: mockups", relationship: "replace", objectiveVersion: 2 },
+    cfg: { wrapup: "pr" },
+  });
+  assert.equal(action.kind, "skip-wrapup");
+});
+
+test("5. a drained implementation with an explicit no-PR restriction neither claims nor retires", () => {
+  for (const wrapup of ["pr", "ask"] as const) {
+    for (const objective of [
+      "Implement heading counts.\nAutomatic handoff: operator only",
+      "Implement heading counts. Do not open a PR.",
+    ]) {
+      const action = tick({
+        items: DRAINED(),
+        intent: { objective },
+        cfg: { wrapup, skipReviewArtifactWrapup: false, skipScoutWrapup: false },
+      });
+      assert.equal(action.kind, "none");
+    }
   }
 });
 

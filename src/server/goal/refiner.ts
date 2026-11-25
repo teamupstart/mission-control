@@ -3,11 +3,12 @@ import { runJobStructured } from "../llm/jobs.ts";
 import { createLimiter, parseModelJson } from "../llm/structured.ts";
 import { unref } from "../util/timers.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
-import { GOAL_UNSUPPORTED, goalLine } from "@shared/goal.ts";
+import { GOAL_OPERATOR_HANDOFF_ONLY, GOAL_UNSUPPORTED, goalLine, hasOperatorHandoffHold } from "@shared/goal.ts";
 import type { Registry } from "../registry.ts";
 import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
+import { explicitHandoffRestriction, withoutHandoffRestrictions } from "./handoff-restrictions.ts";
 import { clampPrompt } from "../util/prompt-text.ts";
 
 // Tier 2: reconcile each human prompt with the durable session objective, in captured
@@ -514,21 +515,56 @@ async function refine(
         );
       }
 
-      // A steering or unclear classification is not authorised to shrink the completion
-      // contract. Amend and replace are the only relationships that may change it.
-      const mayChangeObjective =
-        relationship === "amend" || relationship === "replace" || relationship === "initial";
-      const objective = !mayChangeObjective
+      const humanRestriction = explicitHandoffRestriction(prompt.prompt);
+      const priorRestriction = explicitHandoffRestriction(currentObjective);
+      const hadHold = hasOperatorHandoffHold(currentObjective) || Boolean(priorRestriction);
+      // A standalone release lets the operator confirm the reconciled objective. A
+      // combined turn may revise the deliverable, but any model rewrite is insufficient
+      // authority to release its hold before that objective can be reviewed.
+      const requestsRelease = hadHold && !humanRestriction
+        && RELEASE_DIRECTIVE.test(prompt.prompt.trim().replace(/[.!?]+$/, ""));
+      // A standalone release carries authority to remove the hold from the existing
+      // contract. Disregard a model-proposed deliverable or card title on that turn.
+      const mayChangeObjective = !requestsRelease && (
+        relationship === "amend" || relationship === "replace" || relationship === "initial"
+      );
+      let objective = !mayChangeObjective
         ? currentObjective ?? current.prompt
         : relationship === "amend"
           ? amended
           : r.value.objective;
       const text = mayChangeObjective ? r.value.goal : current.text;
+      const released = requestsRelease && currentObjective ? withoutHandoffRestrictions(currentObjective) : null;
+      let handoffContractChanged = false;
+      if (released && released !== objective) {
+        objective = released;
+        handoffContractChanged = true;
+        if (relationship === "steer" || relationship === "amend" || relationship === "unclear") {
+          relationship = "replace";
+        }
+        rationale = "The operator explicitly released the completion handoff.";
+      }
+      const preserveHold = hadHold && !released;
+      const restriction = humanRestriction
+        ?? explicitHandoffRestriction(objective)
+        ?? (preserveHold ? priorRestriction : undefined);
+      if ((restriction || preserveHold) && objective && !hasOperatorHandoffHold(objective)) {
+        // The accepted human turn can reserve handoff even when the model misses the
+        // restriction or calls the turn steering. Keep any accepted implementation
+        // objective and record the safety restriction in the same intent revision.
+        const restrictionLine = restriction && !objective.includes(restriction) ? `\n${restriction}` : "";
+        objective = clampPrompt(`${objective}${restrictionLine}\n${GOAL_OPERATOR_HANDOFF_ONLY}`);
+        handoffContractChanged = true;
+        if (relationship === "steer") {
+          relationship = "amend";
+          rationale = "The operator explicitly reserved the completion handoff.";
+        }
+      }
       const objectiveChanged = objective !== current.objective;
       const objectiveVersion =
         relationship === "initial"
           ? Math.max(1, current.objectiveVersion)
-          : relationship === "amend" || relationship === "replace"
+          : mayChangeObjective || handoffContractChanged
             ? current.objectiveVersion + (objectiveChanged ? 1 : 0)
             : current.objectiveVersion;
 
@@ -538,7 +574,9 @@ async function refine(
         source: "model",
         // While a newer instruction waits, the UI keeps showing that latest captured focus.
         // Resolving an older transition must not make the drawer appear to move backwards.
-        focus: current.pendingPrompts.length === 1 ? r.value.focus : current.focus,
+        focus: current.pendingPrompts.length === 1
+          ? requestsRelease ? goalLine(prompt.prompt) : r.value.focus
+          : current.focus,
         relationship,
         rationale,
         objectiveVersion,
@@ -555,3 +593,5 @@ async function refine(
     console.error("[goal] refine failed:", err);
   }
 }
+
+const RELEASE_DIRECTIVE = /^(?:please\s+)?resume\s+automatic\s+handoff$/i;

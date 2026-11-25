@@ -11110,8 +11110,8 @@ export class Registry extends EventEmitter {
     if (!session) return null;
     // An `unclear` verdict while newer instructions already wait is this instruction's last
     // chance to be kept: the next resolution replaces the goal's `prompt`, and nothing else
-    // holds its text. Keep it as steering, which never changes the objective (the refiner's
-    // unclear patch already carries the current objective and version). A final `unclear`,
+    // holds its text. Keep it as steering without adopting a different deliverable.
+    // The patch can already carry an explicit operator handoff restriction. A final `unclear`,
     // with nothing newer queued, still pauses wrap-up; capture re-queues it if a newer
     // instruction arrives later.
     if (patch.relationship === "unclear" && (patch.pendingPrompts?.length ?? 0) > 0) {

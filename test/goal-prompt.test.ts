@@ -10,7 +10,7 @@ import type { Session } from "../src/shared/types.ts";
 
 const session = { name: "advisor-settings", cwd: "/wt/advisor", gitBranch: "harness/advisor" } as Session;
 
-test("the goal prompt tells the model that picking an offered option is steering", () => {
+test("the goal prompt distinguishes a choice within implementation from authorization to implement", () => {
   const prompt = buildGoalPrompt({
     session,
     currentObjective: "Show two mockups of the advisor settings page and implement the one I pick",
@@ -18,9 +18,11 @@ test("the goal prompt tells the model that picking an offered option is steering
     prompt: "B",
     window: null,
   });
-  const steer = prompt.slice(prompt.indexOf('- "steer"'), prompt.indexOf('- "amend"'));
-  assert.match(
-    steer.replace(/\s+/g, " "),
-    /When the objective or the conversation explicitly offers choices \(options, mockups, "A or B", "pick one"\), a reply that names one of them is steering, not an amendment\./,
-  );
+  const rules = prompt.replace(/\s+/g, " ");
+  assert.match(rules, /if the objective already says to implement the selected design, "B" selects the approach and leaves that objective intact/);
+  assert.match(rules, /If exploration was the whole objective and the human now authorizes implementing a selected design in the product, use "replace"/);
+  assert.match(rules, /Merely naming or favoring an option does not authorize implementation/);
+  assert.match(rules, /When a selection is ambiguous about whether to implement it, use "unclear"/);
+  assert.match(rules, /If the human explicitly stops further work or withholds automatic review, shipping or a pull request, include the exact standalone line "Automatic handoff: operator only"/);
+  assert.match(rules, /Keep the line until the human expressly lifts the restriction/);
 });

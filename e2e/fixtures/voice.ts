@@ -1,3 +1,4 @@
+import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { fixtureVoiceSupervisor } from "../../test/helpers/voice-supervisor.ts";
 import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -101,6 +102,24 @@ async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Pr
   } finally {
     listener.stop();
   }
+}
+
+/** End detection and transcription may finish after the countdown on any card surface. */
+export async function startSpokenCancel(daemon: VoiceDaemon) {
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const directive = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  const { revision } = await directive.json() as VoiceListenerDirective;
+  const speechStartUs = voiceHostTimeUs();
+  const capturedAt = Date.now();
+  const query = "?revision=" + encodeURIComponent(revision);
+  const start = await fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+    method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "start" }),
+  });
+  if (!(await start.json()).accepted) throw new Error("Listener speech onset refused");
+  return () => fetch(daemon.baseURL + "/voice/utterances" + query, { method: "POST",
+    headers: { ...headers, "x-voice-capture-start-host-us": String(speechStartUs),
+      "x-voice-speech-start-host-us": String(speechStartUs), "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000)) },
+    body: JSON.stringify({ id: crypto.randomUUID(), text: "Cancel.", capturedAt, backend: LISTENER_HELLO.backend }) });
 }
 
 const lastCapturePost = new Map<string, Promise<Response>>();

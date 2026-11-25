@@ -327,7 +327,16 @@ The listener posts captures in spoken order, waiting for each response before po
 capture (including a cancel or pick). This lets the daemon apply a control to an action that
 has already opened. A cancel received with no pending action records `nothing-pending`.
 The daemon starts each delivery deadline when it opens the pending card.
-The cancel window closes at that deadline even if the delivery timer runs late.
+The Cancel button and new speech onsets close at that deadline. The native microphone
+listener reports the first voiced sample before waiting for silence or decoding. The
+daemon allows 250 ms for the final microphone buffer and its loopback onset report.
+If speech began during the countdown, delivery of the selected message waits for
+that segment's result. A bare “cancel” cancels that message even if recognition
+finishes after the countdown. Other speech releases the message for delivery.
+If the listener drops a segment or capture closes before the segment is complete,
+the listener promptly reports completion so the daemon can release that reservation.
+If no completion arrives, the reservation expires 35 seconds after the daemon
+creates it. Send now still claims the message immediately.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
@@ -356,8 +365,9 @@ When a later name could start a second message, or the first name is in doubt, t
 side of it (“Steve and Will, check the build”, “Steve, ping Will”) leaves the whole
 message with the first agent.
 
-During the cancel window, the message stays in memory. At the deadline, or immediately with
-the window off, the daemon submits the remaining text as a spoken turn. The card and Recently heard show the delivery outcome.
+During the cancel window, the message stays in memory. After the countdown and any
+in-window speech have settled, the daemon submits the remaining text as a spoken turn.
+Turning the window off makes submission immediate. The card and Recently heard show the delivery outcome.
 For example, `Will,"ship it"` queues `"ship it"` with both quotes, and
 `Will, ???` queues `???`. Only one comma separates the address from the message,
 so `Will,,,` queues `,,` and `Will,,,stop` queues `,,stop`.
@@ -1029,10 +1039,17 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 
 - `POST /voice/listener/supervised` records a supervisor’s start or confirmed exit.
 - `GET /voice/speech/jobs/:id/audio` and `POST /voice/speech/jobs/:id/events` serve the holder’s WAV and accept its playback reports. These routes, listener hellos and directive polls use the private `x-mission-voice-instance` header. The hello body lists playback capabilities. Only its header identifies a speech target. The capture lease still uses `x-voice-listener-id`.
-- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone, speech? }`, sent by a
+- `POST /voice/listener/hello { backend, version, devices, modelLoaded, microphone, speech?, reportsSpeechOnset? }`, sent by a
   listener every 10 seconds. `version` is the listener protocol version. A hello with a different
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
+- `POST /voice/listener/speech?revision=…` accepts `{ phase, speechStartUs }` from the
+  listener that owns capture. A `start` reports the first voiced sample. After push-to-talk
+  release, the daemon still accepts an onset from that hold's revision if the sample falls
+  between key-down (inclusive) and the release cutoff (exclusive). The listener waits up to
+  one second for the onset acknowledgment before posting its transcript with the same onset.
+  A `finish` releases a segment that produced no accepted transcript, including overlong
+  audio once it can no longer be recovered at key-up.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build

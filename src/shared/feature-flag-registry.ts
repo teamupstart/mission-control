@@ -91,6 +91,7 @@ export const FEATURE_FLAGS = [
     label: "Resident names on cards",
     description: "Offer a Display setting that shows a resident's profile name on its board card beside the call sign it answers to.",
     stage: "preview",
+    sessionSetting: "read-write",
     keywords: ["residents", "reference name", "call sign", "board card", "display"],
   },
   {

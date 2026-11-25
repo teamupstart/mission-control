@@ -20,7 +20,7 @@ const { getUiConfig, setUiConfig } = await import("../src/server/ui-config.ts");
 const unused = (): never => assert.fail("only the ui owner is exercised here");
 const catalog = typedSettings({
   harnesses: unused, foreman: unused, inspector: unused, llm: unused, shipping: unused, skills: unused,
-  cost: unused, worktrees: unused, storageLimits: unused, backups: unused,
+  cost: unused, worktrees: unused, storageLimits: unused, backups: unused, workflows: unused,
 });
 const run = (request: Parameters<typeof dispatchSetting>[0]) => dispatchSetting(request, catalog(), () => null);
 

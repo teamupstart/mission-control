@@ -189,7 +189,9 @@ it fails closed, it is scrubbed from replies, and it is never stored in config.
 Two shapers that name the same URL, scope and issuer share one sign-in, so a selector and a
 router on one server need one browser visit. The daemon derives a connection id from those
 three values. A connection that no known shaper names any more is listed as unused, is not
-refreshed, and can be signed out.
+refreshed, and can be signed out. The stored record keeps the connection's URL, scope and
+issuer beside the tokens. None is a secret, and they name a stored sign-in after a daemon
+restart, when no shaper may name it any more.
 
 ### Signing in
 
@@ -216,8 +218,10 @@ sequenceDiagram
 
 1. **Start.** Settings sends `POST /api/shaping/sign-in` with the shaper's id. The daemon
    reads the server's metadata, checks it against the egress rules below, registers a client
-   if it holds none for that authorization server, and returns the authorization URL. This
-   is the operator's own click, so it may take network time. It is bounded at 20 seconds.
+   if it holds none for that authorization server, and returns the authorization URL. The
+   URL carries the client id, the `state` and the PKCE challenge, because the browser must
+   present them, and never the verifier. This is the operator's own click, so it may take
+   network time. It is bounded at 20 seconds.
 2. **Browser.** The dashboard opens the URL (D3) and also shows it as a link to copy. The
    daemon never starts a browser.
 3. **Callback.** The authorization server sends the browser to
@@ -225,7 +229,9 @@ sequenceDiagram
    has the loopback `Host` check. A browser redirect carries nothing else that proves who
    sent it, so the route accepts only a `state` it issued: 256 random bits, kept in memory,
    compared in constant time, used once, and dropped after 10 minutes. The PKCE verifier is
-   kept beside it. When the reply carries `iss`, it must name the pinned issuer.
+   kept beside it and leaves the daemon only for the token endpoint. The `state` and the
+   code arrive in the browser's redirect and are stored nowhere. When the reply carries
+   `iss`, it must name the pinned issuer.
 4. **Exchange.** The daemon exchanges the code through the SDK's `auth()`, stores the
    tokens, schedules the refresh and emits the new status. The page it answers with is
    static HTML with no script: it says the sign-in finished, or that it did not and where to
@@ -289,14 +295,24 @@ proves a sign-in end to end.
 
 ### Where each thing is kept
 
-| Thing | Kept | Never |
-| --- | --- | --- |
-| Access token and refresh token | One Keychain item per connection on macOS, daemon memory elsewhere (D1, D2) | A file, SQLite, `app_config`, a backup, a settings snapshot, an event, an API reply, a log, a task record, a child process, the browser |
-| PKCE verifier and `state` | Daemon memory, at most 10 minutes, single use | Anywhere else |
-| Authorization code | Daemon memory, for the one exchange | Anywhere else |
-| `client_id`, issuer, redirect URI, registration time | `app_config` key `shaping.signIn`, value class `operational`, in no backup domain | The browser |
-| The marker | The shaper's definition, in `app_config.shaping` or a manifest | It names no value |
-| Server metadata | Daemon memory, read again after a restart | Storage |
+Stored means written somewhere that outlives the request. Passing through means a value is
+in a request or a redirect because the protocol puts it there, and nothing keeps it.
+
+| Thing | Stored | Passes through, and is not kept there | Never reaches |
+| --- | --- | --- | --- |
+| Access token | One Keychain item per connection on macOS, daemon memory elsewhere (D1, D2) | The shaper's server, on each call | A file, SQLite, `app_config`, a backup, a settings snapshot, an event, an API reply, a log, a task record, a child process, the browser |
+| Refresh token | The same item | The authorization server's token endpoint, on a refresh | The same places, and the shaper's server |
+| PKCE verifier | Daemon memory, at most 10 minutes, single use | The token endpoint, once, at the exchange | The browser, an API reply, an event, any storage |
+| `state` | Daemon memory, at most 10 minutes, single use | The authorization URL, so the sign-in reply and the browser, and the browser's redirect to the callback | Any storage, the sign-in list, an event, the snapshot, the callback page |
+| Authorization code | Daemon memory, for the one exchange | The browser's redirect to the callback, then the token endpoint, once | Any storage, an API reply, an event, the snapshot, the callback page |
+| `client_id`, with its issuer, redirect URI and registration time | `app_config` key `shaping.signIn`, value class `operational`, in no backup domain | The `client_id` only: the authorization URL, so the sign-in reply and the browser, and requests to the authorization server | A backup, a settings snapshot, the sign-in list, an event, the snapshot. It is not a secret. |
+| The connection's URL, scope and issuer | The shaper's definition, and the stored record beside the tokens | The sign-in list: the API reply, the event and the snapshot | They are not secrets |
+| The marker | The shaper's definition, in `app_config.shaping` or a manifest | The config view, as any definition | It names no value |
+| Server metadata | Daemon memory, read again after a restart | | Storage |
+
+The browser sees the authorization URL and the callback URL, as in every OAuth sign-in. It
+never sees a token or the verifier, and without the verifier a code or a `state` seen in
+the browser cannot be used.
 
 - The daemon reaches the Keychain through a native addon, `native/keychain/`, that calls
   the Security framework (D2). It is built on macOS only, as `native/keep-awake/` is, and
@@ -339,7 +355,8 @@ token goes to the authorization server's token endpoint and nowhere else.
 A connection is `signed_out`, `pending`, `signed_in` or `renewing`. The daemon publishes a
 list with, per connection: its id, URL, scope, issuer, state, whether it is kept in the
 Keychain or in memory, when the access token expires, a reason, and the ids of the shapers
-that use it. Never a token.
+that use it. The list never holds a token, a code, a `state`, a verifier or an
+authorization URL.
 
 - `GET /api/shaping` gains `signIns`. A new event, `shaping_sign_ins`, and a snapshot field
   carry the same list, so the panel follows a sign-in that finishes in another tab, a
@@ -348,7 +365,9 @@ that use it. Never a token.
   or **Sign out**. Settings has no field-by-field shaper editor: a shaper is registered by
   importing a manifest, so the marker arrives in the manifest. The import review and the
   shaper's row state the sign-in, with its scope and the authorization server's origin, and
-  "What it is sent" names the access token and where it goes.
+  "What it is sent" names the access token and where it goes. A window that did not start a
+  pending sign-in, or that was reloaded, has no link to offer: it shows the sign-in as
+  waiting, with Sign in to start again and Cancel sign-in.
 - On a task, nothing new: an `unavailable` shaper already makes the launch `degraded`, with
   its reason in the viewer.
 
@@ -449,7 +468,8 @@ Each phase file repeats these.
 ## Tests and proof
 
 - A fixture, `test/fixtures/fake-oauth-server.mjs`: a protected `/mcp` with a `401`
-  challenge and a `get_guidance` tool, the two metadata documents, `/register`,
+  challenge and a `get_guidance` tool for the `mcp` transport, a protected `/shape` that
+  answers a shaping result for the `http` transport, the metadata documents, `/register`,
   `/authorize` that approves at once, `/token` with single-use rotation, and `/revoke`. It
   records every request, can put the authorization server on a second loopback origin, and
   can be told to refuse, stall or rotate.

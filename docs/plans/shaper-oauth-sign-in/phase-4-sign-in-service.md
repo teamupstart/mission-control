@@ -63,7 +63,10 @@ Not here: routes, the event, the transports, Settings.
    a pending sign-in or none, the refresh in flight or none, the next refresh time, and a
    reason. Nothing else holds a token.
 4. **`start()` and the flags.** While `task-shaping` and `shaper-sign-in` are both on, the
-   service reads every stored record into memory and schedules its refresh. While either is
+   service reads every stored record into memory and schedules its refresh. Each connection's
+   target comes from its record, so a stored sign-in is listed with its URL and scope even
+   when no shaper names it. A record stored under an id that its target does not hash to is
+   ignored. While either is
    off it reads nothing, fetches nothing and runs no timer. Turning both on loads then.
    Turning one off clears the timers and keeps what is in memory and in the store.
 5. **`accessToken(target)`.** Synchronous, memory only, never the network or the store.
@@ -81,14 +84,17 @@ Not here: routes, the event, the transports, Settings.
    registration or none, saves a new registration, and keeps the pending `state` and
    verifier for 10 minutes. A new pending sign-in replaces an older one for the same
    connection, and at most eight are kept. The whole step is bounded at 20 seconds. It
-   returns the authorization URL and when it expires. The redirect URI is
+   returns the authorization URL and when it expires. The URL carries the client id, the
+   `state` and the PKCE challenge. The verifier stays in the service. The redirect URI is
    `http://127.0.0.1:<PORT>/api/shaping/sign-in/callback`.
-7. **`complete({ state, code, error, iss })`.** It finds the pending sign-in by comparing
+7. **`complete({ state, code, error, iss })`.** The values are the ones the browser's
+   redirect carried to the callback. It finds the pending sign-in by comparing
    `state` in constant time, and removes it before anything else, so a `state` works once.
    An unknown or expired `state`, an `error` from the server, a missing `code`, or an `iss`
    that is not the pinned issuer ends in a fixed reason. Otherwise it runs `exchange`,
    stores the record, schedules the refresh and reports the change.
-8. **Storing.** Every record is written to the store before it replaces the one in memory.
+8. **Storing.** Every record is written to the store, with its target, before it replaces
+   the one in memory.
    When the write fails, the record is used from memory, the connection's storage reads
    `memory`, and its reason says a restart will need a new sign-in.
 9. **Refresh.**
@@ -108,7 +114,8 @@ Not here: routes, the event, the transports, Settings.
     change. The registration is kept.
 12. **`setInUse(list)`, `view()` and `onChanged`.** `setInUse` takes each target with the
     ids of the shapers that name it. `view()` lists every connection, sorted, as
-    `ShapingSignInView`, with an unused one's `shapers` empty. `onChanged` fires only when
+    `ShapingSignInView`, with an unused one's `shapers` empty. It never holds a
+    token, a code, a `state`, a verifier or an authorization URL. `onChanged` fires only when
     the view changed.
 13. **Wiring.** `index.ts` builds `shaperSignIns` with the real store, clock, timers and
     flow. It calls `setInUse` at start, from the stored config and one scan of the shapers
@@ -148,11 +155,15 @@ the memory store, and a store that can be made to fail.
 - A connection that is not in use is not refreshed.
 - A second service over the same store is `signed_in` with no request, and refreshes a
   record that expired while it was down. A spent refresh token ends `signed_out`.
+- **Restart after the shaper was removed.** A second service over the same store, told that
+  no shaper is in use, lists the connection with its URL and scope and with `shapers`
+  empty, sends no request for it, and `signOut` removes its record from the store. A record
+  stored under an id that its target does not hash to is not listed.
 - Both flags off: no store read, no request, no timer, and `accessToken` answers `flagOff`.
 - `signOut` removes the record, calls the fixture's `/revoke`, and keeps the registration.
 - **No token leaves.** `view()`, every `onChanged` payload, the stored `app_config` value
   and a settings snapshot captured after the sign-in (`captureSettingsConfig`) are searched
-  for the fake token values, and none is found. The snapshot does not carry
+  for the fake token values, the code, the `state` and the verifier, and none is found. The snapshot does not carry
   `shaping.signIn` either.
 
 Also `test/settings-backup-coverage.test.ts` for the new key. Run those files,
@@ -162,6 +173,8 @@ Also `test/settings-backup-coverage.test.ts` for the new key. Run those files,
 
 - A sign-in completes against the fixture, and its record is written before it is used.
 - Concurrent refresh triggers produce exactly one refresh request.
+- After a restart, a stored sign-in that no shaper names is listed by its URL and scope, is
+  not refreshed, and can be signed out.
 - The record, the client registration and the view never hold a token outside the store and
   the service's own memory.
 - With both flags off the service does nothing.
@@ -176,7 +189,8 @@ calls only `accessToken` and `noteRefused`. Phase 6 calls `begin`, `complete`, `
 ## Cross-phase audit
 
 - Phase 1: the service is the only caller of the flow, and owns everything it remembers.
-- Phase 2: the only caller of the store. Its `storage` values are the store's kinds.
+- Phase 2: the only caller of the store. Its `storage` values are the store's kinds. It
+  writes the target into every record and reads it back at start.
 - Phase 3: answers with `SIGN_IN_REASONS` and fills `ShapingSignInView`.
 - Phase 5: `accessToken` is synchronous, so a call never waits. A `401` reaches
   `noteRefused`.

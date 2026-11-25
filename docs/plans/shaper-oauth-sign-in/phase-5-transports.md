@@ -41,7 +41,9 @@ Not here: the service, routes, the event, Settings. `carriers.ts`, `references.t
 
 - From Phase 4: `shaperSignIns.accessToken(target)`, synchronous, answers a token or a
   reason by flag and by state, and `shaperSignIns.noteRefused(target)`. From Phase 3:
-  `shaperSignInTarget`, `SIGN_IN_REASONS`, and the guard this phase replaces.
+  `shaperSignInTarget`, `SIGN_IN_REASONS`, and the guard this phase replaces. From Phase 1:
+  the fixture's two protected resources, `/mcp` for the `mcp` transport and `/shape`, which
+  answers a shaping result, for the `http` transport.
 - `callHeaders` (`remote.ts:52-80`) resolves a shaper's configured headers and returns them
   with `resolved`, the values to scrub from whatever comes back.
 - In `openHttp` (`mcp.ts:548-643`) the configured headers ride every request through
@@ -102,11 +104,12 @@ What a call does, for every state. Dispatch continues in every row.
 ## Tests and verification
 
 `test/shaping-transport-mcp.test.ts` and `test/shaping-transport-http.test.ts`, against the
-Phase 1 fixture's protected `/mcp`, with the service signed in through the memory store.
+Phase 1 fixture. The `mcp` tests call its protected `/mcp`, and the `http` tests its
+protected `/shape`. Each uses a service signed in for that URL through the memory store.
 
 - Signed in: the fixture saw `authorization: Bearer <fake token>` on every request of a
-  call, and the reply is the tool's guidance. For `mcp` that is the handshake, the
-  `tools/call` and the session's end.
+  call, and the reply is the guidance the resource returned. For `mcp` that is the handshake,
+  the `tools/call` and the session's end. For `http` it is the one `POST`.
 - The same call still carries `traceparent`, `tracestate` and `x-work-unit-id`, and
   `params._meta` for `mcp`, with the values an unmarked call carries.
 - A redirect off the origin is refused as today, and the other origin received nothing.

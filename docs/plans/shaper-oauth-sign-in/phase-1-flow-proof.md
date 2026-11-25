@@ -62,10 +62,18 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
 
 1. **The fixture.** `startFakeOAuthServer(options)` listens on `127.0.0.1` port 0 and
    resolves to `{ resourceUrl, issuer, requests, close }` plus setters for its modes.
-   - `POST /mcp`: without a valid bearer, `401` with
+   - `POST /mcp`, for the `mcp` transport: without a valid bearer, `401` with
      `WWW-Authenticate: Bearer resource_metadata="..."`. With one, the `get_guidance` tool.
-   - `/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-authorization-server`.
-     The resource metadata advertises more scopes than any test asks for.
+   - `POST /shape`, for the `http` transport: the same `401` and challenge, naming its own
+     resource metadata. With a valid bearer it reads a shaping request and answers a shaping
+     result as JSON, `{ version, guidance, truncated, degraded }`, which `ShapingResultSchema`
+     accepts. Its modes: an echo that puts the `Authorization` header it received into a
+     guidance body, an HTTP 500 whose body repeats that header, and a `401` whatever is sent.
+   - A token is accepted only by the resource it was issued for, the one its sign-in named
+     in `resource`. `/mcp` refuses a token issued for `/shape`, and the other way round.
+   - `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-protected-resource/shape`
+     and `/.well-known/oauth-authorization-server`. Each resource's metadata advertises more
+     scopes than any test asks for.
    - `/register` answers `fake-client-<n>`. `/authorize` checks the client, the exact
      redirect URI and S256, then redirects at once with `code` and `state`. There is no
      login page. `/token` checks the PKCE verifier, issues `fake-access-<n>` and
@@ -74,7 +82,8 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
      `invalid_grant`, `invalid_client` or 503; a registration that returns a `client_secret`
      or refuses; metadata with a wrong `issuer`, an endpoint on another origin, no S256 or
      no registration endpoint; a stalled reply; an oversized reply; a redirect to another
-     origin; an `iss` parameter on the redirect.
+     origin; an `iss` parameter on the redirect; an `/authorize` that waits until the test
+     releases it.
    - Every request is recorded with its method, path, headers and body.
 2. **`signInFetch`.** Given the origins a sign-in may reach, it refuses any other origin and
    any URL that is not HTTPS or loopback HTTP before a request is made. It sends no cookie,
@@ -92,7 +101,8 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
    `state` of 32 random bytes, and this metadata: `client_name` "Mission Control", the one
    redirect URI, `authorization_code` and `refresh_token`, response type `code`, and
    `token_endpoint_auth_method` `none`. It returns the authorization URL, the `state`, the
-   verifier and the client. A registration that carries a `client_secret` is refused.
+   verifier and the client. The URL carries the client id, the `state` and the challenge,
+   and never the verifier. A registration that carries a `client_secret` is refused.
 5. **`exchange(target, discovery, client, { code, codeVerifier, redirectUri })`.** Runs
    `auth()` with the code and returns the tokens, with `expiresAt` from `expires_in` and an
    injected clock. A refused client is reported, never re-registered here.
@@ -129,6 +139,8 @@ transports, Settings. No file outside `sign-in/` and `test/` changes.
   metadata that names a server other than `target.issuer`, a `client_secret`, a plain HTTP
   URL to a host that is not loopback (no request is made), an oversized reply, a stalled
   reply, a redirect to another origin.
+- **The second resource.** A sign-in for the `/shape` URL gets a token that `/shape` accepts
+  and `/mcp` refuses, and a `POST` to `/shape` with it returns a shaping result.
 - **Classification.** `invalid_grant`, `invalid_client`, a 503 and a closed socket.
 - **No value in a reason.** Every returned reason is searched for the fake code, verifier
   and tokens.
@@ -138,6 +150,8 @@ Run the two test files, `npm run typecheck` and `npm run lint`.
 ## Merge and exit criteria
 
 - A complete sign-in and a refresh run against the fixture, with fake values only.
+- Both protected resources, `/mcp` and `/shape`, answer `401` without a token and their own
+  reply with one.
 - The scope sent is exactly the configured one, although the fixture advertises more.
 - Every refusal listed above ends in a returned reason and no further request.
 - No returned reason holds a code, a verifier or a token.
@@ -156,4 +170,6 @@ rule that a failure is a value. The flow keeps no state: Phase 4 owns what is re
 - Phase 3: owns the shared `SignInTarget`. The shape here matches the contract.
 - Phase 4: calls all five functions, and owns the pending `state`, the timers and the
   client's storage. It maps `refresh`'s three answers to its states.
-- Phases 5, 6 and 7: use the fixture's protected `/mcp` and its `/authorize` redirect.
+- Phase 5: its `mcp` tests use the fixture's protected `/mcp`, and its `http` tests the
+  protected `/shape`.
+- Phases 6 and 7: use the `/authorize` redirect, and Phase 7 the mode that holds it.

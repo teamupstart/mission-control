@@ -75,13 +75,17 @@ phase's contract: stop and report instead of adding one.
    | State | Text | Controls |
    | --- | --- | --- |
    | `signed_out` | "Not signed in", and the reason when there is one | Sign in |
-   | `pending` | "Waiting for the browser" | Open the sign-in page, Copy link, Cancel sign-in |
+   | `pending`, started in this window | "Waiting for the browser" | Open the sign-in page, Copy link, Cancel sign-in |
+   | `pending`, with no link in this window | "Waiting for the browser. Started in another window, or before this page was reloaded." | Sign in, Cancel sign-in |
    | `signed_in`, kept in the Keychain | "Signed in. Kept in the macOS Keychain." | Sign out |
    | `signed_in`, kept in memory | "Signed in until Mission Control restarts. Kept in memory.", and the reason when there is one | Sign out |
    | `renewing` | "Renewing the sign-in", and the reason | Sign in, Sign out |
 
    Each control's `aria-label` names the shaper, such as `Sign in <label>`. The controls
-   are offered for registered and for discovered shapers.
+   are offered for registered and for discovered shapers. The sign-in list never carries the
+   authorization URL, so a window holds a pending sign-in's link only when it started that
+   sign-in and has not been reloaded since. Sign in on a pending row starts a new sign-in,
+   which replaces the pending one, so the earlier link stops working.
 4. **With `shaper-sign-in` off**, a marked row shows one sentence instead: sign-in is
    switched off, and the flag's name. There are no controls. The row follows the flag live.
 5. **Sign in.** The click calls `signInShaper`. On success the dashboard opens
@@ -111,23 +115,28 @@ phase's contract: stop and report instead of adding one.
   reads "Not signed in" and its Sign in answers the daemon's 404 as a row error.
 - The authorization URL is kept in the row's own state. It is not stored, and a reload
   drops it. The sign-in then still finishes in the browser tab already open, and the row
-  shows the result from the event.
+  shows the result from the event. Until then the row is in the second pending form.
 
 ## Tests and verification
 
 - `test/task-shaping-settings.test.ts`: each row of the table in step 3 renders its text and
-  its controls with their labels; the flag-off sentence; an unmarked row shows none of it;
+  its controls with their labels; a pending row with no link shows neither Open nor Copy; the flag-off sentence; an unmarked row shows none of it;
   the unused list appears only with an unused entry.
 - A unit test of the URL check in step 5: `https:`, loopback `http:`, and refusals for
   `http:` to another host, `file:` and `javascript:`.
 - `e2e/specs/shaper-sign-in.spec.ts`, against the Phase 1 fixture, with both flags on:
   1. Import a manifest that carries `auth`. Its row reads "Not signed in".
-  2. Click Sign in. A new tab opens, the fixture redirects it, and it reads "Signed in".
-  3. Back in Settings the row reads "Signed in" with no reload, and offers Sign out.
-  4. Dry-run the shaper and read the protected tool's guidance.
-  5. Sign out. The row reads "Not signed in", and a dry run now shows the reason that
+  2. With the fixture holding `/authorize`, click Sign in. The row reads "Waiting for the
+     browser" and offers Open the sign-in page, Copy link and Cancel sign-in. Reload the
+     page. The row still reads "Waiting for the browser" and now offers Sign in and Cancel
+     sign-in, with neither Open nor Copy. Cancel, and the row reads "Not signed in". Release
+     the fixture.
+  3. Click Sign in. A new tab opens, the fixture redirects it, and it reads "Signed in".
+  4. Back in Settings the row reads "Signed in" with no reload, and offers Sign out.
+  5. Dry-run the shaper and read the protected tool's guidance.
+  6. Sign out. The row reads "Not signed in", and a dry run now shows the reason that
      points to Settings > Task shaping.
-  6. Switch `shaper-sign-in` off through the API. The controls go and the switched-off
+  7. Switch `shaper-sign-in` off through the API. The controls go and the switched-off
      sentence shows, in the open window.
 
   Run only this spec, after `npm run build`. Look at the row at each step, attach a
@@ -139,6 +148,8 @@ Run those, `npm run typecheck` and `npm run lint`.
 
 - An operator can sign in, see it, use it in a dry run and sign out, all from Settings.
 - The row's state changes without a reload when a sign-in finishes in another tab.
+- A pending sign-in seen after a reload, or in a window that did not start it, offers Sign
+  in and Cancel sign-in, and no control that needs a link.
 - With the flag off there is no control, and the row says why.
 - The dashboard opens only an `https:` or loopback `http:` authorization URL.
 - The documentation says where the token lives, what a restart costs and how to remove it.
@@ -158,4 +169,5 @@ sign-in against the gateway is the operator's step with Tom, once the four outsi
   state of its own.
 - Phase 5: the spec's dry run is the proof that a signed-in call reaches the tool.
 - Phase 6: the spec's new tab lands on the callback page that phase serves, and reads its
-  sentence.
+  sentence. The row takes the authorization URL only from the sign-in reply, because the
+  list never carries it.

@@ -67,6 +67,16 @@ and the SDK. These shaped the split:
     when Settings reads the folder. A token a transport asks for counts as in use too.
 12. **No full suites locally.** Every phase runs its own test files and focused specs, with
     `npm run typecheck` and `npm run lint`, and relies on CI for the rest.
+13. **Stored is not the same as passing through.** Tokens and the PKCE verifier never reach
+    the browser. The `state`, the code and the client id pass through it, in the
+    authorization URL and the callback redirect, as OAuth requires, and are stored nowhere
+    outside the daemon. `plan.md` has the table, and phases 4 and 6 test both halves.
+14. **A stored record names its connection.** A connection id is a one-way hash, so the
+    record keeps the target beside the tokens. After a restart a sign-in that no shaper
+    names is still listed and can be signed out.
+15. **A pending sign-in's link exists only where it was started.** The sign-in list never
+    carries the authorization URL. A window without the link offers Sign in, which starts
+    again and replaces the pending one, and Cancel sign-in.
 
 ## Size and phase count
 
@@ -143,19 +153,19 @@ flowchart LR
 | Marker | 3 | `auth: { type: "oauth", scope, issuer? }` on the `mcp` transport's `http` server and on the `http` transport. With it, a configured `authorization` header is refused. |
 | Target | 3 | `shaperSignInTarget(shaper)` in `src/shared/shaping.ts` returns `SignInTarget`, `{ url: string; scope: string; issuer: string or null }`, or null for a shaper with no marker |
 | Reasons | 3 | `SIGN_IN_REASONS` in `src/shared/shaping.ts`: `flagOff`, `signedOut`, `renewing`, `refused`. Fixed sentences. Each names Settings > Task shaping, and `flagOff` names the flag. |
-| View | 3 (type), 4 (values), 6 (wire) | `ShapingSignInView`: `{ id, url, scope, issuer, state, storage, expiresAt, reason, shapers }`. Never a token. |
+| View | 3 (type), 4 (values), 6 (wire) | `ShapingSignInView`: `{ id, url, scope, issuer, state, storage, expiresAt, reason, shapers }`. It never holds a token, a code, a `state`, a verifier or an authorization URL. |
 | Flow | 1 | `src/server/shaping/sign-in/flow.ts`: `discover`, `begin`, `exchange`, `refresh`, `revoke`. Stateless. A failure is a returned value with a reason, never a throw, and no reason holds a code, a verifier or a token. `refresh` answers `sign_in_again`, `client_rejected` or `retry`. |
 | Sign-in fetch | 1 | `src/server/shaping/sign-in/egress.ts`: `signInFetch`, the egress rules of `plan.md` |
-| Fixture | 1 | `test/fixtures/fake-oauth-server.mjs`: `startFakeOAuthServer(options)`. Fake values only. |
+| Fixture | 1 | `test/fixtures/fake-oauth-server.mjs`: `startFakeOAuthServer(options)`. Two protected resources: `/mcp`, an MCP server with `get_guidance`, and `/shape`, which answers a shaping result to a `POST`. A token is accepted only by the resource it was issued for. Fake values only. |
 | Store | 2 | `src/server/shaping/sign-in/store.ts`: `SignInStore` with `kind`, and `read`, `write`, `remove` and `ids`, all returning promises. `createSignInStore` picks `memory` when `MISSION_SHAPER_SIGN_IN_STORE` is `memory`, off macOS, or when the addon does not load. |
-| Stored record | 2 | `{ v: 1, issuer, accessToken, refreshToken, expiresAt, scope, obtainedAt }`, as JSON in one Keychain item per connection |
+| Stored record | 2 | `{ v: 1, target, issuer, accessToken, refreshToken, expiresAt, scope, obtainedAt }`, as JSON in one Keychain item per connection. `target` is the connection's `{ url, scope, issuer }`: not a secret, and what names the sign-in after a restart. |
 | Keychain item | 2 | Service `Mission Control shaper sign-in`. Account: a 16-character tag of the state home, `/`, the connection id. |
 | Client registration | 4 | `app_config` key `shaping.signIn`: `{ clients: [{ issuer, clientId, redirectUri, registeredAt }] }`, at most 16, value class `operational`, no backup domain |
 | Connection id | 4 | `connectionId(target)` in `src/server/shaping/sign-in/connection.ts`: the first 32 hex characters of the SHA-256 of the target's canonical JSON |
 | Service | 4 | `shaperSignIns` in `src/server/shaping/sign-in/index.ts`: `accessToken(target)` (synchronous, memory only), `noteRefused(target)`, `begin(target)`, `complete({ state, code, error, iss })`, `signOut(id)`, `setInUse(list)`, `view()`, `onChanged(listener)`, `start()`, `stop()` |
 | Redirect URI | 4 | `http://127.0.0.1:<PORT>/api/shaping/sign-in/callback`, with `PORT` from `src/shared/harness-runtime.mjs` |
 | Call | 5 | A marked shaper's request carries `Authorization: Bearer <token>`, and the token is in the call's resolved values as `sign-in token` |
-| HTTP | 6 | `POST /api/shaping/sign-in` `{ shaper }` answers `{ authorizationUrl, expiresAt, connection }`. `POST /api/shaping/sign-out` `{ connection }` answers `{ signIns }`. `GET /api/shaping/sign-in/callback` answers a static page. `GET /api/shaping` gains `signIns`. |
+| HTTP | 6 | `POST /api/shaping/sign-in` `{ shaper }` answers `{ authorizationUrl, expiresAt, connection }`. The URL carries the client id, the `state` and the PKCE challenge, and appears in this reply only. `POST /api/shaping/sign-out` `{ connection }` answers `{ signIns }`. `GET /api/shaping/sign-in/callback` answers a static page. `GET /api/shaping` gains `signIns`. |
 | Event | 6 | `shaping_sign_ins` with `signIns`, and the snapshot field `shapingSignIns`. Both only while both flags are on. `useEventStream` exposes `shapingSignIns`. |
 | Guide | 3, 5, 6, 7 | `docs/task-shaping.md`: the marker (3), what a call does (5), the API (6), signing in from Settings (7) |
 

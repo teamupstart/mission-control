@@ -64,13 +64,15 @@ Not here: any Settings control, the transports.
 1. **`POST /api/shaping/sign-in`**, body `{ shaper }`. Gates: `task-shaping`, then
    `shaper-sign-in`, then the loopback write check, then a 4 KiB body limit. It finds the
    shaper among the known registered ones and the folder's valid ones, reads its target,
-   calls `begin` and answers `{ authorizationUrl, expiresAt, connection }`. An unknown id
-   is 404, a shaper with no marker is 400, and a failed `begin` is 502 with its reason.
+   calls `begin` and answers `{ authorizationUrl, expiresAt, connection }`. The URL carries
+   the client id, the `state` and the PKCE challenge, because the browser must present
+   them, and it appears in this reply only. An unknown id is 404, a shaper with no marker is 400, and a failed `begin` is 502 with its reason.
 2. **`POST /api/shaping/sign-out`**, body `{ connection }`. The same gates. It calls
    `signOut` and answers `{ signIns }`. An unknown id is 404.
 3. **`GET /api/shaping/sign-in/callback`**. The two flag gates, and the loopback `Host`
    check it has from being under `/api`. It reads `state`, `code`, `error` and `iss` from
-   the query, each at most 2 KiB, and nothing else, then calls `complete`.
+   the query, each at most 2 KiB, and nothing else, then calls `complete`. They arrive in the
+   browser's redirect, and the route stores none of them.
    - It answers a static HTML page: 200 with "Signed in. You can close this tab and go back
      to Mission Control.", or 400 with "The sign-in did not finish." and one fixed sentence
      chosen by the kind of failure, ending "Start again from Settings > Task shaping."
@@ -82,7 +84,8 @@ Not here: any Settings control, the transports.
 4. **`GET /api/shaping`** gains `signIns`: the service's view while `shaper-sign-in` is on,
    and an empty list while it is off. It also calls `setInUse` with the targets of the
    known registered shapers and of the folder's valid ones it has just scanned.
-5. **The event and the snapshot.** `shaping_sign_ins` carries `signIns`. A wiring like
+5. **The event and the snapshot.** `shaping_sign_ins` carries `signIns`. The list never
+   holds an authorization URL, so a pending sign-in in it has no link. A wiring like
    `wireShapingConfigEvents` follows both flags: while both are on it emits the view and
    every change from `onChanged`, and when either goes off it emits an empty list. The
    snapshot carries `shapingSignIns` only while both are on. The registry drops a frame
@@ -101,7 +104,9 @@ Not here: any Settings control, the transports.
 | Snapshot `shapingSignIns` | Absent | Absent | Present |
 
 - An older dashboard ignores an event type it does not know.
-- No reply, event or snapshot field carries a token, a code, a `state` or a verifier.
+- No reply, event or snapshot carries a token, a code or a verifier. The `state` and the
+  client id appear in one place: inside the authorization URL of the sign-in reply. The
+  sign-in list, the event and the snapshot never hold that URL.
 - A `state` works once. The callback of a daemon that restarted since the sign-in began
   answers the "did not finish" page, because pending sign-ins live in memory.
 - A sign-in whose shaper is removed before the callback still completes. Its connection is
@@ -127,7 +132,8 @@ Not here: any Settings control, the transports.
 - Wire: the event is emitted when a sign-in completes and when it ends, an empty list is
   emitted when either flag goes off, and the snapshot carries the field only with both on.
 - **No token leaves.** Every reply, event and snapshot in this file is searched for the
-  fake token values.
+  fake token values, the code and the verifier, and none is found. The `state` is found
+  only inside `authorizationUrl` in the sign-in reply.
 
 One focused browser spec, `e2e/specs/shaper-sign-in-callback.spec.ts`, because the callback
 page is a page a person sees: with both flags on and a marked shaper registered through the
@@ -147,13 +153,15 @@ Run those two, `test/request-collection-bounds.test.ts`, `npm run typecheck` and
 - The event carries the list on every change, and an empty list when a flag goes off.
   `useEventStream` handles the event and the snapshot field, which the type check enforces.
   Phase 7's spec is the first to show the list on screen.
-- No token is in any reply, event or snapshot.
+- No token, code or verifier is in any reply, event or snapshot, and the `state` is only
+  inside the sign-in reply's authorization URL.
 
 ## Handoff
 
 Phase 7 may rely on the two `POST` routes and their replies, on `shapingSignIns` from
-`useEventStream`, and on the callback page's two sentences. It must not add another way to
-start or finish a sign-in.
+`useEventStream`, and on the callback page's two sentences. The authorization URL
+reaches Phase 7 only in the sign-in reply, never in `shapingSignIns`. It must not add
+another way to start or finish a sign-in.
 
 ## Cross-phase audit
 

@@ -17,7 +17,7 @@ import type {
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 import { useFeatureFlag } from "../useFeatureFlag.ts";
 
-import type { DisplayItemId, DisplayItemGroup } from "@shared/board-card-settings.ts";
+import { RESIDENT_CARD_NAME_COPY, type DisplayItemId, type DisplayItemGroup } from "@shared/board-card-settings.ts";
 export * from "@shared/board-card-settings.ts";
 
 /**
@@ -220,24 +220,9 @@ export function setDisplayChoice<K extends DisplayChoiceKey>(key: K, value: Disp
  * profile name while it is titled by the call sign it answers to. Not a `DisplayChoice`, because
  * its styles are independent switches rather than one of a set: an operator may turn on the
  * Subtitle, the Expanding chip, both, or neither (the call sign alone, as before). Offered only
- * while the `resident-card-names` preview is on.
- *
- * Each style's copy is a `Record` over the persisted list, so a style added to
- * `RESIDENT_CARD_NAME_STYLES` does not compile until it says how it is offered. Every description
- * is what the card does when its title is the call sign: with no call sign, or one that is the
- * profile name, the card prints the one name whatever is on.
+ * while the `resident-card-names` preview is on. Each style's words are
+ * `RESIDENT_CARD_NAME_COPY`, shared with the session-settings owner.
  */
-const RESIDENT_CARD_NAME_COPY: Record<ResidentCardNameStyle, Omit<DisplayChoiceOption<ResidentCardNameStyle>, "id">> = {
-  subtitle: {
-    label: "Subtitle",
-    description: "The profile name sits on a muted line under the call sign. Resident cards grow by one short line.",
-  },
-  chip: {
-    label: "Expanding chip",
-    description: "The resident's label chip spells out the profile name while you point at or focus the card. Needs the Resident marker.",
-  },
-};
-
 export const RESIDENT_CARD_NAME_SETTING = {
   flag: RESIDENT_CARD_NAMES_FLAG_ID,
   label: "Resident name with call sign",

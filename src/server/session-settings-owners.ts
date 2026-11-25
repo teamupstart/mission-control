@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { DISPLAY_ITEMS } from "@shared/board-card-settings.ts";
+import { DISPLAY_ITEMS, RESIDENT_CARD_NAME_COPY } from "@shared/board-card-settings.ts";
 import { capabilitiesFor, resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import { ACTIONS, bindingValidationError, resolveKeybindings } from "@shared/keyboard-settings.ts";
 import { isCanonicalChord } from "@shared/keyboard-chords.ts";
@@ -109,7 +109,7 @@ const uiFields = [
     `Hide ${item.label}`)),
   // Resident name with call sign: one switch per style, offered while its preview flag is on.
   ...RESIDENT_CARD_NAME_STYLES.map(id => membership("residentCardNameStyles", id, "board-card",
-    id === "subtitle" ? "Resident name as a subtitle" : "Resident name in an expanding chip", residentCardNamesEnabled)),
+    `Resident name: ${RESIDENT_CARD_NAME_COPY[id].label}`, residentCardNamesEnabled)),
   ...TOPBAR_ITEMS.map(item => item.kind === "optional"
     ? membership("hiddenTopbarItems", item.id, "topbar", `Hide ${item.label} in the top bar`)
     : membership("compactTopbarItems", item.id, "topbar", `Compact ${item.label} in the top bar`)),

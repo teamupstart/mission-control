@@ -1101,9 +1101,13 @@ byte offset to the listener's lease at hello. Before granting capture, it checks
 that the kernel names
 the reported process as the lock owner and opens a process-exit watch (kqueue
 on macOS, pidfd on Linux). A mismatched owner or unavailable watch returns 409.
-Death of that process retires its microphone grant even after an abrupt exit.
+Before serving capture, the daemon saves the grant in an owner-only receipt under
+`voice/capture-grants/`. On restart it restores each owner's pause obligation. A
+standalone grant records the kernel-verified process birth and boot identity. A
+different birth at the same PID, or a confirmed process exit, retires that grant.
+A supervised grant can also be retired by its launcher's authenticated exit.
 A missing heartbeat, unlocked file or reused PID cannot signal that watch.
-An older anonymous grant still requires the original listener's pause acknowledgement.
+An anonymous grant still requires the original listener's pause acknowledgement.
 With every grant accounted for the holder can receive the job immediately.
 Stop bypasses this wait. The directive
 poll checks the capture lease or playback holder both on arrival and after

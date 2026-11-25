@@ -68,6 +68,33 @@ napi_value ThrowSystemError(napi_env env, const char* code, const std::string& m
   return nullptr;
 }
 
+// The kernel records the process birth before exec. Neither a changed executable
+// nor a recycled PID can masquerade as an exit of the original process.
+napi_value VoiceProcessBirth(napi_env env, napi_callback_info info) {
+#if defined(__APPLE__)
+  size_t argc = 1;
+  napi_value arg, result;
+  int32_t pid;
+  if (napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr) != napi_ok || argc != 1 ||
+      napi_get_value_int32(env, arg, &pid) != napi_ok || pid <= 0)
+    return ThrowTypeError(env, "Expected listener PID");
+  int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+  struct kinfo_proc process = {};
+  size_t size = sizeof(process);
+  char boot[64] = {};
+  size_t boot_size = sizeof(boot);
+  if (sysctl(mib, 4, &process, &size, nullptr, 0) < 0 || size != sizeof(process) ||
+      sysctlbyname("kern.bootsessionuuid", boot, &boot_size, nullptr, 0) < 0)
+    return ThrowSystemError(env, "EPROCESSIDENTITY", "Cannot read process birth");
+  const auto start = process.kp_proc.p_starttime;
+  const std::string identity = std::string(boot) + "/" + std::to_string(start.tv_sec) + "/" + std::to_string(start.tv_usec);
+  napi_create_string_utf8(env, identity.c_str(), identity.size(), &result);
+  return result;
+#else
+  return ThrowTypeError(env, "Read the Linux process birth from procfs");
+#endif
+}
+
 // A capture-only listener locks one byte for its private lease. The daemon obtains
 // the owner's PID from the kernel and pins that process before handing out capture.
 napi_value CaptureProcessLock(napi_env env, napi_callback_info info) {
@@ -789,6 +816,7 @@ napi_value HostTimeUs(napi_env env, napi_callback_info) {
 
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
+      {"voiceProcessBirth", nullptr, VoiceProcessBirth, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"captureProcessLock", nullptr, CaptureProcessLock, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"captureProcessExited", nullptr, CaptureProcessExited, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"hostTimeUs", nullptr, HostTimeUs, nullptr, nullptr, nullptr, napi_default, nullptr},

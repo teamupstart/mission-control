@@ -320,17 +320,17 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
   const { instance } = supervisor;
   const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon),
     [VOICE_LISTENER_ID_HEADER]: crypto.randomUUID(), [VOICE_INSTANCE_HEADER]: instance };
-  const post = (path: string, body: unknown) => fetch(daemon.baseURL + path, { method: "POST", headers, body: JSON.stringify(body) });
+  const controller = new AbortController();
+  const post = (path: string, body: unknown) => fetch(daemon.baseURL + path, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
   const supervise = (state: "started" | "exited") => fetch(daemon.baseURL + "/voice/listener/supervised", {
     method: "POST", headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon), ...supervisor.headers(state) },
-    body: JSON.stringify({ instance, state }),
+    body: JSON.stringify({ instance, state }), signal: AbortSignal.timeout(5000),
   });
   const hello = () => post("/voice/listener/hello", { ...LISTENER_HELLO, speech: { audio: true,
     systemVoices: [{ id: "fixture", name: "Fixture", language: "en-US", quality: "enhanced" }] } });
   if (!(await supervise("started")).ok) throw new Error("Fixture supervisor could not announce the listener.");
   await hello();
   const heartbeat = setInterval(() => void hello().catch(() => {}), HELLO_EVERY_MS);
-  const controller = new AbortController();
   const read = (revision?: string) => fetch(daemon.baseURL + "/voice/listener/directive" +
     (revision ? "?revision=" + encodeURIComponent(revision) : ""), { headers, signal: controller.signal });
   const poll = async () => {
@@ -386,7 +386,7 @@ export async function beSpeaker(daemon: VoiceDaemon, options: { delayStart?: boo
         if (!options.ignoreStop) await end("stopped");
       } else if (!playing && !options.delayStart) {
         if (speak.kind === "audio") {
-          const audio = await fetch(daemon.baseURL + "/voice/speech/jobs/" + speak.id + "/audio", { headers });
+          const audio = await fetch(daemon.baseURL + "/voice/speech/jobs/" + speak.id + "/audio", { headers, signal: controller.signal });
           if (!audio.ok) continue; // Stop may have raced the audio fetch.
           await audio.arrayBuffer();
         }

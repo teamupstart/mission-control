@@ -330,7 +330,7 @@ export function registerVoiceRoutes(
     if (result === "already_exited") return c.json({ error: "launch_exited" }, 409);
     if (result === "hold_unavailable") return c.json({ error: "speech_hold_unavailable" }, 503);
     if (result === "unavailable") return c.json({ error: "supervisor_record_unavailable" }, 503);
-    if (state === "exited") store.retireCapture(instance);
+    if (state === "exited" && store.retireCapture(instance) === false) return c.json({ error: "capture_grant_unavailable" }, 503);
     return c.json({ ok: true });
   });
   app.get("/voice/speech/jobs/:id/audio", gate, c => {
@@ -361,7 +361,10 @@ export function registerVoiceRoutes(
   app.get("/voice/listener/directive", drainGate, async (c, next) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     c.header("Cache-Control", "no-store");
-    store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"));
+    if (c.req.method === "HEAD") return c.body(null, 405, { Allow: "GET" });
+    if (store.acknowledgeDirective(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision")) === false) {
+      return c.json({ error: "capture_grant_unavailable" }, 503);
+    }
     const refusal = directiveRefusal(c);
     if (refusal) return refusal;
     const instance = c.req.header(VOICE_INSTANCE_HEADER);
@@ -383,9 +386,10 @@ export function registerVoiceRoutes(
       c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
       c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
     }
-    if (!c.req.raw.signal.aborted && store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next,
-      c.req.header(VOICE_CAPTURE_PID_HEADER)) === false) {
-      return c.json({ error: "capture_process_unverified", capture: false, speak: null }, 409);
+    if (!c.req.raw.signal.aborted) {
+      const served = store.directiveServed(c.req.header(VOICE_LISTENER_ID_HEADER), next, c.req.header(VOICE_CAPTURE_PID_HEADER));
+      if (served === "unavailable") return c.json({ error: "capture_grant_unavailable", capture: false, speak: null }, 503);
+      if (served === false) return c.json({ error: "capture_process_unverified", capture: false, speak: null }, 409);
     }
     return c.json(next);
   });

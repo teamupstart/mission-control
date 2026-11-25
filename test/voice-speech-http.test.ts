@@ -4,8 +4,10 @@ import { announcementName } from "../src/server/voice/speech-holds.ts";
 import { playerScratchDirectory, retirementDirectory } from "../src/server/voice/recovery-files.ts";
 import assert from "node:assert/strict";
 import { fork, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { once } from "node:events";
+import { Socket } from "node:net";
+import { voiceProcessBirth } from "../src/server/voice/process-birth.ts";
 import { text } from "node:stream/consumers";
 import test, { afterEach } from "node:test";
 import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -284,7 +286,8 @@ for (const proof of ["pause", "exit"] as const) {
   });
 }
 
-test("a capture-only client killed without a final report releases only its kernel-verified microphone grant", async t => {
+for (const restarted of [false, true]) test("a capture-only client killed without a final report releases only its kernel-verified microphone grant " +
+  (restarted ? "after daemon restart" : "on the live daemon"), async t => {
   let steady = Math.ceil(performance.now());
   t.mock.method(performance, "now", () => steady);
   store.reset();
@@ -321,6 +324,7 @@ test("a capture-only client killed without a final report releases only its kern
   })]);
   assert.deepEqual(JSON.parse(data.toString()), [409, 409, true]);
   rmSync(join(home, "voice-capture.lock")); // Losing the path cannot release the pinned process.
+  if (restarted) store.reset();
   steady += VOICE_HELLO_LAPSE_MS;
   const holder = player(crypto.randomUUID());
   await holder.announce(); await holder.hello();
@@ -333,11 +337,58 @@ test("a capture-only client killed without a final report releases only its kern
   const exited = once(child, "exit");
   child.kill("SIGKILL");
   await exited;
-  assert.equal((await (await waiting).json()).speak.id, id);
+  const playable = (await (await waiting).json()).speak;
+  assert.equal(playable.kind, "system");
+  assert.equal(playable.id, id);
   assert.equal((await holder.event(id, "started")).status, 200);
   assert.equal((await holder.poll()).capture, false);
   assert.equal((await holder.event(id, "ended")).status, 200);
   assert.equal((await holder.poll()).capture, true);
+});
+
+test("capture is served only after its private grant is saved and a failed pause acknowledgement can retry", async () => {
+  const dir = join(home, "voice/capture-grants");
+  mkdirSync(join(home, "voice"), { recursive: true });
+  writeFileSync(dir, "busy");
+  const owner = player();
+  const denied = await owner.request("/voice/listener/directive", undefined, null);
+  assert.equal(denied.status, 503);
+  assert.equal((await denied.json()).capture, false);
+  rmSync(dir);
+  assert.equal((await owner.poll(null)).capture, true);
+  assert.equal(statSync(join(dir, listenerId + ".json")).mode & 0o777, 0o600);
+  store.reset();
+  const holder = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  const pause = await owner.poll(null);
+  renameSync(dir, dir + "-saved"); writeFileSync(dir, "busy");
+  const ack = () => owner.request("/voice/listener/directive?revision=" + pause.revision, undefined, null);
+  assert.equal((await ack()).status, 503);
+  assert.equal((await holder.poll()).speak, null);
+  rmSync(dir); renameSync(dir + "-saved", dir);
+  await ack();
+  assert.equal((await holder.poll()).speak.id, id);
+});
+
+test("HEAD never grants capture or acknowledges a pause across a daemon restart", async () => {
+  const original = player();
+  const head = (revision = "") => app.request("/voice/listener/directive" + revision,
+    { method: "HEAD", headers: { "x-harness-token": token, "x-voice-listener-id": listenerId } });
+  assert.equal((await head()).status, 405);
+  assert.equal(store.capturePausePending, false);
+  assert.equal((await original.poll(null)).capture, true);
+  store.reset();
+  const holder = player(crypto.randomUUID());
+  await holder.announce(); await holder.hello();
+  const id = await audition();
+  assert.equal((await holder.poll()).speak, null);
+  const pause = await original.poll(null);
+  assert.equal(pause.capture, false);
+  assert.equal((await head("?revision=" + pause.revision)).status, 405);
+  assert.equal((await holder.poll()).speak, null);
+  await original.request("/voice/listener/directive?revision=" + pause.revision, undefined, null);
+  assert.equal((await holder.poll()).speak.id, id);
 });
 
 test("auditions have two waiting places and receive terminal failures if the holder never confirms Stop", async t => {
@@ -1286,6 +1337,59 @@ test("start acknowledgements respect monotonic elapsed time even before the time
   }
 });
 
+test("a signed process birth retires a reused PID and a changed birth cannot retire the live process", async t => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const issuer = createPublicKey(privateKey).export({ type: "spki", format: "der" }).toString("hex");
+  const supervisor = createVoiceSupervisor("shell", privateKey);
+  t.after(() => supervisor.pauseExitRetries());
+  const dir = retirementDirectory(home);
+  mkdirSync(dir, { recursive: true });
+  const protocol = process.platform === "linux" ? "mission-voice-launch-pid/linux-v2" : "mission-voice-launch-pid/v1";
+  const birth = voiceProcessBirth(process.pid);
+  function receipt(recorded: string, attested = recorded) {
+    const instance = "shell_" + issuer + "_" + randomBytes(32).toString("hex");
+    const proof = sign(null, Buffer.from([protocol, instance, process.pid, attested].join("\n")), privateKey).toString("hex");
+    writeFileSync(join(dir, "shell-" + announcementName(instance) + ".json"), JSON.stringify({ instance, pid: process.pid, birth: recorded, proof }));
+    return instance;
+  }
+  receipt(birth);
+  receipt("different-boot", birth);
+  const gone = receipt("previous-boot");
+  const exited: string[] = [];
+  supervisor.retryPendingExits(home, async instance => { exited.push(instance); });
+  await t.waitFor(() => assert.deepEqual(exited, [gone]));
+  await t.waitFor(() => assert.equal(readdirSync(dir).filter(file => file.endsWith(".json")).length, 2));
+});
+
+test("a failed gate write rejects launch and the OS exit retires it in the original state home", {
+  skip: process.platform !== "darwin",
+}, async t => {
+  const supervisor = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
+  t.after(() => supervisor.pauseExitRetries());
+  const root = mkdtempSync(join(home, "gate-"));
+  const alias = join(root, "current");
+  const first = join(root, "first"), replacement = join(root, "second");
+  mkdirSync(first); mkdirSync(replacement); symlinkSync(first, alias);
+  const write = Socket.prototype.write;
+  t.mock.method(Socket.prototype, "write", function(this: Socket, ...args: Parameters<typeof write>) {
+    if (args[0] === "go\n") {
+      this.destroy();
+      const callback = args[1] as unknown as (error: Error) => void;
+      queueMicrotask(() => callback(new Error("fixture gate closed")));
+      return false;
+    }
+    return Reflect.apply(write, this, args);
+  });
+  const reports: string[] = [];
+  await assert.rejects(supervisor.launch(alias, process.execPath, ["--version"], {}, async (_instance, state) => {
+    reports.push(state);
+    if (state === "started") { rmSync(alias); symlinkSync(replacement, alias); }
+  }), /fixture gate closed/);
+  await t.waitFor(() => assert.deepEqual(reports, ["started", "exited"]));
+  await t.waitFor(() => assert.deepEqual(readdirSync(retirementDirectory(first)), []));
+  assert.deepEqual(readdirSync(replacement), []);
+});
+
 for (const disconnected of [false, true]) test("the first supervised same-account child protects recovery files and retires on OS exit " +
   (disconnected ? "after reconnect" : "while connected"), async t => {
   const signer = createVoiceSupervisor("shell", generateKeyPairSync("ed25519").privateKey);
@@ -1342,6 +1446,7 @@ for (const disconnected of [false, true]) test("the first supervised same-accoun
   const { instance, child } = launched;
   const guarded = JSON.parse(readFileSync(join(retirementDirectory(home), "shell-" + announcementName(instance) + ".json"), "utf8"));
   if (child.exitCode === null && child.signalCode === null) {
+    assert.equal(guarded.birth, voiceProcessBirth(guarded.pid));
     if (process.platform === "linux") assert.notEqual(guarded.pid, child.pid);
     else assert.equal(guarded.pid, child.pid);
   }
@@ -1627,7 +1732,7 @@ test("a stalled scratch removal and its retry cannot block another launch's sign
   const stalled = new Promise<void>(resolve => { unblock = resolve; });
   const rm = fsPromises.rm;
   const hook = t.mock.method(fsPromises, "rm", async (...args: Parameters<typeof rm>) => {
-    if (started[0] && args[0] === playerScratchDirectory(home, started[0]) && ++cleanupAttempts === 1) {
+    if (started[0] && args[0] === playerScratchDirectory(fs.realpathSync(home), started[0]) && ++cleanupAttempts === 1) {
       await stalled;
       throw new Error("Scratch temporarily busy");
     }

@@ -2,6 +2,8 @@ import { dirname, join } from "node:path";
 import { stateDir } from "../../shared/harness-runtime.mjs";
 import { askAloudPossible, resolveSpeechVoice, type VoiceSpeechCatalog } from "@shared/voice-speech.ts";
 import { VoiceSpeechManager, type VoiceSynthesizer } from "./speech.ts";
+import { CaptureGrants } from "./capture-grants.ts";
+import { voiceProcessBirth } from "./process-birth.ts";
 import { watchCaptureProcess } from "./capture-process.ts";
 import { SpeechHolds } from "./speech-holds.ts";
 import { randomInt, randomUUID } from "node:crypto";
@@ -62,7 +64,7 @@ export type VoiceHelloResult =
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
  * listener hello and the latest shell report, and published to whoever subscribes.
  *
- * Nothing here is stored. A hello counts for `VOICE_HELLO_LAPSE_MS` and a shell report for
+ * Microphone grants outlive a daemon restart. A hello counts for `VOICE_HELLO_LAPSE_MS` and a shell report for
  * `VOICE_SHELL_REPORT_LAPSE_MS`; a timer set at the next lapse publishes the change a lapse
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
@@ -87,7 +89,8 @@ export class VoiceStateStore {
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   // Heartbeat expiry transfers the lease but cannot close a previous owner's microphone.
-  private readonly captureGrants = new Map<string, { instance?: string; pauseRevision?: string; pid?: number; watch?: ReturnType<typeof watchCaptureProcess> }>();
+  private grants?: CaptureGrants;
+  private get captureGrants() { return this.grants ??= new CaptureGrants(this.speechDirectory); }
   private timer: unknown = null;
   /** Where the roster comes from: the daemon's name registry, once it is wired. */
   private rosterSource: (() => readonly SpokenName[]) | null = null;
@@ -171,39 +174,30 @@ export class VoiceStateStore {
 
   drainingRevisions() { return [...this.releases.keys()]; }
 
-  private releaseCaptureGrant(owner: string) {
-    this.captureGrants.get(owner)?.watch?.close();
-    this.captureGrants.delete(owner);
-  }
-
-  private reapCaptureProcesses() {
-    for (const [owner, grant] of this.captureGrants) {
-      if (grant.watch?.exited()) this.releaseCaptureGrant(owner);
-    }
-  }
-
   get capturePausePending() {
-    this.reapCaptureProcesses();
-    return this.captureGrants.size > 0;
+    if (!this.captureGrants.load()) return true;
+    this.captureGrants.reap();
+    return this.captureGrants.entries.size > 0;
   }
 
   formerOwnerPause(owner: string | undefined): VoiceListenerDirective | undefined {
-    const grant = owner && this.captureGrants.get(owner);
+    const grant = owner && this.captureGrants.load() && this.captureGrants.entries.get(owner);
     if (!grant || this.ownsCapture(owner) || !this.manager?.held) return;
     grant.pauseRevision ??= randomUUID();
     return { capture: false, speak: null, roster: [], inputDevice: "", revision: grant.pauseRevision };
   }
 
   acknowledgeDirective(owner: string | undefined, revision: string | undefined) {
-    if (owner && revision && this.captureGrants.get(owner)?.pauseRevision === revision) {
-      this.releaseCaptureGrant(owner);
+    if (owner && revision && this.captureGrants.load() && this.captureGrants.entries.get(owner)?.pauseRevision === revision) {
+      if (!this.captureGrants.release(owner)) return false;
       if (this.manager?.held) this.publish();
     }
   }
 
   retireCapture(instance: string) {
-    for (const [owner, grant] of this.captureGrants) {
-      if (grant.instance === instance) this.releaseCaptureGrant(owner);
+    if (!this.captureGrants.load()) return false;
+    for (const [owner, grant] of this.captureGrants.entries) {
+      if (grant.instance === instance && !this.captureGrants.release(owner)) return false;
     }
     if (this.manager?.held) this.publish();
   }
@@ -211,25 +205,35 @@ export class VoiceStateStore {
   directiveServed(owner: string | undefined, directive: VoiceListenerDirective, processHeader?: string) {
     if (!owner) return;
     if (!directive.capture) {
-      const grant = this.captureGrants.get(owner);
+      const grant = this.captureGrants.entries.get(owner);
       if (grant) grant.pauseRevision = directive.revision;
       return;
     }
     if (!this.ownsCapture(owner)) return;
-    this.reapCaptureProcesses();
-    const grant = this.captureGrants.get(owner);
+    if (!this.captureGrants.load()) return "unavailable";
+    this.captureGrants.reap();
+    const grant = this.captureGrants.entries.get(owner);
     const pid = processHeader === undefined ? undefined : Number(processHeader);
     const proof = this.liveHello()?.captureProof;
     if (pid !== proof?.pid) return false;
-    if (grant) {
-      // Changing the identity on a previously issued grant cannot retire or rebind it.
-      if (grant.pid !== pid || grant.instance !== this.liveHello()?.speechInstance) return false;
+    const instance = this.liveHello()?.speechInstance;
+    if (grant && (grant.process?.pid !== pid || grant.instance !== instance)) return false;
+    if (grant && (!proof || grant.watch)) {
       grant.pauseRevision = undefined;
     } else {
+      let watch: ReturnType<typeof watchCaptureProcess> | undefined;
       try {
-        const watch = proof && watchCaptureProcess(join(dirname(this.speechDirectory), "voice-capture.lock"), proof.offset, proof.pid);
-        this.captureGrants.set(owner, { pid, watch, instance: this.liveHello()?.speechInstance });
-      } catch { return false; }
+        const process = proof && { pid: proof.pid, birth: voiceProcessBirth(proof.pid) };
+        if (grant?.process && grant.process.birth !== process?.birth) return false;
+        if (proof && process) {
+          watch = watchCaptureProcess(join(dirname(this.speechDirectory), "voice-capture.lock"), proof.offset, proof.pid);
+          if (voiceProcessBirth(proof.pid) !== process.birth) throw new Error("Capture owner exited during verification.");
+        }
+        if (!this.captureGrants.issue(owner, { instance, process, watch })) {
+          watch?.close();
+          return "unavailable";
+        }
+      } catch { watch?.close(); return false; }
     }
     const last = this.lastDirective;
     if (!last?.directive.capture || last.directive.revision !== directive.revision || last.issuedAt !== undefined) return;
@@ -498,7 +502,8 @@ export class VoiceStateStore {
     this.releases.clear();
     this.latestRelease = undefined;
     this.lastDirective = undefined;
-    for (const owner of this.captureGrants.keys()) this.releaseCaptureGrant(owner);
+    this.grants?.close();
+    this.grants = undefined;
     this.hello = null;
     this.refused = null;
     this.report = null;
@@ -510,7 +515,8 @@ export class VoiceStateStore {
     this.disarm();
     if (!this.deps.enabled(VOICE_FLAG)) return;
     const now = this.deps.now();
-    const waitingForProcess = this.manager?.live?.state === "ready" && [...this.captureGrants.values()].some(grant => grant.watch);
+    const waitingForProcess = this.manager?.live?.state === "ready" &&
+      (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
     const lapses = [
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,

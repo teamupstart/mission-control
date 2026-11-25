@@ -4,11 +4,11 @@ import { z } from "zod";
 import { SpeechInstanceSchema } from "@shared/voice-speech.ts";
 import { announcementName, listVoiceRecords, readVoiceRecord, removePlayerScratch, removeVoiceRecord, retirementDirectory, writeVoiceRecord } from "./recovery-files.ts";
 import type { SupervisorReporter, SupervisorReportState } from "./supervisor-auth.ts";
-import { voiceProcessGone } from "./supervised-listener.ts";
+import { voiceProcessGone } from "./process-birth.ts";
 
 const signedExit = z.object({ instance: SpeechInstanceSchema, proof: z.string().length(128) }).strict();
 type PendingExit = z.infer<typeof signedExit>;
-const watchedLaunch = signedExit.extend({ pid: z.number().int().positive() });
+const watchedLaunch = signedExit.extend({ pid: z.number().int().positive(), birth: z.string().min(1).max(128).optional() });
 type WatchedLaunch = z.infer<typeof watchedLaunch>;
 type RetirementProgress = { delivered: boolean; cleaned: boolean; cleaning: boolean };
 const queuedRecord = z.union([signedExit, watchedLaunch]);
@@ -167,7 +167,7 @@ export class SupervisorRetirements {
           if ("pid" in entry) {
             // A live launcher can replace its PID with the child's before dying.
             // Re-read after observing death so stale evidence cannot retire that child.
-            if (!voiceProcessGone(entry.pid) || readVoiceRecord(this.home, path) !== raw) { retry = true; continue; }
+            if (!voiceProcessGone(entry.pid, entry.birth) || readVoiceRecord(this.home, path) !== raw) { retry = true; continue; }
             const exit = this.recoveredExit(entry);
             if (exit) records.set(file, exit);
           } else if (this.verifies(entry)) records.set(file, entry);

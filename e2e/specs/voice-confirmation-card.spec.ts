@@ -5,18 +5,18 @@ import { say } from "../fixtures/voice.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 test("countdown sends once, click and spoken cancel stop delivery, and disabling the window sends immediately", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon, 4);
+  await setupCards(page, daemon, 10);
   const steve = await runningAgent(page, daemon, "Steve");
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
   const pending = page.getByRole("status").filter({ hasText: "To Steve" }).filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
   await say(daemon, "Steve, check the build");
   await expect(pending).toContainText("check the build");
   await expect(pending).toHaveCSS("width", "300px");
-  await expect(pending).toContainText("3s");
+  await expect(pending.locator(".vc-seconds")).toHaveText(/\d+s/);
   await captureCard(page, "pending");
   await expectCardGeometry(pending, "confirmation-card", "#a .cc-card");
   const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
-  await expect(sent).toBeVisible();
+  await expect(sent).toBeVisible({ timeout: 15_000 });
   await captureCard(sent, "sent");
   await expect(page.getByText(/Mock reply to: check the build/).first()).toBeVisible();
   for (const method of ["click", "speech"]) {
@@ -35,8 +35,12 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
     await expect(pending).toHaveCount(0);
     await expect(page.getByRole("status").filter({ hasText: "Cancelled" }).last()).toBeVisible();
   }
-  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
-  await say(daemon, "Steve, immediate delivery");
+  const changed = await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+  expect(changed.ok()).toBe(true);
+  expect((await changed.json()).config.cancelWindow.enabled).toBe(false);
+  const immediate = await say(daemon, "Steve, immediate delivery");
+  expect((await immediate.json()).accepted).toBe(true);
+  await expect(pending).toHaveCount(0);
   await expect(page.getByText(/Mock reply to: immediate delivery/).first()).toBeVisible();
   await expect(pending).toHaveCount(0);
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);
@@ -547,4 +551,32 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
   await expect(card.getByRole("button")).toHaveCount(0);
   await expect(card).not.toContainText("0s");
   await captureCard(card, "awaiting-delivery-confirmation");
+});
+
+test("a new card can still be cancelled after the daemon clock steps back on the same stream", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 15);
+  await runningAgent(page, daemon, "Steve");
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", e => {
+          if (!e.isTrusted) return;
+          const frame = JSON.parse(e.data);
+          if (frame.type !== "voice_card" || frame.card.deadline == null) return;
+          frame.voiceStreamStartedAt -= 60_000;
+          frame.voiceServerTime -= 60_000;
+          frame.card.deadline -= 60_000;
+          e.stopImmediatePropagation();
+          this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+        });
+      }
+    };
+  });
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
+  await say(daemon, "Steve, verify clock recovery");
+  const card = page.getByRole("status").filter({ hasText: "verify clock recovery" });
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });

@@ -239,8 +239,12 @@ test("a blocking question opened during submission survives the queued return va
   const submit = pending.submitSpoken.bind(pending);
   t.mock.method(pending, "submitSpoken", (...args: Parameters<typeof submit>) => {
     const result = submit(...args);
-    const ask = reviews.create(sessionId, "input", "Which build?", "Choose one.", null);
-    t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+    // The route reads the initial queue state synchronously. Change the receipt
+    // after it has returned queued, before deliverPart handles its resolved promise.
+    queueMicrotask(() => {
+      const ask = reviews.create(sessionId, "input", "Which build?", "Choose one.", null);
+      t.after(async () => { await post(`/api/reviews/${ask.id}/resolve`, { action: "answer", response: "main" }); });
+    });
     return result;
   });
   await say("Steve, inspect the build", "review-during-submit");
@@ -261,7 +265,9 @@ test("an awaiting-review session label alone cannot turn a queued spoken message
   assert.equal(cards.at(-1)?.state, "queued");
   registry.voiceRouter!.reset();
   const getSession = registry.getSession.bind(registry);
-  t.mock.method(registry, "getSession", (id: string) => id === sessionId ? { ...session, state: "awaiting_review" as const } : getSession(id));
+  const queuedSession = getSession(sessionId)!;
+  assert.ok(queuedSession.pendingTurns.some(turn => turn.id === "voice:still-queued" && turn.state === "queued"));
+  t.mock.method(registry, "getSession", (id: string) => id === sessionId ? { ...queuedSession, state: "awaiting_review" as const } : getSession(id));
   registry.emitVoiceRoster(roster);
   assert.deepEqual(registry.voiceRouter!.activeCards(), []);
 });

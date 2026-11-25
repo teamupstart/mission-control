@@ -92,6 +92,11 @@ test("a delayed player cannot start after Stop and confirms silence before recap
     await expect(async () => expect(await speaker.start()).toBe(false)).toPass();
     expect(speaker.playing).toBe(false);
     expect((await speaker.poll()).capture).toBe(false);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const status = page.getByRole("status", { name: "Voice mode" });
+    await expect(status).toContainText("the listener did not confirm that speech had stopped", { timeout: 10_000 });
+    await expect(status).not.toContainText("no listener is running");
+    await captureCard(status, "stop-unconfirmed");
     await speaker.end("stopped");
     expect((await speaker.poll()).capture).toBe(true);
   } finally { await speaker.exit(); }

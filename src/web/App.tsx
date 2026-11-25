@@ -4188,7 +4188,7 @@ export function App(): React.JSX.Element {
       // bare-key rebinding must stay behind the typing guard, or that character would open
       // the palette from inside any input.
       if (
-        chord === bindings.settingsSearch &&
+        route.page !== "voice-card" && chord === bindings.settingsSearch &&
         (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
         overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {

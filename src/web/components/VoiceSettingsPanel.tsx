@@ -109,7 +109,8 @@ function ModeLine({ voice, onOpenSetup }: { voice: VoiceState | null; onOpenSetu
       <strong className="voice-mode-label">{mode ? VOICE_MODE_LABEL[mode] : "Checking…"}</strong>
       <span className="voice-mode-why">
         {reasons.length > 0
-          ? `${sentence(reasons.map((reason) => VOICE_REASON_TEXT[reason]))}.`
+          ? `${sentence(reasons.map(reason => reason === "listener" && voice?.capabilities.listener?.reason
+            ? voice.capabilities.listener.reason.replace(/\.$/, "") : VOICE_REASON_TEXT[reason]))}.`
           : mode === "muted"
             ? "Nothing is heard until you unmute."
             : mode === "auto-muted"

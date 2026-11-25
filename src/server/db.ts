@@ -15746,6 +15746,13 @@ export function claimNextPendingTurn(
       if (!composeSpoken) throw new Error("Missing spoken delivery composer");
       row.text = composeSpoken(row.spoken_words);
       row.composed_at = now;
+    } else if (row.spoken_words !== null) {
+      // A pre-upgrade claim froze this suffix after the words and routing notes.
+      // Change only the next send, leaving any earlier delivery receipt intact.
+      const legacySuffix = "\n\nWhen you have finished this, post a report.";
+      if (row.text.slice(row.spoken_words.length).endsWith(legacySuffix)) {
+        row.text = row.text.slice(0, -legacySuffix.length);
+      }
     }
     const spokenClaimId = row.spoken_words === null ? null : randomUUID();
     const changed = d

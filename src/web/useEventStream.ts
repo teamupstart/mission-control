@@ -2,7 +2,7 @@ import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { ShapingConfigView } from "@shared/shaping.ts";
-import { receiveVoiceCard, VoiceCardClock, type DashboardVoiceCard, type VoiceCardRetention } from "./lib/voice-card-clock.ts";
+import { receiveVoiceCard, receiveVoiceCountdown, VoiceCardClock, type DashboardVoiceAnswer, type DashboardVoiceCard, type VoiceCardRetention } from "./lib/voice-card-clock.ts";
 import { voiceCardCanExpire, type VoiceCard } from "@shared/voice-routing.ts";
 import type { VoiceState } from "@shared/voice.ts";
 import type { SessionTransferPage, SessionTransferSummary } from "@shared/session-transfer.ts";
@@ -215,6 +215,10 @@ export interface MissionState {
    */
   voice: VoiceState | null;
   acknowledgeVoiceMode: (ack: VoiceState) => void;
+  voiceWindowId?: string;
+  voiceAnswers: Map<string, DashboardVoiceAnswer>;
+  openVoiceQuestion: { sessionId: string; reviewId: string } | null;
+  consumeVoiceQuestion: (request: { reviewId: string }) => void;
   voiceCards: Map<string, DashboardVoiceCard>;
   fadingVoiceCards: ReadonlySet<string>;
   setVoiceCardRetention: (id: string, retention: VoiceCardRetention) => void;
@@ -347,6 +351,12 @@ export function useEventStream(): MissionState {
     return () => { featureFlagsListeners.current.delete(listener); };
   }, []);
   const [shaping, setShaping] = useState<ShapingConfigView | null>(null);
+  const [voiceWindowId, setVoiceWindowId] = useState<string>();
+  const [voiceAnswers, setVoiceAnswers] = useState(new Map<string, DashboardVoiceAnswer>());
+  const [openVoiceQuestion, setOpenVoiceQuestion] = useState<{ sessionId: string; reviewId: string } | null>(null);
+  const consumeVoiceQuestion = useCallback((request: { reviewId: string }) => {
+    setOpenVoiceQuestion(current => current === request ? null : current);
+  }, []);
   const [voiceCards, setVoiceCards] = useState(new Map<string, DashboardVoiceCard>());
   const [fadingVoiceCards, setFadingVoiceCards] = useState(new Set<string>());
   const setVoiceCardFading = useCallback((id: string, fading: boolean) => {
@@ -418,6 +428,7 @@ export function useEventStream(): MissionState {
   const latestSettingsRestoreRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let windowId: string | undefined;
     let connectionStartedAt = performance.now();
     const es = new EventSource("/events");
     esRef.current = es;
@@ -438,6 +449,8 @@ export function useEventStream(): MissionState {
         void fetchVoiceCardTime(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(stamp => {
           if (clockProbe !== probe || stamp === null || voiceClock.epoch !== epoch) return;
           const refined = voiceClock.observe(now, performance.now(), stamp, stamp);
+          setVoiceAnswers(current => new Map([...current].map(([id, answer]) =>
+            [id, answer.provisionalDeadline ? receiveVoiceCountdown(answer, refined, answer) : answer])));
           setVoiceCards(current => {
             const next = new Map(current);
             for (const [id, card] of current) {
@@ -455,6 +468,7 @@ export function useEventStream(): MissionState {
       lastProbeAt = -Infinity;
     }
     function clearVoiceTimers() {
+      setOpenVoiceQuestion(null);
       cancelClockProbe();
       voiceClock = new VoiceCardClock();
       for (const { timer, fadeTimer } of voiceExpiry.values()) {
@@ -483,6 +497,7 @@ export function useEventStream(): MissionState {
     es.onerror = () => {
       if (esRef.current !== es) return;
       cancelClockProbe();
+      setOpenVoiceQuestion(null);
       connectionStartedAt = performance.now(); // EventSource will retry after this point.
       observeBrowserConnection(false);
       setConnected(false);
@@ -524,6 +539,8 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          windowId = msg.windowId;
+          setVoiceWindowId(windowId);
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -594,7 +611,9 @@ export function useEventStream(): MissionState {
             // The daemon snapshots active deliveries and held turns. Keep settled cards
             // on their local timers, including timers paused for focus or a recovery action.
             const active = msg.voiceCards ?? [];
-            const sample = sampleCardClock(msg, active.some(card => card.state === "pending" && card.deadline !== null));
+            const answers = msg.voiceAnswers ?? [];
+            const sample = sampleCardClock(msg, answers.length > 0 || active.some(card => card.state === "pending" && card.deadline !== null));
+            setVoiceAnswers(current => new Map(answers.map(a => [a.reviewId, receiveVoiceCountdown(a, sample, current.get(a.reviewId))])));
             active.forEach(card => scheduleVoiceExpiry(card));
             setVoiceCards(current => {
               const next = new Map([...current].filter(([, card]) => voiceCardCanExpire(card)));
@@ -602,6 +621,7 @@ export function useEventStream(): MissionState {
               return next;
             });
           } else {
+            setVoiceAnswers(new Map());
             clearVoiceTimers();
             setVoiceCards(new Map());
           }
@@ -867,12 +887,37 @@ export function useEventStream(): MissionState {
         case "voice_state":
           setVoice(current => withNewerVoiceMode(msg.state, current));
           if (msg.state.mode === "off") {
+            setVoiceAnswers(new Map());
             clearVoiceTimers();
             setVoiceCards(new Map());
           }
           break;
         case "voice_indicators":
           applyVoiceIndicatorSelection(msg.indicators, msg.voiceIndicatorVersion, msg.confirmation);
+          break;
+        case "voice_open_question":
+          if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
+          break;
+        case "voice_confirm_focus":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-confirm-focus", { detail: msg }));
+          break;
+        case "voice_answer": {
+          const answer = msg.answer;
+          const sample = answer && sampleCardClock(msg, true);
+          setVoiceAnswers(prev => {
+            const next = new Map(prev);
+            if (answer && sample) next.set(msg.reviewId, receiveVoiceCountdown(answer, sample, prev.get(msg.reviewId)));
+            else next.delete(msg.reviewId);
+            return next;
+          });
+          break;
+        }
+        case "voice_card_remove":
+          setVoiceCards(prev => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
           break;
         case "voice_card": {
           const sample = sampleCardClock(msg, msg.card.state === "pending" && msg.card.deadline !== null);
@@ -1059,7 +1104,7 @@ export function useEventStream(): MissionState {
     subscribeShaping,
     voice,
     acknowledgeVoiceMode,
-    voiceCards,
+    voiceCards, voiceAnswers, openVoiceQuestion, consumeVoiceQuestion, voiceWindowId,
     fadingVoiceCards,
     setVoiceCardRetention,
     settingsStatus,

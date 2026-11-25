@@ -1,3 +1,4 @@
+import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -28,6 +29,7 @@ import {
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
 import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { createReviewResolver } from "./resolve-review.ts";
 import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
@@ -57,19 +59,15 @@ import {
   validatePlanReview,
   bindPlanReview,
   finalBundleDecision,
-  assertStandingApprovalGrantable,
-  grantStandingBundleApproval,
   hasStandingBundleApproval,
-  isStandingFollowUp,
   recordStandingFollowUp,
   reusableStandingApproval,
   standingBundleAnswer,
   unbindPlanReview,
-  STANDING_FOLLOW_UP_NOTE,
   filedPlanIdentityNote,
 } from "./plans/publication.ts";
 import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
-import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
+import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, runtimeTransferPredecessors, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
@@ -5964,7 +5962,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(manager.planPublicationContext(session.id));
   });
 
-  const planFailure = (c: Context, error: unknown) => c.json({ error: error instanceof Error ? error.message : "Plan operation failed" }, error instanceof PlanStoreError ? error.status : 409);
+  const planFailureResult = (error: unknown) => ({
+    body: { error: error instanceof Error ? error.message : "Plan operation failed" },
+    status: error instanceof PlanStoreError ? error.status : 409 as const,
+  });
+  const planFailure = (c: Context, error: unknown) => {
+    const result = planFailureResult(error);
+    return c.json(result.body, result.status);
+  };
   app.post("/mcp/plans/context", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, McpPlanPublicationSchema.merge(PlanContextInputSchema));
@@ -6321,81 +6326,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(response.body, response.status);
   });
 
-  // --- review resolution (from the dashboard, localhost) ---
+  const resolveReview = createReviewResolver(registry, reviews, residentInstructions,
+    (session, by) => foremanWriteRefusal(registry, composerActivity, session, by, true));
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
-    // The fourth Foreman-marked write, and the one the phase plan left as a judgment call
-    // on whether its session could be resolved cheaply. It can: a review record names its
-    // `sessionId`, so this is two map lookups and no I/O.
-    //
-    // Refused only on a POSITIVE answer - the session is here and uninvited. A review
-    // whose session has been evicted resolves normally: there is no pane left to type
-    // into, so this stops being a typing act and becomes the bookkeeping that settles a
-    // dangling row, and refusing it would strand the review instead of protecting anyone.
-    const owner = registry.getReview(c.req.param("id"))?.sessionId;
-    const ownerSession = owner ? registry.getSession(owner) : undefined;
-    const refusal = ownerSession
-      ? foremanWriteRefusal(registry, composerActivity, ownerSession, by, true)
-      : null;
-    if (refusal) {
-      return c.json({ error: refusal.error }, refusal.status);
-    }
-    // "Approve all future bundles for this task" is the operator's standing grant. Checked
-    // before resolving, so a grant that cannot be kept leaves the question open to retry.
-    // Only an answer that approves this bundle grants it: "Needs revision" with the box ticked
-    // must not approve the next one.
-    const grant = parsed.data.action === "answer" && parsed.data.approveFutureBundles === true
-      && approvesFinalBundle(parsed.data.selections);
-    if (grant) {
-      if (by !== "human") return c.json({ error: "Only the operator can approve future plan bundles" }, 403);
-      if (registry.getReview(c.req.param("id"))?.status !== "pending") return c.json({ error: "This review is already settled" }, 409);
-      try {
-        assertStandingApprovalGrantable(c.req.param("id"));
-      } catch (error) { return planFailure(c, error); }
-    }
-    // A resident's proposed instruction changes: only a person's answer applies them, and the
-    // write commits with the answer. Refused before anything settles when the answer is not
-    // the operator's, so the question stays open for them.
-    const instructionChange = residentInstructions?.resolution(
-      c.req.param("id"),
-      parsed.data.action,
-      by,
-      parsed.data.selections ?? null,
-    ) ?? null;
-    if (instructionChange && "refusal" in instructionChange) {
-      return c.json({ error: instructionChange.refusal.error }, instructionChange.refusal.status);
-    }
-    if (grant && instructionChange) {
-      return c.json({ error: "A plan bundle grant cannot answer a resident instruction proposal" }, 409);
-    }
-    try {
-      // An answer to the questions left beside an auto-approved bundle tells the agent the
-      // bundle is already approved, because this form no longer asked about it.
-      // Every answer gets the note, including one sent with selections and no response text.
-      const response = parsed.data.action === "answer" && isStandingFollowUp(c.req.param("id"))
-        ? [STANDING_FOLLOW_UP_NOTE, parsed.data.response].filter(Boolean).join("\n\n")
-        : parsed.data.response;
-      const updated = reviews.resolve(
-        c.req.param("id"),
-        parsed.data.action,
-        response,
-        by,
-        parsed.data.selections,
-        // Committed with the answer, so a failed grant leaves the review pending to retry.
-        grant
-          ? () => grantStandingBundleApproval(c.req.param("id"))
-          : instructionChange?.persist,
-      );
-      if (!updated) return c.json({ error: "no such review" }, 404);
-      instructionChange?.publish();
-      return c.json(updated);
-    } catch (error) {
-      if (error instanceof ReviewResolutionError) return c.json({ error: error.message }, 400);
-      if (error instanceof PlanStoreError) return planFailure(c, error);
-      throw error;
-    }
+    const result = resolveReview(c.req.param("id"), parsed.data, by);
+    return result.kind === "committed" ? c.json(result.review) : c.json({ error: result.error }, result.status);
   });
 
   // Who is asking to snooze or wake a question: the operator, a session acting through session
@@ -9401,6 +9339,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   registerShapingRoutes(app, { taskById: (id) => tasks.get(id) ?? tasks.getDurable(id) });
 
   // Voice addressing, behind its preview flag. See docs/voice.md.
+  const voiceQuestion = (q: ReviewItem) => q.kind === "input" && (q.decisions?.length ?? 0) <= 1;
   registerVoiceRoutes(app);
   const voiceResumes = new Map<string, {
     active: Set<() => boolean>;
@@ -9455,7 +9394,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const held = registry.hasPendingReviewCall(session.id);
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
-  }, (card) => registry.emitVoiceCard(card), voiceDecider);
+  }, (card) => registry.emitVoiceCard(card), voiceDecider, {
+    pending: () => registry.pendingReviews().filter(voiceQuestion),
+    forSession: sessionId => registry.reviewsFor(sessionId).filter(voiceQuestion),
+    publish: (reviewId, answer) => registry.emitQuestionEvent({ type: "voice_answer", reviewId, answer }),
+    removeCompanion: id => registry.emitQuestionEvent({ type: "voice_card_remove", id }),
+    open: (windowId, review) => registry.emitQuestionEvent({ type: "voice_open_question", windowId, sessionId: review.sessionId, reviewId: review.id }),
+    confirmFocus: (windowId, sequence) => registry.emitQuestionEvent({ type: "voice_confirm_focus", windowId, sequence }),
+    async resolve(answer) {
+      const review = registry.getReview(answer.reviewId);
+      if (!featureEnabled(VOICE_FLAG) || review?.kind !== "input" || review.status !== "pending") return false;
+      const response = answer.selections ? formatResponse(review.decisions!, answer.selections, decisionLead("input")) : answer.text;
+      const resolution = ResolveReviewSchema.safeParse({ action: "answer", by: "human", response, selections: answer.selections });
+      return resolution.success && resolveReview(review.id, resolution.data, "human").kind === "committed";
+    },
+  });
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.

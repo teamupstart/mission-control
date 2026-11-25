@@ -87,7 +87,7 @@ wherever the inbox and its alerts name one: alert titles (the toast and the Away
 the inbox's row headers, a snoozed question's row, the review modal's header, and a line at the
 head of each question card. The first of these that is set wins:
 
-1. a call sign or a resident's reference name (reserved for voice, not set yet);
+1. a call sign or a resident's reference name while voice is enabled;
 2. a resident's profile name, drawn in its board colour;
 3. the task title;
 4. the session name;
@@ -102,6 +102,10 @@ The inbox's sections follow one fixed order, `INBOX_SECTION_ORDER` in
 `src/web/lib/attention.ts`, whatever order the fold derives them in. Later sections are inserted at
 fixed places in it rather than appended. **Reports** is its last entry, directly after **Stuck
 finalizations**, so the inbox's own **Snoozed** heading always comes right after it.
+
+### Answering questions by voice
+
+See [Answer a question by voice](voice.md#answer-a-question-by-voice).
 
 ### Agent reports
 

@@ -1,3 +1,4 @@
+import { optionLetter } from "@shared/voice-answers.ts";
 import { useState } from "react";
 import type { PlanDecision, PlanDecisionAnswer } from "@shared/types.ts";
 import { CHAT_ABOUT_IT, formatResponse } from "@shared/review-item.ts";
@@ -104,7 +105,7 @@ export function DecisionForm({
    */
   allowChat = false,
   foremanRecommended,
-  besideSubmit,
+  besideSubmit, footer, voiceLetters, voicePending,
   answers: heldAnswers,
   onAnswersChange,
 }: {
@@ -132,6 +133,9 @@ export function DecisionForm({
   foremanRecommended?: ReadonlySet<string>;
   /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
   besideSubmit?: React.ReactNode;
+  footer?: React.ReactNode;
+  voiceLetters?: boolean;
+  voicePending?: boolean;
   /**
    * The answers, held by the caller instead of by this mount.
    *
@@ -215,12 +219,12 @@ export function DecisionForm({
           aria-label={hideQuestions ? d.question : undefined}
         >
           {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
-          {d.options.map((o) => {
+          {d.options.map((o, index) => {
             const foremanPick = foremanRecommended?.has(decisionChoiceKey(d.id, o.id));
             return (
             <label
               key={o.id}
-              className={`decision-option${foremanPick ? " decision-foreman-pick" : ""}`}
+              className={`decision-option${voicePending ? (get(d.id).selected.includes(o.id) ? " av-picked" : " av-dim") : ""}${foremanPick ? " decision-foreman-pick" : ""}`}
             >
               {/*
                 No `Tooltip`: it repeated the detail printed below, and picking an option
@@ -237,6 +241,7 @@ export function DecisionForm({
                 }
                 disabled={busy}
               />
+              {voiceLetters && <span className="av-key">{optionLetter(index)}</span>}
               <span className="decision-option-body">
                 <span className="decision-option-label">
                   {o.label}
@@ -274,7 +279,7 @@ export function DecisionForm({
           */}
           {d.allowOther && (
             <input
-              className="decision-other"
+              className={`decision-other${voicePending ? (get(d.id).other ? " av-picked" : " av-dim") : ""}`}
               aria-label={`Other answer or context: ${d.question}`}
               placeholder="Other answer, or add context…"
               value={get(d.id).other}
@@ -295,7 +300,7 @@ export function DecisionForm({
           )}
         </fieldset>
       ))}
-      <div className="decisions-actions">
+      {footer || <div className="decisions-actions">
         {onDismiss && (
           <Tooltip label="Dismiss this decision request without sending an answer">
             <button className="btn btn-ghost" disabled={busy} onClick={onDismiss}>
@@ -333,7 +338,7 @@ export function DecisionForm({
             {chatCount ? `Submit & chat (${chatCount})` : "Submit"}
           </button>
         </Tooltip>
-      </div>
+      </div>}
     </div>
   );
 }

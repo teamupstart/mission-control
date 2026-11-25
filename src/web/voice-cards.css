@@ -44,6 +44,7 @@ button.vc-roster:hover { border-color: var(--working); }
 .vc-transcript, .vc-pending .vc-role, .vc-heard {
   max-block-size: min(12rem, 22dvh); overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: thin;
 }
+.voice-card [role="region"]:focus-visible { outline: 2px solid var(--working); outline-offset: 2px; }
 .vc-heard { font: 12px var(--mono); color: var(--muted); }
 .vc-placements { border: 0; min-width: 0; padding: 0; }
 .vc-placements > div { display: flex; flex-wrap: wrap; gap: 10px; }

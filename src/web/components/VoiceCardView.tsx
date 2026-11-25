@@ -19,15 +19,33 @@ export interface VoiceCardActions {
   relaunch(target: SpokenName, requestId: string): Promise<ActionResult>;
 }
 
-function RosterRow({ target, title, detail, state, pick, disabled }: {
-  target?: SpokenName | null; title: string; detail: ReactNode; state?: string; pick?: () => void; disabled?: boolean;
+function Transcript({ as: Tag = "div", className = "vc-transcript", id, text, children }: {
+  as?: "div" | "span" | "q"; className?: string; id?: string; text: string; children?: ReactNode;
+}) {
+  const element = useRef<HTMLElement | null>(null);
+  const [scrollable, setScrollable] = useState(false);
+  useLayoutEffect(() => {
+    const node = element.current!;
+    const measure = () => setScrollable(node.scrollHeight > node.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [text]);
+  return <Tag ref={(node: HTMLElement | null) => { element.current = node; }} className={className} id={id}
+    {...(scrollable && { role: "region", "aria-label": "Spoken message", tabIndex: 0 })}>{children ?? text}</Tag>;
+}
+
+function RosterRow({ target, title, detail, transcript, state, pick, disabled }: {
+  target?: SpokenName | null; title: string; detail: ReactNode; transcript?: string; state?: string; pick?: () => void; disabled?: boolean;
 }) {
   const Tag = pick ? "button" : "div";
   const row = <Tag className="vc-roster" style={target?.colorId ? residentAccentStyle(target.colorId) : undefined}
     {...(pick && { type: "button" as const, onClick: pick, disabled })}>
     <span className="agent-dot" /><span className="vc-grow"><span className="vc-name">{title}</span>{" "}
       {target?.kind === "resident" && <span className="resident-chip">RESIDENT</span>}
-      <span className="vc-role">{detail}</span></span><span className="vc-state">{state}</span>
+      {transcript === undefined ? <span className="vc-role">{detail}</span> :
+        <Transcript as="span" className="vc-role" text={transcript}>{detail}</Transcript>}</span><span className="vc-state">{state}</span>
   </Tag>;
   return pick ? <Tooltip label={`Choose ${title} for this message`}>{row}</Tooltip> : row;
 }
@@ -126,9 +144,12 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
     if (part.immediateStop && !part.outcome) return <b>Stopping {named(target)}…</b>;
     switch (state) {
       case "sent":
-      case "queued":
-        return <div className="vc-success"><Icon name={state === "sent" ? "check" : "clock"} />
-          {state === "sent" ? <>{part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to "}{recipient}</> : <>Queued behind {recipient}’s current turn</>}</div>;
+        return <div className="vc-success"><Icon name="check" />{part.command === "stop" || part.immediateStop ? "Stop sent to " : "Sent to "}{recipient}</div>;
+      case "queued": {
+        const session = sessionOf(target);
+        return <div className="vc-success"><Icon name="clock" />{session?.state === "working" && !session.pause
+          ? <>Queued behind {recipient}’s current turn</> : <>Queued for {recipient}</>}</div>;
+      }
       case "held": {
         // The live outbox also identifies a session that resumed from hibernation.
         const session = actions.sessions.find(s => s.pendingTurns.some(t => t.id === part.turnId))
@@ -142,7 +163,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
           {button("Cancel message", "Recall this message from the agent’s queue", () => session && turn && void run(
             () => api.recallPendingTurn(session.id, turn.id, turn.revision, AbortSignal.timeout(5000)),
             "", "Recall was not confirmed. ", voiceCardRetryDelay(null)), "btn-ghost", !turn, wordsId)}</div>
-          <q id={wordsId} className="vc-transcript">{turn?.spokenWords ?? part.text}</q>
+          <Transcript as="q" id={wordsId} text={turn?.spokenWords ?? part.text} />
           <RosterRow target={target} title={name} detail={question ? "Asked: " + question.title : target?.role} state="blocked" />
           <div className="vc-meta">Your message stays queued until there are no blocking questions.</div>
           {address && <SpokenHint name={address.name} action="answer">Say <q>{address.name}, answer: ...</q> to answer it.</SpokenHint>}
@@ -173,7 +194,7 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
     case "resolving": body = <b>Working out who this is for</b>; break;
     case "unsure":
       body = <><div className="vc-row"><Icon name="unsure" /><b>Who is this for?</b></div>
-        <div className="vc-heard"><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</div>
+        <Transcript className="vc-heard" text={first?.text ?? ""}><u>{first?.text.match(/^\S+/u)?.[0]}</u>{first?.text.replace(/^\S+/u, "")}</Transcript>
         {card.candidates.map(c => {
           const target = actions.roster.find(t => t.key === (c.target?.key ?? c.id)) ?? c.target;
           return <RosterRow key={c.id} title={c.title} target={target} detail={c.detail} state={stateOf(target)}
@@ -192,9 +213,13 @@ export function VoiceCardView({ card, actions, operation, hidden = false, fading
         : "Deliver this message before the countdown ends";
       body = <><div className="vc-row"><Icon name="mic" /><span className="vc-grow">{split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
         {remaining > 0 && <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, card.windowMs)}s</span>}</div>
-        {card.parts.map((p, i) => split || mention ? <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"}
-          detail={p.immediateStop ? p.detail ?? p.text : mention ? messageWithMentions(p.text, card.mentions!) : p.text}
-          state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} /> : <div className="vc-transcript" key={i}>{p.text}</div>)}
+        {card.parts.map((p, i) => {
+          if (!split && !mention) return <Transcript key={i} text={p.text} />;
+          const text = p.immediateStop ? p.detail ?? p.text : p.text;
+          return <RosterRow key={i} target={p.target} title={p.target?.name ?? "Agent"} transcript={text}
+            detail={mention && !p.immediateStop ? messageWithMentions(text, card.mentions!) : text}
+            state={p.immediateStop ? (p.outcome ? "stop " + p.outcome.replace("-", " ") : "stopping") : stateOf(p.target)} />;
+        })}
         {card.mentions?.map(t => <div key={t.key} className="vc-meta">{t.name} is mentioned. Nothing is sent to {t.name}.</div>)}
         {deadline === null || remaining === 0 ? <span className="vc-meta">{deadline === null ? "Sending…" : "Awaiting delivery confirmation"}</span> : <>
           <CountdownAnnouncement key={card.deadline} card={card} deadline={deadline} />

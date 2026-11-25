@@ -2,7 +2,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
-import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { captureCard, expectCardGeometry, readTranscriptWithKeyboard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { Session } from "../../src/shared/types.ts";
@@ -144,15 +144,16 @@ test("a held transcript scrolls inside a split with a failed sibling", async ({ 
   await say(daemon, "Steve, " + words + ", and Will, review the release", { id: "mixed-long" });
   const card = page.getByRole("status");
   await card.getByRole("button", { name: /Will/ }).click();
+  const splitTranscript = card.getByRole("region", { name: "Spoken message" });
+  await expect(splitTranscript).toContainText("Start at the final check");
+  await readTranscriptWithKeyboard(splitTranscript, card.getByRole("button", { name: "Cancel", exact: true }), "Shift+Tab");
   await card.getByRole("button", { name: "Send both now" }).click();
   const mixed = card.filter({ hasText: "Held for Steve" });
   await expect(mixed).toContainText("Failed to send to Will");
   const recall = mixed.getByRole("button", { name: "Cancel message" });
-  const transcript = mixed.locator("q").filter({ hasText: "Start at the final check" });
-  expect(await transcript.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
-  await transcript.hover();
-  await page.mouse.wheel(0, 10000);
-  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+  const transcript = mixed.getByRole("region", { name: "Spoken message" });
+  await expect(transcript).toContainText("Start at the final check");
+  await readTranscriptWithKeyboard(transcript, recall, "Tab");
   for (const control of [recall, mixed.getByRole("button", { name: "Open question" }), mixed.getByText("Failed to send to Will")]) {
     await expect(control).toBeInViewport({ ratio: 1 });
   }
@@ -631,7 +632,10 @@ test("a nonblocking question after daemon restart leaves the spoken turn queued 
   expect((await page.request.post(sessionURL + "/pause", { data: { mode: "now" } })).ok()).toBe(true);
   await say(daemon, "Steve, check the release", { id: "still-queued" });
   await page.getByRole("button", { name: "Send now" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Queued behind Steve" })).toBeVisible();
+  const queued = page.getByRole("status").filter({ hasText: "Queued for Steve" });
+  await expect(queued).toBeVisible();
+  await expect(queued).not.toContainText("current turn");
+  await captureCard(queued, "paused-queued-receipt");
   await daemon.crash();
   await daemon.restart();
   await page.reload();

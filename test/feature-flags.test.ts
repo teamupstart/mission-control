@@ -110,6 +110,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Shaper sign-in",
     description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
     stage: "preview",
+    sessionSetting: "Enables credential enrollment for remote shapers.",
     keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
   });
   assert.equal(registry.SHAPER_SIGN_IN_FLAG_ID, "shaper-sign-in");

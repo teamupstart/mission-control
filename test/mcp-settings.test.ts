@@ -305,7 +305,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
         ...config, overrides: { ...config.overrides, "idle-rail-section-counts": false },
       });
       for (const key of ["featureFlags.enableAll", "featureFlags.overrides", "featureFlags.voice", "featureFlags.inbox",
-        "featureFlags.persona-repository-access", `featureFlags.${SESSION_SETTINGS_FLAG_ID}`]) {
+        "featureFlags.persona-repository-access", "featureFlags.shaper-sign-in", `featureFlags.${SESSION_SETTINGS_FLAG_ID}`]) {
         await call(claude, { ...set, key, value: true }, "protected", "Manage this setting in Settings > Feature flags.");
       }
       assert.equal(publishes, 1);

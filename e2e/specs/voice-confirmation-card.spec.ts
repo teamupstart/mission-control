@@ -557,7 +557,9 @@ test("a reconnect shows the delivery receipt missed during the cancel window", a
   await setupCards(page, daemon);
   await runningAgent(page, daemon, "Steve");
   const tunnel = await forward(daemon.baseURL);
+  const witness = await page.context().newPage();
   try {
+    await witness.goto(daemon.baseURL);
     await page.addInitScript(() => {
       window.EventSource = class extends EventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
@@ -569,12 +571,16 @@ test("a reconnect shows the delivery receipt missed during the cancel window", a
     await page.goto(`http://127.0.0.1:${tunnel.port}/`);
     await say(daemon, "Steve, check the release", { id: "followup-reconnect" });
     await expect(page.getByRole("status").filter({ hasText: "To Steve" })).toContainText("Cancel");
-    tunnel.disconnect();
+    await expect(witness.getByRole("status").filter({ hasText: "To Steve" })).toContainText("Cancel");
+    tunnel.pause();
     await expect(page.locator("html")).toHaveAttribute("data-stream-dropped", "true");
     // Clearing the history in another dashboard must still let this one see later receipts.
     expect((await page.request.delete(daemon.baseURL + "/api/voice/heard")).ok()).toBe(true);
-    expect((await page.request.post(daemon.baseURL + "/api/voice/cards/followup-reconnect/send-now")).ok()).toBe(true);
+    await witness.getByRole("button", { name: "Send now" }).click();
+    await expect(witness.getByRole("status").filter({ hasText: "Sent to Steve" })).toBeVisible();
     const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
+    await expect(sent).toHaveCount(0);
+    tunnel.resume();
     await expect(sent).toBeVisible({ timeout: 10000 });
     await captureCard(sent, "followup-reconnected-receipt");
     await page.reload();
@@ -582,5 +588,6 @@ test("a reconnect shows the delivery receipt missed during the cancel window", a
     await expect(sent).toHaveCount(0);
   } finally {
     await tunnel.stop();
+    await witness.close();
   }
 });

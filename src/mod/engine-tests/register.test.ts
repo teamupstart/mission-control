@@ -283,7 +283,11 @@ function dispatchWorld(on) {
   seen.registered = []
   seen.tools = []
   on('command.register', (_, e) => { seen.registered.push(e.name); return { value: { command: e.name } } })
-  on('tool.register', (_, e) => { seen.tools.push(e.name); return { value: { tool: `mcp__mission-control__${e.name}` } } })
+  on('tool.register', (_, e) => {
+    const tool = `mcp__mission-control__${e.name}`
+    seen.tools.push({ name: e.name, tool })
+    return { value: { tool } }
+  })
   return seen
 }
 
@@ -294,7 +298,7 @@ test('the command and the tool are registered, and the inbox argument opens the 
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
   expect(seen.registered).toEqual(['mission-dispatch'])
-  expect(seen.tools).toEqual(['start_dispatch'])
+  expect(seen.tools.map(({ name }) => name)).toEqual(['start_dispatch'])
 
   const before = seen.openArgs.length
   await $.command.run(COMMAND('inbox'))
@@ -314,7 +318,7 @@ test('a denied start_dispatch sends no draft or context to the daemon', async ($
   })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
-  const outcome = await $.tool.call({ tool, brief: 'a private brief', context: 'private conversation context' })
+  const outcome = await $.tool.call({ tool: seen.tools[0].tool, brief: 'a private brief', context: 'private conversation context' })
   expect(seen.urls.some(url => url.includes('/dispatch/drafts'))).toBe(false)
   expect(JSON.stringify(outcome)).toMatch(/blocked by policy/)
 })
@@ -327,7 +331,7 @@ test('a host without tool.run directs the person to the slash command without cr
   on('tool.call', { tool }, () => ({ isError: true, text, result: text }))
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   await settle(() => seen.statuses.length > 0)
-  const outcome = await $.tool.call({ tool, brief: 'private brief', context: 'private context' })
+  const outcome = await $.tool.call({ tool: seen.tools[0].tool, brief: 'private brief', context: 'private context' })
   expect(JSON.stringify(outcome)).toMatch(/person to run \/mission-dispatch/)
   const nextPrompt = await $.prompt.submit({ text: 'run this in mission control', origin: { kind: 'composer' } })
   expect(nextPrompt.context.join(' ')).toContain('/mission-dispatch')

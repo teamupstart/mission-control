@@ -4088,6 +4088,8 @@ export type ServerEvent =
       voiceIndicators?: string[];
       voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
       /** Cards still awaiting delivery or a pick when this window connects. */
+      windowId?: string;
+      voiceAnswers?: import("./voice-answers.ts").VoiceAnswer[];
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
       /** When this SSE connection reached the daemon, paired with the browser request start. */
       voiceStreamStartedAt?: number;
@@ -4274,6 +4276,10 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
+  | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
+  | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
+  | { type: "voice_confirm_focus"; windowId: string; sequence: number }
+  | { type: "voice_card_remove"; id: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Ref } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type Ref } from "react";
 import type { PaneDialog, PlanDecisionAnswer, ReviewItem, Session, SessionNoteSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
@@ -30,7 +30,10 @@ import { QuestionBody } from "./QuestionBody.tsx";
 import { questionStatusLine, questionWait, useQuestionAgent, type QuestionAgent } from "../lib/async-questions.ts";
 import { useNow } from "../useNow.ts";
 import { useAgentName, useAgentNamesEnabled } from "../lib/agent-names.ts";
-import { AgentName, SpokenHint } from "./AgentName.tsx";
+import { QuestionVoiceHint, VoiceAnswerFooter } from "./VoiceAnswerFooter.tsx";
+import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../lib/voice-roster.ts";
+import { AgentName } from "./AgentName.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -46,7 +49,7 @@ import { AgentName, SpokenHint } from "./AgentName.tsx";
  */
 export function ReviewModal({
   session,
-  reviews,
+  reviews, focusQuestion, onQuestionFocused,
   dialog = null,
   onClose,
   onMovedToChat,
@@ -55,6 +58,8 @@ export function ReviewModal({
 }: {
   session: Session;
   reviews: ReviewItem[];
+  focusQuestion?: { reviewId: string } | null;
+  onQuestionFocused?: (request: { reviewId: string }) => void;
   /**
    * A menu the session is parked on (`activePaneDialog`), answered here by the Conversation's
    * own `PaneDialogPrompt`, so a resident's every requested decision opens in this one modal.
@@ -72,6 +77,13 @@ export function ReviewModal({
   /** Open one checkout file in the session's Files tab. */
   onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
+  const selectedIsDrawn = reviews.some(r => r.id === focusQuestion?.reviewId);
+  useEffect(() => {
+    if (!selectedIsDrawn || !focusQuestion) return;
+    const card = document.querySelector<HTMLElement>(`.review-modal [data-voice-question="${CSS.escape(focusQuestion.reviewId)}"]`);
+    card?.focus();
+    if (card && document.activeElement === card) onQuestionFocused?.(focusQuestion);
+  }, [focusQuestion, selectedIsDrawn, onQuestionFocused]);
   const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
   const openPath = onOpenPath
     ? (path: string) => {
@@ -188,6 +200,50 @@ export function ReviewCard({
   const question = review.kind === "input";
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
   const decisions = reviewDecisions(review);
+  const voiceAnswers = useContext(VoiceAnswersContext);
+  const drawnQuestion = question && voiceAnswers !== null && !snoozing;
+  const voiceQuestion = drawnQuestion && (decisions?.length ?? 0) <= 1;
+  const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
+  const spokenName = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId)?.name;
+  // The daemon owns the deadline. Once the operator edits this preview, the draft
+  // owns the inputs immediately, including while the cancel request is in flight.
+  const [editCancel, setEditCancel] = useState<{ id: string; status: "requested" | "failed" } | null>(null);
+  const origin = pendingAnswer?.originId ?? pendingAnswer?.id;
+  const manualEdit = !!origin && draft.voiceEditOrigin === origin;
+  const cancelStatus = manualEdit ? (editCancel?.id === pendingAnswer?.id ? editCancel?.status : undefined) ?? "requested" : undefined;
+  const preview = cancelStatus ? undefined : pendingAnswer;
+  const voiceSelection = preview?.selections?.[0];
+  const displayedAnswers = voiceSelection ? { [voiceSelection.decisionId]: {
+    selected: voiceSelection.selected, other: voiceSelection.other ?? "", note: "",
+  } } : draft.decisions;
+  const requestedRevision = useRef<string | undefined>(undefined);
+  const cancelEdited = useCallback(async (revision: string, originId: string) => {
+    requestedRevision.current = revision;
+    const attempt = { id: revision, status: "requested" as const };
+    setEditCancel(attempt);
+    const result = await api.voiceAnswerAction(originId, "cancel", undefined, review.id);
+    if (!result.ok) setEditCancel(current => current === attempt ? { ...attempt, status: "failed" } : current);
+  }, [review.id]);
+  const [voiceError, setVoiceError] = useState<{ id: string; message: string } | null>(null);
+  const revision = pendingAnswer?.id;
+  useEffect(() => {
+    // A correction may overtake cancellation. The draft keeps the input and the
+    // corrected action gets its own retry even if the first request is stalled.
+    if (manualEdit && revision && origin && requestedRevision.current !== revision) void cancelEdited(revision, origin);
+  }, [manualEdit, revision, origin, cancelEdited]);
+  const answerAction = async (action: "cancel" | "send-now") => {
+    if (!pendingAnswer) return;
+    if (manualEdit && action === "cancel") return cancelEdited(pendingAnswer.id, origin!);
+    const result = await api.voiceAnswerAction(pendingAnswer.id, action, voiceAnswers?.windowId);
+    if (!result.ok) setVoiceError({ id: pendingAnswer.id, message: result.error ?? "This answer is no longer pending." });
+  };
+  function cancelForManualEdit() {
+    if (!preview || !origin) return;
+    updateDraft(d => ({ ...d, voiceEditOrigin: origin }));
+    void cancelEdited(preview.id, origin);
+  }
+  const footer = pendingAnswer && <VoiceAnswerFooter answer={pendingAnswer} options={decisions?.[0]?.options}
+    act={answerAction} canSubmit={!!voiceAnswers?.windowId && voiceAnswers.windowId === pendingAnswer.footerWindowId} cancelStatus={cancelStatus} />;
   // The daemon marks the reviews that can carry it; an unbound form with the same question cannot.
   const finalBundle = review.standingApprovalEligible === true
     && (decisions?.some((d) => d.id === PLAN_APPROVAL_DECISION) ?? false);
@@ -272,7 +328,7 @@ export function ReviewCard({
   );
 
   return (
-    <section className={`review review-${review.kind}`} data-dialog-action-scope>
+    <section className={`review review-${review.kind}`} data-dialog-action-scope data-voice-question={drawnQuestion ? review.id : undefined} tabIndex={drawnQuestion ? -1 : undefined}>
       <div className="review-head">
         <span className={`kind-tag kind-${review.kind}`}>
           {review.kind === "plan-decisions" ? "decisions" : review.kind}
@@ -337,7 +393,7 @@ export function ReviewCard({
         <SnoozeSheet review={review} wait={wait} onBack={() => setSnoozing(false)} />
       ) : decisions ? (
         <>
-        {question && <SpokenHint action="answer-option" name={asker.name} />}
+
         <DecisionForm
           decisions={decisions}
           busy={busy}
@@ -354,10 +410,14 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
-          answers={draft.decisions}
-          onAnswersChange={(change) =>
-            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }))
-          }
+          voiceLetters={voiceQuestion}
+          voicePending={!!preview}
+          footer={footer}
+          answers={displayedAnswers}
+          onAnswersChange={(change) => {
+            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }));
+            cancelForManualEdit();
+          }}
           besideSubmit={
             // A snoozable question is a `request_input` ask, never a plan bundle, so at
             // most one of the two ever fills this slot.
@@ -382,12 +442,13 @@ export function ReviewCard({
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (
         <div className="review-actions">
           <textarea
-            className="answer-box"
+            className={preview ? "answer-box av-picked" : "answer-box"}
             placeholder="Your answer…"
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
+            value={preview?.text ?? answer}
+            onChange={(e) => { setAnswer(e.target.value); cancelForManualEdit(); }}
             rows={2}
           />
+          {footer ?? <>
           {dismissButton}
           <Tooltip label="Skip answering for now: the agent explains this question in the conversation and waits for you">
             <button className="btn btn-chat" disabled={busy} onClick={chatAboutQuestion}>
@@ -408,7 +469,7 @@ export function ReviewCard({
               Send answer
             </button>
           </Tooltip>
-          <SpokenHint action="answer" name={asker.name} cardOpen />
+          </>}
         </div>
       ) : (
         <div className="review-actions">
@@ -441,6 +502,8 @@ export function ReviewCard({
           </Tooltip>
         </div>
       )}
+      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} decision={decisions?.[0]} />}
+      {voiceError && voiceError.id === revision && <p className="review-err">{voiceError.message}</p>}
       {err && <p className="review-err">{err}</p>}
       {foremanOpen && foremanAvailable && foremanNote && (
         <ForemanRecommendationSidecar

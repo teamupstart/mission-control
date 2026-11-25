@@ -23,10 +23,10 @@ With Sound enabled, the pending chime plays only while the card still offers Can
 A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
 in Mission Control, notification permission is granted, and the platform supports desktop
-notifications. If you switch away while the card is counting down, the notification shows
-the time left in the window. If you return before the desktop shows it, switching away
+notifications. If you switch away while the card is counting down, the notification identifies the pending
+message or answer. The card shows the live countdown. If you return before the desktop shows it, switching away
 again can still show it before the deadline. A split card shows an immediate stop’s result as soon as it arrives. The
-desktop notification identifies that stop separately and counts down only the waiting
+desktop notification identifies that stop separately and expires with the waiting
 delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
 If a desktop action fails, the dashboard card names the unconfirmed action and shows
 the reason. Its controls remain available for a retry while the cancel window is open.
@@ -787,7 +787,7 @@ flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and sav
 An agent is addressed by a name you can say. A [resident](residents.md) answers to its profile
 name, or to its **reference name** when one is set. A session answers only when its task has a
 **call sign**; a task title is never a spoken name. Any other session is answered through its open
-card by starting with "reply" (a later phase).
+card by starting with "reply".
 
 ### Call signs
 
@@ -1263,3 +1263,69 @@ an immutable receipt can be matched by its launch digest. A mutable slot such
 as `shell.json` requires independent evidence of the original player, such as
 the original ledger recovered at restart. If recovery also lost the inventory,
 a separate hold remains until all possible launches can be accounted for.
+
+### Answer a question by voice
+
+With a question card open in the focused dashboard, say “Steve, option B” or “Steve, my answer is Postgres”.
+“Reply, neither yet” fills the text field of the focused question, including a question from an
+agent without a spoken name. If several cards from one agent are open, focus the one you mean.
+Choice-only cards show an option example in the footer. Cards that accept text also show how to dictate it.
+A bare answer matches a unique option label first. “Option two” always selects the second option. Spoken numbers such as “option eleven” and “option twenty-one” work like digits.
+Other wording uses the option matcher. If the lookup fails, the card asks you to try again and the question stays pending.
+Asking for an unavailable option or a recommendation without a single recommended choice
+shows “No matching option.” The Other field stays as you left it and no countdown starts.
+
+From anywhere, “Steve, my answer is Postgres”, “Steve, option two” and “Steve, go with your
+recommendation” can select an option on a pending question. For a free-text question,
+“Steve my answer is Postgres” stages “Postgres” even with its card closed and no punctuation
+in the transcript. Transcripts such as “Steve, answer: Postgres” also work. An instruction
+such as “Steve answer the email” goes to Steve as a message. If Steve has no eligible
+question, an explicit answer shows a notice and sends nothing. If an explicit answer matches
+none of a closed question’s options, the dashboard shows “No matching option.” The question
+stays pending and the agent receives no message. With several pending questions
+and no target card, choose a question by clicking its row or saying its ordinal.
+If the spoken name matches several agents, pick the recipient first. The original answer then applies to that agent’s eligible questions. If a question
+closes while speech is being transcribed, the picker offers the remaining questions unless
+the dashboard can confirm the intended question was already in focus. When a snoozed
+question returns, speak again to start its countdown. “Steve, answer”
+opens the question picker without supplying an answer. If the standalone picker asks you to
+focus a dashboard, choose the question again there. The row stays available until the dashboard
+reports that the selected question has focus. To dictate into Other, open the card before speaking.
+Choosing an older spoken answer from the picker preserves any newer answer already staged for that question. Ordinary addressed speech, such as
+“Steve, check the build”, goes to the agent as a message even while the question is open.
+
+The selected option or written reply appears on the card for the configured cancel window.
+“Cancel” stops the newest pending voice action. “No, A” switches the newest pending answer
+and restarts its countdown. If that answer settles before the correction arrives, the other
+questions keep their choices and deadlines. The footer's **Cancel** and **Submit now** act on that answer.
+Editing the form requests cancellation and keeps the edit in your draft. Until cancellation is
+confirmed, the footer shows the original voice answer and its deadline. Use **Retry cancel**
+if the request fails or takes too long. If speech changes the pending answer, the footer shows
+the revised choice and cancellation follows it. Your manual edit stays in the field. Giving a fresh spoken
+answer starts its own countdown, even while cancellation of the previous answer is in flight. A pending answer can still submit at its deadline.
+If the focused dashboard shows the question, its footer carries the countdown. When the
+question closes or its dashboard loses focus or disconnects, a companion card shows the same
+answer and deadline, along with the question title and the agent’s name when available. Returning to the question moves the controls back to its footer. Before accepting **Submit now**, the daemon checks that the submitting dashboard still shows the footer, or, for a companion or desktop notification, that no focused dashboard has taken it over.
+Disabling the cancel window submits a matched answer immediately.
+
+The daemon keeps pending answers in memory, includes them in reconnect snapshots, and
+publishes changes with `voice_answer`. The focused dashboard reports its drawn question
+cards to `PUT /api/voice/open-cards`. A focus timestamp in the request header orders reports
+across windows. The dashboard also reports when the question became eligible on the daemon's
+monotonic clock, so a delayed report can still accept speech captured while the card was visible.
+The dashboard reports focus immediately and refines a slow clock sample with a second round trip.
+Before starting the countdown, the daemon requests a fresh focus report for “reply” and for named
+answers that depend on an open card. If the transcript overtakes a focus update, the daemon
+checks the question that was drawn at capture against the newly confirmed report.
+The daemon asks each connected reporting window, so a dashboard can confirm a reply after gaining focus or while its first card report is still in transit.
+A confirmed foreground reply gives background windows 400 milliseconds to respond.
+A suspended window must report its current state again before it can take over.
+A reply waiting for calibration stays bound to the observed question and can be cancelled.
+Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
+remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,
+the daemon uses report receipt time. Choosing a question in the picker
+acknowledges the choice immediately and publishes the matched answer when it is ready.
+If two windows claim focus at the same instant, an unaddressed reply cannot answer either
+question. Turning voice back on refreshes the report, even when the dashboard shows no questions.
+A disconnected stream's report expires after ten seconds.
+A window that cannot confirm its state during a companion submit must answer a fresh focus request before it can take over the footer. A dashboard already showing that footer keeps it. Restarting voice preserves the clock calibration for dashboards that stay connected.

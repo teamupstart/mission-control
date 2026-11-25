@@ -29,7 +29,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const dispatch = Object.keys(oracle).filter(isDispatch);
   assert.equal(dispatch.length, 14);
   for (const key of dispatch) assert.match(oracle[key]!, /^404 /, `${key} is disabled in the oracle's default build`);
-  // The 483 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
+  // The 484 entries outside /dispatch: the 418 `main` records, plus the four flag-gated routes
   // of task shaping (the three /api/shaping routes, refreshed when one last changed, and
   // `GET /api/tasks/:id/shaping`), the three flag-gated session control request routes
   // (`POST /mcp/session-control/requests`, its `GET .../:requestId/wait`, and the dashboard's
@@ -76,13 +76,14 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The listener's verified model lookup, GET /api/voice/model, answers 404 with the voice preview off.
   // Voice also gates GET, PUT and DELETE /api/voice/decision-key and POST /api/voice/config/provider-intent.
   // PUT /api/voice/confirmation and GET /api/voice/tasks/:id/follow-up both return 404 with Voice off.
+  // PUT /api/voice/open-cards also returns 404 with Voice off.
   // The five speech routes for supervision, audio, playback events, Stop and audition also return 404 with Voice off.
   // Persona repository access adds the grant update and per-run repository query audit routes.
   // GET /api/voice/mute and POST /api/voice/hotkey-recording answer 404 with the voice preview off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 483);
+  assert.equal(others.length, 484);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "c3138f1243e7647706eddbc99d0103d8cb442aeac01d3551a35354b0436f1b86");
+    "a89c8a2a3747695de6ea8ee6f45691ac319e7d780c1b6d971367634e2f1bf19e");
 });
 
 function sourceFiles(dir: string): string[] {

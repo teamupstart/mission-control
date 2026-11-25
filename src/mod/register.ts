@@ -189,7 +189,7 @@ export function register(on: EngineOn, _options: unknown): void {
       .catch((error: unknown) => reportFlowFailure(host, (text) => $.ui.log(text, { to: "debug" }), error, session));
     return {};
   });
-  on("tool.run", { tool: DISPATCH_TOOL_ID }, async ($, e) => {
+  on("tool.call", { tool: DISPATCH_TOOL_ID }, async ($, e) => {
     if (!flowHost || !flowSession || core?.phase() !== "active") return { result: FLOW_UNAVAILABLE_TEXT };
     const host = flowHost;
     // Captured now: by the time a failure arrives the session may have ended and cleared the module's copy.
@@ -236,7 +236,7 @@ type EngineOn = {
   (event: "session.start" | "session.end" | "prompt.submit", hook: Hook): void;
   (event: "ui.render", matcher: { component: string; requestId?: string }, hook: Hook): void;
   (event: "command.run", matcher: { command: string }, hook: Hook): void;
-  (event: "tool.run", matcher: { tool: string }, hook: Hook): void;
+  (event: "tool.call", matcher: { tool: string }, hook: Hook): void;
 };
 // The engine's events are richer; this is the part the mod reads.
 type EngineEvent = { cwd: string; isInteractive: boolean; props?: { hasSurvey?: boolean; placement?: "dock" | "inline" | "widget"; bodyColumns?: number }; [field: string]: unknown };

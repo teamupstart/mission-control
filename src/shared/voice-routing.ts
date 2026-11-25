@@ -49,6 +49,7 @@ export interface VoiceCard {
   candidates: { kind: "agent" | "question"; id: string; title: string; detail: string; target?: SpokenName }[];
   reason: string;
   openQuestions: number;
+  questionTitle?: string;
   detail?: string;
 }
 
@@ -292,7 +293,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     return { kind: "ignored", reason: "ambiguous-pick" };
   }
   const picks = (context.unsureCards ?? []).flatMap((card) => card.candidates
-    .filter((candidate) => normalized(candidate.title) === pickName)
+    .filter((candidate) => candidate.kind === "agent" && normalized(candidate.title) === pickName)
     .map((candidate) => ({ card, candidateId: candidate.id })));
   if (picks.length === 1 && picks[0]!.card.state === "unsure") {
     return { kind: "control", command: "pick", cardId: picks[0]!.card.id, candidateId: picks[0]!.candidateId };

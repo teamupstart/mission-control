@@ -553,3 +553,58 @@ test("waiting replies and failed resolutions both get a turn on eligible sweeps"
   assert.equal(getInspectorPr(later)?.observedHeadSha, "head-resolution-failure");
   assert.equal(getInspectorPr(later)?.observedState, "CLOSED", "the later PR was observed in the same sweep");
 });
+
+test("a newly arrived question gets its turn behind a repeatedly refused resolution", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const key = adopt(13, now);
+  const newThread = seedThread(key, 1, "New question");
+  writeGithubState({
+    headSha: "head-repeated-resolution-failure",
+    threadsByPr: { 13: [seedThread(key, 0, "Original question")] },
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+
+  const failureCountsAtReply: number[] = [];
+  const model = t.mock.method(claudeRunner, "run", async (prompt: string) => {
+    failureCountsAtReply.push(getInspectorPr(key)!.failCount);
+    return JSON.stringify({ reply: "I checked the guard.", resolved: prompt.includes("Original question") });
+  });
+  const sweeps: string[][] = [];
+  const stop = startInspector(registryStub(() => {
+    const row = getInspectorPr(key);
+    if (row?.observedAt !== now) return;
+    const github = readGithubState();
+    sweeps.push(github.actions);
+    if (sweeps.length === 1) {
+      github.threadsByPr[13]!.push(newThread);
+      writeGithubState(github);
+    }
+    if (sweeps.length === 3) stop();
+    now = row.nextAttemptAt ?? now + pollMs;
+  }));
+  t.after(stop);
+  await waitFor("the late question to get a turn after resolution refusals",
+    () => sweeps.length === 3);
+
+  assert.deepEqual(sweeps, [
+    ["replied to comment 202", "failed to resolve T_0"],
+    ["replied to comment 202", "failed to resolve T_0", "failed to resolve T_0"],
+    ["replied to comment 202", "failed to resolve T_0", "failed to resolve T_0",
+      "replied to comment 203", "failed to resolve T_0"],
+  ]);
+  assert.equal(model.mock.callCount(), 2);
+  assert.match(model.mock.calls[1]!.arguments[0], /New question/);
+  assert.deepEqual(failureCountsAtReply, [0, 2], "the new reply starts before the persistent failure cap");
+  const findings = loadInspectorComments(key);
+  const original = findings.find((row) => row.id === "prior-0");
+  const answered = findings.find((row) => row.id === "prior-1");
+  assert.equal(original?.answeredCommentId, 202);
+  assert.equal(original?.resolutionPending, true);
+  assert.equal(answered?.answeredCommentId, 203);
+  assert.equal(answered?.replies, 1);
+  assert.equal(getInspectorPr(key)?.failCount, 3);
+});

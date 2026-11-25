@@ -309,6 +309,18 @@ test("spoken Publish as scout archives the attachment, Reply delivers its words,
   expect((await storedReport(daemon, next.id)).readAt).toBeNull();
 });
 
+test("the floating pill keeps the Run now control for an inbox action", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const report = await postReport(daemon, steve, "Build results");
+  await page.goto(daemon.baseURL + "/#/voice/pill");
+  await say(daemon, "Steve, mark read");
+  const card = page.getByRole("status").filter({ hasText: "Steve" });
+  await expect(page.getByRole("region", { name: "Voice countdown" })).toContainText("cancel or run now");
+  await card.getByRole("button", { name: "Run now" }).click();
+  await expect.poll(async () => (await storedReport(daemon, report.id)).readBy).toBe("mark-read");
+});
+
 test("Steve's Mark read invokes the open report from the task's previous session", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon, 1);
   const first = await runningAgent(page, daemon, "Steve");

@@ -58,9 +58,20 @@ draft stays available when the follow-up closes. If you leave the follow-up thro
 or launch repair link, reopening Dispatch restores its instructions and attachments.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
-The floating pill is the default preference. The dashboard shows a corner toast for all three
-choices until the desktop implements the floating windows. It saves the selected placement
-for those windows. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
+The floating pill is the default. On macOS it appears under the menu bar on the display with
+the pointer, including while the dashboard is minimized. A floating card appears without taking
+keyboard focus. From another app, use **⌘Tab** to switch to Mission Control. Press **⌘⌥V** or
+choose **View > Focus Voice Confirmation** to focus Cancel on a pending message. Use Tab or
+Shift-Tab to reach Send now. The tray popover hangs beneath the
+Mission Control icon. Click Cancel or say “cancel” before time runs out. The countdown itself
+also accepts a click to send immediately. Browsers and shells without floating windows show
+the corner toast. Right-click the tray icon and choose **Recently Heard** for compact history.
+History takes the place of the tray card while its countdown continues. Press Escape to return
+to the card if it is still active. On a desktop with tray history and no floating-card support,
+Recently Heard opens from the tray while the confirmation stays in the dashboard toast.
+Closing a floating window leaves its card in the toast. The next confirmation or tray history
+request can open the window again. Switching placement keeps the selected message and any action in progress.
+An unsure card opens the same history from **Recently heard**, or the Voice settings table in a browser. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
 cannot replace the newer saved choice, even when that save reaffirms the current placement.
 If the daemon saved the first choice but its reply was lost, choosing again uses the confirmed revision to finish the new save.
 Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
@@ -457,12 +468,12 @@ Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snaps
 session with their respective actions, the message held behind a blocking question, and the
 two-message split or one-message mention. A finished session opens a separate follow-up
 draft on its repository. Reopening regular Dispatch restores the operator's original draft.
-The card also supplies the clickable rows used when asking
-aloud. Phase 12 adds the spoken question, listening state and Recently heard link. The roster
+The unsure card offers clickable candidates and a Recently heard link. Spoken responses follow
+the [Voice Response Options plan](plans/voice-spoken-responses/phased-plan.md). The roster
 in Voice settings lists addressable agents independently of these outcomes.
 [Selected routing-exceptions mock-up](plans/voice-addressing-for-agents/mockup-routing-exceptions.html#b)
 · [Phase 6 outcome cards](plans/voice-addressing-for-agents/phase-6-confirmation-and-outcome-cards.md)
-· [Phase 12 ask aloud](plans/voice-addressing-for-agents/phase-12-floating-surfaces-and-ask-aloud.md)
+· [Phase 12 floating surfaces](plans/voice-addressing-for-agents/phase-12-floating-surfaces-and-ask-aloud.md)
 
 For what each model receives, see [Voice routing in the Security guide](security.md#voice-routing).
 

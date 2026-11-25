@@ -41296,6 +41296,20 @@ body.foreman-sidecar-open .modal-backdrop {
   max-width: 1060px;
 }
 
+.setup-update-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.setup-update-footer > section {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.setup-update-footer p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .setup-row-title,
 .setup-command {
   align-items: center;

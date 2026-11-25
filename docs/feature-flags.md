@@ -71,12 +71,12 @@ off keeps individually enabled flags on. **Advanced** starts collapsed and conta
 that are on by default, with a count of those switched off. A filter matching only Advanced
 opens it. Settings search can toggle individual flags; the master result opens its panel.
 
-Switching on **Alpha updates** in **Settings > Setup > Application updates** also switches on
+Switching on **Alpha updates** at the top of **Settings → Setup** also switches on
 Enable all, so an alpha operator gets every current and future preview feature by default. It is
 the same write as the master switch without "Turn them on too": flags you switched off stay off.
 Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
 on alpha. Alpha is saved first and stays on if that write fails, because the alpha
-switch must keep working while the daemon is down; the Application updates section then says
+switch must keep working while the daemon is down. The message below the checkbox says
 Enable all could not be switched on and offers **Retry**. That failure survives moving between
 Settings categories, and a pending write never locks the alpha switch. A write that gets no
 answer within 10 seconds counts as failed, so Retry is never stuck behind a stalled request.

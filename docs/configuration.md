@@ -283,7 +283,7 @@ reaches shapers only after a restart. `GET /api/shaping` reports it as `unset` u
 
 ## Desktop update channel
 
-**Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
+**Alpha updates** at the top of **Settings → Setup** opts a managed desktop app into
 updates from the latest commit on `main`. It defaults off. Alpha checks about every five
 minutes and on **Check for updates**; stable mode retains its six-hour release checks.
 Both modes require an explicit **Update Now**, followed by **Restart and Install**. Stable selects

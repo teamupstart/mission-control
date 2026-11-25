@@ -647,15 +647,14 @@ export function SettingsPage({
         // link to a row in an unselected family has to move the rail before this page's
         // flash observer can ever find that row in the DOM.
         return (
-          <>
-            <UpdateSettingsPanel />
+          <UpdateSettingsPanel>
             <SetupPanel
               state={setup}
               voice={voice}
               jumpAnchor={unhandledJump?.anchor ?? null}
               jumpRequestId={unhandledJump?.id ?? null}
             />
-          </>
+          </UpdateSettingsPanel>
         );
       case "feature-flags":
         return <FeatureFlagsPanel state={featureFlagsSettings} jumpAnchor={unhandledJump?.anchor} />;

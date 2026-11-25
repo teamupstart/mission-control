@@ -474,8 +474,8 @@ repository:
   optional source/tool prerequisite. An adopted standalone daemon retains its own runtime.
   **Agent extensions → Install Claude integrations** repairs owned hooks, statusline wrappers and
   MCP registrations while preserving custom commands. See the [runtime inventory](docs/owned-runtimes.md).
-  To track unreleased builds, enable **Alpha updates** in **Settings → Setup → Application
-  updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
+  To track unreleased builds, enable **Alpha updates** at the top of **Settings → Setup**.
+  This defaults off. Alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
   **Later** on an update banner snoozes that version for 48 hours, including across app restarts.
   You can still check for updates manually at any time. Updating drains owned background

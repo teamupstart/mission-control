@@ -542,7 +542,7 @@ export class LegacyTreehouseService {
     return { state: "exact", owner };
   }
 
-  async executeReturn(ownerRef: LegacyOwnerRef): Promise<LegacyTreehouseReturnResult> {
+  async executeReturn(ownerRef: LegacyOwnerRef, beforeReturn?: () => Promise<string | null>): Promise<LegacyTreehouseReturnResult> {
     const preview = await this.previewReturn(ownerRef);
     if (!preview.allowed) return { outcome: "blocked", reason: preview.reason };
     const current = this.owner(ownerRef);
@@ -558,6 +558,8 @@ export class LegacyTreehouseService {
     }, async () => {
       const unsafe = await this.returnSafetyReason(current.path);
       if (unsafe) return unsafe;
+      const blocked = await beforeReturn?.();
+      if (blocked) return blocked;
       const finalOwner = this.owner(ownerRef);
       if (!finalOwner || ownerKey(finalOwner) !== ownerKey(current) || finalOwner.path !== current.path ||
         finalOwner.leaseId !== current.leaseId || finalOwner.expectedHolder !== current.expectedHolder) {

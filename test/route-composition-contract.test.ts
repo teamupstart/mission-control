@@ -29,8 +29,8 @@ import type { WorktreeOperationsService } from "../src/server/worktrees/operatio
 /** The loopback Host every data endpoint requires. See `hostIsLoopback` in routes.ts. */
 const LOOPBACK = { host: "127.0.0.1:7317" };
 
-/** None of the routes exercised here read these, so bare stubs keep the test hermetic. */
-const registry = {} as unknown as Registry;
+/** Worktree diagnostics read task ownership, but these tests have no tasks. */
+const registry = { listTasks: () => [] } as unknown as Registry;
 const reviews = {} as unknown as ReviewManager;
 const tasks = {} as unknown as TaskManager;
 const queues = {} as unknown as QueueManager;

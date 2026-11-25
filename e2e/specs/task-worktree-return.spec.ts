@@ -66,6 +66,9 @@ test("Complete closes the session and retains both owned worktrees and their loc
   for (const path of paths) writeFileSync(join(path, "remaining-local-work.md"), "Keep this work through completion.\n");
   await dashboard.locator(".console-detail").getByRole("button", { name: /^complete$/i }).click();
   const complete = dashboard.getByRole("dialog", { name: "Complete task and close session" });
+  await expect(complete).toContainText("Task-owned worktrees and their local changes stay in place.");
+  await expect(complete).toContainText("The retention window starts when the last tracked session using the worktrees leaves.");
+  await expect(complete).toContainText("Automatic cleanup requires clean worktrees with commits published to origin.");
   await expectContentClearsBorder(complete);
   await capture(dashboard, "complete-return-confirmation");
   await complete.getByRole("button", { name: "Complete & close" }).click();

@@ -150,6 +150,21 @@ test("an unavailable named Publish action leaves the focused report unread and s
   expect(replies).toEqual([]);
 });
 
+test("a named Publish command with the inbox closed is refused before starting an agent turn", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const report = await postReport(daemon, steve, "Closed report");
+  await expect(page.getByRole("dialog", { name: "Attention inbox" })).toBeHidden();
+  const id = crypto.randomUUID();
+  await say(daemon, "Steve, publish as scout", { id });
+  await expect(page.getByRole("status").filter({ hasText: "The inbox action is no longer available." })).toBeVisible();
+  const { entries } = await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json();
+  expect(entries[0]).toMatchObject({ id, outcome: "cancelled", rule: "inbox-action" });
+  const { messages } = await (await page.request.get(daemon.baseURL + "/api/sessions/" + encodeURIComponent(steve.id) + "/transcript")).json();
+  expect(messages.filter((m: { role: string; text: string }) => m.role === "user" && m.text.includes("publish as scout"))).toEqual([]);
+  expect((await storedReport(daemon, report.id)).readAt).toBeNull();
+});
+
 test("turning off Plan forms by voice in Settings preserves manual answers while spoken Mark read still works", async ({ dashboard: page, daemon }) => {
   await page.setViewportSize({ width: 1920, height: 1400 });
   await setupCards(page, daemon, 1);

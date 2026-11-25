@@ -1402,7 +1402,8 @@ only unread report. For a resident it uses the resident’s reports across runs.
 target is ambiguous, open the intended report first.
 “Steve, nudge” sends the Stuck row’s fixed status request even while Steve’s Report has
 keyboard focus. If several open cards offer the same command, focus the one you mean.
-A named inbox command that none of the agent’s open inbox cards offers gives an unavailable notice.
+A named inbox command that needs a visible control gives an unavailable notice when no
+matching card is open, including when the inbox is closed.
 Say “reply, …” with a card
 focused to use its reply, follow-up, or message control. The cancel window applies to
 inbox actions. The voice card confirms the action after the dashboard invokes the button.

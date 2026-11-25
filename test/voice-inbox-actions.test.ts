@@ -3,7 +3,7 @@ import test from "node:test";
 import { INBOX_ACTIONS } from "../src/shared/inbox.ts";
 import { spokenInboxAction } from "../src/shared/voice-inbox.ts";
 import type { DrawnVoiceCard, VoiceInboxEvent } from "../src/shared/voice-answers.ts";
-import { act, cards, post, registry, reports, say } from "./helpers/voice-http.ts";
+import { act, cards, post, queued, registry, reports, say } from "./helpers/voice-http.ts";
 import { mockCaptureClock, put } from "./helpers/voice-question.ts";
 import { mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -55,6 +55,11 @@ test("named commands and follow-up dictation select their unique offer and use f
   assert.equal(cards.at(-1)?.detail, "The inbox action is no longer available.");
   assert.deepEqual(await speak("reply, publish as scout"), [["second", "reply", "publish as scout"]]);
   assert.deepEqual(await speak("Steve, send the results"), [["second", "reply", "send the results"]]);
+  await put("/api/voice/open-cards", { windowId, focused: true, cards: [] });
+  assert.deepEqual(await speak("Steve, publish as scout"), []);
+  assert.equal(cards.at(-1)?.state, "cancelled");
+  assert.equal(cards.at(-1)?.detail, "The inbox action is no longer available.");
+  assert.deepEqual(queued("Steve"), []);
 });
 
 test("mark read cancels, refuses ambiguity, requests the drawn button, and reads the sole report with the inbox closed", async t => {

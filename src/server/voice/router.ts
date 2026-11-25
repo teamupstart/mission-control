@@ -607,7 +607,7 @@ export class VoiceRouter {
             return invoked ? "invoked" : "unavailable";
           };
         }
-      } else if (command && !offering.length && candidates.some(c => c.kind === "report" || c.kind === "stuck")) {
+      } else if (command && !offering.length) {
         return notice(inboxActionDetails.unavailable, "inbox-action");
       } else if (offering.length && (command || !card || card.kind === "report" || card.kind === "stuck")) {
         actionCard = selected;

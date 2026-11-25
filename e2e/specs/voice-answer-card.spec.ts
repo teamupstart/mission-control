@@ -432,6 +432,7 @@ test("a spoken correction during manual cancellation leaves the draft visible an
   });
   try {
     await input.fill("after lunch");
+    await input.blur();
     await expect.poll(() => requests).toBe(1);
     await say(daemon, "no, A", { id: "correction-during-edit" });
     const footer = card.getByRole("status").filter({ hasText: "A · Now" });
@@ -478,6 +479,7 @@ test("a fresh spoken answer survives the previous draft’s delayed cancellation
   });
   try {
     await input.fill("after lunch");
+    await input.blur();
     await requested.promise;
     await say(daemon, "Steve, answer: tonight", { id: "fresh-dictation" });
     await expect(input).toHaveValue("tonight");
@@ -511,6 +513,7 @@ test("selecting an option during voice dictation preserves the operator's parked
   await expectContentClearsBorder(inbox);
   const other = inbox.getByRole("textbox").first();
   await other.fill("after lunch");
+  await other.blur();
   await say(daemon, "reply, tomorrow");
   await expect(other).toHaveValue("tomorrow");
   await inbox.getByRole("radio", { name: /Now/ }).check();

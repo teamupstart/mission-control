@@ -152,6 +152,8 @@ struct SpeechGate {
         discarding = interruptedSpeech
     }
 
+    var partial: Segment? { samples.isEmpty || discarding ? nil : segment(samples) }
+
     private func segment(_ pcm: [Float]) -> Segment {
         Segment(samples: pcm, startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample)
     }
@@ -245,6 +247,7 @@ final class SpeechSegmenter {
 
     deinit { fvad_free(detector) }
 
+    var partial: Segment? { gate.partial }
     var endOfSpeechMs: Int { gate.endOfSpeechMs }
     func updateEndOfSpeechMs(_ duration: Int) -> Segment? { gate.updateEndOfSpeechMs(duration) }
 
@@ -311,6 +314,7 @@ final class SpeechSegmenter {
 final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
+    var partial: Segment? { segmenter.partial }
     private var segmenter: SpeechSegmenter
     private let held: Bool
     private let onSegmentDropped: (Int64) -> Void
@@ -571,6 +575,14 @@ final class Microphone {
     func updateEndOfSpeechMs(_ duration: Int) {
         tapLock.withLock {
             if let segment = segmenter?.updateEndOfSpeechMs(duration) { enqueue(segment) }
+        }
+    }
+
+    @MainActor func previewDictation(while active: () -> Bool, consume: (Segment) async -> Void) async throws {
+        while active() {
+            try await Task.sleep(for: .milliseconds(750))
+            guard active() else { return }
+            if let sample = tapLock.withLock({ segmenter?.partial }) { await consume(sample) }
         }
     }
 

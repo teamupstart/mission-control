@@ -4289,6 +4289,8 @@ export type ServerEvent =
   | import("./voice-answers.ts").VoiceInboxEvent
   | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
+  | { type: "voice_dictation"; windowId: string; target: string; text: string; capture: string; interim: boolean }
+  | { type: "voice_dictation_probe"; windowId: string; sequence: number }
   | { type: "voice_confirm_focus"; windowId: string; sequence: number }
   | { type: "voice_card_remove"; id: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }

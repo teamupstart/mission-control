@@ -21,12 +21,13 @@ import { endedOnShutdown } from "../http-shutdown.ts";
 import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { createMiddleware } from "hono/factory";
 import {
-  VOICE_FLAG,
+  VOICE_FLAG, voiceCaptures,
   VOICE_BACKENDS,
   VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
   VOICE_CAPTURE_END_HEADER,
   VOICE_CAPTURE_START_HEADER,
   VOICE_DRAINING_REVISIONS_HEADER,
+  VOICE_FOCUS_UNCONFIRMED_HEADER,
   VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
@@ -512,6 +513,13 @@ export function registerVoiceUtteranceRoutes(
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.put("/api/voice/open-cards", gate, limitBody, async c => {
+    if (c.req.query("dictation") === "1") {
+      const parsed = await parseBody(c, z.object({ windowId: z.string(), sequence: z.number().int().positive(), target: z.string().uuid().optional() }), { strict: true });
+      if (!parsed.ok) return parsed.res;
+      const { windowId, sequence, target } = parsed.data;
+      const ok = router.openCards.acknowledgeDictation(windowId, sequence, target);
+      return c.json({ ok }, ok ? 200 : 409);
+    }
     const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
     const stamp = c.req.header(VOICE_FOCUS_TIME_HEADER);
@@ -549,12 +557,26 @@ export function registerVoiceUtteranceRoutes(
   });
   app.post("/voice/listener/speech", gate, limitBody, async c => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
-    const parsed = await parseBody(c, z.object({ speechStartUs: z.number().int().nonnegative(), phase: z.enum(["start", "finish"]) }), { strict: true });
+    const onset = z.number().int().nonnegative();
+    const parsed = await parseBody(c, z.discriminatedUnion("phase", [
+      z.object({ speechStartUs: onset, phase: z.enum(["start", "focus", "finish"]) }).strict(),
+      z.object({ speechStartUs: onset, phase: z.literal("preview"), text: VoiceUtteranceSchema.shape.text }).strict(),
+    ]), { strict: true });
     if (!parsed.ok) return parsed.res;
     const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const revision = c.req.query("revision");
     const key = speechCaptureKey(owner, revision, parsed.data.speechStartUs);
+    if (parsed.data.phase === "preview" || parsed.data.phase === "focus") {
+      if (!router.hasSpeechOnset(key)) return c.json({ accepted: false });
+      const focused = await router.resolveDictation();
+      const directive = voiceStateStore.directive();
+      if (!voiceStateStore.ownsCapture(owner) || !directive.capture || !voiceCaptures(voiceStateStore.state().mode) ||
+          voiceStateStore.resolveCaptureRevision(revision, directive) !== directive.revision) return c.json({ accepted: false });
+      const claimed = !!focused && router.bindDictation(key, focused, parsed.data.phase === "preview" ? parsed.data.text : undefined);
+      if (claimed) c.header("x-voice-dictation", "1");
+      return c.json({ accepted: claimed });
+    }
     if (parsed.data.phase === "finish") router.speechFinished(key);
     else {
       const directive = voiceStateStore.directive();
@@ -563,7 +585,10 @@ export function registerVoiceUtteranceRoutes(
         const release = revision && voiceStateStore.releasedCapture(revision);
         if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
       }
+      // Reserve a possible spoken cancel at receipt, before the focus round trip.
       router.speechStarted(key, parsed.data.speechStartUs);
+      const field = await router.resolveDictation();
+      if (field && router.bindDictation(key, field)) c.header("x-voice-dictation", "1");
     }
     return c.json({ accepted: true });
   });
@@ -576,9 +601,9 @@ export function registerVoiceUtteranceRoutes(
     if (disabled) return disabled;
     const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+    const submitted = c.req.query("revision");
     const state = voiceStateStore.state();
     let directive = voiceStateStore.directive(state);
-    const submitted = c.req.query("revision");
     const revision = voiceStateStore.resolveCaptureRevision(submitted, directive);
     const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt, voiceStateStore.captureGrantTime(revision));
     if (conflict === "stale") return c.json({ accepted: false });
@@ -624,7 +649,19 @@ export function registerVoiceUtteranceRoutes(
     // Match the revision the listener used for this segment's onset, even after a timing edit.
     const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, submitted, onsetUs);
     try {
-      return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey }) });
+      const dictation = await router.resolveDictation();
+      const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+      if (disabled) return disabled;
+      if (c.req.raw.signal.aborted || !voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+      if (dictation === false) {
+        c.header(VOICE_FOCUS_UNCONFIRMED_HEADER, "1");
+        return c.json({ accepted: false });
+      }
+      const current = voiceStateStore.directive();
+      const authorized = heldBeforeRelease ? voiceStateStore.releasedCapture(release.revision)?.at === release.at
+        : current.capture && voiceStateStore.resolveCaptureRevision(submitted, current) === current.revision;
+      if (!authorized) return c.json({ accepted: false });
+      return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey, dictation: dictation ?? null }) });
     } finally {
       if (captureKey) router.speechFinished(captureKey);
     }

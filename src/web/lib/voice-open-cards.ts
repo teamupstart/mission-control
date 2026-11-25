@@ -1,6 +1,9 @@
 import { createContext, useEffect, useRef } from "react";
 import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceInboxEvent, type VoiceTimeBounds } from "@shared/voice-answers.ts";
 
+import { newRequestId } from "./request-id.ts";
+import type { ServerEvent } from "@shared/types.ts";
+import { focusedDictationField, DictationEditor } from "./voice-dictation.ts";
 import { drawnVoiceCards, receiveInboxEvent } from "./voice-inbox.ts";
 import { fetchVoiceCardTime } from "./api.ts";
 import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
@@ -15,6 +18,10 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
   useEffect(() => {
     if (!windowId) return;
     const controller = new AbortController();
+    // Returning to a field in the same phrase can still replace its last preview.
+    const editors = new WeakMap<HTMLElement, DictationEditor>();
+    let field: HTMLElement | null = null;
+    let dictationTarget: string | undefined;
     let focused: boolean | undefined;
     // The daemon calibrates each stream at connection. A surviving page can reconnect
     // with an older time origin, so anchor this stream's observations to the current era.
@@ -39,14 +46,23 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
         if (!cardClock.observe(sent, performance.now(), stamp, stamp).uncertain) break;
       }
     }
+    const refreshField = () => {
+      const nextField = focusedDictationField();
+      if (nextField !== field) {
+        field = nextField;
+        dictationTarget = field ? newRequestId() : undefined;
+      }
+      return field;
+    };
     const report = async () => {
       if (controller.signal.aborted) return;
-      const hasFocus = dashboard && document.hasFocus() && !document.hidden;
+      const nextField = refreshField();
+      const hasFocus = (dashboard || !!nextField) && document.hasFocus() && !document.hidden;
       if (focused !== hasFocus) {
         focused = hasFocus;
         clock.focusAtUs = Math.max(clock.focusAtUs + 1, Math.round((clock.timeOrigin + performance.now()) * 1000));
       }
-      const payload: OpenCardsReport = { windowId, focused: hasFocus, cards: dashboard ? drawnVoiceCards() : [] };
+      const payload: OpenCardsReport = { windowId, dictationTarget, focused: hasFocus, cards: dashboard ? drawnVoiceCards() : [] };
       const state = voiceReplyState(payload);
       if (state !== observed?.state) observed = state ? { state, at: performance.now(), id: ++clock.revision } : undefined;
       const body = JSON.stringify(payload);
@@ -61,7 +77,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       last = "";
       try {
         const observation = observed;
-        const send = (bounds?: VoiceTimeBounds, calibrating = false) => fetch(dashboard ? "/api/voice/open-cards" : "/api/voice/open-cards?withdraw=1", { method: "PUT",
+        const send = (bounds?: VoiceTimeBounds, calibrating = false) => fetch(dashboard || dictationTarget ? "/api/voice/open-cards" : "/api/voice/open-cards?withdraw=1", { method: "PUT",
           signal: AbortSignal.any([controller.signal, attempt.controller.signal, AbortSignal.timeout(1500)]),
           headers: { "content-type": "application/json", [VOICE_FOCUS_TIME_HEADER]: String(clock.focusAtUs),
             [VOICE_REPORT_REVISION_HEADER]: String(++clock.revision),
@@ -98,26 +114,40 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
     }, 60_000);
     const observer = new MutationObserver(() => void report());
     const events = ["focus", "blur", "focusin", "focusout", "visibilitychange"];
-    if (dashboard) {
-      observer.observe(document.body, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["data-overlay-top", "data-voice-question", "data-voice-id", "data-voice-kind", "data-voice-key", "data-voice-action", "inert", "hidden"] });
-      for (const event of events) window.addEventListener(event, report, true);
-    }
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ["data-overlay-top", "data-voice-question", "data-voice-id", "data-voice-kind", "data-voice-key", "data-voice-action", "inert", "hidden", "disabled", "readonly", "type", "contenteditable"] });
+    for (const event of events) window.addEventListener(event, report, true);
     const confirm = (event: Event) => {
-      const { windowId: requestedWindow, sequence } = (event as CustomEvent<{ windowId: string; sequence: number }>).detail;
+      const { windowId: requestedWindow, sequence, type } = (event as CustomEvent<Extract<ServerEvent, { type: "voice_confirm_focus" | "voice_dictation_probe" }>>).detail;
+      if (windowId === requestedWindow && type === "voice_dictation_probe") {
+        refreshField();
+        void fetch("/api/voice/open-cards?dictation=1", { method: "PUT", headers: { "content-type": "application/json" },
+          signal: controller.signal, body: JSON.stringify({ windowId, sequence, target: dictationTarget }) }).catch(() => {});
+        return;
+      }
       if (windowId !== requestedWindow || sequence <= confirmation) return;
       confirmation = sequence;
       void report();
     };
     window.addEventListener("voice-confirm-focus", confirm);
+    window.addEventListener("voice-dictation-probe", confirm);
     const inboxEvent = (event: Event) => {
       const message = (event as CustomEvent<VoiceInboxEvent>).detail;
       if (dashboard && message.windowId === windowId) void receiveInboxEvent(message, cardClock).catch(() => {
         console.warn("Voice event handler failed", message.type, message.type === "voice_inbox_action" ? message.requestId : message.reviewId);
       });
     };
+    const dictate = (event: Event) => {
+      const message = (event as CustomEvent<Extract<ServerEvent, { type: "voice_dictation" }>>).detail;
+      if (!field || message.target !== dictationTarget || field !== focusedDictationField()) return;
+      const editor = editors.get(field) ?? new DictationEditor();
+      editors.set(field, editor);
+      editor.insert(field, message);
+    };
+    window.addEventListener("voice-dictation", dictate);
     window.addEventListener("voice-inbox-event", inboxEvent);
     return () => {
+      window.removeEventListener("voice-dictation", dictate);
       window.removeEventListener("voice-inbox-event", inboxEvent);
       controller.abort();
       clearTimeout(retry);
@@ -125,6 +155,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       observer.disconnect();
       for (const event of events) window.removeEventListener(event, report, true);
       window.removeEventListener("voice-confirm-focus", confirm);
+      window.removeEventListener("voice-dictation-probe", confirm);
     };
   }, [windowId, dashboard]);
 }

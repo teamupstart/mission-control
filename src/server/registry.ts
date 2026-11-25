@@ -1693,7 +1693,7 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
   }
 
-  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_dictation_probe" | "voice_dictation" | "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
     if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 

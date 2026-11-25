@@ -510,6 +510,7 @@ export const VOICE_RELEASE_TIME_HEADER = "x-voice-release-host-ms";
 export const VOICE_CAPTURE_END_HEADER = "x-voice-capture-end-host-ms";
 export const VOICE_CAPTURE_START_HEADER = "x-voice-capture-start-host-us";
 export const VOICE_SPEECH_START_HEADER = "x-voice-speech-start-host-us";
+export const VOICE_FOCUS_UNCONFIRMED_HEADER = "x-voice-focus-unconfirmed";
 export const VOICE_HELD_REVISION_HEADER = "x-voice-held-revision";
 export const VOICE_DRAINING_REVISIONS_HEADER = "x-voice-draining-revisions";
 export const VoiceListenerIdSchema = z.uuid();

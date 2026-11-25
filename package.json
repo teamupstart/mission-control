@@ -38,6 +38,7 @@
     "voice:listener": "tsx scripts/run-voice-listener.ts",
     "build:state-lock-native": "node scripts/build-state-lock-native.mjs",
     "build:keep-awake-native": "node scripts/build-keep-awake-native.mjs",
+    "build:keychain-native": "node scripts/build-keychain-native.mjs",
     "build:web": "vite build",
     "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/server/index.mjs && npm run build:transcript-boundary",
     "build:transcript-boundary": "esbuild src/server/transcript-boundary-worker.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/server/transcript-boundary-worker.mjs",

@@ -43481,7 +43481,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .vi-listening {
   --vi: var(--voice-listening);
 }
-.vi-muted {
+.vi-muted, .vi-waiting-for-key {
   --vi: var(--voice-muted);
 }
 .vi-auto-muted, .vi-unavailable {
@@ -43538,7 +43538,7 @@ button.vi-floating:is(:hover, :focus-visible) {
 }
 button.vi-floating:is(:hover, :focus-visible) :is(.vi-word, .vi-expanded) { display: inline; }
 button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
-.vi-floating.vi-muted { box-shadow: var(--shadow); border-color: var(--border); }
+.vi-floating:is(.vi-muted, .vi-waiting-for-key) { box-shadow: var(--shadow); border-color: var(--border); }
 .vi-edge-line {
   position: relative; height: 3px; background: var(--vi);
   box-shadow: 0 0 14px 1px color-mix(in oklab, var(--vi) 65%, transparent);
@@ -43553,7 +43553,7 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .app > .vi-edge-line .vi-edge { height: var(--vi-edge-tab-height); }
 /* Keep the centered mute tab above the measured row, including its topmost click targets. */
 .app > .vi-edge-line ~ header.topbar { padding-top: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)); }
-.vi-edge-line.vi-muted { box-shadow: none; background: var(--border); }
+.vi-edge-line:is(.vi-muted, .vi-waiting-for-key) { box-shadow: none; background: var(--border); }
 .vi-edge {
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%); pointer-events: auto;
   display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
@@ -43565,7 +43565,7 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   background: color-mix(in oklab, var(--vi) 13%, var(--panel-2));
   border: 1px solid color-mix(in oklab, var(--vi) 55%, var(--border));
 }
-.vi-composer.vi-muted { background: var(--panel-2); border-color: var(--border); }
+.vi-composer:is(.vi-muted, .vi-waiting-for-key) { background: var(--panel-2); border-color: var(--border); }
 .vi-settings { border: 0; min-width: 0; padding: 0; }
 .vi-choice { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .vi-choice label { cursor: pointer; }

@@ -60,7 +60,14 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long the listener
 waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
 the words in the same utterance. Changes take effect while listening and persist after restart.
-Push-to-talk ends on key release. The separate **Cancel window** starts after routing.
+**Listening mode** defaults to **Always-on**. Choose **Push-to-talk** to keep the
+microphone closed between holds. Hold the configured desktop hotkey to speak and
+release it to finish the utterance, including during calls. A missing shortcut
+or disconnected desktop keeps capture off. A missing key-up discards the hold
+after two minutes. Tap-to-mute, manual mute, call auto-mute, and the automatic
+end-of-speech delay apply to Always-on. Switching back restores their saved values.
+
+The separate **Cancel window** starts after routing.
 While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
 “cancel” can reach the router before delivery. The selected delay resumes when the last countdown closes.
 If a protocol 4.0 helper is still running during an upgrade, restart it with the updated listener
@@ -221,7 +228,7 @@ response header. The native helper retains completed phrases in capture order an
 them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
 The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
 If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
-When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
+When releasing push-to-talk returns Voice to waiting for the hotkey or to call auto-mute, the capture-off response includes
 `x-voice-release-revision` (the held capture revision) and `x-voice-release-host-ms` (monotonic
 host milliseconds). A helper applying that exact held revision uses key-up as the boundary for
 the unfinished phrase. If its input tap still owes samples through that time, the helper
@@ -761,7 +768,7 @@ Below that are the behavior rows:
 
 | Row | Field | Default |
 | --- | --- | --- |
-| Mute hotkey | `hotkey` | Control+Command+Option+V |
+| Mute hotkey / Push-to-talk hotkey | `hotkey` | Control+Command+Option+V |
 | Auto-mute on calls | `autoMuteDuringCalls` | on |
 | Cancel window (duration or Off) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
 | Unsure (Ask or Show) | `whenUnsure` | `show` |
@@ -812,8 +819,9 @@ never wrote needs no migration.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `muted` | `false` | Mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
-| `hotkey` | `cmd+ctrl+alt+v` | The mute chord in the format the Keyboard panel records, or null for none |
+| `listeningMode` | `always-on` | Select `push-to-talk` for held capture |
+| `muted` | `false` | Always-on manual mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
+| `hotkey` | `cmd+ctrl+alt+v` | The shared desktop shortcut in the format the Keyboard panel records, or null for none |
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
 | `endOfSpeechMs` | `2000` | Silence before automatic submission, in milliseconds (500, 800, 1000, 1500, 2000, 3000 or 5000) |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
@@ -1005,9 +1013,10 @@ The daemon publishes one voice state. Its `mode` is one of:
 | --- | --- |
 | `off` | The `voice` flag is off |
 | `unavailable` | At least one reason below holds |
-| `muted` | `muted` is on |
-| `auto-muted` | A live shell report says another app has the microphone, and auto-mute is on |
-| `push-to-talk` | As `auto-muted`, while the shell reports the hotkey held |
+| `waiting-for-key` | Push-to-talk is selected and the confirmed shortcut is idle |
+| `muted` | Always-on is selected and manual mute is on |
+| `auto-muted` | In Always-on, a live shell report says another app has the microphone, and auto-mute is on |
+| `push-to-talk` | The desktop confirms a hold in Push-to-talk mode or during Always-on call auto-mute |
 | `listening` | Otherwise |
 
 `voiceMode(inputs)` in `src/shared/voice.ts` is the one rule, applied in that order. The reasons,
@@ -1017,8 +1026,10 @@ in the order they are listed:
 - `listener`: no listener hello in the last 30 seconds;
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
+- `shortcut`: Push-to-talk is selected and the desktop has no current confirmation of the configured shortcut.
 
 The state also carries `speech`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+In Push-to-talk mode the state includes a fresh `pushToTalkSession` for the desktop to echo. A report from a prior mode or disconnected desktop cannot resume a hold.
 Every window receives the saved chord and current shell registration together when either changes.
 The dashboard shows a shortcut only when the shell confirms the exact configured chord,
 reports the hotkey capability and has no registration error. Until then the indicator shows its
@@ -1083,7 +1094,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   one second for the onset acknowledgment before posting its transcript with the same onset and revision.
   A `finish` releases a segment that produced no accepted transcript, including overlong
   audio once it can no longer be recovered at key-up.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkSession?, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build
   does not know are dropped rather than refused. When a shortcut trial fails, the desktop
@@ -1091,8 +1102,8 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 
 ### Desktop hotkey and microphone contention
 
-Choose **Settings > Voice > Mute hotkey**, then press a chord. Escape cancels recording.
-A tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
+Choose the hotkey row in **Settings > Voice**, then press a chord. Escape cancels recording.
+In Always-on mode, a tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
 the tray opens with the result of a fresh status check. During call auto-mute, hold for 350 ms
 to talk and release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
 the warning names the chord still registered, or says when none is in force. Settings saves a

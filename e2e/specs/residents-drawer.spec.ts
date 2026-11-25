@@ -177,6 +177,37 @@ async function expectOffFleet(page: Page, name = NAME): Promise<void> {
   await expect(page.locator(".console-rail", { hasText: name })).toHaveCount(0);
 }
 
+test("a listening resident card shows its quoted reference name with spoken names disabled", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  await useDrawer(page, daemon, "board");
+  const listener = await beListener(daemon);
+  try {
+    const indicator = page.locator("button.vi-status-line");
+    await expect(indicator).toHaveAccessibleName("Voice: listening. Mute");
+    const snapshot = await residentSnapshot(daemon);
+    expect(snapshot.voice?.mode).toBe("listening");
+
+    // App resolves spokenNames from the voice flag. Replay the listening snapshot with
+    // that flag disabled so the test controls the two inputs independently.
+    const featureFlags = {
+      ...snapshot.featureFlags,
+      overrides: { ...snapshot.featureFlags.overrides, voice: false },
+    };
+    await page.route("**/events", route => route.fulfill({
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({ ...snapshot, featureFlags })}\n\n`,
+    }));
+    await page.reload();
+    await edgeTab(page).click();
+    await expect(indicator).toHaveCount(0);
+    await expect(drawerOf(page).locator(".residents-drawer-name")).toHaveText('"Marlowe"');
+    await capture(page, "listening-title-spoken-names-disabled");
+  } finally {
+    listener.stop();
+  }
+});
+
 test("resident card titles follow listening mode and the current reference name", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const profile = await launch(daemon);

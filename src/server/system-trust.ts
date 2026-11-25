@@ -17,15 +17,22 @@ import * as tls from "node:tls";
  *
  * Roots are only added, never removed, and verification is never relaxed. The bundled set,
  * `NODE_EXTRA_CA_CERTS`, and the system store a `--use-system-ca` launch already added all stay.
- * Node 24.0 to 24.4 lack the API; there the daemon keeps Node's default roots, as before.
+ * Node 24.0 to 24.4 lack the API; there the daemon keeps Node's default roots, as before, and
+ * says so once at startup, because a download through the proxy will still be refused.
  */
 export function trustSystemCertificates(api: SystemTrustApi = tls): SystemTrustResult {
   if (typeof api.setDefaultCACertificates !== "function" || typeof api.getCACertificates !== "function") {
+    console.warn(
+      `[tls] the system certificate store was not added: Node ${process.versions.node} lacks tls.setDefaultCACertificates (24.5 or newer has it). ` +
+        "Outbound requests trust only Node's own roots and NODE_EXTRA_CA_CERTS.",
+    );
     return "unsupported";
   }
   try {
-    const roots = new Set([...api.getCACertificates("default"), ...api.getCACertificates("system")]);
+    const defaults = api.getCACertificates("default");
+    const roots = new Set([...defaults, ...api.getCACertificates("system")]);
     api.setDefaultCACertificates([...roots]);
+    console.log(`[tls] added ${roots.size - new Set(defaults).size} root(s) from the system certificate store`);
     return "trusted";
   } catch (error) {
     // An unreadable keychain must not stop the daemon: it starts with the roots it had.

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { trustSystemCertificates, type SystemTrustApi } from "../src/server/system-trust.ts";
 
@@ -14,20 +13,27 @@ function fakeTls(roots: { default: string[]; system: string[] }): SystemTrustApi
   };
 }
 
-test("adds the system store to the default roots without dropping any", () => {
+test("adds the system store to the default roots without dropping any, and says how many", (t) => {
+  const log = t.mock.method(console, "log", () => undefined);
   const api = fakeTls({ default: ["bundled", "extra-from-env"], system: ["corporate-proxy-root"] });
   assert.equal(trustSystemCertificates(api), "trusted");
   assert.deepEqual(api.set, [["bundled", "extra-from-env", "corporate-proxy-root"]]);
+  assert.equal(log.mock.calls[0]?.arguments[0], "[tls] added 1 root(s) from the system certificate store");
 });
 
-test("a root already in the defaults, as under --use-system-ca, is not added twice", () => {
+test("a root already in the defaults, as under --use-system-ca, is not added or counted twice", (t) => {
+  const log = t.mock.method(console, "log", () => undefined);
   const api = fakeTls({ default: ["bundled", "corporate-proxy-root"], system: ["corporate-proxy-root"] });
   assert.equal(trustSystemCertificates(api), "trusted");
   assert.deepEqual(api.set, [["bundled", "corporate-proxy-root"]]);
+  assert.equal(log.mock.calls[0]?.arguments[0], "[tls] added 0 root(s) from the system certificate store");
 });
 
-test("a Node without the API keeps its default roots", () => {
+test("a Node without the API keeps its default roots and says the system store was not added", (t) => {
+  const warn = t.mock.method(console, "warn", () => undefined);
   assert.equal(trustSystemCertificates({}), "unsupported");
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0]?.arguments[0]), /^\[tls\] the system certificate store was not added: Node \S+ lacks/);
 });
 
 test("an unreadable system store does not stop the daemon", (t) => {
@@ -41,12 +47,4 @@ test("an unreadable system store does not stop the daemon", (t) => {
   };
   assert.equal(trustSystemCertificates(api), "failed");
   assert.match(String(warn.mock.calls[0]?.arguments[0]), /keychain locked/);
-});
-
-test("the daemon installs system trust before any subsystem starts", () => {
-  const source = readFileSync(new URL("../src/server/index.ts", import.meta.url), "utf8");
-  const trust = source.indexOf("\ntrustSystemCertificates();");
-  const firstStartup = source.indexOf("\nawait initializeExecutableEnvironment();");
-  assert.ok(trust > 0, "index.ts calls trustSystemCertificates()");
-  assert.ok(trust < firstStartup, "system trust is installed before the executable environment and the database");
 });

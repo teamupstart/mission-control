@@ -56,6 +56,15 @@ test("the published sherpa addon transcribes a recording through the listener an
   const app = new Hono();
   const captures: VoiceUtterance[] = [];
   let posts = 0;
+  const previewPhases: string[] = [];
+  app.use("/voice/listener/transcript", async (c, next) => {
+    const sample = await c.req.raw.clone().json();
+    await next();
+    if (!posts && !sample.final && (await c.res.clone().json()).accepted) {
+      const preview = voiceStateStore.state().transcript;
+      if (preview && (preview.phase !== "words" || preview.text.trim())) previewPhases.push(preview.phase);
+    }
+  });
   let hellos = 0;
   let acceptedAfterRelease = false;
   let onDirectivePoll: (() => void) | undefined;
@@ -175,6 +184,9 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.equal(posts, 1);
   });
   assert.equal(captures.length, 1);
+  await t.test("the built listener publishes quiet, detected audio and recognized words before its first utterance", () => {
+    assert.deepEqual([...new Set(previewPhases)], ["ready", "audio", "words"]);
+  });
   const capture = captures[0]!;
   assert.equal(capture.backend, "sherpa-onnx");
   const normalize = (text: string) => text.toLowerCase().replace(/[^a-z ]/gu, "").trim();

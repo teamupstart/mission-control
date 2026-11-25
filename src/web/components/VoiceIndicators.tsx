@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
+  voiceCaptures, voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
 import { api } from "../lib/api.ts";
 import { formatChord } from "../lib/keybindings.ts";
@@ -61,6 +61,11 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
   } : null, [enabled, state, openSetup, setMuted, pendingMute]);
   return <VoiceWindow.Provider value={value}>
     {children}
+    {enabled && state?.transcript && voiceCaptures(state.mode) && <aside aria-label="Live voice transcript"
+      className={`voice-transcript vt-${state.transcript.style} vt-${state.transcript.corner} vt-${state.transcript.phase}`}>
+      <strong>{{ ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[state.transcript.phase]}</strong>
+      {state.transcript.text && <span>{state.transcript.text}</span>}
+    </aside>}
     {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status">
       {pendingMute !== null && (pendingMute ? "Muting voice…" : "Unmuting voice…")}
     </div>}

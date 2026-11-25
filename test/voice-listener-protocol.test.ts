@@ -533,3 +533,52 @@ test("scanning a silent recording lets the event loop run before reaching EOF", 
   await assert.rejects(segments.next({ revision: "active" }), { name: "AbortError" });
   assert.ok(scanned > 0 && scanned < windows);
 });
+
+test("Sherpa publishes quiet, onset and growing partials from unfinished PCM before it addresses the final phrase", async t => {
+  setVoiceConfig({ muted: false, showTranscript: true, backend: "sherpa-onnx" });
+  voiceStateStore.reset();
+  t.after(() => voiceStateStore.reset());
+  const states: string[] = [];
+  const finals: string[] = [];
+  const decoded: number[] = [];
+  const quietFrames = 16;
+  const frames = 72;
+  const pcm = new Float32Array(frames * 512);
+  pcm.fill(0.25, quietFrames * 512);
+  let scanned = 0;
+  let finished = false;
+  const client = new ListenerClient("http://localhost", tokenPath(), async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === "/voice/utterances") finals.push(JSON.parse(String(init.body)).text);
+    const response = await app.request(url, init);
+    if (path.endsWith("/transcript")) {
+      const snapshot = voiceStateStore.state().transcript;
+      assert.ok(snapshot);
+      states.push(snapshot.phase + " " + snapshot.text);
+    }
+    return response;
+  });
+  const recognition = (text: string) => ({ text, tokens: [], timestamps: [], durations: [] });
+  await playRecording(client, signal => recordingSegments(pcm, () => ({
+    acceptWaveform() { scanned++; },
+    isDetected: () => scanned > quietFrames,
+    isEmpty: () => !finished,
+    flush() { finished = true; },
+    front: () => ({ start: quietFrames * 512, samples: pcm.subarray(quietFrames * 512) }),
+    pop() { finished = false; }, reset() {},
+  }), signal, voiceHostTimeUs), async samples => {
+    assert.deepEqual(samples, pcm.subarray(quietFrames * 512));
+    return recognition("Steve, check the build");
+  }, async samples => {
+    assert.ok(scanned < frames, "preview reached the decoder before EOF");
+    assert.deepEqual(finals, []);
+    decoded.push(samples.length);
+    return recognition(decoded.length === 1 ? "ordinary" : "ordinary words");
+  });
+  assert.equal(states[0], "ready ");
+  assert.equal(states[1], "audio ");
+  assert.ok(states.indexOf("words ordinary words") > states.indexOf("words ordinary"));
+  assert.ok(decoded.length >= 2 && decoded.every((n, i) => i === 0 || n > decoded[i - 1]!));
+  assert.equal(states.at(-1), "words Steve, check the build");
+  assert.deepEqual(finals, ["Steve, check the build"]);
+});

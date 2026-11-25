@@ -27,6 +27,7 @@ import {
   voiceUnavailableReasons,
   type VoiceBackend,
   type VoiceCapabilities,
+  transcriptTail, type TranscriptSample,
   type VoiceConfig,
   type VoiceInputDevice,
   type VoiceListenerHello,
@@ -172,6 +173,49 @@ export class VoiceStateStore {
 
   ownsCapture(id: string | undefined): boolean {
     return id !== undefined && this.liveHello()?.ownerId === id;
+  }
+
+  private preview?: { grant: string; owner: string; at: number; committed: string; interim: string; onset: number;
+    finalOnset: number; phase: TranscriptSample["phase"]; text: string };
+
+  reportTranscript(owner: string | undefined, revision: string | undefined, sample: TranscriptSample) {
+    const directive = this.directive();
+    if (!owner || !this.ownsCapture(owner) || !directive.capture ||
+        this.resolveCaptureRevision(revision, directive) !== directive.revision || !this.deps.config().showTranscript) return false;
+    const grant = directive.captureRevision ?? directive.revision;
+    const now = this.deps.now();
+    const previous = this.preview;
+    const preview = previous?.grant === grant && previous.owner === owner ? previous :
+      { grant, owner, at: now, committed: "", interim: "", onset: -1, finalOnset: -1, phase: "ready" as TranscriptSample["phase"], text: "" };
+    const previousText = previous?.text;
+    const previousPhase = previous?.phase;
+    if (sample.phase === "ready") {
+      preview.phase = "ready";
+    } else if (sample.onset <= preview.finalOnset) {
+      return true;
+    } else if (sample.phase === "words" && sample.final) {
+      // The next onset can arrive while the previous phrase's final decode is pending.
+      preview.committed = transcriptTail(preview.committed + " " + sample.text);
+      preview.finalOnset = sample.onset;
+      if (sample.onset >= preview.onset) {
+        preview.interim = "";
+        preview.onset = sample.onset;
+        preview.phase = "words";
+      }
+    } else if (sample.onset >= preview.onset) {
+      if (sample.onset !== preview.onset) preview.interim = "";
+      preview.onset = sample.onset;
+      if (sample.phase === "words") preview.interim = sample.text;
+      preview.phase = preview.interim ? "words" : "audio";
+    } else {
+      return true;
+    }
+    preview.text = transcriptTail(preview.committed + " " + preview.interim);
+    preview.at = now;
+    this.preview = preview;
+    if (previousText === preview.text && previousPhase === preview.phase) this.arm();
+    else this.publish();
+    return true;
   }
 
   setCancelWindowOpen(open: boolean): void {
@@ -344,6 +388,7 @@ export class VoiceStateStore {
     if (!this.deps.enabled(VOICE_FLAG)) {
       this.recorder = undefined;
       this.hotkeyTrial = undefined;
+      this.preview = undefined;
       this.lastMode = "off";
       return voiceStateOff();
     }
@@ -398,7 +443,15 @@ export class VoiceStateStore {
       this.lastMode = mode;
       this.modeRevision++;
     }
+    const preview = this.preview;
+    if (preview && (!voiceCaptures(mode) || !config.showTranscript || manager.held ||
+        listener?.ownerId !== preview.owner || now - preview.at >= 6000 ||
+        preview.grant !== (this.lastDirective?.directive.captureRevision ?? this.lastDirective?.directive.revision))) {
+      this.preview = undefined;
+    }
     return {
+      ...(this.preview && { transcript: { style: config.transcriptStyle, corner: config.transcriptCorner,
+        phase: this.preview.phase, text: transcriptTail(this.preview.text, config.transcriptWords) } }),
       planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
       mode,
@@ -581,7 +634,13 @@ export class VoiceStateStore {
     else if (enabled && this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS &&
         this.deps.config().autoMuteDuringCalls) this.manager?.stopAll("ask");
     const state = this.state();
-    if (this.lastDirective) this.directive(state);
+    if (this.lastDirective) {
+      const directive = this.directive(state);
+      if (this.preview && this.preview.grant !== (directive.captureRevision ?? directive.revision)) {
+        this.preview = undefined;
+        delete state.transcript;
+      }
+    }
     for (const listener of Array.from(this.listeners)) {
       try { listener(state); }
       catch (error) { console.warn("[voice] state listener failed:", error); }
@@ -597,6 +656,7 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.preview = undefined;
     this.recorder = undefined;
     this.hotkeyTrial = undefined;
     if (this.manager) this.manager.dispose();
@@ -625,6 +685,7 @@ export class VoiceStateStore {
     const waitingForProcess = this.manager?.live?.state === "ready" &&
       (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
     const lapses = [
+      this.preview && this.preview.at + 6000,
       this.hotkeyTrial?.expiresAt,
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,

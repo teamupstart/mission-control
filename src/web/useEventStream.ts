@@ -296,7 +296,7 @@ export interface MissionState {
 function withNewerVoiceMode(base: VoiceState | null, candidate: VoiceState | null): VoiceState | null {
   if (!base?.modeVersion || !candidate?.modeVersion || base.modeVersion.source !== candidate.modeVersion.source
     || base.modeVersion.revision >= candidate.modeVersion.revision) return base;
-  return { ...base, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
+  return { ...base, transcript: undefined, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
 }
 
 /**

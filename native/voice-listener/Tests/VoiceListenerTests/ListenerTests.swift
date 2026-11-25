@@ -11,6 +11,46 @@ private final class TapFixtureEngine: AVAudioEngine, @unchecked Sendable {
 }
 
 final class ListenerTests: XCTestCase {
+    @MainActor func testPreviewLoopPublishesGrowingWordsBeforeFinalSpeech() async throws {
+        var gate = SpeechGate(endOfSpeechMs: 500)
+        var ticks = 0
+        var phases: [String] = []
+        var texts: [String] = []
+        var onsets: [Int64] = []
+        var decodedLengths: [Int] = []
+        let frame = Array(repeating: Float(0.25), count: 320)
+        var endNs: Int64 = 1_000_000_000
+        await runTranscriptPreview(isRunning: { ticks < 4 }, snapshot: { gate.preview }, pendingOnset: { nil },
+            decode: { segment in
+                decodedLengths.append(segment.samples.count)
+                if decodedLengths.count == 1 { throw URLError(.cannotDecodeContentData) }
+                return decodedLengths.count == 2 ? "ordinary" : "ordinary words"
+            }, report: { phase, onset, text in
+                phases.append(phase)
+                if let text { texts.append(text) }
+                if let onset { onsets.append(onset) }
+                return true
+            }, pause: {
+                ticks += 1
+                if ticks <= 3 {
+                    endNs += 20_000_000
+                    XCTAssertNil(gate.feed(frame, active: true, endNs: endNs, toUnixMs: { $0 / 1_000_000 }))
+                }
+            })
+        XCTAssertEqual(phases, ["ready", "audio", "words", "words"])
+        XCTAssertEqual(texts, ["ordinary", "ordinary words"])
+        XCTAssertEqual(decodedLengths, [320, 640, 960])
+        var completed: Segment?
+        for _ in 0..<25 {
+            endNs += 20_000_000
+            completed = gate.feed(Array(repeating: 0, count: 320), active: false, endNs: endNs,
+                                  toUnixMs: { $0 / 1_000_000 })
+        }
+        let final = try XCTUnwrap(completed)
+        XCTAssertEqual(onsets, Array(repeating: final.speechStartHostUs, count: 3))
+        XCTAssertEqual(Array(final.samples.prefix(960)), frame + frame + frame)
+    }
+
     func testHeldPostDeadlineCancelsAnUnansweredRequest() async throws {
         let cancelled = expectation(description: "pending send cancelled")
         do {
@@ -45,15 +85,20 @@ final class ListenerTests: XCTestCase {
         }
         fill(0.1)
         for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
+        XCTAssertNotNil(tap.preview, "Detected PCM is available before end of speech")
         tap = try InputSegmenter(source: stereo) // Discard partial speech and converter history on mute.
         fill(0)
         for _ in 0..<90 { XCTAssertTrue(consume().isEmpty) }
+        XCTAssertNil(tap.preview, "Silent frames do not start a transcript")
         fill(0.1)
         for _ in 0..<15 { XCTAssertTrue(consume().isEmpty) }
+        let preview = try XCTUnwrap(tap.preview)
         fill(0)
         let segments = (0..<110).flatMap { _ in consume() }
         XCTAssertEqual(segments.count, 1)
         let segment = try XCTUnwrap(segments.first)
+        XCTAssertEqual(preview.speechStartHostUs, segment.speechStartHostUs)
+        XCTAssertEqual(preview.samples, Array(segment.samples.prefix(preview.samples.count)))
         // The 300 ms stereo tone spans 4,800 output samples, regardless of when
         // the detector starts treating the steady part of the tone as background.
         let firstTone = try XCTUnwrap(segment.samples.firstIndex { abs($0) > 0.05 })

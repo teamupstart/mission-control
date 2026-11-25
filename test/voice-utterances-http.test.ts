@@ -7,6 +7,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { model, utterancePath, listenerId, act, app, applyFeatureFlagIntent, capture, cards, home, interrupts, name, pending, post, queued, readHeard, registry, roster, say, sdk, token, voiceStateStore } from "./helpers/voice-http.ts";
 
+import { ListenerClient } from "../src/voice-listener/client.ts";
+import { playRecording } from "../src/voice-listener/playback.ts";
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 
@@ -1812,4 +1814,70 @@ test("an accepted non-cancel transcript after expiry releases the reserved messa
   assert.deepEqual(queued("Will"), ["check the logs"]);
   t.mock.timers.tick(40_000);
   assert.deepEqual(queued("Will"), ["check the logs"]);
+});
+
+test("a failed preview decode still delivers the completed message to its addressed resident", async () => {
+  voiceStateStore.reset();
+  const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+  assert.equal(config.status, 200);
+  const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => app.request(url, init));
+  const pcm = Float32Array.of(0.1, 0.2);
+  let previewAttempts = 0;
+  let exhausted = false;
+  await playRecording(client, () => ({
+    get exhausted() { return exhausted; },
+    async next({ observe }) {
+      assert.ok(observe);
+      await observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      assert.equal(voiceStateStore.state().transcript?.phase, "audio");
+      assert.deepEqual(queued("Steve"), []);
+      exhausted = true;
+      return { done: false, value: { samples: pcm, onset: 1 } };
+    },
+  }), async samples => {
+    assert.equal(samples, pcm);
+    return { text: "Steve, check the build", tokens: [], durations: [], timestamps: [] };
+  }, async () => {
+    previewAttempts++;
+    throw new Error("fixture partial decoder failed");
+  });
+  assert.equal(previewAttempts, 1);
+  assert.deepEqual(queued("Steve"), ["check the build"]);
+  assert.equal(voiceStateStore.state().transcript?.text, "Steve, check the build");
+});
+
+test("a rejected transcript request still delivers the completed phrase once to its addressed resident", async () => {
+  voiceStateStore.reset();
+  const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+  assert.equal(config.status, 200);
+
+  const requests: string[] = [];
+  const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === "/voice/listener/transcript" && JSON.parse(String(init.body)).text === "unfinished") {
+      requests.push("preview rejected");
+      return new Response("Preview temporarily unavailable", { status: 503 });
+    }
+    if (path === "/voice/utterances") requests.push("final utterance");
+    return app.request(url, init);
+  });
+  const pcm = Float32Array.of(0.1, 0.2);
+  let exhausted = false;
+  await playRecording(client, () => ({
+    get exhausted() { return exhausted; },
+    async next({ observe }) {
+      assert.ok(observe);
+      await observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      assert.deepEqual(requests, ["preview rejected"]);
+      assert.deepEqual(queued("Steve"), []);
+      exhausted = true;
+      return { done: false, value: { samples: pcm, onset: 1 } };
+    },
+  }), async () => ({ text: "Steve, check the build", tokens: [], timestamps: [], durations: [] }),
+  async () => ({ text: "unfinished", tokens: [], timestamps: [], durations: [] }));
+
+  assert.deepEqual(requests, ["preview rejected", "final utterance"]);
+  assert.deepEqual(queued("Steve"), ["check the build"]);
 });

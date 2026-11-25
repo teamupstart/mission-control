@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { closeSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  type TranscriptSample,
   VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
   VOICE_CAPTURE_END_HEADER, VOICE_CAPTURE_START_HEADER, VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER, VOICE_LISTENER_PROTOCOL_VERSION,
@@ -63,6 +64,19 @@ export class ListenerClient {
       }
     }
     return response;
+  }
+
+  async transcript(sample: TranscriptSample, revision: string, signal: AbortSignal): Promise<boolean> {
+    try {
+      const deadline = AbortSignal.any([signal, AbortSignal.timeout(1000)]);
+      const response = await this.request("/voice/listener/transcript?revision=" + encodeURIComponent(revision), sample, deadline);
+      if (response.ok) return (await response.json()).accepted === true;
+      await response.body?.cancel();
+    } catch {
+      signal.throwIfAborted();
+      // The overlay is optional. A missing endpoint or a missed sample must not stop delivery.
+    }
+    return false;
   }
 
   async poll(revision?: string, signal?: AbortSignal): Promise<VoiceListenerDirective & { held?: true }> {

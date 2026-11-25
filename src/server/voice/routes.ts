@@ -34,6 +34,7 @@ import {
   VOICE_RECORDING_ID_HEADER,
   VOICE_SPEECH_START_HEADER,
   VoiceUiConfigPatchSchema,
+  TranscriptSampleSchema,
   VoiceConfigPatchSchema,
   VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
@@ -455,6 +456,12 @@ export function registerVoiceRoutes(
     }
     return c.json(next);
   });
+  app.post("/voice/listener/transcript", gate, limitBody, async c => {
+    if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, TranscriptSampleSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    return c.json({ accepted: store.reportTranscript(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"), parsed.data) });
+  });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceListenerHelloSchema, { strict: true });
@@ -564,6 +571,7 @@ export function registerVoiceUtteranceRoutes(
         if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
       }
       router.speechStarted(key, parsed.data.speechStartUs);
+      voiceStateStore.reportTranscript(owner, revision, { phase: "audio", onset: parsed.data.speechStartUs });
     }
     return c.json({ accepted: true });
   });
@@ -621,6 +629,9 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
+    if (!heldBeforeRelease && onsetUs !== undefined) {
+      voiceStateStore.reportTranscript(owner, submitted, { phase: "words", onset: onsetUs, text: parsed.data.text, final: true });
+    }
     // Match the revision the listener used for this segment's onset, even after a timing edit.
     const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, submitted, onsetUs);
     try {

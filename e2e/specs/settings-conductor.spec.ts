@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -30,7 +30,7 @@ test.use({ daemonEnv: { MISSION_PIPELINE_TICK_MS: "1000" } });
 
 const EVIDENCE = artifactsDir("settings-conductor");
 
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(page: Page, name: string, focus?: Locator): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
@@ -38,7 +38,8 @@ async function shoot(page: Page, name: string): Promise<void> {
     (document.activeElement as HTMLElement | null)?.blur();
     window.scrollTo(0, 0);
   });
-  await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
+  await focus?.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: !focus });
   console.log(`CAPTURED e2e/.artifacts/settings-conductor/${name}.png`);
 }
 
@@ -267,7 +268,10 @@ test("Conductor keeps a newer runtime through delayed reads and consent-only sav
   await saveRuntime("agent-sdk");
   const consentSave = page.waitForResponse(response =>
     response.url().endsWith(path) && response.request().method() === "PUT");
-  await page.getByRole("checkbox", { name: "Observe conductor pipelines" }).check();
+  const observe = page.getByRole("checkbox", { name: "Observe conductor pipelines" });
+  const observationSwitch = page.locator("label.sc-switch").filter({ has: observe });
+  await expect(observe).not.toBeChecked();
+  await observationSwitch.click();
   const response = await consentSave;
   expect(response.ok()).toBe(true);
   expect(response.request().postDataJSON()).not.toHaveProperty("launchRuntime");
@@ -285,11 +289,10 @@ test("Conductor keeps a newer runtime through delayed reads and consent-only sav
     await hold;
     await route.fulfill({ response: firstSave });
   }, { times: 1 });
-  const observe = page.getByRole("checkbox", { name: "Observe conductor pipelines" });
-  await observe.uncheck();
+  await observationSwitch.click();
   await sent;
   await terminal.check();
-  await observe.check();
+  await observationSwitch.click();
   const settled = page.waitForResponse(response =>
     response.url().endsWith(path) && response.request().method() === "PUT"
     && response.request().postDataJSON().enabled === true);
@@ -303,6 +306,7 @@ test("Conductor reports a failed runtime change after a later consent save", asy
   const sdk = page.getByRole("radio", { name: /Managed Agent SDK/ });
   const terminal = page.getByRole("radio", { name: /Terminal/ });
   const observe = page.getByRole("checkbox", { name: "Observe conductor pipelines" });
+  const observationSwitch = page.locator("label.sc-switch").filter({ has: observe });
   await expect(sdk).toBeChecked();
   await expect(observe).not.toBeChecked();
 
@@ -324,14 +328,14 @@ test("Conductor reports a failed runtime change after a later consent save", asy
   await sent;
   const consent = page.waitForResponse(response => response.url().endsWith(path)
     && response.request().method() === "PUT" && response.request().postDataJSON().enabled === true);
-  await observe.check();
+  await observationSwitch.click();
   releaseRuntime();
   expect(await (await consent).json()).toMatchObject({ config: { enabled: true, launchRuntime: "agent-sdk" } });
   await expect(sdk).toBeChecked();
   await expect(observe).toBeChecked();
   const failure = page.getByText(/Engineer runtime choice wasn't saved.*fixture runtime save refused/);
   await expect(failure).toBeVisible();
-  await shoot(page, "coderabbit-conductor-runtime-save-refused");
+  await shoot(page, "coderabbit-conductor-runtime-save-refused", failure);
 
   const retry = page.waitForResponse(response => response.url().endsWith(path)
     && response.request().method() === "PUT" && response.request().postDataJSON().launchRuntime === "terminal");

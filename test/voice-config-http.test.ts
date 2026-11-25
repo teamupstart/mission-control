@@ -125,6 +125,18 @@ test("new and existing voice profiles default to two seconds and preserve indepe
   assert.equal((await config()).endOfSpeechMs, 5000);
 });
 
+test("dedicated push-to-talk ignores mute commands and preserves the prior Always-on mute", async () => {
+  await json("/api/voice/mute", "POST", { muted: true });
+  await json("/api/voice/config", "PUT", { listeningMode: "push-to-talk" });
+  for (const command of [{ toggle: true }, { muted: false }]) {
+    const response = await json("/api/voice/mute", "POST", command);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state.muted, true);
+  }
+  const restored = await json("/api/voice/config", "PUT", { listeningMode: "always-on" });
+  assert.equal((await restored.json()).config.muted, true);
+});
+
 test("reading mute after a toggle returns the authoritative state without another write", async () => {
   await json("/api/voice/mute", "POST", { toggle: true });
   const applied = voiceStateStore.state();

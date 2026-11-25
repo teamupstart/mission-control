@@ -629,6 +629,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("voice"),
   },
   {
+    id: "voice-listening-mode",
+    label: "Listening mode",
+    description: "Choose Always-on listening or hold the global hotkey to speak.",
+    category: "voice",
+    anchor: "voice/listening-mode",
+    keywords: ["push-to-talk", "microphone", "hold", "always-on"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-end-of-speech",
     label: "End-of-speech delay",
     description: "How long the listener waits for more speech before submitting an automatic capture.",

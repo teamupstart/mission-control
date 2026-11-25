@@ -400,6 +400,28 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.deepEqual(primings(), [first, replacement]);
   });
 
+  it("opens the Swift microphone only between dedicated key-down and key-up directives", async t => {
+    const { events, posted, nextPoll, apply } = await launch(t, { initialCapture: false });
+    const lifecycle = () => events.filter(e => /^(opened|stopped) /.test(e));
+    let idle = await nextPoll("first");
+    assert.deepEqual(lifecycle(), []);
+    for (const n of [1, 2]) {
+      const held = "held-" + n;
+      idle.setHeader("x-voice-held-revision", held);
+      apply(idle, held, true);
+      const release = await nextPoll(held);
+      assert.equal(lifecycle().at(-1), "opened " + n);
+      assert.equal(posted.some(p => p.revision === held), false);
+      release.setHeader("x-voice-release-revision", held);
+      release.setHeader("x-voice-release-host-ms", "1000");
+      apply(release, "idle-" + n, false);
+      idle = await nextPoll("idle-" + n);
+      await until(() => posted.some(p => p.revision === held), "held audio delivered on release");
+      assert.equal(lifecycle().at(-1), "stopped " + n);
+    }
+    assert.deepEqual(lifecycle(), ["opened 1", "stopped 1", "opened 2", "stopped 2"]);
+  });
+
   it("delivers every phrase in a hold in order only after confirmed release", async t => {
     const { events, posted, captureBounds, nextPoll, apply } = await launch(t, { held: true });
     await until(() => events.includes("holding audio"), "held microphone");

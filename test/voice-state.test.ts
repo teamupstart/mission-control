@@ -12,6 +12,7 @@ import {
   VOICE_CONFIG_DEFAULTS,
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_VERSION,
+  VOICE_MAX_HOLD_MS,
   VOICE_MODEL_STATE_NONE,
   VOICE_SHELL_REPORT_LAPSE_MS,
   VoiceConfigSchema,
@@ -73,6 +74,7 @@ test("voiceUnavailableReasons names every reason that holds, in order", () => {
 test("the config schema holds every contract A field with its default", () => {
   assert.deepEqual(VoiceConfigSchema.parse({}), {
     muted: false,
+    listeningMode: "always-on",
     hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
     endOfSpeechMs: 2000,
@@ -129,6 +131,7 @@ function harness(options: { speechDirectory?: string; flags?: Set<string>; confi
     flags,
     published,
     setConfig: (patch: Partial<VoiceConfig>) => { config = { ...config, ...patch }; },
+    elapseWithoutTimers(ms: number) { now += ms; },
     /** Move the clock and fire every timer that came due, as the real ones would. */
     advance(ms: number): void {
       now += ms;
@@ -139,6 +142,145 @@ function harness(options: { speechDirectory?: string; flags?: Set<string>; confi
     },
     timers,
   };
+}
+
+test("dedicated capture requires the current desktop registration and a fresh press after loss or mode change", () => {
+  const h = harness({ config: { listeningMode: "push-to-talk", muted: true } });
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (patch: Partial<VoiceShellReport> = {}) => {
+    h.advance(1);
+    h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: h.hostNowUs(), ...patch });
+  };
+  const press = () => report({ pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() + 1 });
+  assert.equal(h.store.directive().capture, false);
+  report();
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  press();
+  const held = h.store.directive();
+  assert.ok(held.capture);
+  report({ pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture()?.revision, held.revision);
+  press();
+  report({ registeredHotkey: null, hotkeyError: { reason: "Reserved", chordInForce: null } });
+  assert.equal(h.store.directive().capture, false);
+  assert.deepEqual(h.store.drainingRevisions(), []);
+  report();
+  press();
+  const session = h.store.state().pushToTalkSession;
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptHello(listenerId, HELLO);
+  report({ pushToTalkSession: session, pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  report();
+  press();
+  assert.ok(h.store.directive().capture);
+  h.setConfig({ listeningMode: "always-on" });
+  assert.equal(h.store.publish().mode, "muted");
+  h.setConfig({ listeningMode: "push-to-talk" });
+  assert.equal(h.store.directive().capture, false);
+  h.store.reset();
+});
+
+test("dedicated Push-to-talk captures only during the hold on an active call with auto-mute saved", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk", autoMuteDuringCalls: true } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (down: boolean) => {
+    h.advance(1);
+    const at = h.hostNowUs();
+    h.store.acceptShellReport({ ...REPORT, callActive: true, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { "call-detection": { available: true, reason: null }, hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: at, pushToTalk: down,
+      ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) });
+  };
+  report(false);
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  report(true);
+  const hold = h.store.directive();
+  assert.equal(h.store.state().mode, "push-to-talk");
+  assert.equal(hold.capture, true);
+  report(false);
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture()?.revision, hold.revision);
+});
+
+test("a late listener hello invalidates a held shortcut before renewing the lease", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const session = h.store.state().pushToTalkSession!;
+  const registration = { ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+    capabilities: { hotkey: { available: true, reason: null } } };
+  // The desktop is still live when the listener returns, before its timer gets to run.
+  h.elapseWithoutTimers(VOICE_HELLO_LAPSE_MS - 1);
+  const pressed = h.hostNowUs();
+  const held = { ...registration, pushToTalkSession: session, pushToTalk: true, pushToTalkPressedAtHostUs: pressed };
+  h.store.acceptShellReport({ ...held, reportedAtHostUs: pressed });
+  assert.ok(h.store.directive().capture);
+  h.elapseWithoutTimers(2);
+  assert.ok(h.store.acceptHello(listenerId, HELLO).ok);
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptShellReport({ ...held, reportedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  const recovered = h.store.state().pushToTalkSession;
+  assert.notEqual(recovered, session);
+  h.advance(1);
+  h.store.acceptShellReport({ ...registration, pushToTalkSession: recovered, reportedAtHostUs: h.hostNowUs(),
+    pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  h.advance(1);
+  h.store.acceptShellReport({ ...held, pushToTalkSession: recovered, reportedAtHostUs: h.hostNowUs(),
+    pushToTalkPressedAtHostUs: h.hostNowUs() });
+  assert.ok(h.store.directive().capture);
+});
+
+test("a hold crossing its cutoff during publication schedules immediate capture revocation", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const pressed = h.hostNowUs();
+  h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+    capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
+    pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: pressed, pushToTalkPressedAtHostUs: pressed });
+  assert.ok(h.store.directive().capture);
+  const cutoff = pressed + VOICE_MAX_HOLD_MS * 1000;
+  let hostTime = cutoff - 1;
+  t.mock.method(h.store, "hostNowUs", () => hostTime);
+  h.store.onChange(() => { hostTime = cutoff + 1; });
+  assert.equal(h.store.publish().mode, "push-to-talk");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture(), undefined);
+});
+
+for (const listeningMode of ["always-on", "push-to-talk"] as const) {
+  test(`${listeningMode} expires a lost native key-up even with continuous desktop heartbeats`, () => {
+    const h = harness({ config: { listeningMode } });
+    h.store.acceptHello(listenerId, HELLO);
+    const pressed = h.hostNowUs();
+    const snapshot = { ...REPORT, callActive: true, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
+      pushToTalkSession: h.store.state().pushToTalkSession, pushToTalkPressedAtHostUs: pressed };
+    for (let seconds = 0; seconds < 120; seconds += 5) {
+      h.store.acceptHello(listenerId, HELLO);
+      h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
+      assert.equal(h.store.directive().capture, true);
+      h.advance(5000);
+    }
+    assert.equal(h.published.at(-1)?.mode, listeningMode === "always-on" ? "auto-muted" : "waiting-for-key");
+    assert.equal(h.store.directive().capture, false);
+    assert.equal(h.store.releasedCapture(), undefined);
+    h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
+    assert.equal(h.store.directive().capture, false);
+    h.store.reset();
+  });
 }
 
 test("with the flag off the state is off, whatever was heard", () => {

@@ -277,7 +277,7 @@ export function registerVoiceRoutes(
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    if ("toggle" in parsed.data && store.state().recordingHotkey) return c.json({ state: store.state() });
+    if (getVoiceConfig().listeningMode === "push-to-talk" || ("toggle" in parsed.data && store.state().recordingHotkey)) return c.json({ state: store.state() });
     setVoiceConfig({ muted: "toggle" in parsed.data ? !getVoiceConfig().muted : parsed.data.muted });
     return c.json({ state: store.state() });
   });

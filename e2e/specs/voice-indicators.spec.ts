@@ -8,6 +8,66 @@ import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
+test("Push-to-talk indicators show hold and release guidance with or without the status line", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await page.getByRole("checkbox", { name: "Floating button" }).check();
+    await page.getByRole("checkbox", { name: "Status line" }).uncheck();
+    await page.getByRole("combobox", { name: "Listening mode" }).selectOption("push-to-talk");
+    await expect(page.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeDisabled();
+    const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+    await page.goto(daemon.baseURL);
+    const indicator = page.locator(".app > .vi-floating");
+    const report = async (held: boolean) => {
+      const at = voiceHostTimeUs();
+      const response = await page.request.post(daemon.baseURL + "/voice/shell-report", {
+        headers: { "x-harness-token": voiceToken(daemon) },
+        data: { registeredHotkey: state.configuredHotkey, pushToTalkSession: state.pushToTalkSession,
+          capabilities: { hotkey: { available: true } }, reportedAtHostUs: at, pushToTalk: held,
+          ...(held ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) },
+      });
+      expect(response.ok()).toBe(true);
+    };
+    for (const held of [false, true, false]) {
+      await report(held);
+      await expect(indicator.getByText(held ? "Listening while held" : "Waiting for hotkey", { exact: true })).toBeVisible();
+      if (held) await expect(indicator.getByText("Release to finish")).toBeVisible();
+      else {
+        await expect(indicator.getByText(/^Hold .* to talk$/)).toBeVisible();
+        await expect(indicator.locator("kbd")).toHaveText("⌘⌃⌥V");
+      }
+      await expect(page.locator("button.vi")).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE) {
+        const dir = artifactsDir("voice-floating-hold");
+        mkdirSync(dir, { recursive: true });
+        await indicator.screenshot({ path: join(dir, held ? "held.png" : "waiting.png") });
+      }
+    }
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await page.getByRole("checkbox", { name: "Status line" }).check();
+    await page.getByRole("checkbox", { name: "Top-bar segment" }).check();
+    await report(false);
+    const status = page.locator(".app > .vi-status-line");
+    await expect(status.locator("kbd")).toHaveText("⌘⌃⌥V");
+    const topbar = page.locator(".pulse .vi-topbar");
+    await topbar.focus();
+    await expect(page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" })).toBeVisible();
+    await expect(topbar).toHaveRole("status");
+    if (process.env.MC_E2E_EVIDENCE) {
+      const dir = artifactsDir("voice-floating-hold");
+      await status.screenshot({ path: join(dir, "status-shortcut.png") });
+      await page.locator(".tooltip").filter({ hasText: "Hold ⌘⌃⌥V to talk" }).screenshot({ path: join(dir, "compact-shortcut.png") });
+    }
+    await report(true);
+    await expect(topbar).toHaveAccessibleDescription("Release to finish");
+    await report(false);
+  } finally {
+    listener.stop();
+  }
+});
+
 test("five selected indicators follow the daemon and advertise only a registered chord", async ({ dashboard: page, context, daemon }) => {
   const root = artifactsDir("voice-window");
   let capture: string | undefined;

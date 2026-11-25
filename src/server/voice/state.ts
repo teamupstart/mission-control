@@ -19,8 +19,10 @@ import {
   VoiceListenerIdSchema,
   VOICE_REQUIRED_FLAGS,
   VOICE_SHELL_REPORT_LAPSE_MS,
+  VOICE_MAX_HOLD_MS,
   voiceMode,
   voiceCaptures,
+  awaitingVoiceHold,
   type VoiceListenerDirective,
   voiceProtocolMajor,
   voiceStateOff,
@@ -96,6 +98,7 @@ export class VoiceStateStore {
     } };
   }
   private readonly source = randomUUID();
+  private pushToTalkSession?: string;
   private lastMode: VoiceState["mode"] = "off";
   private modeRevision = 0;
   private hello: { at: number; ownerId: string | null; speechInstance?: string; captureProof?: { pid: number; offset: number }; hello: VoiceListenerHello } | null = null;
@@ -111,7 +114,7 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private lastDirective?: { pushToTalkSession?: string; issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
   private cancelWindowOpen = false;
   private timingRevision = 0;
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
@@ -236,10 +239,11 @@ export class VoiceStateStore {
     const { inputDevice, endOfSpeechMs: configuredDelay } = this.deps.config();
     const automaticDelay = this.cancelWindowOpen ? 500 : configuredDelay;
     // An automatic timing edit must not interrupt a hold or revoke its pending key-up delivery.
-    const endOfSpeechMs = state.mode === "push-to-talk" || state.mode === "auto-muted" ? 800 : automaticDelay;
+    const endOfSpeechMs = state.mode === "push-to-talk" || awaitingVoiceHold(state.mode) ? 800 : automaticDelay;
     const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
     const last = this.lastDirective;
-    const sameCapture = last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted &&
+    const sameSession = last && last.pushToTalkSession === state.pushToTalkSession;
+    const sameCapture = sameSession && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted &&
       last.directive.capture === capture && last.directive.inputDevice === inputDevice && last.recipients === recipients && last.press === press;
     // Protocol 4.0 reopens its microphone on every revision, dropping the unfinished phrase.
     const canUpdateTiming = Number(hello?.version.split(".")[1] ?? 0) >= 1;
@@ -253,12 +257,14 @@ export class VoiceStateStore {
       pauseMs: null, revision: captureRevision ? `${captureRevision}:${this.timingRevision}` : randomUUID(),
       ...(captureRevision && { captureRevision }) };
     // Only successive key presses and releases share pending delivery rights.
-    const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
-      (last?.mode === "push-to-talk" && state.mode === "auto-muted");
+    const keyTransition = sameSession && (
+      (state.mode === "push-to-talk" && (awaitingVoiceHold(last.mode) || last.mode === "push-to-talk")) ||
+      (last.mode === "push-to-talk" && awaitingVoiceHold(state.mode))
+    );
     if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press,
+    this.lastDirective = { pushToTalkSession: state.pushToTalkSession, holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press,
       issuedAt: automatic && sameCapture ? last.issuedAt : undefined };
     return directive;
   }
@@ -390,6 +396,7 @@ export class VoiceStateStore {
       this.hotkeyTrial = undefined;
       this.preview = undefined;
       this.lastMode = "off";
+      this.pushToTalkSession = undefined;
       return voiceStateOff();
     }
     const now = this.deps.now();
@@ -431,15 +438,30 @@ export class VoiceStateStore {
     capabilities["speech-output"] = { available: !!resolved.voice, reason: resolved.reason };
     const live = manager.live;
     const job = live ? { id: live.id, purpose: live.purpose, state: live.state, cardId: live.cardId } : null;
+    const dedicated = config.listeningMode === "push-to-talk";
+    if (dedicated) this.pushToTalkSession ??= randomUUID();
+    else this.pushToTalkSession = undefined;
+    const confirmed = config.hotkey && report?.registeredHotkey === config.hotkey && report.capabilities.hotkey?.available &&
+      (!report.hotkeyError || report.hotkeyError.chordInForce === config.hotkey);
+    if (dedicated && (!confirmed || report?.pushToTalkSession !== this.pushToTalkSession ||
+        this.recorder || (trial && now < trial.expiresAt))) reasons.push("shortcut");
+    // A snapshot without a native stamp is dated at the first observed transition.
+    const press = this.report?.keyChangedHostUs;
+    const validPress = press != null && (!dedicated || press === report?.pushToTalkPressedAtHostUs) &&
+      this.hostNowUs() - press < VOICE_MAX_HOLD_MS * 1000;
     const mode = voiceMode({
+      listeningMode: config.listeningMode,
       enabled: true,
       reasons,
       muted: config.muted,
       callActive: report?.callActive ?? false,
       autoMuteDuringCalls: config.autoMuteDuringCalls,
-      pushToTalk: report?.pushToTalk ?? false,
+      pushToTalk: !!report?.pushToTalk && report.pushToTalkSession === this.pushToTalkSession &&
+        validPress,
     });
     if (mode !== this.lastMode) {
+      // A recovered desktop or listener must observe the new session and a new key-down.
+      if (dedicated && mode === "unavailable") this.pushToTalkSession = randomUUID();
       this.lastMode = mode;
       this.modeRevision++;
     }
@@ -452,6 +474,7 @@ export class VoiceStateStore {
     return {
       ...(this.preview && { transcript: { style: config.transcriptStyle, corner: config.transcriptCorner,
         phase: this.preview.phase, text: transcriptTail(this.preview.text, config.transcriptWords) } }),
+      ...(this.pushToTalkSession && { pushToTalkSession: this.pushToTalkSession }),
       planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
       mode,
@@ -541,6 +564,8 @@ export class VoiceStateStore {
     if (ownerId && ownerId !== id && !takesOver) {
       return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
     }
+    // Observe a missed listener lapse before renewal can reuse the desktop's held key.
+    if (this.hello && !live) this.directive();
     // A denied helper exits immediately. Keep its permission reading but release its capture.
     const nextOwnerId = hello.microphone === "denied" ? null : id;
     if (!ownerId || ownerId !== nextOwnerId || live?.hello.backend !== hello.backend) {
@@ -598,7 +623,8 @@ export class VoiceStateStore {
     if (eventAt !== undefined && (!staleKey || ambiguousRelease)) this.lastPhysicalKeyHostUs = eventAt;
     this.report = { at: observedAt, keyChangedHostUs, report: { ...report, pushToTalk: down } };
     if (report.microphone) this.microphone.shell = { at: observedAt, reading: { permission: report.microphone, source: "shell" } };
-    if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
+    if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined &&
+        report.pushToTalkSession === this.pushToTalkSession && awaitingVoiceHold(this.state().mode)) {
       const issuedAt = this.lastDirective!.issuedAt;
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.
@@ -627,12 +653,16 @@ export class VoiceStateStore {
     }
     const enabled = this.deps.enabled(VOICE_FLAG);
     this.manager?.setEnabled(enabled);
-    const muted = enabled && this.deps.config().muted;
+    const config = enabled ? this.deps.config() : undefined;
+    const automatic = config?.listeningMode === "always-on";
+    const muted = automatic && config.muted;
     const becomingMuted = muted && !this.muted;
     this.muted = muted;
     if (becomingMuted) this.manager?.stopAll();
-    else if (enabled && this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS &&
-        this.deps.config().autoMuteDuringCalls) this.manager?.stopAll("ask");
+    else if (config?.listeningMode === "push-to-talk" || (automatic && config.autoMuteDuringCalls &&
+        this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS)) {
+      this.manager?.stopAll("ask");
+    }
     const state = this.state();
     if (this.lastDirective) {
       const directive = this.directive(state);
@@ -645,7 +675,7 @@ export class VoiceStateStore {
       try { listener(state); }
       catch (error) { console.warn("[voice] state listener failed:", error); }
     }
-    this.arm();
+    this.arm(state);
     return state;
   }
 
@@ -663,6 +693,7 @@ export class VoiceStateStore {
     else this.deps.speechBackend?.synthesizer.stop();
     this.manager = undefined;
     this.muted = false;
+    this.pushToTalkSession = undefined;
     this.lastReportHostUs = -1;
     this.lastPhysicalKeyHostUs = -1;
     this.releases.clear();
@@ -678,7 +709,7 @@ export class VoiceStateStore {
     this.disarm();
   }
 
-  private arm(): void {
+  private arm(state: VoiceState): void {
     this.disarm();
     if (!this.deps.enabled(VOICE_FLAG)) return;
     const now = this.deps.now();
@@ -692,6 +723,11 @@ export class VoiceStateStore {
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,
     ].filter((at): at is number => at != null && at > now);
+    const press = this.report?.keyChangedHostUs;
+    if (state.mode === "push-to-talk" && press != null) {
+      // Publication may have crossed the cutoff. Recompute immediately in that case.
+      lapses.push(now + Math.max(0, VOICE_MAX_HOLD_MS - (this.hostNowUs() - press) / 1000));
+    }
     if (lapses.length === 0) return;
     const wait = Math.min(...lapses) - now;
     const set = this.deps.setTimer ?? ((fn: () => void, ms: number) => {

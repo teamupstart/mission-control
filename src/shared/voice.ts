@@ -307,6 +307,7 @@ export interface VoiceHotkeyError {
 export interface VoiceState {
   /** Manual mute can also be set while the mode reads unavailable. */
   muted?: boolean;
+  planFormsByVoice?: boolean;
   speech: VoiceSpeechState;
   mode: VoiceMode;
   /** Orders mode transitions within one daemon across HTTP replies and the event stream.
@@ -439,6 +440,7 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.modeVersion?.source,
     state.modeVersion?.revision,
     state.muted ?? false,
+    state.planFormsByVoice ?? true,
     state.reasons,
     capabilities,
     state.configuredHotkey,

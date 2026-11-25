@@ -145,3 +145,19 @@ html.voice-window, html.voice-window body, html.voice-window #root { background:
 .review[data-voice-question] .decision-option { align-items: flex-start; }
 .review-modal .av-foot { margin-inline: 0; }
 .inbox-reviews .review:has(.av-foot) { padding-bottom: 0; }
+
+.review[data-voice-kind="plan"] .decisions { gap: 8px; }
+.review[data-voice-kind="plan"] .decision { padding: 8px 10px 9px; gap: 6px; }
+.review[data-voice-kind="plan"] .decision-option { align-items: center; padding: 5px 9px; }
+.review[data-voice-kind="plan"] .decision-option input { margin-top: 0; }
+.review[data-voice-kind="plan"] .decision-q { display: flex; align-items: center; gap: 8px; }
+.pd-key { flex: none; width: 17px; height: 17px; display: grid; place-items: center; font: 700 10px var(--mono); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; }
+.decision-option.pd-picked { border-color: color-mix(in oklab, var(--working) 55%, var(--border)); background: color-mix(in oklab, var(--working) 8%, var(--bg-2)); }
+.pd-picked .pd-key { color: var(--working); border-color: color-mix(in oklab, var(--working) 55%, var(--border)); }
+.decision.pd-missing { border-color: color-mix(in oklab, var(--attention) 60%, var(--border)); background: color-mix(in oklab, var(--attention) 5%, var(--bg-2)); }
+.pd-ord { flex: none; display: inline-flex; align-items: center; gap: 4px; font: 700 12px var(--mono); letter-spacing: 0.02em; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 2px 8px; }
+.pd-ord.is-voice { color: var(--on-accent); background: color-mix(in oklab, var(--working) 78%, var(--bg)); border-color: transparent; }
+.pd-ord.is-missing { color: var(--on-attention); background: var(--attention); border-color: transparent; }
+.pd-miss { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--attention); margin: 0; }
+.pd-ord .vc-icon { width: 11px; height: 11px; }
+.pd-miss .vc-icon { width: 14px; height: 14px; }

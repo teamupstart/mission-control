@@ -1395,3 +1395,43 @@ If two windows claim focus at the same instant, an unaddressed reply cannot answ
 question. Turning voice back on refreshes the report, even when the dashboard shows no questions.
 A disconnected stream's report expires after ten seconds.
 A window that cannot confirm its state during a companion submit must answer a fresh focus request before it can take over the footer. A dashboard already showing that footer keeps it. Restarting voice preserves the clock calibration for dashboards that stay connected.
+
+### Fill a plan form by voice
+
+Open the plan form in the foreground dashboard. Say “Steve, first one B, second one A”.
+The badges count decisions in display order, including a final approval question when present.
+A blue microphone badge marks a voice selection. Say the position again to change it, or
+edit the same draft by hand. If you change a decision while a spoken choice is being matched,
+your newer choice wins. Other decisions from the same utterance can still be filled.
+A named command selects that agent’s open plan even when a Report
+has focus. If the agent has multiple open plans, focus the one you want. With the form focused, “reply” works in place of the name.
+
+Say “Steve, submit” or click Submit to send the current draft. If a spoken choice is still
+being matched, wait for the selection to appear and say “Steve, submit” again. The same
+retry is required if an earlier spoken choice reaches the form while Submit is in progress.
+An incomplete form marks the
+first unanswered decision in amber and shows how to fill it. Closing the inbox keeps the
+draft. With the plan still pending, a named choice or submit while the form is closed asks
+you to reopen it. The draft stays as it was, even if a Report reply box has focus.
+The daemon must receive the dashboard’s submission before the five-second submit ID expires.
+If it arrives too late, the plan stays pending.
+Turn off **Plan forms by voice** in Settings > Voice to
+use addressed speech for messages while filling plans by hand. It starts on.
+
+### Act on an inbox card by voice
+
+An open report or Stuck row lists its available phrases at the foot of the card. For example,
+“Steve, mark read” marks Steve's open unread report, including one posted during an earlier
+session of the same task. With his reports closed, the command marks his current session’s
+only unread report. For a resident it uses the resident’s reports across runs. When the
+target is ambiguous, open the intended report first.
+“Steve, nudge” sends the Stuck row’s fixed status request even while Steve’s Report has
+keyboard focus. If several open cards offer the same command, focus the one you mean.
+A named inbox command that needs a visible control gives an unavailable notice when no
+matching card is open, including when the inbox is closed.
+Say “reply, …” with a card
+focused to use its reply, follow-up, or message control. A dictated reply or follow-up keeps
+any different text you have typed in the report. The cancel window applies to
+inbox actions. The voice card confirms the action after the dashboard invokes the button.
+If the card closes or the control disappears before then, the voice card reports that the
+action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.

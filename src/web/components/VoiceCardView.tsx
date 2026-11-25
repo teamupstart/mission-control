@@ -54,6 +54,7 @@ function RosterRow({ target, title, detail, transcript, state, pick, disabled }:
 }
 
 const icons = {
+  warn: "M8 2.2l6.3 11H1.7z M8 6.5v3.2M8 11.7v.1",
   speaker: "M2.5 6H5l3.5-3v10L5 10H2.5z M11 5.5a3.5 3.5 0 0 1 0 5 M12.8 3.5a6.5 6.5 0 0 1 0 9",
   mic: "M8 1.5a2 2 0 0 0-2 2v4a2 2 0 0 0 4 0v-4a2 2 0 0 0-2-2z M4 7.5a4 4 0 0 0 8 0M8 11.5v3M5.5 14.5h5",
   unsure: "M14 8A6 6 0 1 1 2 8a6 6 0 0 1 12 0z M6.3 6.3a1.8 1.8 0 1 1 2.6 1.6c-.6.3-.9.7-.9 1.3M8 11.5v.1",
@@ -82,7 +83,8 @@ export function CountdownAnnouncement({ card, deadline }: { card: DashboardVoice
     const seconds = voiceCountdownSeconds(deadline - performance.now(), card.windowMs);
     if (!seconds) return "";
     const amount = (card.provisionalDeadline ? "up to " : "") + seconds + (seconds === 1 ? " second" : " seconds");
-    return "This card opened with " + amount + (card.reason === "voice-answer" ? " to cancel or submit now." : " to cancel or send now.");
+    const action = card.reason === "inbox-action" ? "run" : card.reason === "voice-answer" ? "submit" : "send";
+    return "This card opened with " + amount + " to cancel or " + action + " now.";
   });
   return <span className="sr-only">{message}</span>;
 }
@@ -193,7 +195,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
     }
   }
 
-  const simple = !split && !card.mentions?.length && card.reason !== "voice-answer" && card.reason !== "question-notice";
+  const simple = !split && !card.mentions?.length && !["voice-answer", "question-notice", "inbox-action"].includes(card.reason);
   const pill = surface === "pill" && simple;
   const seconds = voiceCountdownSeconds(remaining, card.windowMs);
   const progress = Math.min(100, remaining / (card.windowMs ?? 4000) * 100) + "%";
@@ -239,11 +241,13 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
       const remainingParts = card.parts.filter(part => !part.immediateStop);
       const recipient = remainingParts[0]?.target?.name;
       let sendLabel = card.reason === "voice-answer" ? "Submit now" : "Send now";
+      if (card.reason === "inbox-action") sendLabel = "Run now";
       if (split && remainingParts.length > 1) sendLabel = "Send both now";
       else if ((split || mention) && recipient) sendLabel = "Send to " + recipient + " now";
-      const sendHint = card.reason === "voice-answer" ? "Submit this answer before the countdown ends" : split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
+      const sendHint = card.reason === "inbox-action" ? "Run this inbox action before the countdown ends"
+        : card.reason === "voice-answer" ? "Submit this answer before the countdown ends" : split && remainingParts.length > 1 ? "Deliver both messages before the countdown ends"
         : "Deliver this message before the countdown ends";
-      body = <><div className="vc-row">{(!surface || !simple) && <VoiceIcon name="mic" />}<span className="vc-grow">{card.reason === "voice-answer" ? <b>Voice answer{first?.target && <> for {named(first.target)}</>}</b> : split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
+      body = <><div className="vc-row">{(!surface || !simple) && <VoiceIcon name="mic" />}<span className="vc-grow">{card.reason === "inbox-action" ? <b>{first?.target ? named(first.target) : "Inbox action"}</b> : card.reason === "voice-answer" ? <b>Voice answer{first?.target && <> for {named(first.target)}</>}</b> : split ? <b>Two messages</b> : mention ? <b>One message</b> : <>To {named(first?.target)}</>}</span>
         {remaining > 0 && (surface && simple ? timerButton : <span className="vc-seconds" aria-hidden="true">{card.provisionalDeadline ? "≤" : ""}{voiceCountdownSeconds(remaining, card.windowMs)}s</span>)}</div>
         {card.questionTitle && <div className="vc-meta">{card.questionTitle}</div>}
         {card.parts.map((p, i) => {
@@ -261,7 +265,7 @@ export function VoiceCardView({ card, actions, operation, surface, hidden = fals
       break;
     }
     default:
-      body = card.reason === "question-notice" || (card.reason === "voice-answer" && card.detail) ? <b>{card.detail}</b> : <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
+      body = card.detail && ["question-notice", "form-not-open", "form-incomplete", "inbox-action", "voice-answer"].includes(card.reason) ? <b>{card.detail}</b> : <>{card.parts.map((part, index) => <div className="vc-outcome" key={index}>{outcome(part)}</div>)}
         {(card.state === "sent" || card.state === "queued") && card.openQuestions > 0 && <>
           <div className="vc-meta">{card.openQuestions} open question{card.openQuestions === 1 ? "" : "s"}.</div>
           <SpokenHint action="answer" name={first?.target?.name ?? ""}>Say <q>{first?.target?.name}, answer</q> to reply to one.</SpokenHint></>}</>;

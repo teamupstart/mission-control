@@ -1,6 +1,8 @@
-import { VOICE_DASHBOARD_CONFIRM_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
+import { namedInboxCommand, spokenInboxAction } from "@shared/voice-inbox.ts";
+import { VoicePlanForms, formChoices, isFormChoice } from "./plan-forms.ts";
+import { addressedCards, focusedVoiceCard, planVoiceTarget, spokenOrdinal, VOICE_DASHBOARD_CONFIRM_MS, VOICE_INBOX_ACTION_TIMEOUT_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
-import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
+import { explicitAnswerText, matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
   routeUtterance,
   voiceCardCanExpire,
@@ -114,7 +116,15 @@ function compareAnswerCaptures(a: AnswerCapture, b: AnswerCapture): number {
   return delta || a.sequence - b.sequence;
 }
 
+const inboxActionDetails = {
+  invoked: "Inbox action invoked.",
+  unavailable: "The inbox action is no longer available.",
+  unconfirmed: "The dashboard did not confirm the inbox action.",
+};
+type InboxActionResult = keyof typeof inboxActionDetails;
+
 interface OpenCard {
+  inboxAction?: () => Promise<InboxActionResult>;
   answer?: VoiceAnswer;
   /** Daemon monotonic deadline. The wire deadline is in wall time for dashboard calibration. */
   answerExpiresAt?: number;
@@ -248,6 +258,8 @@ export function resolveVoiceDecision(
 }
 
 export class VoiceRouter {
+  readonly forms = new VoicePlanForms();
+  private readonly inboxRequests = new Map<string, { claimed: boolean; timer: NodeJS.Timeout; finish(result: InboxActionResult): void }>();
   readonly openCards = new VoiceOpenCards(() => {
     for (const item of this.open.values()) {
       if (!item.answer) continue;
@@ -260,6 +272,8 @@ export class VoiceRouter {
       if (!owner) this.publish(item.card);
       else if (hadCompanion) this.questions!.removeCompanion(item.card.id);
     }
+  }, report => {
+    for (const card of report.cards) if (card.kind === "plan") this.forms.observed(card.id);
   });
   readonly heard = new RecentlyHeard();
   private readonly speechCaptures = new Map<string, { cardId: string; timeout: ReturnType<typeof setTimeout> }>();
@@ -359,6 +373,7 @@ export class VoiceRouter {
   }
 
   reviewSettled(reviewId: string): void {
+    this.forms.settled(reviewId);
     this.lastAnswer.delete(reviewId);
     for (const item of this.open.values()) {
       if (item.answerAttempt?.reviewId !== reviewId) continue;
@@ -540,6 +555,8 @@ export class VoiceRouter {
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
     if (this.questions) {
+      const inbox = this.routeInbox(utterance, decision, entry, time);
+      if (inbox !== false) return inbox;
       const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards);
       if (routed !== false) return routed;
     }
@@ -573,6 +590,154 @@ export class VoiceRouter {
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
     };
     this.openCard({ card, entry, time, message: decision.text, commands: [decision.command] });
+    return true;
+  }
+
+  private routeInbox(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry, time: ActionTime): boolean | Promise<boolean> {
+    const inbox = this.questions?.inbox;
+    if (!inbox || decision.kind === "control") return false;
+    const reply = /^reply(?:,\s*|\s+)(.+)$/iu.exec(utterance.text.trim());
+    const named = decision.kind === "addressed" && !decision.command ? decision : null;
+    if (!reply && !named) return false;
+    const body = (reply?.[1] ?? named!.text).trim();
+    const target = reply ? null : named!.target;
+    const report = this.openCards.current;
+    const address = target && { key: target.key, sessionId: target.sessionId };
+    const candidates = addressedCards(report?.cards ?? [], address);
+    const card = focusedVoiceCard(candidates);
+    const owner = target ?? (card && this.state().roster.find(r => r.sessionId === card.sessionId || (card.kind !== "question" && r.key === card.agentKey))) ?? null;
+    const item: OpenCard = { time, entry, message: body, card: { id: utterance.id, state: "pending", reason: "inbox-action",
+      parts: [{ target: owner, text: body }], deadline: null, openQuestions: 0, candidates: [] } };
+    const notice = (detail: string, reason: string) => {
+      entry.rule = reason;
+      entry.outcome = "cancelled";
+      entry.detail = detail;
+      this.publish({ ...item.card, state: "cancelled", reason, detail });
+      return true;
+    };
+    const submit = /^submit[.!?]*$/iu.test(body);
+    const eligibleCapture = (at: number) => Number.isFinite(at) && this.openCards.captureTiming(time.openedAt, at) === "eligible";
+    const planCommand = (submit || isFormChoice(body)) && inbox.formsEnabled();
+    const plan = planCommand && report ? planVoiceTarget(report.cards, address) : undefined;
+    const forms = planCommand ? inbox.forms() : [];
+    const form = plan && forms.find(f => f.id === plan.id);
+    const windowId = report?.windowId;
+    const name = owner?.name ?? "reply";
+    const notOpen = () => {
+      const formName = owner ? name + "'s plan form" : "the plan form";
+      return notice("Open " + formName + (submit ? " to submit it" : " and say your choice again"), "form-not-open");
+    };
+    if (planCommand && target && !plan && candidates.some(c => c.kind === "plan")) {
+      return notice("Focus the plan form you want and say it again.", "question-notice");
+    }
+    if (planCommand && target && !form && forms.some(f => f.sessionId === target.sessionId)) return notOpen();
+    if (form && windowId) {
+      const signal = this.lifetime.signal;
+      const current = () => {
+        const live = this.openCards.current;
+        return !signal.aborted && live?.windowId === windowId && planVoiceTarget(live.cards, address)?.id === form.id &&
+          inbox.formsEnabled() && inbox.forms().some(f => f.id === form.id);
+      };
+      const capturedAtMonotonicMs = this.questionTime(time);
+      if (!eligibleCapture(capturedAtMonotonicMs)) return notice("The open card changed. Say it again.", "question-notice");
+      entry.rule = submit ? "form-submit" : "form-fill";
+      entry.outcome = "control";
+      if (submit) {
+        const retry = () => notice("Still matching a plan choice. When the selection appears, say “" + name + ", submit” again.", "question-notice");
+        if (this.forms.isMatching(form.id)) return retry();
+        const submitId = this.forms.request(form.id, capturedAtMonotonicMs, missing => {
+          if (missing === undefined) notOpen();
+          else if (missing === "matching") retry();
+          else notice("Not sent. The " + spokenOrdinal(missing) + " one has no answer yet. Say “" + name + ", " + spokenOrdinal(missing) + " one A”.", "form-incomplete");
+        });
+        inbox.emit({ type: "voice_form_submit", address, windowId, reviewId: form.id, submitId });
+        return true;
+      }
+      const match = this.forms.beginFill(form.id, capturedAtMonotonicMs);
+      return formChoices(form, body, this.decider, owner, signal).then(selections => {
+        if (signal.aborted) return true;
+        if (!selections || !current()) return notice("No matching decision. Say its position and option letter.", "question-notice");
+        const changes = match.apply(selections);
+        if (!changes) return notice("Open the plan form and say your selection again.", "question-notice");
+        if (changes.length) inbox.emit({ type: "voice_form_fill", address, windowId, reviewId: form.id, selections: changes, capturedAtMonotonicMs });
+        return true;
+      }).finally(match.finish);
+    }
+    // Explicit question-answer phrases retain their phase 13 meaning even beside an inbox reply box.
+    if (target && (requestedChoice(body) !== undefined || explicitAnswerText(body) !== undefined)) return false;
+    let actionCard = card;
+    if (target) {
+      // A named command identifies its control across the agent's open cards. Plain
+      // dictation is contextual, and an unnamed "reply" always stays with the focused card.
+      const command = namedInboxCommand(body);
+      // routeUtterance already classified interrupts. A remaining "stop" is message text.
+      if (command?.action === "stop") return false;
+      const offering = candidates.filter(c => (c.kind === "report" || c.kind === "stuck") &&
+        (command ? c.actions?.includes(command.action) : spokenInboxAction(c.actions ?? [], body, false)));
+      const selected = focusedVoiceCard(offering);
+      if (command?.action === "mark-read") {
+        if (!selected && candidates.some(c => c.kind === "report")) return notice("Open the report first.", "question-notice");
+        const id = inbox.markReadTarget(target, selected?.id ?? null);
+        if (!id) return notice("Open the report first.", "question-notice");
+        actionCard = candidates.find(c => c.kind === "report" && c.id === id);
+        if (!actionCard) {
+          // A sole unread report can be addressed even without a dashboard. Recheck the
+          // target before running the button's operator action after the cancel window.
+          item.inboxAction = async () => {
+            const invoked = inbox.markReadTarget(target, null) === id && await inbox.markUndrawnReportRead(id);
+            return invoked ? "invoked" : "unavailable";
+          };
+        }
+      } else if (command && !offering.length) {
+        return notice(inboxActionDetails.unavailable, "inbox-action");
+      } else if (offering.length && (command || !card || card.kind === "report" || card.kind === "stuck")) {
+        actionCard = selected;
+        if (!actionCard && command) return notice("Focus the card you want and say it again.", "question-notice");
+      }
+    }
+    if (!item.inboxAction) {
+      if (!actionCard || !windowId || (actionCard.kind !== "report" && actionCard.kind !== "stuck")) return false;
+      if (!eligibleCapture(this.questionTime(time))) return notice("The open card changed. Say it again.", "question-notice");
+      const action = spokenInboxAction(actionCard.actions ?? [], body, !!reply);
+      if (!action || action.action === "stop") return false;
+      const { kind, id } = actionCard;
+      item.inboxAction = () => {
+        const live = this.openCards.current;
+        if (live?.windowId !== windowId || !live.cards.some(c => c.kind === kind && c.id === id && c.actions?.includes(action.action))) return Promise.resolve("unavailable");
+        const requestId = crypto.randomUUID();
+        return new Promise(resolve => {
+          const finish = (result: InboxActionResult) => {
+            clearTimeout(request.timer);
+            this.inboxRequests.delete(requestId);
+            resolve(result);
+          };
+          const timer = setTimeout(finish, VOICE_INBOX_ACTION_TIMEOUT_MS, "unavailable").unref();
+          const request = { claimed: false, timer, finish };
+          this.inboxRequests.set(requestId, request);
+          inbox.emit({ type: "voice_inbox_action", address, windowId, kind, cardId: id, ...action, requestId });
+        });
+      };
+    }
+    if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
+    entry.rule = "inbox-action";
+    entry.matchedName = owner?.name ?? null;
+    this.openCard(item);
+    return true;
+  }
+
+  claimInbox(id: string) {
+    const request = this.inboxRequests.get(id);
+    if (!request || request.claimed) return false;
+    request.claimed = true;
+    clearTimeout(request.timer);
+    request.timer = setTimeout(request.finish, VOICE_INBOX_ACTION_TIMEOUT_MS, "unconfirmed").unref();
+    return true;
+  }
+
+  completeInbox(id: string, invoked: boolean) {
+    const request = this.inboxRequests.get(id);
+    if (!request?.claimed) return false;
+    request.finish(invoked ? "invoked" : "unavailable");
     return true;
   }
 
@@ -611,16 +776,13 @@ export class VoiceRouter {
     const target = reply ? null : addressed?.target ?? null;
     const body = (reply?.[1] ?? addressed?.text ?? ambiguous!.text).trim();
     if (!body) return false;
-    // The spoken prefix survives punctuation-free transcription. Keep the shorter
-    // punctuated form and the bare picker command without capturing "answer the email".
-    const answer = /^my\s+answer\s+is(?:\s*[:,]\s*|\s+|[.!?]?$)([\s\S]*)$/iu.exec(body)
-      ?? /^answer(?:\s*[:,]\s*|[.!?]?$)([\s\S]*)$/iu.exec(body);
+    const answer = explicitAnswerText(body);
     const choiceCommand = requestedChoice(body) !== undefined;
-    const explicit = !reply && (!!answer || choiceCommand);
+    const explicit = !reply && (answer !== undefined || choiceCommand);
     if (!explicit && !(reply && this.openCards.reportingWindows().length)) return false;
     const monotonicMs = this.questionTime(time);
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
-    const content = explicit && answer ? answer[1]!.trim() : body;
+    const content = explicit ? answer ?? body : body;
     const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
@@ -1205,6 +1367,15 @@ export class VoiceRouter {
     }
     this.take(item);
     if (this.state().mode === "off") return false;
+    if (item.inboxAction) {
+      const signal = this.lifetime.signal;
+      const result = await item.inboxAction().catch(() => "unavailable" as const);
+      if (signal.aborted) return false;
+      const ok = result === "invoked";
+      item.entry.outcome = ok ? "sent" : "failed";
+      this.publish({ ...item.card, state: item.entry.outcome, deadline: null, detail: inboxActionDetails[result] });
+      return ok;
+    }
     if (item.answer) {
       const ok = this.questions!.pending().some(q => q.id === item.answer!.reviewId)
         && await this.questions!.resolve(item.answer).catch(() => false);
@@ -1289,6 +1460,8 @@ export class VoiceRouter {
   }
 
   clearActionsAndHistory(): void {
+    this.forms.clear();
+    for (const request of this.inboxRequests.values()) request.finish(request.claimed ? "unconfirmed" : "unavailable");
     for (const item of this.open.values()) {
       clearTimeout(item.timer);
       item.modelStep?.abort();

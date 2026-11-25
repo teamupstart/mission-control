@@ -33,7 +33,11 @@ import type { ServerEvent } from "@shared/types.ts";
  * was moved to chat ("Chat about it"). `chat` is optional so drafts parked before it existed,
  * and every untouched question, read as not moved.
  */
-export type DecisionAnswer = { selected: string[]; other: string; note: string; chat?: boolean };
+export type DecisionAnswer = {
+  selected: string[]; other: string; note: string; chat?: boolean; voice?: boolean;
+  /** Browser performance time (including timeOrigin) of the last manual plan choice. */
+  manualChoiceAt?: number;
+};
 export type DecisionAnswers = Record<string, DecisionAnswer>;
 
 /** Everything a review card lets the operator enter before resolving it. */
@@ -126,6 +130,8 @@ function normalize(value: unknown): ReviewDraft | null {
         selected: Array.isArray(d.selected) ? d.selected.filter((x): x is string => typeof x === "string") : [],
         other: typeof d.other === "string" ? d.other : "",
         note: typeof d.note === "string" ? d.note : "",
+        ...(d.voice === true && { voice: true }),
+        ...(typeof d.manualChoiceAt === "number" && Number.isFinite(d.manualChoiceAt) && { manualChoiceAt: d.manualChoiceAt }),
         ...(d.chat === true ? { chat: true } : {}),
       };
     }
@@ -146,7 +152,8 @@ function isEmpty(draft: ReviewDraft): boolean {
     && !draft.answer
     && !draft.note
     && !draft.approveFuture
-    && Object.values(draft.decisions).every((a) => a.selected.length === 0 && !a.other && !a.note && !a.chat)
+    // A manually cleared choice still takes precedence over a voice fill captured before it.
+    && Object.values(draft.decisions).every((a) => a.selected.length === 0 && !a.other && !a.note && !a.chat && a.manualChoiceAt === undefined)
   );
 }
 
@@ -167,8 +174,8 @@ export function readReviewDraft(reviewId: string): ReviewDraft {
 }
 
 /**
- * Remember what's on this review. A draft emptied back to nothing is forgotten rather than
- * stored, for `writeDraft`'s reason: a cleared form and an untouched one are the same state.
+ * Keep the draft while it contains an answer or the time of a manual choice that can still
+ * supersede a delayed voice fill.
  */
 export function writeReviewDraft(reviewId: string, draft: ReviewDraft): void {
   if (isEmpty(draft)) drafts.delete(reviewId);

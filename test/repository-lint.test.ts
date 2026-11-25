@@ -30,6 +30,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
 
   write("src/shared/non-agent-values.ts", 'export const model = (provider) => provider === "codex"; export const wire = (form) => form === "claude";');
   write("src/server/independent-map.ts", 'export function prune(id) { const sessions = new Map(); sessions.delete(id); }');
+  write("src/server/branch-overwrite.ts", "export function prune(registry, condition, id) { let sessions = registry.sessions; if (condition) { sessions = new Map(); sessions.delete(id); } }");
   write("src/server/independent-destructured-map.ts", 'export function prune(cache, id) { const { sessions } = cache; sessions.delete(id); }');
   write("src/server/independent-json.ts", "export function read({ req }) { return ((req) => req.json())(req); }");
   write("src/server/reassigned.ts", "export function use(c, registry, other, id) { let request = c.req; request = other; request.json(); let sessions = registry.sessions; sessions = new Map(); sessions.delete(id); }");
@@ -46,6 +47,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   };
   const seed = {
     ...testIdSeeds,
+    "src/server/reassigned-typed-agent.ts": 'export function choose(initial, next) { let selected: AgentType = initial; selected = next(); return selected === "claude"; }',
+    "src/server/reassigned-typed-registry.ts": "export function evict(initial, next, id) { let owner: Registry = initial; owner = next(); owner.sessions.delete(id); }",
     "src/server/destructured-agent.ts": 'export function choose(session) { const { agent: selected } = session; return selected === "claude"; }',
     "src/server/non-null-event.ts": 'export const evict = (emit, id) => emit({ type: ("session_remove" as const)!, id });',
     "src/server/request-alias.ts": 'export function read(c) { const request = c.req; return request.json(); }',
@@ -98,8 +101,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "test-imports": 5,
     "no-test-ids": 6,
     "parse-request-body": 7,
-    "agent-comparison": 7,
-    "registry-eviction": 19,
+    "agent-comparison": 8,
+    "registry-eviction": 20,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
@@ -112,6 +115,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     ["destructured-agent", "agent-comparison"],
     ["non-null-event", "registry-eviction"],
     ["agent-alias", "agent-comparison"],
+    ["reassigned-typed-agent", "agent-comparison"],
+    ["reassigned-typed-registry", "registry-eviction"],
     ["registry-alias", "registry-eviction"],
     ["mutable-request-alias", "parse-request-body"],
     ["mutable-registry-alias", "registry-eviction"],

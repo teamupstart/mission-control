@@ -66,8 +66,12 @@ function reachingAssignments(context, node, variable, declaration) {
     if (sameBlock && isLaterWrite(node, identifier, block, statement)) continue;
     const assignment = identifier.parent;
     if (assignment.type !== "AssignmentExpression" || assignment.operator !== "=" || assignment.left !== identifier) continue;
+    const writeBlock = assignment.parent.parent;
+    let use = node;
+    while (use !== statement && use.parent !== writeBlock) use = use.parent;
     if (sameBlock && assignment.parent.type === "ExpressionStatement" &&
-        assignment.parent.parent === block && assignment.range[1] <= statement.range[0]) {
+        (writeBlock.type === "BlockStatement" || writeBlock.type === "Program") &&
+        use.parent === writeBlock && assignment.range[1] <= use.range[0]) {
       if (!latest || latest.range[0] < assignment.range[0]) latest = assignment;
     } else {
       possible.push({ assignment, sameBlock });
@@ -82,7 +86,7 @@ function reachingAssignments(context, node, variable, declaration) {
   return { values, overwritten: latest !== undefined };
 }
 
-function matchesLocalValue(context, initial, matches) {
+function matchesLocalValue(context, initial, matches, matchesDeclaredType) {
   const seen = new Set();
   const pending = [initial];
   while (pending.length > 0) {
@@ -97,6 +101,7 @@ function matchesLocalValue(context, initial, matches) {
     const definition = variable?.defs[0];
     const binding = definition?.name;
     const declaration = definition?.node;
+    if (matchesDeclaredType?.(binding)) return true;
     if (declaration?.type === "VariableDeclarator" && declaration.parent.kind !== "const") {
       const { values, overwritten } = reachingAssignments(context, node, variable, declaration);
       pending.push(...values);
@@ -115,9 +120,8 @@ function selectsAgent(context, node) {
     return agentOperands.has(name(value)) ||
       (value.type === "MemberExpression" && agentOperands.has(name(value.property, value.computed))) ||
       (property?.type === "Property" && property.parent.type === "ObjectPattern" &&
-        property.value === binding && agentOperands.has(name(property.key, property.computed))) ||
-      annotation(binding) === "AgentType";
-  });
+        property.value === binding && agentOperands.has(name(property.key, property.computed)));
+  }, (binding) => annotation(binding) === "AgentType");
 }
 
 const agentNames = new Set(["claude", "codex", "pi"]);
@@ -240,9 +244,8 @@ export default {
               }
               return matchesLocalValue(context, owner, (candidate, ownerBinding) => {
                 const ownerType = annotation(ownerBinding);
-                return hasRegistrySessions(ownerBinding) || (!ownerType &&
-                  (name(candidate) === "registry" || member(candidate, "registry")));
-              });
+                return !ownerType && (name(candidate) === "registry" || member(candidate, "registry"));
+              }, hasRegistrySessions);
             });
             if (isRegistryMap) report(node);
           },

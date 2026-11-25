@@ -5,6 +5,7 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
+import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
@@ -360,11 +361,11 @@ export function WorkflowSettingsPanel({
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
 
-  const save = async (next: WorkflowConfig): Promise<void> => {
+  const save = async (patch: WorkflowPolicyPatch): Promise<void> => {
     setBusy(true);
     setLocalError(null);
     try {
-      await update(next);
+      await update(patch);
     } finally {
       setBusy(false);
     }
@@ -373,7 +374,7 @@ export function WorkflowSettingsPanel({
   const toggleLive = (enabled: boolean): void => {
     if (!config) return;
     if (!enabled) {
-      void save({ ...config, liveEnabled: false });
+      void save({ liveEnabled: false });
       return;
     }
     setConfirm({
@@ -384,14 +385,14 @@ export function WorkflowSettingsPanel({
         "bindings stay read-only.",
       confirmLabel: "Enable Live delivery",
       confirmHint: "Allow repair packets to be typed into allowlisted sessions",
-      onConfirm: () => void save({ ...config, liveEnabled: true }),
+      onConfirm: () => void save({ liveEnabled: true }),
     });
   };
 
   const toggleChecks = (enabled: boolean): void => {
     if (!config) return;
     if (!enabled) {
-      void save({ ...config, checksEnabled: false });
+      void save({ checksEnabled: false });
       return;
     }
     // The confirm copy names what is actually being authorized, which is not "running a
@@ -412,7 +413,7 @@ export function WorkflowSettingsPanel({
       confirmLabel: "Allow Commands",
       confirmHint: "Allow branch-authored code to run with the daemon's filesystem authority",
       danger: true,
-      onConfirm: () => void save({ ...config, checksEnabled: true }),
+      onConfirm: () => void save({ checksEnabled: true }),
     });
   };
 
@@ -424,9 +425,9 @@ export function WorkflowSettingsPanel({
       return;
     }
     setLocalError(null);
-    const next = { ...config, retention: read.value };
+    const patch = { retention: read.value };
     if (!retentionShortens(read.value, config.retention)) {
-      void save(next);
+      void save(patch);
       return;
     }
     setConfirm({
@@ -438,7 +439,7 @@ export function WorkflowSettingsPanel({
       confirmLabel: "Shorten retention",
       confirmHint: "Save the shorter limits and let the next sweep act on them",
       danger: true,
-      onConfirm: () => void save(next),
+      onConfirm: () => void save(patch),
     });
   };
 
@@ -646,7 +647,7 @@ export function WorkflowSettingsPanel({
                   checked={config?.skipPassedJudges ?? true}
                   disabled={!config || busy}
                   onChange={(event) => {
-                    if (config) void save({ ...config, skipPassedJudges: event.target.checked });
+                    if (config) void save({ skipPassedJudges: event.target.checked });
                   }}
                 />
                 Skip judges that already passed

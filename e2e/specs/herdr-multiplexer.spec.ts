@@ -79,8 +79,11 @@ async function openDispatchedSession(page: Page): Promise<ReturnType<Page["locat
     .getByRole("navigation", { name: "Sessions" })
     .locator("button.rail-row")
     .filter({ hasText: TASK });
-  await expect(row).toBeVisible();
+  // The initial SDK turn moves the row from Working to Idle. Wait for that move
+  // before clicking so the button stays mounted throughout the pointer action.
+  await expect(row).toHaveClass(/\btone-idle\b/);
   await row.click();
+  await expect(row).toHaveAttribute("aria-current", "true");
   return page.locator(".console-detail");
 }
 

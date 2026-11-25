@@ -10,7 +10,7 @@ import {
 import type { SettingsBackupDomainId } from "@shared/settings-backup-domains.ts";
 import { canonicalSettingsBackupJson } from "@shared/settings-backups.ts";
 import { getAwayConfig } from "../away/config.ts";
-import { getAppConfig } from "../db.ts";
+import { getAppConfig, setAppConfig } from "../db.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { getHarnessesConfig } from "../harnesses.ts";
 import { getInspectorConfig } from "../inspector/config.ts";
@@ -135,13 +135,9 @@ export function restoreSettingsConfigInTransaction(
   db: DatabaseSync,
   staged: readonly StagedSettingsConfigRestore[],
 ): void {
-  const write = db.prepare(
-    `INSERT INTO app_config (key, value) VALUES (?, ?)
-     ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-  );
   for (const item of staged) {
     if (!item.changed) continue;
-    write.run(item.entry.key, JSON.stringify(item.entry.schema.parse(item.mergedValue)));
+    setAppConfig(item.entry, item.entry.schema.parse(item.mergedValue), db);
   }
 }
 

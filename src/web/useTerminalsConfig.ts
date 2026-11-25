@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TerminalsConfig, TerminalsConfigPatch } from "@shared/protocol.ts";
 import { readIsCurrent } from "./harnesses-reconcile.ts";
@@ -84,6 +85,7 @@ export function useTerminalsConfig(revision = 0): TerminalsConfigState {
     setConfigState(next);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("terminals");
   useEffect(() => {
     let alive = true;
     const seq = editSeq.current;
@@ -101,7 +103,7 @@ export function useTerminalsConfig(revision = 0): TerminalsConfigState {
     return () => {
       alive = false;
     };
-  }, [setConfig, revision]);
+  }, [setConfig, revision, settingsRevision]);
 
   const update = useCallback(
     (patch: TerminalsConfigPatch): Promise<void> => {

@@ -85,11 +85,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The listener reports speech onset and completion through one additional voice-gated route.
   // Session settings adds the MCP entry point, the operator access pair and the skin refresh read.
   // Foreman's guarded POST /api/sessions/:id/queue/wrapup/drain returns 404 for a missing session.
+  // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
   // POST /voice/listener/transcript also returns 404 with the voice preview off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 496);
+  assert.equal(others.length, 497);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "d30faf1ff23e113ac6001662391257ea0453d6874500663a9d2576547e2ac1b6");
+    "36d6bfc7da8e84a5d4edd15be87d140569414ebb2d36d8b204b3f832aa4ddb8f");
 });
 
 function sourceFiles(dir: string): string[] {

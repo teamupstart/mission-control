@@ -130,6 +130,16 @@ final class ListenerTests: XCTestCase {
         XCTAssertGreaterThan(segment.startedAtHostMs, 3000)
     }
 
+    func testRosterCorrectionPreservesStandaloneCancelAndItsPunctuation() {
+        for original in ["Cancel.", "CANCEL!", "cancel", "“Cancel”"] {
+            var text = original
+            var words = [TimedWord(text: original, startMs: 80, endMs: 320)]
+            Recognizer.applyAddressCorrection("Voice", in: 0..<1, roster: ["Voice"], text: &text, words: &words)
+            XCTAssertEqual(text, original)
+            XCTAssertEqual(words.map(\.text), [original])
+        }
+    }
+
     func testMultiWordRosterCorrectionAlignsTimingLabelsWithinDecoderSpan() {
         var text = "maryjane,  ask mare tomorrow!"
         var words = [

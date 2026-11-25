@@ -45,6 +45,9 @@ struct Recognizer {
     static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String],
                                        text: inout String, words: inout [TimedWord]) {
         guard range.lowerBound == 0, !range.isEmpty, range.upperBound <= words.count else { return }
+        // Let the router interpret a standalone Cancel, including its original quotation marks.
+        // A roster suggestion for that one word would erase the control before routing.
+        guard text.trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines)).lowercased() != "cancel" else { return }
         let tokens = text.split(maxSplits: range.count, whereSeparator: { $0.isWhitespace }).prefix(range.count)
         guard tokens.count == range.count, let first = tokens.first, let last = tokens.last,
               let start = first.firstIndex(where: { $0.isLetter || $0.isNumber }),
@@ -95,7 +98,8 @@ struct Recognizer {
         words.replaceSubrange(range, with: corrected)
     }
 
-    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?) async throws -> Utterance? {
+    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?,
+                    onAddressSuggestion: ((String, Range<Int>) -> Void)? = nil) async throws -> Utterance? {
         var decoder = TdtDecoderState.make(decoderLayers: await asr.decoderLayerCount)
         let result = try await asr.transcribe(segment.samples, decoderState: &decoder)
         try Task.checkCancellation()
@@ -108,6 +112,7 @@ struct Recognizer {
         }
         if let boosting, let address = boosted?.replacements.first(where: { $0.shouldReplace && $0.wordRange?.lowerBound == 0 }),
            let range = address.wordRange, let name = address.replacementWord {
+            onAddressSuggestion?(name, range)
             Self.applyAddressCorrection(name, in: range, roster: boosting.vocabulary.terms.map(\.text), text: &text, words: &words)
         }
         return Utterance(text: text, words: words, capturedAt: segment.capturedAt)

@@ -474,6 +474,11 @@ in ~10 minutes; a session idle ~20 minutes with a task or queue still open again
 parked on it**; and a Foreman escalation nobody answered. A stuck session is
 attention-level, so it breaks through even while you're away.
 
+While an open workflow owns the next move, its session is exempt from stall detection. Idle
+sessions under active review appear under **Held by a workflow**. A run parked on its session
+for a repair turn or a pushed head can still raise **Workflow run parked** after the idle
+threshold.
+
 A resident's standing task stays open between iterations and does not count as unfinished
 work. Its scheduled waits therefore do not produce a Stuck row. An open queue, a parked
 workflow, an unanswered escalation, or a silent active turn can still flag a resident.

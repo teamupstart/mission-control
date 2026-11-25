@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
 import { randomUUID } from "node:crypto";
 import {
   seedHiddenDisplayItems,
@@ -134,7 +135,7 @@ function unshippedStoredSkin(stored: unknown): string | null {
  */
 function persistUiConfig(config: UiConfig, stored: unknown, choosesSkin: boolean): void {
   const unshipped = choosesSkin ? null : unshippedStoredSkin(stored);
-  setAppConfig(CONFIG_ENTRY, unshipped === null ? config : ({ ...config, skin: unshipped } as unknown as UiConfig));
+  setAppConfig(CONFIG_ENTRY, { ...getAppConfig(CONFIG_ENTRY), ...config, ...(unshipped !== null && { skin: unshipped }) } as UiConfig);
 }
 
 /** The current config, with schema defaults applied over whatever was stored. */
@@ -189,8 +190,9 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
   // the route's patch schema does, so no caller can write a skin by accident.
   if (patch.skin !== undefined) SkinIdSchema.parse(patch.skin);
   const stored = getAppConfig(CONFIG_ENTRY);
-  const next = UiConfigSchema.parse({ ...getUiConfig(), ...patch });
-  persistUiConfig(next, stored, patch.skin !== undefined);
+  const current = getUiConfig();
+  const next = UiConfigSchema.parse({ ...current, ...patch });
+  persistConfigPatch(CONFIG_ENTRY, current, next, patch, ["alerts"]);
   if (patch.voice) {
     voiceIndicatorVersion(next.voice, true);
     for (const listener of indicatorListeners) {

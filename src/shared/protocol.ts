@@ -2730,6 +2730,7 @@ export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 
 /** A provider id, or the empty string meaning "inherit". Strict, because this is a WRITE. */
 const ForemanRunnerOverrideSchema = z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]);
+const ForemanModelOverrideSchema = z.union([ModelIdSchema, z.literal("")]);
 
 /**
  * Partial update of the Foreman config from the dashboard.
@@ -2749,6 +2750,10 @@ export const ForemanConfigPatchSchema = partialPatch(ForemanConfigSchema)
     verifyRunner: ForemanRunnerOverrideSchema.optional(),
     triageRunner: ForemanRunnerOverrideSchema.optional(),
     backlogRunner: ForemanRunnerOverrideSchema.optional(),
+    triageModel: ForemanModelOverrideSchema.optional(),
+    reviewModel: ForemanModelOverrideSchema.optional(),
+    verifyModel: ForemanModelOverrideSchema.optional(),
+    backlogModel: ForemanModelOverrideSchema.optional(),
     efforts: effortOverridesPatch(FOREMAN_MODEL_ROLES).optional(),
     backlogDefaultModel: z
       .object({
@@ -8014,6 +8019,11 @@ export const WorkflowPolicySchema = z.object({
   checksEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.checksEnabled),
 });
 export type WorkflowPolicyInput = z.input<typeof WorkflowPolicySchema>;
+
+export const WorkflowPolicyPatchSchema = partialPatch(WorkflowPolicySchema).strict().extend({
+  retention: partialPatch(WorkflowPolicySchema.shape.retention.unwrap()).strict().optional(),
+}).refine(patch => Object.keys(patch).length > 0, { message: "Supply at least one Workflow policy field" });
+export type WorkflowPolicyPatch = z.output<typeof WorkflowPolicyPatchSchema>;
 
 /**
  * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.

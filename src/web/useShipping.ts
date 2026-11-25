@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ShippingConfig, ShippingConfigPatch } from "@shared/protocol.ts";
 import type { InspectorInspection } from "@shared/types.ts";
@@ -51,6 +52,7 @@ export function useShipping(): ShippingState {
     setConfigState(c);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("shipping");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -66,7 +68,7 @@ export function useShipping(): ShippingState {
       alive = false;
       clearInterval(id);
     };
-  }, [setConfig]);
+  }, [setConfig, settingsRevision]);
 
   /**
    * Apply a config change optimistically, and TAKE IT BACK if the server refuses.

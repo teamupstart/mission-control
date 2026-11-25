@@ -39,9 +39,13 @@ const voiceTab = (window: Page) => rail(window).getByRole("tab", { name: "Voice"
 const modeLine = (window: Page) => window.getByRole("status", { name: "Voice mode" });
 const flagToggle = (window: Page) => window.getByRole("button", { name: /^Voice addressing:/ });
 
-test("Push-to-talk persists across restart and preserves Always-on settings and the Cancel window", async ({ dashboard: page, daemon }) => {
+test("Listening mode is searchable and Push-to-talk preserves settings across restart", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await page.goto(daemon.baseURL + "/#/fleet");
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search everything" }).fill("push-to-talk");
+  await page.getByRole("option", { name: /Listening mode, setting/ }).click();
+  await expect(page.locator('[data-anchor="voice/listening-mode"]')).toHaveClass(/settings-flash/);
   const mode = page.getByRole("combobox", { name: "Listening mode" });
   const delay = page.getByRole("combobox", { name: "End-of-speech delay" });
   const calls = page.getByRole("checkbox", { name: "Auto-mute on calls" });

@@ -1,7 +1,7 @@
 // Hand-written types for harness-runtime.mjs so the TypeScript consumers
 // (src/server/config.ts, src/mcp/server.ts, vite.config.ts) can import it.
 
-export function envVar(suffix: string): string | undefined;
+export function envVar(suffix: string, env?: Readonly<Record<string, string | undefined>>): string | undefined;
 
 export const PORT: number;
 export const HOST: string;
@@ -9,6 +9,7 @@ export const BASE_URL: string;
 
 export const STATE_DIRS: readonly string[];
 export function stateDir(): string;
+export function resolveStateDir(env: Readonly<Record<string, string | undefined>>, home: string): string;
 export function migrateStateDir(): { from: string; to: string } | null;
 export function desktopVoiceEndpointPath(home?: string, port?: number): string;
 export function tokenPath(): string;

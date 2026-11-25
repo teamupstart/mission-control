@@ -113,7 +113,7 @@ describes snapshot behavior independently of session access.
 | `soak` | 2 | Pending | Shipping `soakMinutes` |
 | `merge-method` | 2 | Pending | Shipping `method` |
 | `stacked-pull-requests` | 2 | Pending | Shipping `stacking` and `maxStackDepth` |
-| `session-settings-access` | 1 | Protected | Installation consent `sessionSettings.access`. Manage in Settings > Trust. |
+| `session-settings-access` | 1 | Protected | Installation consent `sessionSettings.access`, off until enabled in the desktop app's Settings > Trust. |
 | `trust-grants` | 3 | Protected | Foreman, Workflow, Inspector and Shipping `repoAllowlist` grants and effective Check execution. UI `trustStaged` is local matrix staging. |
 
 ## Controls without individual search entries

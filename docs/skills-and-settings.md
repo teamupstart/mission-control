@@ -774,8 +774,10 @@ selection because neither harness has a verified frozen-isolation mechanism. See
 
 ## Let a session change the theme
 
-Enable **Session settings through MCP** under **Settings > Feature flags** to opt in. Then ask a
-registered session **“Switch Mission Control to Daylight.”** The session can use
+Enable **Session settings through MCP** under **Settings > Feature flags** and turn on **Allow
+sessions to access Mission Control settings** in **Settings > Trust** in the desktop app.
+A fresh or upgraded installation requires that Trust choice even when all previews are enabled.
+Then ask a registered session **“Switch Mission Control to Daylight.”** The session can use
 `mission_settings` to find “theme”, read `ui.skin` and its choices, and set it to `daylight`.
 Ask **“Which theme am I using?”** for a read. The result applies to this installation and
 open dashboards repaint as soon as the change is saved.

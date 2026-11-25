@@ -85,7 +85,7 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.equal(others.length, 490);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "23c0ad602c2be7c7be600d80b910b444d7df15463701b259271b448ec13563d4");
+    "6da3047419549a01966640de3fc60e4fc910037433836ee62e7cab3786cbdcb5");
 });
 
 function sourceFiles(dir: string): string[] {

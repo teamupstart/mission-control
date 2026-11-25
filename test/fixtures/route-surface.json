@@ -95,7 +95,7 @@
   "GET /api/session-actions": "503 {\"error\":\"session action manager unavailable\"}",
   "GET /api/session-actions/:id": "503 {\"error\":\"session action manager unavailable\"}",
   "GET /api/session-actions/capabilities": "200 {\"completions\":[{\"available\":true,\"kind\":\"session_turn\",\"label\":\"Session turn finishes\",\"unavailableReason\":null},{\"available\":true,\"kind\":\"pull_request\",\"label\":\"Pull request is opened\",\"unavailableReason\":null},{\"available\":true,\"kind\":\"repo_commit\",\"label\":\"A commit lands in the checkout\",\"unavailableReason\":null}]}",
-  "GET /api/session-settings-access": "200 {\"enabled\":true}",
+  "GET /api/session-settings-access": "200 {\"enabled\":false}",
   "GET /api/session-transfers": "200 {\"overflow\":0,\"transfers\":[]}",
   "GET /api/session-transfers/:id": "404 {\"error\":\"no such terminal transfer\"}",
   "GET /api/sessions": "200 []",

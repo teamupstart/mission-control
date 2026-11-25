@@ -178,9 +178,10 @@ Do not skip the default-on release: it gives operators a way to disable a proble
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
 
-Session settings through MCP starts as an opt-in preview. Its independent
-**Allow sessions to access Mission Control settings** preference remains in **Settings > Trust**
-after the rollout flag retires, including any explicit opt-out.
+Session settings through MCP starts as an opt-in preview. Even with all previews enabled, the
+operator must turn on **Allow sessions to access Mission Control settings** in **Settings > Trust**
+in the desktop app. Trust starts off when there is no saved choice and remains independent of the
+rollout flag, including after the flag retires.
 
 ## Shipped flags
 

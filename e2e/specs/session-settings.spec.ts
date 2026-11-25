@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { _electron as electron, type Page } from "@playwright/test";
 import { buildSync } from "esbuild";
 import { SESSION_SETTINGS_FLAG_ID } from "../../src/shared/feature-flag-registry.ts";
+import { SESSION_SETTINGS_ACCESS } from "../../src/shared/session-settings-metadata.ts";
 import { api, connect, dispatch } from "../fixtures/session-control.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 const ACCESS_ENDPOINT = "/api/session-settings-access";
@@ -25,11 +27,11 @@ async function openTrust(page: Page) {
 
 async function evidence(page: Page, name: string) {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
-  const directory = artifactsDir("session-settings-inspector");
+  const directory = artifactsDir("session-settings-explicit-opt-in");
   mkdirSync(directory, { recursive: true });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${directory}${name}.png` });
-  console.log(`CAPTURED e2e/.artifacts/session-settings-inspector/${name}.png`);
+  console.log(`CAPTURED e2e/.artifacts/session-settings-explicit-opt-in/${name}.png`);
 }
 
 async function callSettings(client: Awaited<ReturnType<typeof connect>>, args: Record<string, unknown>, error?: string) {
@@ -47,6 +49,10 @@ async function enableSettingsPreview(daemon: Parameters<typeof api>[0]) {
 
 test("a registered session changes the theme in two open windows and the peer retries a failed refresh", async ({ page, browser, daemon }) => {
   await enableSettingsPreview(daemon);
+  // This browser-only case starts with saved desktop consent. The Electron case below grants it by clicking Trust.
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
   const session = await dispatch(daemon, "Theme request");
   const client = await connect(daemon, session);
   const peer = await browser.newPage();
@@ -117,7 +123,7 @@ test("the Trust access checkbox stays disabled when the initial read fails", asy
 
 test("a desktop Trust click revokes access across dashboards and a refused save can retry", async ({ daemon, browser }) => {
   test.skip(process.platform !== "darwin", "the sandboxed desktop fixture requires macOS");
-  await enableSettingsPreview(daemon);
+  await api(daemon, "/api/feature-flags", { kind: "master", enabled: true }, "PUT");
   await daemon.crash();
   const authorizationModule = join(daemon.home, "session-settings-authorization.cjs");
   buildSync({
@@ -145,12 +151,18 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
     await startDaemon();
     await Promise.all([page.goto(daemon.baseURL), peer.goto(daemon.baseURL)]);
     const [access, peerAccess] = await Promise.all([openTrust(page), openTrust(peer)]);
-    await expect(access).toBeChecked();
+    await expect(access).not.toBeChecked();
     await expect(access).toBeEnabled();
-    await expect(peerAccess).toBeChecked();
+    await expect(peerAccess).not.toBeChecked();
     await expect(peerAccess).toBeDisabled();
     const client = await connect(daemon, await dispatch(daemon, "Access"));
     try {
+      await callSettings(client, { operation: "get", key: "ui.skin" }, "access_disabled");
+      await evidence(page, "trust-off-before-consent");
+      await access.click();
+      await expect(access).toBeChecked();
+      await expect(access).toBeEnabled();
+      await expect(peerAccess).toBeChecked();
       expect(await callSettings(client, { operation: "get", key: "ui.skin" })).toMatchObject({ ok: true });
       let refuseWrite = true;
       let refuseRead = false;

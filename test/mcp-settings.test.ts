@@ -36,7 +36,7 @@ const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
 const { getAppConfig, setAppConfig } = await import("../src/server/db.ts");
-const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
+const { applyFeatureFlagIntent, featureEnabled, reloadFeatureFlags } = await import("../src/server/feature-flags/index.ts");
 const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
 const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
 const { onUiSkinChanged, getUiConfig } = await import("../src/server/ui-config.ts");
@@ -106,7 +106,6 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   const token = ensureToken();
   const valid = { "x-harness-token": token, "x-mission-scout-credential": credential(sdk.id) };
 
-  assert.deepEqual(await (await app.request("/api/session-settings-access", { headers })).json(), { enabled: true });
   assert.equal((await mcp(get)).status, 401);
   assert.equal((await mcp(get, { "x-harness-token": token, "x-mission-scout-credential": "forged" })).status, 403);
   assert.equal((await mcp({ ...get, sessionId: sdk.id }, { "x-harness-token": token })).status, 403);
@@ -114,10 +113,23 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   assert.equal(inactive.status, 403, "the preview starts off on a fresh profile");
   assert.deepEqual(await inactive.json(), settingsFailure("access_disabled"));
   setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "console" } as never);
-  assert.equal((await mcp(get, valid)).status, 403, "upgrade also keeps access closed before opt-in");
+  setAppConfig(APP_CONFIG_ENTRIES.featureFlags, { enableAll: true, overrides: {} });
+  reloadFeatureFlags();
+  assert.equal(featureEnabled(SESSION_SETTINGS_FLAG_ID), true, "the saved master switch enables the new preview");
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess), undefined, "the old profile has no Trust choice");
+  for (const request of [find, get, set]) {
+    const denied = await mcp(request, valid);
+    assert.equal(denied.status, 403, "the preview master switch cannot grant access on upgrade");
+    assert.deepEqual(await denied.json(), settingsFailure("access_disabled"));
+  }
+  assert.deepEqual(await (await app.request("/api/session-settings-access", { headers })).json(), { enabled: false });
   applyFeatureFlagIntent({ kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: true });
+  assert.equal((await mcp(get, valid)).status, 403, "the individual preview switch also requires desktop consent");
+  assert.equal((await setAccess(true, operatorClick(true))).status, 200);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess), true);
+  assert.deepEqual(accessChanges, [true]);
   assert.equal((await mcp({ ...get, sessionId: "sdk:other" }, valid)).status, 400);
-  assert.equal((await mcp(get, valid)).status, 200, "opting in opens access when there is no saved opt-out");
+  assert.equal((await mcp(get, valid)).status, 200, "the authorized Trust choice opens access");
 
   const tsx = fileURLToPath(import.meta.resolve("tsx"));
   const source = fileURLToPath(new URL("../src/mcp/server.ts", import.meta.url));
@@ -216,7 +228,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   const revoke = operatorClick(false);
   assert.equal((await setAccess(false, revoke)).status, 200);
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess), false);
-  assert.deepEqual(accessChanges, [false]);
+  assert.deepEqual(accessChanges, [true, false]);
   for (const response of [
     await setAccess(true),
     await setAccess(true, randomUUID(), { origin: `http://127.0.0.1:${address.port}`, "x-mission-operation-actor": "human" }),
@@ -224,7 +236,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     await setAccess(true, revoke),
   ]) assert.equal(response.status, 403);
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.sessionSettingsAccess), false);
-  assert.deepEqual(accessChanges, [false], "refusals publish no access update");
+  assert.deepEqual(accessChanges, [true, false], "refusals publish no access update");
   assert.ok(!SETTINGS_CONFIG_BACKUP_ENTRIES.some(entry => entry.key === APP_CONFIG_ENTRIES.sessionSettingsAccess.key));
   for (const request of [find, get, { ...set, value: "paper" }]) await call(claude, request, "access_disabled");
   await assert.rejects(piTool.execute("revoked", get), /access_disabled/);
@@ -234,7 +246,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   await call(claude, get, "access_disabled");
   assert.equal((await setAccess(true, operatorClick(true))).status, 200);
   assert.equal((await setAccess(true, operatorClick(true))).status, 200);
-  assert.deepEqual(accessChanges, [false, true], "a repeated save does not emit a duplicate update");
+  assert.deepEqual(accessChanges, [true, false, true], "a repeated save does not emit a duplicate update");
   assert.equal((await call(claude, get)).ok, true);
 
   // Simulate access being withdrawn after the request passed the gate and began reading its body.

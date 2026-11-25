@@ -22,8 +22,7 @@ const accessEntry = APP_CONFIG_ENTRIES.sessionSettingsAccess;
 const accessWriteSchema = SessionSettingsAuthorizationSchema.partial({ requestId: true });
 
 function sessionSettingsAccess(): boolean {
-  const stored = getAppConfig(accessEntry);
-  return stored === undefined || stored === true;
+  return getAppConfig(accessEntry) === true;
 }
 
 const rollout = FEATURE_FLAGS.find(flag => flag.id === SESSION_SETTINGS_FLAG_ID);

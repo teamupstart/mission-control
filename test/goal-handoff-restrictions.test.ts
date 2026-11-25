@@ -18,6 +18,7 @@ test("a bound workflow can own the PR while the operator reserves other actions"
   const delegation = "Don’t open a PR, let the bound Workflow open it.";
   assert.equal(explicitHandoffRestriction(delegation), undefined);
   assert.equal(explicitHandoffRestriction("Stop here. " + delegation), "Stop here");
+  assert.equal(explicitHandoffRestriction("Do not open a PR, but let the bound workflow publish the preview."), "Do not open a PR");
 });
 
 test("delegation cannot remove a prior approval condition", () => {

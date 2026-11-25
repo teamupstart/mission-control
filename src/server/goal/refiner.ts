@@ -8,7 +8,7 @@ import type { Registry } from "../registry.ts";
 import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
-import { contextualHandoffRestriction, explicitHandoffRestriction, withoutHandoffRestrictions } from "./handoff-restrictions.ts";
+import { contextualHandoffRestriction, explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./handoff-restrictions.ts";
 import { clampPrompt } from "../util/prompt-text.ts";
 
 // Tier 2: reconcile each human prompt with the durable session objective, in captured
@@ -521,8 +521,8 @@ async function refine(
       // A standalone release lets the operator confirm the reconciled objective. A
       // combined turn may revise the deliverable, but any model rewrite is insufficient
       // authority to release its hold before that objective can be reviewed.
-      const requestsRelease = hadHold && !humanRestriction
-        && RELEASE_DIRECTIVE.test(prompt.prompt.trim().replace(/[.!?]+$/, ""));
+      const requestsRelease = !initial && !humanRestriction
+        && isStandaloneHandoffRelease(prompt.prompt);
       // A standalone release carries authority to remove the hold from the existing
       // contract. Disregard a model-proposed deliverable or card title on that turn.
       const mayChangeObjective = !requestsRelease && (
@@ -536,12 +536,10 @@ async function refine(
       const text = mayChangeObjective ? r.value.goal : current.text;
       const released = requestsRelease && currentObjective ? withoutHandoffRestrictions(currentObjective) : null;
       let handoffContractChanged = false;
-      if (released && released !== objective) {
+      if (released) {
+        handoffContractChanged = released !== objective;
         objective = released;
-        handoffContractChanged = true;
-        if (relationship === "steer" || relationship === "amend" || relationship === "unclear") {
-          relationship = "replace";
-        }
+        relationship = handoffContractChanged ? "replace" : "steer";
         rationale = "The operator explicitly released the completion handoff.";
       }
       const preserveHold = hadHold && !released;
@@ -601,5 +599,3 @@ async function refine(
     console.error("[goal] refine failed:", err);
   }
 }
-
-const RELEASE_DIRECTIVE = /^(?:please\s+)?resume\s+automatic\s+handoff$/i;

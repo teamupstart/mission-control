@@ -36,7 +36,7 @@ process.env.MISSION_GOAL_POLL_MS = "10";
 process.env.MISSION_GOAL_REFRESH_MS = "0";
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, getSessionGoal } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
@@ -1068,6 +1068,8 @@ for (const scenario of [
       await waitForRevision(revision);
       assert.equal(resolvedSessionIntent(readGoal())?.objective, expectedObjective);
       assert.equal(readGoal()?.text, expectedObjective);
+      assert.ok(readGoal()?.handoffReleasedAt);
+      assert.equal(getSessionGoal(d.noteKey)?.handoffReleasedAt, readGoal()?.handoffReleasedAt);
       assert.equal(await tick(), true);
       assert.equal(verifyPrompts.length, 1);
       assert.ok(verifyPrompts[0]?.includes(expectedObjective));

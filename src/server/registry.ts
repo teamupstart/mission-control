@@ -1,3 +1,4 @@
+import { isStandaloneHandoffRelease } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -11043,6 +11044,7 @@ export class Registry extends EventEmitter {
       ? { revision: prev.promptRevision, prompt: prev.prompt }
       : null;
     return this.mergeGoal(id, {
+      ...(isStandaloneHandoffRelease(raw) ? { handoffReleasedAt: now } : {}),
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -11204,7 +11206,7 @@ export class Registry extends EventEmitter {
   /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
   private mergeGoal(
     id: string,
-    patch: SetGoal & { openingPrompt?: string },
+    patch: SetGoal & { openingPrompt?: string; handoffReleasedAt?: number },
     now: number,
     steering?: WorkflowSteeringNote | WorkflowSteeringNote[],
   ): SessionGoal | null {
@@ -11215,6 +11217,7 @@ export class Registry extends EventEmitter {
     const text = patch.text !== undefined ? patch.text : prev?.text ?? null;
     const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
     const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
+    const handoffReleasedAt = patch.handoffReleasedAt ?? prev?.handoffReleasedAt;
     const next: SessionGoal = {
       noteKey: key,
       text,
@@ -11240,6 +11243,7 @@ export class Registry extends EventEmitter {
         patch.pendingPrompts !== undefined
           ? patch.pendingPrompts
           : prev?.pendingPrompts ?? [],
+      ...(handoffReleasedAt === undefined ? {} : { handoffReleasedAt }),
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     if (Array.isArray(steering)) upsertSessionGoalWithSteeringNotes(next, steering);

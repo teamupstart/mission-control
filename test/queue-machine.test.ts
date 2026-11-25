@@ -1705,13 +1705,17 @@ test("a session awaiting its own background process holds its queue until its de
   assert.equal(tick({ session: { awaiting: { id: "aw-fixture", what: "CI checks on PR #1612", wakeSource: "command" as const, expectedBy: NOW, referenceUrl: null, details: null, startedAt: 1, updatedAt: 1 } }, items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
 });
 
-test("drain honors a restriction from a work item delivered after the Goal changed", () => {
+test("drain retains a delivered item restriction until a standalone release", () => {
   const items = DRAINED().map((item) => ({
     ...item, sentAt: NOW - 5_000, intent: "Do not open a PR.",
   }));
   const intent = { objective: "Implement heading counts.", updatedAt: NOW - 10_000 };
   assert.equal(tick({ items, intent, cfg: { wrapup: "ask" } }).kind, "none");
-  assert.equal(tick({ items, intent: { ...intent, updatedAt: NOW }, cfg: { wrapup: "ask" } }).kind, "ask-wrapup");
+  assert.equal(tick({ items, intent: { ...intent, updatedAt: NOW }, cfg: { wrapup: "ask" } }).kind, "none");
+  assert.equal(tick({ items, intent: { ...intent, handoffReleasedAt: NOW }, cfg: { wrapup: "ask" } }).kind, "ask-wrapup");
+  assert.equal(tick({ items: items.map((item) => ({ ...item, sentAt: NOW + 1 })), intent: {
+    ...intent, handoffReleasedAt: NOW,
+  }, cfg: { wrapup: "ask" } }).kind, "none");
 });
 
 test("a fenced item example cannot hide a drained queue's Ship it card", () => {
@@ -1722,4 +1726,14 @@ test("a fenced item example cannot hide a drained queue's Ship it card", () => {
   });
   assert.equal(decide("Implement heading counts.\n```text\nAutomatic handoff: operator only\n```").kind, "ask-wrapup");
   assert.equal(decide("Implement heading counts.\nAutomatic handoff: operator only").kind, "none");
+});
+
+
+test("a delivered mockup item remains artifact-only when it is newer than the implementation Goal", () => {
+  const items = DRAINED().map((item) => ({
+    ...item, sentAt: NOW - 5_000, intent: "Output: mockups",
+  }));
+  const objective = "Implement heading counts.";
+  assert.equal(tick({ items, intent: { objective, updatedAt: NOW - 10_000 } }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: { objective, updatedAt: NOW } }).kind, "ask-wrapup");
 });

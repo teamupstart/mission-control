@@ -1490,6 +1490,8 @@ export interface SessionGoal {
    * never denormalized onto session cards.
    */
   pendingPrompts: GoalPromptRevision[];
+  /** Accepted standalone release timestamp. Queue instructions started later still apply. */
+  handoffReleasedAt?: number;
   updatedAt: number;
 }
 

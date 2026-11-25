@@ -360,13 +360,9 @@ function liveDir(pr: InspectorPr): string | null {
 /**
  * What one PR's pass through the tick has already done to its row.
  *
- * The tick reads `InspectorPr` once and then writes to it from several places, so the
- * pre-tick snapshot goes stale the first time anything fails. Two things went wrong
- * without this: a second failure in the same pass re-derived `failCount` from the stale
- * snapshot and so never got past 1, and the "nothing pushed" branch cleared a failure
- * that had been recorded seconds earlier in the same pass - which made the backoff
- * oscillate between one interval and an immediate retry on the exact case it exists
- * for, a PR whose head never moves and whose replies keep failing.
+ * A reply can be posted successfully and then fail to resolve its thread.
+ * Track the failure separately from whether any work was done, so the pass
+ * stops spending model calls and leaves the newly recorded backoff in force.
  */
 interface TickState {
   /** Set by `noteFailure`. Nothing may clear the failure state while this is true. */
@@ -389,15 +385,17 @@ interface TickState {
 function noteFailure(
   pr: InspectorPr,
   reason: string,
-  now: number,
   tick: TickState,
   kind: InspectorFailKind = "persistent",
 ): false {
+  // Start the wait at the failure itself. A slow call may outlast the entire
+  // backoff interval measured from the start of the PR's pass.
+  const now = Date.now();
   recordAutomationTransition(`${pr.key}:${now}`, { feature: "inspector", action: "review", outcome: "failed", coverage: "owner_transition" },
     { kind: "system", origin: "daemon", basis: "owner" }, now);
   tick.failed = true;
-  // Re-read rather than trusting the snapshot: an earlier failure in this same pass has
-  // already written a higher count, and incrementing the stale one would discard it.
+  // The durable count can differ from the snapshot, for example when a completed
+  // review resets it before a pending resolution or clean publication fails.
   const failCount = (getInspectorPr(pr.key)?.failCount ?? pr.failCount) + 1;
   const wait = kind === "push-fixable" ? BACKOFF_CEILING_MS : backoffMs(failCount);
   updateInspectorPr(
@@ -685,7 +683,7 @@ async function processPr(
     if (codeRabbitEnabled()) failCodeRabbit(pr.key, "The owning checkout is unavailable", now);
     if (!cfg.enabled) return false;
     if (backedOff) return false;
-    return noteFailure(pr, "the checkout this PR was opened from is gone", now, tick);
+    return noteFailure(pr, "the checkout this PR was opened from is gone", tick);
   }
 
   // Read the PR even while backed off. The backoff is there to stop paying for repeated
@@ -698,7 +696,7 @@ async function processPr(
     if (codeRabbitEnabled()) failCodeRabbit(pr.key, snap.error ?? "Could not read PR", now);
     if (!cfg.enabled) return false;
     if (backedOff) return false;
-    return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
+    return noteFailure(pr, snap.error ?? "could not read the pull request", tick);
   }
   const s = snap.value;
   if (codeRabbitEnabled()) {
@@ -795,7 +793,7 @@ async function processPr(
   // the backoff applies rather than us re-asking every poll.
   const login = await authenticatedLogin(dir, now);
   if (!login) {
-    return noteFailure(pr, "could not confirm which GitHub account gh speaks for", now, tick);
+    return noteFailure(pr, "could not confirm which GitHub account gh speaks for", tick);
   }
 
   const rows = existingByFingerprint(pr.key);
@@ -812,7 +810,7 @@ async function processPr(
     if (!post) break;
     if (!rows.get(fingerprint)?.resolutionPending) continue;
     const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
-    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", now, tick);
+    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", tick);
     resolvedThreadIds.add(thread.threadId);
     closeRow(rows, fingerprint, now);
     acted = true;
@@ -841,10 +839,11 @@ async function processPr(
         resolvedThreadIds,
       );
       if (replied) acted = true;
+      // Leave the other questions pending and let the sweep move on to the next PR.
+      // Check the failure flag even if the reply posted before thread resolution failed.
+      if (tick.failed) return acted;
     }
   }
-
-  if (tick.failed) return acted;
 
   // 2. Ship it, if YOLO mode says every gate is green.
   //
@@ -885,7 +884,7 @@ async function processPr(
   if (baseReview === "unknown") {
     // Neither merge on a review that may describe another diff nor spend a review on a
     // question GitHub did not answer: try again on a later tick.
-    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", now, tick) || acted;
+    return noteFailure(pr, "could not confirm the reviewed diff's merge base with GitHub", tick) || acted;
   }
   // Incomplete provenance must recover before it can authorize Shipping too.
   if (
@@ -902,9 +901,7 @@ async function processPr(
   // no-op behavior: repeatedly reviewing a head we still cannot publish buys nothing.
   //
   // Reaching the no-op branch having failed nothing means the PR is healthy again, so a
-  // stale error from an earlier tick is cleared. `tick.failed` rather than the pre-tick
-  // snapshot, because a reply that failed moments ago is this tick's news and clearing
-  // it would hand the backoff back its own reset button.
+  // stale error from an earlier tick is cleared unless this publication attempt fails.
   if (
     s.headSha &&
     s.headSha === pr.headSha &&
@@ -933,7 +930,7 @@ async function processPr(
   }
 
   if (pr.round >= INSPECTOR_LIMITS.maxRounds) {
-    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, now, tick);
+    return noteFailure(pr, `stopped after ${INSPECTOR_LIMITS.maxRounds} rounds`, tick);
   }
   const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick, readDiff, resolvedThreadIds);
   return acted || reviewed;
@@ -987,7 +984,7 @@ async function answerFollowUp(
     (raw) => parseModelReply(raw, InspectorReplySchema),
     "The inspector",
   );
-  if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, now, tick);
+  if (result.kind !== "ok") return noteFailure(pr, `reply failed: ${result.reason}`, tick);
   const answer = result.value as InspectorReply;
 
   const reply = scrubSecrets(answer.reply.trim());
@@ -1004,7 +1001,7 @@ async function answerFollowUp(
   ].join("\n");
 
   const res = await replyToComment(dir, pr.owner, pr.repo, pr.number, w.newest.databaseId, body);
-  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", now, tick);
+  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", tick);
 
   // Stamp AFTER the send, never before: a failed post that had already recorded the
   // answer would leave someone's question permanently unanswered and invisible.
@@ -1029,7 +1026,7 @@ async function answerFollowUp(
       closeRow(rows, w.row.fingerprint, now);
       resolvedThreadIds.add(w.thread.id);
     } else {
-      noteFailure(pr, resolved.error ?? "could not resolve the answered thread", now, tick);
+      noteFailure(pr, resolved.error ?? "could not resolve the answered thread", tick);
     }
   }
   return true;
@@ -1054,23 +1051,23 @@ async function publishCleanReview(
   if (!consent.enabled || inspectorPosture(consent, pr.cwd, pr.repoRoot) !== "live") return false;
 
   const fresh = await fetchPr(dir, pr.owner, pr.repo, pr.number);
-  if (!fresh.ok || !fresh.value) return noteFailure(pr, fresh.error ?? "could not confirm current PR head", now, tick);
+  if (!fresh.ok || !fresh.value) return noteFailure(pr, fresh.error ?? "could not confirm current PR head", tick);
   if (fresh.value.state !== "OPEN" || fresh.value.headSha !== snapshot.headSha) return false;
   const input = { cwd: dir, owner: pr.owner, repo: pr.repo, number: pr.number, snapshot: fresh.value, login,
     headSha: snapshot.headSha, resolvedThreadIds };
   const pages = linkCapturingLoaders(dir, pr, fresh.value, rows, login);
   const threads = await ownedThreadsResolved(input, pages.threads);
-  if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", now, tick);
+  if (!threads.ok) return noteFailure(pr, threads.error ?? "could not inspect review threads", tick);
   if (!threads.value) return false;
   const bodyOnly = await hasBodyOnlyFindings(input, pages.reviews);
-  if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", now, tick);
+  if (!bodyOnly.ok) return noteFailure(pr, bodyOnly.error ?? "could not inspect body-only findings", tick);
   if (bodyOnly.value) return false;
   const existing = await cleanReviewExists(input, pages.reviews);
-  if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", now, tick);
+  if (!existing.ok) return noteFailure(pr, existing.error ?? "could not inspect clean reviews", tick);
   if (!existing.value) {
     const body = renderCleanReview(formatMarker({ id: randomUUID(), fingerprint: CLEAN_REVIEW_FINGERPRINT, round: pr.round }), pr.round);
     const sent = await postReview(dir, pr.owner, pr.repo, pr.number, body, [], snapshot.headSha);
-    if (!sent.ok) return noteFailure(pr, sent.error ?? "could not post the clean review", now, tick);
+    if (!sent.ok) return noteFailure(pr, sent.error ?? "could not post the clean review", tick);
   }
   updateInspectorPr(pr.key, { cleanReviewHeadSha: snapshot.headSha, lastError: null,
     failCount: 0, nextAttemptAt: null, lastFailKind: null }, now);
@@ -1103,7 +1100,6 @@ async function reviewRound(
     return noteFailure(
       pr,
       diffRes.error ?? "could not read the diff",
-      now,
       tick,
       diffRes.tooLarge ? "push-fixable" : "persistent",
     );
@@ -1113,7 +1109,7 @@ async function reviewRound(
   if (paths.length === 0) {
     // Retrying an incomplete Live review must not spin on an unchanged empty diff.
     // Surface the reason and use the existing push-fixable backoff until work changes.
-    if (post) return noteFailure(pr, "no reviewable files in the PR diff", now, tick, "push-fixable");
+    if (post) return noteFailure(pr, "no reviewable files in the PR diff", tick, "push-fixable");
     // Nothing reviewable (an empty or purely-binary diff). Still advance the head, or
     // every tick forever would re-fetch and re-decide the same nothing.
     updateInspectorPr(
@@ -1165,7 +1161,7 @@ async function reviewRound(
   if (result.kind !== "ok") {
     // A transient failure must NEVER advance the head sha: doing so would record this
     // push as reviewed and the PR would never be looked at again.
-    return noteFailure(pr, result.reason, now, tick);
+    return noteFailure(pr, result.reason, tick);
   }
 
   const round = pr.round + 1;
@@ -1297,7 +1293,7 @@ async function reviewRound(
   );
   recordAutomationTransition(`${pr.key}:${s.headSha}:${round}`, { feature: "inspector", action: "review", outcome: "applied", coverage: "owner_transition" },
     { kind: "system", origin: "daemon", basis: "owner" }, now);
-  if (resolutionError) return noteFailure(pr, resolutionError, now, tick);
+  if (resolutionError) return noteFailure(pr, resolutionError, tick);
   await publishCleanReview(getInspectorPr(pr.key)!, dir, s, existingByFingerprint(pr.key),
     post, login, now, tick, resolvedThreadIds);
   return true;
@@ -1364,13 +1360,13 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
   // round's reconciliation to find, so left in `posting` they would be promoted to `open` and
   // never actually said. Everything else stays in `posting` for the live thread read to
   // adjudicate.
-  if (!wasRefused(first)) return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+  if (!wasRefused(first)) return noteFailure(pr, first.error ?? "could not post the review", tick);
 
   const carried = p.planned.filter((row) => p.carried.has(row.fingerprint));
   const fresh = p.planned.filter((row) => !p.carried.has(row.fingerprint));
   if (carried.length === 0 || (await classifyReviewRefusal(first, headUnmoved(p))) === "whole-review") {
     writeRows(p, p.planned, { status: "drafted" });
-    return noteFailure(pr, first.error ?? "could not post the review", now, tick);
+    return noteFailure(pr, first.error ?? "could not post the review", tick);
   }
 
   if (fresh.length > 0) {
@@ -1381,7 +1377,7 @@ async function publishRound(p: RoundPublication): Promise<boolean> {
       // again either way. The new findings follow `wasRefused`, exactly as above.
       writeRows(p, carried, { status: "drafted" });
       if (wasRefused(retry)) writeRows(p, fresh, { status: "drafted" });
-      return noteFailure(pr, retry.error ?? "could not post the review", now, tick);
+      return noteFailure(pr, retry.error ?? "could not post the review", tick);
     }
     writeRows(p, fresh, confirmedPost(now));
   }
@@ -1443,7 +1439,7 @@ async function pinRefusal(
       settleCharges();
       // This draft may have landed and stays `posting`, for its thread to answer.
       writeRows(p, untried, { status: "drafted" });
-      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+      return noteFailure(pr, res.error ?? "could not post the review", tick);
     }
     if ((await classifyReviewRefusal(res, headUnmoved(p))) === "validation") {
       charged.push([row, res]);
@@ -1451,7 +1447,7 @@ async function pinRefusal(
     }
     settleCharges();
     writeRows(p, [row, ...untried], { status: "drafted" });
-    return noteFailure(pr, res.error ?? "could not post the review", now, tick);
+    return noteFailure(pr, res.error ?? "could not post the review", tick);
   }
   settleCharges();
   return true;

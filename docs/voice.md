@@ -1413,7 +1413,8 @@ An incomplete form marks the
 first unanswered decision in amber and shows how to fill it. Closing the inbox keeps the
 draft. With the plan still pending, a named choice or submit while the form is closed asks
 you to reopen it. The draft stays as it was, even if a Report reply box has focus.
-A dashboard response more than five seconds after a spoken submit leaves the plan pending.
+The daemon must receive the dashboard’s submission before the five-second submit ID expires.
+If it arrives too late, the plan stays pending.
 Turn off **Plan forms by voice** in Settings > Voice to
 use addressed speech for messages while filling plans by hand. It starts on.
 

@@ -136,13 +136,19 @@ test("clearing voice actions during a claimed inbox action leaves the cleared ca
   await put("/api/voice/open-cards", { windowId, focused: true, cards: [
     { kind: "stuck", id: "sdk:Steve", sessionId: "sdk:Steve", focused: true, actions: ["nudge"] },
   ] });
+  let requestId = "";
   t.after(registry.subscribe(event => {
     if (event.type !== "voice_inbox_action") return;
     assert.ok(router.claimInbox(event.requestId));
+    requestId = event.requestId;
     router.clearActionsAndHistory();
   }));
   await say("Steve, nudge", "clear-before-receipt");
   assert.equal(await router.sendNow("clear-before-receipt"), false);
+  assert.ok(requestId);
+  const before = cards.length;
+  assert.equal((await post(`/api/voice/inbox-actions/${requestId}/complete`, { invoked: true })).status, 409);
+  assert.equal(cards.length, before);
   assert.deepEqual(cards.filter(c => c.id === "clear-before-receipt").map(c => c.state), ["pending"]);
 });
 

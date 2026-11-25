@@ -1,4 +1,4 @@
-import { PLAN_DECISION_LIMITS } from "@shared/protocol.ts";
+import { MAX_PLAN_DECISIONS_WITH_APPROVAL } from "@shared/protocol.ts";
 import type { PlanDecisionAnswer, ReviewItem } from "@shared/types.ts";
 import { ordinal, spokenOrdinal, type VoiceFormFill } from "@shared/voice-answers.ts";
 import { matchAnswer } from "./questions.ts";
@@ -8,7 +8,7 @@ import type { SpokenName } from "@shared/voice-names.ts";
 // The display order includes the daemon-appended approval. Use the same labels the
 // dashboard prints to recognize punctuation-free transcripts and compound ordinals.
 const positions = new Map<string, number>();
-for (let i = 1; i <= PLAN_DECISION_LIMITS.decisions; i++) {
+for (let i = 1; i <= MAX_PLAN_DECISIONS_WITH_APPROVAL; i++) {
   for (const label of [ordinal(i), spokenOrdinal(i), String(i)]) positions.set(label, i - 1);
 }
 const positionPattern = [...positions.keys()].sort((a, b) => b.length - a.length).join("|").replaceAll(" ", "[ -]");

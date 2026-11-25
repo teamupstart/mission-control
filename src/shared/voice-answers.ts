@@ -81,6 +81,7 @@ export function spokenOrdinal(position: number): string {
   const tens = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
   if (position < 20) return units[position]!;
   if (position === 100) return "one hundredth";
+  if (position > 100 && position < 200) return "one hundred " + spokenOrdinal(position - 100);
   const ten = tens[Math.floor(position / 10) - 2];
   if (!ten) return ordinal(position);
   return position % 10 ? ten + " " + units[position % 10] : ten.slice(0, -1) + "ieth";

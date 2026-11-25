@@ -1,4 +1,5 @@
 import { PLAN_APPROVAL_DECISION } from "../src/shared/managed-plans.ts";
+import { PLAN_DECISION_LIMITS } from "../src/shared/protocol.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cards, model, post, queued, registry, reviews, say, readHeard, act } from "./helpers/voice-http.ts";
@@ -50,6 +51,45 @@ test("fill-only ordinals include the appended approval. Submit requires an open 
   await say("Steve, submit", "plain");
   await act("plain", "send-now");
   assert.ok(queued("Steve").some(s => s.includes("submit")));
+});
+
+test("the appended approval on a full-size plan accepts its printed, spoken and numeric positions and submits", async t => {
+  const ids = Array.from({ length: PLAN_DECISION_LIMITS.decisions }, (_, i) => "decision-" + i);
+  ids.push(PLAN_APPROVAL_DECISION);
+  const review = reviews.create("sdk:Steve", "plan-decisions", "Full plan", "Choose", ids.map(id => ({
+    id, question: id, options: [{ id: "approve", label: "Approve" }, { id: "revise", label: "Revise" }],
+  })));
+  const router = registry.voiceRouter!;
+  t.after(router.openCards.connect("dashboard"));
+  assert.equal((await put("/api/voice/open-cards", { windowId: "dashboard", focused: true,
+    cards: [{ kind: "plan", id: review.id, sessionId: review.sessionId, focused: true }] })).status, 200);
+  for (const [words, option] of [["101st one B", "revise"], ["one hundred first one A", "approve"], ["101 one B", "revise"]]) {
+    await say("Steve, " + words);
+    assert.deepEqual(router.forms.get(review.id)?.selections, [{ decisionId: PLAN_APPROVAL_DECISION, selected: [option], other: null }]);
+  }
+  let submitId = "";
+  t.after(registry.subscribe(event => { if (event.type === "voice_form_submit") submitId = event.submitId; }));
+  await say("Steve, submit");
+  assert.ok(submitId);
+  const selections = ids.slice(0, -1).map(decisionId => ({ decisionId, selected: ["approve"], other: null }));
+  const resolved = await post("/api/reviews/" + review.id + "/resolve", { action: "answer", response: "Revise",
+    selections: [...selections, ...router.forms.get(review.id)!.selections], voiceSubmitId: submitId });
+  assert.equal(resolved.status, 200);
+  assert.equal(registry.getReview(review.id)?.status, "answered");
+});
+
+test("clearing voice history during an option match discards its eventual fill and notice", async t => {
+  const { review, fill } = await form(1);
+  const decide = t.mock.method(model, "decide", async () => {
+    registry.voiceRouter!.clearActionsAndHistory();
+    return { rung: "job", answers: [{ choice: "b", confidence: 1 }], detail: "retired match" };
+  });
+  await say("Steve, first one the alternative database", "retired-match");
+  assert.equal(decide.mock.callCount(), 1);
+  assert.deepEqual(cards.filter(c => c.id === "retired-match"), []);
+  assert.equal(fill(), undefined);
+  assert.deepEqual(await readHeard(), []);
+  assert.equal(registry.getReview(review.id)?.status, "pending");
 });
 
 for (const surface of ["closed inbox", "focused Report reply"] as const) {
@@ -292,6 +332,8 @@ test("a slow option lookup preserves later picks and cannot repopulate a retired
   forms.clear();
   forms.observed(review.id);
   assert.equal(forms.isMatching(review.id), false);
+  assert.equal(older.apply([choice("expiry", "a")]), null);
+  assert.equal(fill(), undefined);
   older.finish();
   assert.equal(later.apply([choice("cache", "b")]), null);
   assert.equal(fill(), undefined);

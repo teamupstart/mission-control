@@ -72,9 +72,14 @@ test("Steve's Nudge runs from Report focus, Open report runs from Stuck focus, a
   await expectContentClearsBorder(reader);
   await reader.getByRole("button", { name: "Close" }).click();
   await expect(reader).toBeHidden();
-  await say(daemon, "Steve, mark read");
+  const cancelledId = crypto.randomUUID();
+  await say(daemon, "Steve, mark read", { id: cancelledId });
   await expect(page.getByRole("button", { name: "Run now" })).toBeVisible();
   await say(daemon, "cancel");
+  await expect.poll(async () => {
+    const { entries } = await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json();
+    return entries.find((entry: { id: string }) => entry.id === cancelledId)?.outcome;
+  }).toBe("cancelled");
   expect((await storedReport(daemon, report.id)).readAt).toBeNull();
   const markRead = page.waitForResponse(response => response.url().endsWith(`/api/reports/${report.id}/read`) && response.request().method() === "POST");
   await say(daemon, "Steve, mark read");

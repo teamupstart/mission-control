@@ -78,6 +78,7 @@ test("a cleared plan choice retains its manual edit time across a reload until t
   reloadReviewDraftsFromStorage();
   assert.deepEqual(readReviewDraft("plan").decisions.first, decision);
   clearReviewDraft("plan");
+  reloadReviewDraftsFromStorage();
   assert.equal(readReviewDraft("plan"), EMPTY_REVIEW_DRAFT);
 });
 

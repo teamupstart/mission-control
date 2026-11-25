@@ -655,6 +655,7 @@ export class VoiceRouter {
       }
       const match = this.forms.beginFill(form.id, capturedAtMonotonicMs);
       return formChoices(form, body, this.decider, owner, signal).then(selections => {
+        if (signal.aborted) return true;
         if (!selections || !current()) return notice("No matching decision. Say its position and option letter.", "question-notice");
         const changes = match.apply(selections);
         if (!changes) return notice("Open the plan form and say your selection again.", "question-notice");

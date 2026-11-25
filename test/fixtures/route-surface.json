@@ -293,6 +293,7 @@
   "POST /api/sessions/:id/queue/ship-recovery/claim": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/queue/ship-recovery/delivery": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/queue/wrapup/asked": "404 {\"error\":\"no such session\"}",
+  "POST /api/sessions/:id/queue/wrapup/drain": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/queue/wrapup/prompted": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/queue/wrapup/prompted/undelivered": "404 {\"error\":\"no such session\"}",
   "POST /api/sessions/:id/rename": "404 {\"error\":\"no such session\"}",

@@ -7,6 +7,7 @@ import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { hasTmux, paneSession, PANE_AGENT_DAEMON, startPaneAgent } from "../fixtures/pane-agent.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
@@ -42,6 +43,7 @@ interface TaskSnapshot {
   title: string;
   intent: string;
   status: string;
+  sessionId: string | null;
   worktreePath: string | null;
   worktreeLeaseId: string | null;
 }
@@ -305,4 +307,71 @@ test("an edited checkout postpones automatic cleanup and is reclaimed once publi
     .poll(() => taskFor(daemon, REUSE_INTENT), { timeout: 60_000 })
     .toMatchObject({ status: "running" });
   expect((await taskFor(daemon, REUSE_INTENT))?.worktreePath).toBe(worktree);
+});
+
+test.describe("retention deadline in Worktrees", () => {
+  test.use(PANE_AGENT_DAEMON);
+  test.skip(!hasTmux(), "the returning fixture session needs tmux discovery");
+
+  test("a returning session clears the displayed deadline until verified departure", async ({ dashboard, daemon }) => {
+    const intent = "Retain this checkout for a returning session";
+    await dispatch(dashboard, daemon, intent);
+    await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({
+      status: "running", sessionId: expect.any(String), worktreePath: expect.any(String),
+    });
+    const task = (await taskFor(daemon, intent))!;
+    const worktree = task.worktreePath!;
+    const stopped = await dashboard.request.post(`${daemon.baseURL}/api/sessions/${encodeURIComponent(task.sessionId!)}/kill`);
+    expect(stopped.ok()).toBe(true);
+    await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({
+      status: "failed", worktreePath: worktree,
+    });
+    await daemon.crash();
+    await daemon.restart();
+    await expect.poll(() => retentionRow(daemon, task.id)?.unownedSince, { timeout: 60_000 }).toEqual(expect.any(Number));
+
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = pool.getByRole("article").filter({ hasText: worktree });
+    const deadline = slot.locator("time");
+    await expect(deadline).toBeVisible({ timeout: 60_000 });
+    const initial = Date.parse((await deadline.getAttribute("datetime"))!);
+
+    const returning = startPaneAgent(daemon, { cwd: worktree, prefix: "mc-e2e-retention" });
+    let sessionId: string;
+    try {
+      sessionId = await paneSession(daemon, returning);
+      const refreshed = dashboard.waitForResponse((response) =>
+        response.request().method() === "GET" && new URL(response.url()).pathname === "/api/worktrees");
+      await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
+      expect((await refreshed).ok()).toBe(true);
+      await expect(slot).toBeVisible();
+      await expect(slot).toContainText(task.title);
+      await expect(deadline).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        mkdirSync(EVIDENCE, { recursive: true });
+        await slot.screenshot({ path: join(EVIDENCE, "deadline-cleared.png"), animations: "disabled" });
+      }
+    } finally {
+      returning.cleanup();
+    }
+    await expect.poll(async () => {
+      const response = await fetch(`${daemon.baseURL}/api/sessions`);
+      return ((await response.json()) as Array<{ id: string }>).some((session) => session.id === sessionId);
+    }, { timeout: 30_000 }).toBe(false);
+
+    // The restart starts an ordinary observation without waiting for its six-hour cadence.
+    await daemon.crash();
+    await daemon.restart();
+    await expect.poll(() => retentionRow(daemon, task.id)?.cleanupDueAt ?? 0, { timeout: 60_000 }).toBeGreaterThan(initial);
+    await dashboard.reload();
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    await expect(deadline).toBeVisible({ timeout: 60_000 });
+    expect(Date.parse((await deadline.getAttribute("datetime"))!)).toBeGreaterThan(initial);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      await slot.screenshot({ path: join(EVIDENCE, "deadline-restored.png"), animations: "disabled" });
+    }
+  });
 });

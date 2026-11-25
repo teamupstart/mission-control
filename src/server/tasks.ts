@@ -156,6 +156,7 @@ import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } f
 import { appendRank, placeBacklogRank, prependRank } from "./backlog-rank.ts";
 import {
   isRetentionRetryable,
+  taskCheckoutIdentities,
   taskHoldsCleanupResources,
   taskResourceGeneration,
 } from "./task-resource-generation.ts";
@@ -7087,14 +7088,7 @@ export class TaskManager {
     return JSON.stringify({
       status: task.status,
       dispatchedAt: task.dispatchedAt,
-      repos: taskRepoRefs(task).map((ref) => [
-        ref.position,
-        ref.repoRoot,
-        ref.worktreePath,
-        ref.provider,
-        ref.worktreeLeaseId,
-        ...(ref.provider === "git" && ref.worktreePath ? [ref.branch] : []),
-      ]),
+      repos: taskCheckoutIdentities(task),
     });
   }
 

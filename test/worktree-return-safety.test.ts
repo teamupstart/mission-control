@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/server/util/exec.ts";
@@ -27,6 +27,64 @@ function fixture(t: TestContext) {
 test("a clean published checkout qualifies, including after a fresh origin fetch", async (t) => {
   const { path } = fixture(t);
   assert.equal(await worktreeReturnBlocker(path, { fetch: true }), null);
+});
+
+test("publication fetch refreshes origin refs without applying a configured local branch mapping", async (t) => {
+  const { path, git } = fixture(t);
+  const pinned = git("rev-parse", "HEAD");
+  git("branch", "local-pin");
+  git("commit", "--allow-empty", "-m", "new origin head");
+  git("push", "origin", "main");
+  const published = git("rev-parse", "HEAD");
+  git("update-ref", "refs/remotes/origin/main", pinned);
+  git("config", "--add", "remote.origin.fetch", "+refs/heads/main:refs/heads/local-pin");
+
+  assert.equal(await worktreeReturnBlocker(path, { fetch: true }), null);
+  assert.equal(git("rev-parse", "refs/remotes/origin/main"), published);
+  assert.equal(git("rev-parse", "refs/heads/local-pin"), pinned);
+});
+
+test("final safety preserves a linked checkout with a clean merge in progress", async (t) => {
+  const { path, git } = fixture(t);
+  git("switch", "-c", "merge-side");
+  git("commit", "--allow-empty", "-m", "merge side");
+  git("switch", "main");
+  git("commit", "--allow-empty", "-m", "main side");
+  git("push", "origin", "main");
+  const linked = join(path, "..", "linked");
+  git("worktree", "add", "-b", "task", linked, "main");
+
+  const blocked = await worktreeReturnBlocker(linked, {
+    strictIndex: true,
+    expectedBranch: "task",
+    execute: async (command, args, options) => {
+      const result = await run(command, args, options);
+      if (args.includes("rev-list")) git("-C", linked, "merge", "--no-commit", "merge-side");
+      return result;
+    },
+  });
+  assert.equal(git("-C", linked, "status", "--porcelain"), "");
+  assert.ok(existsSync(git("-C", linked, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD")));
+  assert.match(blocked ?? "", /Git operation is in progress/);
+  git("-C", linked, "merge", "--abort");
+  assert.equal(await worktreeReturnBlocker(linked, { strictIndex: true, expectedBranch: "task" }), null);
+});
+
+test("disposable checkout eligibility reports initialized submodules", async (t) => {
+  const { path, git } = fixture(t);
+  const submodule = fixture(t).path;
+  git("-c", "protocol.file.allow=always", "submodule", "add", submodule, "dep with spaces");
+  git("commit", "-m", "track a submodule");
+  git("push", "origin", "main");
+  const linked = join(path, "..", "linked");
+  git("worktree", "add", "-b", "task", linked, "main");
+
+  const options = { strictIndex: true, expectedBranch: "task" };
+  assert.equal(await worktreeReturnBlocker(linked, options), null);
+  git("-C", linked, "-c", "protocol.file.allow=always", "submodule", "update", "--init");
+  assert.equal(git("-C", linked, "status", "--porcelain"), "");
+  assert.match(await worktreeReturnBlocker(linked, options) ?? "", /initialized submodule/);
+  assert.match(await worktreeReturnBlocker(linked, { ...options, fetch: true }) ?? "", /initialized submodule/);
 });
 
 test("Kill preserves ignored local files even when ordinary Git status is clean", async (t) => {

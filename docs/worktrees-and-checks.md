@@ -785,9 +785,12 @@ earliest possible release.
 At release, the daemon rechecks task and provider ownership, Git registration and activity,
 and process occupancy. After occupancy and publication verification, it fingerprints
 Git activity and confirms the published HEAD in a clean status scan that includes ignored
-files. A final index check protects files hidden by Git index flags. The commit must be reachable from a freshly verified origin branch.
-For disposable Git worktrees, the final status must also match the task's recorded branch. Missing metadata, unknown occupancy, unpublished commits,
-local files, or an unsettled required archive hold the checkout. Ordinary failures are retried
+files. A final index check protects files hidden by Git index flags. The daemon verifies
+publication against refreshed origin tracking refs, without applying the repository's configured
+fetch mappings to local branches. An unfinished Git operation also blocks return.
+Disposable Git worktrees must match the task's recorded branch. Initialized submodules and
+retained submodule metadata block automatic removal. Missing metadata, unknown occupancy,
+unpublished commits, local files, or an unsettled required archive hold the checkout. Ordinary failures are retried
 with backoff capped at a day. A partial return clears only the repos the provider returned,
 and a surviving checkout with a changed resource generation gets a fresh window. Automatic
 Git removal also preserves the local branch. Native leases return under the slot lock.

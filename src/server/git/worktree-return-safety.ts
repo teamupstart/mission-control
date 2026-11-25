@@ -1,4 +1,5 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { run } from "../util/exec.ts";
 import { isolatedGitEnvironment } from "./worktree-tree.ts";
 import { NativeWorktreeGit } from "../worktrees/git.ts";
@@ -30,6 +31,45 @@ function returnGit(path: string, execute: typeof run) {
 
 export type ReadReturnActivity = () => Promise<{ head: string } | { blocker: string }>;
 
+async function metadataExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function operationBlocker(git: ReturnType<typeof returnGit>, gitDir: string): Promise<string | null> {
+  const markers = ["MERGE_HEAD", "rebase-apply", "rebase-merge", "sequencer", "BISECT_LOG"];
+  if ((await Promise.all(markers.map((name) => metadataExists(join(gitDir, name))))).some(Boolean)) {
+    return "a Git operation is in progress";
+  }
+  // Ask Git about these refs so the same check works with files and reftable storage.
+  const states = await Promise.all(["CHERRY_PICK_HEAD", "REVERT_HEAD"].map((ref) =>
+    git(["rev-parse", "--verify", "--quiet", ref])));
+  if (states.some((state) => state.code === 0)) return "a Git operation is in progress";
+  if (states.some((state) => state.code !== 1 || state.outcomeUnknown || state.overflowed || state.stderr)) {
+    return "checkout Git operation state could not be verified";
+  }
+  return null;
+}
+
+/** Match Git's unforced linked-worktree removal check for submodule metadata. */
+async function submoduleBlocker(path: string, gitDir: string, index: string[]): Promise<string | null> {
+  const blocker = "checkout has initialized submodules or retained submodule metadata";
+  if (await metadataExists(join(gitDir, "modules"))) return blocker;
+  for (const entry of index) {
+    if (!entry.startsWith("160000 ", 2)) continue;
+    const tab = entry.indexOf("\t");
+    const submodule = tab < 0 ? "" : entry.slice(tab + 1);
+    if (!submodule || submodule.includes("\uFFFD")) return "checkout submodule paths could not be verified";
+    if (await metadataExists(join(path, submodule, ".git"))) return blocker;
+  }
+  return null;
+}
+
 /** Every uncertain read retains the checkout. Ignored files have no cache-disposal policy. */
 export async function worktreeReturnBlocker(
   path: string,
@@ -43,7 +83,8 @@ export async function worktreeReturnBlocker(
       return "checkout identity could not be verified";
     }
     if (options.fetch) {
-      const fetched = await git(["fetch", "--atomic", "--prune", "--no-tags", "--no-recurse-submodules", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
+      const fetched = await git(["fetch", "--atomic", "--prune", "--no-tags", "--no-recurse-submodules",
+        "--refmap=", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
       if (fetched.code !== 0 || fetched.outcomeUnknown || fetched.overflowed) return "origin could not be refreshed";
     }
     const head = await git(["rev-parse", "--verify", "HEAD"]);
@@ -78,14 +119,24 @@ export async function worktreeReturnBlocker(
           !records.includes(`# branch.head ${options.expectedBranch}`))) {
       return "checkout branch does not match the task's recorded branch";
     }
-    if (options.strictIndex) {
-      const index = await git(["ls-files", "-v", "-z"]);
-      if (index.code !== 0 || index.outcomeUnknown || index.overflowed ||
-          index.stdout.split("\0").some((entry) => /^[a-zS] /.test(entry))) {
+    const disposable = options.expectedBranch !== undefined;
+    let index: string[] = [];
+    if (options.strictIndex || disposable) {
+      const listed = await git(["ls-files", "-v", "-z", ...(disposable ? ["--stage"] : [])]);
+      index = listed.stdout.split("\0").filter(Boolean);
+      if (listed.code !== 0 || listed.outcomeUnknown || listed.overflowed ||
+          (options.strictIndex && index.some((entry) => /^[a-zS] /.test(entry)))) {
         return "checkout index has hidden changes or could not be verified";
       }
     }
-    return null;
+    const directory = await git(["rev-parse", "--absolute-git-dir"]);
+    const gitDir = directory.stdout.replace(/\r?\n$/, "");
+    if (directory.code !== 0 || directory.outcomeUnknown || directory.overflowed ||
+        !isAbsolute(gitDir) || !(await lstat(gitDir)).isDirectory()) {
+      return "checkout Git metadata could not be verified";
+    }
+    const submodules = disposable ? await submoduleBlocker(path, gitDir, index) : null;
+    return submodules ?? await operationBlocker(git, gitDir);
   } catch {
     return "checkout safety could not be verified";
   }

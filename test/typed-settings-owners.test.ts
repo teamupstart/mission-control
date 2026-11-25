@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { z } from "zod";
-import { APP_CONFIG_ENTRIES, appConfigEntryHasSettings } from "../src/shared/app-config-entries.ts";
+import { APP_CONFIG_ENTRIES, appConfigEntryHasSettings, type AppConfigEntry } from "../src/shared/app-config-entries.ts";
 import { DISPLAY_ITEMS } from "../src/shared/board-card-settings.ts";
 import { ACTIONS } from "../src/shared/keyboard-settings.ts";
 import { ALL_SETTINGS_CONTROLS } from "../src/shared/settings-controls.ts";
 import { SETTINGS_VALUE_MAX_BYTES, settingsFailure } from "../src/shared/settings-mcp.ts";
 import { TOPBAR_ITEMS } from "../src/shared/topbar-items-settings.ts";
+import { persistConfigPatch } from "../src/server/config-patch-storage.ts";
 import { getAppConfig, setAppConfig } from "../src/server/db.ts";
 import { setForemanConfig } from "../src/server/foreman/config.ts";
 import { setHarnessesConfig } from "../src/server/harnesses.ts";
@@ -165,5 +166,28 @@ test("nested owner patches preserve stored siblings from a newer build", async (
     assert.equal(next.multiplexerTerminal.tmux, "wezterm");
     assert.equal(stored?.tmux, "wezterm");
     assert.equal((stored as Record<string, unknown>)["future-mux"], "future-emulator");
+  });
+});
+
+test("repairing a malformed row keeps siblings inside merged fields", () => {
+  const schema = z.object({
+    limit: z.number(),
+    group: z.object({ nested: z.object({ enabled: z.boolean() }) }),
+  });
+  const entry = { ...APP_CONFIG_ENTRIES.storageLimits, schema } as unknown as AppConfigEntry;
+  const before = { limit: 10, group: { nested: { enabled: false } } };
+  const patch = { group: { nested: { enabled: true } } };
+  const next = schema.parse({ ...before, ...patch });
+  setAppConfig(entry, {
+    limit: "invalid",
+    group: { nested: { enabled: false, futureOption: true } },
+  } as never);
+
+  persistConfigPatch(entry, before, next, patch, Object.keys(patch));
+
+  assert.deepEqual(schema.parse(getAppConfig(entry)), next);
+  assert.deepEqual(getAppConfig(entry), {
+    limit: 10,
+    group: { nested: { enabled: true, futureOption: true } },
   });
 });

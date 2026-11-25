@@ -32,14 +32,29 @@ export function persistConfigPatch<Entry extends AppConfigEntry>(
     return;
   }
   // Whole-record fallback readers can start a patch from defaults when the saved row is
-  // malformed. Repair known fields from the validated result so a later read sees the save.
+  // malformed. Replace known values from the validated result and keep the siblings that
+  // the merge retained. Refuse the save if the repaired row still cannot be read.
   const repaired = { ...result, ...after };
-  setAppConfig(entry, entry.schema.safeParse(repaired).success ? repaired as AppConfigInput<Entry> : next);
+  for (const key of mergedFields) {
+    repaired[key] = repairMergedValue(result[key], after[key]);
+  }
+  entry.schema.parse(repaired);
+  setAppConfig(entry, repaired as AppConfigInput<Entry>);
 }
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
+}
+
+function repairMergedValue(preserved: unknown, validated: unknown): unknown {
+  if (validated === null || typeof validated !== "object" || Array.isArray(validated)) return validated;
+  const siblings = record(preserved);
+  return {
+    ...siblings,
+    ...Object.fromEntries(Object.entries(validated).map(([key, value]) =>
+      [key, repairMergedValue(siblings[key], value)])),
+  };
 }
 
 function preserveSiblings(raw: unknown, before: unknown, after: unknown, patch: unknown): unknown {

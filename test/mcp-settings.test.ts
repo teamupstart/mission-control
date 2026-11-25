@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 import { SESSION_SETTINGS_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import type { SettingsErrorCode, SettingsRequest, SettingsResult } from "../src/shared/settings-mcp.ts";
 import { settingsFailure } from "../src/shared/settings-mcp.ts";
 import { SKINS } from "../src/shared/skins.ts";
@@ -54,6 +55,8 @@ const { registerSessionSettingsRoutes } = await import("../src/server/session-se
 const { getShapingConfig } = await import("../src/server/shaping/index.ts");
 const { getVoiceConfig } = await import("../src/server/voice/config.ts");
 const { getTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
+const { getWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { dispatchSetting } = await import("../src/server/settings-dispatcher.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 type SettingDescriptor = import("../src/server/settings-dispatcher.ts").SettingDescriptor;
@@ -73,6 +76,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   const databaseBackups = new DatabaseBackupService(openDb(), { root: join(home, "database-backups") });
   const app = buildApp({
     registry, tasks: new TaskManager(registry), reviews: {} as ReviewManager, queues: {} as QueueManager,
+    workflows: new WorkflowManager(registry),
     databaseBackups,
     worktreeOperations: { setConfig: setWorktreesConfig } as import("../src/server/worktrees/operations.ts").WorktreeOperationsService,
     authorizeSessionSettings: async ({ requestId, enabled }) => {
@@ -337,6 +341,9 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     await call(claude, { ...set, key: "shaping.caller", value: { name: "fixture-secret" } }, "protected",
       "Manage this setting in Settings > Task shaping.");
     const before = getVoiceConfig();
+    await call(claude, { ...set, key: "voice.autoMuteDuringCalls", value: false }, "protected",
+      "Manage this setting in Settings > Voice.");
+    assert.equal(getVoiceConfig().autoMuteDuringCalls, true);
     await call(claude, { ...set, key: voiceKey, value: before.cancelWindow.seconds + 1 });
     assert.deepEqual(getVoiceConfig(), { ...before, cancelWindow: { ...before.cancelWindow, seconds: before.cancelWindow.seconds + 1 } });
     for (const key of ["voice.decisionProvider", "voice.decisionKey", "voice.hotkey", "voice.listeningMode",
@@ -364,10 +371,13 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
       if (event.type === "repo_index_changed") identities.push(event.identity);
     });
     try {
-      const saved = await app.request("/api/repo-index", {
-        method: "PUT", headers, body: JSON.stringify({ directories: [] }),
+      const { revision } = await (await app.request("/api/repo-index", { headers })).json();
+      const replace = (revision: string) => app.request("/api/repo-index", {
+        method: "PUT", headers, body: JSON.stringify({ directories: [], revision }),
       });
+      const saved = await replace(revision);
       assert.equal(saved.status, 200);
+      const dashboard = await saved.json();
       await call(claude, { ...set, key, expectedVersion: read.version, value: [{ path: home }] }, "stale_version");
       const current = await call(claude, { ...get, key });
       assert.ok(current.ok && current.operation === "get" && current.version);
@@ -381,6 +391,10 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
       });
       assert.equal(identities.length, 2);
       assert.notEqual(identities[0], identities[1]);
+      assert.equal((await replace(dashboard.revision)).status, 409);
+      const index = await call(claude, { ...get, key });
+      assert.ok(index.ok && index.operation === "get");
+      assert.deepEqual(index.value, next);
     } finally {
       stop();
     }
@@ -388,12 +402,26 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
 
   await t.test("workflow history can be kept longer while destructive edits and report muting retain operator authority", async () => {
     const key = "workflows.retention.maxCompletedRuns";
+    const before = getWorkflowPolicy().retention;
     const current = await call(claude, { ...get, key });
     assert.ok(current.ok && current.operation === "get" && typeof current.value === "number");
     await call(claude, { ...set, key, value: current.value - 1 }, "invalid_value");
     assert.deepEqual(await call(claude, { ...get, key }), current);
     const value = current.value + 1;
     assert.deepEqual(await call(claude, { ...set, key, value }), { ok: true, operation: "set", key, value });
+    const latest = getWorkflowPolicy().retention;
+    const patch = { retention: before, skipPassedJudges: false };
+    const write = (body: object, method = "PATCH") => app.request("/api/workflows/config", {
+      method, headers, body: JSON.stringify(body),
+    });
+    for (const confirmation of [undefined, { current: before, proposed: before }, { current: latest, proposed: latest }]) {
+      assert.equal((await write({ ...patch, retentionConfirmation: confirmation })).status, 409);
+      assert.deepEqual(getWorkflowPolicy().retention, latest);
+      assert.equal(getWorkflowPolicy().skipPassedJudges, true);
+    }
+    assert.equal((await write(patch, "PUT")).status, 409);
+    assert.equal((await write({ ...patch, retentionConfirmation: { current: latest, proposed: before } })).status, 200);
+    assert.deepEqual(getWorkflowPolicy().retention, before);
     for (const [key, destination] of [
       ["workflows.liveEnabled", "Workflows"], ["workflows.checksEnabled", "Workflows"],
       ["reports.muted", "Reports"], ["settings.restore", "Restore"], ["telemetry.user", "Telemetry"],
@@ -402,6 +430,18 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
       await call(claude, { ...set, key, value: { credential: "private" } }, "protected",
         `Manage this setting in Settings > ${destination}.`);
     }
+  });
+
+  await t.test("a published workflow matching the built-in default is stored as an explicit choice", async () => {
+    const key = "workflows.kindWorkflowDefaults.ship";
+    assert.equal(getWorkflowPolicy().kindWorkflowDefaults.ship, undefined);
+    const inherited = await call(claude, { ...get, key });
+    assert.ok(inherited.ok && inherited.operation === "get");
+    assert.equal(inherited.value, NO_MISTAKES_REVIEW_WORKFLOW_ID);
+    await call(claude, { ...set, key, value: NO_MISTAKES_REVIEW_WORKFLOW_ID });
+    assert.equal(getWorkflowPolicy().kindWorkflowDefaults.ship, NO_MISTAKES_REVIEW_WORKFLOW_ID);
+    await call(claude, { ...set, key, value: "$inherit" });
+    assert.equal(getWorkflowPolicy().kindWorkflowDefaults.ship, undefined);
   });
 
   await t.test("task-source leaf edits preserve provider authority and reject stale list replacements", async () => {
@@ -413,6 +453,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     const prefix = `taskSources.${createHash("sha256").update("fixture-source").digest("base64url")}`;
     const key = `${prefix}.config.labelsAny`;
     const original = getTaskSourcesConfig();
+    const dashboard = await (await app.request("/api/task-sources/config", { headers })).json();
     await call(claude, { ...set, key: `${prefix}.config.unassignedOnly`, value: true }, "invalid_value");
     assert.deepEqual(getTaskSourcesConfig(), original);
     await call(claude, { ...get, key: `${prefix}.authority` }, "protected", "Manage this setting in Settings > Task sources.");
@@ -421,6 +462,10 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     assert.ok(read.ok && read.operation === "get" && read.version);
     const stale = { ...set, key, expectedVersion: read.version, value: ["bug"] };
     await call(codex, { ...set, key: `${prefix}.maxPerSweep`, value: 12 });
+    const oldSave = await app.request("/api/task-sources/config", {
+      method: "PUT", headers, body: JSON.stringify({ revision: dashboard.revision, sources: dashboard.sources }),
+    });
+    assert.equal(oldSave.status, 409);
     await call(claude, stale, "stale_version");
     const latest = await call(claude, { ...get, key });
     assert.ok(latest.ok && latest.operation === "get" && latest.version);
@@ -430,6 +475,25 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     const saved = getTaskSourcesConfig().sources[0]!;
     assert.deepEqual(saved, { ...original.sources[0], maxPerSweep: 12,
       config: { ...(original.sources[0]!.config as object), labelsAny: ["bug"] } });
+  });
+
+  await t.test("Jira query edits require the operator while an upstream write-back trigger is configured", async () => {
+    const source = {
+      id: "fixture-jira", kind: "jira", enabled: true, repoRoot: home,
+      config: { jql: "project = ONE" }, writeback: { onPrOpened: true },
+    };
+    const entry = APP_CONFIG_ENTRIES.taskSources;
+    setAppConfig(entry, { sources: [source] } as never);
+    const key = `taskSources.${createHash("sha256").update(source.id).digest("base64url")}.config.jql`;
+    await call(claude, { ...set, key, value: source.config.jql });
+    const before = getTaskSourcesConfig();
+    const broader = "project in (ONE, TWO)";
+    await call(claude, { ...set, key, value: broader }, "protected", "Manage this setting in Settings > Task sources.");
+    assert.deepEqual(getTaskSourcesConfig(), before);
+    setAppConfig(entry, { sources: [{ ...source, writeback: {} }] } as never);
+    assert.deepEqual(await call(claude, { ...set, key, value: broader }), {
+      ok: true, operation: "set", key, value: broader,
+    });
   });
 
   await t.test("Harnesses validation and notification are shared by MCP and dashboard edits", async () => {

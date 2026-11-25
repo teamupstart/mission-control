@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { disposableWorktreeCensus } from "./worktrees/disposable-census.ts";
 import { backgroundWorktreeRetentionStatus } from "./task-worktree-retention.ts";
 import { specializedSettings, workflowDefaultSettings, pipelineRuntimeSetting } from "./session-settings-specialized.ts";
@@ -270,7 +271,7 @@ import {
   PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
-  TaskSourcesConfigPatchSchema,
+  TaskSourcesUpdateSchema,
   type TaskSourcesConfigPatch,
   TaskSourceWritebackRetrySchema,
   SpendReportSchema,
@@ -320,7 +321,8 @@ import {
   UpdateWorkflowCommandSchema,
   ReadWorkflowCommandOutputSchema,
   WorkflowConfigSchema,
-  WorkflowPolicyPatchSchema,
+  WorkflowSettingsPatchSchema,
+  type WorkflowSettingsPatch,
   WorkflowRunActionSchema,
   WorktreeActionExecuteSchema,
   WorktreeActionRequestSchema,
@@ -559,7 +561,7 @@ import {
   REPO_INDEX_IDENTITY_HEADER,
   REPO_INDEX_IDENTITY_UNKNOWN,
   REPOS_SCANNED_AT_HEADER,
-  RepoIndexConfigPatchSchema,
+  RepoIndexUpdateSchema,
 } from "@shared/repo-index.ts";
 import { defaultSetupDeps, setupChecksView } from "./setup/index.ts";
 import { currentOwnedRuntime } from "./owned-runtime.ts";
@@ -2901,16 +2903,35 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     return null;
   };
-  const applyWorkflowPreferences: SettingsOwners["workflows"] = patch => {
+  const retentionNeedsConfirmation = (
+    patch: WorkflowSettingsPatch["retention"],
+    confirmation?: WorkflowSettingsPatch["retentionConfirmation"],
+  ): boolean => {
+    if (!patch) return false;
+    const current = getWorkflowPolicy().retention;
+    if (!retentionShortens(patch, current)) return false;
+    if (!confirmation) return true;
+    const proposed = { ...current, ...patch };
+    return !isDeepStrictEqual(confirmation.current, current) || !isDeepStrictEqual(confirmation.proposed, proposed);
+  };
+  const retentionConfirmationError =
+    "Workflow retention would shorten. Review the current limits and confirm this change in Workflow settings.";
+
+  const applyWorkflowPreferences = (
+    patch: Parameters<SettingsOwners["workflows"]>[0],
+    confirmation?: WorkflowSettingsPatch["retentionConfirmation"],
+  ) => {
+    if (retentionNeedsConfirmation(patch.retention, confirmation)) throw new InvalidSettingValue(retentionConfirmationError);
     const error = patch.kindWorkflowDefaults && workflowDefaultError(patch.kindWorkflowDefaults);
     if (error) throw new InvalidSettingValue(error);
     return patchWorkflowPolicy(patch);
   };
   app.get("/api/workflows/config", (c) => c.json(legacyWorkflowConfig()));
   app.patch("/api/workflows/config", async c => {
-    const parsed = await parseBody(c, WorkflowPolicyPatchSchema, { strict: true });
+    const parsed = await parseBody(c, WorkflowSettingsPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    try { applyWorkflowPreferences(parsed.data); }
+    const { retentionConfirmation, ...patch } = parsed.data;
+    try { applyWorkflowPreferences(patch, retentionConfirmation); }
     catch (error) {
       if (error instanceof InvalidSettingValue) return c.json({ error: error.message }, 409);
       throw error;
@@ -2940,6 +2961,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
+    if (retentionNeedsConfirmation(parsed.data.retention)) return c.json({ error: retentionConfirmationError }, 409);
     const error = workflowDefaultError(parsed.data.kindWorkflowDefaults);
     if (error) return c.json({ error }, 409);
     // ONE transaction over both halves, because the old route's contract is that its body is
@@ -4639,10 +4661,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         error: `Repository index directories are read-only while ${override.variable} is set.`,
       }, 409);
     }
-    const parsed = await parseBody(c, RepoIndexConfigPatchSchema);
+    const parsed = await parseBody(c, RepoIndexUpdateSchema);
     if (!parsed.ok) return parsed.res;
+    const { revision, ...patch } = parsed.data;
+    if (revision !== appConfigRevision(APP_CONFIG_ENTRIES.repoIndex)) {
+      return c.json({ error: "Repository index changed. Review the current directories and try again." }, 409);
+    }
     try {
-      applyRepoIndexSettings(parsed.data);
+      applyRepoIndexSettings(patch);
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
@@ -8574,6 +8600,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const taskSourcesView = (): TaskSourcesView => {
     const cfg = getTaskSourcesConfig();
     return {
+      revision: appConfigRevision(APP_CONFIG_ENTRIES.taskSources),
       sources: cfg.sources,
       status: taskSourceStatuses(cfg.sources),
       sync: sourceSyncReviews(cfg.sources),
@@ -8617,9 +8644,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * `resolveTaskRepoRoot` before filing any task and reports that stricter refusal there.
    */
   app.put("/api/task-sources/config", async (c) => {
-    const parsed = await parseBody(c, TaskSourcesConfigPatchSchema);
+    const parsed = await parseBody(c, TaskSourcesUpdateSchema);
     if (!parsed.ok) return parsed.res;
-    const revision = appConfigRevision(APP_CONFIG_ENTRIES.taskSources);
+    const staleSources = () => c.json({ error: "Task sources changed. Review the current settings and try again." }, 409);
+    const { revision } = parsed.data;
+    if (revision !== appConfigRevision(APP_CONFIG_ENTRIES.taskSources)) return staleSources();
     const before = getTaskSourcesConfig();
     const beforeById = new Map(before.sources.map((source) => [source.id, source]));
     const sources = [];
@@ -8641,7 +8670,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       sources.push({ ...s, repoRoot });
     }
     if (revision !== appConfigRevision(APP_CONFIG_ENTRIES.taskSources)) {
-      return c.json({ error: "Task sources changed while this edit was being validated. Reload and retry." }, 409);
+      return staleSources();
     }
     applyTaskSourceSettings({ sources });
     return c.json(taskSourcesView());
@@ -9567,11 +9596,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   const getTypedSettings = typedSettings({
     advisorModelIds: agent => modelCatalogs?.cachedModelIds(agent) ?? [],
     worktreePoolRoots: () => worktreeOperations?.manager?.store.pools().map(pool => pool.gitCommonDirectory) ?? [],
-    workflows: patch => {
-      const current = getWorkflowPolicy().retention;
-      if (patch.retention && retentionShortens(patch.retention, current)) throw new InvalidSettingValue();
-      return applyWorkflowPreferences(patch);
-    },
+    workflows: applyWorkflowPreferences,
     harnesses: patch => {
       try { return applyHarnessesSettings(patch); }
       catch (error) {

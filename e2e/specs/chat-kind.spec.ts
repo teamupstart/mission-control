@@ -190,7 +190,9 @@ test("backlog edit, ensemble, and task sources do not offer chat; recurring miss
     .toEqual(["ship", "scout", "plan", "pipeline", "chat", "bugfix", "document"]);
   await missions.getByRole("button", { name: "Close" }).click();
 
+  const { revision } = await api(daemon, "/api/task-sources/config");
   await api(daemon, "/api/task-sources/config", {
+    revision,
     sources: [{
       id: "source-chat-scope",
       kind: "github-issues",

@@ -2640,8 +2640,8 @@ export const api = {
   // drops reads sent before the save, and clears the announced identity so this window takes
   // its new index before its own announcement arrives. A rescan keeps the list - same
   // directories, and a list that is a few seconds old beats none.
-  setRepoIndex: async (cfg: RepoIndexConfigPatch) => {
-    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, cfg);
+  setRepoIndex: async (cfg: RepoIndexConfigPatch, revision: string) => {
+    const saved = await put<ActionResult & RepoIndexView>(`/api/repo-index`, { ...cfg, revision });
     if (saved.ok) forgetCachedRepos();
     return saved;
   },
@@ -2656,7 +2656,8 @@ export const api = {
     }),
 
   // --- Task sources (pulling work into the backlog) ---
-  setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),
+  setTaskSources: (cfg: TaskSourcesConfigPatch, revision: string) =>
+    put<ActionResult & Pick<TaskSourcesView, "revision">>(`/api/task-sources/config`, { ...cfg, revision }),
   /** Sweep one source now. The report says what it filed, skipped and dropped. */
   sweepTaskSource: (id: string) =>
     post<ActionResult & SweepReport>(`/api/task-sources/${encodeURIComponent(id)}/sweep`),

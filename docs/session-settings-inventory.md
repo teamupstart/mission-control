@@ -49,7 +49,7 @@ follow the dashboard's feature and build gates.
 | `voice-heard` | 3 | Protected status | Voice's in-memory heard text may be private |
 | `voice-input-device` | 3 | Read/write | `voice.inputDevice` selects the built-in, system or currently reported input device. |
 | `voice-hotkey` | 3 | Protected | Desktop shortcut reservation and verification establish the operator's intended chord. |
-| `voice-auto-mute` | 3 | Read/write | `voice.autoMuteDuringCalls` reconciles the listener. |
+| `voice-auto-mute` | 3 | Read/write | `voice.autoMuteDuringCalls` can enable call auto-mute. Disabling it requires the operator because that can resume microphone capture. |
 | `voice-listening-mode` | 3 | Protected | Switching between automatic and held microphone capture changes when the workstation listens. |
 | `voice-end-of-speech` | 3 | Read/write | `voice.endOfSpeechMs` updates automatic capture timing. |
 | `voice-cancel-window` | 3 | Read/write | `voice.cancelWindow.enabled` and `voice.cancelWindow.seconds` update delivery timing. |
@@ -98,7 +98,7 @@ follow the dashboard's feature and build gates.
 | `workflow-check-commands` | 3 | Protected | Workflow command definitions in Library affect executable argv and share the workflow trust boundary |
 | `workflow-retention` | 3 | Read/write with confirmation boundary | `rawEvidenceDays`, `completedRunDays` and `maxCompletedRuns` can be extended. Shortening requires dashboard confirmation. |
 | `workflow-health` | 3 | Status | Workflow delivery health and failure views |
-| `task-sources` | 3 | Read/write and protected | Existing source label, interval, refresh, batch cap, task kind, agent, priority, labels and provider search/mapping fields are editable. Enablement is consent. Repository, credentials, automatic dispatch and write-back remain operator-controlled. |
+| `task-sources` | 3 | Read/write and protected | Existing source label, interval, refresh, batch cap, task kind, agent, priority, labels and provider search/mapping fields are editable. Enablement is consent. Repository, credentials, automatic dispatch, write-back and Jira query changes while write-back is configured remain operator-controlled. |
 | `conductor-repos` | 3 | Protected | Pipelines `repos` commissioning policy and repository paths, withheld by this build |
 | `conductor-overview` | 3 | Status and actions | Commissioning and runs, withheld by this build |
 | `conductor-detection` | 3 | Status | Engine environment and availability, withheld by this build |

@@ -1,10 +1,11 @@
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { TaskSourcesConfigPatchSchema } from "@shared/protocol.ts";
-import type { TaskSourceInstance, TaskSourcesConfig } from "@shared/task-source.ts";
+import { JiraConfigSchema, type TaskSourceInstance, type TaskSourcesConfig } from "@shared/task-source.ts";
 import type { SettingsValue } from "@shared/settings-mcp.ts";
 import { appConfigRevision } from "./db.ts";
 import { bindTypedSettings, field } from "./typed-settings.ts";
 import { controlMetadata, settingTargetId } from "./session-settings-specialized.ts";
+import { ProtectedSettingValue } from "./settings-dispatcher.ts";
 
 const commonFields = [
   "label", "intervalMs", "keepUpdated", "maxPerSweep",
@@ -32,9 +33,17 @@ function sourceField(source: TaskSourceInstance, path: string) {
       return (leaf ? (value as Record<string, SettingsValue>)[leaf] : value) ?? null;
     },
     patch: (config, value) => ({
-      sources: config.sources.map(row => row.id === source.id
-        ? { ...row, ...(leaf ? { [parent]: { ...(row[parent as "config" | "defaults"] as object), [leaf]: value } } : { [parent]: value }) }
-        : row),
+      sources: config.sources.map(row => {
+        if (row.id !== source.id) return row;
+        // A disabled source can still be swept manually. Jira does not provide a
+        // local way to prove a changed JQL stays within the operator's approved scope.
+        if (path === "config.jql" && row.kind === "jira"
+          && (row.writeback.onPrOpened || row.writeback.onCompleted || row.writeback.resolve)
+          && value !== JiraConfigSchema.parse(row.config).jql) {
+          throw new ProtectedSettingValue(controlMetadata("task-sources").destination);
+        }
+        return { ...row, ...(leaf ? { [parent]: { ...(row[parent as "config" | "defaults"] as object), [leaf]: value } } : { [parent]: value }) };
+      }),
     }),
   });
 }

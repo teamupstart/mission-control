@@ -31,7 +31,7 @@ export interface TaskSourcesState {
   resolveSync: (id: string, taskId: string, version: string, choice: "source" | "local") => Promise<boolean>;
   view: TaskSourcesView | null;
   /** Write the whole set. Applied optimistically, reverted if the server refuses. */
-  save: (sources: TaskSourceInstance[]) => Promise<boolean>;
+  save: (sources: TaskSourceInstance[], revision: string) => Promise<boolean>;
   /** Sweep one source now, and refresh. Returns what it filed. */
   sweep: (id: string) => Promise<SweepReport | null>;
   /** Ask whether a source could run at all. Null means it can. */
@@ -86,6 +86,7 @@ export function useTaskSources(): TaskSourcesState {
    */
   const editSeq = useRef(0);
   const writeGen = useRef(0);
+  const batch = useRef<{ revision: string; tail: Promise<unknown> } | null>(null);
 
   const setView = useCallback((v: TaskSourcesView | null): void => {
     viewRef.current = v;
@@ -109,12 +110,13 @@ export function useTaskSources(): TaskSourcesState {
    * default, because whatever is current when a poll leaves is exactly what a poll is asking about.
    */
   const refresh = useCallback(
-    async (seqAtRequest: number = editSeq.current): Promise<void> => {
+    async (seqAtRequest: number = editSeq.current, confirming = false): Promise<void> => {
       const genAtRequest = writeGen.current;
       const v = await fetchTaskSources();
       if (!v) return;
       if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
       if (!readIsCurrent(genAtRequest, writeGen.current)) return;
+      if (batch.current && !confirming) return;
       setView(v);
     },
     [setView],
@@ -134,36 +136,25 @@ export function useTaskSources(): TaskSourcesState {
   }, [refresh, settingsRevision]);
 
   /**
-   * The write already in flight, so the next one can wait for it.
-   *
-   * Every save PUTs the WHOLE source list, so two of them in flight together are decided by
-   * arrival rather than by intent: if the first is delayed past the second, it lands last and
-   * puts its older blob back, dropping the newer field. `editSeq` does not help - it guards
-   * reads and local reverts, and a request already on the wire is neither.
-   *
-   * Serialized rather than fixed with a server-side revision, which would be a new wire
-   * contract and a persisted field for one panel's benefit. The client is the only writer of
-   * this config in practice, and it can simply take its turn. Two tabs writing at once remain
-   * last-write-wins, as they are for every config in the app.
-   */
-  const writing = useRef<Promise<unknown>>(Promise.resolve());
-
-  /**
    * Apply a change optimistically, and TAKE IT BACK if the server refuses - so a switch
    * never shows a state that isn't in force. That contract matters more here than in most
    * panels: a source reading "on" while the daemon has it off means work you believe is
    * being swept is silently not, which looks exactly like an empty upstream.
    */
   const save = useCallback(
-    async (sources: TaskSourceInstance[]): Promise<boolean> => {
+    async (sources: TaskSourceInstance[], revision: string): Promise<boolean> => {
       const before = viewRef.current;
       if (!before) return false;
+      // Start from the revision rendered with these rows. Queued edits include earlier
+      // optimistic edits, so advance their revision only with this queue's own save replies.
+      const current = batch.current ?? { revision, tail: Promise.resolve() };
+      batch.current = current;
       const seq = ++editSeq.current;
       // Optimistically and IMMEDIATELY, outside the queue: what an operator sees when they
       // finish typing must not wait on somebody else's round trip.
       setView({ ...before, sources });
 
-      const queued = writing.current;
+      const queued = current.tail;
       const attempt = (async (): Promise<boolean> => {
         await queued;
         // Superseded while queued. A later edit composed its blob from this one's optimistic
@@ -171,16 +162,20 @@ export function useTaskSources(): TaskSourcesState {
         // overwrite the newer field with a value the operator has moved past.
         if (!readIsCurrent(seq, editSeq.current)) return true;
         const patch: TaskSourcesConfigPatch = { sources };
-        const res = await api.setTaskSources(patch);
+        const res = await api.setTaskSources(patch, current.revision);
         if (!res.ok) {
           // Say so either way - a refusal the operator never sees is how a panel comes to
           // disagree with the daemon silently. But only REVERT while this is still the newest
           // edit: a later one has already replaced what `before` holds, and its own confirming
           // read is what corrects this one's optimistic value.
           setError(whyItFailed(res.error));
-          if (readIsCurrent(seq, editSeq.current)) setView(before);
+          if (readIsCurrent(seq, editSeq.current)) {
+            await refresh(seq, true);
+            if (readIsCurrent(seq, editSeq.current) && viewRef.current?.sources === sources) setView(before);
+          }
           return false;
         }
+        current.revision = res.revision;
         setError(null);
         // The server has moved, so every read already in flight is describing an older one. This
         // is what invalidates a poll that left after this edit but before this write arrived -
@@ -189,12 +184,15 @@ export function useTaskSources(): TaskSourcesState {
         writeGen.current += 1;
         // THIS save's sequence, not whatever is current: a response that predates a queued edit
         // must not be applied over it. See `refresh`.
-        await refresh(seq);
+        await refresh(seq, true);
         return true;
       })();
       // Never a rejected link in the chain: one failed write must not stop the next one from
       // taking its turn.
-      writing.current = attempt.catch(() => {});
+      const tail = attempt.catch(() => {}).finally(() => {
+        if (current.tail === tail) batch.current = null;
+      });
+      current.tail = tail;
       return attempt;
     },
     [refresh, setView],
@@ -248,6 +246,7 @@ export function useTaskSources(): TaskSourcesState {
     (v: TaskSourcesView, seqAtRequest: number, genAtRequest: number): void => {
       if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
       if (!readIsCurrent(genAtRequest, writeGen.current)) return;
+      if (batch.current) return;
       setView(v);
     },
     [setView],
@@ -256,7 +255,7 @@ export function useTaskSources(): TaskSourcesState {
   /**
    * The two ledger actions.
    *
-   * Not queued behind `writing`, unlike `save`: that one PUTs the WHOLE source list, so two
+   * Outside the settings save queue: that one PUTs the WHOLE source list, so two
    * in flight together are decided by arrival rather than by intent. These write a source's
    * DELIVERY QUEUE and touch no part of that list, so they cannot overwrite an edit and have
    * nothing to take a turn behind.

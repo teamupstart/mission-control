@@ -26,7 +26,7 @@ import { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig } from ".
 import { getAwayConfig } from "./away/config.ts";
 import { launcherPromptEnabled, setLauncherPrompt } from "./home-dispatch/config.ts";
 import { getRepoIndexConfig, repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
-import { InvalidSettingValue, type SettingDescriptor, type SettingScalar } from "./settings-dispatcher.ts";
+import { InvalidSettingValue, ProtectedSettingValue, type SettingDescriptor, type SettingScalar } from "./settings-dispatcher.ts";
 import { applyShapingIntent, getShapingConfig } from "./shaping/index.ts";
 import { bindTypedSettings, choices, field } from "./typed-settings.ts";
 import { setVoiceConfirmation, setVoiceIndicator, storedVoiceUi } from "./ui-config.ts";
@@ -57,6 +57,7 @@ export function scalarIntent<Value extends SettingScalar>(
     read(): Value;
     /** Use the stored choice for retry detection when the effective value can be inherited. */
     readStored?(): Value | undefined;
+    reaffirm?: true;
     apply(value: Value): Value;
     choices?: () => readonly SettingsChoice[];
     label?: string;
@@ -75,7 +76,7 @@ export function scalarIntent<Value extends SettingScalar>(
       const parsed = schema.parse(value);
       const current = adapter.read();
       const stored = adapter.readStored ? adapter.readStored() : current;
-      if (stored === parsed) return current;
+      if (!adapter.reaffirm && stored === parsed) return current;
       if (adapter.choices && !adapter.choices().some(choice => choice.value === parsed)) throw new InvalidSettingValue();
       return adapter.apply(parsed);
     },
@@ -147,7 +148,15 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
         return voiceId(saved.speech.voice);
       },
     }),
-    ...bindTypedSettings({ schema: VoiceConfigPatchSchema, read: getVoiceConfig, apply: patch => setVoiceConfig(patch), changed }, [
+    ...bindTypedSettings({
+      schema: VoiceConfigPatchSchema, read: getVoiceConfig, changed,
+      apply(patch) {
+        if (patch.autoMuteDuringCalls === false) {
+          throw new ProtectedSettingValue(controlMetadata("voice-auto-mute").destination);
+        }
+        return setVoiceConfig(patch);
+      },
+    }, [
       field("voice", "autoMuteDuringCalls", "voice-auto-mute"),
       field("voice", "transcriptStyle", "voice-mode", {
         label: "Live voice transcript style", choices: choices(VoiceConfigSchema.shape.transcriptStyle.unwrap().options),
@@ -177,6 +186,8 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
     }),
     scalarIntent("ui.voice.confirmation", "voice-confirmation", VoiceUiConfigPatchSchema.shape.confirmation, {
       read: () => storedVoiceUi().confirmation,
+      // A repeated selection supersedes any placement write still in flight.
+      reaffirm: true,
       choices: () => choices(VOICE_CONFIRMATION_PLACEMENTS),
       apply: value => setVoiceConfirmation(value).confirmation,
     }),
@@ -231,6 +242,10 @@ export function workflowDefaultSettings(
       label: `${TASK_KIND_INFO[kind].label} after-work workflow`,
       available: () => workflowManager() !== null,
       read: () => taskDefaultWorkflowId(kind, getWorkflowPolicy().kindWorkflowDefaults),
+      readStored: () => {
+        const stored = getWorkflowPolicy().kindWorkflowDefaults[kind];
+        return stored === undefined ? "$inherit" : stored;
+      },
       choices: () => [
         { value: "$inherit", label: "Use the built-in default" },
         { value: null, label: "None" },

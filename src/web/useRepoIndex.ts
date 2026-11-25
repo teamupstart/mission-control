@@ -60,11 +60,15 @@ export function useRepoIndex(enabled = true): RepoIndexState {
     if (!current || current.managedBy === "environment") return false;
     const at = (writes.current += 1);
     setWriting(true);
-    const result = await api.setRepoIndex(patch);
+    const result = await api.setRepoIndex(patch, current.revision);
     if (writes.current !== at) return result.ok;
     setWriting(false);
     if (!result.ok) {
       setError(whyItFailed(result.error));
+      if (result.status === 409) {
+        const next = await fetchRepoIndex();
+        if (next && writes.current === at) setView(next);
+      }
       return false;
     }
     setError(null);

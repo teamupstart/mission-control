@@ -5,8 +5,12 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { INBOX_MESSAGES } from "../../src/shared/inbox.ts";
+import { SESSION_SETTINGS_FLAG_ID } from "../../src/shared/feature-flag-registry.ts";
+import { SESSION_SETTINGS_ACCESS } from "../../src/shared/session-settings-metadata.ts";
 import type { Session, Task } from "../../src/shared/types.ts";
 import type { ResidentProfile } from "../../src/shared/residents.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { connect } from "../fixtures/session-control.ts";
 
 /**
  * What is at stake: with the `idle-stalled` preview on, a session the daemon's idle stall rules
@@ -259,6 +263,28 @@ test("with the inbox on, an idle stall is no Stuck row until the Stalled preview
     await expect(inbox).toBeVisible({ timeout: 3000 });
   }).toPass({ timeout: 45_000 });
   await expect(inbox.getByRole("region", { name: `${a.task.title} is stuck` })).toBeVisible();
+
+  // Away's detection settings appear as Stuck rows in the open inbox. Presence itself
+  // is an operator action and is separate from this detector preference.
+  await api(daemon, "/api/feature-flags", { kind: "flag", id: SESSION_SETTINGS_FLAG_ID, enabled: true }, "PUT");
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, a.session);
+  try {
+    const refresh = page.waitForResponse(async response => response.url().endsWith("/api/away") && response.ok()
+      && (await response.json()).detectStalls === false);
+    const result = await client.callTool({ name: "mission_settings", arguments: {
+      operation: "set", key: "away.detectStalls", value: false,
+    } });
+    expect(result.isError).not.toBe(true);
+    await refresh;
+    await expect(inbox.getByRole("region", { name: `${a.task.title} is stuck` })).toHaveCount(0, { timeout: 15_000 });
+    await expect(inbox).toBeVisible();
+    await capture(inbox, "inspector-away-detection-off", page);
+  } finally {
+    await client.close();
+  }
 });
 
 test("a pinned resident's idle stall leaves the inbox for Idle's Stalled section", async ({ dashboard: page, daemon }) => {

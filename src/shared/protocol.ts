@@ -4189,6 +4189,7 @@ export type TerminalsConfigPatch = z.infer<typeof TerminalsConfigPatchSchema>;
  * quietly on a background tick nobody is watching.
  */
 export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
+export const TaskSourcesUpdateSchema = TaskSourcesConfigSchema.extend({ revision: z.string().max(80) });
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 /**
@@ -8024,6 +8025,21 @@ export const WorkflowPolicyPatchSchema = partialPatch(WorkflowPolicySchema).stri
   retention: partialPatch(WorkflowPolicySchema.shape.retention.unwrap()).strict().optional(),
 }).refine(patch => Object.keys(patch).length > 0, { message: "Supply at least one Workflow policy field" });
 export type WorkflowPolicyPatch = z.output<typeof WorkflowPolicyPatchSchema>;
+
+const WorkflowRetentionLimitsSchema = z.strictObject({
+  rawEvidenceDays: WorkflowPolicySchema.shape.retention.unwrap().shape.rawEvidenceDays.unwrap(),
+  completedRunDays: WorkflowPolicySchema.shape.retention.unwrap().shape.completedRunDays.unwrap(),
+  maxCompletedRuns: WorkflowPolicySchema.shape.retention.unwrap().shape.maxCompletedRuns.unwrap(),
+});
+export const WorkflowSettingsPatchSchema = WorkflowPolicyPatchSchema.safeExtend({
+  retentionConfirmation: z.strictObject({
+    current: WorkflowRetentionLimitsSchema,
+    proposed: WorkflowRetentionLimitsSchema,
+  }).optional(),
+}).refine(patch => !patch.retentionConfirmation || patch.retention !== undefined, {
+  message: "Retention confirmation requires proposed limits",
+});
+export type WorkflowSettingsPatch = z.output<typeof WorkflowSettingsPatchSchema>;
 
 /**
  * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.

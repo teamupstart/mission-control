@@ -7,7 +7,7 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
-import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
+import type { WorkflowSettingsPatch } from "@shared/protocol.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
@@ -355,7 +355,7 @@ export function WorkflowSettingsPanel({
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
 
-  const save = async (patch: WorkflowPolicyPatch): Promise<void> => {
+  const save = async (patch: WorkflowSettingsPatch): Promise<void> => {
     setBusy(true);
     setLocalError(null);
     try {
@@ -433,7 +433,10 @@ export function WorkflowSettingsPanel({
       confirmLabel: "Shorten retention",
       confirmHint: "Save the shorter limits and let the next sweep act on them",
       danger: true,
-      onConfirm: () => void save(patch),
+      onConfirm: () => void save({
+        ...patch,
+        retentionConfirmation: { current: config.retention, proposed: read.value },
+      }),
     });
   };
 

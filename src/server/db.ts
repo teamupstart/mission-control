@@ -4212,11 +4212,11 @@ function migrate(d: DatabaseSync): void {
   // upgrading catalog the same budget a fresh install gets - deliberately a behaviour change,
   // since a gate that re-ran on every repair round is the cost this bounds - and it needs no
   // backfill because the default IS the migrated value for every existing slot.
-  addColumn(d, "workflow_commands", "inspector_severity", "TEXT");
   addColumn(d, "workflow_commands", "max_runs", "INTEGER NOT NULL DEFAULT 1");
   addColumn(d, "workflow_commands", "timeout_ms", "INTEGER");
   addColumn(d, "workflow_commands", "on_unavailable", "TEXT NOT NULL DEFAULT 'skip'");
   addColumn(d, "workflow_commands", "on_budget_exhausted", "TEXT NOT NULL DEFAULT 'skip'");
+  addColumn(d, "workflow_commands", "inspector_severity", "TEXT");
   // One attempt's claim on a Command's per-run execution budget. Nullable with no default and
   // no backfill: an attempt written before this column existed reserved nothing, and inventing
   // a reservation for it would spend a budget against work whose cost is already paid.

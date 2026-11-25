@@ -69,6 +69,9 @@ test("preview exposes the setting, tuning and stage picker before Pull Request",
   await dashboard.goto(daemon.baseURL + "/#/library/commands/inspector");
   await expect(dashboard.getByRole("heading", { name: "Local Inspector", exact: true })).toBeVisible();
   await expect(dashboard.getByLabel("Blocking severity")).toHaveValue("major");
+  await expect(dashboard.getByLabel("Blocking severity")).toHaveAccessibleDescription(
+    "Choose the lowest severity that blocks the Pull Request action",
+  );
   await expect(dashboard.getByLabel("How often this Command may run")).toHaveValue("10");
   await expect(dashboard.getByLabel("Timeout in minutes")).toHaveValue("10");
   const exhaustion = dashboard.getByLabel("When the run budget is exhausted");

@@ -17,6 +17,7 @@ import {
 import {
   emptyWorkflowCommandView,
   workflowCommandFact,
+  workflowCommandName,
   workflowCommandStatusSentence,
   WORKFLOW_CHECK_SLOTS,
   WORKFLOW_COMMAND_PURPOSE,
@@ -25,6 +26,8 @@ import {
   parseCheckCommand,
 } from "../src/shared/workflow.ts";
 import type { WorkflowCommandView } from "../src/shared/workflow.ts";
+import { LOCAL_INSPECTOR_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
+import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // What is at stake: this editor is the ONLY surface that writes the Global Command catalog,
@@ -43,15 +46,18 @@ const view = (over: Partial<WorkflowCommandView> = {}): WorkflowCommandView => (
   ...over,
 });
 
-function markup(commands: WorkflowCommandView[], initialSlot: string | null = null): string {
-  return renderToStaticMarkup(withOverlayHost(createElement(CommandLibrary, {
+function markup(commands: WorkflowCommandView[], initialSlot: string | null = null, localInspector = false): string {
+  const library = withOverlayHost(createElement(CommandLibrary, {
     commands,
     hasSnapshot: true,
     initialSlot,
     isOverlayOpen: () => false,
     onLeave: () => {},
     onDirtyChange: () => {},
-  })));
+  }));
+  return renderToStaticMarkup(createElement(FeatureFlagsContext.Provider, {
+    value: { enableAll: false, overrides: { [LOCAL_INSPECTOR_FLAG_ID]: localInspector } },
+  }, library));
 }
 
 test("the rail's first row is the way out, above its own heading", () => {
@@ -70,26 +76,23 @@ test("the rail's first row is the way out, above its own heading", () => {
 });
 
 test("the rail is the built-in slots, in registry order, configured or not", () => {
-  const html = markup([view({ defaultCommand: ["npm", "test"] })]);
-  for (const slot of WORKFLOW_CHECK_SLOTS) {
-    assert.ok(html.includes(`>${slot}</span>`), `${slot} is missing from the rail`);
-  }
-  // Registry order, asserted as order rather than as presence: the slots are a fixed
-  // vocabulary and a rail that sorted them would be inventing a hierarchy they do not have.
-  const at = WORKFLOW_CHECK_SLOTS.map((slot) => html.indexOf(`>${slot}</span>`));
-  assert.deepEqual([...at].sort((a, b) => a - b), at);
-  // All rows, under ONE group head that says built-in once for all of them. The per-row
-  // tag is gone with the flat list it apologised for - a rail whose every row carries the
-  // same tag is a rail whose tag distinguishes nothing.
-  assert.equal(html.match(/class="wf-command-list-item/g)?.length, WORKFLOW_CHECK_SLOTS.length);
-  assert.match(html, /<h4 class="lib-rail-group"><span>Built-in slots<\/span>/);
-  assert.match(html, new RegExp(`<span class="lib-rail-group-count">${WORKFLOW_CHECK_SLOTS.length}</span>`));
-  assert.equal(html.match(/lib-rail-tag/g)?.length, undefined);
-  for (const absent of ["New", "Duplicate", "Archive"]) {
-    assert.ok(
-      !new RegExp(`>${absent}<`).test(html),
-      `a fixed catalog must not offer ${absent}`,
-    );
+  for (const localInspector of [false, true]) {
+    const html = markup([view({ defaultCommand: ["npm", "test"] })], null, localInspector);
+    const slots = WORKFLOW_CHECK_SLOTS.filter((slot) => slot !== "inspector" || localInspector);
+    assert.equal(html.includes(`>${workflowCommandName("inspector")}</span>`), localInspector);
+    for (const slot of slots) {
+      assert.ok(html.includes(`>${workflowCommandName(slot)}</span>`), `${slot} is missing from the rail`);
+    }
+    // Visible slots preserve registry order and share a single built-in group.
+    const at = slots.map((slot) => html.indexOf(`>${workflowCommandName(slot)}</span>`));
+    assert.deepEqual([...at].sort((a, b) => a - b), at);
+    assert.equal(html.match(/class="wf-command-list-item/g)?.length, slots.length);
+    assert.match(html, /<h4 class="lib-rail-group"><span>Built-in slots<\/span>/);
+    assert.match(html, new RegExp(`<span class="lib-rail-group-count">${slots.length}</span>`));
+    assert.equal(html.match(/lib-rail-tag/g)?.length, undefined);
+    for (const absent of ["New", "Duplicate", "Archive"]) {
+      assert.ok(!new RegExp(`>${absent}<`).test(html), `a fixed catalog must not offer ${absent}`);
+    }
   }
 });
 

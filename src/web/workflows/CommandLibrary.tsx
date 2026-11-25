@@ -165,7 +165,7 @@ export function commandDraftFrom(view: WorkflowCommandView | null): CommandDraft
     // the control never shows a number the daemon would disagree with.
     maxRuns: view?.maxRuns ?? WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
     timeoutMs: view?.timeoutMs ?? null,
-    inspectorSeverity: view?.inspectorSeverity,
+    ...(view?.inspectorSeverity === undefined ? {} : { inspectorSeverity: view.inspectorSeverity }),
     onUnavailable: view?.onUnavailable ?? "skip",
     onBudgetExhausted: view?.onBudgetExhausted ?? "skip",
   };
@@ -993,16 +993,18 @@ export function CommandLibrary({
           {isInspector ? (
             <section className="wf-command-review-tuning" aria-label="Local Inspector tuning">
               <label>Blocking severity
-                <select className="field-input"
-                  value={draft.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY}
-                  onChange={event => setDraft(current => ({
-                    ...current, inspectorSeverity: event.target.value as WorkflowCommandView["inspectorSeverity"],
-                  }))}
-                >
-                  {INSPECTOR_SEVERITIES.map(severity => (
-                    <option key={severity} value={severity}>{severity === "blocker" ? "Blocker only" : `${severity[0]!.toUpperCase()}${severity.slice(1)} and above`}</option>
-                  ))}
-                </select>
+                <Tooltip label="Choose the lowest severity that blocks the Pull Request action">
+                  <select className="field-input"
+                    value={draft.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY}
+                    onChange={event => setDraft(current => ({
+                      ...current, inspectorSeverity: event.target.value as WorkflowCommandView["inspectorSeverity"],
+                    }))}
+                  >
+                    {INSPECTOR_SEVERITIES.map(severity => (
+                      <option key={severity} value={severity}>{severity === "blocker" ? "Blocker only" : `${severity[0]!.toUpperCase()}${severity.slice(1)} and above`}</option>
+                    ))}
+                  </select>
+                </Tooltip>
               </label>
               <p className="wf-command-hint">Lower-severity findings appear in the run without blocking the Pull Request action.</p>
             </section>

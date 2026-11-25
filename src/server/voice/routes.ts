@@ -493,7 +493,7 @@ export function registerVoiceUtteranceRoutes(
         if (sentence) voiceStateStore.speech.open("ask", sentence, card.id);
       },
       stop(cardId) { if (featureEnabled(VOICE_FLAG)) voiceStateStore.speech.stopCard(cardId); },
-    });
+    }, open => voiceStateStore.setCancelWindowOpen(open));
   app.post("/api/voice/form-submit/:id/refuse", gate, limitBody, async c => {
     const parsed = await parseBody(c, z.object({ missing: z.int().positive() }).strict());
     if (!parsed.ok) return parsed.res;
@@ -558,7 +558,7 @@ export function registerVoiceUtteranceRoutes(
     else {
       const directive = voiceStateStore.directive();
       if (!featureEnabled(VOICE_FLAG)) return c.json({ accepted: false });
-      if (!directive.capture || revision !== directive.revision) {
+      if (!directive.capture || voiceStateStore.resolveCaptureRevision(revision, directive) !== directive.revision) {
         const release = revision && voiceStateStore.releasedCapture(revision);
         if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
       }
@@ -577,7 +577,8 @@ export function registerVoiceUtteranceRoutes(
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const state = voiceStateStore.state();
     let directive = voiceStateStore.directive(state);
-    const revision = c.req.query("revision");
+    const submitted = c.req.query("revision");
+    const revision = voiceStateStore.resolveCaptureRevision(submitted, directive);
     const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt, voiceStateStore.captureGrantTime(revision));
     if (conflict === "stale") return c.json({ accepted: false });
     if (conflict === "while-speaking") {
@@ -619,7 +620,8 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
-    const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, revision, onsetUs);
+    // Match the revision the listener used for this segment's onset, even after a timing edit.
+    const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, submitted, onsetUs);
     try {
       return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey }) });
     } finally {

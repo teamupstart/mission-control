@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
 process.env.MISSION_HOME = home;
-const { closeDb, getAppConfig, deleteAppConfig, openDb, upgradeDatabaseToCurrentSchema, upsertTask } = await import("../src/server/db.ts");
+const { closeDb, setAppConfig, getAppConfig, deleteAppConfig, openDb, upgradeDatabaseToCurrentSchema, upsertTask } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -109,6 +109,20 @@ test("GET returns every contract A field with its default", async () => {
   const response = await json("/api/voice/config");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { config: VOICE_CONFIG_DEFAULTS });
+});
+
+test("new and existing voice profiles default to two seconds and preserve independent Cancel settings", async () => {
+  const config = async () => (await (await json("/api/voice/config")).json()).config;
+  assert.equal((await config()).endOfSpeechMs, 2000);
+  setAppConfig(APP_CONFIG_ENTRIES.voice, { cancelWindow: { enabled: false, seconds: 7 } });
+  assert.equal((await config()).endOfSpeechMs, 2000);
+  for (const endOfSpeechMs of [500, 5000]) {
+    assert.equal((await json("/api/voice/config", "PUT", { endOfSpeechMs })).status, 200);
+    assert.equal((await config()).endOfSpeechMs, endOfSpeechMs);
+    assert.deepEqual((await config()).cancelWindow, { enabled: false, seconds: 7 });
+  }
+  assert.equal((await json("/api/voice/config", "PUT", { endOfSpeechMs: 0 })).status, 400);
+  assert.equal((await config()).endOfSpeechMs, 5000);
 });
 
 test("reading mute after a toggle returns the authoritative state without another write", async () => {

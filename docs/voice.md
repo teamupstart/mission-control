@@ -57,6 +57,15 @@ Each follow-up opens a fresh draft on the finished task’s repository. The regu
 draft stays available when the follow-up closes. If you leave the follow-up through a setup
 or launch repair link, reopening Dispatch restores its instructions and attachments.
 
+In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long the listener
+waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
+the words in the same utterance. Changes take effect while listening and persist after restart.
+Push-to-talk ends on key release. The separate **Cancel window** starts after routing.
+While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
+“cancel” can reach the router before delivery. The selected delay resumes when the last countdown closes.
+If a protocol 4.0 helper is still running during an upgrade, restart it with the updated listener
+to use live delay changes.
+
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default. On macOS it appears under the menu bar on the display with
 the pointer, including while the dashboard is minimized. A floating card appears without taking
@@ -156,7 +165,7 @@ closed. Run the development command from a terminal app that already has microph
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
 prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
-On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
+On startup and every ten seconds, the helper posts protocol 4.1 to `/voice/listener/hello`.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
 Standalone listeners generate a UUID per process. The desktop supervisor generates its own
 UUID and passes it to each managed helper after the previous child exits. This lets its
@@ -190,9 +199,21 @@ With only the TDT repository present, transcription continues with priming off.
 
 Fetch `GET /voice/listener/directive` with both `x-harness-token` and `x-voice-listener-id`
 on every poll. Use the same listener UUID that the daemon accepted at hello. The first poll returns
-`{ capture, roster, inputDevice, pauseMs, revision }`. The roster is an array of spoken names.
+`{ capture, roster, inputDevice, endOfSpeechMs, pauseMs, revision }`. The roster is an array of spoken names.
 After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
+Automatic capture directives also include a `captureRevision` that stays valid across
+silence delay edits. Both listeners send that revision with automatic utterances. A 4.1 hello
+advertises that the listener can update the open capture in place. A 4.0 listener keeps its
+original directive throughout a capture, including when a countdown opens or expires, so its
+microphone keeps the buffered phrase. A listener can also submit a previously issued poll
+revision from the same automatic capture grant. Muting or changing the input or roster revokes
+all revisions of that grant. The Swift listener
+updates the open microphone's silence boundary in place. When a shorter delay closes a phrase
+immediately, up to 150 ms of quiet audio after the new boundary supplies the next phrase's lead-in.
+Sherpa reprocesses unfinished recording audio with the new delay. During silence it retains
+only the onset lead-in for replay. A change in capture
+authorization discards that audio, including a mute and unmute between polls.
 `pauseMs` is optional and unused. This daemon sends null.
 
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
@@ -249,7 +270,7 @@ a hold. Legacy Unix key timestamps are accepted as input and have no delivery au
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
 steady background noise can continue between utterances. Parakeet transcribes each segment
-after 800 ms of frames classified as non-speech. If the 30-second buffer fills
+after the silence interval specified by the directive’s `endOfSpeechMs`. If the 30-second buffer fills
 before that boundary, the listener discards the whole utterance, including any further
 speech before the next silence boundary. During a key hold, the prefix remains recoverable
 for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
@@ -261,7 +282,7 @@ divides the measured span evenly among the corrected words. Interior boundaries 
 While listening, two completed phrases can wait in capture order behind a busy recognizer
 or a pending POST. If that queue fills, the listener drops the incoming phrase and reports
 the backlog on stderr. Only text, relative word timings and capture metadata reach the daemon. Samples and pending
-utterances stay in memory. Except for a matching push-to-talk release, a changed directive
+utterances stay in memory. A directive that revokes capture without a matching push-to-talk release
 discards buffered audio and cancels unfinished work. A later capture starts with a fresh audio engine.
 If a hardware change stops the engine, the helper refreshes its directive and opens a new
 input if capture is still enabled. Losing an explicitly selected UID produces an input error.
@@ -272,8 +293,9 @@ transcripts and logs no recognized words.
 
 A listener posts `{ id, text, words, capturedAt, backend }` to `POST /voice/utterances?revision=...`
 with both `x-harness-token` and `x-voice-listener-id`. Set the latter to the UUID from that
-listener's accepted hello. Send the directive revision under which the segment was captured. The daemon
-returns `{ accepted: false }` for a missing or superseded revision before the utterance reaches
+listener's accepted hello. For automatic speech, use the segment's `captureRevision` or its original
+poll revision. Use the held directive revision for push-to-talk. The daemon
+returns `{ accepted: false }` for a missing or revoked capture grant before the utterance reaches
 Recently heard, a card or the queue. This also covers a mute and unmute while a POST is in flight.
 Reassigning a spoken name or changing its target task or session issues a fresh revision,
 even when the list of names sent to the recognizer stays the same.
@@ -621,7 +643,9 @@ checkout. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit flo
 The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
 The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
-permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances. During
+permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances.
+The selected pause still applies after 20 seconds of speech. If a command exceeds the 30-second
+capture limit before the pause completes, Sherpa drops the command and resumes at the next phrase. During
 playback the development listener reports its file input as granted and enumerates
 zero microphones. Use ordinary listening mode for playback. After the file ends,
 allow the listener’s 30-second lease to expire before launching another process. The packaged app excludes file playback. The desktop
@@ -783,6 +807,7 @@ never wrote needs no migration.
 | `muted` | `false` | Mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
 | `hotkey` | `cmd+ctrl+alt+v` | The mute chord in the format the Keyboard panel records, or null for none |
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
+| `endOfSpeechMs` | `2000` | Silence before automatic submission, in milliseconds (500, 800, 1000, 1500, 2000, 3000 or 5000) |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
 | `speech` | `{ voice: null }` | Automatic voice, or a saved engine and voice ID |
@@ -1047,7 +1072,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   listener that owns capture. A `start` reports the first voiced sample. After push-to-talk
   release, the daemon still accepts an onset from that hold's revision if the sample falls
   between key-down (inclusive) and the release cutoff (exclusive). The listener waits up to
-  one second for the onset acknowledgment before posting its transcript with the same onset.
+  one second for the onset acknowledgment before posting its transcript with the same onset and revision.
   A `finish` releases a segment that produced no accepted transcript, including overlong
   audio once it can no longer be recovered at key-up.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,

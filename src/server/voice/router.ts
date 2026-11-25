@@ -318,6 +318,7 @@ export class VoiceRouter {
     private readonly hostNowUs: () => number = voiceHostTimeUs,
     private readonly questions?: VoiceQuestions,
     private readonly speech?: { resolving?(): void; unsure(card: VoiceCard): void; stop(cardId: string): void },
+    private readonly onCancelWindowChange?: (open: boolean) => void,
   ) {}
 
   private publish(card: VoiceCard): void {
@@ -477,6 +478,7 @@ export class VoiceRouter {
     const id = item.card.id;
     item.timer = setTimeout(() => this.sendAfterSpeech(id), duration + transit);
     item.timer.unref();
+    this.onCancelWindowChange?.(true);
   }
 
   private cancelLatestAt(time: ActionTime, captureKey?: string): string | undefined {
@@ -979,10 +981,10 @@ export class VoiceRouter {
       parts: [{ target: target ?? this.state().roster.find(row => row.sessionId === review.sessionId) ?? null, text: result.text }] };
     item.entry.rule = "voice-answer";
     item.entry.outcome = "pending";
+    if (windowMs) this.armCountdown(item, Math.max(0, Math.ceil(expiresAt - performance.now())));
     this.questions!.publish(review.id, item.answer);
     if (!item.answer.footerWindowId) this.publish(item.card);
-    if (!windowMs) { await this.sendNow(id); return; }
-    this.armCountdown(item, Math.max(0, Math.ceil(expiresAt - performance.now())));
+    if (!windowMs) await this.sendNow(id);
   }
 
   /**
@@ -1134,6 +1136,9 @@ export class VoiceRouter {
     }
     const index = this.pendingVoiceActions.findIndex((a) => a.kind === "card" && a.id === item.card.id);
     if (index >= 0) this.pendingVoiceActions.splice(index, 1);
+    if (item.card.deadline !== null) {
+      this.onCancelWindowChange?.([...this.open.values()].some(({ card }) => card.state === "pending" && !!card.windowMs));
+    }
   }
 
   cancelEditedAnswer(reviewId: string, originId: string): boolean {
@@ -1483,6 +1488,7 @@ export class VoiceRouter {
     this.heard.clear();
     this.priorChoices.length = 0;
     this.picksLostThrough = undefined;
+    this.onCancelWindowChange?.(false);
   }
 
   reset(): void {

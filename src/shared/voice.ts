@@ -42,6 +42,9 @@ export type VoiceBackend = (typeof VOICE_BACKENDS)[number];
 export const VOICE_BACKEND_CHOICES = ["auto", ...VOICE_BACKENDS] as const;
 export type VoiceBackendChoice = (typeof VOICE_BACKEND_CHOICES)[number];
 
+export const VOICE_END_OF_SPEECH_MS = [500, 800, 1000, 1500, 2000, 3000, 5000] as const;
+const EndOfSpeechMsSchema = z.literal(VOICE_END_OF_SPEECH_MS);
+
 /** The bounds on the cancel window's length, in whole seconds. */
 export const VOICE_CANCEL_WINDOW_SECONDS = { min: 1, max: 30 } as const;
 
@@ -85,6 +88,7 @@ export const VoiceConfigSchema = z.object({
   autoMuteDuringCalls: z.boolean().default(true),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
+  endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
   speech: z.object({ voice: SpeechVoiceSchema.nullable().default(null) }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
@@ -107,6 +111,7 @@ export const VoiceConfigPatchSchema = z.object({
   muted: z.boolean(),
   hotkey: ChordSchema.nullable(),
   autoMuteDuringCalls: z.boolean(),
+  endOfSpeechMs: EndOfSpeechMsSchema,
   cancelWindow: z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
@@ -208,7 +213,9 @@ export const VoiceListenerDirectiveSchema = z.object({
   capture: z.boolean(),
   roster: z.array(z.string()),
   inputDevice: z.string(),
+  endOfSpeechMs: EndOfSpeechMsSchema.optional(),
   pauseMs: z.number().nullable().optional(),
+  captureRevision: z.string().min(1).optional(),
   revision: z.string().min(1),
 });
 export type VoiceListenerDirective = z.infer<typeof VoiceListenerDirectiveSchema>;
@@ -490,7 +497,8 @@ export function voiceStateOff(): VoiceState {
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
-export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+// Starting with 4.1, listeners apply timing-only directives to an open capture in place.
+export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.1`;
 export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** A capture-only listener's process and the byte it must lock before opening the microphone. */

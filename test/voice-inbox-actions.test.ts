@@ -3,7 +3,7 @@ import test from "node:test";
 import { INBOX_ACTIONS } from "../src/shared/inbox.ts";
 import { spokenInboxAction } from "../src/shared/voice-inbox.ts";
 import type { DrawnVoiceCard, VoiceInboxEvent } from "../src/shared/voice-answers.ts";
-import { act, cards, post, queued, registry, reports, reviews, say } from "./helpers/voice-http.ts";
+import { act, cards, post, queued, registry, reports, reviews, say, voiceStateStore } from "./helpers/voice-http.ts";
 import { mockCaptureClock, put } from "./helpers/voice-question.ts";
 import { mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -64,10 +64,18 @@ test("named commands and follow-up dictation select their unique offer and use f
 
 test("mark read cancels, refuses ambiguity, requests the drawn button, and reads the sole report with the inbox closed", async t => {
   mockCaptureClock(t);
+  const originalDelay = voiceStateStore.directive().endOfSpeechMs;
+  t.after(async () => { await put("/api/voice/config", { endOfSpeechMs: originalDelay }); });
+  assert.equal((await put("/api/voice/config", { endOfSpeechMs: 5000 })).status, 200);
+  assert.equal(voiceStateStore.directive().endOfSpeechMs, 5000);
   const steve = registry.getSession("sdk:Steve")!;
   const first = await reports.post(steve, { title: "First report", body: "Ready." });
   await say("Steve, mark read");
+  assert.equal(cards.at(-1)?.windowMs, 1000);
+  assert.equal(voiceStateStore.directive().endOfSpeechMs, 500);
+  t.mock.timers.tick(500);
   await say("cancel");
+  assert.equal(voiceStateStore.directive().endOfSpeechMs, 5000);
   t.mock.timers.tick(1500);
   assert.equal(reports.get(first.id)?.readAt, null);
   const other = await reports.post(steve, { title: "Second report", body: "Ready too." });

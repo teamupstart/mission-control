@@ -153,12 +153,18 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
   }
 
   it("a stalled onset acknowledgment lets the decoded cancel and queued utterance post in spoken order", async t => {
-    const { speechReports, posted, captureBounds, events } = await launch(t, { inputDevice: "stalled-onset" });
+    const inputDevice = "stalled-onset";
+    const { speechReports, posted, captureBounds, events, nextPoll } = await launch(t, { inputDevice, initialCapture: false });
+    const capture = { capture: true, captureRevision: "same-capture", inputDevice, roster: [] };
+    (await nextPoll("first")).end(JSON.stringify({ ...capture, revision: "before-countdown", endOfSpeechMs: 5000 }));
     await until(() => speechReports.some(report => report.speechStartUs === 625) && events.includes("decode Cancel."), "recorded onset and decoded cancel");
     assert.equal(posted.length, 0);
+    (await nextPoll("before-countdown")).end(JSON.stringify({ ...capture, revision: "countdown", endOfSpeechMs: 500 }));
     // The fixture withholds the first acknowledgment until teardown.
     await until(() => posted.length === 2, "both transcripts despite the stalled acknowledgment", 3000);
     assert.deepEqual(posted.map(post => post.text), ["Cancel.", "next"]);
+    assert.deepEqual(speechReports.map(report => report.revision), ["same-capture", "same-capture"]);
+    assert.deepEqual(posted.map(post => post.revision), ["same-capture", "same-capture"]);
     assert.deepEqual(captureBounds.map(bound => bound.onset), ["625", "1625"]);
   });
 
@@ -196,11 +202,44 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       await until(() => posted.length > 0, "fixture transcription to reach the daemon");
       assert.ok(events.includes('prime ["Steve"]'));
       assert.deepEqual(posted[0], { text: "first", revision: "resumed" });
-      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === "4.0"));
+      assert.ok(hellos.some(hello => hello.modelLoaded && hello.version === "4.1"));
       assert.equal(instanceIds.size, 1);
       assert.ok([...instanceIds][0]);
     });
   }
+
+  it("applies revised end-of-speech timing to the running Swift microphone listener", async t => {
+    const captureRevision = "automatic-capture";
+    const { events, posted, nextPoll } = await launch(t, { initialCapture: false });
+    let revision = "active";
+    (await nextPoll("first")).end(JSON.stringify({ revision, captureRevision, capture: true, inputDevice: "built-in", roster: [] }));
+    await until(() => events.includes("decode in-flight"), "decode to start before the edit");
+    for (const endOfSpeechMs of [500, 5000]) {
+      const poll = await nextPoll(revision);
+      revision = String(endOfSpeechMs);
+      poll.end(JSON.stringify({ revision, captureRevision, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs }));
+    }
+    const replacement = await nextPoll(revision);
+    await until(() => events.includes("silence interval 5000 ms") && posted.length === 2, "final setting and buffered speech");
+    assert.deepEqual(events.filter(e => /^(opened|stopped) /.test(e)), ["opened 1"]);
+    assert.deepEqual(posted, [{ text: "in-flight", revision: captureRevision }, { text: "buffered", revision: captureRevision }]);
+    assert.deepEqual(events.filter(e => e.startsWith("silence interval")), [
+      "silence interval 2000 ms", "silence interval 500 ms", "silence interval 5000 ms",
+    ]);
+    replacement.end(JSON.stringify({ revision: "resumed", captureRevision: "new-capture", capture: true, inputDevice: "built-in", roster: [] }));
+    await until(() => events.includes("opened 2"), "new capture authorization to open a fresh microphone");
+    assert.deepEqual(events.filter(e => /^(opened|stopped) /.test(e)), ["opened 1", "stopped 1", "opened 2"]);
+  });
+
+  it("rejects an invalid end-of-speech duration before opening the microphone", async t => {
+    const { events, diagnostics, nextPoll, child, closed } = await launch(t, { initialCapture: false });
+    const poll = await nextPoll("first");
+    poll.end(JSON.stringify({ revision: "invalid", capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 0 }));
+    await until(() => child.exitCode !== null, "invalid capture directive to stop the listener");
+    assert.deepEqual(await closed, [1, null]);
+    assert.ok(diagnostics.includes("Voice listener stopped. Check the daemon, local models and selected input."));
+    assert.deepEqual(events.filter(e => e.startsWith("opened ") || e.startsWith("silence interval ")), []);
+  });
 
   it("the managed Swift listener authenticates its daemon before delivering its first hello", async t => {
     const endpointFile = join(dir, "desktop.json");
@@ -289,11 +328,11 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     assert.equal(diagnostics.filter(line => line.includes("terminal app that already has microphone access")).length, 1);
   });
 
-  it("finishes the outstanding loading heartbeat before publishing protocol 4.0 readiness", async (t) => {
+  it("finishes the outstanding loading heartbeat before publishing protocol 4.1 readiness", async (t) => {
     const { hellos } = await launch(t, { slowLoad: true });
     await until(() => hellos.length >= 3, "ready hello and delayed heartbeat");
     assert.deepEqual(hellos.map(h => h.modelLoaded), [false, false, true]);
-    assert.ok(hellos.every(h => h.version === "4.0"));
+    assert.ok(hellos.every(h => h.version === "4.1"));
   });
 
   it("a stopped engine refreshes the directive and reopens the same selection with fresh audio", async (t) => {

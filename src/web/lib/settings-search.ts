@@ -631,6 +631,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("voice"),
   },
   {
+    id: "voice-end-of-speech",
+    label: "End-of-speech delay",
+    description: "How long the listener waits for more speech before submitting an automatic capture.",
+    category: "voice",
+    anchor: "voice/end-of-speech",
+    keywords: ["silence", "pause", "microphone", "seconds", "utterance"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-hotkey",
     label: "Mute hotkey",
     description: "Record a system-wide shortcut to mute voice or hold to talk during call auto-mute.",

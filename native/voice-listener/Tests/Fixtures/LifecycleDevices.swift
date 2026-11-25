@@ -39,7 +39,7 @@ final class Segment {
     private var heldPhrases: [Segment] = []
     private let source: AsyncStream<Segment>.Continuation
 
-    init(selection: String, held: Bool, onSpeechStart: @escaping (Int64) -> Void,
+    init(selection: String, held: Bool, endOfSpeechMs: Int, onSpeechStart: @escaping (Int64) -> Void,
          onSegmentDropped: @escaping (Int64) -> Void, onStopped: @escaping @MainActor (Microphone) -> Void) throws {
         exclusive = selection == "exclusive"
         if exclusive, Self.exclusiveOwner?.isRunning == true {
@@ -51,6 +51,7 @@ final class Segment {
         if selection == "unplugged" && opening > 1 { throw CaptureError.device }
         (segments, source) = AsyncStream.makeStream()
         if exclusive { Self.exclusiveOwner = self }
+        observe("silence interval \(endOfSpeechMs) ms")
         observe("opened \(opening)")
         if ["reconfigured", "unplugged"].contains(selection) && opening == 1 {
             signal(SIGUSR1, SIG_IGN)
@@ -103,6 +104,12 @@ final class Segment {
             Recognizer.pendingDecode?.resume()
             Recognizer.pendingDecode = nil
         }
+    }
+
+    func updateEndOfSpeechMs(_ duration: Int) {
+        observe("silence interval \(duration) ms")
+        Recognizer.pendingDecode?.resume()
+        Recognizer.pendingDecode = nil
     }
 
     func whenCaptured(through release: Int64, finish: @escaping @MainActor () -> Void) {

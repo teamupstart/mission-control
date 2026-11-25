@@ -1258,8 +1258,29 @@ post-playback directive. A dash means the recognizer returned no words.
 
 All three silent controls in the delayed run returned no words. The repeated “Yeah.”
 after Samantha was absent from the test sentence, but its source could not be established.
-That result did not qualify playback for release. In a separate hands-on check the Mac
-asked “Steve or Will?” once and the operator’s spoken “Steve” selected the card.
+That result did not qualify playback for release.
+
+On November 25, the same Mac, speakers and microphone were tested with the 250 ms
+playback delay. Each player had three open-microphone trials and three paused trials.
+After each paused trial, a silent control repeated the microphone stop and restart
+without playing the question. At the end of each paused or silent observation
+window, a separate process spoke “Purple bicycle” through the same speakers to
+check that the freshly opened microphone could recognize speech.
+
+| End-of-speech setting | F4 open controls recognizing both clauses | Samantha open controls recognizing both clauses | Paused trials with words before the probe | Silent controls with words before the probe | Probes recognized after reopening |
+| --- | --- | --- | --- | --- | --- |
+| 2 seconds (default) | 1/3 | 0/3 | 0/6 | 0/6 | 0/12 |
+| 500 ms | 2/3 | 3/3 | 6/6 | 6/6 | 12/12 |
+
+At 500 ms, the remaining F4 open control recognized the second clause. The resumed
+listener recognized neither clause in any paused trial. It returned “Yeah” after
+two of three Samantha playbacks and in all three matching silent controls. The
+word can occur with no playback. Its source in the original trials remains unknown,
+and the default setting missed too many controls to establish silence. Mac playback
+therefore remains unavailable.
+
+In a separate hands-on check the Mac asked “Steve or Will?” once and the operator’s
+spoken “Steve” selected the card.
 In a follow-up using AirPods and an isolated test daemon, both samples started and ended
 as `finished`. The listener acknowledged a fresh capture directive after each sample and
 manual mute stayed off. The operator heard both samples and pressed Control + Option +

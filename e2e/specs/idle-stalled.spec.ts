@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
@@ -85,6 +85,75 @@ async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
 const idleColumn = (page: Page) => page.locator("main.board section.board-col.tone-idle");
 const facts = (page: Page, session: Session) => page.getByRole("group", { name: `Why ${session.name} stalled` });
 const toAnswer = (page: Page) => page.locator("button.pulse-seg", { hasText: "to answer" });
+
+test("an active workflow moves an idle task from Stalled to Held until the run ends", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(240_000);
+  await setFlag(daemon, "idle-stalled", true);
+  await api(daemon, "/api/away", { detectStalls: true, stallUnfinishedMinutes: 1 }, "PUT");
+  const { session } = await dispatch(daemon, "Task under review");
+  await useBoardLayout(page, daemon);
+
+  // Hold a real workflow Command open while the daemon and dashboard refresh their stall lists.
+  const release = join(daemon.home, "release-stall-check");
+  await api(daemon, "/api/workflows/config", {
+    liveEnabled: true,
+    checksEnabled: true,
+    repoAllowlist: [daemon.repo],
+    checkCommands: [{
+      repoRoot: daemon.repo,
+      slot: "test",
+      command: ["sh", "-c", 'while [ ! -f "$1" ]; do sleep 0.2; done', "stall-check", release],
+    }],
+  }, "PUT");
+  const { workflow } = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "Review before handoff",
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "check", kind: "check", slot: "test", position: { x: 220, y: 0 } },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+      ],
+      edges: [
+        { id: "submit", source: "session", sourcePort: "submitted", target: "check", targetPort: "activate" },
+        { id: "pass", source: "check", sourcePort: "pass", target: "end", targetPort: "terminal" },
+        { id: "fail", source: "check", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      ],
+    },
+  });
+  const { version } = await api<{ version: { id: string } }>(
+    daemon, `/api/workflows/${workflow.id}/publish`, { expectedDraftRevision: 1 });
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: version.id, sessionId: session.id, deliveryMode: "preview",
+  });
+  await stalled(daemon, session);
+  await expect(facts(page, session)).toBeVisible();
+  const idle = idleColumn(page);
+  await expect(idle.getByText("1 stalled", { exact: true })).toBeVisible();
+
+  const { run } = await api<{ run: { id: string } }>(
+    daemon, `/api/workflow-bindings/${binding.id}/submit`, { requestId: "idle-stall-review" });
+  const runStatus = async () => (await api<{ run: { status: string } }>(
+    daemon, `/api/workflow-runs/${run.id}`)).run.status;
+  try {
+    await expect.poll(runStatus).toBe("running");
+    await expect(idle.getByText("held by a workflow", { exact: true })).toBeVisible();
+    await expect(idle.getByText("1 held", { exact: true })).toBeVisible();
+    await expect(idle.getByText("1 stalled", { exact: true })).toHaveCount(0);
+    await expect(facts(page, session)).toHaveCount(0);
+    await expect.poll(async () => {
+      const stalls = await api<Array<{ sessionId: string }>>(daemon, "/api/away/stalls");
+      return stalls.some((stall) => stall.sessionId === session.id);
+    }).toBe(false);
+    expect(await runStatus()).toBe("running");
+    await capture(idle, "workflow-held-without-stall", page);
+  } finally {
+    writeFileSync(release, "");
+  }
+
+  await expect.poll(runStatus).toBe("completed");
+  await expect(idle.getByText("held by a workflow", { exact: true })).toHaveCount(0);
+  await expect(idle.getByText("1 stalled", { exact: true })).toBeVisible();
+});
 
 test("an idle stall sits in Idle's Stalled section with what is open and the fix in place", async ({ dashboard: page, daemon }) => {
   test.setTimeout(330_000);

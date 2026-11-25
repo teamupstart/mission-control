@@ -25,7 +25,7 @@ import {
   reportBucket,
 } from "./session.ts";
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
-import type { Stall } from "./stall.ts";
+import { workflowOwnsNextMove, type Stall } from "./stall.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "./workflow.ts";
 import { blockedPhaseClause } from "./workflow-lifecycle.ts";
 import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
@@ -560,6 +560,7 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
     if (before.has(`${st.sessionId}:${st.kind}`)) continue;
+    if (workflowOwnsNextMove(st.sessionId, next.workflowRuns)) continue;
     alerts.push(stuckAlert(st, next.sessions, next.names, next.spokenNames));
   }
 

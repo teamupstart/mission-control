@@ -112,3 +112,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Supertonic 3 speech synthesis
+-----------------------------
+Mission Control downloads the optional int8 Supertonic 3 model from
+https://huggingface.co/csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tree/cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4
+on request. Supertone publishes the original weights at
+https://huggingface.co/Supertone/supertonic-3 under the BigScience OpenRAIL-M
+licence. Use is subject to paragraph 5 and the restrictions in Attachment A:
+https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE
+The Supertonic code is MIT licensed.

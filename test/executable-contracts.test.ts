@@ -146,6 +146,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],
+  "src/server/voice/synthesizer.ts": [
+    { operation: "fork", command: "speechHelperPath()", contract: "current-runtime", reason: "bundled speech helper uses the owned Node runtime and private IPC" },
+  ],
   "src/server/voice/supervised-listener.ts": [
     { operation: "spawn", command: "command", contract: "fixed-os-utility", reason: "the voice supervisor starts its child through the pinned platform filesystem sandbox before granting playback authority" },
   ],
@@ -315,7 +318,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === "shell";
     case "current-runtime":
       return ["descriptor.command", "runtime.command", "request.node", "process.execPath"].includes(boundary.command)
-        || (boundary.operation === "fork" && boundary.command === "options.worker");
+        || (boundary.operation === "fork" && ["options.worker", "speechHelperPath()"].includes(boundary.command));
     // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`
     // into a variable, so a literal never reaches the call and the declaration above names the
     // one reason a fixed utility is invoked directly.

@@ -291,7 +291,7 @@ export class VoiceRouter {
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
     private readonly questions?: VoiceQuestions,
-    private readonly speech?: { unsure(card: VoiceCard): void; stop(cardId: string): void },
+    private readonly speech?: { resolving?(): void; unsure(card: VoiceCard): void; stop(cardId: string): void },
   ) {}
 
   private publish(card: VoiceCard): void {
@@ -777,6 +777,7 @@ export class VoiceRouter {
         parts: [{ target: decision.reason === "second-name" ? decision.target : null, text: utterance.text }] },
     };
     this.open.set(id, item);
+    this.speech?.resolving?.();
     this.pendingVoiceActions.push({ id, kind: "card", ...time, cancel: () => this.cancel(id) });
     item.timer = setTimeout(() => {
       if (this.open.get(id) !== item) return;

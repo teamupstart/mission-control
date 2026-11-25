@@ -781,6 +781,37 @@ With
 `voice` off, `GET /api/ui/config` omits `voice` (the stored value is kept and returns with the
 flag), and a `PUT /api/ui/config` that names `voice` is refused with 404 and saves nothing.
 
+## Mission Control voices
+
+On macOS and Linux, the daemon can synthesize speech locally with Supertonic 3.
+F1 through F5 and M1 through M5 share a 145.3 MB download. Automatic selects F4
+when the model has verified and the listener can play audio. The weights come
+from Supertone and carry the BigScience OpenRAIL-M licence, including the
+use restrictions in Attachment A. [Original model and licence](https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE)
+and [pinned sherpa-onnx conversion](https://huggingface.co/csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/tree/cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4).
+
+With the Voice preview enabled, POST to `/api/voice/speech/model/download` to
+start or resume. DELETE cancels an in-progress download. Each file must match
+its pinned size and SHA-256, including after a daemon restart. The verified
+directory is reported in `VoiceState.speech.model`.
+
+The 2026-11-23 benchmark measured 516 to 539 MB with Supertonic 3 int8 loaded
+on an Apple M4 Pro running macOS 26.6.2, Node 26.7.0 and `sherpa-onnx-node` 2.0.3
+with two CPU threads. The range covers that Mac configuration only.
+[Benchmark conditions and results](plans/voice-spoken-responses/plan.md#how-the-options-were-measured)
+
+The helper loads on demand and exits after ten idle minutes or at daemon shutdown.
+A synthesis request has five seconds,
+including one retry after a helper crash. A resolving card can warm the helper
+when Voice can ask aloud using a neural voice. Speech travels over private IPC as
+16-bit mono PCM WAV. The daemon caches the last 32 text and voice pairs in memory.
+
+The daemon forks `dist/voice-speaker/synth.mjs` with the verified revision directory
+as its argument. A `{ id, type: "warm" }` message is acknowledged after model load.
+A `{ id, type: "synthesize", text, voice }` message names a catalog voice such as
+`supertonic-3/F4`. The reply carries the matching ID, WAV bytes and exact
+`durationMs`, or `failed: true`.
+
 ## Spoken names
 
 An agent is addressed by a name you can say. A [resident](residents.md) answers to its profile

@@ -83,8 +83,8 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await page.addInitScript(fakeAlphaBridge);
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
-  await expect(page.getByText("Switching alpha on also switches on Enable all", { exact: false })).toBeVisible();
   const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
+  await expect(alpha).toHaveAccessibleDescription(/enables preview feature flags, except those you switched off/);
   await expect(alpha).not.toBeChecked();
   await expect(peerMaster).not.toBeChecked();
   await alpha.check();

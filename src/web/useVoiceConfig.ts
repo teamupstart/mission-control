@@ -1,3 +1,4 @@
+import { newRequestId } from "./lib/request-id.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, VOICE_PROVIDER_EDIT_TIMEOUT_MS, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
 import type { VoiceKeyProvider } from "@shared/voice-decide.ts";
@@ -45,7 +46,7 @@ async function nextProviderGesture(signal: AbortSignal): Promise<VoiceProviderIn
       const previous = localStorage.getItem(key);
       const [group, value] = previous?.split(":") ?? [];
       const parsed = VoiceProviderGestureSchema.safeParse({ group, order: Number(value) + 1 });
-      const next = parsed.success ? parsed.data : { group: crypto.randomUUID(), order: 1 };
+      const next = parsed.success ? parsed.data : { group: newRequestId(), order: 1 };
       localStorage.setItem(key, `${next.group}:${next.order}`);
       return next;
     });
@@ -106,7 +107,7 @@ export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
   const settingsQueue = useRef(Promise.resolve());
   const latestProviderEdit = useRef(0);
   const confirmedProviderEdit = useRef(0);
-  const [writer] = useState(() => crypto.randomUUID());
+  const [writer] = useState(newRequestId);
   const [provider, setProvider] = useState<{ revision: string; selection: VoiceConfig["decisionProvider"] }>();
   const latestProvider = useRef(provider);
   const previousDaemons = useRef(new Set<string>());

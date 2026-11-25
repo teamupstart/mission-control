@@ -4,6 +4,7 @@
 
 import type { UpdateApplyOutcome, UpdateSnapshot } from "@shared/update.ts";
 import type { UpdateDialogChoice, UpdateDialogRequest } from "@shared/update-dialog.ts";
+import type { VoiceCardNotice, VoiceCardNoticeResult } from "@shared/voice-routing.ts";
 import type { ResidentLaunchAuthorization, SessionControlAuthorization } from "@shared/session-control-authorization.ts";
 
 export {};
@@ -11,6 +12,8 @@ export {};
 declare global {
   interface MissionDesktop {
     isDesktop: boolean;
+    showVoiceCardNotice?(input: VoiceCardNotice): Promise<VoiceCardNoticeResult>;
+    dismissVoiceCardNotice?(id: string): void;
     fixVoiceMicrophone?(): Promise<"checked" | "unavailable">;
     checkVoiceMicrophone?(): Promise<"checked" | "unavailable">;
     version(): Promise<string>;

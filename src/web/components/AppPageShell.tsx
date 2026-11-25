@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
 
+export type DashboardPage = Exclude<MissionRoute["page"], "voice-card">;
+
 /**
  * Which full-screen page is showing, and the overlays that outlive all of them.
  *
@@ -25,8 +27,8 @@ export function AppPageShell({
   overlays,
   ...slots
 }: {
-  page: MissionRoute["page"];
+  page: DashboardPage;
   overlays: ReactNode;
-} & Record<MissionRoute["page"], ReactNode>): React.JSX.Element {
+} & Record<DashboardPage, ReactNode>): React.JSX.Element {
   return <>{slots[page]}{overlays}</>;
 }

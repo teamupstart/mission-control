@@ -9452,7 +9452,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const turn = result.pendingTurn;
       if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
       reviews.tryFileForQueuedSpeech(session.id);
-      const held = registry.hasPendingReviewCall(session.id) || registry.getSession(session.id)?.state === "awaiting_review";
+      const held = registry.hasPendingReviewCall(session.id);
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider);

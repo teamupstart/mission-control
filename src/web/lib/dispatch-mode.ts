@@ -74,7 +74,7 @@ const LaunchModeChangeField = callback<(mode: DispatchLaunchMode) => void>();
  * `DispatchLayer`, which survives a close. The layer turns an opening into exactly one mode.
  */
 export const DispatchOpeningSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("new") }).strict(),
+  z.object({ kind: z.literal("new"), followUp: z.object({ id: z.string(), repoRoot: z.string() }).strict().optional() }).strict(),
   z.object({ kind: z.literal("ensemble"), strategyId: z.enum(ENSEMBLE_STRATEGY_IDS) }).strict(),
   z.object({ kind: z.literal("edit"), task: TaskField }).strict(),
   z.object({ kind: z.literal("tour"), demo: TourDemoField }).strict(),
@@ -210,7 +210,8 @@ export function dispatchModeProblem(mode: DispatchMode): string | null {
  * `edit` names its row by id, because the row itself is live and is read back per render.
  */
 export type DispatchRequest =
-  | { kind: "new" }
+  | { kind: "repair-follow-up"; followUp: NonNullable<Extract<DispatchOpening, { kind: "new" }>["followUp"]> }
+  | Extract<DispatchOpening, { kind: "new" }>
   | { kind: "edit"; taskId: string }
   | { kind: "ensemble"; strategyId: EnsembleStrategyId }
   | { kind: "resident"; profileId: string | null };
@@ -226,8 +227,8 @@ export type DispatchResolution =
  * The request is a single value, so the only other thing that can claim the form is the See the
  * work tour. While the tour runs its dispatch preview it owns the FRESH-dispatch form - its
  * spotlight is on the topbar Dispatch button, and pressing it is how the tour is taken - so an
- * ordinary new request is the tour's opening then. That is a claim, not a tie-break: the tour
- * does not claim the backlog editor, which is a different form over a row that already exists.
+ * ordinary new request is the tour's opening then. A voice follow-up opens the draft for its
+ * repository, and the backlog editor continues to open the requested row during the tour.
  *
  * What it does refuse is the one real collision left. A Library strategy card pressed while the
  * tour holds the fresh-dispatch form asks for an Ensemble on the form the tour has fixed to a
@@ -247,6 +248,7 @@ export function resolveDispatchOpening(
 ): DispatchResolution {
   if (request === null) return { opening: null, problem: null };
   switch (request.kind) {
+    case "repair-follow-up": return { opening: null, problem: null };
     case "edit":
       return world.editTask && world.editTask.id === request.taskId
         ? { opening: { kind: "edit", task: world.editTask }, problem: null }
@@ -270,8 +272,8 @@ export function resolveDispatchOpening(
           }
         : { opening: { kind: "resident", profileId: request.profileId }, problem: null };
     case "new":
-      return world.tourDemo
+      return world.tourDemo && !request.followUp
         ? { opening: { kind: "tour", demo: world.tourDemo }, problem: null }
-        : { opening: { kind: "new" }, problem: null };
+        : { opening: request, problem: null };
   }
 }

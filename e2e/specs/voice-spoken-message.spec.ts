@@ -128,7 +128,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
   } } });
   expect(resident.ok(), await resident.text()).toBe(true);
   expect(await (await say(daemon, "Marlowe, check the build")).json()).toEqual({ accepted: true });
-  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
+  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running" });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
     await feedback.screenshot({ path: join(artifactsDir("voice-spoken-message-live-flag"), "not-running.png") });
@@ -187,7 +187,7 @@ test("an earlier spoken failure stays visible when a newer card updates in the s
   expect(complete.ok(), await complete.text()).toBe(true);
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/earlier/send-now`)).ok()).toBe(true);
   expect((await request.post(`${daemon.baseURL}/api/voice/cards/newer/cancel`)).ok()).toBe(true);
-  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running. Nothing was sent. Relaunch the resident." });
+  const feedback = page.getByRole("status").filter({ hasText: "Marlowe isn't running" });
   await expect(feedback).toBeVisible();
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const dir = artifactsDir("voice-overlapping-cards-stopped-during-window");

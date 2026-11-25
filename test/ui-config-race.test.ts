@@ -28,7 +28,7 @@ Object.defineProperty(globalThis, "fetch", {
   },
 });
 
-const { applyVoiceIndicatorSelection, hydrateUiConfig, uiConfig, updateUiConfig, updateVoiceIndicator } = await import("../src/web/lib/uiConfig.ts");
+const { applyVoiceIndicatorSelection, hydrateUiConfig, uiConfig, updateUiConfig, updateVoiceIndicator, updateVoicePlacement } = await import("../src/web/lib/uiConfig.ts");
 
 test("a failed tour preference write does not restore over a newer preference", async () => {
   const savingPreference = updateUiConfig({ showToursOnStartup: false });
@@ -70,9 +70,10 @@ test("initial hydration cannot undo an indicator save acknowledged after the GET
   assert.equal(uiConfig().richText, true);
   assert.equal(reads, 2);
   const indicators = ["status-line", "edge", "floating"];
-  finishRefresh(Response.json({ configured: true, config: { ...before, voice: { ...before.voice, indicators } } }));
+  finishRefresh(Response.json({ configured: true, config: { ...before, voice: { ...before.voice, confirmation: "popover", indicators } } }));
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(uiConfig().voice.indicators, indicators);
+  assert.equal(uiConfig().voice.confirmation, "popover");
   assert.equal(uiConfig().richText, true);
 });
 
@@ -135,4 +136,18 @@ test("a reconnected daemon can start at a lower indicator revision and discard a
   acknowledge(Response.json({ indicators: ["status-line"], voiceIndicatorVersion: { source: "before-restart", revision: 10 } }));
   assert.equal(await write, "saved");
   assert.deepEqual(uiConfig().voice.indicators, indicators);
+});
+
+test("a late placement acknowledgement cannot undo a peer's newer placement with the same indicators", async t => {
+  const indicators = ["status-line"];
+  const revision = (revision: number) => ({ source: "placement-daemon", revision });
+  applyVoiceIndicatorSelection(indicators, revision(1), "toast");
+  let acknowledge!: (response: Response) => void;
+  const reply = new Promise<Response>(resolve => { acknowledge = resolve; });
+  t.mock.method(globalThis, "fetch", async () => reply);
+  const write = updateVoicePlacement("pill");
+  applyVoiceIndicatorSelection(indicators, revision(3), "popover");
+  acknowledge(Response.json({ confirmation: "pill", indicators, voiceIndicatorVersion: revision(2) }));
+  assert.equal(await write, true);
+  assert.equal(uiConfig().voice.confirmation, "popover");
 });

@@ -2,6 +2,7 @@
 // listener's hello and the shell report under the token, the snapshot field and `voice_state`
 // frames, and every route answering 404 with the flag off.
 import assert from "node:assert/strict";
+import { mkTask } from "./helpers/session-fixture.ts";
 import { randomUUID } from "node:crypto";
 import { after, beforeEach, mock, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,7 +11,7 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "mission-voice-http-"));
 process.env.MISSION_HOME = home;
-const { closeDb, getAppConfig, deleteAppConfig, openDb } = await import("../src/server/db.ts");
+const { closeDb, getAppConfig, deleteAppConfig, openDb, upsertTask } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -71,6 +72,7 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
   setFlag("voice", false);
   const disabled = { error: "This feature is disabled.", feature: "voice" };
   for (const response of [
+    await json("/api/voice/tasks/stored/follow-up"),
     await json("/api/voice/config"),
     await json("/api/voice/config", "PUT", { muted: true }),
     await json("/api/voice/config/provider-intent", "POST"),
@@ -86,6 +88,18 @@ test("with the flag off every route answers 404, writes nothing, and the snapsho
   assert.equal("voice" in registry.snapshot(), false);
   assert.equal("voiceIndicators" in registry.snapshot(), false);
   assert.equal("voiceIndicatorVersion" in registry.snapshot(), false);
+});
+
+test("follow-up uses the stored task repository even when the finished task is outside the registry", async () => {
+  const id = "old-finished-task";
+  upsertTask(mkTask({ id, status: "done", repoRoot: "/repo/finished" }));
+  assert.equal(registry.getTask(id), undefined);
+  const response = await json("/api/voice/tasks/" + id + "/follow-up");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { repoRoot: "/repo/finished" });
+  const missing = await json("/api/voice/tasks/missing/follow-up");
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error, "The finished task could not be found.");
 });
 
 test("GET returns every contract A field with its default", async () => {
@@ -373,6 +387,71 @@ test("newer explicit provider tickets win across windows unless an intervening O
   assert.equal((await choose("jev", stale)).status, 409);
 });
 
+test("a card clock probe returns only daemon time while Voice is enabled", async () => {
+  const before = Date.now();
+  const response = await json("/api/voice/config", "HEAD");
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "");
+  const stamp = Number(response.headers.get("X-Voice-Server-Time-Ms"));
+  assert.ok(stamp >= before && stamp <= Date.now());
+  setFlag("voice", false);
+  const disabled = await json("/api/voice/config", "HEAD");
+  assert.equal(disabled.status, 404);
+  assert.equal(disabled.headers.get("X-Voice-Server-Time-Ms"), null);
+});
+
+test("a confirmed placement advances the selection revision without changing indicators", async () => {
+  const write = async (confirmation: string) => (await json("/api/voice/confirmation", "PUT", { confirmation })).json();
+  const start = await write("toast");
+  const saved = await write("pill");
+  assert.equal(saved.confirmation, "pill");
+  assert.deepEqual(saved.indicators, start.indicators);
+  assert.equal(saved.voiceIndicatorVersion.source, start.voiceIndicatorVersion.source);
+  assert.ok(saved.voiceIndicatorVersion.revision > start.voiceIndicatorVersion.revision);
+  assert.deepEqual(registry.snapshot().voiceIndicatorVersion, saved.voiceIndicatorVersion);
+});
+
+test("a placement body that arrives late cannot undo a newer save, including for an unversioned caller", async t => {
+  const path = "/api/voice/confirmation";
+  const initial = await (await json(path, "PUT", { confirmation: "toast" })).json();
+  const published: string[][] = [];
+  t.after(onVoiceIndicatorsChanged(indicators => published.push(indicators)));
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const newer = await json(path, "PUT", { confirmation: "popover", expectedVersion: initial.voiceIndicatorVersion });
+      assert.equal(newer.status, 200);
+      controller.enqueue(new TextEncoder().encode(JSON.stringify({ confirmation: "pill" })));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const stale = await app.request(path, { method: "PUT", headers, body, duplex: "half" } as RequestInit & { duplex: "half" });
+  assert.equal(stale.status, 409);
+  const current = await stale.json();
+  assert.equal(current.confirmation, "popover");
+  assert.deepEqual(current.voiceIndicatorVersion, registry.snapshot().voiceIndicatorVersion);
+  assert.deepEqual(current.indicators, initial.indicators);
+  assert.equal(published.length, 1);
+  const previousDaemon = { ...current.voiceIndicatorVersion, source: "previous-daemon" };
+  assert.equal((await json(path, "PUT", { confirmation: "pill", expectedVersion: previousDaemon })).status, 409);
+  assert.equal((await (await json("/api/ui/config")).json()).config.voice.confirmation, "popover");
+});
+
+test("reaffirming the current placement publishes a new revision and supersedes an older choice", async t => {
+  const path = "/api/voice/confirmation";
+  const toast = await (await json(path, "PUT", { confirmation: "toast" })).json();
+  let announced: ServerEvent | undefined;
+  t.after(onVoiceIndicatorsChanged(indicators => registry.emitVoiceIndicators(indicators)));
+  t.after(registry.subscribe(event => { if (event.type === "voice_indicators") announced = event; }));
+  const reaffirm = await json(path, "PUT", { confirmation: "toast", expectedVersion: toast.voiceIndicatorVersion });
+  assert.equal(reaffirm.status, 200);
+  const saved = await reaffirm.json();
+  assert.ok(saved.voiceIndicatorVersion.revision > toast.voiceIndicatorVersion.revision);
+  assert.deepEqual(announced, { type: "voice_indicators", confirmation: "toast", indicators: toast.indicators, voiceIndicatorVersion: saved.voiceIndicatorVersion });
+  const stale = await json(path, "PUT", { confirmation: "pill", expectedVersion: toast.voiceIndicatorVersion });
+  assert.equal(stale.status, 409);
+  assert.equal((await (await json("/api/ui/config")).json()).config.voice.confirmation, "toast");
+});
+
 test("indicator edits publish the persisted selection in order and preserve unknown ids on reconnect", async (t) => {
   const selections: string[][] = [];
   const revisions: number[] = [];
@@ -410,7 +489,7 @@ test("a full indicator list refuses an addition and still permits removing an in
   assert.equal((await json("/api/ui/config", "PUT", { voice: { confirmation: "pill", indicators: [...indicators, "edge"] } })).status, 200);
   assert.equal((await json("/api/voice/indicators", "PUT", { id: "topbar", enabled: true })).status, 409);
   const removed = await json("/api/voice/indicators", "PUT", { id: "edge", enabled: false });
-  assert.deepEqual(await removed.json(), { indicators, voiceIndicatorVersion: registry.snapshot().voiceIndicatorVersion });
+  assert.deepEqual(await removed.json(), { indicators, confirmation: "pill", voiceIndicatorVersion: registry.snapshot().voiceIndicatorVersion });
 });
 
 test("PUT applies a patch, merges the cancel window per key, and persists it", async () => {

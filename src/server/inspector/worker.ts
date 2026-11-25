@@ -805,18 +805,6 @@ async function processPr(
   const readDiff = diffOncePerTick(dir, pr);
   let acted = false;
   const resolvedThreadIds = new Set<string>();
-  // A review or reply may have succeeded before resolving its thread failed. Its durable marker
-  // authorizes retrying that mutation, without treating an operator's ledger override
-  // as permission to close GitHub threads.
-  for (const [fingerprint, thread] of ourThreads(s, login)) {
-    if (!post) break;
-    if (!rows.get(fingerprint)?.resolutionPending) continue;
-    const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
-    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", tick);
-    resolvedThreadIds.add(thread.threadId);
-    closeRow(rows, fingerprint, now);
-    acted = true;
-  }
 
   // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
   //    pushes ago should not queue behind a fresh review of a big diff.
@@ -861,6 +849,20 @@ async function processPr(
         return acted;
       }
     }
+  }
+
+  // A review or reply may have succeeded before resolving its thread failed. Its durable marker
+  // authorizes retrying that mutation, without treating an operator's ledger override
+  // as permission to close GitHub threads. Retry only after waiting questions get a turn,
+  // so a repeated GitHub refusal cannot starve them.
+  for (const [fingerprint, thread] of ourThreads(s, login)) {
+    if (!post) break;
+    if (!rows.get(fingerprint)?.resolutionPending) continue;
+    const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
+    if (!resolved.ok) return noteFailure(pr, "could not resolve the answered thread", tick) || acted;
+    resolvedThreadIds.add(thread.threadId);
+    closeRow(rows, fingerprint, now);
+    acted = true;
   }
 
   // 2. Ship it, if YOLO mode says every gate is green.

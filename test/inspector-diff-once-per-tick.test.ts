@@ -475,8 +475,10 @@ test("a failed reply yields to the next PR and retries pending replies from the 
   assert.deepEqual(loadInspectorComments(failing).map((row) => row.answeredCommentId).sort(), [202, 203, 204]);
 });
 
-test("a posted reply with failed resolution leaves the next reply pending and yields to the next PR", async (t) => {
+test("a posted reply with failed resolution yields, then waiting replies precede the resolution retry", async (t) => {
   const adoptedAt = Date.now();
+  let now = adoptedAt;
+  t.mock.method(Date, "now", () => now);
   const failing = adopt(11, adoptedAt);
   const later = adopt(12, adoptedAt + 1);
   writeGithubState({
@@ -492,30 +494,50 @@ test("a posted reply with failed resolution leaves the next reply pending and yi
     actions: [],
   });
 
-  const model = t.mock.method(claudeRunner, "run", async (_prompt: string) =>
-    JSON.stringify({ reply: "The guard is fixed.", resolved: true }),
+  const model = t.mock.method(claudeRunner, "run", async (prompt: string) =>
+    JSON.stringify({ reply: "I checked the guard.", resolved: prompt.includes("First question") }),
   );
+  let firstSweep: { calls: number; actions: string[]; laterState: string | null | undefined } | undefined;
   let sweepComplete = false;
   const stop = startInspector(registryStub(() => {
+    if (!firstSweep) {
+      firstSweep = {
+        calls: model.mock.callCount(),
+        actions: readGithubState().actions,
+        laterState: getInspectorPr(later)?.observedState,
+      };
+      now += pollMs;
+      return;
+    }
+    if (getInspectorPr(failing)?.observedAt !== now) return;
     stop();
     sweepComplete = true;
   }));
   t.after(stop);
-  await waitFor("the sweep to finish after the resolution refusal", () => sweepComplete);
+  await waitFor("the next eligible sweep after the resolution refusal", () => sweepComplete);
 
-  assert.equal(model.mock.callCount(), 1, "the second reply never calls the model");
+  assert.deepEqual(firstSweep, {
+    calls: 1,
+    actions: ["replied to comment 202", "failed to resolve T_0"],
+    laterState: "CLOSED",
+  });
+  assert.equal(model.mock.callCount(), 2, "the second question gets a model call on the next eligible sweep");
   assert.match(model.mock.calls[0]?.arguments[0] ?? "", /First question/);
-  assert.deepEqual(readGithubState().actions, ["replied to comment 202", "failed to resolve T_0"]);
+  assert.match(model.mock.calls[1]?.arguments[0] ?? "", /Second question/);
+  assert.deepEqual(readGithubState().actions, [
+    "replied to comment 202", "failed to resolve T_0",
+    "replied to comment 203", "failed to resolve T_0",
+  ]);
 
   const findings = loadInspectorComments(failing);
   const answered = findings.find((row) => row.id === "prior-0");
-  const pending = findings.find((row) => row.id === "prior-1");
+  const second = findings.find((row) => row.id === "prior-1");
   assert.equal(answered?.answeredCommentId, 202, "the posted reply stays recorded");
   assert.equal(answered?.resolutionPending, true, "the failed resolution remains retryable");
-  assert.equal(pending?.answeredCommentId, null);
-  assert.equal(pending?.replies, 0);
-  assert.equal(pending?.status, "open");
-  assert.match(getInspectorPr(failing)?.lastError ?? "", /fake thread resolution failure/);
+  assert.equal(second?.answeredCommentId, 203);
+  assert.equal(second?.replies, 1);
+  assert.equal(getInspectorPr(failing)?.failCount, 2);
+  assert.match(getInspectorPr(failing)?.lastError ?? "", /could not resolve the answered thread/);
   assert.equal(getInspectorPr(later)?.observedHeadSha, "head-resolution-failure");
   assert.equal(getInspectorPr(later)?.observedState, "CLOSED", "the later PR was observed in the same sweep");
 });

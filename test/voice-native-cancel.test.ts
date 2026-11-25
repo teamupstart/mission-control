@@ -5,12 +5,17 @@ import test from "node:test";
 import { once } from "node:events";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
-import { app, cards, home, queued, voiceStateStore } from "./helpers/voice-http.ts";
+import { app, cards, home, name, queued, roster, voiceStateStore } from "./helpers/voice-http.ts";
 
 test("native recorded Cancel reaches the daemon after the countdown", {
   skip: !process.env.MISSION_CANCEL_TEST_WAV || !process.env.MISSION_CANCEL_TEST_MODELS,
 }, async t => {
   voiceStateStore.reset();
+  // This roster name can win CTC rescoring even when Parakeet decoded "Cancel." exactly.
+  voiceStateStore.useRoster(() => [...roster, name("Voice")]);
+  const config = await app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ endOfSpeechMs: 3000 }) });
+  assert.equal(config.status, 200);
   const server = serve({ fetch: async request => {
     const response = await app.fetch(request);
     t.diagnostic(request.method + " " + new URL(request.url).pathname + " " + response.status);

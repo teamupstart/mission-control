@@ -39,7 +39,7 @@ function kindRow(page: Page, kind: string): Locator {
 /** Choose a row's Workflow and wait for the Settings write that carries it to land. */
 async function chooseRow(page: Page, kind: string, value: string): Promise<void> {
   const saved = page.waitForResponse((response) =>
-    response.url().endsWith("/api/workflows/config") && response.request().method() === "PUT");
+    response.url().endsWith("/api/workflows/config") && response.request().method() === "PATCH");
   await kindRow(page, kind).selectOption(value);
   expect((await saved).ok()).toBe(true);
 }

@@ -124,6 +124,56 @@ test("tap toggles, hold during auto-mute publishes physical edges, other holds d
   hardware.stop();
 });
 
+test("an in-call hold expires two minutes from key-down and a late key-up cannot deliver", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1000 });
+  const clock = () => Date.now() * 1000;
+  let edge!: (down: boolean, at: number) => void;
+  const hardware = new VoiceHardware({ value: { register(_, cb) { edge = cb; return true; }, unregister() {} } },
+    { value: { running: () => true } }, () => -1, () => assert.fail("long hold toggled mute"), () => {}, clock);
+  t.after(() => hardware.stop());
+  hardware.update("ctrl+k", "auto-muted");
+  edge(true, clock());
+  t.mock.timers.tick(350);
+  assert.ok(hardware.report().pushToTalk);
+  t.mock.timers.tick(119_649);
+  assert.ok(hardware.report().pushToTalk);
+  t.mock.timers.tick(1);
+  assert.equal(hardware.report().pushToTalk, false);
+  edge(false, clock());
+  assert.equal(hardware.report().pushToTalkReleasedAtHostUs, undefined);
+});
+
+test("dedicated holds start immediately, expire without delivery on lost key-up, and rearm", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  const clock = () => Date.now() * 1000;
+  let edge!: (down: boolean, at: number) => void;
+  const hardware = new VoiceHardware({ value: { register(_, cb) { edge = cb; return true; }, unregister() {} } },
+    { reason: "Unavailable" }, () => -1, () => assert.fail("dedicated key toggled mute"), () => {}, clock);
+  t.after(() => hardware.stop());
+  hardware.update("ctrl+k", "waiting-for-key", false, undefined, undefined, crypto.randomUUID());
+  edge(true, clock());
+  assert.equal(hardware.report().pushToTalk, true);
+  t.mock.timers.tick(120_000);
+  assert.equal(hardware.report().pushToTalk, false);
+  assert.equal(hardware.report().pushToTalkReleasedAtHostUs, undefined);
+  edge(false, clock());
+  t.mock.timers.tick(1);
+  edge(true, clock());
+  assert.equal(hardware.report().pushToTalk, true);
+  t.mock.timers.tick(119_999);
+  assert.equal(hardware.report().pushToTalk, true);
+  t.mock.timers.tick(1);
+  assert.equal(hardware.report().pushToTalk, false);
+  assert.equal(hardware.report().pushToTalkReleasedAtHostUs, undefined);
+  edge(false, clock());
+  t.mock.timers.tick(1);
+  edge(true, clock());
+  assert.equal(hardware.report().pushToTalk, true);
+  hardware.update("ctrl+k", "listening");
+  edge(false, clock());
+  assert.equal(hardware.report().pushToTalkReleasedAtHostUs, undefined);
+});
+
 test("an input-source change remaps a retained shortcut and retries the refused preference", () => {
   let layout = new Map([["ctrl+v", 9]]);
   let physical: number | undefined;

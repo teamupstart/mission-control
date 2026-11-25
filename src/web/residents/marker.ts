@@ -7,7 +7,7 @@ import {
   type ResidentProfile,
   type ResidentRunSummary,
 } from "@shared/residents.ts";
-import { normalizeSpokenName } from "@shared/voice-names.ts";
+import { quotedReferenceName, normalizeSpokenName } from "@shared/voice-names.ts";
 import type { Session, Task } from "@shared/types.ts";
 
 /**
@@ -155,7 +155,7 @@ export function residentSessionMark(
   const marker = residentMarker(run.settings);
   const referenceName = (profile ?? run).settings.identity.referenceName?.trim();
   return {
-    ...(listening && referenceName ? { listeningTitle: `"${referenceName}"` } : {}),
+    ...(listening && referenceName ? { listeningTitle: quotedReferenceName(referenceName) } : {}),
     runId: run.id,
     taskId: run.taskId,
     loop: run,

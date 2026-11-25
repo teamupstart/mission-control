@@ -38,6 +38,7 @@ const catalog: readonly SettingDescriptor[] = [
 
 export function registerSessionSettingsRoutes(
   app: Hono, registry: Registry, authorizeWrite: AuthorizeSessionSettings = sessionSettingsAuthorization(),
+  typedSettings: () => readonly SettingDescriptor[] = () => [],
 ): void {
   function authorize(c: Context) {
     try {
@@ -65,7 +66,9 @@ export function registerSessionSettingsRoutes(
     const parsed = await parseBody(c, SettingsRequestSchema, { strict: true });
     if (!parsed.ok) return c.json(settingsFailure("invalid_request"), 400);
     // Recheck past body intake. Owner preparation and mutation then run synchronously.
-    const result = dispatchSetting(parsed.data, catalog, () => authorize(c));
+    const refusal = authorize(c);
+    if (refusal) return c.json(refusal, refusal.error === "unavailable" ? 503 : 403);
+    const result = dispatchSetting(parsed.data, [...catalog, ...typedSettings()], () => authorize(c));
     if (result.ok) return c.json(result);
     if (result.error === "unauthorized" || result.error === "access_disabled") return c.json(result, 403);
     if (result.error === "unavailable") return c.json(result, 503);

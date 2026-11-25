@@ -181,8 +181,12 @@ test.describe("while the latest instruction is still reconciling", () => {
     await expect(reply).toBeEnabled();
     await reply.fill(FOLLOW_UP);
     await reply.press("Enter");
+    // Idle and an empty queue can still describe the opening turn while the send is in flight.
+    const goalPath = `/api/sessions/${sessionId}/goal`;
+    await expect.poll(async () => (await api<Goal>(daemon, goalPath)).promptRevision,
+      { message: "the follow-up should reach Goal intake" }).toBeGreaterThan(before.promptRevision);
     await settled(daemon, sessionId);
-    const pending = await api<Goal>(daemon, `/api/sessions/${sessionId}/goal`);
+    const pending = await api<Goal>(daemon, goalPath);
     expect(pending.resolvedPromptRevision).toBeLessThan(pending.promptRevision);
 
     // The resolving hover names the same exit as the unclear one.

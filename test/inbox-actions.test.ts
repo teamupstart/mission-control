@@ -58,6 +58,8 @@ test("action ids are unique, and the question card's two forms are declared", ()
 });
 
 test("a hint fills in the agent's name, and adds the open-card form only while the card is open", () => {
+  assert.equal(spokenHintText(inboxAction("answer"), { name: "Sage", isReferenceName: true }, true), '"Sage", ... or "reply, ..."');
+  assert.equal(spokenHintText(inboxAction("answer"), '"Sage"', true), '""Sage", ..." or "reply, ..."');
   assert.equal(spokenHintText(inboxAction("answer"), "Steve"), '"Steve, ..."');
   assert.equal(spokenHintText(inboxAction("answer"), "Steve", true), '"Steve, ..." or "reply, ..."');
   assert.equal(spokenHintText(inboxAction("answer-option"), "Steve", true), '"Steve, option B"');
@@ -72,6 +74,14 @@ test("a spoken hint renders nothing until voice turns hints on", () => {
     renderToStaticMarkup(voice(true, createElement(SpokenHint, { action: "answer", name: "Steve" }))),
     '<span class="spoken-hint" data-spoken-action="answer">&quot;Steve, ...&quot;</span>',
   );
+});
+
+test("a sent card quotes just the reference name in its answer command", () => {
+  const hint = createElement(SpokenHint, {
+    action: "answer", name: { name: '"Sage"', isReferenceName: true },
+    command: "{name}, answer", instruction: "to reply to one.",
+  });
+  assert.match(renderToStaticMarkup(voice(true, hint)), />Say &quot;Sage&quot;, answer to reply to one\.<\/span>/);
 });
 
 test("a relabelled button keeps its action's id and spoken form", () => {

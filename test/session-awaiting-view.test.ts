@@ -121,11 +121,10 @@ test("the Board's Idle head counts a pinned resident inside a wait as awaiting, 
   const idleColumn = html.slice(html.indexOf('class="board-col tone-idle'));
   // Both waiting sessions are counted; the pin only decides where the resident's card sits.
   assert.match(idleColumn, /class="board-col-n n-awaiting"[^>]*>2 awaiting</);
-  // Nothing is held, and the head still says how many can take work rather than the total.
+  // The Free section reports capacity, while the head counts both waiting sessions.
   const headHtml = idleColumn.slice(0, idleColumn.indexOf("</header>"));
-  assert.match(headHtml, /class="board-col-n n-free"[^>]*>1 free</);
-  assert.doesNotMatch(headHtml, /class="board-col-n">3</, "the head drew the column total beside the awaiting count");
-  assert.doesNotMatch(headHtml, /n-held/);
+  assert.doesNotMatch(headHtml, /class="board-col-n(?:"| n-free"| n-held")/);
+  assert.match(idleColumn, /<b>free<\/b><span class="fleet-section-n">1</);
   assert.ok(idleColumn.indexOf("Release Watch") < idleColumn.indexOf("awaiting background work"),
     "the pinned resident left its pinned place for the Awaiting section");
   assert.match(idleColumn, /fleet-section-awaiting[\s\S]*?fleet-section-n">1</, "the section rule counts only the cards under it");
@@ -183,7 +182,7 @@ test("a pinned free resident above the Awaiting section is drawn under a Free ru
   assert.ok(freeRule >= 0 && freeRule < idleColumn.indexOf("Release Watch"), "the pinned free resident is not under a Free rule");
   assert.ok(idleColumn.indexOf("Release Watch") < idleColumn.indexOf("fleet-section-awaiting"));
   assert.ok(idleColumn.indexOf("fleet-section-free", freeRule + 1) > idleColumn.indexOf("Awaiting CI"), "no Free rule below the Awaiting section");
-  assert.match(idleColumn, /class="board-col-n n-free"[^>]*>2 free</);
+  assert.equal([...idleColumn.matchAll(/<b>free<\/b><span class="fleet-section-n">1</g)].length, 2);
 });
 
 test("the awaiting set keeps its identity while its members are unchanged", () => {

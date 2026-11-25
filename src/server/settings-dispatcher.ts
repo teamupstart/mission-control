@@ -9,7 +9,9 @@ import {
 interface Descriptor {
   key: string;
   label: string;
+  control?: string;
   keywords: readonly string[];
+  available?: () => boolean;
 }
 
 type Choices = {
@@ -17,8 +19,8 @@ type Choices = {
   constraints?: { choicesOnly?: true };
 };
 
-type Scalar = Exclude<SettingsValue, object>;
-type Composite = Extract<SettingsValue, object>;
+export type SettingScalar = Exclude<SettingsValue, object>;
+export type SettingComposite = Extract<SettingsValue, object>;
 
 /**
  * Owners are synchronous so the version check, authorization check and owner mutation
@@ -28,11 +30,14 @@ type Composite = Extract<SettingsValue, object>;
 export type SettingDescriptor = Descriptor & (
   | { access: "protected"; destination: string }
   | ({ access: "read-only"; read(): SettingsValue } & Choices)
-  | ({ access: "read-write"; replacement: "scalar"; schema: ZodType<Scalar>;
-       read(): Scalar; write(value: Scalar): Scalar } & Choices)
-  | ({ access: "read-write"; replacement: "composite"; schema: ZodType<Composite>;
-       read(): { value: Composite; revision: string }; write(value: Composite): Composite } & Choices)
+  | ({ access: "read-write"; replacement: "scalar"; schema: ZodType<SettingScalar>;
+       read(): SettingScalar; write(value: SettingScalar): SettingScalar } & Choices)
+  | ({ access: "read-write"; replacement: "composite"; schema: ZodType<SettingComposite>;
+       read(): { value: SettingComposite; revision: string }; write(value: SettingComposite): SettingComposite } & Choices)
 );
+
+/** Owner validation can fail after merging with the current config. */
+export class InvalidSettingValue extends Error {}
 
 const tokenKey = randomBytes(32);
 function token(parts: unknown[]): string {
@@ -70,6 +75,11 @@ export function dispatchSetting(
 ): SettingsResult {
   const refusal = authorize();
   if (refusal) return refusal;
+
+  catalog = catalog.filter(setting => {
+    try { return setting.available?.() ?? true; }
+    catch { return false; }
+  });
 
   if (request.operation === "find") {
     const terms = request.query.toLowerCase().split(/\s+/);
@@ -117,7 +127,8 @@ export function dispatchSetting(
     }
     if (setting.access === "read-only") return settingsFailure("read_only");
     return writeSetting(setting, request, authorize);
-  } catch {
+  } catch (error) {
+    if (error instanceof InvalidSettingValue) return settingsFailure("invalid_value");
     // Owner exceptions may include paths, input or config contents. Keep those out of tool responses and logs.
     return settingsFailure("unavailable");
   }

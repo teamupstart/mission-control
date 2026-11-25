@@ -339,9 +339,10 @@ let db: DatabaseSync | undefined;
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
 // 63: replace the previously materialized Voice mute shortcut default once.
 // 64: retain handoff release, accepted Goal instruction and initial queue delivery times.
-// 65: remember verified departure for task worktree retention.
-// 66: preserve additional SDK checkout grants across driver and daemon lifetimes.
-export const CURRENT_DATABASE_SCHEMA_VERSION = 66;
+// 65: preserve resident reference-name provenance in reports and mutes.
+// 66: remember verified departure for task worktree retention.
+// 67: preserve additional SDK checkout grants across driver and daemon lifetimes.
+export const CURRENT_DATABASE_SCHEMA_VERSION = 67;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -5451,6 +5452,31 @@ function migrate(d: DatabaseSync): void {
 
   addColumn(d, "reports", "author_spoken_name", "TEXT");
   addColumn(d, "report_mutes", "author_spoken_name", "TEXT");
+
+  addColumn(d, "reports", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "report_mutes", "author_is_reference_name", "INTEGER NOT NULL DEFAULT 0");
+  // Recover the source using the profile revision at post time. A profile rename alone
+  // can also make the stored spoken and pinned fallback names differ.
+  if (databaseSchemaVersion(d) < 65) {
+    d.function("normalized_spoken_name", { deterministic: true }, value => {
+      const parsed = SpokenNameSchema.safeParse(value);
+      return parsed.success ? parsed.data : null;
+    });
+    d.exec(`
+      UPDATE reports SET author_is_reference_name = 1,
+        author_spoken_name = COALESCE(author_spoken_name, author_name)
+      WHERE author_resident_profile_id IS NOT NULL AND COALESCE(author_spoken_name, author_name) = (
+        SELECT CASE WHEN json_valid(settings_json) THEN normalized_spoken_name(json_extract(settings_json, '$.identity.referenceName')) END
+        FROM resident_profile_revisions WHERE profile_id = reports.author_resident_profile_id
+          AND created_at <= reports.created_at ORDER BY revision DESC LIMIT 1
+      );
+      UPDATE report_mutes SET author_is_reference_name = 1
+      WHERE (SELECT author_is_reference_name FROM reports WHERE reports.author_key = report_mutes.author_key
+        AND reports.author_name = report_mutes.author_name
+        AND COALESCE(reports.author_spoken_name, reports.author_name) = COALESCE(report_mutes.author_spoken_name, report_mutes.author_name)
+        AND created_at <= report_mutes.muted_at ORDER BY seq DESC LIMIT 1) = 1;
+    `);
+  }
 
   rebuildInFlightIndexIfStale(d);
   rebuildOutstandingFileCommentIndexIfStale(d);
@@ -17419,16 +17445,29 @@ export function setSkillsAck(noteKey: string, generation: number, now = Date.now
     .run(noteKey, generation, now);
 }
 
+const appConfigRevisions = new Map<string, number>();
+
+/** A daemon-local generation for conditional setting replacement. */
+export function appConfigRevision(entry: AppConfigEntry): string {
+  return String(appConfigRevisions.get(entry.key) ?? 0);
+}
+
+function bumpAppConfigRevision(entry: AppConfigEntry): void {
+  appConfigRevisions.set(entry.key, (appConfigRevisions.get(entry.key) ?? 0) + 1);
+}
+
 export function setAppConfig<Entry extends AppConfigEntry>(
   entry: Entry,
   value: AppConfigInput<Entry>,
+  db = openDb(),
 ): void {
-  openDb()
+  db
     .prepare(
       `INSERT INTO app_config (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(entry.key, JSON.stringify(value));
+  bumpAppConfigRevision(entry);
 }
 
 /**
@@ -17442,6 +17481,7 @@ export function hasAppConfigRow(entry: AppConfigEntry): boolean {
 /** Remove a registered config blob, so a later read answers undefined as if never set. */
 export function deleteAppConfig(entry: AppConfigEntry): void {
   openDb().prepare(`DELETE FROM app_config WHERE key = ?`).run(entry.key);
+  bumpAppConfigRevision(entry);
 }
 
 // ---- Inspector: the adoption + provenance ledgers ----

@@ -179,7 +179,7 @@ async function expectOffFleet(page: Page, name = NAME): Promise<void> {
 
 test("a listening resident card shows its quoted reference name with spoken names disabled", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  await launch(daemon, NAME, { referenceName: "Marlowe" });
+  await launch(daemon, NAME, { referenceName: '"Marlowe"' });
   await useDrawer(page, daemon, "board");
   const listener = await beListener(daemon);
   try {

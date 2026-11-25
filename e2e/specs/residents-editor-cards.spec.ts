@@ -138,15 +138,22 @@ test("the resident editor lays its sections out as a card grid with a live board
   const limits = [
     "Wake cadence (seconds)", "Minimum requested delay (seconds)", "Maximum requested delay (seconds)",
     "Iterations per 24 hours", "Spend per 24 hours (USD)", "Compact at context (%)",
-  ];
+  ] as const;
   for (const label of limits) await expect(loopCard.getByLabel(label, { exact: true })).toBeVisible();
-  const first = await box(loopCard.getByLabel(limits[0], { exact: true }));
-  const third = await box(loopCard.getByLabel(limits[2], { exact: true }));
-  const fourth = await box(loopCard.getByLabel(limits[3], { exact: true }));
-  expect(Math.abs(first.y - third.y)).toBeLessThan(2);
-  expect(fourth.y).toBeGreaterThan(first.y + first.height);
-  const prompt = await box(loopCard.getByLabel("Loop prompt"));
-  expect(first.x).toBeGreaterThan(prompt.x + prompt.width);
+  // Compare the tiles. A wrapped label can move the input within its tile.
+  const tile = (label: string) => loopCard.locator(".resident-loop-limit")
+    .filter({ has: page.getByLabel(label, { exact: true }) });
+  await expect(async () => {
+    const [first, third, fourth, prompt] = await Promise.all([
+      box(tile(limits[0])),
+      box(tile(limits[2])),
+      box(tile(limits[3])),
+      box(loopCard.getByRole("textbox", { name: "Loop prompt", exact: true })),
+    ]);
+    expect(Math.abs(first.y - third.y)).toBeLessThan(2);
+    expect(fourth.y).toBeGreaterThan(first.y + first.height);
+    expect(first.x).toBeGreaterThan(prompt.x + prompt.width);
+  }).toPass({ timeout: 5_000 });
 
   // Granting authority marks its row in the attention color.
   const control = editor.getByRole("checkbox", { name: "Control other sessions" });

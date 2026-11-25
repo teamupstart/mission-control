@@ -1200,9 +1200,10 @@ available:
   its turn, and the run is off working checks, judges and reviewers before it sends the next
   round. The runtime reading is right - the agent really is doing nothing - but it is not
   *free*, and the column used to count it as capacity. It now sorts below a **held by a
-  workflow** rule, under its own count: the head reads **N free · M held** instead of one
-  number that means neither, and each held tile wears a purple spine and a **held** tag so it
-  stays legible once the rule has scrolled away. The tile's
+  workflow** rule. On the Board, the Free and Held sections each display their count. Each
+  held tile wears a purple spine and a **held** tag so it stays legible once the rule has
+  scrolled away. The session is exempt from stall detection while the workflow owns the next
+  move. The tile's
   [active-rung preview](workflows.md#watching-a-run) already says *which* run and *where
   it is*; the rule answers the question that preview cannot, which is whether you may give this
   agent anything. Held-ness is a join, not a session state - a run whose status has reached
@@ -1224,12 +1225,11 @@ available:
   [declared a wait](sessions.md#sessions-awaiting-a-background-process-preview) on its own CI, build,
   monitor or wakeup sorts under an **awaiting background work** rule at the top of Idle, soonest
   due first, after pinned residents and before free and held agents. The section keeps that
-  order with **Group by repository** on: its cards are not framed by repository or by run. The head counts it
-  (**1 awaiting**) and counts the rest as free (**2 free**) rather than drawing the column total,
-  whether or not a workflow holds any, in the **Console** rail's head as well. A pinned resident
-  that is waiting keeps its pinned place, ahead of the other pinned residents and above the Free
-  rule, and is counted as awaiting, never as free. In the Conversation tab, Tab from the
-  conversation reaches the band's **Open**, **Clear** and **Details** before the tab strip; a link
+  order with **Group by repository** on: its cards are not framed by repository or by run. The
+  Board's Free section shows its count, and the **Console** rail header shows the Awaiting and
+  Free counts. A pinned resident with a declared wait stays ahead of the other pinned residents
+  and counts as awaiting. In the Conversation tab, Tab from the conversation reaches the band's
+  **Open**, **Clear** and **Details** before the tab strip; a link
   inside a closed Details is not on that path. Its card draws a deadline track: what it waits
   for, the due time, and a bar from when it declared the wait to when it is due. Once the
   deadline passes the card reads **Overdue** in amber and leaves the section for plain Idle; it
@@ -1240,10 +1240,10 @@ available:
   [stuck rules](attention-and-alerts.md#stuck-sessions) flag as **Idle with work open** or
   **Workflow run parked** sorts under a **stalled** rule between the free agents and the held
   ones, longest stalled first, and is no longer a row in the inbox. Free stays first because it is
-  what you dispatch to; stalled comes next because it is what you act on. The head counts it
-  (**1 free · 2 stalled · 1 held**), and the **Console** rail's head does too. Each stalled card
-  wears a yellow spine and a **stalled** tag, and a short fact sheet: the open **Task** and any
-  open **Queue** items, or for a parked run what it is **Waiting** on and the **Missing** step,
+  what you dispatch to; stalled comes next because it is what you act on. The Board's Stalled
+  section shows its count, and the **Console** rail header shows it alongside Free and Held. Each
+  stalled card wears a yellow spine and a **stalled** tag, and a short fact sheet: the open
+  **Task** and any open **Queue** items, or for a parked run what it is **Waiting** on and the **Missing** step,
   then the session's **Last** activity line and Foreman's note when it has one. Below it are the
   actions for the open work. **Nudge** asks the agent for a status update. **Message…** opens
   the task session's composer, **Mark done** opens the session's **Complete** dialog (the one its

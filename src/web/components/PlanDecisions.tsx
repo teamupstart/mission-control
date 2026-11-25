@@ -1,3 +1,4 @@
+import type { HintName } from "@shared/inbox.ts";
 import { PlanVoiceHint } from "./VoiceAnswerFooter.tsx";
 import { VoiceIcon } from "./VoiceCardView.tsx";
 import { ordinal, spokenOrdinal, optionLetter } from "@shared/voice-answers.ts";
@@ -136,7 +137,7 @@ export function DecisionForm({
   /** A control drawn next to Submit, such as the final-bundle form's standing approval. */
   besideSubmit?: React.ReactNode;
   footer?: React.ReactNode;
-  planAddress?: string;
+  planAddress?: HintName;
   voiceLetters?: boolean;
   voicePending?: boolean;
   /**

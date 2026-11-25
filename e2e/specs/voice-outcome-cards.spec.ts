@@ -177,21 +177,21 @@ test("without randomUUID a pending card can cancel and a stopped resident can re
     else await route.continue();
   });
   const resident = await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
-    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+    identity: { name: "Build reviewer", referenceName: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
   } } });
   expect(resident.ok(), await resident.text()).toBe(true);
   expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
   await say(daemon, "Marlowe, cancel this one");
-  await page.getByRole("status").filter({ hasText: "To Marlowe" }).getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: 'To "Marlowe"' }).getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
   await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
   await say(daemon, "Marlowe, check the build");
-  const card = page.getByRole("status").filter({ hasText: "Marlowe isn't running" });
+  const card = page.getByRole("status").filter({ hasText: `"Marlowe" isn't running` });
   await expect(card).toContainText("Nothing was sent");
   await captureCard(card, "resident");
-  await card.getByRole("button", { name: "Relaunch Marlowe" }).click();
+  await card.getByRole("button", { name: 'Relaunch "Marlowe"' }).click();
   await expect(card).toContainText("Try the launch again");
-  await card.getByRole("button", { name: "Relaunch Marlowe" }).click();
+  await card.getByRole("button", { name: 'Relaunch "Marlowe"' }).click();
   await expect.poll(async () => ((await (await page.request.get(daemon.baseURL + "/api/sessions")).json()) as Session[]).some(s => s.task?.kind === "resident")).toBe(true);
   expect(launches).toHaveLength(2);
   expect(launches[0]).toMatch(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i);

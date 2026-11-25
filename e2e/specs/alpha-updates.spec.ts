@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { UpdateController, ALPHA_RECHECK_MS } from "../../src/main/updater.ts";
 import { readUpdatePreferences, writeUpdatePreferences } from "../../src/main/update-preferences.ts";
+import { binaryEnrollmentChoice } from "../../src/shared/binary-enrollment.ts";
 import type { UpdateSnapshot } from "../../src/shared/update.ts";
 import { expect, test } from "../fixtures/test.ts";
 
@@ -44,7 +45,10 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
     if (command === "defer") controller.defer();
     return controller.getSnapshot();
   });
-  await dashboard.addInitScript(() => {
+  const home = "/Users/operator";
+  const bundle = join(home, "Applications", "Agent Mission Control.app");
+  const enrollment = binaryEnrollmentChoice({ bundle, home, managedPath: bundle });
+  await dashboard.addInitScript((enrollment) => {
     let snapshot: UpdateSnapshot | null = null;
     const listeners = new Set<(value: UpdateSnapshot) => void>();
     const publish = (next: UpdateSnapshot) => { snapshot = next; for (const listener of listeners) listener(next); };
@@ -56,13 +60,14 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
     };
     Object.defineProperty(window, "missionDesktop", { value: {
       isDesktop: true, version: async () => "1.2.3", onOpenSettings: () => () => {},
+      binaryInstallation: { getState: async () => enrollment },
       updates: {
         getState: async () => snapshot ?? command("state"), setAlpha: (alpha: boolean) => command("alpha", alpha),
         check: () => command("check"), apply: () => command("apply"), install: () => command("install"), defer: () => command("defer"),
         onState: (listener: (value: UpdateSnapshot) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
       },
     } });
-  });
+  }, enrollment);
   const unsubscribe = controller.subscribe((snapshot) => {
     void dashboard.evaluate((value) => {
       (window as unknown as { pushAlphaSnapshot?(value: UpdateSnapshot): void }).pushAlphaSnapshot?.(value);
@@ -81,12 +86,19 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
     await dashboard.getByRole("tab", { name: "Setup" }).click();
     await expect(dashboard.getByRole("tabpanel")).toContainText("This installation");
     const panel = dashboard.getByRole("region", { name: "Application updates" });
-    const alpha = panel.getByRole("checkbox", { name: "Alpha updates" });
+    const alpha = dashboard.getByRole("checkbox", { name: "Alpha updates" });
+    const setup = dashboard.getByRole("navigation", { name: "Setup families" });
     await expect(alpha).not.toBeChecked();
     await expect(alpha).toBeEnabled();
+    await expect(panel).toContainText(bundle);
+    expect((await alpha.boundingBox())!.y).toBeLessThan((await setup.boundingBox())!.y);
+    expect((await panel.boundingBox())!.y).toBeGreaterThan((await setup.boundingBox())!.y);
+    await expect(panel.getByText(bundle, { exact: false })).toHaveCSS("font-size", "11.5px");
+    await expect(panel).toContainText("Managed installation.");
+    await expect(panel).not.toContainText("use the signed installer for recovery");
     await capture("default-off");
     await alpha.hover();
-    await expect(dashboard.locator(".tooltip")).toHaveText("Track unreleased main commits instead of stable releases.");
+    await expect(dashboard.locator(".tooltip")).toContainText("Track unreleased main commits instead of stable releases.");
     await capture("alpha-tooltip", true);
     await panel.getByRole("button", { name: "Check for updates" }).hover();
     await expect(dashboard.locator(".tooltip")).toHaveText("Check for a newer stable release now.");
@@ -139,9 +151,47 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
   }
 });
 
+test("Setup keeps rejected alpha changes beside the checkbox and rejected update checks in the footer", async ({ dashboard }) => {
+  await dashboard.addInitScript(() => {
+    const snapshot: UpdateSnapshot = {
+      phase: "idle", alpha: false, currentVersion: "1.2.3", lastCheckedAt: null, lastOutcome: null,
+    };
+    Object.defineProperty(window, "missionDesktop", { value: {
+      isDesktop: true, version: async () => "1.2.3", onOpenSettings: () => () => {},
+      updates: {
+        getState: async () => snapshot,
+        setAlpha: async () => { throw new Error("Could not save alpha preference"); },
+        check: async () => { throw new Error("Could not start update check"); },
+        onState: () => () => {},
+      },
+    } });
+  });
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Settings" }).click();
+  await dashboard.getByRole("tab", { name: "Setup" }).click();
+  const tab = dashboard.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
+  const setup = tab.getByRole("navigation", { name: "Setup families" });
+  const footer = tab.getByRole("region", { name: "Application updates" });
+
+  await alpha.click();
+  const alphaAlert = tab.getByRole("alert").filter({ hasText: "Could not save alpha preference" });
+  await expect(alphaAlert).toBeVisible();
+  await expect(alpha).not.toBeChecked();
+  expect((await alphaAlert.boundingBox())!.y).toBeGreaterThan((await alpha.boundingBox())!.y);
+  expect((await alphaAlert.boundingBox())!.y).toBeLessThan((await setup.boundingBox())!.y);
+  await expect(footer.getByRole("alert")).toHaveCount(0);
+
+  await footer.getByRole("button", { name: "Check for updates" }).click();
+  await expect(footer.getByRole("alert")).toHaveText("Could not start update check");
+  await expect(alphaAlert).toBeVisible();
+});
+
 test("the browser settings remain usable without a desktop update bridge", async ({ dashboard }) => {
   await dashboard.getByRole("button", { name: "Settings" }).click();
   await dashboard.getByRole("tab", { name: "Setup" }).click();
   await expect(dashboard.getByRole("tab", { name: "Setup" })).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByRole("navigation", { name: "Setup families" })).toBeVisible();
   await expect(dashboard.getByRole("checkbox", { name: "Alpha updates" })).toHaveCount(0);
+  await expect(dashboard.getByRole("region", { name: "Application updates" })).toHaveCount(0);
 });

@@ -65,6 +65,52 @@ test("Ask aloud follows the player, and Stop and the time limit wait for silence
   } finally { await speaker.exit(); }
 });
 
+test("Push-to-talk preserves Ask aloud on a round trip and allows saving Show on screen", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const speaker = await beSpeaker(daemon);
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const mode = page.getByRole("combobox", { name: "Listening mode" });
+    const ask = page.getByRole("radio", { name: "Ask aloud" });
+    const row = page.getByRole("radiogroup", { name: "When routing is unsure" });
+    await expect(mode).toHaveValue("always-on");
+    await ask.check();
+    const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config;
+    await expect.poll(saved).toMatchObject({ whenUnsure: "ask", listeningMode: "always-on" });
+    await mode.selectOption("push-to-talk");
+    await expect.poll(saved).toMatchObject({ whenUnsure: "ask", listeningMode: "push-to-talk" });
+    await page.reload();
+    await expect(ask).toBeChecked();
+    await expect(ask).toBeDisabled();
+    await expect(ask).toHaveAccessibleDescription("Ask aloud requires Always-on listening.");
+    await captureCard(row, "saved-ask-push-to-talk");
+    await mode.selectOption("always-on");
+    await expect.poll(saved).toMatchObject({ whenUnsure: "ask", listeningMode: "always-on" });
+    await expect(ask).toBeChecked();
+    await expect(ask).toBeEnabled();
+    await captureCard(row, "saved-ask-always-on");
+    const show = page.getByRole("radio", { name: "Show on screen" });
+    await show.check();
+    await expect.poll(saved).toMatchObject({ whenUnsure: "show" });
+    await ask.check();
+    await expect.poll(saved).toMatchObject({ whenUnsure: "ask" });
+    await expect(ask).toBeChecked();
+
+    await mode.selectOption("push-to-talk");
+    await expect(ask).toBeChecked();
+    await expect(ask).toBeDisabled();
+    await expect(show).toBeEnabled();
+    await show.check();
+    await expect.poll(saved).toMatchObject({ whenUnsure: "show", listeningMode: "push-to-talk" });
+    await page.reload();
+    await expect(mode).toHaveValue("push-to-talk");
+    await expect(show).toBeChecked();
+    await expect(show).toBeEnabled();
+    await expect(ask).toBeDisabled();
+    await captureCard(page.locator('[data-anchor="voice/when-unsure"]'), "saved-show-push-to-talk");
+  } finally { await speaker.exit(); }
+});
+
 test("a saved Ask aloud choice with a capture-only listener shows the usual candidate rows", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   for (const name of ["Steve", "Will"]) await runningAgent(page, daemon, name);

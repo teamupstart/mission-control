@@ -270,11 +270,11 @@ test("the idle column splits into free and held, with the held ones last", () =>
   );
 });
 
-test("the idle column head reports free and held rather than one number that means neither", () => {
+test("the idle column shows free and held counts in their sections only", () => {
   const html = renderToStaticMarkup(createElement(BoardView, heldProps(true)));
-  assert.match(html, /class="board-col-n n-free"[^>]*>1 free</);
-  assert.match(html, /class="board-col-n n-held"[^>]*>1 held</);
-  assert.match(html, /1 of 2 idle agents can take work/);
+  assert.match(html, /<b>free<\/b><span class="fleet-section-n">1</);
+  assert.match(html, /<b>held by a workflow<\/b><span class="fleet-section-n">1</);
+  assert.doesNotMatch(html, /class="board-col-n/);
 });
 
 test("a held tile carries its own tag, since the section rule scrolls away", () => {
@@ -286,10 +286,7 @@ test("a held tile carries its own tag, since the section rule scrolls away", () 
   assert.match(html, /Held by No-Mistakes Review - the run owns this session/);
 });
 
-test("a column where everything is held drops the free pill rather than counting zero", () => {
-  // Matches `fleetRows` dropping the free RULE in the same case. "0 free · 1 held" counts a
-  // side of the split that is not there, and disagreed with the single rule below it about
-  // whether the column had two halves at all.
+test("a column where everything is held shows only the Held section count", () => {
   const held = mkSession({ id: "held-only", name: "held", state: "idle", activity: null });
   const viewProps = {
     ...props([held]),
@@ -299,11 +296,9 @@ test("a column where everything is held drops the free pill rather than counting
     onOpenWorkflowRun: () => {},
   };
   const html = renderToStaticMarkup(createElement(BoardView, viewProps));
-  assert.doesNotMatch(html, /n-free/);
-  assert.doesNotMatch(html, /0 free/);
-  assert.match(html, /class="board-col-n n-held"[^>]*>1 held</);
+  assert.doesNotMatch(html, /class="board-col-n/);
   assert.doesNotMatch(html, /fleet-section-free/);
-  assert.match(html, /fleet-section-held/);
+  assert.match(html, /<b>held by a workflow<\/b><span class="fleet-section-n">1</);
 });
 
 test("a CLOSED run holds nothing: the column goes back to one count and no rules", () => {
@@ -451,7 +446,7 @@ test("Fleet action waits remain visible across multiple repositories and disappe
 
 test("an idle stall is drawn in Idle's Stalled section with what is open and the fix", () => {
   // `idle-stalled`: App hands the views the idle stalls; a card in the section carries the tag,
-  // the fact sheet and its fixes, and the Idle head counts the section between free and held.
+  // the fact sheet and its fixes, and its section counts the stalled cards.
   const stalled = mkSession({
     id: "stalled", name: "amber-lynx", state: "idle", activity: "Ran npm test (2 failing)",
     task: { ...mkSession().task!, id: "task-stalled", title: "Fix login redirect loop", status: "running" },
@@ -468,9 +463,8 @@ test("an idle stall is drawn in Idle's Stalled section with what is open and the
     stalledById: new Map([[stalled.id, stall]]),
     onDismissStall: () => {},
   }));
-  assert.match(html, /board-col-n n-free"[^>]*>1 free/);
-  assert.match(html, /board-col-n n-stalled"[^>]*>1 stalled/);
-  assert.match(html, /fleet-section-stalled/);
+  assert.doesNotMatch(html, /class="board-col-n/);
+  assert.match(html, /<b>stalled<\/b><span class="fleet-section-n">1</);
   assert.match(html, /class="tile [^"]*is-stalled/);
   assert.match(html, /<span class="tile-stalled"[^>]*>stalled<\/span>/);
   assert.match(html, /<dt>Task<\/dt><dd>Fix login redirect loop<span class="stalled-task-status"> · in progress<\/span><\/dd>/);

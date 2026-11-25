@@ -6,6 +6,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
+import { ACTIONS } from "../src/shared/keyboard-settings.ts";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 import {
@@ -261,12 +262,8 @@ test("no rebindable action ships with a chord these twelve would shadow", () => 
   // binding that landed on one of them would be an action that silently stopped working on
   // the Board. An operator who rebinds onto one is their own business; a shipped default is
   // ours.
-  const source = readFileSync(
-    fileURLToPath(new URL("../src/web/lib/keybindings.ts", import.meta.url)),
-    "utf8",
-  );
-  const claimed = new Set(CARD_SHORTCUT_CHORDS);
-  for (const [, chord] of source.matchAll(/defaultBinding:\s*"([^"]+)"/g)) {
-    assert.equal(claimed.has(chord!), false, `${chord} is both a default binding and a card slot`);
+  const claimed = new Set<string>(CARD_SHORTCUT_CHORDS);
+  for (const { id, defaultBinding } of ACTIONS) {
+    assert.equal(claimed.has(defaultBinding), false, `${id}'s default ${defaultBinding} is a card slot`);
   }
 });

@@ -17,6 +17,7 @@ import type {
   TaskSummary,
 } from "../src/shared/types.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
+import { WORKFLOW_RUN_STATUSES, workflowRunIsOpen, workflowRunParkedOnSession } from "../src/shared/workflow.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -448,6 +449,35 @@ test("waiting_for_pr and waiting_for_inspector wait on machinery, not on the ses
   for (const status of ["waiting_for_pr", "waiting_for_inspector"] as const) {
     assert.equal(one(s, 999 * MIN, TH, [mkRun({ status })]), null, status);
   }
+});
+
+test("a workflow that owns the next move keeps open work from becoming a session stall", () => {
+  const s = mkSession({
+    state: "idle",
+    lastActivity: 0,
+    task: mkTask({ status: "running" }),
+    queue: mkQueue({ openCount: 1, drained: false }),
+  });
+  const now = TH.unfinishedMs;
+  for (const status of WORKFLOW_RUN_STATUSES) {
+    const expected = workflowRunParkedOnSession(status) ? "workflow-parked"
+      : workflowRunIsOpen(status) ? null : "unfinished-work";
+    assert.equal(one(s, now, TH, [mkRun({ status })])?.kind ?? null, expected, status);
+  }
+  const active = mkRun({ id: "sibling", status: "running" });
+  assert.equal(one(s, now, TH, [mkRun(), active]), null);
+  assert.equal(one(s, now, TH, [{ ...active, sessionId: "other" }])?.kind, "unfinished-work");
+});
+
+test("a workflow that owns the next move suppresses silence and escalation stalls", () => {
+  const run = mkRun({ status: "running" });
+  const working = mkSession({ state: "working", lastActivity: 0 });
+  const escalated = mkSession({ note: mkNote({ disposition: "escalated", updatedAt: 0 }) });
+  const now = Math.max(TH.workingMs, TH.escalationMs);
+  assert.equal(one(working, now)?.kind, "silent-working");
+  assert.equal(one(escalated, now)?.kind, "escalated");
+  assert.equal(one(working, now, TH, [run]), null);
+  assert.equal(one(escalated, now, TH, [run]), null);
 });
 
 test("a parked run is reported ahead of an open task - it is the more specific cause", () => {

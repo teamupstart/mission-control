@@ -243,6 +243,34 @@ async function smokeNativeKeepAwake() {
 }
 
 /**
+ * The shaper sign-in Keychain addon, checked the same way: load it and check its four
+ * functions, without one Keychain call, so smoke never reads or writes an item.
+ */
+async function smokeNativeKeychain() {
+  if (process.platform !== "darwin") {
+    console.log(`[smoke] native Keychain addon deliberately skipped on ${process.platform}`);
+    return;
+  }
+  const addonPath = resolve("dist/native/keychain.node");
+  if (!existsSync(addonPath)) {
+    fail(`the Darwin build is missing ${addonPath}`);
+    return;
+  }
+  let binding;
+  try {
+    binding = createRequire(import.meta.url)(addonPath);
+  } catch (err) {
+    fail(`the native Keychain addon could not load (${err instanceof Error ? err.message : err})`);
+    return;
+  }
+  if (["get", "set", "remove", "accounts"].some((name) => typeof binding?.[name] !== "function")) {
+    fail("the native Keychain addon does not export get, set, remove and accounts functions");
+    return;
+  }
+  console.log("[smoke] native Keychain addon loads without a Keychain call");
+}
+
+/**
  * Pin the packaged main process to the Foreman artifact. Booting the worker proves the bundle;
  * this check proves Electron actually names it, which is the seam that left the installed app
  * healthy while its scheduler never existed.
@@ -861,6 +889,7 @@ async function smokeDetachedUpdateHelper() {
 
 await smokeDetachedUpdateHelper();
 await smokeNativeKeepAwake();
+await smokeNativeKeychain();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();

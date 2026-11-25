@@ -15,6 +15,7 @@ import {
   ShaperManifestSchema,
   ShaperSchema,
   shaperIsLocal,
+  shaperSignInTarget,
   shaperSwitchedOn,
   shapingReferences,
   shapingViewHasRevisions,
@@ -481,8 +482,18 @@ function headerLines(headers: Readonly<Record<string, string>>): ShaperReachLine
 }
 
 /**
- * Exactly what a shaper runs or calls: the command line, the URL and headers, or the built-in
- * and the files it reads. Header values are config, and the schema holds every credential as a
+ * The sign-in a marked shaper makes: its scope, and the authorization server's origin, which is
+ * the issuer's when the marker names one and the server's own otherwise. None for no marker.
+ */
+function signInLines(shaper: Shaper): ShaperReachLine[] {
+  const target = shaperSignInTarget(shaper);
+  if (!target) return [];
+  return [{ label: "Signs in", value: `OAuth, scope ${target.scope}, at ${new URL(target.issuer ?? target.url).origin}` }];
+}
+
+/**
+ * Exactly what a shaper runs or calls: the command line, the URL, headers and sign-in, or the
+ * built-in and the files it reads. Header values are config, and the schema holds every credential as a
  * `{env:NAME}` reference, so nothing here is a secret.
  */
 export function shaperReach(shaper: Shaper): ShaperReachLine[] {
@@ -494,7 +505,7 @@ export function shaperReach(shaper: Shaper): ShaperReachLine[] {
       const server = transport.server;
       const where = server.type === "stdio"
         ? [{ label: "Runs MCP server", value: commandLine(server.command, server.args) }]
-        : [{ label: "Calls MCP server", value: server.url }, ...headerLines(server.headers)];
+        : [{ label: "Calls MCP server", value: server.url }, ...headerLines(server.headers), ...signInLines(shaper)];
       return [
         ...where,
         { label: "Tool", value: transport.tool },
@@ -502,7 +513,7 @@ export function shaperReach(shaper: Shaper): ShaperReachLine[] {
       ];
     }
     case "http":
-      return [{ label: "Calls", value: `POST ${transport.url}` }, ...headerLines(transport.headers)];
+      return [{ label: "Calls", value: `POST ${transport.url}` }, ...headerLines(transport.headers), ...signInLines(shaper)];
     case "builtin": {
       const { include, summary, facts } = transport.options;
       const reads = [...include.map((entry) => entry.path), ...(summary ? [summary] : []), ...(facts ? [facts] : [])];
@@ -560,7 +571,8 @@ export function shaperEnvironmentStatus(
 
 /**
  * What the shaper is given, stated beside it. A remote shaper is never sent a local path, a
- * file's contents or a token other than its own header references; `plan.md` fixes the list.
+ * file's contents or a token other than its own header references and, for a shaper that signs
+ * in, the access token from that sign-in; `plan.md` fixes the list.
  */
 export function shaperReceives(shaper: Shaper): { remote: boolean; sent: string[]; never: string | null } {
   if (shaper.transport.type === "builtin") {
@@ -580,6 +592,7 @@ export function shaperReceives(shaper: Shaper): { remote: boolean; sent: string[
       never: null,
     };
   }
+  const signsIn = shaperSignInTarget(shaper) !== null;
   return {
     remote: true,
     sent: [
@@ -588,10 +601,12 @@ export function shaperReceives(shaper: Shaper): { remote: boolean; sent: string[
       "Repository names, with the facts and summary a gatherer produced",
       "The launch's trace context, when it has one",
       "The headers above, each {env:NAME} resolved when it is called",
+      ...(signsIn ? ["An access token from your sign-in, sent only to the server's origin"] : []),
     ],
     // Scoped to the fields the transport leaves out. The prompt, the title and a gatherer's facts
     // and summary are free text, so they carry whatever was typed or read into them.
-    never: "Mission Control leaves out the repositories' local paths and every credential except the header references above. "
+    never: `Mission Control leaves out the repositories' local paths and every credential except the header references above${
+      signsIn ? " and the access token from your sign-in" : ""}. `
       + "The text it does send is passed on as written: a prompt, title, fact or summary that contains a path, "
       + "file contents or a secret sends that too.",
   };

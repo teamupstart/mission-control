@@ -58,3 +58,20 @@ export const RETIRED_SHAPING_SKILL_STATES = [] as const;
  */
 export const SHAPING_PROMPT_STATES = ["held", "queued", "delivered", "skipped", "not_delivered", "waiting"] as const;
 export const RETIRED_SHAPING_PROMPT_STATES = [] as const;
+
+/**
+ * How a remote shaper signs in to its server: the `type` of a server's `auth` marker. Stored in
+ * the shaper's definition, so a kind this build does not know leaves the shaper unsupported.
+ */
+export const SHAPING_AUTH_KINDS = ["oauth"] as const;
+export const RETIRED_SHAPING_AUTH_KINDS = [] as const;
+
+/**
+ * Where one connection's sign-in is. `pending` has sent the operator to the authorization
+ * server and waits for the callback; `renewing` holds a token that is being refreshed or that a
+ * server refused. Published in the sign-in list, never stored.
+ */
+export const SHAPING_SIGN_IN_STATES = ["signed_out", "pending", "signed_in", "renewing"] as const;
+
+/** Where a connection's tokens are kept: the macOS Keychain, or the daemon's memory only. */
+export const SHAPING_SIGN_IN_STORAGE = ["keychain", "memory"] as const;

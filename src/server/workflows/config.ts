@@ -1,6 +1,6 @@
 import type { TaskKind } from "@shared/types.ts";
 import { taskDefaultWorkflowId } from "@shared/task.ts";
-import type { WorkflowPolicyInput } from "@shared/protocol.ts";
+import type { WorkflowPolicyInput, WorkflowPolicyPatch } from "@shared/protocol.ts";
 import { StoredWorkflowPolicySchema, WorkflowPolicySchema } from "@shared/protocol.ts";
 import type { WorkflowCheckSlot, WorkflowPolicy } from "@shared/workflow.ts";
 import { WORKFLOW_CHECK_SLOTS } from "@shared/workflow.ts";
@@ -89,6 +89,23 @@ export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
     defaultWorkflowId: taskDefaultWorkflowId("ship", next.kindWorkflowDefaults),
   });
   return next;
+}
+
+/** Merge a policy edit at commit time, leaving untouched fields and the command catalog alone. */
+export function patchWorkflowPolicy(patch: WorkflowPolicyPatch): WorkflowPolicy {
+  const stored = getAppConfig(CONFIG_ENTRY);
+  const { retention, kindWorkflowDefaults, ...preferences } = patch;
+  setAppConfig(CONFIG_ENTRY, {
+    // Preserve fresh-install consent as well as the absence that marks a pre-field upgrade.
+    ...(stored ?? { checksEnabled: getWorkflowPolicy().checksEnabled }),
+    ...preferences,
+    ...(retention && { retention: { ...getWorkflowPolicy().retention, ...retention } }),
+    ...(kindWorkflowDefaults && {
+      kindWorkflowDefaults,
+      defaultWorkflowId: taskDefaultWorkflowId("ship", kindWorkflowDefaults),
+    }),
+  });
+  return getWorkflowPolicy();
 }
 
 /**

@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SkillsConfigPatch } from "@shared/protocol.ts";
 import type { SkillsView } from "@shared/types.ts";
@@ -45,6 +46,7 @@ export function useSkills(): SkillsState {
     setViewState(v);
   }, []);
 
+  const settingsRevision = useSettingsConfigRevision("skills");
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
@@ -62,7 +64,7 @@ export function useSkills(): SkillsState {
       alive = false;
       clearInterval(id);
     };
-  }, [setView]);
+  }, [setView, settingsRevision]);
 
   /**
    * Apply a change optimistically, and TAKE IT BACK if the server refuses.

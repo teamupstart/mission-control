@@ -85,6 +85,28 @@ async function readUiSkin(generation: number, delay: number): Promise<void> {
   if (current.skin !== confirmedSkin) commit({ ...current, skin: confirmedSkin });
 }
 
+let preferenceRevision = 0;
+let preferencesPending = false;
+let preferenceWritesPending = 0;
+let preferenceRetry: ReturnType<typeof setTimeout> | undefined;
+
+/** Reconcile ordinary preferences without disturbing skin and voice's ordered stores. */
+export async function refreshUiPreferences(delay = 1_000): Promise<void> {
+  clearTimeout(preferenceRetry);
+  const revision = ++preferenceRevision;
+  preferencesPending = true;
+  if (!hydrated || preferenceWritesPending) return;
+  const view = await fetchUiConfig(AbortSignal.timeout(5_000));
+  if (revision !== preferenceRevision) return;
+  if (!view) {
+    preferenceRetry = setTimeout(() => void refreshUiPreferences(Math.min(delay * 2, 30_000)), delay);
+    return;
+  }
+  preferencesPending = false;
+  const { skin: _skin, voice: _voice, ...preferences } = view.config;
+  commit({ ...current, ...preferences });
+}
+
 export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
 export const UI_CONFIG_HYDRATE_MAX_RETRY_MS = 30_000;
 let hydrationRetryDelay = UI_CONFIG_HYDRATE_RETRY_MS;
@@ -186,6 +208,7 @@ export async function hydrateUiConfig(): Promise<void> {
   hydrated = true;
   emit();
   if (skinRefreshPending) void refreshUiSkin();
+  if (preferencesPending) void refreshUiPreferences();
 }
 
 /**
@@ -201,6 +224,11 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     const generation = (writeGeneration.get(key) ?? 0) + 1;
     writeGeneration.set(key, generation);
     generations.set(key, generation);
+  }
+  const changesPreferences = Object.keys(patch).some(key => key !== "skin" && key !== "voice");
+  if (changesPreferences) {
+    preferenceWritesPending++;
+    preferenceRevision++;
   }
   const skin = patch.skin;
   if (skin !== undefined) {
@@ -219,6 +247,7 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     if (res.ok) confirmedSkin = skin;
     if (!pendingSkinWrites && (skinRefreshPending || !res.ok)) void refreshUiSkin();
   }
+  if (changesPreferences && --preferenceWritesPending === 0 && preferencesPending) void refreshUiPreferences();
   if (!res.ok) {
     // A later optimistic patch, including one setting this field to the same value, may have
     // already superseded this request. Roll back only fields this request still owns, never

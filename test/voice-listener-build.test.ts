@@ -15,7 +15,7 @@ test("ordinary native builds run the app addon builders without the optional lis
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const scripts = join(cwd, "scripts");
   mkdirSync(scripts);
-  const builders = ["build-state-lock-native.mjs", "build-keep-awake-native.mjs", "build-voice-hardware.mjs"];
+  const builders = ["build-state-lock-native.mjs", "build-keep-awake-native.mjs", "build-keychain-native.mjs", "build-voice-hardware.mjs"];
   for (const name of builders) {
     writeFileSync(join(scripts, name), `console.log("${name}")`);
   }

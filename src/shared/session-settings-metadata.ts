@@ -13,3 +13,13 @@ export const SESSION_SETTINGS_ACCESS = {
   description: "Let registered sessions read or change supported settings. Turning this off takes effect immediately, including in sessions that are already running.",
   keywords: ["sessions", "settings", "mcp", "access", "revoke", "permission"],
 } as const;
+
+/** Settings owners whose existing HTTP views need a bounded invalidation. */
+export const SETTINGS_REFRESH_DOMAINS = [
+  "ui", "foreman", "inspector", "llm", "shipping", "skills", "cost", "terminals", "workflows",
+] as const;
+export type SettingsRefreshDomain = (typeof SETTINGS_REFRESH_DOMAINS)[number];
+
+export function settingsRefreshDomain(key: string): SettingsRefreshDomain | undefined {
+  return SETTINGS_REFRESH_DOMAINS.find(domain => key.startsWith(`${domain}.`));
+}

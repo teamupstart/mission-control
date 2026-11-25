@@ -232,8 +232,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   await click("click");
   assert.equal((await read()).opens, 1);
   await t.test("Electron dispatches Carbon down and up from its application queue and reports replacement failures", async t => {
-    const publish = (configuredHotkey: string | null, mode: VoiceMode = "listening", pendingHotkey?: string) => events!.write("data: " + JSON.stringify({
-      type: "voice_state", state: { ...voiceStateOff(), mode, configuredHotkey, pendingHotkey },
+    const publish = (configuredHotkey: string | null, mode: VoiceMode = "listening", pendingHotkey?: string, pendingHotkeyId?: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode, configuredHotkey, pendingHotkey, pendingHotkeyId },
     }) + "\n\n");
     const chord = "cmd+ctrl+shift+F9";
     const startUs = voiceHostTimeUs();
@@ -252,9 +252,14 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       assert.equal(reports.at(-1)?.registeredHotkey, chord);
     }
     const reserved = "cmd+ctrl+shift+F10";
-    publish(chord, "listening", reserved);
+    const firstTrial = crypto.randomUUID();
+    publish(chord, "listening", reserved, firstTrial);
     await until(() => reports.at(-1)?.hotkeyError?.reason.includes("another app already owns it.") === true);
     assert.equal(reports.at(-1)?.registeredHotkey, chord);
+    assert.equal(reports.at(-1)?.hotkeyError?.trialId, firstTrial);
+    const nextTrial = crypto.randomUUID();
+    publish(chord, "listening", reserved, nextTrial);
+    await until(() => reports.at(-1)?.hotkeyError?.trialId === nextTrial);
     const beforeRestore = reports.length;
     publish(chord);
     await until(() => reports.length > beforeRestore);

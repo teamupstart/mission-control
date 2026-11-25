@@ -19,6 +19,7 @@ const reasonOf = (error: unknown) => String(error instanceof Error ? error.messa
 
 export class VoiceHardware {
   private desired?: string | null;
+  private trialId?: string;
   private suspended?: string | null;
   private registeredHotkey: string | null = null;
   private hotkeyError: VoiceHotkeyError | null = null;
@@ -37,7 +38,7 @@ export class VoiceHardware {
     this.callCapability = activity.value ? available : unavailable(activity.reason);
   }
 
-  update(saved: string | null, mode: VoiceMode, recording = false, pending?: string) {
+  update(saved: string | null, mode: VoiceMode, recording = false, pending?: string, trialId?: string) {
     const chord = pending ?? saved;
     this.mode = mode;
     if (mode !== "auto-muted" && mode !== "push-to-talk" && this.pushToTalk) this.cancelPress();
@@ -52,7 +53,7 @@ export class VoiceHardware {
       }
       return;
     }
-    if (this.suspended === undefined && this.desired === chord) return;
+    if (this.suspended === undefined && this.desired === chord && this.trialId === trialId) return;
     // A fresh desktop can first see an in-flight edit. Establish its saved fallback
     // before trying the replacement, just as when resuming from the recorder.
     const fallback = pending ? saved : this.suspended;
@@ -60,21 +61,22 @@ export class VoiceHardware {
     if (chord && fallback !== undefined && fallback !== chord && fallback !== this.registeredHotkey) this.bind(fallback);
     const retained = !pending && this.hotkeyError && chord === this.registeredHotkey;
     this.desired = chord;
+    this.trialId = trialId;
     // Ending a refused trial keeps its warning while this binding remains in force.
     if (retained) return;
-    this.bind(chord);
+    this.bind(chord, false, trialId);
   }
 
   layoutChanged() {
     if (!this.desired || this.suspended !== undefined) return;
     const previous = this.registeredHotkey;
     // A refused preference may have left a different shortcut in force. Remap it too.
-    if (previous) this.bind(previous, true);
-    if (this.desired !== previous) this.bind(this.desired);
+    if (previous) this.bind(previous, true, previous === this.desired ? this.trialId : undefined);
+    if (this.desired !== previous) this.bind(this.desired, false, this.trialId);
     this.changed();
   }
 
-  private bind(chord: string | null, remap = false) {
+  private bind(chord: string | null, remap = false, trialId?: string) {
     const registrar = this.registrar.value;
     if (!registrar) return;
     try {
@@ -94,7 +96,7 @@ export class VoiceHardware {
         this.cancelPress();
       }
       const reason = `macOS refused ${formatChord(chord ?? "")}: ${reasonOf(error)}`;
-      this.hotkeyError = { reason: reason.slice(0, VOICE_LIMITS.reasonChars), chordInForce: this.registeredHotkey };
+      this.hotkeyError = { reason: reason.slice(0, VOICE_LIMITS.reasonChars), chordInForce: this.registeredHotkey, ...(trialId && { trialId }) };
     }
   }
 

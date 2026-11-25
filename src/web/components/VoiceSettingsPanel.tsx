@@ -362,7 +362,9 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
   const [captureError, setCaptureError] = useState("");
   const [leaseGranted, setLeaseGranted] = useState(false);
   const available = !!voice?.capabilities.hotkey?.available && !!state.config;
-  const error = voice?.hotkeyError;
+  const pending = voice?.pendingHotkey;
+  const expired = voice?.expiredHotkey;
+  const error = pending || (expired && voice?.hotkeyError?.trialId) ? null : voice?.hotkeyError;
   const chord = error ? error.chordInForce : voice ? voice.configuredHotkey : state.config?.hotkey;
   const label = chord ? formatChord(chord) : "Unset";
   const requested = recordingLabel !== null;
@@ -401,20 +403,27 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
     void state.update({ hotkey: captured.replace(/[ \u00a0]$/, "Space") });
   }, true);
   return (
-    <div className={`kb-row${error ? " has-conflict" : ""}`} data-anchor="voice/hotkey">
+    <div className={`kb-row${error || expired ? " has-conflict" : ""}`} data-anchor="voice/hotkey">
       <div className="kb-row-text">
         <span className="kb-row-label">Mute hotkey</span>
         {recording && available ? <span className="kb-row-desc">Press the chord you want. Esc keeps {recordingLabel}.</span>
           : captureError ? <span className="kb-row-conflict" role="alert">{captureError}</span>
-          : error && <span className="kb-row-conflict" role="alert">
-            {error.reason}{" "}
-            {chord ? `${label} is still your hotkey.` : "No hotkey is in force."}
-          </span>}
+          : pending ? <span className="kb-row-desc" role="status">Waiting for the desktop to confirm {formatChord(pending)}.</span>
+          : <>
+            {expired && <span className="kb-row-conflict" role="alert">
+              The desktop did not confirm {formatChord(expired)}.{" "}
+              {voice.configuredHotkey ? `${formatChord(voice.configuredHotkey)} is still saved.` : "No shortcut is saved."}
+            </span>}
+            {error && <span className="kb-row-conflict" role="alert">
+              {error.reason}{" "}
+              {chord ? `${label} is still your hotkey.` : "No hotkey is in force."}
+            </span>}
+          </>}
       </div>
       <div className="kb-row-controls">
         {available ? (
           <Tooltip label={recording ? "Press a shortcut, or Escape to cancel" : "Record a system-wide mute shortcut"}>
-            <button type="button" aria-label="Mute hotkey" aria-pressed={!!recording} aria-busy={requested && !recording}
+            <button type="button" aria-label="Mute hotkey" aria-pressed={!!recording} aria-busy={!!pending || (requested && !recording)}
               className={`kb-capture${recording ? " is-recording" : ""}`}
               onBlur={() => setRecordingLabel(null)} onClick={() => { setCaptureError(""); setRecordingLabel(requested ? null : label); }}>
               {recording ? <span className="kb-recording">Press a key…</span> : <kbd>{label}</kbd>}

@@ -61,12 +61,12 @@ export type VoiceHelloResult =
  */
 export class VoiceStateStore {
   private recorder?: symbol;
-  private hotkeyTrial?: { chord: string; previous: string | null; requestedAtUs: number; expiresAt: number };
+  private hotkeyTrial?: { id: string; chord: string; previous: string | null; requestedAtUs: number; expiresAt: number };
 
   proposeHotkey(chord: string | null) {
     const previous = this.deps.config().hotkey;
     this.hotkeyTrial = chord && chord !== previous ? {
-      chord, previous, requestedAtUs: this.hostNowUs(), expiresAt: this.deps.now() + VOICE_SHELL_REPORT_LAPSE_MS,
+      id: randomUUID(), chord, previous, requestedAtUs: this.hostNowUs(), expiresAt: this.deps.now() + VOICE_SHELL_REPORT_LAPSE_MS,
     } : undefined;
     this.publish();
   }
@@ -172,7 +172,8 @@ export class VoiceStateStore {
     }
     const now = this.deps.now();
     const config = this.deps.config();
-    if (this.hotkeyTrial && (this.hotkeyTrial.previous !== config.hotkey || now >= this.hotkeyTrial.expiresAt)) this.hotkeyTrial = undefined;
+    if (this.hotkeyTrial && this.hotkeyTrial.previous !== config.hotkey) this.hotkeyTrial = undefined;
+    const trial = this.hotkeyTrial;
     const hello = this.liveHello()?.hello ?? null;
     const refused = this.refused && now - this.refused.at < VOICE_HELLO_LAPSE_MS ? this.refused : null;
     const report = this.report && now - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS ? this.report.report : null;
@@ -208,7 +209,9 @@ export class VoiceStateStore {
       reasons,
       capabilities,
       configuredHotkey: config.hotkey,
-      ...(this.hotkeyTrial && { pendingHotkey: this.hotkeyTrial.chord }),
+      ...(trial && (now < trial.expiresAt
+        ? { pendingHotkey: trial.chord, pendingHotkeyId: trial.id }
+        : { expiredHotkey: trial.chord })),
       ...(this.recorder && { recordingHotkey: true }),
       registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
@@ -342,8 +345,8 @@ export class VoiceStateStore {
     const trial = this.hotkeyTrial;
     if (trial && !this.recorder && order !== undefined && order > trial.requestedAtUs &&
         this.state().pendingHotkey === trial.chord && report.capabilities.hotkey?.available) {
-      if (report.hotkeyError) this.hotkeyTrial = undefined;
-      else if (report.registeredHotkey === trial.chord) {
+      if (report.hotkeyError?.trialId === trial.id) this.hotkeyTrial = undefined;
+      else if (!report.hotkeyError && report.registeredHotkey === trial.chord) {
         this.deps.saveHotkey?.(trial.chord);
         this.hotkeyTrial = undefined;
       }

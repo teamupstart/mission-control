@@ -292,6 +292,8 @@ export const VOICE_MODEL_STATE_NONE: VoiceModelState = Object.freeze({
 export interface VoiceHotkeyError {
   reason: string;
   chordInForce: string | null;
+  /** Set only when this refusal came from an attempt to register a proposed shortcut. */
+  trialId?: string;
 }
 
 /**
@@ -313,6 +315,9 @@ export interface VoiceState {
   configuredHotkey: string | null;
   /** A replacement to try while the persisted shortcut remains the fallback. */
   pendingHotkey?: string;
+  pendingHotkeyId?: string;
+  /** The desktop missed the confirmation deadline for this replacement. */
+  expiredHotkey?: string;
   /** A focused Settings recorder is waiting for the desktop to release its reservation. */
   recordingHotkey?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
@@ -427,9 +432,11 @@ export function canonicalVoiceState(state: VoiceState): string {
     capabilities,
     state.configuredHotkey,
     state.pendingHotkey,
+    state.pendingHotkeyId,
+    state.expiredHotkey,
     state.recordingHotkey,
     state.registeredHotkey,
-    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce] : null,
+    state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce, state.hotkeyError.trialId] : null,
     canonicalVoiceModel(state.model),
   ]);
 }
@@ -535,6 +542,7 @@ export const VoiceShellReportSchema = z.object({
   hotkeyError: z.object({
     reason: z.string().min(1).max(VOICE_LIMITS.reasonChars),
     chordInForce: ChordSchema.nullable(),
+    trialId: z.uuid().optional(),
   }).nullable().default(null),
 });
 export type VoiceShellReport = z.infer<typeof VoiceShellReportSchema>;

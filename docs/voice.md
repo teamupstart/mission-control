@@ -911,7 +911,8 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build
-  does not know are dropped rather than refused.
+  does not know are dropped rather than refused. When a shortcut trial fails, the desktop
+  echoes its `pendingHotkeyId` in `hotkeyError.trialId`. Only a matching refusal ends that trial.
 
 ### Desktop hotkey and microphone contention
 
@@ -920,7 +921,9 @@ A tap toggles manual mute from any app. If the daemon refuses the toggle or its 
 the tray opens with the result of a fresh status check. During call auto-mute, hold for 350 ms
 to talk and release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
 the warning names the chord still registered, or says when none is in force. Settings saves a
-replacement only after the desktop confirms registration. Restarting the desktop after a refusal
+replacement only after the desktop confirms registration. While waiting, the row shows the
+proposed chord. If confirmation takes longer than 15 seconds, the row identifies the edit
+that expired and the shortcut that remains saved. Restarting the desktop after a refusal
 restores the saved shortcut.
 Voice releases the current shortcut while Settings records, so recording it again keeps the
 same binding without muting. Typing and navigation keys require Command, Control, or Option.

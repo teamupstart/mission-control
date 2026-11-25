@@ -80,6 +80,9 @@ test("Voice settings records a chord, explains refusal, and follows call and key
         const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
         return !state.recordingHotkey && state.pendingHotkey;
       }).toBe(chord);
+      const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+      expect(typeof state.pendingHotkeyId).toBe("string");
+      return state.pendingHotkeyId as string;
     };
     await capture.focus();
     await expect(page.locator(".tooltip")).toHaveText("Record a system-wide mute shortcut");
@@ -108,9 +111,10 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect.poll(async () => (await saved()).hotkey).toBe("ctrl+shift++");
     await recordReplacement("Control+k", "ctrl+k");
     await report({ registeredHotkey: "ctrl+k" });
-    await recordReplacement("Alt+Space", "alt+Space");
+    const spaceTrial = await recordReplacement("Alt+Space", "alt+Space");
     expect((await saved()).hotkey).toBe("ctrl+k");
-    await report({ hotkeyError: { reason: "macOS refused ⌥Space: another app already owns it.", chordInForce: "ctrl+k" } });
+    const spaceError = { reason: "macOS refused ⌥Space: another app already owns it.", chordInForce: "ctrl+k", trialId: spaceTrial };
+    await report({ hotkeyError: spaceError });
     await expect(row.getByRole("alert")).toHaveText("macOS refused ⌥Space: another app already owns it. ⌃K is still your hotkey.");
     await expect(capture).toHaveText("⌃K");
     await screenshot("refused");
@@ -119,8 +123,11 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect(row.getByRole("alert")).toContainText("⌃K is still your hotkey.");
     expect((await saved()).hotkey).toBe("ctrl+k");
     await screenshot("refused-after-reload");
-    await recordReplacement("v", "v");
-    await report({ hotkeyError: { reason: "macOS refused v: Use Command, Control, or Option with a typing key.", chordInForce: "ctrl+k" } });
+    const letterTrial = await recordReplacement("v", "v");
+    await report({ hotkeyError: spaceError });
+    await expect(row.getByRole("status")).toHaveText("Waiting for the desktop to confirm v.");
+    await expect(row.getByRole("alert")).toHaveCount(0);
+    await report({ hotkeyError: { reason: "macOS refused v: Use Command, Control, or Option with a typing key.", chordInForce: "ctrl+k", trialId: letterTrial } });
     await expect(row.getByRole("alert")).toContainText("Use Command, Control, or Option with a typing key. ⌃K is still your hotkey.");
     expect((await saved()).hotkey).toBe("ctrl+k");
     await expect(capture).toHaveText("⌃K");
@@ -151,6 +158,18 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect(row.getByRole("alert")).toContainText("No hotkey is in force.");
     await expect(controls.getByRole("checkbox")).toBeDisabled();
     await expect(controls).toContainText("Call detection requires macOS 14.2 or later.");
+
+    await recordReplacement("Control+j", "ctrl+j");
+    await expect(row.getByRole("status")).toHaveText("Waiting for the desktop to confirm ⌃J.");
+    await screenshot("pending-confirmation");
+    // Simulate the desktop disconnecting: no more shell reports arrive.
+    const expired = "The desktop did not confirm ⌃J. ⌃K is still saved.";
+    await expect(row.getByRole("alert")).toHaveText(expired, { timeout: 25_000 });
+    await expect(row).toContainText("Needs the desktop app");
+    await screenshot("confirmation-expired");
+    await page.reload();
+    await expect(row.getByRole("alert")).toHaveText(expired);
+    expect((await saved()).hotkey).toBe("ctrl+k");
   } finally {
     listener.stop();
   }

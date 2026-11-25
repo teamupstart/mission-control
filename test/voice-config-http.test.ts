@@ -129,9 +129,9 @@ test("only a confirmed replacement becomes the saved hotkey, including across a 
   let nowUs = 1_000_000;
   t.mock.method(voiceStateStore, "hostNowUs", () => nowUs);
   const propose = (hotkey: string | null) => json("/api/voice/config", "PUT", { hotkey });
-  const snapshot = (registeredHotkey: string, reason?: string, reportedAtHostUs = ++nowUs) =>
+  const snapshot = (registeredHotkey: string, reason?: string, reportedAtHostUs = ++nowUs, trialId?: string) =>
     report({ capabilities: { hotkey: { available: true } }, registeredHotkey, reportedAtHostUs,
-      hotkeyError: reason ? { reason, chordInForce: registeredHotkey } : null });
+      hotkeyError: reason ? { reason, chordInForce: registeredHotkey, trialId } : null });
   const saved = async () => (await (await json("/api/voice/config")).json()).config.hotkey;
   await propose("ctrl+k");
   assert.equal(await saved(), VOICE_CONFIG_DEFAULTS.hotkey);
@@ -143,9 +143,18 @@ test("only a confirmed replacement becomes the saved hotkey, including across a 
   const beforeEdit = ++nowUs;
   nowUs++;
   await propose("alt+Space");
+  const previousTrial = voiceStateStore.state().pendingHotkeyId;
+  assert.ok(previousTrial);
   await snapshot("alt+Space", undefined, beforeEdit);
   assert.equal(await saved(), "ctrl+k", "a snapshot taken before the edit cannot approve it");
+  await propose("alt+Space");
+  const currentTrial = voiceStateStore.state().pendingHotkeyId;
+  assert.ok(currentTrial && currentTrial !== previousTrial);
+  await snapshot("ctrl+k", "Reserved.", ++nowUs, previousTrial);
+  assert.equal(voiceStateStore.state().pendingHotkeyId, currentTrial, "a heartbeat may repeat an earlier refusal for the same chord");
   await snapshot("ctrl+k", "Reserved.");
+  assert.equal(voiceStateStore.state().pendingHotkeyId, currentTrial, "a legacy refusal cannot identify this trial");
+  await snapshot("ctrl+k", "Reserved.", ++nowUs, currentTrial);
   assert.equal(voiceStateStore.state().pendingHotkey, undefined);
   assert.equal(voiceStateStore.state().hotkeyError?.chordInForce, "ctrl+k");
   const reopened = new DatabaseSync(join(home, "harness.db"), { readOnly: true });

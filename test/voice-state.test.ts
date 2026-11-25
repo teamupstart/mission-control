@@ -137,6 +137,25 @@ test("with the flag off the state is off, whatever was heard", () => {
   assert.equal(h.timers.length, 0, "nothing is scheduled while voice is off");
 });
 
+test("an unconfirmed hotkey publishes an expiry outcome and a new edit clears it", () => {
+  const h = harness();
+  h.setConfig({ hotkey: null });
+  h.store.proposeHotkey("ctrl+j");
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS - 1);
+  assert.equal(h.store.state().pendingHotkey, "ctrl+j");
+  h.advance(1);
+  const expired = h.published.at(-1)!;
+  assert.equal(expired.expiredHotkey, "ctrl+j");
+  assert.equal(expired.configuredHotkey, null);
+  assert.equal(expired.pendingHotkey, undefined);
+  assert.equal(expired.pendingHotkeyId, undefined);
+  h.store.acceptShellReport({ ...REPORT, reportedAtHostUs: h.hostNowUs(), registeredHotkey: "ctrl+j" });
+  assert.equal(h.store.state().expiredHotkey, "ctrl+j", "late confirmation cannot revive an expired edit");
+  h.store.proposeHotkey("ctrl+k");
+  assert.equal(h.store.state().expiredHotkey, undefined);
+  assert.equal(h.store.state().pendingHotkey, "ctrl+k");
+});
+
 test("mute replies and published modes share a revision ordered within one daemon", () => {
   const h = harness();
   h.store.acceptHello(listenerId, HELLO);

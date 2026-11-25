@@ -226,6 +226,78 @@ test("Engineer host migrates the legacy SDK value and persists an explicit Termi
   await shoot(page, "04-sdk-runtime-selected");
 });
 
+test("Conductor keeps a newer runtime through delayed reads and consent-only saves", async ({ page, daemon }) => {
+  const time = new Date();
+  await page.clock.install({ time });
+  await page.clock.pauseAt(new Date(time.getTime() + 500));
+  await openConductor(page, daemon.baseURL);
+  const sdk = page.getByRole("radio", { name: /Managed Agent SDK/ });
+  const terminal = page.getByRole("radio", { name: /Terminal/ });
+  await expect(sdk).toBeChecked();
+
+  const path = "/api/pipelines/config";
+  let releaseOldRead!: () => void;
+  let captureOldRead!: () => void;
+  const release = new Promise<void>(resolve => { releaseOldRead = resolve; });
+  const captured = new Promise<void>(resolve => { captureOldRead = resolve; });
+  await page.route(`**${path}`, async route => {
+    const old = await route.fetch();
+    captureOldRead();
+    await release;
+    await route.fulfill({ response: old, headers: { ...old.headers(), "x-fixture-stale": "1" } });
+  }, { times: 1 });
+  await page.clock.runFor(4000);
+  await captured;
+
+  const saveRuntime = async (launchRuntime: "terminal" | "agent-sdk") => {
+    const response = await page.request.put(`${daemon.baseURL}${path}`, {
+      data: { enabled: false, repos: [], launchRuntime },
+    });
+    expect(response.ok()).toBe(true);
+  };
+  await saveRuntime("terminal");
+  await page.getByRole("button", { name: /check again/i }).click();
+  await expect(terminal).toBeChecked();
+  const delivered = page.waitForResponse(response => response.headers()["x-fixture-stale"] === "1");
+  releaseOldRead();
+  await (await delivered).finished();
+  await page.clock.runFor(50);
+  await expect(terminal).toBeChecked();
+
+  await saveRuntime("agent-sdk");
+  const consentSave = page.waitForResponse(response =>
+    response.url().endsWith(path) && response.request().method() === "PUT");
+  await page.getByRole("checkbox", { name: "Observe conductor pipelines" }).check();
+  const response = await consentSave;
+  expect(response.ok()).toBe(true);
+  expect(response.request().postDataJSON()).not.toHaveProperty("launchRuntime");
+  expect(await response.json()).toMatchObject({ config: { enabled: true, launchRuntime: "agent-sdk" } });
+  await expect(sdk).toBeChecked();
+  await shoot(page, "coderabbit-conductor-runtime-preserved");
+
+  let releaseConsent!: () => void;
+  let consentSent!: () => void;
+  const hold = new Promise<void>(resolve => { releaseConsent = resolve; });
+  const sent = new Promise<void>(resolve => { consentSent = resolve; });
+  await page.route(`**${path}`, async route => {
+    const firstSave = await route.fetch();
+    consentSent();
+    await hold;
+    await route.fulfill({ response: firstSave });
+  }, { times: 1 });
+  const observe = page.getByRole("checkbox", { name: "Observe conductor pipelines" });
+  await observe.uncheck();
+  await sent;
+  await terminal.check();
+  await observe.check();
+  const settled = page.waitForResponse(response =>
+    response.url().endsWith(path) && response.request().method() === "PUT"
+    && response.request().postDataJSON().enabled === true);
+  releaseConsent();
+  expect(await (await settled).json()).toMatchObject({ config: { enabled: true, launchRuntime: "terminal" } });
+  await expect(terminal).toBeChecked();
+});
+
 test("an open Dispatch modal changes only after exact observation succeeds", async ({
   dashboard,
   daemon,

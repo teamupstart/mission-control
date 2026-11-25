@@ -8951,7 +8951,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     applyPipelineSettings({
       enabled: parsed.data.enabled,
-      launchRuntime: parsed.data.launchRuntime,
+      launchRuntime: parsed.data.launchRuntime ?? getPipelinesConfig().launchRuntime,
       foremanMechanicalTriage: parsed.data.foremanMechanicalTriage,
       repos,
     });

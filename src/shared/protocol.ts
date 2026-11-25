@@ -4219,8 +4219,11 @@ export type TaskSourceWritebackRetry = z.infer<typeof TaskSourceWritebackRetrySc
  * and bounded by its schema. The master switch rides the same write because a panel that
  * could save one without the other would let a browser hold a picture in which the master
  * is off and a repository is on, which is not a state the daemon can be in.
+ * The Engineer runtime is included only for an explicit choice.
  */
-export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
+export const PipelinesConfigPatchSchema = PipelinesConfigSchema.extend({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap().optional(),
+});
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
 
 /** Register one canonical repository with its provider. Observation consent is a later write. */

@@ -164,6 +164,7 @@ test("the live owner catalog and explicit dispositions cover every indexed contr
   }
   for (const [key, access] of [
     ["dispatch.launcher.prompt", "read-write"], ["ui.showToursOnStartup", "read-write"],
+    ["foreman.autoApproveAccess", "protected"], ["harnesses.autoModeOnDispatch", "protected"],
     ["sessionSettings.access", "protected"], ["updates.alpha", "protected"], ["reports.muted", "protected"],
     ["telemetry.user", "protected"], ["telemetry.product", "protected"], ["telemetry.identity", "protected"],
   ]) {

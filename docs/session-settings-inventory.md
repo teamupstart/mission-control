@@ -5,6 +5,11 @@ The first table uses control IDs from `ALL_SETTINGS_CONTROLS`, including build-h
 families use their existing registry as the row source. The second table covers additional controls and leaves
 without individual search entries. An owner may back several anchors, and an anchor may cover several leaves.
 
+Repository Index and Task Sources list saves require the revision returned with the list the client edited.
+A client opening a view after a daemon restart must fetch a fresh revision before saving. The daemon
+rejects missing or stale revisions before replacing a list so a dashboard or script cannot overwrite a
+newer session edit.
+
 The inventory distinguishes live preferences, authority-bearing controls, actions and derived state.
 Backup classification describes snapshot behavior independently of session access. Conditional rows
 follow the dashboard's feature and build gates.

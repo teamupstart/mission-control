@@ -323,6 +323,21 @@ test("both Engineer runtimes round-trip and the cheap Dispatch read reports the 
   }
 });
 
+test("saving pipeline observation consent keeps the stored Engineer runtime", async () => {
+  const { request } = fixture();
+  const repo = gitRepo("consent-runtime");
+  const save = (body: unknown) => request("/api/pipelines/config", {
+    method: "PUT", body: JSON.stringify(body),
+  });
+  const before = { enabled: true, repos: [{ provider: "ai-conductor", repoRoot: repo, enabled: true }] };
+  assert.equal((await save({ ...before, launchRuntime: "terminal" })).status, 200);
+  const saved = await save({ ...before, enabled: false });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as PipelinesView).config.launchRuntime, "terminal");
+  assert.equal(getPipelinesConfig().launchRuntime, "terminal");
+  assert.equal(getPipelinesConfig().enabled, false);
+});
+
 test("a body the schema refuses changes nothing", async () => {
   const { request } = fixture();
   const repo = gitRepo("bad-body");

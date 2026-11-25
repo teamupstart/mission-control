@@ -11,7 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 import { SESSION_SETTINGS_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
-import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { LOCAL_PLAN_VALIDATION_WORKFLOW_ID, NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import type { SettingsErrorCode, SettingsRequest, SettingsResult, SettingsValue } from "../src/shared/settings-mcp.ts";
 import { settingsFailure } from "../src/shared/settings-mcp.ts";
 import { SHAPING_LIMIT_RANGES } from "../src/shared/shaping.ts";
@@ -639,6 +639,21 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     await call(claude, { ...set, key, value: "$inherit" });
     assert.equal(getWorkflowPolicy().kindWorkflowDefaults.ship, undefined);
     await assertPreference(key, NO_MISTAKES_REVIEW_WORKFLOW_ID);
+  });
+
+  await t.test("plan workflow defaults report the validator for local plan storage", async t => {
+    const planStorage = getSkillsConfig().planStorage;
+    t.after(() => setSkillsConfig({ planStorage }));
+    setSkillsConfig({ planStorage: "local" });
+    const key = "workflows.kindWorkflowDefaults.plan";
+    await assertPreference(key, LOCAL_PLAN_VALIDATION_WORKFLOW_ID);
+    assert.deepEqual(await call(claude, { ...set, key, value: PLAN_VALIDATION_WORKFLOW_ID }), {
+      ok: true, operation: "set", key, value: LOCAL_PLAN_VALIDATION_WORKFLOW_ID,
+    });
+    assert.equal(getWorkflowPolicy().kindWorkflowDefaults.plan, PLAN_VALIDATION_WORKFLOW_ID);
+    await call(claude, { ...set, key, value: "$inherit" });
+    setSkillsConfig({ planStorage: "repository" });
+    await assertPreference(key, PLAN_VALIDATION_WORKFLOW_ID);
   });
 
   await t.test("task-source leaf edits preserve provider authority and reject stale list replacements", async () => {

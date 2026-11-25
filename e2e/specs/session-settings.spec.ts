@@ -574,13 +574,68 @@ test("the open Task Sources editor shows a Jira filter changed through mission_s
     await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
     const query = page.getByLabel("JQL filter");
     await expect(query).toHaveValue("project = ONE");
+
+    let releaseOldRead!: () => void;
+    let captureOldRead!: () => void;
+    const release = new Promise<void>(resolve => { releaseOldRead = resolve; });
+    const captured = new Promise<void>(resolve => { captureOldRead = resolve; });
+    await page.route(`**${path}`, async route => {
+      const old = await route.fetch();
+      captureOldRead();
+      await release;
+      await route.fulfill({ response: old, headers: { ...old.headers(), "x-fixture-stale": "1" } });
+    }, { times: 1 });
+    await page.clock.runFor(4000);
+    await captured;
     const key = `taskSources.${createHash("sha256").update(id).digest("base64url")}.config.jql`;
     await callSettings(client, { operation: "set", key, value: "project = TWO" });
     await expect(query).toHaveValue("project = TWO");
-    await evidence(page, "inspector-task-sources-live");
+    const delivered = page.waitForResponse(response => response.headers()["x-fixture-stale"] === "1");
+    releaseOldRead();
+    await (await delivered).finished();
+    await page.clock.runFor(50);
+    await expect(query).toHaveValue("project = TWO");
+    await evidence(page, "coderabbit-task-sources-read-order");
   } finally {
     await client.close();
   }
+});
+
+test("Task Sources can save again after a confirming read fails", async ({ dashboard: page, daemon }) => {
+  const path = "/api/task-sources/config";
+  const { revision } = await api(daemon, path);
+  await api(daemon, path, { revision, sources: [{
+    id: "settings-save-fixture-jira", kind: "jira", label: "Example issue queue",
+    repoRoot: daemon.repo, config: { jql: "project = ONE" },
+  }] }, "PUT");
+  await pauseDashboardTimers(page);
+  await page.goto(`${daemon.baseURL}/#/settings/task-sources`);
+  const query = page.getByLabel("JQL filter");
+  await expect(query).toHaveValue("project = ONE");
+
+  await page.route(`**${path}`, route => route.request().method() === "GET"
+    ? route.fulfill({ status: 503, json: { error: "fixture read unavailable" } }) : route.continue());
+  const nextSave = () => page.waitForResponse(response =>
+    response.url().endsWith(path) && response.request().method() === "PUT");
+  const firstSave = nextSave();
+  const refusedRead = page.waitForResponse(response => response.url().endsWith(path) && response.status() === 503);
+  await query.fill("project = TWO");
+  await query.blur();
+  const first = await firstSave;
+  expect(first.ok()).toBe(true);
+  const saved = await first.json();
+  await refusedRead;
+  await page.clock.runFor(50);
+
+  const secondSave = nextSave();
+  await query.fill("project = THREE");
+  await query.blur();
+  const second = await secondSave;
+  expect(second.request().postDataJSON()).toMatchObject({ revision: saved.revision });
+  expect(second.ok()).toBe(true);
+  await expect(query).toHaveValue("project = THREE");
+  expect((await api(daemon, path)).sources[0].config.jql).toBe("project = THREE");
+  await evidence(page, "coderabbit-task-sources-save-revision");
 });
 
 test.describe("saved Repository Index", () => {

@@ -1,4 +1,4 @@
-import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO, taskDefaultWorkflowId } from "@shared/task.ts";
+import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO, taskDefaultWorkflowId, type HarnessLaunchedTaskKind, type KindWorkflowDefaults } from "@shared/task.ts";
 import { PipelinesConfigSchema, type PipelinesConfig } from "@shared/pipeline.ts";
 import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
 import { getWorkflowPolicy } from "./workflows/config.ts";
@@ -28,6 +28,7 @@ import { launcherPromptEnabled, setLauncherPrompt } from "./home-dispatch/config
 import { getRepoIndexConfig, repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { InvalidSettingValue, ProtectedSettingValue, type SettingDescriptor, type SettingScalar } from "./settings-dispatcher.ts";
 import { applyShapingIntent, getShapingConfig } from "./shaping/index.ts";
+import { getSkillsConfig } from "./skills/config.ts";
 import { bindTypedSettings, choices, field } from "./typed-settings.ts";
 import { setVoiceConfirmation, setVoiceIndicator, storedVoiceUi } from "./ui-config.ts";
 import { getVoiceConfig, setVoiceConfig } from "./voice/config.ts";
@@ -231,6 +232,10 @@ export function specializedSettings(owners: {
   ];
 }
 
+function effectiveWorkflowDefault(kind: HarnessLaunchedTaskKind, defaults: KindWorkflowDefaults): string | null {
+  return taskDefaultWorkflowId(kind, defaults, kind === "plan" ? getSkillsConfig().planStorage : undefined);
+}
+
 export function workflowDefaultSettings(
   workflowManager: () => Pick<WorkflowManager, "list"> | null,
   apply: (patch: WorkflowPolicyPatch) => ReturnType<typeof getWorkflowPolicy>,
@@ -241,7 +246,7 @@ export function workflowDefaultSettings(
     {
       label: `${TASK_KIND_INFO[kind].label} after-work workflow`,
       available: () => workflowManager() !== null,
-      read: () => taskDefaultWorkflowId(kind, getWorkflowPolicy().kindWorkflowDefaults),
+      read: () => effectiveWorkflowDefault(kind, getWorkflowPolicy().kindWorkflowDefaults),
       readStored: () => {
         const stored = getWorkflowPolicy().kindWorkflowDefaults[kind];
         return stored === undefined ? "$inherit" : stored;
@@ -258,7 +263,7 @@ export function workflowDefaultSettings(
         else kindWorkflowDefaults[kind] = value;
         const saved = apply({ kindWorkflowDefaults });
         changed(`workflows.kindWorkflowDefaults.${kind}`);
-        return taskDefaultWorkflowId(kind, saved.kindWorkflowDefaults);
+        return effectiveWorkflowDefault(kind, saved.kindWorkflowDefaults);
       },
     },
   ));

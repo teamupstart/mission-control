@@ -72,13 +72,14 @@ export function useTaskSources(): TaskSourcesState {
    * response applied over a value the operator has moved past is not a flash - the very next
    * field's commit persists the reverted blob, and the edit is gone from the daemon for good.
    *
-   * The picture moves for two different reasons, which is why there are two counters:
+   * These counters cover edits, landed writes and overlapping reads:
    *
    *  - `editSeq` - an edit has STARTED. A read that left before it cannot describe it.
    *  - `writeGen` - a write has LANDED. A read that left before that write describes an older
    *    server, even if no new edit began in between.
+   *  - `readSeq` - a read has STARTED. Its response supersedes any older in-flight read.
    *
-   * Both are needed, and one is not the other. Editing B while A is in flight moves `editSeq`
+   * Editing B while A is in flight moves `editSeq`
    * only; B's own PUT landing moves `writeGen` only. A poll that left after B's edit but before
    * B's PUT arrived carries B's `editSeq` and yet holds a pre-B server, which is exactly how the
    * fourth defect got in: `readIsCurrent(B, B)` said yes and restored the stale value after B's
@@ -86,6 +87,7 @@ export function useTaskSources(): TaskSourcesState {
    */
   const editSeq = useRef(0);
   const writeGen = useRef(0);
+  const readSeq = useRef(0);
   const batch = useRef<{ revision: string; tail: Promise<unknown> } | null>(null);
 
   const setView = useCallback((v: TaskSourcesView | null): void => {
@@ -96,7 +98,7 @@ export function useTaskSources(): TaskSourcesState {
   /**
    * Read the route, and apply the result only if it can still be the whole truth - the rule above.
    *
-   * BOTH counters are checked, and each catches a case the other cannot:
+   * The response must be the latest read and still agree with the edit and write counters:
    *
    *  - a later EDIT means this response cannot describe what is now on screen;
    *  - a later landed WRITE means this response describes an older server than the one the client
@@ -111,9 +113,12 @@ export function useTaskSources(): TaskSourcesState {
    */
   const refresh = useCallback(
     async (seqAtRequest: number = editSeq.current, confirming = false): Promise<void> => {
+      // Polls cannot displace a confirming read while a save is in flight.
+      if (batch.current && !confirming) return;
+      const readAtRequest = ++readSeq.current;
       const genAtRequest = writeGen.current;
       const v = await fetchTaskSources();
-      if (!v) return;
+      if (!v || !readIsCurrent(readAtRequest, readSeq.current)) return;
       if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
       if (!readIsCurrent(genAtRequest, writeGen.current)) return;
       if (batch.current && !confirming) return;
@@ -182,6 +187,9 @@ export function useTaskSources(): TaskSourcesState {
         // without it, such a poll carries this edit's sequence, passes the edit check, and puts
         // the pre-write config back on top of the confirming read below.
         writeGen.current += 1;
+        // Save replies carry the revision even if the confirming read is unavailable.
+        const visible = viewRef.current;
+        if (visible) setView({ ...visible, revision: res.revision });
         // THIS save's sequence, not whatever is current: a response that predates a queued edit
         // must not be applied over it. See `refresh`.
         await refresh(seq, true);

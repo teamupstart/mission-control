@@ -1,4 +1,4 @@
-import { isStandaloneHandoffRelease } from "./goal/handoff-restrictions.ts";
+import { isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -11219,6 +11219,8 @@ export class Registry extends EventEmitter {
     const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
     const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
     const handoffReleasedAt = patch.handoffReleasedAt ?? prev?.handoffReleasedAt;
+    const deliverableChanged = objective !== (prev?.objective ?? null)
+      && withoutHandoffRestrictions(objective ?? "") !== withoutHandoffRestrictions(prev?.objective ?? "");
     const next: SessionGoal = {
       noteKey: key,
       text,
@@ -11245,6 +11247,7 @@ export class Registry extends EventEmitter {
           ? patch.pendingPrompts
           : prev?.pendingPrompts ?? [],
       ...(handoffReleasedAt === undefined ? {} : { handoffReleasedAt }),
+      deliverableUpdatedAt: deliverableChanged ? now : prev?.deliverableUpdatedAt ?? prev?.updatedAt ?? now,
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     if (Array.isArray(steering)) upsertSessionGoalWithSteeringNotes(next, steering);

@@ -1740,11 +1740,15 @@ test("a delivered bulleted no-PR or no-shipping instruction holds until release"
 });
 
 
-test("a delivered mockup item remains artifact-only when it is newer than the implementation Goal", () => {
+test("a delivered mockup item stays artifact-only after release, until the deliverable changes", () => {
   const items = DRAINED().map((item) => ({
     ...item, sentAt: NOW - 5_000, intent: "Output: mockups",
   }));
   const objective = "Implement heading counts.";
   assert.equal(tick({ items, intent: { objective, updatedAt: NOW - 10_000 } }).kind, "skip-wrapup");
-  assert.equal(tick({ items, intent: { objective, updatedAt: NOW } }).kind, "ask-wrapup");
+  const afterRelease = { objective, updatedAt: NOW, handoffReleasedAt: NOW, deliverableUpdatedAt: NOW - 10_000 };
+  assert.equal(tick({ items, intent: afterRelease }).kind, "skip-wrapup");
+  assert.equal(tick({ items, intent: {
+    ...afterRelease, objective: "Implement counts for collapsed headings.", deliverableUpdatedAt: NOW,
+  } }).kind, "ask-wrapup");
 });

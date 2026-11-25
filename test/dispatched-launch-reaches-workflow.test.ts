@@ -1061,6 +1061,8 @@ for (const scenario of [
     }
     if (releaseAfterReplacement || releaseWithoutReplacement) {
       const expectedObjective = releaseWithoutReplacement ? IMPLEMENTATION_OBJECTIVE : REPLACEMENT_OBJECTIVE;
+      const deliverableUpdatedAt = readGoal()?.deliverableUpdatedAt;
+      assert.ok(deliverableUpdatedAt);
       revision = releaseWithoutReplacement ? 4 : 5;
       instruction = "Resume automatic handoff.";
       submitEcho(d.registry, d.noteKey, instruction, now + 15, transcriptPath);
@@ -1070,6 +1072,8 @@ for (const scenario of [
       assert.equal(readGoal()?.text, expectedObjective);
       assert.ok(readGoal()?.handoffReleasedAt);
       assert.equal(getSessionGoal(d.noteKey)?.handoffReleasedAt, readGoal()?.handoffReleasedAt);
+      assert.equal(readGoal()?.deliverableUpdatedAt, deliverableUpdatedAt);
+      assert.equal(getSessionGoal(d.noteKey)?.deliverableUpdatedAt, deliverableUpdatedAt);
       assert.equal(await tick(), true);
       assert.equal(verifyPrompts.length, 1);
       assert.ok(verifyPrompts[0]?.includes(expectedObjective));

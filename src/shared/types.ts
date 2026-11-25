@@ -1492,6 +1492,8 @@ export interface SessionGoal {
   pendingPrompts: GoalPromptRevision[];
   /** Accepted standalone release timestamp. Queue instructions started later still apply. */
   handoffReleasedAt?: number;
+  /** When the actual deliverable last changed, excluding handoff restrictions. */
+  deliverableUpdatedAt?: number;
   updatedAt: number;
 }
 

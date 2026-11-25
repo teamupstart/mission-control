@@ -419,7 +419,8 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     };
     // A resolved Goal supersedes earlier item deliverables. Later items still
     // declare their own outputs, independently of code left by earlier work.
-    const laterItems = intent ? items.filter((item) => (item.sentAt ?? item.createdAt) > intent.updatedAt) : [];
+    const laterItems = intent ? items.filter((item) =>
+      (item.sentAt ?? item.createdAt) > (intent.deliverableUpdatedAt ?? intent.updatedAt)) : [];
     const block = automaticWrapupBlock({
       ...eligibility,
       objective: intentGuard?.objective ?? (

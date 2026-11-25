@@ -338,7 +338,7 @@ let db: DatabaseSync | undefined;
 // 61: remember accepted spoken outbox IDs after retirement.
 // 62: frozen Persona access, graph fingerprints, reviewer ownership and body-free query audit.
 // 63: replace the previously materialized Voice mute shortcut default once.
-// 64: retain the accepted timestamp of an explicit operator handoff release.
+// 64: retain the times of explicit operator handoff releases and deliverable changes.
 export const CURRENT_DATABASE_SCHEMA_VERSION = 64;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
@@ -926,6 +926,7 @@ function createSchemaObjects(d: DatabaseSync): void {
       source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
       opening_prompt          TEXT,              -- first accepted human instruction, write-once
       handoff_released_at     INTEGER,
+      deliverable_updated_at  INTEGER,
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
       focus                   TEXT,              -- compact latest instruction
@@ -5285,6 +5286,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_goals", "objective", "TEXT");
   addColumn(d, "session_goals", "opening_prompt", "TEXT");
   addColumn(d, "session_goals", "handoff_released_at", "INTEGER");
+  addColumn(d, "session_goals", "deliverable_updated_at", "INTEGER");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -13027,6 +13029,7 @@ export function loadSessionNotes(): SessionNote[] {
 
 interface SessionGoalRow {
   handoff_released_at: number | null;
+  deliverable_updated_at: number | null;
   opening_prompt: string | null;
   note_key: string;
   text: string | null;
@@ -13107,6 +13110,7 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
       r.resolved_prompt_revision || (r.prompt && r.source === "model" ? 1 : 0),
     pendingPrompts: pendingGoalPrompts(r),
     ...(r.handoff_released_at === null ? {} : { handoffReleasedAt: r.handoff_released_at }),
+    ...(r.deliverable_updated_at === null ? {} : { deliverableUpdatedAt: r.deliverable_updated_at }),
     updatedAt: r.updated_at,
   };
 }
@@ -13116,8 +13120,9 @@ export function upsertSessionGoal(g: SessionGoal): void {
     .prepare(
       `INSERT INTO session_goals
          (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
-          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at, handoff_released_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at,
+          handoff_released_at, deliverable_updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
          opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
@@ -13126,12 +13131,14 @@ export function upsertSessionGoal(g: SessionGoal): void {
          prompt_revision=excluded.prompt_revision,
          resolved_prompt_revision=excluded.resolved_prompt_revision,
          pending_prompts=excluded.pending_prompts,
-         handoff_released_at=excluded.handoff_released_at, updated_at=excluded.updated_at`,
+         handoff_released_at=excluded.handoff_released_at,
+         deliverable_updated_at=excluded.deliverable_updated_at, updated_at=excluded.updated_at`,
     )
     .run(
       g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
       JSON.stringify(g.pendingPrompts), g.updatedAt, g.handoffReleasedAt ?? null,
+      g.deliverableUpdatedAt ?? null,
     );
 }
 

@@ -369,8 +369,8 @@ describes the product change. Foreman applies the same artifact-only diff safegu
 verifies the implementation before claiming the bound Workflow. A drained work queue uses
 the current Goal to decide what is eligible for handoff. The completed items and task title
 supply the contract when there is no Goal. A pending or ambiguous Goal pauses the drain decision.
-Later delivered items still contribute artifact-only requirements. Item restrictions on publication
-remain active across Goal revisions until the operator sends a standalone release.
+Items delivered after the last deliverable change still contribute artifact-only requirements.
+A standalone release lifts item restrictions on publication while preserving those requirements.
 Guarded drain writes use a dedicated daemon route. A worker connected to an older daemon
 receives a missing-route error and leaves the drain untouched. Desktop updates stop the owned
 worker and daemon before switching bundles. See [desktop updates](desktop-and-packaging.md#updates-from-the-installed-app).

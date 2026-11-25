@@ -675,6 +675,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   const loadStore = async (): Promise<void> => {
     const source = getStore();
     const own = activation;
+    // Switched off, or switched on again with a load of its own: this one reads and publishes nothing more.
+    const over = () => !active || activation !== own;
     let incomplete = false;
     let ids: string[] = [];
     try {
@@ -683,9 +685,9 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       incomplete = true;
       warn(`the stored sign-ins could not be listed: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (over()) return;
     for (const id of ids) {
-      // Switched off, or switched on again with a load of its own: this one reads no further.
-      if (!active || activation !== own) return;
+      if (over()) return;
       let record: StoredSignIn | null;
       try {
         record = await source.read(id);
@@ -694,6 +696,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         warn(`a stored sign-in could not be read: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
+      if (over()) return;
       if (!record || connectionId(record.target) !== id) continue;
       const conn = ensure(id, record.target);
       // Memory already decided this connection's record since the daemon started: it wins.
@@ -703,7 +706,17 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       conn.storage = source.kind;
       conn.nextAt = refreshDue(record);
     }
+    if (over()) return;
     loadIncomplete = incomplete;
+  };
+
+  /** Until the load that is current when it ends has ended, so a load stopped by a flag reset is never taken for the one after it. */
+  const loaded = async (): Promise<void> => {
+    for (;;) {
+      const current = loading;
+      await current;
+      if (current === loading) return;
+    }
   };
 
   const reconcile = (): void => {
@@ -767,9 +780,12 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     // Timed out while waiting its turn: no request at all.
     if (abandoned()) return refusal("timeout");
     if (!active) return refusal("flag_off");
+    // Bound to this activation: a flag reset since means another load decides what is named.
+    const own = activation;
+    const reset = () => !active || activation !== own;
     const found = await deps.flow.discover(target, flowOptions());
     if (!found.ok) return { ok: false, code: found.code, reason: found.reason };
-    if (!active) return refusal("flag_off");
+    if (reset()) return refusal("flag_off");
     const discovery = found.discovery;
     const conn = ensure(connectionId(target), target);
     conn.discovery = discovery;
@@ -789,7 +805,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       }
       result = await deps.flow.begin(target, discovery, null, deps.redirectUri, flowOptions());
       if (result.ok && abandoned()) return refusal("timeout");
-      if (result.ok && !active) return refusal("flag_off");
+      if (result.ok && reset()) return refusal("flag_off");
       if (result.ok) {
         // In one write: room made from what is held now, and the new registration saved.
         let kept = deps.registrations.read();
@@ -818,7 +834,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     let gaveUp = false;
     // One at a time, after the load: two sign-ins started together cannot register twice for
     // the same issuer, redirect URI and scope, or both take the last place.
-    const work = beginTail.then(() => loading).then(() => beginNow(target, () => gaveUp));
+    const work = beginTail.then(loaded).then(() => beginNow(target, () => gaveUp));
     beginTail = work.catch(() => undefined);
     void track(beginTail);
     let timer: TimerHandle | null = null;

@@ -1144,16 +1144,22 @@ test("a refresh that falls due while an older refresh is still running is starte
   h.svc.setInUse([use(a)]);
   const { id } = await signIn(h, a);
   const release = held.holdRefreshReplies();
-  // The first record's 75% refresh starts and its reply is held.
-  h.clock.fireDue(46 * MINUTE);
-  while (held.replies.length === 0) await new Promise((done) => setTimeout(done, 5));
-  // A new sign-in replaces the record while that refresh runs; its own refresh then falls due.
-  const back = await authorize((await begun(h, a)).authorizationUrl);
-  assert.equal((await h.svc.complete(callback(back))).ok, true);
-  const replacement = (await h.store.records.read(id))!;
-  h.clock.fireDue(46 * MINUTE);
-  const from = h.fake.requests.length;
-  release();
+  let replacement: StoredSignIn;
+  let from: number;
+  try {
+    // The first record's 75% refresh starts and its reply is held.
+    h.clock.fireDue(46 * MINUTE);
+    while (held.replies.length === 0) await new Promise((done) => setTimeout(done, 5));
+    // A new sign-in replaces the record while that refresh runs; its own refresh then falls due.
+    const back = await authorize((await begun(h, a)).authorizationUrl);
+    assert.equal((await h.svc.complete(callback(back))).ok, true);
+    replacement = (await h.store.records.read(id))!;
+    h.clock.fireDue(46 * MINUTE);
+    from = h.fake.requests.length;
+  } finally {
+    // Released even when an assertion above fails, so teardown never waits on the held reply.
+    release();
+  }
   await settle(h);
   await h.clock.advance(0);
   const refreshed = refreshesSeen(h.fake, from).map((request) => form(request).get("refresh_token"));
@@ -1223,6 +1229,85 @@ test("the test clock does not fire a timer that an earlier callback cleared", ()
   second = clock.setTimer(() => fired.push("second"), 20);
   clock.fireDue(30);
   assert.deepEqual(fired, ["first"]);
+});
+
+test("a load whose activation ended publishes nothing, so its late failure cannot refuse a begin with store_unread", async (t) => {
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  // Sixteen registrations, none named: a new scope can make room.
+  const regs = memoryRegistrations((await seed(fake, SHAPING_SIGN_IN_CLIENTS, null)).clients);
+  const store = controlledStore("memory");
+  let listings = 0;
+  let failFirst!: () => void;
+  const firstHeld = new Promise<void>((done) => { failFirst = done; });
+  const listIds = store.store.ids.bind(store.store);
+  store.store.ids = async () => {
+    listings += 1;
+    if (listings === 1) {
+      await firstHeld;
+      throw new SignInStoreError("ids", -25300);
+    }
+    return listIds();
+  };
+  const flags = flagSwitch(true);
+  const h = await harness(t, { fake, store, regs, flags, start: false });
+  h.svc.start();
+  while (listings === 0) await new Promise((done) => setTimeout(done, 5));
+  // Off and on: the second load lists the store, which reads fully.
+  flags.set(false);
+  flags.set(true);
+  while (listings < 2) await new Promise((done) => setTimeout(done, 5));
+  await new Promise((done) => setTimeout(done, 10));
+  // The first load's listing now fails, after its activation ended.
+  failFirst();
+  await settle(h);
+  const answer = await h.svc.begin(target(fake, { scope: "mcp:fresh" }));
+  assert.equal(answer.ok, true, `begin answered ${JSON.stringify(answer)}`);
+  assert.equal(registrationsSeen(fake).length, 1);
+});
+
+test("a begin queued across a flag reset waits for the new load, so it never drops a registration an unread record names", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  // Sixteen registrations, each named by a stored record.
+  const seeded = await seed(fake, SHAPING_SIGN_IN_CLIENTS, records);
+  const regs = memoryRegistrations(seeded.clients);
+  const store = controlledStore("memory", records);
+  let reads = 0;
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((done) => { releaseFirst = done; });
+  let releaseSecond!: () => void;
+  const secondHeld = new Promise<void>((done) => { releaseSecond = done; });
+  let secondReading!: () => void;
+  const secondStarted = new Promise<void>((done) => { secondReading = done; });
+  store.store.read = async (id) => {
+    reads += 1;
+    const record = await records.read(id);
+    if (reads === 1) await firstHeld;
+    else { secondReading(); await secondHeld; }
+    return record;
+  };
+  const flags = flagSwitch(true);
+  const h = await harness(t, { fake, store, regs, flags, start: false });
+  h.svc.start();
+  while (reads === 0) await new Promise((done) => setTimeout(done, 5));
+  // Queued behind the first load, for a scope that needs a new registration.
+  const answer = h.svc.begin(target(fake, { scope: "mcp:fresh" }));
+  // Let it start waiting on the first load before the flags are reset.
+  await new Promise((done) => setImmediate(done));
+  flags.set(false);
+  flags.set(true);
+  await secondStarted;
+  // The first load stops early. The begin must not go on while the second is still reading.
+  releaseFirst();
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(registrationsSeen(fake).length, 0, "no registration request while the new load is still reading");
+  const keyBefore = regs.read();
+  releaseSecond();
+  assert.equal((await answer as { code: string }).code, "registration_limit", "every registration is named once the load has read them");
+  assert.equal(registrationsSeen(fake).length, 0);
+  assert.deepEqual(regs.read(), keyBefore, "no registration a stored sign-in names was dropped");
 });
 
 test("every row of the accessToken table", async (t) => {

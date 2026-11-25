@@ -1,7 +1,8 @@
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
-import { captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { captureCard, expectCardGeometry, readTranscriptWithKeyboard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { say, voiceToken } from "../fixtures/voice.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import type { Session } from "../../src/shared/types.ts";
@@ -122,6 +123,45 @@ test("a mixed split shows both delivery outcomes and recalls only the held part"
   await expect(page.getByRole("status").filter({ hasText: "Held for Will" })).toHaveCount(1);
   await expect.poll(pendingWords).toEqual([earlier]);
   await captureCard(mixed, "mixed-split-recalled");
+});
+
+test("a held transcript scrolls inside a split with a failed sibling", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Will");
+  const question = "Which release should I check?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+  })).ok()).toBe(true);
+  // Refuse only the second part in this fixture's outbox so the daemon publishes a mixed result.
+  withDaemonDb(daemon, db => db.exec(`
+    CREATE TRIGGER refuse_split_sibling BEFORE INSERT ON pending_turns
+    WHEN NEW.id = 'voice:mixed-long#2' BEGIN SELECT RAISE(ABORT, 'Test outbox refused the sibling'); END
+  `));
+  await page.setViewportSize({ width: 560, height: 420 });
+  const words = "Review the build output. ".repeat(60) + "Start at the final check";
+  await say(daemon, "Steve, " + words + ", and Will, review the release", { id: "mixed-long" });
+  const card = page.getByRole("status");
+  await card.getByRole("button", { name: /Will/ }).click();
+  const splitTranscript = card.getByRole("region", { name: "Spoken message" });
+  await expect(splitTranscript).toContainText("Start at the final check");
+  await readTranscriptWithKeyboard(splitTranscript, card.getByRole("button", { name: "Cancel", exact: true }), "Shift+Tab");
+  await card.getByRole("button", { name: "Send both now" }).click();
+  const mixed = card.filter({ hasText: "Held for Steve" });
+  await expect(mixed).toContainText("Failed to send to Will");
+  const recall = mixed.getByRole("button", { name: "Cancel message" });
+  const transcript = mixed.getByRole("region", { name: "Spoken message" });
+  await expect(transcript).toContainText("Start at the final check");
+  await readTranscriptWithKeyboard(transcript, recall, "Tab");
+  for (const control of [recall, mixed.getByRole("button", { name: "Open question" }), mixed.getByText("Failed to send to Will")]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+  await captureCard(mixed, "held-scroll-with-failed-sibling");
+  const receipt = page.waitForResponse(r => r.url().endsWith("/pending-turns/voice%3Amixed-long/recall"));
+  await recall.click();
+  expect((await receipt).ok()).toBe(true);
+  await expect(mixed).toHaveCount(0);
 });
 
 test("without randomUUID a pending card can cancel and a stopped resident can relaunch", async ({ dashboard: page, daemon }) => {
@@ -284,6 +324,48 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   await expect(repo).toHaveValue(regularRepo);
   await expect(intent).toHaveValue("Keep this unrelated dispatch");
 });
+for (const exitTiming of ["before", "after"] as const) {
+  test(`a voice follow-up keeps its repository when the tour exits ${exitTiming} lookup finishes`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+    const steve = await runningAgent(page, daemon, "Steve");
+    expect((await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/complete", { data: { outcome: "Done" } })).ok()).toBe(true);
+    await page.goto(daemon.baseURL + "/#/settings/display");
+    const startTour = page.getByRole("button", { name: "Start See the work tour" });
+    await expect(startTour).toBeVisible();
+    const release = Promise.withResolvers<void>();
+    await page.route("**/api/voice/tasks/*/follow-up", async route => {
+      await release.promise;
+      await route.continue();
+    }, { times: 1 });
+    await say(daemon, "Steve, review the next change");
+    const lookup = page.waitForRequest(request => request.url().endsWith("/follow-up"));
+    await page.getByRole("button", { name: "Start a follow-up task" }).click();
+    await lookup;
+    try {
+      await startTour.click();
+      await expect(page.getByText("Step 1 of 14")).toBeVisible();
+      if (exitTiming === "before") {
+        await page.getByRole("button", { name: "Exit tour" }).click();
+        await expect(page.getByText("Step 1 of 14")).toHaveCount(0);
+      }
+    } finally {
+      release.resolve();
+    }
+    const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo, { timeout: 5000 });
+    await expect(dialog.getByRole("button", { name: "Add to backlog" })).toBeVisible();
+    await expectContentClearsBorder(dialog);
+    if (exitTiming === "after") await page.getByRole("button", { name: "Exit tour" }).click();
+    const intent = dialog.getByPlaceholder("What should this agent do?");
+    await intent.fill("Review the next change", { timeout: 5000 });
+    await expect(dialog.getByPlaceholder("search repos or type a path…")).toHaveValue(daemon.repo);
+    await page.mouse.move(0, 0);
+    if (exitTiming === "after") await captureCard(dialog.locator(".modal-foot"), "tour-follow-up-actions");
+    else await captureCard(intent, "follow-up-after-tour-exit");
+  });
+}
+
 for (const opening of ["follow-up", "regular Dispatch"]) {
   test(`a delayed follow-up lookup cannot replace a newer ${opening} opening`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
@@ -365,6 +447,69 @@ test("a queued card becomes held and stays recallable past its original expiry w
   await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
 });
 
+test("a dashboard countdown stays in view when newer held outcomes fill the stack", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  const will = await runningAgent(page, daemon, "Will");
+  const question = "Which release should I check?";
+  expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: will.cwd, kind: "input", title: question, body: question },
+  })).ok()).toBe(true);
+  await page.setViewportSize({ width: 560, height: 420 });
+  await say(daemon, "Steve, check the build", { id: "active-build" });
+  const pending = page.getByRole("status").filter({ hasText: "To Steve" });
+  const cancel = pending.getByRole("button", { name: "Cancel", exact: true });
+  await expect(cancel).toBeInViewport({ ratio: 1 });
+  expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } })).ok()).toBe(true);
+  for (const topic of ["tests", "docs", "release"]) await say(daemon, "Will, review the " + topic);
+  const held = page.getByRole("status").filter({ hasText: "Held for Will" });
+  await expect(held).toHaveCount(3);
+  for (const control of [pending.getByText("To Steve", { exact: true }), pending.locator(".vc-seconds"), cancel,
+    pending.getByRole("button", { name: "Send now" })]) await expect(control).toBeInViewport({ ratio: 1, timeout: 3000 });
+  await captureCard(page.locator(".voice-card-stack"), "active-countdown-before-held-outcomes");
+  const response = page.waitForResponse(r => r.url().endsWith("/cards/active-build/cancel"));
+  await cancel.click();
+  expect((await response).ok()).toBe(true);
+  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  await expect(held).toHaveCount(3);
+});
+
+test("two dashboard cards held by the same question identify and recall their own spoken words", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const question = "Which build should I check?";
+  const ask = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) },
+    data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+  });
+  expect(ask.ok()).toBe(true);
+  const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
+  const turns = [
+    { id: "first-held", words: "check the staging build" },
+    { id: "second-held", words: "check the production build" },
+  ];
+  for (const { id, words } of turns) {
+    await say(daemon, "Steve, " + words, { id });
+    await page.getByRole("button", { name: "Send now" }).click();
+  }
+  await expect(held.filter({ hasText: question })).toHaveCount(2);
+  const byWords = (words: string) => held.filter({ has: page.getByText(words, { exact: true }) });
+  for (const { words } of turns) {
+    await expect(byWords(words).getByText(words, { exact: true })).toBeVisible();
+    await expect(byWords(words).getByRole("button", { name: "Cancel message" })).toHaveAccessibleDescription(new RegExp(words));
+  }
+  await page.mouse.move(0, 0);
+  await captureCard(page.locator(".voice-card-stack"), "distinct-held-messages");
+  for (const { id, words } of turns) {
+    const response = page.waitForResponse(r => r.url().endsWith("/pending-turns/" + encodeURIComponent("voice:" + id) + "/recall"));
+    await byWords(words).getByRole("button", { name: "Cancel message" }).click();
+    expect(await (await response).json()).toEqual({ ok: true, text: words });
+    await expect(byWords(words)).toHaveCount(0);
+  }
+  await expect(held).toHaveCount(0);
+});
+
 test("a held card identifies the blocking question and recalls the queued words", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const session = await runningAgent(page, daemon, "Steve");
@@ -400,6 +545,80 @@ test("a held card identifies the blocking question and recalls the queued words"
   await expect.poll(async () => ((await (await page.request.get(daemon.baseURL + "/api/sessions")).json()) as Session[]).find(s => s.id === session.id)?.pendingTurns.length).toBe(0);
 });
 
+test("Open question opens and answers the exact blocker named by the Held card", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const headers = { "x-harness-token": voiceToken(daemon) };
+  const filedTitle = "Which branch should we document later?";
+  const blockingTitle = "Which build is blocked?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", { headers, data: {
+    env: {}, cwd: steve.cwd, kind: "input", title: filedTitle, body: filedTitle, asyncCapable: true, snoozable: true,
+  } });
+  expect((await filed.json()).wait).toBe("message");
+  const created = await page.request.post(daemon.baseURL + "/mcp/reviews", { headers, data: {
+    env: {}, cwd: steve.cwd, kind: "input", title: blockingTitle, body: blockingTitle,
+  } });
+  expect(created.ok(), await created.text()).toBe(true);
+  await say(daemon, "Steve, inspect the next release");
+  await page.getByRole("button", { name: "Send now" }).click();
+  const held = page.getByRole("status").filter({ hasText: "Held for Steve" });
+  await expect(held).toContainText(blockingTitle);
+  await held.getByRole("button", { name: "Open question" }).click();
+  const dialog = page.getByRole("dialog", { name: "Review request" });
+  await expectContentClearsBorder(dialog);
+  await expect(dialog).toContainText(blockingTitle);
+  await expect(dialog).not.toContainText(filedTitle, { timeout: 2000 });
+  await dialog.getByPlaceholder("Your answer…").fill("The release build");
+  await captureCard(dialog, "held-open-exact-blocker");
+  await dialog.getByRole("button", { name: "Send answer" }).click();
+  await expect(dialog).toHaveCount(0);
+  const reviews = await (await page.request.get(daemon.baseURL + "/api/reviews")).json() as { title: string; status: string }[];
+  expect(reviews).toContainEqual(expect.objectContaining({ title: filedTitle, status: "pending" }));
+  await expect(held).toHaveCount(0);
+});
+
+for (const transition of ["restart", "Voice re-enable"] as const) {
+  test(`a held turn restores its question and recall after its call sign is removed on ${transition}`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    const steve = await runningAgent(page, daemon, "Steve");
+    const question = "Which release needs review?";
+    expect((await page.request.post(daemon.baseURL + "/mcp/reviews", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { env: {}, cwd: steve.cwd, kind: "input", title: question, body: question },
+    })).ok()).toBe(true);
+    await say(daemon, "Steve, inspect the held release", { id: "removed-call-sign" });
+    await page.getByRole("button", { name: "Send now" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Held for Steve" })).toContainText(question);
+    const changed = await page.request.post(daemon.baseURL + "/api/tasks/" + steve.task!.id + "/update", { data: { callSign: null } });
+    expect(changed.ok(), await changed.text()).toBe(true);
+    if (transition === "restart") {
+      await daemon.crash();
+      await daemon.restart();
+      await page.reload();
+    } else {
+      for (const enabled of [false, true]) {
+        const response = await page.request.put(daemon.baseURL + "/api/feature-flags", {
+          data: { kind: "flag", id: "voice", enabled },
+        });
+        expect(response.ok(), await response.text()).toBe(true);
+        if (!enabled) await expect(page.getByRole("status").filter({ hasText: "inspect the held release" })).toHaveCount(0);
+      }
+    }
+    const restored = page.getByRole("status").filter({ hasText: "inspect the held release" });
+    await expect(restored).toContainText("Held for Steve on builds", { timeout: 6000 });
+    await expect(restored).toContainText(question);
+    await expect(restored.getByRole("button", { name: "Open question" })).toBeEnabled();
+    await expect(restored.getByText(/Say .*answer/)).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await expectCardGeometry(restored, "routing-exceptions", ".rx-card.is-held");
+    await captureCard(restored, transition === "restart" ? "held-without-call-sign" : "held-after-voice-reenabled");
+    const recall = page.waitForResponse(r => r.url().endsWith("/pending-turns/voice%3Aremoved-call-sign/recall"));
+    await restored.getByRole("button", { name: "Cancel message" }).click();
+    expect(await (await recall).json()).toEqual({ ok: true, text: "inspect the held release" });
+    await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  });
+}
+
 test("a nonblocking question after daemon restart leaves the spoken turn queued without a held card", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   const steve = await runningAgent(page, daemon, "Steve");
@@ -413,7 +632,10 @@ test("a nonblocking question after daemon restart leaves the spoken turn queued 
   expect((await page.request.post(sessionURL + "/pause", { data: { mode: "now" } })).ok()).toBe(true);
   await say(daemon, "Steve, check the release", { id: "still-queued" });
   await page.getByRole("button", { name: "Send now" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Queued behind Steve" })).toBeVisible();
+  const queued = page.getByRole("status").filter({ hasText: "Queued for Steve" });
+  await expect(queued).toBeVisible();
+  await expect(queued).not.toContainText("current turn");
+  await captureCard(queued, "paused-queued-receipt");
   await daemon.crash();
   await daemon.restart();
   await page.reload();

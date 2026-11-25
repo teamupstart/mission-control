@@ -42,15 +42,15 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       }
     }
   }, [card.state]);
-  const announced = useRef<number | null>(null);
-  useEffect(() => {
-    if (!notify || !card.deadline || card.state !== "pending" || announced.current === card.deadline) return;
-    announced.current = card.deadline;
-    if (sound) playChime("info");
-  }, [card, notify, sound]);
   const { id: cardId, state } = card;
   const deadline = voiceCardDeadline(card);
   const wireDeadline = card.deadline;
+  const announced = useRef<number | null>(null);
+  useEffect(() => {
+    if (!notify || state !== "pending" || deadline === null || deadline <= performance.now() || announced.current === wireDeadline) return;
+    announced.current = wireDeadline;
+    if (sound) playChime("info");
+  }, [deadline, notify, sound, state, wireDeadline]);
   const pendingNotice = useRef<{ wireDeadline: number; deadline: number } | null>(null);
   useLayoutEffect(() => {
     pendingNotice.current = state === "pending" && wireDeadline !== null && deadline !== null ? { wireDeadline, deadline } : null;
@@ -138,10 +138,20 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
 }) {
   const [, reselect] = useReducer((revision: number) => revision + 1, 0);
   const [selection, setSelection] = useState<{ id: string; openWindows: Map<string, number | null> } | null>(null);
-  const newestFirst = [...cards.values()].reverse();
   const now = performance.now();
-  const pending = surface ? newestFirst.filter(card => card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now) : [];
-  const choices = pending.length ? pending : newestFirst;
+  const pending: DashboardVoiceCard[] = [];
+  const others: DashboardVoiceCard[] = [];
+  for (const card of [...cards.values()].reverse()) {
+    if (card.state === "pending" && (voiceCardDeadline(card) ?? 0) > now) pending.push(card);
+    else others.push(card);
+  }
+  pending.sort((a, b) => {
+    // A stop receipt refreshes a split in the stream without opening a new cancel window.
+    const openedA = a.deadline! - (a.windowMs ?? 0);
+    const openedB = b.deadline! - (b.windowMs ?? 0);
+    return openedB - openedA || (b.firstReceivedAt ?? 0) - (a.firstReceivedAt ?? 0) || a.id.localeCompare(b.id);
+  });
+  const choices = pending.length ? pending : others;
   // A manual choice applies to the windows the operator has seen. Each later window
   // takes priority until it closes or the operator makes another explicit selection.
   const newWindow = pending.find(card => selection?.openWindows.get(card.id) !== card.deadline);
@@ -154,13 +164,13 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     return () => window.clearTimeout(timer);
   }, [nextDeadline]);
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
-    {newestFirst.map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
+    {pending.concat(others).map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
     {choices.length > 1 && selected && <label className="vc-switch">Voice message
       <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>
         setSelection({ id: event.target.value, openWindows: new Map(pending.map(card => [card.id, card.deadline])) })}>
         {choices.map(card => <option key={card.id} value={card.id}>
-          {card.parts.map(part => [part.target?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
+          {card.parts.map(part => [part.target?.name ?? part.restoredSession?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
         </option>)}
       </select></Tooltip>
     </label>}

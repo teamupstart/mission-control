@@ -112,39 +112,84 @@ test("a stalled placement save releases the controls and can be retried", async 
   await expect(pill).toBeChecked();
 });
 
-test("a timed-out placement save cannot overwrite the newer choice when it reaches the daemon late", async ({ dashboard: page, daemon }) => {
+for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner toast/]] as const) {
+  test(`a timed-out placement save cannot overwrite the operator’s later ${placement} choice`, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    const group = page.getByRole("group", { name: "Confirmation card" });
+    const pill = group.getByRole("radio", { name: /Floating pill/ });
+    const choice = group.getByRole("radio", { name: label });
+    const url = daemon.baseURL + "/api/voice/confirmation";
+    // Keep the first request's actual body, including the version the operator saw.
+    const delayed = page.waitForRequest(request => request.url() === url && request.method() === "PUT");
+    await page.route(url, () => {}, { times: 1 });
+    await pill.click();
+    const first = await delayed;
+    await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
+    if (placement === "toast") await expect(choice).toBeChecked();
+    const [saved] = await Promise.all([
+      page.waitForResponse(response => response.url() === url && response.request().method() === "PUT", { timeout: 5000 }),
+      choice.click(),
+    ]);
+    expect(saved.ok()).toBe(true);
+    await expect(choice).toBeEnabled();
+    const late = await page.request.put(url, { data: first.postDataJSON() });
+    expect(late.status()).toBe(409);
+    expect((await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation).toBe(placement);
+    await page.reload();
+    await expect(choice).toBeChecked();
+    await expect(group.getByRole("radio")).toHaveCount(3);
+    await page.mouse.move(0, 0);
+    await captureCard(group, placement === "toast" ? "reaffirmed-toast-after-timeout" : "placement-after-stale-save");
+    await runningAgent(page, daemon, "Steve");
+    await say(daemon, "Steve, check the build and report back");
+    const card = page.getByRole("status").filter({ hasText: "To Steve" });
+    await expectCardGeometry(card, "confirmation-card", "#a .cc-card");
+    await expect(card.getByRole("button", { name: "Send now" })).toBeEnabled();
+    if (placement === "popover") await captureCard(card, "toast-after-stale-save");
+    await card.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  });
+}
+
+test("an older split stop receipt keeps the newer standalone countdown selected", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
-  const group = page.getByRole("group", { name: "Confirmation card" });
-  const pill = group.getByRole("radio", { name: /Floating pill/ });
-  const popover = group.getByRole("radio", { name: /Tray popover/ });
-  const url = daemon.baseURL + "/api/voice/confirmation";
-  // Keep the first request's actual body, including the version the operator saw.
-  const delayed = page.waitForRequest(request => request.url() === url && request.method() === "PUT");
-  await page.route(url, () => {}, { times: 1 });
-  await pill.click();
-  const first = await delayed;
-  await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
-  const saved = page.waitForResponse(response => response.url() === url && response.request().method() === "PUT");
-  await popover.click();
-  expect((await saved).ok()).toBe(true);
-  await expect(popover).toBeEnabled();
-  const late = await page.request.put(url, { data: first.postDataJSON() });
-  expect(late.status()).toBe(409);
-  expect((await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation).toBe("popover");
-  await page.reload();
-  await expect(popover).toBeChecked();
-  await expect(group.getByRole("radio")).toHaveCount(3);
-  await page.mouse.move(0, 0);
-  await captureCard(group, "placement-after-stale-save");
   await runningAgent(page, daemon, "Steve");
-  await say(daemon, "Steve, check the build and report back");
-  const card = page.getByRole("status").filter({ hasText: "To Steve" });
-  await expectCardGeometry(card, "confirmation-card", "#a .cc-card");
-  await expect(card.getByRole("button", { name: "Send now" })).toBeEnabled();
-  await captureCard(card, "toast-after-stale-save");
+  await runningAgent(page, daemon, "Will");
+  await page.addInitScript(() => {
+    window.EventSource = class extends EventSource {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init);
+        this.addEventListener("message", event => {
+          if (!event.isTrusted) return;
+          const frame = JSON.parse(event.data);
+          if (frame.type !== "voice_card" || frame.card.id !== "earlier-split" || frame.card.state !== "pending" ||
+            !frame.card.parts.some((part: { immediateStop?: boolean; outcome?: string }) => part.immediateStop && part.outcome)) return;
+          event.stopImmediatePropagation();
+          window.addEventListener("release-stop-receipt", () => this.dispatchEvent(new MessageEvent("message", { data: event.data })), { once: true });
+          document.documentElement.dataset.stopReceipt = "buffered";
+        });
+      }
+    };
+  });
+  await page.goto("about:blank");
+  await page.goto(daemon.baseURL + "/#/voice/pill");
+  const card = page.getByRole("status");
+  await say(daemon, "Steve, inspect the build, and Will, stop", { id: "earlier-split" });
+  await card.getByRole("button", { name: /Will/ }).click();
+  await expect(card).toContainText("stopping");
+  await say(daemon, "Steve, inspect the newer release", { id: "newer-message" });
+  await expect(card).toContainText("inspect the newer release");
+  await expect(page.locator("html")).toHaveAttribute("data-stop-receipt", "buffered");
+  await page.evaluate(() => window.dispatchEvent(new Event("release-stop-receipt")));
+  await expect(card).toContainText("inspect the newer release", { timeout: 3000 });
+  await page.mouse.move(600, 400);
+  await captureCard(page.locator(".voice-card-surface"), "newer-countdown-after-stop-receipt");
+  const cancelled = page.waitForResponse(response => response.url().endsWith("/cards/newer-message/cancel"));
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
+  expect((await cancelled).ok()).toBe(true);
+  await expect(card).toContainText("stop sent");
+  await expect(card.getByRole("button", { name: "Send to Steve now" })).toBeEnabled();
 });
 
 for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray popover"]] as const) {
@@ -358,6 +403,50 @@ test("a standalone relaunch keeps its feedback and retry ID while another card o
   await page.clock.fastForward(61_000);
   await expect(card).toContainText("Awaiting delivery confirmation");
   await expect(page.getByRole("combobox", { name: "Voice message" })).toHaveCount(0, { timeout: 3000 });
+});
+
+test("an accepted resident relaunch keeps its retry ID across dashboard and standalone routes", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  expect((await page.request.post(daemon.baseURL + "/api/residents/profiles", { data: { settings: {
+    identity: { name: "Marlowe", description: "Reviews builds" }, persona: { personaId: "builtin:code-risk-reviewer" },
+  } } })).ok()).toBe(true);
+  const accepted = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
+  const attempts: string[] = [];
+  await page.route("**/api/residents/profiles/*/launch", async route => {
+    attempts.push(route.request().postDataJSON().requestId);
+    if (attempts.length > 1) return route.continue();
+    const result = await route.fetch();
+    accepted.resolve(result.status());
+    await release.promise;
+    await route.fulfill({ status: 503, json: { error: "The launch reply was lost" } });
+  });
+  await say(daemon, "Marlowe, check the build");
+  const card = page.getByRole("status").filter({ hasText: "Marlowe" });
+  await card.getByRole("button", { name: "Send now" }).click();
+  const relaunch = card.getByRole("button", { name: "Relaunch Marlowe" });
+  await relaunch.click();
+  try {
+    const status = await accepted.promise;
+    expect(status).toBeGreaterThanOrEqual(200);
+    expect(status).toBeLessThan(300);
+    for (const placement of ["pill", "popover"]) {
+      await page.goto(daemon.baseURL + "/#/voice/" + placement);
+      await expect(page.locator(".voice-standalone")).toBeVisible();
+      await expect(relaunch).toBeDisabled({ timeout: 2000 });
+    }
+  } finally {
+    release.resolve();
+  }
+  await expect(card).toContainText("The launch reply was lost");
+  await page.goto(daemon.baseURL + "/#/fleet");
+  await expect(page.locator(".app")).toBeVisible();
+  await expect(card).toContainText("The launch reply was lost");
+  await captureCard(card, "relaunch-retry-after-route-changes");
+  await relaunch.click();
+  await expect(card).toContainText("Relaunch requested.");
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toBe(attempts[0]);
 });
 
 test("disabled voice links open Fleet and disabling voice closes an active standalone route", async ({ dashboard: page, daemon }) => {

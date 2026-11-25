@@ -47,6 +47,15 @@ export async function captureCard(target: Page | Locator, name: string) {
   await target.screenshot({ path: join(dir, name + ".png") });
 }
 
+export async function readTranscriptWithKeyboard(transcript: Locator, adjacentControl: Locator, direction: "Tab" | "Shift+Tab") {
+  await expect(transcript).toHaveAttribute("tabindex", "0");
+  await adjacentControl.focus();
+  await adjacentControl.press(direction);
+  await expect(transcript).toBeFocused();
+  await transcript.press("End");
+  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+}
+
 /** Compare the rendered box to the corresponding approved design at normal browser zoom. */
 export async function expectCardGeometry(card: Locator, design: "confirmation-card" | "routing-exceptions", selector: string) {
   const reference = await card.page().context().newPage();

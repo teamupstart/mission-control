@@ -312,11 +312,7 @@ export const PREVIEW_RESIDENT: ResidentSessionMark = {
   controlOtherSessions: false,
 };
 
-/**
- * The same resident answering to a call sign, as a listening resident with a reference name
- * does, for the Resident name picker's preview: the card is titled by the call sign, and the
- * picker's style decides where "Triage Bot" goes.
- */
+/** `PREVIEW_RESIDENT` as a listening resident with a reference name, titled by its call sign. */
 export const PREVIEW_RESIDENT_WITH_CALL_SIGN: ResidentSessionMark = {
   ...PREVIEW_RESIDENT,
   listeningTitle: '"Scout"',

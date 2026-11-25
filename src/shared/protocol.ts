@@ -4420,14 +4420,7 @@ export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
 export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
 
 /**
- * The ways a resident's board card can show its profile name while the card's title is the
- * call sign (reference name) it answers to: `subtitle` prints it on a muted line under the call
- * sign, and `chip` lets the resident's label chip spell it out while the card is hovered or
- * focused. Each is its own switch, so an operator may turn on either, both or neither; neither
- * prints the call sign alone, as before. A card whose title is already the profile name draws
- * nothing extra.
- *
- * Read only while the `resident-card-names` flag is on. Persisted on operators' machines, so
+ * Resident name with call sign styles (`docs/residents.md`). Persisted on operators' machines, so
  * append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the panel's order, and
  * the one a stored list is kept in.
  */
@@ -4645,7 +4638,6 @@ export const UI_CONFIG_DEFAULTS = {
   taskKindCard: "tab",
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
-  /** The call sign alone until the operator turns a style on, as before the setting existed. */
   residentCardNameStyles: [] as readonly ResidentCardNameStyle[],
   keybindings: {},
   /**
@@ -4820,10 +4812,9 @@ export const UiConfigSchema = z.object({
     .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
     .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
   /**
-   * Which ways a resident's card shows its profile name beside its call sign. Read leniently:
-   * a style a newer build added is dropped after a downgrade while the ones this build knows
-   * are kept, and anything that is not a list reads as none, rather than failing the whole
-   * `ui` record. The patch schema below is strict.
+   * Read leniently: a style a newer build added is dropped after a downgrade while the ones this
+   * build knows are kept, and anything that is not a list reads as none, rather than failing the
+   * whole `ui` record. The patch schema below is strict.
    */
   residentCardNameStyles: z
     .array(z.unknown())

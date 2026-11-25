@@ -356,9 +356,6 @@ export function SessionTile({
   // chip is this tile's to draw.
   const agentsChip = useDisplayChoice("backgroundAgentsStyle") === "chip";
   const agentDot = <AgentDot agent={session.agent} />;
-  // The resident's profile name beside the call sign its title shows, in each style the operator
-  // turned on (Settings > Display > Resident name with call sign) - either, both or neither. The
-  // chip style draws only where the chip is.
   const residentNameStyles = useResidentCardNameStyles();
   const residentProfileName = residentNameStyles.size > 0 ? residentCardProfileName(resident) : null;
   const nameSubtitle = residentNameStyles.has("subtitle") ? residentProfileName : null;

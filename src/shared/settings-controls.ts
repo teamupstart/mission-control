@@ -282,9 +282,7 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task type",
       "task kind",
       "kind",
-      // The Resident name with call sign checkboxes, offered by the resident-card-names
-      // preview: what an operator types who wants a resident's profile name on the card
-      // beside its call sign.
+      // The Resident name with call sign checkboxes.
       "resident name",
       "call sign",
       "reference name",

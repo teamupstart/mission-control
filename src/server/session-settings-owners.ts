@@ -107,7 +107,6 @@ const uiFields = [
   ...DISPLAY_ITEMS.map(item => membership("hiddenDisplayItems", item.id,
     item.group === "card" ? "board-card" : item.group === "conversation" ? "conversation-header" : "working-indicator",
     `Hide ${item.label}`)),
-  // Resident name with call sign: one switch per style, offered while its preview flag is on.
   ...RESIDENT_CARD_NAME_STYLES.map(id => membership("residentCardNameStyles", id, "board-card",
     `Resident name: ${RESIDENT_CARD_NAME_COPY[id].label}`, residentCardNamesEnabled)),
   ...TOPBAR_ITEMS.map(item => item.kind === "optional"

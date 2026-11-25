@@ -28,11 +28,7 @@ export function ResidentChip({
    * lengthen the name every rail selector reads.
    */
   tooltip?: boolean;
-  /**
-   * The profile name the chip spells out beside its label while its card is pointed at or
-   * focused (the board card's Expanding chip style). Drawn only; the chip is already named by
-   * `title`, which says the resident's name.
-   */
+  /** Drawn only (`aria-hidden`): the chip is already named by `title`, which says the resident's name. */
   expandedName?: string;
 }): React.JSX.Element {
   const name = title ?? residentChipTitle(mark);

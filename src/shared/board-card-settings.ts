@@ -318,12 +318,8 @@ export const DISPLAY_GROUP_COPY: Record<
 };
 
 /**
- * Each Resident name with call sign style's words, read by the Display panel's checkboxes and by
- * the session-settings owner that offers the same switches. A `Record` over the persisted list,
- * so a style added to `RESIDENT_CARD_NAME_STYLES` does not compile until it says how it is
- * offered, in both places at once. Every description is what the card does when its title is the
- * call sign: with no call sign, or one that is the profile name, the card prints the one name
- * whatever is on.
+ * Shared by the Display panel and the session-settings owner. A `Record` over the persisted list,
+ * so a style added to `RESIDENT_CARD_NAME_STYLES` does not compile until both can offer it.
  */
 export const RESIDENT_CARD_NAME_COPY: Record<ResidentCardNameStyle, { label: string; description: string }> = {
   subtitle: {

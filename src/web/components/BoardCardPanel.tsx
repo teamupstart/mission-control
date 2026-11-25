@@ -108,11 +108,7 @@ function ChoicePicker<K extends DisplayChoiceKey>({
   );
 }
 
-/**
- * Resident name with call sign: the ChoicePicker's layout, with a checkbox per style rather than
- * one radio among them, because the styles combine - Subtitle, Expanding chip, both or neither.
- * Drawn only while the `resident-card-names` preview is on; off, the stored styles are kept.
- */
+/** The ChoicePicker's layout with a checkbox per style instead of radios: these styles combine. */
 function ResidentCardNamePicker(): React.JSX.Element | null {
   const styles = useUiConfig().residentCardNameStyles;
   const offered = useFeatureFlag(RESIDENT_CARD_NAME_SETTING.flag);
@@ -240,8 +236,7 @@ export function BoardCardPanel(): React.JSX.Element {
   const config = useUiConfig();
   const hidden = config.hiddenDisplayItems;
   const session = usePreviewSession();
-  // With Resident name with call sign offered, the preview resident answers to a call sign, so the card is
-  // titled by it and the picker has a profile name to show beside it.
+  // Titled by a call sign, the preview card has a profile name for the styles to add.
   const previewResident = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID) ? PREVIEW_RESIDENT_WITH_CALL_SIGN : PREVIEW_RESIDENT;
   const groups = DISPLAY_ITEM_GROUPS.filter((group) =>
     DISPLAY_ITEMS.some((item) => item.group === group),

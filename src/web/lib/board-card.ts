@@ -215,14 +215,7 @@ export function setDisplayChoice<K extends DisplayChoiceKey>(key: K, value: Disp
   void updateUiConfig({ [key]: value } as Pick<DisplayChoiceValues, K>);
 }
 
-/**
- * Settings > Display > Board card > Resident name with call sign: how a resident's card shows its
- * profile name while it is titled by the call sign it answers to. Not a `DisplayChoice`, because
- * its styles are independent switches rather than one of a set: an operator may turn on the
- * Subtitle, the Expanding chip, both, or neither (the call sign alone, as before). Offered only
- * while the `resident-card-names` preview is on. Each style's words are
- * `RESIDENT_CARD_NAME_COPY`, shared with the session-settings owner.
- */
+/** Not a `DisplayChoice`: those are one-of-N, and these styles combine. */
 export const RESIDENT_CARD_NAME_SETTING = {
   flag: RESIDENT_CARD_NAMES_FLAG_ID,
   label: "Resident name with call sign",
@@ -231,10 +224,7 @@ export const RESIDENT_CARD_NAME_SETTING = {
   options: RESIDENT_CARD_NAME_STYLES.map((id) => ({ id, ...RESIDENT_CARD_NAME_COPY[id] })),
 } as const;
 
-/**
- * The resident name styles a board card draws: the operator's while the `resident-card-names`
- * preview is on, and none while it is not, whatever is stored.
- */
+/** None while the preview flag is off, whatever is stored. */
 export function useResidentCardNameStyles(): ReadonlySet<ResidentCardNameStyle> {
   const offered = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID);
   const styles = useUiConfig().residentCardNameStyles;

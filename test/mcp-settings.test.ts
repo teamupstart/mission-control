@@ -339,10 +339,14 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     const before = getVoiceConfig();
     await call(claude, { ...set, key: voiceKey, value: before.cancelWindow.seconds + 1 });
     assert.deepEqual(getVoiceConfig(), { ...before, cancelWindow: { ...before.cancelWindow, seconds: before.cancelWindow.seconds + 1 } });
-    for (const key of ["voice.decisionProvider", "voice.decisionKey", "voice.hotkey", "voice.listeningMode", "voice.muted", "voice.heard"]) {
+    for (const key of ["voice.decisionProvider", "voice.decisionKey", "voice.hotkey", "voice.listeningMode",
+      "voice.muted", "voice.heard", "voice.showTranscript"]) {
       await call(claude, { ...get, key }, "protected", "Manage this setting in Settings > Voice.");
     }
     await call(claude, { ...set, key: "voice.inputDevice", value: "fixture-unavailable-device" }, "invalid_value");
+    await call(claude, { ...set, key: "voice.transcriptStyle", value: "capsule" });
+    assert.equal(getVoiceConfig().transcriptStyle, "capsule");
+    assert.equal(getVoiceConfig().showTranscript, before.showTranscript);
     await call(claude, { ...set, key: "ui.voice", value: { confirmation: "toast" } }, "unknown_key");
     await call(claude, { ...set, key: "ui.voice.confirmation", value: "toast" });
     await call(claude, { ...set, key: "ui.voice.indicators.edge", value: true });

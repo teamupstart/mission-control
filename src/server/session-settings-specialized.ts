@@ -149,6 +149,13 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
     }),
     ...bindTypedSettings({ schema: VoiceConfigPatchSchema, read: getVoiceConfig, apply: patch => setVoiceConfig(patch), changed }, [
       field("voice", "autoMuteDuringCalls", "voice-auto-mute"),
+      field("voice", "transcriptStyle", "voice-mode", {
+        label: "Live voice transcript style", choices: choices(VoiceConfigSchema.shape.transcriptStyle.unwrap().options),
+      }),
+      field("voice", "transcriptCorner", "voice-mode", {
+        label: "Live voice transcript corner", choices: choices(VoiceConfigSchema.shape.transcriptCorner.unwrap().options),
+      }),
+      field("voice", "transcriptWords", "voice-mode", { label: "Live voice transcript word limit" }),
       field("voice", "endOfSpeechMs", "voice-end-of-speech"),
       field("voice", "cancelWindow.enabled", "voice-cancel-window", { label: "Enable voice cancel window" }),
       field("voice", "cancelWindow.seconds", "voice-cancel-window", { label: "Voice cancel window in seconds" }),

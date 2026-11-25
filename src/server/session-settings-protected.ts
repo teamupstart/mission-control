@@ -19,6 +19,7 @@ export const protectedSettings = [
   operatorSetting("voice.muted", "voice-mode", "Changes live microphone capture."),
   operatorSetting("voice.hotkey", "voice-hotkey", "The desktop must reserve and verify the native shortcut."),
   operatorSetting("voice.listeningMode", "voice-listening-mode", "Changes when the workstation captures microphone input."),
+  operatorSetting("voice.showTranscript", "voice-mode", "Controls whether private speech appears on the dashboard.", "Show live voice transcript"),
   operatorSetting("voice.decisionProvider", "voice-mode", "Selecting an external provider authorizes sending spoken text.", "Voice decision provider"),
   operatorSetting("voice.decisionKey", "voice-mode", "Credentials are managed by the operator.", "Voice decision credentials"),
   operatorSetting("voice.heard", "voice-heard", "Heard text may contain private speech."),

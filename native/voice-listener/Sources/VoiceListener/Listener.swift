@@ -155,6 +155,19 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         }
     }
 
+    func reportPreview(_ phase: String, revision: String, onset: Int64? = nil, text: String? = nil) async -> Bool {
+        struct Sample: Encodable { let phase: String; let onset: Int64?; let text: String? }
+        do {
+            let body = try JSONEncoder().encode(Sample(phase: phase, onset: onset, text: text))
+            let (data, _) = try await request("voice/listener/transcript", revision: revision, body: body)
+            return try JSONDecoder().decode(Acknowledgement.self, from: data).accepted
+        } catch { return false }
+    }
+
+    func pendingOnset(revision: String) -> Int64? {
+        speechLock.withLock { starts.keys.filter { $0.revision == revision }.map(\.onset).max() }
+    }
+
     // Register synchronously on the tap. Each segment waits only for its own onset POST.
     func startSpeech(_ onset: Int64, revision: String) {
         let key = SpeechKey(revision: revision, onset: onset)
@@ -247,9 +260,40 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
+@MainActor func runTranscriptPreview(
+    isRunning: @escaping () -> Bool, snapshot: @escaping () -> Segment?, pendingOnset: () -> Int64?,
+    decode: @escaping (Segment) async throws -> String?,
+    report: @escaping (String, Int64?, String?) async -> Bool,
+    pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
+) async {
+    var decoding: Task<Void, Never>?
+    defer { decoding?.cancel() }
+    while !Task.isCancelled && isRunning() {
+        if let segment = snapshot() {
+            let onset = segment.speechStartHostUs
+            // Renew capture independently of recognition, even while a slow decode is in flight.
+            if await report("audio", onset, nil), decoding == nil, !Task.isCancelled {
+                decoding = Task { @MainActor in
+                    defer { decoding = nil }
+                    guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
+                          snapshot()?.speechStartHostUs == onset else { return }
+                    let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
+                    if !tail.isEmpty { _ = await report("words", onset, tail) }
+                }
+            }
+        } else if let onset = pendingOnset() {
+            _ = await report("audio", onset, nil)
+        } else {
+            _ = await report("ready", nil, nil)
+        }
+        await pause()
+    }
+}
+
 @MainActor private final class Capture {
     let revision: String
     var mic: Microphone?
+    var previewTask: Task<Void, Never>?
     var decoding: Task<Void, Never>?
     var releasedAt: Int64?
     var releasedSegments: [Segment] = []
@@ -264,6 +308,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     func release(at time: Int64) {
         guard releasedAt == nil else { return }
+        previewTask?.cancel()
         releasedAt = time
         mic?.whenCaptured(through: time) { [weak self] in
             guard let self, let mic else { return }
@@ -277,6 +322,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     func cancel() {
         onInputClosed = nil
+        previewTask?.cancel()
         decoding?.cancel()
         mic?.stop()
         daemon.closeSpeech(revision: revision)
@@ -426,6 +472,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         self.directivePoll?.cancel()
                     })
                     batch.mic = microphone
+                    batch.previewTask = Task { [daemon] in
+                        await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.preview },
+                            pendingOnset: { daemon.pendingOnset(revision: captureRevision) },
+                            decode: { try await recognizer.transcribe($0, boosting: nil)?.text },
+                            report: { phase, onset, text in
+                                await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
+                            })
+                    }
                     let previous = draining.last?.decoding
                     batch.decoding = Task { [segments = microphone.segments] in
                         defer {

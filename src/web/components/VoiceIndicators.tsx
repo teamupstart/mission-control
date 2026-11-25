@@ -1,7 +1,8 @@
+import { VoiceTranscriptText } from "./VoiceTranscriptText.tsx";
 import { spokenNameLabel } from "@shared/voice-names.ts";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
+  voiceCaptures, voiceCapable, VOICE_INDICATOR_IDS, type VoiceIndicatorId, type VoiceMode, type VoiceState,
 } from "@shared/voice.ts";
 import { api } from "../lib/api.ts";
 import { formatChord } from "../lib/keybindings.ts";
@@ -60,10 +61,17 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
   const value = useMemo(() => enabled && state ? {
     state, openSetup, setMuted, mutePending: pendingMute !== null,
   } : null, [enabled, state, openSetup, setMuted, pendingMute]);
+  const transcript = enabled && state && voiceCaptures(state.mode) ? state.transcript : undefined;
+  const phaseLabel = transcript && { ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[transcript.phase];
   return <VoiceWindow.Provider value={value}>
     {children}
-    {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status">
-      {pendingMute !== null && (pendingMute ? "Muting voice…" : "Unmuting voice…")}
+    {transcript && <aside aria-label="Live voice transcript"
+      className={`voice-transcript vt-${transcript.style} vt-${transcript.corner} vt-${transcript.phase}`}>
+      <strong>{phaseLabel}</strong>
+      {transcript.text && <VoiceTranscriptText as="span" className="vt-text" text={transcript.text} />}
+    </aside>}
+    {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status" aria-label="Voice feedback">
+      {pendingMute === null ? phaseLabel : (pendingMute ? "Muting voice…" : "Unmuting voice…")}
     </div>}
     {showFailure && <div className="vi-window-feedback">
       <span role="alert">{failure.message}</span>

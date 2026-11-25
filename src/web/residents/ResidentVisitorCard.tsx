@@ -4,7 +4,7 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { SubagentChip } from "../components/layouts/SubagentChip.tsx";
 import { useDisplayChoice } from "../lib/board-card.ts";
 import { ResidentChip } from "./ResidentChip.tsx";
-import { residentAccentStyle, type ResidentSessionMark } from "./marker.ts";
+import { residentAccentStyle, residentActionName, type ResidentSessionMark } from "./marker.ts";
 
 /** The line every visitor card carries under the resident's name. */
 export const RESIDENT_VISITOR_NOTE = "Resident · opens its conversation";
@@ -32,7 +32,7 @@ export function ResidentVisitorCard({ session, mark, variant, selected, register
     (el: HTMLElement | null) => registerEl?.(session.id, el),
     [registerEl, session.id],
   );
-  const name = mark.name || session.name || "(unnamed)";
+  const name = residentActionName(mark, mark.name || session.name || "(unnamed)");
   const label = `${name} needs you - resident, opens its conversation`;
   const open = (): void => onOpen(session.id);
   const hint = `Open ${name}'s conversation; it needs you`;

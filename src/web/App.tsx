@@ -1513,9 +1513,17 @@ export function App(): React.JSX.Element {
    * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` share. One derivation
    * for the drawer's cards, the jump keys and the palette's resident rows.
    */
+  const listening = voice?.mode === "listening";
+  // Which sessions are residents, joined through their task to the live run that launched
+  // them: the marker and pin from that run's pinned revision. One join, handed to every
+  // layout, and its pins reach `orderSessions` here and in both views from the same map.
+  const residentBySession = useMemo(
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles, listening),
+    [sessions, residentRuns, residentProfiles, listening],
+  );
   const residentEntries = useMemo(
-    () => residentDrawerEntries(residentRuns, residentProfiles, sessions),
-    [residentRuns, residentProfiles, sessions],
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, listening, residentBySession),
+    [residentRuns, residentProfiles, sessions, listening, residentBySession],
   );
   // The filter and both card surfaces share each run's feedback across menu and card unmounts.
   const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
@@ -2983,13 +2991,6 @@ export function App(): React.JSX.Element {
   // reason: the placement moves sessions between `boardColumns` arrays, so it is an input to
   // the one ordering rather than a decision a view makes while drawing.
   const { groupBoardByRepo: groupByRepo, blockedPlacement, blockedFrameCollapsed } = useUiConfig();
-  // Which sessions are residents, joined through their task to the live run that launched
-  // them: the marker and pin from that run's pinned revision. One join, handed to every
-  // layout, and its pins reach `orderSessions` here and in both views from the same map.
-  const residentBySession = useMemo(
-    () => residentMarksBySession(sessions, residentRuns, residentProfiles),
-    [sessions, residentRuns, residentProfiles],
-  );
   const pinnedResidents = useMemo(() => pinnedResidentSessions(residentBySession), [residentBySession]);
   const residentReplacementBySession = useMemo(
     () => residentReplacementsBySession(sessions, tasks, residentRuns),
@@ -3055,7 +3056,7 @@ export function App(): React.JSX.Element {
     const matched = !fleetQuery ? placed : placed.filter((session) => {
       const mark = residentBySession.get(session.id);
       if (!mark) return matchesSessionFilter(session, fleetQuery);
-      const residentFields = [mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
+      const residentFields = [mark.listeningTitle ?? "", mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
       if (placement.visitors.has(session.id)) {
         residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
       } else {

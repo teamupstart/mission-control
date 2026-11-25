@@ -314,6 +314,7 @@ export function registerVoiceRoutes(
     // Parsed here rather than through `parseBody`, whose 400 echoes the issues: a rejected key
     // must not come back in the answer.
     let body: unknown;
+    // oxlint-disable-next-line repository/parse-request-body -- Credential input uses redacted errors and a dedicated malformed-JSON reply.
     try { body = await c.req.json(); }
     catch { return c.json({ error: "invalid_body", reason: "The body is not JSON." }, 400); }
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);

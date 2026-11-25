@@ -202,6 +202,7 @@ export function resolveInspectorModel(
   const chosen = resolveModelChoice(
     {
       ...INSPECTOR_MODEL_SPEC,
+      // oxlint-disable-next-line repository/agent-comparison -- The Inspector has a pinned Claude model fallback.
       fallback: runner === "claude" ? INSPECTOR_MODEL_SPEC.fallback : providerModelDefault(runner, "deep"),
     },
     cfg?.model,

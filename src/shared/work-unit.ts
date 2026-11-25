@@ -112,5 +112,6 @@ const CLAUDE_REFERENCE = new RegExp(`^\\$\\{${WORK_UNIT_ENV_VAR}(?::-[^}]*)?\\}$
  */
 export function isWorkUnitHeaderReference(name: string, value: unknown, form: "claude" | "codex-env"): boolean {
   if (name.toLowerCase() !== WORK_UNIT_HEADER || typeof value !== "string") return false;
+  // oxlint-disable-next-line repository/agent-comparison -- This wire helper validates Claude prompt references and environment variable forms.
   return form === "claude" ? CLAUDE_REFERENCE.test(value) : value === WORK_UNIT_ENV_VAR;
 }

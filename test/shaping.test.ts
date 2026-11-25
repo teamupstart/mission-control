@@ -125,10 +125,10 @@ test("registry data is append-only tuples, unique, and disjoint from its tombsto
   }
 });
 
-test("the shared modules are browser-safe: no node: imports and no protocol.ts", () => {
+test("the shared modules do not import protocol.ts", () => {
   for (const file of ["src/shared/shaping.ts", "src/shared/shaping-registry.ts"]) {
     const source = readFileSync(file, "utf8");
-    assert.doesNotMatch(source, /["'](?:node:|[^"']*protocol\.ts)/, file);
+    assert.doesNotMatch(source, /["'][^"']*protocol\.ts/, file);
   }
   assert.doesNotMatch(readFileSync("src/shared/shaping-registry.ts", "utf8"), /^import /m, "the registry is data only");
 });

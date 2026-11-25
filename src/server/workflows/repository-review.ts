@@ -131,6 +131,7 @@ export class RepositoryReview {
       ownWorkspace: (id, path) => this.local.recordHome(id, path),
       providerEnvironment: async provider => {
         const env: Record<string, string> = {};
+        // oxlint-disable-next-line repository/agent-comparison -- The review preflight checks credentials for the selected provider.
         const keys = provider === "codex" ? ["OPENAI_API_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
         for (const key of keys) if (process.env[key]) env[key] = process.env[key]!;
         return env;

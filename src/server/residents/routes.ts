@@ -43,6 +43,7 @@ export function registerResidentInstructionRoutes(app: Hono, deps: {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const session = caller(c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
     if (!session) return c.json({ error: NO_CALLER }, 409);
+    // oxlint-disable-next-line repository/parse-request-body -- Resident tools preserve their custom refusal schema and status.
     const body: unknown = await c.req.json().catch(() => null);
     const parsed = ProposeResidentInstructionChangesSchema.safeParse(body);
     if (!parsed.success) {
@@ -70,6 +71,7 @@ export function registerResidentLoopRoutes(app: Hono, deps: {
     const caller = sessionControlCaller(deps.registry, c.req.header(SCOUT_SUBMISSION_CREDENTIAL_HEADER));
     const session = caller && deps.registry.getSession(caller);
     if (!session || session.runtime !== "sdk") return refused("No matching signed resident session.");
+    // oxlint-disable-next-line repository/parse-request-body -- Resident tools preserve their custom refusal schema and status.
     const body: unknown = await c.req.json().catch(() => null);
     const parsed = ScheduleNextIterationRequestSchema.safeParse(body);
     if (!parsed.success) return refused(parsed.error.message);

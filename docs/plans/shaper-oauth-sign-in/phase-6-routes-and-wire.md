@@ -44,6 +44,8 @@ Not here: any Settings control, the transports.
 - From Phase 4: `begin`, `complete`, `signOut`, `view`, `onChanged`, `setInUse`, and the
   redirect URI `http://127.0.0.1:<PORT>/api/shaping/sign-in/callback`. From Phase 3: the
   flag, `shaperSignInTarget`, `ShapingSignInView`.
+  `begin` returns two refusals of its own, with the codes `registration_limit` and
+  `store_unread`, apart from a failure to reach a server.
 - **Guards.** `/api/*` has a loopback `Host` check (`requireLoopback`,
   `src/server/routes.ts`). There is no API token. In `registerShapingRoutes` the flag gate
   comes first, then `trustedLoopbackJsonRequest` on writes, then `limitBody`. Bodies are
@@ -66,7 +68,7 @@ Not here: any Settings control, the transports.
    shaper among the known registered ones and the folder's valid ones, reads its target,
    calls `begin` and answers `{ authorizationUrl, expiresAt, connection }`. The URL carries
    the client id, the `state` and the PKCE challenge, because the browser must present
-   them, and it appears in this reply only. An unknown id is 404, a shaper with no marker is 400, and a failed `begin` is 502 with its reason.
+   them, and it appears in this reply only. An unknown id is 404 and a shaper with no marker is 400. A `begin` that Phase 4 refused with the code `registration_limit` or `store_unread` is 409 with its reason, because the refusal is Mission Control's own. Any other failed `begin` is 502 with its reason.
 2. **`POST /api/shaping/sign-out`**, body `{ connection }`. The same gates. It calls
    `signOut` and answers `{ signIns }`. An unknown id is 404.
 3. **`GET /api/shaping/sign-in/callback`**. The two flag gates, and the loopback `Host`
@@ -125,7 +127,9 @@ Not here: any Settings control, the transports.
   that is not loopback is 403. A `POST` with a foreign `Origin` is 403. A body over the
   limit is 413.
 - Start: an unknown shaper, a shaper with no marker, a discovered shaper, and a `begin`
-  that fails.
+  that fails, which is 502. With the key seeded with 16 registrations and the store with
+  one fake record naming each, a sign-in for a shaper with another scope is 409 with the
+  `registration_limit` sentence, and the fixture saw no registration request.
 - Callback: an unknown `state`, a replayed one, an `error` parameter and a missing `code`.
   Each is the failure page with status 400. Every page is searched for the code, the
   `state` and the fake tokens. The five headers are present.

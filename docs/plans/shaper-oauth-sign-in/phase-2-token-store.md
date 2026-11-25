@@ -107,7 +107,8 @@ stop and report: those files are controlled.
    - `target` is the connection the record belongs to. It is not a secret. It lets the
      service name a stored sign-in after a restart, when no shaper may name it any more.
    - `clientId` is the client that obtained the tokens. It is not a secret. Every refresh
-     uses it, whatever registrations the daemon holds by then.
+     uses it, read from the record. Phase 4 also reads it to tell which client
+     registrations a sign-in names.
    - Memory backend: a map, gone when the daemon stops.
    - Nothing here logs a record or puts one in an error.
 5. **Docs.** `docs/security.md`, under Task shaping: where a sign-in is kept, the item's

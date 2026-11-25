@@ -82,7 +82,17 @@ and the SDK. These shaped the split:
     the scope at registration, so a client registered for one scope is not reused for
     another. Phase 1's fixture enforces it, and Phase 4 tests two connections on one
     authorization server with different scopes. A record names the client that obtained
-    its tokens, so a refresh never depends on which registrations are still held.
+    its tokens, and every refresh uses that client.
+17. **A registration that a sign-in names is never dropped to make room.** At most 16 are
+    kept. When a sign-in needs another and 16 are held, the oldest that no held record and
+    no pending sign-in names is dropped. When every one is named, `begin` refuses with a
+    fixed reason before any registration request, and the sign-in works once a sign-out
+    leaves a registration that nothing names. When 16 are held and the store could not be
+    read, `begin` drops nothing and refuses with a reason that says to restart. One
+    `begin` runs at a time, so two sign-ins started
+    together cannot register twice for the same three values. A client the authorization
+    server rejects ends every sign-in that names it before its registration is removed.
+    Phase 4 owns the rule and tests the limit.
 
 ## Size and phase count
 
@@ -93,11 +103,11 @@ Estimated non-test production lines, counting native, shared, daemon and dashboa
 | 1. Flow proof | 260 to 340 |
 | 2. Token store | 380 to 480 |
 | 3. Flag and marker | 170 to 240 |
-| 4. Sign-in service | 380 to 460 |
+| 4. Sign-in service | 400 to 490 |
 | 5. Transports | 170 to 240 |
 | 6. Routes and wire | 300 to 380 |
 | 7. Settings and docs | 240 to 320 |
-| Total | 1,900 to 2,460 |
+| Total | 1,920 to 2,490 |
 
 Why each boundary exists, and why its neighbour is not merged into it:
 
@@ -166,12 +176,12 @@ flowchart LR
 | Store | 2 | `src/server/shaping/sign-in/store.ts`: `SignInStore` with `kind`, and `read`, `write`, `remove` and `ids`, all returning promises. `createSignInStore` picks `memory` when `MISSION_SHAPER_SIGN_IN_STORE` is `memory`, off macOS, or when the addon does not load. |
 | Stored record | 2 | `{ v: 1, target, issuer, clientId, accessToken, refreshToken, expiresAt, scope, obtainedAt }`, as JSON in one Keychain item per connection. `target` is the connection's `{ url, scope, issuer }`: not a secret, and what names the sign-in after a restart. `clientId` is the client that obtained the tokens, and every refresh uses it. |
 | Keychain item | 2 | Service `Mission Control shaper sign-in`. Account: a 16-character tag of the state home, `/`, the connection id. |
-| Client registration | 4 | `app_config` key `shaping.signIn`: `{ clients: [{ issuer, clientId, redirectUri, scope, registeredAt }] }`, at most 16, value class `operational`, no backup domain. A registration is reused only for the same issuer, redirect URI and scope. |
+| Client registration | 4 | `app_config` key `shaping.signIn`: `{ clients: [{ issuer, clientId, redirectUri, scope, registeredAt }] }`, at most 16, value class `operational`, no backup domain. A registration is reused only for the same issuer, redirect URI and scope. One that a held record or a pending sign-in names is never dropped to make room. At 16, `begin` drops the oldest that nothing names, or refuses: with the code `registration_limit` when every one is named, and `store_unread` when the store could not be read. |
 | Connection id | 4 | `connectionId(target)` in `src/server/shaping/sign-in/connection.ts`: the first 32 hex characters of the SHA-256 of the target's canonical JSON |
-| Service | 4 | `shaperSignIns` in `src/server/shaping/sign-in/index.ts`: `accessToken(target)` (synchronous, memory only), `noteRefused(target)`, `begin(target)`, `complete({ state, code, error, iss })`, `signOut(id)`, `setInUse(list)`, `view()`, `onChanged(listener)`, `start()`, `stop()` |
+| Service | 4 | `shaperSignIns` in `src/server/shaping/sign-in/index.ts`: `accessToken(target)` (synchronous, memory only), `noteRefused(target)`, `begin(target)`, `complete({ state, code, error, iss })`, `signOut(id)`, `setInUse(list)`, `view()`, `onChanged(listener)`, `start()`, `stop()`. One `begin` runs at a time. |
 | Redirect URI | 4 | `http://127.0.0.1:<PORT>/api/shaping/sign-in/callback`, with `PORT` from `src/shared/harness-runtime.mjs` |
 | Call | 5 | A marked shaper's request carries `Authorization: Bearer <token>`, and the token is in the call's resolved values as `sign-in token` |
-| HTTP | 6 | `POST /api/shaping/sign-in` `{ shaper }` answers `{ authorizationUrl, expiresAt, connection }`. The URL carries the client id, the `state` and the PKCE challenge, and appears in this reply only. `POST /api/shaping/sign-out` `{ connection }` answers `{ signIns }`. `GET /api/shaping/sign-in/callback` answers a static page. `GET /api/shaping` gains `signIns`. |
+| HTTP | 6 | `POST /api/shaping/sign-in` `{ shaper }` answers `{ authorizationUrl, expiresAt, connection }`. The URL carries the client id, the `state` and the PKCE challenge, and appears in this reply only. A `begin` refused with `registration_limit` or `store_unread` is 409, and any other failed `begin` is 502. `POST /api/shaping/sign-out` `{ connection }` answers `{ signIns }`. `GET /api/shaping/sign-in/callback` answers a static page. `GET /api/shaping` gains `signIns`. |
 | Event | 6 | `shaping_sign_ins` with `signIns`, and the snapshot field `shapingSignIns`. Both only while both flags are on. `useEventStream` exposes `shapingSignIns`. |
 | Guide | 3, 5, 6, 7 | `docs/task-shaping.md`: the marker (3), what a call does (5), the API (6), signing in from Settings (7) |
 
@@ -183,7 +193,7 @@ flowchart LR
 | S2 explicit sign-in, never at dispatch | 4 (service), 5 (`unavailable`), 7 (the control) |
 | S3 and D1 where tokens live | 2 (store), 4 (store first, memory fallback), 6 (never on the wire) |
 | D2 native addon | 2 |
-| S4 registration, loopback redirect, `client_id` in `app_config` | 1 (registration), 4 (key and redirect URI), 6 (callback route) |
+| S4 registration, loopback redirect, `client_id` in `app_config` | 1 (registration), 4 (key, its limit and redirect URI), 6 (callback route) |
 | S5 scope | 1 (always passed), 3 (required in the marker) |
 | S6 background single-flight refresh | 4 |
 | S7 redaction | 5 |

@@ -200,6 +200,15 @@ scope registers its own client, and two connections with the same scope on one
 authorization server share one. The record names the client that obtained its tokens, and
 every refresh uses that client.
 
+The daemon keeps at most 16 registrations. One that a held sign-in or a pending one names
+is never dropped to make room. When a sign-in needs another and 16 are held, the oldest
+that nothing names is dropped. When every one is named, the new sign-in is refused
+before any registration request, with a reason that says to sign out of one in
+Settings > Task shaping. It works once a sign-out leaves a registration that nothing
+names. If the daemon could not read its stored sign-ins, it cannot tell which
+registrations they name, so at 16 it drops none and refuses with a reason that says to
+restart. Nothing already held is lost either way.
+
 ### Signing in
 
 ```mermaid
@@ -226,7 +235,8 @@ sequenceDiagram
 1. **Start.** Settings sends `POST /api/shaping/sign-in` with the shaper's id. The daemon
    reads the server's metadata, checks it against the egress rules below, registers a client
    if it holds none for that authorization server, redirect URI and scope, and returns the
-   authorization URL. The
+   authorization URL. When it already holds 16 registrations it first makes room, or
+   refuses, as "One sign-in per connection" says. The
    URL carries the client id, the `state` and the PKCE challenge, because the browser must
    present them, and never the verifier. This is the operator's own click, so it may take
    network time. It is bounded at 20 seconds.
@@ -291,8 +301,9 @@ proves a sign-in end to end.
   memory. If the write fails, the new pair is used from memory, the status says it is kept
   in memory only, and a restart will need a new sign-in.
 - **Failures.** `invalid_grant`: the tokens are deleted and the connection is `signed_out`
-  with "sign in again". `invalid_client` or `unauthorized_client`: the tokens and the stored
-  client registration are deleted. A network error, a timeout, a 5xx,
+  with "sign in again". `invalid_client` or `unauthorized_client`: the server no
+  longer accepts the client, so every sign-in that client obtained ends the same way, and
+  then its stored registration is deleted. A network error, a timeout, a 5xx,
   `temporarily_unavailable` or a 429: retried after 1, 2, 4 and 8 minutes, then every 15.
   The connection is `renewing` once the access token has expired.
 - **No refresh token.** A server that issues none gives a sign-in that ends when its access
@@ -317,7 +328,7 @@ puts it there, and whatever it passes through does not keep it.
 | PKCE verifier | At most 10 minutes, single use | Never | The token endpoint, once, at the exchange | The browser, an API reply, an event |
 | `state` | At most 10 minutes, single use | Never | The authorization URL, so the sign-in reply and the browser, and the browser's redirect to the callback | The sign-in list, an event, the snapshot, the callback page |
 | Authorization code | For the one exchange | Never | The browser's redirect to the callback, then the token endpoint, once | An API reply, an event, the snapshot, the callback page |
-| `client_id`, with its issuer, redirect URI, scope and registration time | While the daemon runs | `app_config` key `shaping.signIn`, value class `operational`, in no backup domain | The `client_id` only: the authorization URL, so the sign-in reply and the browser, and requests to the authorization server | A backup, a settings snapshot, the sign-in list, an event, the snapshot. It is not a secret. |
+| `client_id`, with its issuer, redirect URI, scope and registration time | While the daemon runs | `app_config` key `shaping.signIn`, at most 16 registrations, value class `operational`, in no backup domain. One that a sign-in names is never dropped to make room. The id alone is also in each record that client obtained, beside the tokens. | The `client_id` only: the authorization URL, so the sign-in reply and the browser, and requests to the authorization server | A backup, a settings snapshot, the sign-in list, an event, the snapshot. It is not a secret. |
 | The connection's URL, scope and issuer | While the daemon runs | The shaper's definition, and the record in the Keychain item beside the tokens | The sign-in list: the API reply, the event and the snapshot | They are not secrets |
 | The marker | While the daemon runs | The shaper's definition, in `app_config.shaping` or a manifest | The config view, as any definition | It names no value |
 | Server metadata | Until the daemon stops, and read again after a restart | Never | | |
@@ -419,7 +430,8 @@ refreshed, so they may lapse.
   The old one becomes unused.
 - **A changed daemon port** changes the redirect URI. The stored registration no longer
   matches, so the next sign-in registers again. Held tokens keep refreshing, because a
-  refresh does not use the redirect URI.
+  refresh does not use the redirect URI. The registration that a held sign-in names stays
+  in `app_config` however many sign-ins register under the new port.
 - **A crash between a refresh reply and the store write** loses the rotated pair. The stored
   refresh token is then already spent, and the next start ends in "sign in again" unless
   the server's reuse grace still covers it.
@@ -436,7 +448,7 @@ is that phase's guide.
 | 1. Flow proof | Mission Control's OAuth client core, run end to end against a loopback mock authorization server with fake values: discovery, registration, PKCE, exchange, refresh, rotation, every refusal. Go or no-go for the rest. | 260 to 340 | Planning PR | 2026-12-04 |
 | 2. Token store | The native Keychain addon, the Keychain store and the memory store, behind one interface | 380 to 480 | Planning PR | 2026-12-04 |
 | 3. Flag and marker | The `shaper-sign-in` flag, the `auth` field, the target accessor, the Settings text for a marked shaper, and a marked shaper answering `unavailable` | 170 to 240 | Planning PR | 2026-12-04 |
-| 4. Sign-in service | Start, finish, sign out, background refresh, status, the client registration key | 380 to 460 | 1, 2, 3 | 2026-12-09 |
+| 4. Sign-in service | Start, finish, sign out, background refresh, status, the client registration key and its limit | 400 to 490 | 1, 2, 3 | 2026-12-09 |
 | 5. Transports | `mcp` and `http` send the token, redact it, and handle a `401` | 170 to 240 | 4 | 2026-12-14 |
 | 6. Routes and wire | The three routes, the callback page, `signIns`, the event and the snapshot field | 300 to 380 | 4 | 2026-12-14 |
 | 7. Settings and docs | The sign-in control, the Playwright spec, the documentation | 240 to 320 | 5, 6 | 2026-12-17 |

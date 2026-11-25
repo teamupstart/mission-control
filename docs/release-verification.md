@@ -366,6 +366,10 @@ stopped during compilation. The macOS runner selected Swift 6.1, while
 check the arm64 image inventory for the bundle path and the Xcode compiler version against
 the package manifest. [Runner inventory](https://github.com/actions/runner-images/blob/macos-15-arm64/20261118.0550/images/macos/macos-15-arm64-Readme.md) · [Apple Xcode version table](https://developer.apple.com/xcode/system-requirements)
 
+The [hosted voice-listener probe](https://github.com/teamupstart/mission-control/actions/runs/45540123231/job/138956326430)
+selected Xcode 26.3 (17C529) on `macos-15-arm64` and reported Apple Swift 6.2.4.
+It linked the release `voice-listener` executable in 121.59 seconds.
+
 ## Choosing the release version
 
 Release Please computes the next version from the Conventional Commit subjects merged since the

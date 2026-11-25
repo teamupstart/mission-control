@@ -40,7 +40,7 @@ export class NeuralSynthesizer implements VoiceSynthesizer {
     child.once("exit", close);
     child.once("error", close);
     child.on("message", (msg: { id: number }) => replies.emit(String(msg.id), msg));
-    return { child, closed, replies };
+    return { child, closed, replies, usedForSynthesis: false };
   }
 
   private keepAlive() {
@@ -62,6 +62,7 @@ export class NeuralSynthesizer implements VoiceSynthesizer {
       signal.throwIfAborted();
       this.keepAlive();
       const helper = this.helper ??= this.launch(directory);
+      if (message.type === "synthesize") helper.usedForSynthesis = true;
       const id = ++this.serial;
       const stop = AbortSignal.any([signal, helper.closed.signal]);
       const response = once(helper.replies, String(id), { signal: stop });
@@ -69,6 +70,8 @@ export class NeuralSynthesizer implements VoiceSynthesizer {
       // before a replacement audition can send work to the same blocked process.
       const retire = () => {
         if (this.helper !== helper) return;
+        // Once a question joins, its deadline owns the remaining model load.
+        if (message.type === "warm" && helper.usedForSynthesis) return;
         this.helper = undefined;
         helper.child.kill("SIGKILL");
       };

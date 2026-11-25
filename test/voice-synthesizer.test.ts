@@ -64,6 +64,32 @@ test("retries an interrupted synthesis once, including a crash of the replacemen
   }
 });
 
+test("a question can finish on the loading helper after the warm-up deadline", async t => {
+  const warmDeadline = new AbortController();
+  t.mock.method(AbortSignal, "timeout", () => warmDeadline.signal, { times: 1 });
+  const { synth, children } = fixture("hang");
+  t.after(() => synth.stop());
+  synth.warm();
+  const question = synth.synthesize("Steve?", voice);
+  const helper = children[0]!;
+  assert.deepEqual(helper.messages.map(m => m.type), ["warm", "synthesize"]);
+  warmDeadline.abort(new DOMException("Warm-up timed out", "TimeoutError"));
+  helper.emit("message", { id: helper.messages[1]!.id, wav: Uint8Array.of(7), durationMs: 20 });
+  assert.deepEqual(await question, { wav: Uint8Array.of(7), durationMs: 20 });
+  assert.ok(helper.alive);
+  assert.equal(children.length, 1);
+});
+
+test("a timed-out warm-up releases its helper when no question joined", t => {
+  const warmDeadline = new AbortController();
+  t.mock.method(AbortSignal, "timeout", () => warmDeadline.signal, { times: 1 });
+  const { synth, children } = fixture("hang");
+  t.after(() => synth.stop());
+  synth.warm();
+  warmDeadline.abort(new DOMException("Warm-up timed out", "TimeoutError"));
+  assert.equal(children[0]?.alive, false);
+});
+
 test("rejects an explicit helper failure with the synthesis error", async t => {
   const { synth } = fixture({ failed: true });
   t.after(() => synth.stop());

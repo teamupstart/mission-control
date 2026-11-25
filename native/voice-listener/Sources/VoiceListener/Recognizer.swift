@@ -1,3 +1,4 @@
+import CoreML
 import FluidAudio
 import Foundation
 
@@ -24,16 +25,35 @@ struct Recognizer {
         AppLogger.minimumLevel = .fault
         AppLogger.mirrorsToConsole = false
         asr = AsrManager()
-        let models = try AsrModels.loadLocal(from: directory.appending(path: "parakeet-tdt-0.6b-v2-coreml"), version: .v2)
+        // ANE model compilation can wait indefinitely in the confined process. Use the
+        // same installed models on the CPU without granting access to shared writable caches.
+        let confined = ProcessInfo.processInfo.environment["MISSION_VOICE_LISTENER_INSTANCE"] != nil
+        let config = AsrModels.defaultConfiguration()
+        if confined { config.computeUnits = .cpuOnly }
+        let models = try AsrModels.loadLocal(from: directory.appending(path: "parakeet-tdt-0.6b-v2-coreml"),
+                                             version: .v2, configuration: config)
         try await asr.loadModels(models)
         let ctcDirectory = directory.appending(path: "parakeet-ctc-110m-coreml")
         // The CTC loader alone also succeeds on a partial install missing the
         // tokenizer. A roster cannot be primed from that directory.
         if (try? await CtcTokenizer.load(from: ctcDirectory)) != nil {
-            ctc = try? await CtcModels.loadDirect(from: ctcDirectory)
+            if confined {
+                ctc = try? Self.localCTC(ctcDirectory, config)
+            } else {
+                ctc = try? await CtcModels.loadDirect(from: ctcDirectory)
+            }
         } else {
             ctc = nil
         }
+    }
+
+    private static func localCTC(_ directory: URL, _ config: MLModelConfiguration) throws -> CtcModels {
+        // loadDirect fixes the encoder to the Neural Engine. Construct the same CTC
+        // container from the verified local files with the supervised compute units.
+        let vocabulary = try JSONDecoder().decode([Int: String].self, from: Data(contentsOf: directory.appending(path: "vocab.json")))
+        return try CtcModels(melSpectrogram: MLModel(contentsOf: directory.appending(path: "MelSpectrogram.mlmodelc"), configuration: config),
+                             encoder: MLModel(contentsOf: directory.appending(path: "AudioEncoder.mlmodelc"), configuration: config),
+                             configuration: config, vocabulary: vocabulary, directory: directory)
     }
 
     func prime(_ roster: [String]) async throws -> VocabularyBoostingSession? {

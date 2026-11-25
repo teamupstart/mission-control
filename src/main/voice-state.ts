@@ -2,42 +2,35 @@ import { shell, systemPreferences } from "electron";
 import { EventSource } from "eventsource";
 import { existsSync } from "node:fs";
 import { macVoiceHardware, type VoiceHardware } from "./voice-hardware.ts";
-import { dirname, isAbsolute } from "node:path";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { z } from "zod";
 import { desktopVoiceConnection } from "./voice-connection.ts";
 import { EVENT_STREAM_HEARTBEAT_MS } from "../shared/daemon-protocol.ts";
 import { desktopVoiceEndpointPath } from "../shared/harness-runtime.mjs";
 import type { TrayVoiceState } from "./voice-tray.ts";
 import { showVoiceMuteError } from "./tray.ts";
 import { logMain } from "./main-log.ts";
-import { VOICE_BACKENDS, VOICE_MODES, VOICE_MODEL_STATUSES, voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
+import { voiceStateOff, type VoiceShellReport } from "../shared/voice.ts";
+import type { VoiceSigner } from "../server/voice/macos-supervisor.ts";
+import { VOICE_SUPERVISOR_PROOF_HEADER } from "../server/voice/supervisor-auth.ts";
+import { hotkeySpeechJob } from "./voice-hotkey-tap.ts";
 import { nativeVoiceListener } from "./voice-listener.ts";
 
-// Only these daemon fields drive the native listener and tray. Other event families,
-// including roster-only updates, have no consumer in this shell.
-const ShellVoiceStateSchema = z.object({
-  mode: z.enum(VOICE_MODES),
-  configuredHotkey: z.string().nullable().optional(),
-  pendingHotkey: z.string().optional(),
-  pendingHotkeyId: z.uuid().optional(),
-  recordingHotkey: z.literal(true).optional(),
-  recordingHotkeyId: z.uuid().optional(),
-  muted: z.boolean().optional(),
-  model: z.object({
-    status: z.enum(VOICE_MODEL_STATUSES),
-    backend: z.enum(VOICE_BACKENDS).nullable(),
-    directory: z.string().refine(path => isAbsolute(path) && !path.includes("\0")).nullable(),
-  }).refine(model => model.status !== "ready" || (model.directory !== null && model.backend !== null)),
-});
-export type ShellVoiceState = z.infer<typeof ShellVoiceStateSchema>;
+import { ShellVoiceStateSchema, type ShellVoiceState } from "./voice-state-schema.ts";
 
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
-export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS) {
+export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS, signer?: VoiceSigner) {
   let connection: ReturnType<typeof desktopVoiceConnection>;
   const listener = nativeVoiceListener(binary, () => {
     if (!connection) throw new Error("Voice listener has no daemon connection");
     return connection;
+  }, signer, async (instance, state, proof, signal) => {
+    const res = await connection?.postStatus("/voice/listener/supervised", {instance, state},
+      signal ?? AbortSignal.timeout(5000), { [VOICE_SUPERVISOR_PROOF_HEADER]: proof });
+    if (!res?.ok) {
+      if (state === "started" && (res?.status === 403 || res?.status === 409)) return false;
+      throw new Error("Voice supervisor report unacknowledged.");
+    }
   });
   let stream: EventSource | undefined;
   let hasSnapshot = false;
@@ -225,6 +218,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     if (!parsed.success) { requestSnapshot(); return; }
     if (!hasSnapshot) {
       if (message.type !== "snapshot") return;
+      listener.reconnect();
       hasSnapshot = true;
       clearTimeout(streamDeadline);
       streamDeadline = setTimeout(requestSnapshot, 3 * heartbeatMs);
@@ -257,7 +251,13 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   async function toggleFromHotkey() {
     const attempt = ++hotkeyAttempt;
     const current = connection;
-    if (!current || disabled() || await sendMute({ toggle: true })) return;
+    if (!current || disabled()) return;
+    const id = hotkeySpeechJob(state);
+    if (id) {
+      await current.postStatus("/api/voice/speech/stop", {id}, AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)]));
+      return;
+    }
+    if (await sendMute({ toggle: true })) return;
     const relevant = () => attempt === hotkeyAttempt && lastEnabledMute !== undefined && !lifetime.signal.aborted;
     if (!relevant()) return;
     let message = "Mute shortcut not confirmed. Current Voice status unavailable.";
@@ -295,14 +295,15 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       return "checked";
     },
     mute: (muted: boolean) => sendMute({ muted }),
-    stop() {
+    async stop() {
       clearTimeout(reconnect);
-      disconnect();
+      clearTimeout(streamDeadline);
+      stream?.close();
       stopHardware();
       lifetime.abort();
       clearInterval(heartbeat);
       state = voiceStateOff();
-      return listener.stop();
+      try { await listener.stop(); } finally { disconnect(); }
     },
   };
 }

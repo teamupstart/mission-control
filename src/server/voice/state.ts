@@ -336,7 +336,7 @@ export class VoiceStateStore {
     delete capabilities.listener;
     if (hello) capabilities.listener = { available: true, reason: null };
     else if (refused) capabilities.listener = { available: false, reason: refused.reason };
-    if (failure) capabilities.listener = { available: false, reason: failure };
+    if (failure) capabilities.listener = failure;
     const output = hello?.speech;
     const model = this.deps.speechBackend?.model() ?? { ...VOICE_MODEL_STATE_NONE };
     const catalog: VoiceSpeechCatalog = {
@@ -344,7 +344,7 @@ export class VoiceStateStore {
       system: (output?.systemVoices ?? []).filter(v => /^en(?:[-_]|$)/iu.test(v.language))
         .map(({ id, name, quality }) => ({ id, name, detail: quality })),
     };
-    const unavailable = failure ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
+    const unavailable = failure?.reason ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
       : !listener?.speechInstance || !manager.announced.has(listener.speechInstance) ? "this listener was not started by a supervisor"
       : !output.audio && !catalog.system.length ? "This listener cannot play speech." : null);
     const resolved = unavailable ? { reason: unavailable, voice: null } : resolveSpeechVoice(config, catalog);

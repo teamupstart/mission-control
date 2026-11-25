@@ -15,7 +15,167 @@ import { voiceStateOff, type VoiceMode, type VoiceShellReport } from "../src/sha
 import { assertElectronGuiLaunchAllowed } from "./helpers/electron-gui.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
+import { supervisorIssuer, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
 import { formatChord } from "../src/shared/keyboard-chords.ts";
+import type { ShellVoiceState } from "../src/main/voice-state-schema.ts";
+
+function buildVoiceShellFixture(root: string, contents: string) {
+  const native = join(root, "dist", "native");
+  mkdirSync(native, { recursive: true });
+  symlinkSync(ensureNativeStateLockAddon(), join(native, "state-lock.node"));
+  const entry = join(root, "dist", "main", "fixture.cjs");
+  buildSync({ stdin: { resolveDir: resolve("."), contents }, bundle: true, platform: "node",
+    format: "cjs", external: ["electron"], outfile: entry, logLevel: "error" });
+  return entry;
+}
+
+function launchVoiceShellFixture(root: string, entry: string) {
+  const env = { ...process.env };
+  delete env.MISSION_VOICE_SHELL_CREDENTIAL_FD;
+  delete env.MISSION_VOICE_SHELL_PUBLIC_KEY;
+  return _electron.launch({ args: [entry, "--user-data-dir=" + join(root, "profile")],
+    env: { ...env, MISSION_HOME: root, MISSION_VOICE_LISTENER_INSTANCE: "inherited-fixture-instance" } });
+}
+
+test("packaged shell reloads the same encrypted supervisor key on restart and supplies no verifier without protected storage", {
+  skip: process.platform !== "darwin", timeout: 60_000,
+}, async t => {
+  assertElectronGuiLaunchAllowed();
+  const root = mkdtempSync(join(tmpdir(), "voice-signing-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const credential = join(root, "voice", "shell-credential.json");
+  const entry = buildVoiceShellFixture(root, `
+      import { safeStorage } from "electron";
+      import { createPrivateKey, createPublicKey } from "node:crypto";
+      import { readFileSync } from "node:fs";
+      import { shellVoiceSigner } from "./src/main/voice-signing.ts";
+      globalThis.readShellCredential = () => {
+        const signer = shellVoiceSigner();
+        if (!signer) return null;
+        const sealed = Buffer.from(JSON.parse(readFileSync(${JSON.stringify(credential)}, "utf8")), "base64");
+        const key = Buffer.from(safeStorage.decryptString(sealed), "base64");
+        try {
+          const stored = createPrivateKey({ key, format: "der", type: "pkcs8" });
+          const verifier = createPublicKey(stored).export({ format: "der", type: "spki" }).toString("base64");
+          return { verifier, daemonEnv: signer.daemonEnv };
+        } finally { key.fill(0); }
+      };
+  `);
+  const launch = async (locked: boolean) => {
+    const shell = await launchVoiceShellFixture(root, entry);
+    try {
+      return await shell.evaluate(async ({ app, safeStorage }, locked) => {
+        await app.whenReady();
+        if (locked) safeStorage.isEncryptionAvailable = () => false;
+        type Credential = { verifier: string; daemonEnv: Record<string, string> };
+        return (globalThis as unknown as {readShellCredential(): Credential | null}).readShellCredential();
+      }, locked);
+    } finally { await shell.close(); }
+  };
+  assert.equal(await launch(true), null);
+  assert.equal(existsSync(credential), false);
+  const first = await launch(false);
+  assert.ok(first?.verifier);
+  assert.deepEqual(first.daemonEnv, { MISSION_VOICE_SHELL_PUBLIC_KEY: first.verifier });
+  const sealed = readFileSync(credential);
+  assert.deepEqual(await launch(false), first);
+  assert.equal(await launch(true), null);
+  assert.deepEqual(readFileSync(credential), sealed);
+});
+
+test("a refused shell start launches only a capture-only Swift listener", {
+  skip: process.platform !== "darwin", timeout: 60_000,
+}, async t => {
+  assertElectronGuiLaunchAllowed();
+  const root = mkdtempSync(join(tmpdir(), "voice-shell-refusal-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "token"), ensureToken());
+  const binary = join(root, "dist", "native", "voice-listener");
+  const entry = buildVoiceShellFixture(root, `
+    import { app, systemPreferences } from "electron";
+    import { startShellVoice } from "./src/main/voice-state.ts";
+    import { shellVoiceSigner } from "./src/main/voice-signing.ts";
+    app.whenReady().then(() => {
+      systemPreferences.getMediaAccessStatus = () => "granted";
+      const service = startShellVoice(${JSON.stringify(binary)}, () => {}, undefined, shellVoiceSigner());
+      globalThis.stopVoice = () => service.stop();
+    });
+  `);
+  execFileSync("swiftc", ["-parse-as-library", "-module-cache-path", join(root, "modules"),
+    "native/voice-listener/Sources/VoiceListener/Listener.swift", "native/voice-listener/Sources/VoiceListener/Playback.swift",
+    "native/voice-listener/Tests/Fixtures/LifecycleDevices.swift", "-o", binary]);
+
+  const voice = voiceStateOff();
+  voice.mode = "listening";
+  voice.model = { ...voice.model, backend: "fluidaudio", directory: root, status: "ready" };
+  const reports: string[] = [];
+  const helperPids = new Set<number>();
+  let readyHello = false;
+  let speechAdvertised = false;
+  let instanceHeaderSent = false;
+  let captureGranted = false;
+  let signedStart = false;
+  let refusal: ServerResponse | undefined;
+  const lifetime = new AbortController();
+  t.after(() => lifetime.abort());
+  await serveDesktopVoice(async (req, res) => {
+    const url = new URL(req.url!, "https://localhost");
+    if (url.pathname === "/events") {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write("data: " + JSON.stringify({ type: "snapshot", voice }) + "\n\n");
+      return;
+    }
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    if (url.pathname === "/voice/listener/supervised") {
+      const { instance, state } = JSON.parse(body);
+      reports.push(state);
+      const proof = req.headers[VOICE_SUPERVISOR_PROOF_HEADER];
+      signedStart = state === "started" && typeof proof === "string" && supervisorIssuer(instance, state, proof)?.name === "shell";
+      if (state === "started") refusal = res;
+      else res.end("{}");
+      return;
+    }
+    if (url.pathname === "/voice/listener/hello" || url.pathname === "/voice/listener/directive") {
+      helperPids.add(Number(req.headers["x-voice-capture-pid"]));
+      instanceHeaderSent ||= req.headers["x-mission-voice-instance"] !== undefined;
+      if (url.pathname === "/voice/listener/hello") {
+        const hello = JSON.parse(body);
+        readyHello ||= hello.modelLoaded === true;
+        speechAdvertised ||= "speech" in hello;
+      } else {
+        if (url.searchParams.get("revision") === "capture") captureGranted = true;
+        else res.end(JSON.stringify({ revision: "capture", capture: true, roster: [], inputDevice: "built-in" }));
+        return;
+      }
+    }
+    res.end("{}");
+  }, desktopVoiceEndpointPath(root), lifetime.signal);
+  const shell = await launchVoiceShellFixture(root, entry);
+  let fallbackPid = 0;
+  try {
+    const start = await t.waitFor(() => { assert.ok(refusal); return refusal; }, { timeout: 10_000 });
+    assert.ok(signedStart);
+    assert.equal(helperPids.size, 0);
+    start.writeHead(403).end();
+    await t.waitFor(() => assert.ok(captureGranted), { timeout: 10_000 });
+    assert.equal(helperPids.size, 1);
+    const [pid] = helperPids;
+    assert.ok(pid && Number.isSafeInteger(pid) && pid > 1);
+    fallbackPid = pid;
+    process.kill(pid, 0);
+    assert.ok(readyHello);
+    assert.equal(speechAdvertised, false);
+    assert.equal(instanceHeaderSent, false);
+    assert.equal(existsSync(join(root, "voice", "supervised", "shell.json")), false);
+  } finally {
+    if (refusal && !refusal.writableEnded) refusal.writeHead(403).end();
+    try { await shell.evaluate(() => (globalThis as unknown as { stopVoice?(): Promise<void> }).stopVoice?.()); }
+    finally { await shell.close(); }
+  }
+  assert.throws(() => process.kill(fallbackPid, 0), { code: "ESRCH" });
+  assert.deepEqual(reports, ["started"]);
+});
 
 test("Electron keeps one template tray in sync while minimized, handles both clicks and restores the off menu", {
   skip: process.platform !== "darwin", timeout: 75_000,
@@ -53,6 +213,8 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   const heartbeatMs = 750;
   let keepalive: "ping" | "registry" | "silent" = "ping";
   let toggles = 0;
+  const speechStops: string[] = [];
+  let refusedSpeechJob: string | undefined;
   let muteReadbacks = 0;
   let readbackMuted = false;
   const requests: boolean[] = [];
@@ -98,6 +260,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     }
     let body = "";
     for await (const chunk of req) body += chunk;
+    if (req.url === "/api/voice/speech/stop") {
+      const { id } = JSON.parse(body);
+      speechStops.push(id);
+      if (id === refusedSpeechJob) { res.writeHead(503).end(); return; }
+    }
     if (req.url === "/api/voice/mute") {
       if (req.method === "GET") {
         muteReadbacks++;
@@ -186,10 +353,14 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         nativeRequire.cache[activityPath].exports = {
           running(pid) { polls++; return testCall || activity.running(pid); }
         };
+        const stopResponses = [];
+        nativeRequire("node:diagnostics_channel").channel("undici:request:headers").subscribe(({request, response}) => {
+          if (request.path === "/api/voice/speech/stop") stopResponses.push(response.statusCode);
+        });
         const voice = startShellVoice(${JSON.stringify(binary)}, setTrayVoice, ${heartbeatMs});
         const { post, releaseReservation } = nativeRequire(${JSON.stringify(eventFixture)});
         const freeKeyAndNotify = () => { releaseReservation(); systemPreferences.postNotification(layoutEvent, {}, true); };
-        global.fixture = { post, freeKeyAndNotify, tray, voice, captures, calls, configurePermission, setTestCall: value => { testCall = value; }, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; }, get polls() { return polls; } };
+        global.fixture = { post, freeKeyAndNotify, tray, voice, stopResponses, captures, calls, configurePermission, setTestCall: value => { testCall = value; }, clickMenu: label => lastMenu.items.find(item => item.label === label).click(), get labels() { return labels; }, get opens() { return opens; }, get polls() { return polls; } };
         app.on("before-quit", () => { voice.stop(); destroyTray(); });
       });
     ` }, bundle: true, platform: "node", format: "cjs", external: ["electron"], outfile: entry,
@@ -199,7 +370,7 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   } });
   t.after(() => app.close());
   const page = await app.firstWindow();
-  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; setTestCall(value: boolean): void; tray: Electron.Tray; voice: {state: {mode: string}; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };
+  type Fixture = { post(down: boolean): void; freeKeyAndNotify(): void; setTestCall(value: boolean): void; tray: Electron.Tray; voice: {state: ShellVoiceState; fixMicrophone(): Promise<string>; checkMicrophone(): Promise<string>}; stopResponses: number[]; calls: string[]; configurePermission(status: string, answer: string): void; clickMenu(label: string): void; labels: string[]; captures: string[]; opens: number; polls: number };
   // evaluate executes in the fixture main process.
   const read = () => app.evaluate(() => {
     const f = (globalThis as unknown as {fixture: Fixture}).fixture;
@@ -277,6 +448,46 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
       (globalThis as unknown as {fixture: Fixture}).fixture.setTestCall(value), value);
     const post = (down: boolean) => app.evaluate((_, down) =>
       (globalThis as unknown as {fixture: Fixture}).fixture.post(down), down);
+    const publishSpeaking = (id: string) => events!.write("data: " + JSON.stringify({ type: "voice_state", state: {
+      ...voiceStateOff(), configuredHotkey: chord, mode: "listening", muted: false, speech: {job: {id, state: "speaking"}},
+    } }) + "\n\n");
+    await t.test("a tap during playback stops the streamed job without toggling mute", async () => {
+      const id = crypto.randomUUID();
+      const before = reports.length;
+      publishSpeaking(id);
+      await until(() => reports.length > before);
+      const beforeTap = toggles;
+      await post(true);
+      await post(false);
+      await until(() => speechStops.includes(id));
+      assert.equal(toggles, beforeTap);
+      publish(chord);
+    });
+    await t.test("a rejected hotkey speech stop leaves the streamed job speaking and manual mute off", async () => {
+      const job = { id: crypto.randomUUID(), state: "speaking" };
+      const tapState = () => app.evaluate(() => {
+        const { voice, stopResponses } = (globalThis as unknown as { fixture: Fixture }).fixture;
+        return { job: voice.state.speech?.job, muted: voice.state.muted, status: stopResponses.at(-1) };
+      });
+      const before = { stops: speechStops.length, toggles, sets: requests.length };
+      refusedSpeechJob = job.id;
+      try {
+        publishSpeaking(job.id);
+        await until(async () => (await tapState()).job?.id === job.id);
+        await post(true);
+        await post(false);
+        await until(async () => (await tapState()).status === 503);
+        // Complete a subsequent shell/daemon round trip before checking for a stray mute write.
+        await app.evaluate(() => (globalThis as unknown as { fixture: Fixture }).fixture.voice.checkMicrophone());
+        assert.deepEqual(await tapState(), { job, muted: false, status: 503 });
+        assert.deepEqual(speechStops.slice(before.stops), [job.id]);
+        assert.equal(toggles, before.toggles);
+        assert.equal(requests.length, before.sets);
+      } finally {
+        refusedSpeechJob = undefined;
+        publish(chord);
+      }
+    });
     await t.test("key-up reaches the daemon while both the press and routine report responses are stalled", async t => {
       if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
       await call(true);

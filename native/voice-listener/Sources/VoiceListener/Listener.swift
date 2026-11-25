@@ -8,10 +8,12 @@ struct Directive: Decodable {
     let revision: String
     let capture: Bool
     let inputDevice: String
+    let speak: Speak?
     let roster: [String]
 }
 
 struct Hello: Encodable {
+    var speech: SpeechHello?
     let version = "4.0"
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
@@ -29,7 +31,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     let token: String
     let directory: URL
     private let listenerID: String
-    private let speechInstance: String?
+    let speechInstance: String?
     private let captureLockPath: String
     private var captureOffset: Int64?
     private var captureLock: Int32 = -1
@@ -96,9 +98,9 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    private enum ServiceError: Error { case unavailable }
+    enum ServiceError: Error { case http(Int) }
 
-    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil) async throws -> Response {
+    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil, allowObsolete: Bool = false) async throws -> Response {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
@@ -120,12 +122,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             req.httpBody = body
         }
         let (data, response) = try await session.data(for: req)
-        if (response as? HTTPURLResponse)?.statusCode == 409,
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 409,
            (try? JSONDecoder().decode([String: String].self, from: data))?["error"] == "listener_in_use" {
             throw CaptureError.listenerInUse
         }
-        if (response as? HTTPURLResponse)?.statusCode == 503 { throw ServiceError.unavailable }
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
+        guard http.statusCode == 200 || (allowObsolete && http.statusCode == 409) else {
+            throw ServiceError.http(http.statusCode)
+        }
         return (data, http)
     }
 
@@ -134,7 +138,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         while true {
             try Task.checkCancellation()
             do { return try await request("voice/listener/directive", revision: revision) }
-            catch ServiceError.unavailable where microphonePaused {
+            catch ServiceError.http(503) where microphonePaused {
                 try await Task.sleep(for: .milliseconds(backoff))
                 backoff = min(2000, backoff * 2)
             }
@@ -212,6 +216,15 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     private var directivePoll: Task<Daemon.Response, Error>?
     private var pendingHello: Task<Void, Error>?
 
+    private lazy var playback = Playback(player: MacSpeechPlayer(), fetch: { [daemon] id in
+        try await daemon.request("voice/speech/jobs/\(id)/audio").data
+    }, report: { [daemon] id, type, outcome in
+        var body = ["type": type]
+        body["outcome"] = outcome
+        _ = try await daemon.request("voice/speech/jobs/\(id)/events", body: JSONEncoder().encode(body), allowObsolete: type == "ended")
+    })
+    private var speech: SpeechHello? { daemon.speechInstance.map { _ in SpeechHello() } }
+
     func hello() async throws {
         let previous = pendingHello
         let send = Task {
@@ -228,7 +241,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         if first && status == "not-determined" {
             fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
         }
-        let body = Hello(modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
+        let body = Hello(speech: speech, modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
         defer {
             if status == "denied" {
                 fputs("Microphone access denied by macOS.\n", stderr)
@@ -247,6 +260,15 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     func run() async throws {
+        playback.changed = { [weak self] in self?.directivePoll?.cancel() }
+        // A pipe inherited across the confined startup gate closes on supervisor death.
+        if daemon.speechInstance != nil {
+            DispatchQueue.global().async {
+                var byte: UInt8 = 0
+                while read(STDIN_FILENO, &byte, 1) > 0 {}
+                exit(0)
+            }
+        }
         try await hello()
         let heartbeat = Task {
             while !Task.isCancelled {
@@ -275,7 +297,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             }
             let (data, http) = try response.get()
             let next = try JSONDecoder().decode(Directive.self, from: data)
-            let capture = next.capture && permission() == "granted"
+            if next.speak != nil && daemon.speechInstance == nil { throw URLError(.badServerResponse) }
+            if next.speak != nil || playback.busy { close() }
+            try await playback.apply(next.speak)
+            let capture = next.speak == nil && !playback.busy && next.capture && permission() == "granted"
             if next.revision != revision || capture != (current?.mic?.isRunning == true) {
                 let releasedRevision = http.value(forHTTPHeaderField: "x-voice-release-revision")
                 var allowed = Set((http.value(forHTTPHeaderField: "x-voice-draining-revisions") ?? "")

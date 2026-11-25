@@ -1875,12 +1875,13 @@ test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep cap
   assert.equal(job.state, "stopping");
   assert.equal(store.state().mode, "unavailable");
   assert.deepEqual(store.state().capabilities.listener,
-    { available: false, reason: "the listener did not confirm that speech had stopped" });
+    { available: false, reason: "the listener did not confirm that speech had stopped", code: "speech_stop_unconfirmed" });
   assert.deepEqual(await pollWhileHeld(), stop);
 
   assert.equal((await holder.event(id, "ended")).status, 200);
   assert.equal(job.state, "timed-out");
   const released = await holder.poll();
+  assert.deepEqual(store.state().capabilities.listener, { available: true, reason: null });
   assert.equal(released.capture, true);
   assert.equal(released.speak, null);
 });
@@ -2264,7 +2265,7 @@ for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof 
     assert.equal(stop.id === original, ledgerState === "intact");
     if (ledgerState !== "intact") {
       assert.deepEqual(other.speak, { id: recovered.find((h: { instance: string }) => h.instance === second.instance).jobId, stop: true });
-      assert.equal(store.state().capabilities.listener?.reason, "the record of unfinished speech could not be read");
+      assert.deepEqual(store.state().capabilities.listener, { available: false, reason: "the record of unfinished speech could not be read" });
       await second.event(other.speak.id, "ended");
     } else assert.equal(other.speak, null);
     assert.equal((await second.event(stop.id, "ended")).status, 409);

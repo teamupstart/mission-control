@@ -595,7 +595,9 @@ Memory use during a file could have been higher. [Sherpa spike findings](voice-s
 On macOS or Linux, build the helper, select sherpa in the daemon, download its model
 in Setup, unmute, then run
 `npm run voice:listener -- --backend sherpa-onnx --input-file sample.wav` from the
-checkout. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit float samples.
+checkout. File input requires Sherpa. If the daemon selects FluidAudio, the development
+launcher rejects the recording before starting a microphone, with or without a supervisor
+credential. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit float samples.
 The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
 The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
@@ -972,7 +974,9 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
-An unconfirmed stop can make the listener unavailable even while its hello is live.
+A missed speech stop confirmation makes the listener unavailable even while its hello is live.
+The daemon sets `capabilities.listener.code` to `speech_stop_unconfirmed`, which tells the shell
+to replace the helper. The accompanying `reason` supplies the display text.
 `model` is the speech model manager's reading (see [The speech model](#the-speech-model)), and
 `roster` is [who can be addressed](#who-can-be-addressed).
 
@@ -1148,6 +1152,53 @@ candidate, cancelling the card or muting also requests a stop. Asking requires
 listening mode and a supervised listener with a ready voice. The setting keeps
 its saved value when unavailable and the usual on-screen choices still work.
 A sample requested through the audition route can play while muted.
+
+**Mac playback is currently unavailable.** The supervised FluidAudio helper sends
+`speech.audio: false` and an empty system voice list. Ask aloud falls back to the
+on-screen candidate rows. Answering by name remains available after capture resumes.
+
+The macOS playback implementation consumes neural WAV bytes in memory and speaks system
+voices live. Its voice catalog reads the installed English voices and their quality tiers,
+including Enhanced and Premium. To install another voice, open System Settings >
+Accessibility > Read & Speak and manage system voices. The helper closes input and discards
+its recognition segment before playback. It holds capture through the player’s completion
+or stop callback and another 250 ms before reporting the end. The next capture directive
+starts a fresh segment. During a live job the mute shortcut requests a stop and preserves
+the manual mute setting.
+
+The original [S9 trials](voice-spike-findings.md#s9-system-speech-feedback) measured the
+exit of `say`. On November 24, 2026, the new players repeated the comparison on a Mac mini
+using its speakers and a NexiGo webcam microphone. Mission Control F4 and Samantha each
+said “Will, check the build. Steve, run the tests.” A second supervised listener kept its
+microphone open for the positive controls. In the paused trials only the playing helper
+received capture after completion. Each measurement included four seconds after the
+post-playback directive. A dash means the recognizer returned no words.
+
+| Additional delay | Voice | Open controls recognizing the sentence | Words recognized after pause, by trial |
+| --- | --- | --- | --- |
+| None | F4 | 3/3 | “Yeah.” / – / “Okay.” |
+| None | Samantha | 3/3 | “Yeah.” / – / – |
+| 250 ms | F4 | 3/3 | – / – / – |
+| 250 ms | Samantha | 3/3 | “Yeah.” / – / “Yeah.” |
+
+All three silent controls in the delayed run returned no words. The repeated “Yeah.”
+after Samantha was absent from the test sentence, but its source could not be established.
+That result did not qualify playback for release. In a separate hands-on check the Mac
+asked “Steve or Will?” once and the operator’s spoken “Steve” selected the card.
+In a follow-up using AirPods and an isolated test daemon, both samples started and ended
+as `finished`. The listener acknowledged a fresh capture directive after each sample and
+manual mute stayed off. The operator heard both samples and pressed Control + Option +
+Shift + K during the first. Speech continued and no stop request reached the daemon.
+On a separate physical retry the Mac reserved that same chord. An untimed tap before
+playback toggled mute. During audible playback the shell received both edges of a 190 ms
+tap and posted the stop. The daemon accepted the stop request and the player's
+`ended: stopped` report. Manual mute stayed off, and the listener acknowledged a fresh
+capture directive. The cause of the first missed tap remains unknown.
+
+In the disconnect-only retry, the player started on the AirPods. When the operator
+disconnected them during speech, macOS selected Mac mini Speakers. The daemon accepted
+the helper’s `ended: failed` report, manual mute stayed off, and the listener acknowledged
+a fresh capture directive. This verifies capture recovery after Bluetooth output loss.
 
 Neural preparation has a 15-second deadline per job once it reaches the front
 of the queue. If it expires, the daemon fails that job, discards late audio and

@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
-import { execFile, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Writable } from "node:stream";
 import test from "node:test";
 import { promisify } from "node:util";
-import { VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
+import { playerScratchDirectory } from "../src/server/voice/recovery-files.ts";
+import { supervisorIssuer, VOICE_SUPERVISOR_PROOF_HEADER } from "../src/server/voice/supervisor-auth.ts";
+import { VOICE_MODELS, VOICE_TEST_MODEL } from "../src/shared/voice-models.ts";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 
 test("ordinary native builds run the app addon builders without the optional listener", t => {
   const cwd = mkdtempSync(join(tmpdir(), "voice-build-"));
@@ -101,7 +106,7 @@ test("rebuilds publish and reuse a complete replacement when a sherpa shared lib
   assert.match(play.stderr, /Sherpa currently requires --input-file/); // The bundled entry loaded the addon.
 });
 
-for (const selection of ["automatic", "explicit auto", "explicit"] as const) {
+for (const selection of ["automatic", "explicit auto", "explicit", "credential-configured"] as const) {
   test(`the development launcher forwards the verified model and WAV to sherpa on ${selection} selection`, async t => {
     const cwd = mkdtempSync(join(realpathSync(tmpdir()), "voice-launch-"));
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -125,6 +130,7 @@ for (const selection of ["automatic", "explicit auto", "explicit"] as const) {
     const args = [resolve("scripts/run-voice-listener.ts")];
     const env: NodeJS.ProcessEnv = { ...process.env, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port };
     delete env.MISSION_VOICE_BACKEND;
+    if (selection === "credential-configured") env.MISSION_VOICE_DEV_CREDENTIAL_FD = "3";
     if (selection === "explicit") {
       env.MISSION_VOICE_BACKEND = "fluidaudio";
       args.push("--backend", "sherpa-onnx");
@@ -160,6 +166,146 @@ test("an empty --input-file is refused before daemon lookup or FluidAudio captur
     /--input-file requires a non-empty recording path/);
   assert.equal(lookups, 0);
   assert.equal(existsSync(join(cwd, "started")), false);
+});
+
+for (const credential of [false, true]) {
+  test(`daemon-selected FluidAudio refuses a WAV before launching a microphone listener ${credential ? "with" : "without"} a dev credential`, async t => {
+    const cwd = mkdtempSync(join(tmpdir(), "voice-file-mode-"));
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const native = join(cwd, "dist", "native");
+    mkdirSync(native, { recursive: true });
+    writeFileSync(join(native, "voice-listener"), "#!/bin/sh\ntouch microphone-started\n", { mode: 0o755 });
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url!);
+      res.end(JSON.stringify({ backend: "fluidaudio", directory: cwd, manifest: VOICE_TEST_MODEL }));
+    });
+    t.after(() => server.close());
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const env: NodeJS.ProcessEnv = { ...process.env, MISSION_HOME: cwd, MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port };
+    delete env.MISSION_VOICE_DEV_CREDENTIAL_FD;
+    if (credential) env.MISSION_VOICE_DEV_CREDENTIAL_FD = "3";
+    const child = spawn(process.execPath, [resolve("scripts/run-voice-listener.ts"), "--backend", "auto", "--input-file",
+      resolve("test/fixtures/voice/steve-check-the-build.wav")], {
+      cwd, env, stdio: ["ignore", "ignore", "pipe", "pipe"], timeout: 5000,
+    });
+    const closed = once(child, "close");
+    const keyPipe = child.stdio[3];
+    assert.ok(keyPipe instanceof Writable);
+    keyPipe.end(credential ? generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" }) : undefined);
+    let diagnostic = "";
+    assert.ok(child.stderr);
+    child.stderr.on("data", chunk => { diagnostic += chunk; });
+    assert.deepEqual(await closed, [1, null]);
+    assert.match(diagnostic, /^Error: --input-file requires sherpa-onnx$/m);
+    assert.deepEqual(requests, ["/api/voice/model"]);
+    assert.equal(existsSync(join(cwd, "microphone-started")), false);
+    assert.equal(existsSync(join(cwd, "voice", "supervised", "dev.json")), false);
+  });
+}
+
+test("credentialed FluidAudio live input reports OS-confirmed exits on state read failure and launcher shutdown, and restarts on recovery", {
+  skip: process.platform !== "darwin",
+}, async t => {
+  ensureNativeStateLockAddon();
+  const home = mkdtempSync(join(realpathSync(tmpdir()), "voice-live-launch-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const native = join(home, "dist", "native");
+  const manifest = VOICE_MODELS.fluidaudio;
+  assert.ok(manifest);
+  const directory = join(home, "voice", "models", manifest.revision);
+  mkdirSync(native, { recursive: true });
+  mkdirSync(directory, { recursive: true });
+  // Stay alive after TERM so that reporting on the signal would fail the OS check.
+  writeFileSync(join(native, "voice-listener"), [
+    "#!/bin/sh", "trap '' TERM",
+    'printf "%s\\n" "$$" "$#" "$MISSION_VOICE_MODEL_DIR" > "$TMPDIR/ready"',
+    "IFS= read -r line",
+  ].join("\n"), { mode: 0o755 });
+  const token = join(home, "token");
+  writeFileSync(token, "fixture", { mode: 0o600 });
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const verifier = publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  const pids = new Map<string, number>();
+  const reports: { instance: string; state: string; authenticated: boolean; gone: boolean }[] = [];
+  let online = true;
+  let failedReads = 0;
+  const server = createServer(async (req, res) => {
+    if (req.url === "/api/voice/model") {
+      res.end(JSON.stringify({ backend: "fluidaudio", directory, manifest }));
+    } else if (req.url === "/api/voice/mute") {
+      if (online) res.end(JSON.stringify({ state: { mode: "listening", model: { status: "ready", backend: "fluidaudio", directory } } }));
+      else { failedReads++; res.writeHead(503).end(); }
+    } else if (req.method === "POST" && req.url === "/voice/listener/supervised") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const { instance, state } = JSON.parse(body);
+      const proof = req.headers[VOICE_SUPERVISOR_PROOF_HEADER];
+      const issuer = typeof proof === "string" && supervisorIssuer(instance, state, proof);
+      const authenticated = !!issuer && issuer.name === "dev" && issuer.key === verifier && req.headers["x-harness-token"] === "fixture";
+      const pid = pids.get(instance);
+      let gone = false;
+      if (state === "exited" && pid !== undefined) {
+        try { process.kill(pid, 0); }
+        catch (error) { gone = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+      }
+      reports.push({ instance, state, authenticated, gone });
+      res.writeHead(authenticated ? 200 : 403).end();
+    } else res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const launcher = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), resolve("scripts/run-voice-listener.ts"), "--backend", "auto"], {
+    cwd: home,
+    env: { ...process.env, TSX_TSCONFIG_PATH: resolve("tsconfig.json"), MISSION_HOME: home, MISSION_VOICE_TOKEN_FILE: token,
+      MISSION_VOICE_DAEMON_URL: "http://127.0.0.1:" + address.port, MISSION_VOICE_DEV_CREDENTIAL_FD: "3" },
+    stdio: ["ignore", "ignore", "pipe", "pipe"], timeout: 30_000, killSignal: "SIGKILL",
+  });
+  const closed = once(launcher, "close");
+  let diagnostic = "";
+  launcher.stderr!.on("data", chunk => { diagnostic += chunk; });
+  const starts = () => reports.filter(report => report.state === "started");
+  const liveInstance = (index: number) => t.waitFor(() => {
+    const start = starts()[index];
+    assert.ok(start, diagnostic || "waiting for signed start");
+    const ready = readFileSync(join(playerScratchDirectory(home, start.instance), "ready"), "utf8").trim().split("\n");
+    const record = JSON.parse(readFileSync(join(home, "voice", "supervised", "dev.json"), "utf8"));
+    assert.ok(record.instance === start.instance);
+    assert.deepEqual(ready, [String(record.pid), "0", directory]);
+    process.kill(record.pid, 0);
+    pids.set(start.instance, record.pid);
+    return start.instance;
+  }, { timeout: 8000 });
+
+  try {
+    const keyPipe = launcher.stdio[3];
+    assert.ok(keyPipe instanceof Writable);
+    keyPipe.end(privateKey.export({ type: "pkcs8", format: "der" }));
+    const first = await liveInstance(0);
+    online = false;
+    await t.waitFor(() => {
+      assert.ok(failedReads >= 2);
+      assert.ok(reports.some(report => report.instance === first && report.state === "exited" && report.gone));
+    }, { timeout: 8000 });
+    assert.equal(starts().length, 1);
+    online = true;
+    const second = await liveInstance(1);
+    assert.ok(first !== second);
+    launcher.kill("SIGTERM");
+    assert.deepEqual(await closed, [0, null], diagnostic);
+    assert.equal(starts().length, 2);
+    assert.ok(reports.some(report => report.instance === second && report.state === "exited"));
+    assert.ok(reports.every(report => report.authenticated && (report.state === "started" || report.gone)));
+  } finally {
+    if (launcher.exitCode === null && launcher.signalCode === null) launcher.kill("SIGKILL");
+    await closed;
+  }
 });
 
 for (const [description, args, error] of [

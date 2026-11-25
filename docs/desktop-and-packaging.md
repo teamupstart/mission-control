@@ -1029,6 +1029,14 @@ packaged helper let the shell start one listener. A crash retries with increasin
 five seconds. Switching voice off, losing the model or quitting stops the owned process. On
 quit the shell waits for the listener before draining the daemon.
 
+The shell identifies each speech-capable launch to the daemon. If a stop goes
+unconfirmed for five seconds, it terminates that helper, escalates to SIGKILL after
+two seconds if needed, and waits for the OS exit and daemon acknowledgement before
+replacing it. The helper also exits when its supervisor pipe closes.
+The pinned desktop endpoint forwards the speech stop, launch reports and per-job audio
+and event routes. The development FluidAudio launcher uses the same supervision when
+its launch service provides a credential. [Credential provisioning](storage.md#voice-supervisor-credentials)
+
 The native tray retains the need-you count. While voice is on, left click toggles manual mute
 and right click opens the existing menu with voice status and a mute action. Switching voice
 off restores the standard image and click behavior. See [Voice addressing](voice.md).

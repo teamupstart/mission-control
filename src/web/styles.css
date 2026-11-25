@@ -41296,6 +41296,20 @@ body.foreman-sidecar-open .modal-backdrop {
   max-width: 1060px;
 }
 
+.setup-update-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.setup-update-footer > section {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.setup-update-footer p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .setup-row-title,
 .setup-command {
   align-items: center;
@@ -43481,7 +43495,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .vi-listening {
   --vi: var(--voice-listening);
 }
-.vi-muted {
+.vi-muted, .vi-waiting-for-key {
   --vi: var(--voice-muted);
 }
 .vi-auto-muted, .vi-unavailable {
@@ -43532,13 +43546,13 @@ button.vi { cursor: pointer; }
 .app > .vi-floating { position: fixed; bottom: 12px; left: 12px; z-index: 5; }
 .app:has(> .vi-status-line) > .vi-floating { bottom: 38px; }
 .vi-floating .vi-word, .vi-composer .vi-word, .vi-expanded { display: none; }
-button.vi-floating:is(:hover, :focus-visible) {
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) {
   width: auto; border-radius: 999px; padding: 0 13px 0 10px; gap: 6px;
   color: var(--fg); box-shadow: var(--shadow); font: 12px var(--sans);
 }
-button.vi-floating:is(:hover, :focus-visible) :is(.vi-word, .vi-expanded) { display: inline; }
-button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
-.vi-floating.vi-muted { box-shadow: var(--shadow); border-color: var(--border); }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) :is(.vi-word, .vi-expanded) { display: inline; }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) svg { color: var(--vi); }
+.vi-floating:is(.vi-muted, .vi-waiting-for-key) { box-shadow: var(--shadow); border-color: var(--border); }
 .vi-edge-line {
   position: relative; height: 3px; background: var(--vi);
   box-shadow: 0 0 14px 1px color-mix(in oklab, var(--vi) 65%, transparent);
@@ -43553,7 +43567,19 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .app > .vi-edge-line .vi-edge { height: var(--vi-edge-tab-height); }
 /* Keep the centered mute tab above the measured row, including its topmost click targets. */
 .app > .vi-edge-line ~ header.topbar { padding-top: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)); }
-.vi-edge-line.vi-muted { box-shadow: none; background: var(--border); }
+/* The edge tab overlaps the header's padding. Keep Electron's native drag
+   surface below it so the window manager delivers clicks to the microphone. */
+.is-desktop .app > .vi-edge-line ~ header.topbar {
+  -webkit-app-region: none;
+}
+.is-desktop .app > .vi-edge-line ~ header.topbar::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)) 0 0;
+  z-index: -1;
+  -webkit-app-region: drag;
+}
+.vi-edge-line:is(.vi-muted, .vi-waiting-for-key) { box-shadow: none; background: var(--border); }
 .vi-edge {
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%); pointer-events: auto;
   display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
@@ -43565,7 +43591,7 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   background: color-mix(in oklab, var(--vi) 13%, var(--panel-2));
   border: 1px solid color-mix(in oklab, var(--vi) 55%, var(--border));
 }
-.vi-composer.vi-muted { background: var(--panel-2); border-color: var(--border); }
+.vi-composer:is(.vi-muted, .vi-waiting-for-key) { background: var(--panel-2); border-color: var(--border); }
 .vi-settings { border: 0; min-width: 0; padding: 0; }
 .vi-choice { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .vi-choice label { cursor: pointer; }

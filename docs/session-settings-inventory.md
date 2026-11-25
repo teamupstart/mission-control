@@ -50,6 +50,7 @@ describes snapshot behavior independently of session access.
 | `voice-input-device` | 3 | Pending | Voice config `inputDevice`, OS inventory and listener reconciliation |
 | `voice-hotkey` | 3 | Pending and protected | Voice config `hotkey`, native shortcut registration and hold-to-talk behavior |
 | `voice-auto-mute` | 3 | Pending | Voice config `autoMuteDuringCalls`, listener reconciliation |
+| `voice-listening-mode` | 3 | Pending | Voice config `listeningMode`, automatic or held microphone capture |
 | `voice-end-of-speech` | 3 | Pending | Voice config `endOfSpeechMs`, listener timing in automatic modes |
 | `voice-cancel-window` | 3 | Pending | Voice config `cancelWindow` fields and delivery timing |
 | `voice-when-unsure` | 3 | Pending | Voice config `whenUnsure`, routing policy |

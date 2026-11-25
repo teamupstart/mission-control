@@ -1,11 +1,12 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import type { Page, Route } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
-import { beListener, enableVoice, say, type Listener } from "../fixtures/voice.ts";
+import { beListener, enableVoice, say, sendHello, voiceToken, type Listener } from "../fixtures/voice.ts";
 
 // Voice addressing's first phase, end to end against the shipped registry: the flag row toggles,
 // the Voice category appears with it in every open window, a cancel window change persists across
@@ -22,7 +23,7 @@ async function capture(window: Page, name: string): Promise<void> {
   await window.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
 }
 
-async function voiceConfig(daemon: DaemonHandle): Promise<{ endOfSpeechMs: number; cancelWindow: { enabled: boolean; seconds: number }; whenUnsure: string; planFormsByVoice: boolean }> {
+async function voiceConfig(daemon: DaemonHandle): Promise<{ listeningMode: string; endOfSpeechMs: number; cancelWindow: { enabled: boolean; seconds: number }; whenUnsure: string; planFormsByVoice: boolean }> {
   const response = await fetch(`${daemon.baseURL}/api/voice/config`);
   expect(response.status).toBe(200);
   return ((await response.json()) as { config: Awaited<ReturnType<typeof voiceConfig>> }).config;
@@ -37,6 +38,67 @@ const rail = (window: Page) => window.getByRole("tablist", { name: "Settings cat
 const voiceTab = (window: Page) => rail(window).getByRole("tab", { name: "Voice" });
 const modeLine = (window: Page) => window.getByRole("status", { name: "Voice mode" });
 const flagToggle = (window: Page) => window.getByRole("button", { name: /^Voice addressing:/ });
+
+test("Listening mode is searchable and Push-to-talk preserves settings across restart", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/fleet");
+  await page.keyboard.press("Meta+k");
+  await page.getByRole("combobox", { name: "Search everything" }).fill("push-to-talk");
+  await page.getByRole("option", { name: /Listening mode, setting/ }).click();
+  await expect(page.locator('[data-anchor="voice/listening-mode"]')).toHaveClass(/settings-flash/);
+  const mode = page.getByRole("combobox", { name: "Listening mode" });
+  const delay = page.getByRole("combobox", { name: "End-of-speech delay" });
+  const calls = page.getByRole("checkbox", { name: "Auto-mute on calls" });
+  const cancel = page.getByRole("combobox", { name: "Cancel window" });
+  await expect(mode).toHaveValue("always-on");
+  await expect(mode).toHaveAccessibleDescription("Choose when Voice opens the microphone");
+  await delay.selectOption("5000");
+  await expect(calls).toBeChecked();
+  await calls.press("Space");
+  await expect(calls).not.toBeChecked();
+  await mode.selectOption("push-to-talk");
+  await expect(delay).toBeDisabled();
+  await expect(calls).toBeDisabled();
+  await expect(page.getByRole("radio", { name: "Ask aloud" })).toBeDisabled();
+  await expect(cancel).toBeEnabled();
+  await expect(page.getByText("Push-to-talk hotkey", { exact: true })).toBeVisible();
+  await expect.poll(async () => (await voiceConfig(daemon)).listeningMode).toBe("push-to-talk");
+  await daemon.shutdown();
+  await daemon.restart();
+  await page.reload();
+  await expect(mode).toHaveValue("push-to-talk");
+  await expect(delay).toBeDisabled();
+  expect(await sendHello(daemon)).toBe(200);
+  const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+  const report = async (down: boolean) => {
+    const at = voiceHostTimeUs();
+    const result = await page.request.post(daemon.baseURL + "/voice/shell-report", {
+      headers: { "x-harness-token": voiceToken(daemon) },
+      data: { pushToTalkSession: state.pushToTalkSession, registeredHotkey: state.configuredHotkey,
+        capabilities: { hotkey: { available: true } }, reportedAtHostUs: at, pushToTalk: down,
+        ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) },
+    });
+    expect(result.ok()).toBe(true);
+  };
+  await report(false);
+  await expect(modeLine(page)).toContainText("Waiting for hotkey");
+  await report(true);
+  await expect(modeLine(page)).toContainText("Push to talk");
+  await report(false);
+  await expect(modeLine(page)).toContainText("Waiting for hotkey");
+  if (EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await mode.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(EVIDENCE, "push-to-talk.png") });
+  }
+  await mode.selectOption("always-on");
+  await expect(delay).toBeEnabled();
+  await expect(delay).toHaveValue("5000");
+  await expect(calls).toBeEnabled();
+  await expect(modeLine(page)).toContainText("Listening");
+  await expect(calls).not.toBeChecked();
+  await expect(cancel).toHaveValue("4");
+});
 
 test("end-of-speech delay saves shorter and longer choices independently and survives a daemon restart", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);

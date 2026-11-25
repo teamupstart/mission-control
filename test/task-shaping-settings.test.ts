@@ -308,6 +308,65 @@ test("the review states what a shaper runs or calls, the variables it names and 
   assert.match(sent.never ?? "", /The text it does send is passed on as written/);
 });
 
+test("the review and the row of a shaper that signs in state the sign-in and the access token; an unmarked one states neither", () => {
+  const marked = [
+    {
+      id: "signed-mcp", label: "Signed MCP", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: {
+        type: "http", url: "https://tools.acme.example/mcp", headers: { "x-acme-user": "{caller.user}" },
+        auth: { type: "oauth", scope: "mcp:context" },
+      } },
+    },
+    {
+      id: "signed-http", label: "Signed HTTP", stage: "select",
+      transport: { type: "http", url: "https://tools.acme.example/shape", headers: {},
+        auth: { type: "oauth", scope: "openid mcp:context", issuer: "https://login.acme.example/oauth2/default" } },
+    },
+  ];
+  const expected = [
+    [
+      { label: "Calls MCP server", value: "https://tools.acme.example/mcp" },
+      { label: "Header x-acme-user", value: "{caller.user}" },
+      // No issuer: the authorization server is on the server's own origin.
+      { label: "Signs in", value: "OAuth, scope mcp:context, at https://tools.acme.example" },
+      { label: "Tool", value: "get_guidance" },
+      { label: "Context", value: "Folded into the task argument" },
+    ],
+    [
+      { label: "Calls", value: "POST https://tools.acme.example/shape" },
+      { label: "Signs in", value: "OAuth, scope openid mcp:context, at https://login.acme.example" },
+    ],
+  ];
+  const TOKEN_LINE = "An access token from your sign-in, sent only to the server's origin";
+  marked.forEach((definition, at) => {
+    const read = readShaperManifest(JSON.stringify(definition));
+    assert.equal(read.ok, true, read.ok ? "" : read.reason);
+    if (!read.ok) return;
+    assert.deepEqual(shaperReach(read.shaper), expected[at]);
+    const receives = shaperReceives(read.shaper);
+    assert.equal(receives.sent.at(-1), TOKEN_LINE);
+    assert.match(receives.never ?? "", /every credential except the header references above and the access token from your sign-in\./);
+    const review = renderToStaticMarkup(createElement(ShaperReview, { shaper: read.shaper }));
+    const signsIn = expected[at]!.find((line) => line.label === "Signs in")!.value;
+    assert.ok(review.includes(`<dt>Signs in</dt><dd><code>${signsIn}</code></dd>`), review);
+    assert.ok(review.includes(`<li>${TOKEN_LINE.replace("'", "&#x27;")}</li>`), review);
+    const row = render(view({ shapers: [definition] }));
+    assert.ok(row.includes(`<p class="shaping-row-reach">Signs in: ${signsIn}</p>`), row);
+  });
+
+  const unmarked = view({ shapers: [remote] }).shapers[0]!;
+  assert.ok(!("unsupported" in unmarked));
+  if ("unsupported" in unmarked) return;
+  assert.equal(shaperReach(unmarked).some((line) => line.label === "Signs in"), false);
+  assert.equal(shaperReceives(unmarked).sent.includes(TOKEN_LINE), false);
+  const review = renderToStaticMarkup(createElement(ShaperReview, { shaper: unmarked }));
+  const row = render(view({ shapers: [remote] }));
+  for (const html of [review, row]) {
+    assert.doesNotMatch(html, /Signs in/);
+    assert.doesNotMatch(html, /access token from your sign-in/);
+  }
+});
+
 // Every transport's review, as a table: what the review promises is exactly what the shaper runs
 // or calls, so each row names every part a reviewer must see - command, arguments, endpoint,
 // headers, tool, context delivery, or the files a built-in reads - and the review renders each.

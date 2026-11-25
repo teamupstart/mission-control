@@ -347,9 +347,9 @@ Its **Terminals** family also holds **Show sessions started outside Mission Cont
 default, which decides whether discovery cards sessions Mission Control did not start. Some
 sessions are carded either way; [sessions started outside Mission
 Control](sessions.md#sessions-started-outside-mission-control) lists which.
-In the desktop app, **Application updates** also offers **Check for updates** and the
-default-off **Alpha updates** preference, which follows the latest `main` commit while
-including stable release news. Its badge says `This installation` because this page combines
+In the desktop app, the **Alpha updates** checkbox sits above the setup checks. It defaults
+off and follows the latest `main` commit, with stable release news included. The footer shows
+the installation status and offers **Check for updates**. Setup’s badge says `This installation` because this page combines
 tool inspection with persisted settings. See [alpha updates](desktop-and-packaging.md#alpha-updates).
 
 **Feature flags** sits directly after Setup under Sessions, scoped to this machine. It offers

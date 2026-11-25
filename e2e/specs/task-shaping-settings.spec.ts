@@ -2408,3 +2408,43 @@ test("an open dry run waits with its row for the revision an accepted import mad
   await expect(dryRun.getByRole("alert")).toContainText("was replaced");
   await expect(run).toBeDisabled();
 });
+
+test("a manifest that signs in states its sign-in in the review and in its saved row", async ({ dashboard: page, daemon }) => {
+  // Task shaping on and Shaper sign-in left off: the schema accepts the marker either way.
+  await setFlag(daemon, true);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await panel(page).getByRole("button", { name: "Import manifest…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a shaper" });
+  const signsIn = "OAuth, scope mcp:context, at https://login.acme.example";
+  // A placeholder host: a marked shaper is never called, so nothing here reaches a network.
+  await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify({
+    id: "signed-guidance", label: "Signed guidance", stage: "select",
+    transport: {
+      type: "mcp", tool: "get_guidance",
+      server: {
+        type: "http", url: "https://tools.acme.example/mcp", headers: { "x-acme-user": "{caller.user}" },
+        auth: { type: "oauth", scope: "mcp:context", issuer: "https://login.acme.example/oauth2/default" },
+      },
+    },
+  }, null, 2));
+  const review = dialog.getByRole("region", { name: "What this shaper runs or calls" });
+  await expect(review.getByRole("term").filter({ hasText: /^Signs in$/ })).toBeVisible();
+  await expect(review.getByRole("definition").filter({ hasText: signsIn })).toHaveText(signsIn);
+  await expect(review.getByRole("listitem").filter({ hasText: "access token" }))
+    .toHaveText("An access token from your sign-in, sent only to the server's origin");
+  await expect(review).toContainText("every credential except the header references above and the access token from your sign-in");
+  await expectContentClearsBorder(dialog);
+  await review.getByRole("listitem").filter({ hasText: "access token" }).scrollIntoViewIfNeeded();
+  await capture(page, "sign-in-review");
+  await dialog.getByRole("button", { name: "Save switched off" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Saved as a known shaper, with the marker exactly as written, and its row states the same line.
+  await expect(pill(page, "Signed guidance")).toHaveAccessibleName("Signed guidance: off");
+  await expect(row(page, "Signed guidance").getByText(`Signs in: ${signsIn}`, { exact: true })).toBeVisible();
+  const stored = (await shapingConfig(daemon)).shapers.find((shaper) => shaper.id === "signed-guidance") as
+    { unsupported?: string; transport?: { server?: { auth?: unknown } } } | undefined;
+  expect(stored?.unsupported).toBeUndefined();
+  expect(stored?.transport?.server?.auth).toEqual({ type: "oauth", scope: "mcp:context", issuer: "https://login.acme.example/oauth2/default" });
+  await capture(page, "sign-in-row");
+});

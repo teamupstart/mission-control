@@ -37,6 +37,12 @@ export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 
+/**
+ * The one owner of the shaper sign-in preview's id. A remote shaper whose server carries the
+ * `auth` marker is called only while it is on and signed in. See `docs/task-shaping.md`.
+ */
+export const SHAPER_SIGN_IN_FLAG_ID = "shaper-sign-in" as const;
+
 export const FEATURE_FLAGS = [
   {
     id: SESSION_SETTINGS_FLAG_ID,
@@ -101,6 +107,13 @@ export const FEATURE_FLAGS = [
     description: "Call registered shapers at dispatch and add the context they return to a worker's first prompt. Register and dry-run them in Settings > Task shaping.",
     stage: "preview",
     keywords: ["shaping", "shaper", "context", "guidance", "prompt"],
+  },
+  {
+    id: SHAPER_SIGN_IN_FLAG_ID,
+    label: "Shaper sign-in",
+    description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
+    stage: "preview",
+    keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
   },
   {
     id: "resident-profiles-fold",

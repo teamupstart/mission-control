@@ -65,11 +65,18 @@ saved for a harness with an Agent SDK driver.
 
 ## Built-in residents
 
-Mission Control ships one resident ready to launch, installed on every machine:
+Mission Control installs these optional profiles. Choose **Launch** to start one.
 
 | Resident | What it does |
 |---|---|
 | Agent Shepherd | Watches the backlog and running tasks and unblocks stuck work. It removes dependencies on work that already shipped and grants repair rounds while a workflow still finds real bugs. It keeps reviewers within the task's original intent. Decisions only a human can make go to you through `request_input`. It runs Claude Code with Sonnet 5.5 at extra-high effort, and **Control other sessions** is on |
+| Bug Fix Inspector | Helps improve Mission Control over time by checking recent logs, sessions, and workflows for bugs affecting users. It runs Claude Sonnet 5.5 at extra-high effort, waits 45 minutes between automatic passes, and has a $20 spend cap per rolling 24 hours. A desktop Launch click grants read-only access to other sessions and workflows. The grant cannot steer sessions or change their workflows. It resumes inspection from a separate checkpoint for each source after an outage. |
+
+Enable **Settings → Feature flags → Bug Fix Inspector** to list and launch the built-in. Switching the preview off hides it from the catalog and prevents new launches. Existing runs keep their pinned revision. The inspector records missed history that its tools can no longer retrieve, including sessions that ended between snapshots. For known live sessions it pages back through the retained transcript to recover older turns. A desktop Launch grant can return after restart with the same run and conversation. Choose **Off** in the session control menu to revoke it. It checks the configured issue destination for duplicates and repeats the search if the destination changes.
+
+The inspector checks spend before each automatic pass. For example, if a turn starts at $19.50 and costs $1, the run records $20.50 and pauses at the next wake. Resume becomes available when enough spend leaves the rolling window.
+
+Launching the built-in inspector requests drafts for confirmed defects on its first and scheduled passes. It uses `report_product_issue` to preview each public report. Choose **Submit public issue** to publish it to the configured GitHub tracker (default `teamupstart/mission-control`). See [public product issue reporting](security.md#public-product-issue-reporting).
 
 Built-ins appear under **Built-in** in the Residents rail, and in the dock and in Dispatch beside
 your own profiles. They are **app data, not your data**. Opening one shows it read-only: Save and
@@ -95,8 +102,7 @@ reads `Launch <name> (built-in)`. Neither one hides the other. To run the built-
 your own, launch it, or archive yours once you no longer need it. Built-ins do not count toward the 200
 live-profile limit. Settings snapshots do not carry them, and a restore never archives one.
 
-The instructions are [`residents/agent-shepherd.md`](../residents/agent-shepherd.md), compiled into
-the build. See [`residents/README.md`](../residents/README.md) for how to change or add one.
+The build includes the [Agent Shepherd instructions](../residents/agent-shepherd.md) and [Bug Fix Inspector instructions](../residents/bug-fix-inspector.md). See [`residents/README.md`](../residents/README.md) for how to change or add one.
 
 The **Meet your residents** guided tour walks this page on Agent Shepherd, then opens the
 [Residents drawer](#the-residents-drawer) and points at **Pin**. Start it from **Settings > Help &

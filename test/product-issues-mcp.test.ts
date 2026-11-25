@@ -139,6 +139,20 @@ test("the exact human submit selection publishes the original bounded draft", as
   }]);
 });
 
+test("a change of repository after duplicate search stops the report before human approval", async () => {
+  const observed = { reviews: [], submissions: [] };
+  const deps = dependencies(review({}), observed);
+  const result = await reportProductIssueWithConfirmation({ ...DRAFT, expectedTarget: "acme/old-tracker" }, "browser", deps);
+  assert.equal(result.isError, true);
+  assert.match(result.text, /search the current destination for duplicates/);
+  assert.deepEqual(observed, { reviews: [], submissions: [] });
+
+  const retry = await reportProductIssueWithConfirmation({ ...DRAFT, expectedTarget: preview().target }, "browser", deps);
+  assert.equal(retry.isError, false);
+  assert.equal(observed.reviews.length, 1);
+  assert.equal(observed.submissions.length, 1);
+});
+
 test("MCP attachment ids survive review and a created warning remains non-error", async () => {
   const withScreenshot = { ...DRAFT, attachmentUploadIds: ["upload-1.png"] };
   const observed = {

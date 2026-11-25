@@ -33,7 +33,16 @@ export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
 export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as const;
 
+export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
+
 export const FEATURE_FLAGS = [
+  {
+    id: BUG_FIX_INSPECTOR_FLAG_ID,
+    label: "Bug Fix Inspector",
+    description: "Offer an optional resident that investigates Mission Control bugs and prepares GitHub issues for approval.",
+    stage: "preview",
+    keywords: ["resident", "bugs", "inspector", "logs", "github"],
+  },
   {
     id: PERSONA_REPOSITORY_ACCESS_FLAG_ID,
     label: "Persona repository access",

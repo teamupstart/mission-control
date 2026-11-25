@@ -16,7 +16,7 @@ import type { PauseManager } from "./pause/manager.ts";
 import { registerPauseRoutes } from "./pause/routes.ts";
 import { HibernationManager } from "./hibernation/manager.ts";
 import { registerHibernationRoutes } from "./hibernation/routes.ts";
-import { getResidentProfile as stateProfile } from "./residents/store.ts";
+import { getAvailableResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,

@@ -282,11 +282,13 @@ test("product issue registration requires public confirmation and bounded attach
   const end = source.indexOf('server.registerTool(\n  "report_status"', start);
   assert.ok(start >= 0 && end > start, "report_product_issue registration is present");
   const registration = source.slice(start, end);
-  assert.match(registration, /only after the user explicitly/);
+  assert.match(registration, /when the user explicitly requests a Mission Control report/);
+  assert.match(registration, /built-in Bug Fix Inspector, the operator's launch is a standing request to prepare drafts/);
+  assert.match(registration, /first and scheduled passes of that run/);
   assert.match(registration, /public GitHub issue/);
   assert.match(registration, /Submit public issue/);
   assert.match(registration, /Optional screenshot/);
-  assert.match(registration, /inputSchema: ProductIssueDraftSchema\.shape/);
+  assert.match(registration, /\.\.\.ProductIssueDraftSchema\.shape/);
   assert.match(registration, /\.\.\.productIssueTransport/);
   assert.match(registration, /PRODUCT_ISSUE_CLIENT/);
   assert.doesNotMatch(

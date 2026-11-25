@@ -1,9 +1,14 @@
 import { setImmediate } from "node:timers/promises";
 import type { Vad } from "sherpa-onnx-node";
 import type { RecordingSegments } from "./playback.ts";
-import { VOICE_CONFIG_DEFAULTS } from "../shared/voice.ts";
+import { VOICE_CONFIG_DEFAULTS, VOICE_END_OF_SPEECH_MS } from "../shared/voice.ts";
 
-const WINDOW = 512;
+export const WINDOW = 512;
+const SAMPLE_RATE = 16_000;
+const MAX_SEGMENT = 30 * SAMPLE_RATE;
+// Half a second covers Silero's 150 ms onset confirmation and its overlapping analysis windows.
+const LEAD = 16 * WINDOW;
+const DISCARD_LOOKBACK = LEAD + Math.ceil(Math.max(...VOICE_END_OF_SPEECH_MS) * 16 / WINDOW) * WINDOW;
 const BATCH = 64 * WINDOW;
 
 /** One capture directive authorizes at most one batch. A null result asks playback to poll again. */
@@ -14,6 +19,8 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
   let captureRevision: string | undefined;
   let pendingStart = 0;
   let readThrough = 0;
+  let detectorBase = 0;
+  let discardedThrough = 0;
   // The WAV has no host clock. Date each 512-sample window when playback feeds it to the detector.
   // VAD segment indices start at zero again on reset. Ordinary playback needs no timestamp table.
   const windowTimes: number[] = [];
@@ -26,6 +33,7 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         // Even a missed mute/unmute revokes every sample seen under the old capture.
         offset = readThrough;
         pendingStart = readThrough;
+        detectorBase = readThrough;
         windowTimes.length = 0;
         vad?.reset();
         captureRevision = current;
@@ -36,6 +44,7 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         // The recording owns its PCM. Re-feed only the unfinished portion to the new
         // detector in normal, interruptible batches, including speech before VAD onset.
         offset = pendingStart;
+        detectorBase = offset;
         windowTimes.length = 0;
       }
       const end = Math.min(offset + BATCH, samples.length);
@@ -44,6 +53,7 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         if (held) windowTimes.push(hostNowUs());
         vad.acceptWaveform(samples.subarray(offset, next));
         offset = next;
+        if (!vad.isDetected()) pendingStart = Math.max(pendingStart, offset - LEAD);
         if (offset === samples.length) vad.flush();
       }
       readThrough = Math.max(readThrough, offset);
@@ -51,11 +61,24 @@ export function recordingSegments(samples: Float32Array, createVad: (endOfSpeech
         pendingStart = offset;
         const { start, samples } = vad.front();
         vad.pop();
+        const onset = detectorBase + start;
+        if (onset < discardedThrough || offset - onset > MAX_SEGMENT) return { done: false, value: null };
         if (!held) return { done: false, value: { samples } };
         const startUs = windowTimes[Math.floor(start / WINDOW)];
         const lastUs = windowTimes[Math.floor((start + samples.length - 1) / WINDOW)];
         if (startUs === undefined || lastUs === undefined) throw new Error("Missing playback time for a held speech segment");
         return { done: false, value: { samples, capture: { startUs, endMs: Math.ceil((lastUs + 1) / 1000) } } };
+      }
+      // Bound the native buffer while an overlong command is still in progress.
+      // Replay enough context to recognize even the longest allowed pause. A segment
+      // starting in the discarded command is ineligible, including after another delay edit.
+      if (offset - pendingStart > MAX_SEGMENT + LEAD) {
+        discardedThrough = offset;
+        pendingStart = offset - DISCARD_LOOKBACK;
+        offset = pendingStart;
+        detectorBase = pendingStart;
+        vad.reset();
+        windowTimes.length = 0;
       }
       return offset === samples.length ? { done: true, value: undefined } : { done: false, value: null };
     },

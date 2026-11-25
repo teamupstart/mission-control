@@ -262,7 +262,7 @@ test("a key release during decoding admits only speech read inside the hold", { 
   });
   let ready = false;
   await playRecording(client, signal => recordingSegments(new Float32Array(512 * 70), () => ({
-    acceptWaveform() {}, flush() { ready = true; }, isEmpty: () => !ready,
+    acceptWaveform() {}, flush() { ready = true; }, isDetected: () => true, isEmpty: () => !ready,
     front: () => ({ start: 10 * 512, samples: new Float32Array(60 * 512) }), pop() { ready = false; }, reset() {},
   }), signal, voiceHostTimeUs), async () => {
     setVoiceConfig({ endOfSpeechMs: 5000 });
@@ -344,7 +344,7 @@ test("a mute during speech detection pauses the file scan and resumes at the nex
       if (scanned === windows) detected = partial || scanned;
       if (scanned === 2) setVoiceConfig({ muted: true });
     },
-    isEmpty: () => detected === 0, front: () => ({ start: 0, samples: Float32Array.of(detected) }),
+    isDetected: () => partial !== 0, isEmpty: () => detected === 0, front: () => ({ start: 0, samples: Float32Array.of(detected) }),
     pop() { detected = 0; },
     reset() { partial = 0; detected = 0; },
     flush() {},
@@ -358,12 +358,41 @@ test("a mute during speech detection pauses the file scan and resumes at the nex
   assert.deepEqual(posts, [true]);
 });
 
+test("successive Sherpa delay edits after five minutes of quiet replay only the onset lead-in", async t => {
+  const batch = 64 * 512;
+  const recording = new Float32Array(151 * batch);
+  let first = 0;
+  let end = 0;
+  const segments = recordingSegments(recording, () => {
+    first = -1;
+    return {
+      acceptWaveform(frame) {
+        const offset = frame.byteOffset / frame.BYTES_PER_ELEMENT;
+        if (first < 0) first = offset;
+        end = offset + frame.length;
+      },
+      isDetected: () => false, isEmpty: () => true, flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
+    };
+  }, new AbortController().signal, voiceHostTimeUs);
+  const directive = { revision: "original", captureRevision: "capture", endOfSpeechMs: 2000 };
+  for (let i = 0; i < 147; i++) await segments.next(directive);
+  assert.equal(end, 147 * batch);
+  for (const delay of [5000, 500]) {
+    const previousEnd = end;
+    await segments.next({ ...directive, revision: String(delay), endOfSpeechMs: delay });
+    const replay = previousEnd - first;
+    assert.ok(replay >= 0.15 * 16_000 && replay <= 16_000, `replayed ${replay} samples`);
+    assert.ok(end > previousEnd, "the same poll must reach fresh audio");
+    t.diagnostic(`${delay} ms delay: replayed ${replay / 16} ms of lead-in and reached fresh audio in one poll.`);
+  }
+});
+
 test("a revoked capture skips previously read samples even partway through Sherpa reprocessing", async () => {
   const samples = new Float32Array(512 * 256);
   const offsets: number[] = [];
   const segments = recordingSegments(samples, () => ({
     acceptWaveform(frame) { offsets.push(frame.byteOffset / Float32Array.BYTES_PER_ELEMENT); },
-    isEmpty: () => true, flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
+    isDetected: () => true, isEmpty: () => true, flush() {}, pop() {}, reset() {}, front: () => assert.fail("unfinished speech"),
   }), new AbortController().signal, voiceHostTimeUs);
   const original = { revision: "first", endOfSpeechMs: 2000 };
   await segments.next(original);
@@ -391,7 +420,7 @@ test("muting during the last decode discards it and ends playback while capture 
   });
   let ready = false;
   await playRecording(client, signal => recordingSegments(Float32Array.of(1), () => ({
-    acceptWaveform() {}, flush() { ready = true; }, isEmpty: () => !ready,
+    acceptWaveform() {}, flush() { ready = true; }, isDetected: () => true, isEmpty: () => !ready,
     front: () => ({ start: 0, samples: Float32Array.of(1) }), pop() { ready = false; }, reset() { ready = false; },
   }), signal, voiceHostTimeUs), async () => {
     setVoiceConfig({ muted: true });
@@ -414,7 +443,7 @@ test("completed speech is delivered before the scanner reads any trailing silenc
   });
   await playRecording(client, signal => recordingSegments(new Float32Array(512 * windows), () => ({
     acceptWaveform() { ready = ++scanned === 3; },
-    isEmpty: () => !ready, front: () => ({ start: 0, samples: Float32Array.of(1) }),
+    isDetected: () => false, isEmpty: () => !ready, front: () => ({ start: 0, samples: Float32Array.of(1) }),
     pop() { ready = false; }, reset() { ready = false; }, flush() {},
   }), signal, voiceHostTimeUs), async () => ({ text: "command", tokens: [], timestamps: [], durations: [] }));
   assert.deepEqual(deliveredAt, [3]);
@@ -494,7 +523,7 @@ test("scanning a silent recording lets the event loop run before reaching EOF", 
     acceptWaveform() {
       if (++scanned === 1) setImmediate(() => lifetime.abort());
     },
-    isEmpty: () => true,
+    isDetected: () => false, isEmpty: () => true,
     flush() {}, pop() {}, reset() {}, front: () => assert.fail("no speech"),
   }), lifetime.signal, voiceHostTimeUs);
   assert.deepEqual(await segments.next({ revision: "active" }), { done: false, value: null });

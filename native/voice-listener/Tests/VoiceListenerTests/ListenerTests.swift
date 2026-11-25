@@ -194,6 +194,30 @@ final class ListenerTests: XCTestCase {
         XCTAssertEqual(later.samples, speech + Array(repeating: 0, count: 48_000))
     }
 
+    func testShorteningAnElapsedPauseCarriesOnlyItsBoundedTailIntoTheNextPhrase() throws {
+        for extra in [0, 320, 3200] {
+            var gate = SpeechGate(endOfSpeechMs: 2000)
+            var now: Int64 = 0
+            func feed(_ pcm: [Float], active: Bool) -> Segment? {
+                now += Int64(pcm.count) * Segment.sampleNs
+                return gate.feed(pcm, active: active, endNs: now)
+            }
+            let quiet = Array(repeating: Float(0), count: 8000)
+            let soft = (0..<extra).map { Float($0 + 1) / 2_000_000 }
+            XCTAssertNil(feed([0.2], active: true))
+            XCTAssertNil(feed(quiet + soft, active: false))
+            let first = try XCTUnwrap(gate.updateEndOfSpeechMs(500))
+            XCTAssertEqual(first.samples, [0.2] + quiet)
+            let onset = now
+            XCTAssertNil(feed([0.3], active: true))
+            let second = try XCTUnwrap(feed(quiet, active: false))
+            let retained = Array(soft.suffix(2400))
+            XCTAssertEqual(second.samples, retained + [0.3] + quiet)
+            XCTAssertEqual(second.firstVoicedSample, retained.count)
+            XCTAssertEqual(second.startNs, onset - Int64(retained.count) * Segment.sampleNs)
+        }
+    }
+
     func testLiveMicrophoneDelayEditsPreserveBothCommandsAndCompleteAnElapsedPause() async throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../../..")
         let speech = try samples(from: root.appending(path: "test/fixtures/voice/steve-check-the-build.wav"))

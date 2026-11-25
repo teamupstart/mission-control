@@ -8,7 +8,7 @@ const client = new ListenerClient(process.env.MISSION_VOICE_DAEMON_URL!, process
 const samples = new Float32Array(512);
 let ready = false;
 await playRecording(client, signal => recordingSegments(samples, () => ({
-  acceptWaveform() { ready = true; }, isEmpty: () => !ready, front: () => ({ start: 0, samples }),
+  acceptWaveform() { ready = true; }, isDetected: () => false, isEmpty: () => !ready, front: () => ({ start: 0, samples }),
   pop() { ready = false; }, flush() {}, reset() { ready = false; },
 }), signal, voiceHostTimeUs), async (_samples, roster) => {
   process.stdout.write("prime " + JSON.stringify(roster) + "\n");

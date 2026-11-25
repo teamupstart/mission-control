@@ -219,51 +219,77 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.equal(captures.length, 3);
     assert.equal(normalize(captures[2]!.text), "steve check the build");
   });
+  const recording = await readFile(fixture);
+  const phrase = recording.subarray(44);
+  const pcmBytesPerMs = 32;
+  const silence = (ms: number) => Buffer.alloc(ms * pcmBytesPerMs);
+  async function playPhrases(name: string, ...pcm: Buffer[]): Promise<VoiceUtterance[]> {
+    const sequence = Buffer.concat([recording.subarray(0, 44), ...pcm]);
+    sequence.writeUInt32LE(sequence.length - 8, 4);
+    sequence.writeUInt32LE(sequence.length - 44, 40);
+    const path = join(cwd, name);
+    await writeFile(path, sequence);
+    const before = captures.length;
+    await play(path, "--backend", "sherpa-onnx");
+    return captures.slice(before);
+  }
   await t.test("Sherpa splits or joins the same recorded phrases at the selected silence boundary", async () => {
-    const recording = await readFile(fixture);
-    const phrase = recording.subarray(44);
     // The recording already has about 1.2 seconds of combined trailing and leading quiet.
     for (const [endOfSpeechMs, addedQuietMs, expected] of [[500, 0, 2], [2000, 0, 1], [2000, 1800, 2], [5000, 1800, 1]] as const) {
       voiceStateStore.reset();
       setVoiceConfig({ endOfSpeechMs });
-      const repeated = Buffer.concat([recording, Buffer.alloc(addedQuietMs * 32), phrase]);
-      repeated.writeUInt32LE(repeated.length - 8, 4);
-      repeated.writeUInt32LE(repeated.length - 44, 40);
-      const path = join(cwd, "two-phrases.wav");
-      await writeFile(path, repeated);
-      const before = captures.length;
-      await play(path, "--backend", "sherpa-onnx");
-      const messages = captures.slice(before);
+      const messages = await playPhrases("two-phrases.wav", phrase, silence(addedQuietMs), phrase);
       assert.equal(messages.length, expected, `delay ${endOfSpeechMs} ms, added silence ${addedQuietMs} ms`);
       if (expected === 1) {
         // Recognition of the name can vary without priming. Its final word must come from the second phrase.
-        assert.ok(messages[0]!.words.at(-1)!.endMs > (phrase.length / 32) + addedQuietMs);
+        assert.ok(messages[0]!.words.at(-1)!.endMs > (phrase.length / pcmBytesPerMs) + addedQuietMs);
       }
     }
+  });
+  await t.test("a five-second pause setting still joins recorded speech across Sherpa’s 20-second threshold", async () => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 5000 });
+    const messages = await playPhrases("past-twenty-seconds.wav", ...Array<Buffer>(9).fill(phrase), silence(5000));
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0]!.words.at(-1)!.endMs > 8 * phrase.length / pcmBytesPerMs, "the ninth command belongs to the first capture");
+  });
+  await t.test("Sherpa drops a recording’s overlong command through its selected pause and admits the next command", async t => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 3000 });
+    let polls = 0;
+    onDirectivePoll = () => { if (++polls === 18) setVoiceConfig({ endOfSpeechMs: 5000 }); };
+    t.after(() => { onDirectivePoll = undefined; });
+    const messages = await playPhrases("overlong.wav", ...Array<Buffer>(25).fill(phrase), silence(5000), phrase);
+    assert.deepEqual(messages.map(message => normalize(message.text)), ["steve check the build"]);
+    assert.ok(messages[0]!.words.at(-1)!.endMs < phrase.length / pcmBytesPerMs);
+  });
+  await t.test("successive delay edits retain an emerging recorded command after extended silence", async t => {
+    voiceStateStore.reset();
+    setVoiceConfig({ endOfSpeechMs: 2000 });
+    let polls = 0;
+    onDirectivePoll = () => {
+      polls++;
+      if (polls === 8) setVoiceConfig({ endOfSpeechMs: 5000 });
+      if (polls === 9) setVoiceConfig({ endOfSpeechMs: 800 });
+    };
+    t.after(() => { onDirectivePoll = undefined; });
+    // At poll eight only the first 64 ms of the name has been voiced, before Silero confirms onset.
+    const messages = await playPhrases("quiet-before-edits.wav", silence(7 * 2048 - 256), phrase);
+    assert.deepEqual(messages.map(message => normalize(message.text)), ["steve check the build"]);
+    assert.ok(polls >= 9 && polls <= 12, `finished at poll ${polls}`);
   });
   await t.test("one running Sherpa listener applies a longer boundary between phrases in the same recording", async t => {
     voiceStateStore.reset();
     setVoiceConfig({ endOfSpeechMs: 500 });
-    const recording = await readFile(fixture);
-    const phrase = recording.subarray(44);
     // The natural gap is ~1.2 s. Extend the later gaps to ~4.2 and ~6.2 s:
     // only the 5 s choice joins the middle pair and still splits the final phrase.
-    const pcmBytesPerMs = 32;
-    const sequence = Buffer.concat([recording, phrase, Buffer.alloc(3000 * pcmBytesPerMs), phrase,
-      Buffer.alloc(5000 * pcmBytesPerMs), phrase]);
-    sequence.writeUInt32LE(sequence.length - 8, 4);
-    sequence.writeUInt32LE(sequence.length - 44, 40);
-    const path = join(cwd, "live-delay.wav");
-    await writeFile(path, sequence);
-    const before = captures.length;
     onAcceptedCapture = () => {
       // The helper waits for this POST before polling and feeding any more audio.
       onAcceptedCapture = undefined;
       setVoiceConfig({ endOfSpeechMs: 5000 });
     };
     t.after(() => { onAcceptedCapture = undefined; });
-    await play(path, "--backend", "sherpa-onnx");
-    const messages = captures.slice(before);
+    const messages = await playPhrases("live-delay.wav", phrase, phrase, silence(3000), phrase, silence(5000), phrase);
     assert.equal(messages.length, 3);
     const phraseMs = phrase.length / pcmBytesPerMs;
     assert.ok(messages[0]!.words.at(-1)!.endMs < phraseMs, "500 ms splits the first phrase");
@@ -271,26 +297,16 @@ test("the published sherpa addon transcribes a recording through the listener an
     assert.ok(messages[2]!.words.at(-1)!.endMs < phraseMs, "the final phrase is separate");
   });
   await t.test("Sherpa retains unfinished words when the silence delay changes during speech or the following pause", async t => {
-    const recording = await readFile(fixture);
-    const phrase = recording.subarray(44);
-    const path = join(cwd, "unfinished.wav");
     t.after(() => { onDirectivePoll = undefined; });
     for (const [leadMs, newDelay, expected] of [[0, 5000, 1], [1000, 5000, 1], [0, 500, 2]] as const) {
       voiceStateStore.reset();
       setVoiceConfig({ endOfSpeechMs: newDelay === 500 ? 5000 : 2000 });
-      const before = captures.length;
-      const sequence = Buffer.concat([recording.subarray(0, 44), Buffer.alloc(leadMs * 32), phrase,
-        Buffer.alloc(1800 * 32), phrase]);
-      sequence.writeUInt32LE(sequence.length - 8, 4);
-      sequence.writeUInt32LE(sequence.length - 44, 40);
-      await writeFile(path, sequence);
       let polls = 0;
       onDirectivePoll = () => {
         // Poll two follows 2.048 seconds of input: inside the first pause, or mid-command with the lead-in.
         if (++polls === 2) setVoiceConfig({ endOfSpeechMs: newDelay });
       };
-      await play(path, "--backend", "sherpa-onnx");
-      const messages = captures.slice(before);
+      const messages = await playPhrases("unfinished.wav", silence(leadMs), phrase, silence(1800), phrase);
       assert.equal(messages.length, expected, `after a change to ${newDelay} ms`);
       const transcript = messages.map(message => normalize(message.text)).join(" ");
       assert.equal(transcript.match(/check the build/g)?.length, 2, transcript);

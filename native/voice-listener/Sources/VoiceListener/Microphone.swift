@@ -105,6 +105,7 @@ struct SpeechGate {
     private(set) var endOfSpeechMs: Int
     private var silenceSamples: Int { endOfSpeechMs * 16 }
     private static let maxSegmentSamples = 16_000 * 30
+    private static let maxLeadSamples = 2400
     private var lead: [Float] = []
     private var samples: [Float] = []
     private var quiet = 0
@@ -125,9 +126,14 @@ struct SpeechGate {
         guard quiet >= silenceSamples else { return nil }
         // A shorter interval may already have elapsed. Close at the new sample
         // boundary before any later tap can append the start of the next phrase.
-        defer { self = SpeechGate(held: held, endOfSpeechMs: duration) }
+        let excess = quiet - silenceSamples
+        let nextLead = Array(lead.suffix(excess))
+        defer {
+            self = SpeechGate(held: held, endOfSpeechMs: duration)
+            lead = nextLead
+        }
         guard !discarding else { return nil }
-        samples.removeLast(quiet - silenceSamples)
+        samples.removeLast(excess)
         return segment(samples)
     }
 
@@ -166,22 +172,25 @@ struct SpeechGate {
         if let prefix = overflowPrefix, endNs > prefix.startNs + Int64(Self.maxSegmentSamples) * Segment.sampleNs + 2_000_000_000 {
             overflowPrefix = nil
         }
-        if samples.isEmpty && !discarding {
-            if !active {
-                lead = Array((lead + frame).suffix(2400))
-                return nil
-            }
+        // Keep the latest quiet samples, including a soft onset after a boundary moved by a live edit.
+        if !active {
+            lead = Array((lead + frame).suffix(Self.maxLeadSamples))
+            if samples.isEmpty && !discarding { return nil }
+        } else if samples.isEmpty && !discarding {
             startNs = endNs - Int64(lead.count + frame.count) * Segment.sampleNs
             capturedAt = toUnixMs(startNs)
             firstVoicedSample = lead.count + (frame.firstIndex { abs($0) > Self.activityFloor } ?? frame.count)
             samples = lead
-            lead.removeAll()
         }
+        if active { lead.removeAll(keepingCapacity: true) }
         // A quiet frame may straddle both the silence boundary and the buffer limit.
         let count = active ? frame.count : min(frame.count, silenceSamples - quiet)
         quiet = active ? 0 : quiet + count
         let ended = quiet == silenceSamples
-        if ended { quiet = 0 }
+        if ended {
+            quiet = 0
+            lead = Array(lead.suffix(frame.count - count))
+        }
 
         if !discarding && count <= Self.maxSegmentSamples - samples.count {
             samples.append(contentsOf: frame.prefix(count))

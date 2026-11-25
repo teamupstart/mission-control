@@ -200,8 +200,10 @@ After applying the directive, pass the opaque revision back as `?revision=...` t
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
 Automatic capture directives also include a `captureRevision` that stays valid across
 silence delay edits. Both listeners send that revision with automatic utterances. The Swift listener
-updates the open microphone's silence boundary in place. Sherpa reprocesses unfinished recording
-audio with the new delay. A change in capture
+updates the open microphone's silence boundary in place. When a shorter delay closes a phrase
+immediately, up to 150 ms of quiet audio after the new boundary supplies the next phrase's lead-in.
+Sherpa reprocesses unfinished recording audio with the new delay. During silence it retains
+only the onset lead-in for replay. A change in capture
 authorization discards that audio, including a mute and unmute between polls.
 `pauseMs` is optional and unused. This daemon sends null.
 
@@ -620,7 +622,9 @@ checkout. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit flo
 The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
 The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
-permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances. During
+permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances.
+The selected pause still applies after 20 seconds of speech. If a command exceeds the 30-second
+capture limit before the pause completes, Sherpa drops the command and resumes at the next phrase. During
 playback the development listener reports its file input as granted and enumerates
 zero microphones. Use ordinary listening mode for playback. After the file ends,
 allow the listener’s 30-second lease to expire before launching another process. The packaged app excludes file playback. The desktop

@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { OfflineRecognizer, Vad } from "sherpa-onnx-node";
 import { playRecording } from "./playback.ts";
-import { recordingSegments } from "./segments.ts";
+import { recordingSegments, WINDOW } from "./segments.ts";
 import { readRecording } from "./recording.ts";
 import { loadVoiceHostClock } from "../server/voice/native-clock.ts";
 import { VOICE_MODELS, VOICE_TEST_MODEL, VoiceModelManifestSchema } from "../shared/voice-models.ts";
@@ -41,7 +41,9 @@ const recognizer = new OfflineRecognizer({
 });
 const detectorModel = modelFile("onnx/model.onnx");
 const createVad = (endOfSpeechMs: number) => new Vad({
-  sileroVad: { model: detectorModel, windowSize: 512, minSilenceDuration: endOfSpeechMs / 1000, minSpeechDuration: 0.15 },
+  // recordingSegments enforces the 30-second cap before Silero can shorten the selected pause.
+  sileroVad: { model: detectorModel, windowSize: WINDOW, minSilenceDuration: endOfSpeechMs / 1000,
+    minSpeechDuration: 0.15, maxSpeechDuration: 60 },
   numThreads: 1, sampleRate: 16000,
 }, 60);
 

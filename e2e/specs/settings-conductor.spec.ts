@@ -203,7 +203,7 @@ test("Engineer host migrates the legacy SDK value and persists an explicit Termi
 
   const selectTerminal = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PATCH",
   );
   await terminal.check();
   expect((await selectTerminal).ok()).toBe(true);
@@ -215,7 +215,7 @@ test("Engineer host migrates the legacy SDK value and persists an explicit Termi
 
   const selectSdk = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PUT",
+      response.url().endsWith("/api/pipelines/config") && response.request().method() === "PATCH",
   );
   await sdk.check();
   expect((await selectSdk).ok()).toBe(true);
@@ -225,6 +225,58 @@ test("Engineer host migrates the legacy SDK value and persists an explicit Termi
   ).toBeVisible();
   await expect(page.getByText(/Installed at .*conduct-ts/)).toBeVisible();
   await shoot(page, "04-sdk-runtime-selected");
+});
+
+test("a stale Engineer runtime panel cannot restore revoked pipeline consent", async ({ page, browser, daemon }) => {
+  const path = "/api/pipelines/config";
+  const enabled = await page.request.put(`${daemon.baseURL}${path}`, {
+    data: {
+      enabled: true, foremanMechanicalTriage: true, launchRuntime: "agent-sdk",
+      repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
+    },
+  });
+  expect(enabled.ok()).toBe(true);
+
+  // Hold this panel's polling while another dashboard withdraws both grants.
+  const time = new Date();
+  await page.clock.install({ time });
+  await page.clock.pauseAt(new Date(time.getTime() + 500));
+  const peer = await browser.newPage();
+  try {
+    await openConductor(page, daemon.baseURL);
+    await openConductor(peer, daemon.baseURL);
+    const observe = "Observe conductor pipelines";
+    const triage = "Triage mechanical pipeline halts";
+    for (const name of [triage, observe]) {
+      const toggle = peer.getByRole("checkbox", { name });
+      await expect(toggle).toBeChecked();
+      const saved = peer.waitForResponse(response =>
+        response.url().endsWith(path) && response.request().method() === "PUT");
+      await peer.locator("label.sc-switch").filter({ has: toggle }).click();
+      expect((await saved).ok()).toBe(true);
+      await expect(toggle).not.toBeChecked();
+    }
+    await expect(page.getByRole("checkbox", { name: observe })).toBeChecked();
+    await expect(page.getByRole("checkbox", { name: triage })).toBeChecked();
+
+    const saved = page.waitForResponse(response =>
+      response.url().endsWith(path) && response.request().method() !== "GET");
+    const terminal = page.getByRole("radio", { name: /Terminal/ });
+    await terminal.check();
+    const result = await saved;
+    expect(result.ok()).toBe(true);
+    const expected = { enabled: false, foremanMechanicalTriage: false, launchRuntime: "terminal" };
+    expect(await result.json()).toMatchObject({ config: expected });
+    expect(await (await page.request.get(`${daemon.baseURL}${path}`)).json()).toMatchObject({ config: expected });
+    expect(result.request().method()).toBe("PATCH");
+    expect(result.request().postDataJSON()).toEqual({ launchRuntime: "terminal" });
+    await expect(page.getByRole("checkbox", { name: observe })).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: triage })).not.toBeChecked();
+    await expect(terminal).toBeChecked();
+    await shoot(page, "inspector-runtime-preserves-revocation", page.getByRole("heading", { name: "Launch runtime" }));
+  } finally {
+    await peer.close();
+  }
 });
 
 test("Conductor keeps a newer runtime through delayed reads and consent-only saves", async ({ page, daemon }) => {
@@ -289,8 +341,16 @@ test("Conductor keeps a newer runtime through delayed reads and consent-only sav
     await hold;
     await route.fulfill({ response: firstSave });
   }, { times: 1 });
+  const sentRuntimes: string[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith(path) && request.method() === "PATCH") {
+      sentRuntimes.push(request.postDataJSON().launchRuntime);
+    }
+  });
   await observationSwitch.click();
   await sent;
+  await terminal.check();
+  await sdk.check();
   await terminal.check();
   await observationSwitch.click();
   const settled = page.waitForResponse(response =>
@@ -298,6 +358,7 @@ test("Conductor keeps a newer runtime through delayed reads and consent-only sav
     && response.request().postDataJSON().enabled === true);
   releaseConsent();
   expect(await (await settled).json()).toMatchObject({ config: { enabled: true, launchRuntime: "terminal" } });
+  expect(sentRuntimes).toEqual(["terminal"]);
   await expect(terminal).toBeChecked();
 });
 
@@ -317,7 +378,7 @@ test("Conductor reports a failed runtime change after a later consent save", asy
   const sent = new Promise<void>(resolve => { runtimeSent = resolve; });
   let refused = false;
   await page.route(`**${path}`, async route => {
-    if (route.request().method() !== "PUT" || refused) return route.continue();
+    if (route.request().method() !== "PATCH" || refused) return route.continue();
     expect(route.request().postDataJSON()).toMatchObject({ launchRuntime: "terminal" });
     refused = true;
     runtimeSent();
@@ -338,7 +399,7 @@ test("Conductor reports a failed runtime change after a later consent save", asy
   await shoot(page, "coderabbit-conductor-runtime-save-refused", failure);
 
   const retry = page.waitForResponse(response => response.url().endsWith(path)
-    && response.request().method() === "PUT" && response.request().postDataJSON().launchRuntime === "terminal");
+    && response.request().method() === "PATCH" && response.request().postDataJSON().launchRuntime === "terminal");
   await terminal.check();
   expect((await retry).ok()).toBe(true);
   await expect(failure).toHaveCount(0);

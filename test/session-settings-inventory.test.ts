@@ -97,7 +97,7 @@ test("the live owner catalog and explicit dispositions cover every indexed contr
     })(),
     ...specializedSettings({ away: neverWrite, repoIndex: neverWrite }),
     ...workflowDefaultSettings(() => null, neverWrite, neverWrite),
-    pipelineRuntimeSetting(neverWrite, neverWrite),
+    pipelineRuntimeSetting(neverWrite),
     ...taskSourceSettings({ read: () => sources, apply: neverWrite, changed: neverWrite }),
   ];
   const keys = new Set(catalog.map(setting => setting.key));

@@ -269,6 +269,7 @@ import {
   SetupInstallerLaunchSchema,
   SetupServiceStartSchema,
   PipelineRepoRegistrationSchema,
+  PipelineRuntimePatchSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesUpdateSchema,
@@ -542,6 +543,7 @@ import {
   type PipelineConsoleResult,
   type PipelineForemanView,
   type PipelineInstallerLaunchResult,
+  type PipelineLaunchRuntime,
   type PipelinesView,
 } from "@shared/pipeline.ts";
 import { schedulePipelineRefresh } from "./pipelines/index.ts";
@@ -8929,6 +8931,19 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     publishSettingsStatus(registry);
     return saved;
   };
+  const applyPipelineLaunchRuntime = (launchRuntime: PipelineLaunchRuntime): PipelineLaunchRuntime => {
+    const current = getPipelinesConfig();
+    if (current.launchRuntime === launchRuntime) return launchRuntime;
+    const saved = applyPipelineSettings({ ...current, launchRuntime });
+    settingsChanged("pipelines.launchRuntime");
+    return saved.launchRuntime;
+  };
+  app.patch("/api/pipelines/config", async (c) => {
+    const parsed = await parseBody(c, PipelineRuntimePatchSchema);
+    if (!parsed.ok) return parsed.res;
+    applyPipelineLaunchRuntime(parsed.data.launchRuntime);
+    return c.json(await pipelinesView(false));
+  });
   app.put("/api/pipelines/config", async (c) => {
     const parsed = await parseBody(c, PipelinesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
@@ -9636,7 +9651,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     },
   }, settingsChanged);
   const workflowDefaults = workflowDefaultSettings(workflowManager, applyWorkflowPreferences, settingsChanged);
-  const pipelineRuntime = pipelineRuntimeSetting(applyPipelineSettings, settingsChanged);
+  const pipelineRuntime = pipelineRuntimeSetting(applyPipelineLaunchRuntime);
   registerSessionSettingsRoutes(app, registry, authorizeSessionSettings, () => [
     ...getTypedSettings(), ...specialized, ...workflowDefaults, pipelineRuntime,
     ...taskSourceSettings({ read: getTaskSourcesConfig, apply: applyTaskSourceSettings, changed: settingsChanged }),

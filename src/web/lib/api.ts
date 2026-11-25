@@ -190,6 +190,7 @@ import type {
   PipelineRepoRegistrationResponse,
   PipelineReposView,
   PipelineRunDetail,
+  PipelineLaunchRuntime,
   PipelinesView,
 } from "@shared/pipeline.ts";
 import type { Attachment } from "@shared/attachments.ts";
@@ -568,20 +569,21 @@ export const fetchPipelines = (refresh = false) =>
   fetchJson<PipelinesView>(`/api/pipelines/config${refresh ? "?refresh=1" : ""}`);
 
 /**
- * Replace observation consent and keep the returned pipeline status array intact.
+ * Save pipeline config and keep the returned repository status array intact.
  *
  * This cannot use the generic mutation helper: that helper adds the HTTP `status` number to
  * every answer, while `PipelinesView.status` is the repository health array. Flattening both
  * shapes would replace the array with `200` precisely when a consent write succeeds.
  */
-export async function setPipelinesConfig(
-  config: PipelinesConfigPatch,
+async function writePipelinesConfig(
+  request: { method: "PUT"; config: PipelinesConfigPatch }
+    | { method: "PATCH"; config: { launchRuntime: PipelineLaunchRuntime } },
 ): Promise<{ ok: true; view: PipelinesView } | { ok: false; error: string }> {
   try {
     const res = await actionFetch("/api/pipelines/config", {
-      method: "PUT",
+      method: request.method,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(config),
+      body: JSON.stringify(request.config),
     });
     const data = (await res.json().catch(() => ({}))) as Partial<PipelinesView> & {
       error?: string;
@@ -596,6 +598,10 @@ export async function setPipelinesConfig(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export function setPipelinesConfig(config: PipelinesConfigPatch) {
+  return writePipelinesConfig({ method: "PUT", config });
 }
 // ---- Repository standing instructions ----
 //
@@ -2649,6 +2655,8 @@ export const api = {
 
   // --- Pipelines (observing an external SDLC engine) ---
   setPipelines: setPipelinesConfig,
+  setPipelineRuntime: (launchRuntime: PipelineLaunchRuntime) =>
+    writePipelinesConfig({ method: "PATCH", config: { launchRuntime } }),
   registerPipelineRepo: (provider: PipelineProviderId, repoRoot: string) =>
     post<ActionResult & PipelineRepoRegistrationResponse>(`/api/pipelines/register`, {
       provider,

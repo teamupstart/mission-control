@@ -1,6 +1,5 @@
 import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO, taskDefaultWorkflowId, type HarnessLaunchedTaskKind, type KindWorkflowDefaults } from "@shared/task.ts";
-import { PipelinesConfigSchema, type PipelinesConfig } from "@shared/pipeline.ts";
-import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
+import type { PipelineLaunchRuntime } from "@shared/pipeline.ts";
 import { getWorkflowPolicy } from "./workflows/config.ts";
 import type { WorkflowManager } from "./workflows/manager.ts";
 import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
@@ -10,7 +9,7 @@ import { z } from "zod";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/feature-flags.ts";
-import { AwayConfigPatchSchema, type AwayConfigPatch } from "@shared/protocol.ts";
+import { AwayConfigPatchSchema, PipelineRuntimePatchSchema, type AwayConfigPatch, type WorkflowPolicyPatch } from "@shared/protocol.ts";
 import { RepoIndexConfigPatchSchema, type RepoIndexConfig, type RepoIndexConfigPatch } from "@shared/repo-index.ts";
 import { ShapingSettingsIntentSchema, type ShapingConfig } from "@shared/shaping.ts";
 import {
@@ -271,16 +270,11 @@ export function workflowDefaultSettings(
 }
 
 export function pipelineRuntimeSetting(
-  apply: (config: PipelinesConfig) => PipelinesConfig,
-  changed: (key: string) => void,
+  apply: (launchRuntime: PipelineLaunchRuntime) => PipelineLaunchRuntime,
 ): SettingDescriptor {
   return scalarIntent("pipelines.launchRuntime", "conductor-launch-runtime",
-    PipelinesConfigSchema.shape.launchRuntime.unwrap(), {
+    PipelineRuntimePatchSchema.shape.launchRuntime, {
       read: () => getPipelinesConfig().launchRuntime,
-      apply(launchRuntime) {
-        const saved = apply({ ...getPipelinesConfig(), launchRuntime });
-        changed("pipelines.launchRuntime");
-        return saved.launchRuntime;
-      },
+      apply,
     });
 }

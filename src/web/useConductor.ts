@@ -34,6 +34,8 @@ function pipelineConsent({ enabled, foremanMechanicalTriage, repos }: PipelinesC
   return { enabled, foremanMechanicalTriage, repos };
 }
 
+type ConductorConfigEdit = PipelinesConfig | Pick<PipelinesConfig, "launchRuntime">;
+
 /** Compose observation consent without disturbing any other provider or repository choice. */
 export function configWithObservation(
   config: PipelinesConfig,
@@ -66,8 +68,8 @@ export interface ConductorState {
   view: PipelinesView | null;
   /** Canonical repository roots from Mission Control's existing workspace catalog. */
   workspaceRepos: string[];
-  /** Write the whole consent config. Applied optimistically, reverted if refused. */
-  save: (config: PipelinesConfig, options?: { includeRuntime: true }) => Promise<boolean>;
+  /** Write a consent snapshot or a runtime preference. Applied optimistically, reverted if refused. */
+  save: (config: ConductorConfigEdit) => Promise<boolean>;
   /** Register with the provider, then enable Mission Control observation after confirmation. */
   registerAndObserve: (provider: PipelineProviderId, repoRoot: string) => Promise<boolean>;
   /** Recovery after provider registration succeeded but the observation write did not. */
@@ -111,6 +113,8 @@ export function useConductor(active: boolean): ConductorState {
   const [installerNotice, setInstallerNotice] = useState<ConductorInstallerNotice | null>(null);
   const viewRef = useRef<PipelinesView | null>(null);
   const editSeq = useRef(0);
+  const consentEditSeq = useRef(0);
+  const runtimeEditSeq = useRef(0);
   const writeGen = useRef(0);
   const readSeq = useRef(0);
   /** Non-null while the two-step setup flow owns the view. Ordinary polls stand down. */
@@ -209,33 +213,35 @@ export function useConductor(active: boolean): ConductorState {
   }, [active, missingProbeCheckedAt]);
 
   const save = useCallback(
-    async (config: PipelinesConfig, options?: { includeRuntime: true }): Promise<boolean> => {
+    async (config: ConductorConfigEdit): Promise<boolean> => {
       const before = viewRef.current;
       if (!before) return false;
-      const update = options?.includeRuntime ? config : pipelineConsent(config);
+      const consent = "enabled" in config ? pipelineConsent(config) : null;
+      const update = consent ?? { launchRuntime: config.launchRuntime };
+      const latestEdit = consent ? consentEditSeq : runtimeEditSeq;
       const seq = ++editSeq.current;
+      latestEdit.current = seq;
       setView({ ...before, config: { ...before.config, ...update } });
 
       const queued = writing.current;
       const attempt = (async (): Promise<boolean> => {
         await queued;
-        // A later consent edit carries earlier consent changes, but no runtime choice.
-        if (!readIsCurrent(seq, editSeq.current) && !options?.includeRuntime) return true;
-        const res = await api.setPipelines(update);
+        // Each request supersedes only older queued edits to the same part of the config.
+        if (!readIsCurrent(seq, latestEdit.current)) return true;
+        const res = await (consent ? api.setPipelines(consent) : api.setPipelineRuntime(config.launchRuntime));
         // The request may have been current when it left and become stale while it was on the
         // wire. A later optimistic edit owns the screen now, so this response may invalidate
         // old polls but must never replace or roll back that newer state.
         if (res.ok) writeGen.current += 1;
-        if (options?.includeRuntime) {
-          setRuntimeError(res.ok ? null : whyItFailed(res.error, "The Engineer runtime choice wasn't saved."));
+        if (readIsCurrent(seq, latestEdit.current)) {
+          if (consent) setError(res.ok ? null : whyItFailed(res.error));
+          else setRuntimeError(res.ok ? null : whyItFailed(res.error, "The Engineer runtime choice wasn't saved."));
         }
         if (!readIsCurrent(seq, editSeq.current)) return res.ok;
         if (!res.ok) {
-          if (!options?.includeRuntime) setError(whyItFailed(res.error));
           setView(before);
           return false;
         }
-        setError(null);
         setView(res.view);
         return true;
       })();
@@ -248,6 +254,7 @@ export function useConductor(active: boolean): ConductorState {
   const enableObservation = useCallback(
     async (provider: PipelineProviderId, repoRoot: string): Promise<boolean> => {
       const seq = ++editSeq.current;
+      consentEditSeq.current = seq;
       const token = ++nextSetupToken.current;
       setupToken.current = token;
       setSetup({ repoRoot, phase: "observing" });
@@ -294,6 +301,7 @@ export function useConductor(active: boolean): ConductorState {
   const registerAndObserve = useCallback(
     async (provider: PipelineProviderId, requestedRoot: string): Promise<boolean> => {
       const seq = ++editSeq.current;
+      consentEditSeq.current = seq;
       const token = ++nextSetupToken.current;
       setupToken.current = token;
       setSetup({ repoRoot: requestedRoot, phase: "registering" });

@@ -186,6 +186,7 @@
   "PATCH /api/archives/:archiveKey": "503 {\"error\":\"archive library unavailable\"}",
   "PATCH /api/personas/:id": "503 {\"error\":\"Persona manager unavailable\"}",
   "PATCH /api/personas/:id/repository-access": "503 {\"error\":\"Persona manager unavailable\"}",
+  "PATCH /api/pipelines/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_union\\\",\\n    \\\"errors\\\": [\\n      [\\n        {\\n          \\\"code\\\": \\\"invalid_value\\\",\\n          \\\"values\\\": [\\n            \\\"agent-sdk\\\",\\n            \\\"terminal\\\"\\n          ],\\n          \\\"path\\\": [],\\n          \\\"message\\\": \\\"Invalid option: expected one of \\\\\\\"agent-sdk\\\\\\\"|\\\\\\\"terminal\\\\\\\"\\\"\\n        }\\n      ],\\n      [\\n        {\\n          \\\"code\\\": \\\"invalid_value\\\",\\n          \\\"values\\\": [\\n            \\\"claude-sdk\\\"\\n          ],\\n          \\\"path\\\": [],\\n          \\\"message\\\": \\\"Invalid input: expected \\\\\\\"claude-sdk\\\\\\\"\\\"\\n        }\\n      ]\\n    ],\\n    \\\"path\\\": [\\n      \\\"launchRuntime\\\"\\n    ],\\n    \\\"message\\\": \\\"Invalid input\\\"\\n  }\\n]\"}",
   "PATCH /api/residents/profiles/:id": "503 {\"error\":\"Resident service unavailable\"}",
   "PATCH /api/session-actions/:id": "503 {\"error\":\"session action manager unavailable\"}",
   "PATCH /api/sessions/:id/queue/:itemId": "404 {\"error\":\"no such session\"}",

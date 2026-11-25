@@ -108,7 +108,7 @@ follow the dashboard's feature and build gates.
 | `conductor-overview` | 3 | Status and actions | Commissioning and runs, withheld by this build |
 | `conductor-detection` | 3 | Status | Engine environment and availability, withheld by this build |
 | `conductor-enabled` | 3 | Protected | Activates observation of commissioned repositories. Withheld by this build. |
-| `conductor-launch-runtime` | 3 | Read/write | `pipelines.launchRuntime` uses pipeline reconciliation in builds that offer this panel. |
+| `conductor-launch-runtime` | 3 | Read/write | `pipelines.launchRuntime` and the dashboard’s runtime PATCH share a field-scoped owner that applies pipeline reconciliation while preserving saved observation and Foreman consent. |
 | `conductor-foreman-triage` | 3 | Protected | Grants automated intervention in the external engine. Withheld by this build. |
 | `task-kind-defaults` | 2 | Read/write | Harnesses `kindDefaults` agent, model and effort per task kind |
 | `llm-jobs` | 2 | Read/write | LLM `runner`, per-job `models`, `runners`, `efforts`, and Claude/Codex transport choices with the existing model and transport validation |

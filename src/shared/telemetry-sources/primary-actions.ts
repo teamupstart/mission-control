@@ -148,6 +148,7 @@ export const PRIMARY_ACTION_ROUTES = [
   ["POST", "/mcp/pipelines/adopt", "pipeline.adopt", "pipelines"],
   ["POST", "/mcp/pipelines/workspace", "pipeline.workspace", "pipelines"],
   ["PUT", "/api/pipelines/config", "pipeline.configure", "pipelines"],
+  ["PATCH", "/api/pipelines/config", "pipeline.configure", "pipelines"],
   ["POST", "/api/pipelines/action", "pipeline.action", "pipelines"],
   ["POST", "/api/pipelines/console", "pipeline.console", "pipelines"],
   ["POST", "/api/tasks/:id/pipeline/readiness", "pipeline.readiness", "pipelines"],

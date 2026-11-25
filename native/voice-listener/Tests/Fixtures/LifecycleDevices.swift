@@ -34,8 +34,7 @@ final class Segment {
     private let exclusive: Bool
     let opening: Int
     let segments: AsyncStream<Segment>
-    // This device yields completed segments and has no unfinished PCM between them.
-    var preview: Segment? { nil }
+    private(set) var preview: Segment?
     private(set) var isRunning = true
     private var disruption: DispatchSourceSignal?
     private var heldPhrases: [Segment] = []
@@ -82,6 +81,18 @@ final class Segment {
                 Recognizer.pendingDecode = nil
             }
             observe("holding audio")
+        } else if selection == "hands-free-dictation" {
+            let partial = Segment("Steve, check")
+            preview = partial
+            onSpeechStart(partial.speechStartHostUs)
+            signal(SIGUSR1, SIG_IGN)
+            let endpoint = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+            endpoint.setEventHandler { [weak self] in
+                self?.preview = nil
+                self?.source.yield(Segment("Steve, check the build"))
+            }
+            disruption = endpoint
+            endpoint.resume()
         } else if selection == "stalled-onset" {
             for segment in [Segment("Cancel."), Segment("next", endedAt: 2, onset: 1625)] {
                 onSpeechStart(segment.speechStartHostUs)
@@ -139,7 +150,12 @@ final class Segment {
     deinit { observe("released microphone \(opening)") }
 }
 
-struct FixtureUtterance: Encodable { let text: String }
+struct FixtureUtterance: Encodable {
+    let id = UUID().uuidString
+    let backend = "fluidaudio"
+    let capturedAt = Int64(Date().timeIntervalSince1970 * 1000)
+    let text: String
+}
 
 @MainActor struct Recognizer {
     static var pendingDecode: CheckedContinuation<Void, Never>?

@@ -421,3 +421,113 @@ test("addressed speech reaches its session when the editor's blur report is dela
     listener.stop();
   }
 });
+
+for (const scenario of ["split text nodes", "overlapping phrases", "refocused correction", "moved number caret", "moved email caret"] as const) {
+  test("dictation preserves the editing range across " + scenario, async ({ dashboard: page, daemon }) => {
+    await setupCards(page, daemon);
+    const listener = await beListener(daemon);
+    try {
+      await page.evaluate(scenario => {
+        const field = document.createElement(scenario === "split text nodes" ? "div" : "input");
+        if (field instanceof HTMLInputElement) {
+          if (scenario === "moved number caret" || scenario === "moved email caret") {
+            field.type = scenario === "moved number caret" ? "number" : "email";
+            field.value = "11";
+          }
+        } else {
+          field.contentEditable = "true";
+          field.setAttribute("role", "textbox");
+        }
+        field.setAttribute("aria-label", "Draft for dictation");
+        document.body.prepend(field);
+        field.focus();
+      }, scenario);
+      const draft = page.getByLabel("Draft for dictation");
+      const frames: string[] = [];
+      await page.exposeFunction("heardDraftFrame", (text: string) => frames.push(text));
+      await page.evaluate(() => window.addEventListener("voice-dictation", event => {
+        (window as Window & { heardDraftFrame(text: string): void }).heardDraftFrame((event as CustomEvent).detail.text);
+      }));
+      const speech = await startSpeech(daemon);
+      if (scenario === "split text nodes") {
+        await speech.preview("green apples");
+        await expect(draft).toHaveText("green apples");
+        // Syntax decoration splits the text without moving the logical caret.
+        await draft.evaluate(field => {
+          const tail = (field.firstChild as Text).splitText(6);
+          const span = document.createElement("span");
+          tail.replaceWith(span);
+          span.append(tail);
+          document.getSelection()!.collapse(tail, tail.length);
+        });
+        await speech.finish("red pears");
+        await expect(draft).toHaveText("red pears");
+      } else if (scenario === "overlapping phrases") {
+        await speech.preview("one");
+        await expect(draft).toHaveValue("one");
+        const second = await startSpeech(daemon);
+        await second.preview("two");
+        await expect(draft).toHaveValue("one two");
+        await speech.finish("first phrase");
+        await expect(draft).toHaveValue("first phrase two");
+        await second.finish("second phrase");
+        await expect(draft).toHaveValue("first phrase second phrase");
+      } else if (scenario === "refocused correction") {
+        await speech.preview("ship");
+        await expect(draft).toHaveValue("ship");
+        await draft.fill("wait");
+        await page.getByRole("button", { name: "Dispatch", exact: true }).focus();
+        await draft.focus();
+        await speech.finish("ship today");
+        await expect.poll(() => frames).toContain("ship today");
+        await expect(draft).toHaveValue("wait");
+      } else {
+        await draft.press("End");
+        await speech.preview("1");
+        await expect(draft).toHaveValue("111");
+        await draft.press("ArrowLeft");
+        await draft.press("ArrowLeft");
+        await speech.finish("2");
+        await expect.poll(() => frames).toContain("2");
+        await expect(draft).toHaveValue("111");
+        await page.keyboard.insertText("3");
+        await expect(draft).toHaveValue("1311");
+      }
+      await captureCard(draft, "dictation-" + scenario.replaceAll(" ", "-"));
+    } finally {
+      listener.stop();
+    }
+  });
+}
+
+test("hands-free FluidAudio updates Dispatch before the microphone ends the phrase", async ({ dashboard: page, daemon }) => {
+  test.skip(process.platform !== "darwin", "Requires the macOS Swift listener");
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await page.getByRole("button", { name: "Dispatch", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
+  await expectContentClearsBorder(dialog);
+  const task = dialog.getByPlaceholder("What should this agent do?");
+  await expect(task).toBeFocused();
+  expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: {
+    inputDevice: "hands-free-dictation", backend: "fluidaudio", showTranscript: false,
+  } })).ok()).toBe(true);
+  const binary = join(daemon.home, "fixture-listener");
+  await promisify(execFile)("swiftc", ["-parse-as-library", "native/voice-listener/Sources/VoiceListener/Listener.swift",
+    "native/voice-listener/Sources/VoiceListener/Playback.swift", "native/voice-listener/Tests/Fixtures/LifecycleDevices.swift", "-o", binary]);
+  const listener = promisify(execFile)(binary, [], { env: { ...process.env, MISSION_VOICE_DAEMON_URL: daemon.baseURL,
+    MISSION_VOICE_TOKEN_FILE: join(daemon.home, "token"), MISSION_VOICE_MODEL_DIR: daemon.home } });
+  const stopped = listener.then(() => null, error => error);
+  try {
+    await expect(task).toHaveValue("Steve, check");
+    await captureCard(dialog, "fluidaudio-hands-free-interim");
+    listener.child.kill("SIGUSR1");
+    await expect(task).toHaveValue("Steve, check the build");
+    expect((await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries).toHaveLength(0);
+  } finally {
+    listener.child.kill();
+    await stopped;
+  }
+  const error = await stopped;
+  if (error && error.signal !== "SIGTERM") throw error;
+});

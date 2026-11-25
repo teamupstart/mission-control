@@ -141,7 +141,7 @@ struct SpeechGate {
     }
 
     // A copy-on-write snapshot of this unfinished phrase. Preview decoding never drains the gate.
-    var preview: Segment? { samples.isEmpty ? nil : segment(samples) }
+    var preview: Segment? { samples.isEmpty || discarding ? nil : segment(samples) }
 
     func canRecover(with pending: [Float]) -> Bool {
         overflowPrefix != nil || !samples.isEmpty || (!discarding && pending.contains { abs($0) > Self.activityFloor })
@@ -154,8 +154,6 @@ struct SpeechGate {
         self = SpeechGate(held: held, endOfSpeechMs: endOfSpeechMs, onSegmentDropped: onSegmentDropped)
         discarding = interruptedSpeech
     }
-
-    var partial: Segment? { samples.isEmpty || discarding ? nil : segment(samples) }
 
     private func segment(_ pcm: [Float]) -> Segment {
         Segment(samples: pcm, startNs: startNs, capturedAt: capturedAt, firstVoicedSample: firstVoicedSample)
@@ -250,7 +248,6 @@ final class SpeechSegmenter {
 
     deinit { fvad_free(detector) }
 
-    var partial: Segment? { gate.partial }
     var preview: Segment? { gate.preview }
     var endOfSpeechMs: Int { gate.endOfSpeechMs }
     func updateEndOfSpeechMs(_ duration: Int) -> Segment? { gate.updateEndOfSpeechMs(duration) }
@@ -318,7 +315,6 @@ final class SpeechSegmenter {
 final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
-    var partial: Segment? { segmenter.partial }
     var preview: Segment? { segmenter.preview }
     private var segmenter: SpeechSegmenter
     private let held: Bool
@@ -581,14 +577,6 @@ final class Microphone {
     func updateEndOfSpeechMs(_ duration: Int) {
         tapLock.withLock {
             if let segment = segmenter?.updateEndOfSpeechMs(duration) { enqueue(segment) }
-        }
-    }
-
-    @MainActor func previewDictation(while active: () -> Bool, consume: (Segment) async -> Void) async throws {
-        while active() {
-            try await Task.sleep(for: .milliseconds(750))
-            guard active() else { return }
-            if let sample = tapLock.withLock({ segmenter?.partial }) { await consume(sample) }
         }
     }
 

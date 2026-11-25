@@ -17,65 +17,128 @@ function isControl(field: HTMLElement): field is HTMLInputElement | HTMLTextArea
   return field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement;
 }
 
-/** Capture the caret and the field after an interim edit. A user edit or caret
- * move cancels replacement for the rest of that phrase. */
-function replacement(field: HTMLElement, inserted: string): () => boolean {
-  if (isControl(field) && field.selectionStart !== null) {
-    const end = field.selectionStart;
-    const value = field.value;
-    const start = end - inserted.length;
-    return () => {
-      if (field.value !== value || start < 0 || value.slice(start, end) !== inserted ||
-          field.selectionStart !== end || field.selectionEnd !== end) return false;
-      field.setSelectionRange(start, end);
-      return true;
-    };
-  }
-  if (isControl(field)) {
-    const value = field.value;
-    // Chromium supports native selection movement in email and number fields
-    // even though their HTML selectionStart and setSelectionRange APIs are unavailable.
-    return () => {
-      const selection = document.getSelection();
-      if (!selection || field.value !== value || selection.toString()) return false;
-      const characters = new Intl.Segmenter().segment(inserted);
-      for (const _ of characters) selection.modify("extend", "backward", "character");
-      if (selection.toString() === inserted) return true;
-      selection.modify("move", "forward", "character");
-      return false;
-    };
-  }
-  const selection = document.getSelection();
-  const node = selection?.focusNode;
-  const end = selection?.focusOffset ?? 0;
-  return () => {
-    if (!selection || !node || node.nodeType !== Node.TEXT_NODE || !field.contains(node) ||
-        !selection.isCollapsed || selection.focusNode !== node || selection.focusOffset !== end ||
-        end < inserted.length || node.textContent?.slice(end - inserted.length, end) !== inserted) return false;
-    selection.setBaseAndExtent(node, end - inserted.length, node, end);
-    return true;
-  };
+function valueOf(field: HTMLElement): string {
+  return isControl(field) ? field.value : field.textContent ?? "";
 }
 
+// DOM Range offsets are local to a node. Use text offsets within the editing host
+// so syntax highlighting can split or replace those nodes between transcripts.
+function caret(field: HTMLElement): number | null {
+  if (isControl(field) && field.selectionStart !== null) {
+    return field.selectionStart === field.selectionEnd ? field.selectionStart : null;
+  }
+  const selection = document.getSelection();
+  if (!selection || !selection.isCollapsed) return null;
+  if (isControl(field)) {
+    // Email and number expose their native selection to Selection.modify only.
+    // Measure the prefix, then collapse back to the original end of the selection.
+    selection.modify("extend", "backward", "lineboundary");
+    const prefix = selection.toString();
+    if (prefix) selection.modify("move", "forward", "character");
+    return prefix.length;
+  }
+  if (!selection.focusNode || !field.contains(selection.focusNode)) return null;
+  const range = document.createRange();
+  range.selectNodeContents(field);
+  range.setEnd(selection.focusNode, selection.focusOffset);
+  return range.toString().length;
+}
+
+function selectOffsets(field: HTMLElement, start: number, end: number): boolean {
+  if (isControl(field) && field.selectionStart !== null) {
+    field.setSelectionRange(start, end);
+    return true;
+  }
+  const selection = document.getSelection();
+  if (!selection) return false;
+  if (isControl(field)) {
+    selection.modify("move", "backward", "lineboundary");
+    const segments = new Intl.Segmenter();
+    for (const _ of segments.segment(field.value.slice(0, start))) selection.modify("move", "forward", "character");
+    for (const _ of segments.segment(field.value.slice(start, end))) selection.modify("extend", "forward", "character");
+    return selection.toString() === field.value.slice(start, end);
+  }
+  const nodes = document.createTreeWalker(field, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  let offset = 0;
+  let foundStart = false;
+  for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
+    const next = offset + (node as Text).length;
+    if (!foundStart && start <= next) {
+      range.setStart(node, start - offset);
+      foundStart = true;
+    }
+    if (end <= next) {
+      range.setEnd(node, end - offset);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    }
+    offset = next;
+  }
+  return false;
+}
+
+type Span = { start: number; end: number; space: string; text: string; target: string };
+
 export class DictationEditor {
-  private pending?: { capture: string; target: string; select: () => boolean; text: string; space: string };
+  // A final decode can arrive after another capture has already inserted its preview.
+  // A null entry protects a manually edited phrase until its final arrives.
+  private readonly spans = new Map<string, Span | null>();
+  private value = "";
+  private cursor: number | null = null;
+
+  interrupt(): void {
+    for (const capture of this.spans.keys()) this.spans.set(capture, null);
+  }
 
   insert(field: HTMLElement, message: Dictation): void {
-    const prior = this.pending?.capture === message.capture ? this.pending : undefined;
-    const sameFocus = prior?.target === message.target;
-    if (sameFocus && message.text === prior?.text) {
-      if (!message.interim) this.pending = undefined;
-      return;
+    const previous = this.spans.get(message.capture);
+    if (!message.interim) this.spans.delete(message.capture);
+    if (previous === null) return;
+    const value = valueOf(field);
+    const cursor = caret(field);
+    // When returning to an unmodified field, an explicit selection is the new insertion range.
+    const newSelection = previous && previous.target !== message.target && cursor === null;
+    if (value !== this.value || (cursor !== this.cursor && !newSelection)) {
+      this.interrupt();
+      if (previous) return;
     }
-    const replacing = prior?.select() ? prior : undefined;
-    if (sameFocus && !replacing) return;
-    const selection = document.getSelection();
-    const before = isControl(field) ? field.value.slice(0, field.selectionStart ?? 0)
-      : selection?.anchorNode?.textContent?.slice(0, selection.anchorOffset) ?? "";
+    const replacing = newSelection ? undefined : previous;
+    if (replacing?.text === message.text) return;
+    if (replacing && !selectOffsets(field, replacing.start, replacing.end)) return;
+
+    const before = isControl(field) ? value.slice(0, field.selectionStart ?? 0) : value.slice(0, cursor ?? 0);
     const space = replacing?.space ?? (/[\p{L}\p{N}.!?]$/u.test(before) && /^[\p{L}\p{N}]/u.test(message.text) ? " " : "");
     const inserted = space + message.text;
-    // The native edit fires input for React and CodeMirror, and participates in Undo.
     if (!document.execCommand("insertText", false, inserted)) return;
-    this.pending = message.interim ? { capture: message.capture, target: message.target, text: message.text, space, select: replacement(field, inserted) } : undefined;
+    const updated = valueOf(field);
+    const end = caret(field);
+    if (end === null || !updated.slice(0, end).endsWith(inserted)) {
+      this.interrupt();
+      if (message.interim) this.spans.set(message.capture, null);
+      return;
+    }
+    const start = end - inserted.length;
+    const delta = updated.length - value.length;
+    const oldEnd = end - delta;
+    for (const [id, span] of this.spans) {
+      if (!span || id === message.capture) continue;
+      if (span.start >= oldEnd) {
+        span.start += delta;
+        span.end += delta;
+      } else if (span.end > start) this.spans.set(id, null);
+    }
+    this.cursor = end;
+    if (replacing && cursor !== null && cursor !== replacing.end) {
+      const restore = cursor < start ? cursor : cursor + delta;
+      if (selectOffsets(field, restore, restore)) this.cursor = restore;
+    }
+    this.value = updated;
+    if (message.interim) {
+      this.spans.set(message.capture, { start, end, space, text: message.text, target: message.target });
+      // A switched-away field may never receive the final for its old capture.
+      if (this.spans.size > 100) this.spans.delete(this.spans.keys().next().value!);
+    }
   }
 }

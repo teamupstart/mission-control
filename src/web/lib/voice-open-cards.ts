@@ -145,9 +145,21 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       editor.insert(field, message);
     };
     window.addEventListener("voice-dictation", dictate);
+    // Range-less inputs hide their native caret. Intercept navigation before the
+    // default action so a repeated digit at the new position cannot claim the edit.
+    const navigateNativeInput = (event: Event) => {
+      if (!(field instanceof HTMLInputElement) || field.selectionStart !== null || event.target !== field) return;
+      if (event instanceof KeyboardEvent && !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End",
+        "PageUp", "PageDown"].includes(event.key)) return;
+      editors.get(field)?.interrupt();
+    };
+    window.addEventListener("keydown", navigateNativeInput, true);
+    window.addEventListener("pointerdown", navigateNativeInput, true);
     window.addEventListener("voice-inbox-event", inboxEvent);
     return () => {
       window.removeEventListener("voice-dictation", dictate);
+      window.removeEventListener("keydown", navigateNativeInput, true);
+      window.removeEventListener("pointerdown", navigateNativeInput, true);
       window.removeEventListener("voice-inbox-event", inboxEvent);
       controller.abort();
       clearTimeout(retry);

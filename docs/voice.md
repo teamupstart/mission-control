@@ -13,7 +13,10 @@ dictation while a background dashboard is unresponsive. Routing to a session req
 dashboard to confirm that no editor has focus. Dictation replaces selected
 text at the caret. You can focus a field after you start speaking or switch fields mid-phrase.
 The next update puts the phrase so far in the focused field. The previous field keeps its last
-preview. The final transcript goes to the field focused at recognition. Once a field has claimed
+preview. The final transcript goes to the field focused at recognition. Each phrase replaces
+its own preview, even when the next phrase has already started. If you correct a preview,
+later recognition for that phrase preserves your edit, including after you return to the field.
+Once a field has claimed
 a phrase, leaving the field keeps that phrase out of session routing. Start a new phrase outside
 an editor to address a session. Names and commands such as “cancel” are ordinary draft text while editing.
 

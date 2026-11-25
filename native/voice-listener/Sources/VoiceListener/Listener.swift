@@ -159,9 +159,9 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         return isDictating(onset, revision: revision)
     }
 
-    func preview(_ words: Utterance, onset: Int64, revision: String) async throws {
+    func preview(_ text: String, onset: Int64, revision: String) async throws {
         struct Preview: Encodable { let phase = "preview"; let text: String; let speechStartUs: Int64 }
-        let body = try JSONEncoder().encode(Preview(text: words.text, speechStartUs: onset))
+        let body = try JSONEncoder().encode(Preview(text: text, speechStartUs: onset))
         let (_, response) = try await request("voice/listener/speech", revision: revision, body: body)
         if response.value(forHTTPHeaderField: "x-voice-dictation") != "1" {
             let key = SpeechKey(revision: revision, onset: onset)
@@ -294,6 +294,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     isRunning: @escaping () -> Bool, snapshot: @escaping () -> Segment?, pendingOnset: () -> Int64?,
     decode: @escaping (Segment) async throws -> String?,
     report: @escaping (String, Int64?, String?) async -> Bool,
+    editorFocused: @escaping (Int64) async -> Bool = { _ in false },
+    updateEditor: @escaping (Int64, String) async -> Void = { _, _ in },
     pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
 ) async {
     var decoding: Task<Void, Never>?
@@ -302,11 +304,15 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         if let segment = snapshot() {
             let onset = segment.speechStartHostUs
             // Renew capture independently of recognition, even while a slow decode is in flight.
-            if await report("audio", onset, nil), decoding == nil, !Task.isCancelled {
+            let overlay = await report("audio", onset, nil)
+            if decoding == nil, !Task.isCancelled {
                 decoding = Task { @MainActor in
                     defer { decoding = nil }
-                    guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
+                    let editor = await editorFocused(onset)
+                    guard (editor || overlay), !Task.isCancelled, let words = try? await decode(segment), !Task.isCancelled, isRunning(),
                           snapshot()?.speechStartHostUs == onset else { return }
+                    if editor { await updateEditor(onset, words) }
+                    guard overlay else { return }
                     let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
                     if !tail.isEmpty { _ = await report("words", onset, tail) }
                 }
@@ -508,6 +514,9 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                             decode: { try await recognizer.transcribe($0, boosting: nil)?.text },
                             report: { phase, onset, text in
                                 await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
+                            }, editorFocused: { await daemon.shouldPreview($0, revision: captureRevision) },
+                            updateEditor: { onset, words in
+                                try? await daemon.preview(words, onset: onset, revision: captureRevision)
                             })
                     }
                     let previous = draining.last?.decoding
@@ -518,17 +527,6 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         }
                         await previous?.value
                         guard !Task.isCancelled else { return }
-                        // Decode a bounded snapshot only for a phrase claimed by a focused
-                        // field. Final held delivery still checks the release boundary.
-                        let previews = Task {
-                            try await microphone.previewDictation(while: { batch.releasedAt == nil }) { segment in
-                                guard await daemon.shouldPreview(segment.speechStartHostUs, revision: batch.revision),
-                                      let words = try? await recognizer.transcribe(segment, boosting: nil),
-                                      !Task.isCancelled, batch.releasedAt == nil else { return }
-                                try? await daemon.preview(words, onset: segment.speechStartHostUs, revision: batch.revision)
-                            }
-                        }
-                        defer { previews.cancel() }
                         let boosting = try? await recognizer.prime(next.roster)
                         @MainActor func deliver(_ buffered: Segment) async {
                             var accepted = false

@@ -50,6 +50,9 @@ static napi_value physicalKeysAvailable(napi_env env, UInt32 modifiers, UInt32 f
 static napi_value plusKeysAvailable(napi_env env, napi_callback_info) {
   return physicalKeysAvailable(env, controlKey | shiftKey, kVK_ANSI_Equal, kVK_ANSI_KeypadPlus);
 }
+static napi_value sevenKeysAvailable(napi_env env, napi_callback_info) {
+  return physicalKeysAvailable(env, controlKey | shiftKey, kVK_ANSI_7, kVK_ANSI_Keypad7);
+}
 static napi_value layoutKeysAvailable(napi_env env, napi_callback_info) {
   return physicalKeysAvailable(env, cmdKey | controlKey | optionKey | shiftKey, kVK_ANSI_V, kVK_ANSI_Period);
 }
@@ -66,8 +69,9 @@ NAPI_MODULE_INIT() {
     {"post", nullptr, post, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"releaseReservation", nullptr, releaseReservation, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"plusKeysAvailable", nullptr, plusKeysAvailable, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"sevenKeysAvailable", nullptr, sevenKeysAvailable, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"layoutKeysAvailable", nullptr, layoutKeysAvailable, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  napi_define_properties(env, exports, 4, props);
+  napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
   return exports;
 }

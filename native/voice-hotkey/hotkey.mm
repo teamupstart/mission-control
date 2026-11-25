@@ -5,6 +5,7 @@
 #include <string>
 #include <map>
 #include <optional>
+#include <utility>
 
 // Electron main owns the application event target and dispatches both Carbon events.
 namespace {
@@ -81,6 +82,8 @@ std::optional<UInt32> typingKeyCode(const std::string& key, UInt32& modifiers) {
     // Shift+Equals on the main US keyboard and unshifted Plus on the keypad.
     auto recorded = std::find(levels.begin(), levels.end(), modifiers & (shiftKey | optionKey));
     std::rotate(levels.begin(), recorded, recorded + 1);
+    const bool digit = key.size() == 1 && key.front() >= '0' && key.front() <= '9';
+    std::optional<std::pair<UInt32, UInt32>> keypadFallback;
     for (UInt32 level : levels) {
       if ((level & optionKey) && !(modifiers & optionKey)) continue;
       for (UInt16 code = 0; code < 128; ++code) {
@@ -93,9 +96,22 @@ std::optional<UInt32> typingKeyCode(const std::string& key, UInt32& modifiers) {
         CFStringRef value = CFStringCreateWithCharacters(nullptr, chars, count);
         bool match = CFStringGetCString(value, utf8, sizeof(utf8), kCFStringEncodingUTF8) && key == utf8;
         CFRelease(value);
-        if (match) { result = code; modifiers |= level; break; }
+        if (!match) continue;
+        // A normalized digit can name a number-row key whose shifted glyph differs.
+        // Keep the first keypad match only if no main-keyboard layer has the digit.
+        if (digit && code >= kVK_ANSI_Keypad0 && code <= kVK_ANSI_Keypad9) {
+          if (!keypadFallback) keypadFallback.emplace(code, level);
+          continue;
+        }
+        result = code;
+        modifiers |= level;
+        break;
       }
       if (result) break;
+    }
+    if (!result && keypadFallback) {
+      result = keypadFallback->first;
+      modifiers |= keypadFallback->second;
     }
   }
   CFRelease(source);

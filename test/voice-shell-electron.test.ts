@@ -480,6 +480,18 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     }, { layout: layoutAddon, events: eventFixture });
     assert.deepEqual(keys, [false, true]);
   });
+  await t.test("Control+Shift+7 reserves the main US number row and leaves keypad 7 free", async () => {
+    const keys = await app.evaluate((_, paths) => {
+      const require = process.getBuiltinModule("node:module").createRequire(paths.layout);
+      const registrar = require(paths.layout);
+      const { sevenKeysAvailable } = require(paths.events);
+      try {
+        registrar.register("ctrl+shift+7", () => {});
+        return sevenKeysAvailable();
+      } finally { registrar.unregister(); }
+    }, { layout: layoutAddon, events: eventFixture });
+    assert.deepEqual(keys, [false, true]);
+  });
   const images: string[] = [];
   for (const mode of ["listening", "muted", "auto-muted", "push-to-talk", "unavailable", "off"] satisfies VoiceMode[]) {
     events!.write("data: " + JSON.stringify({ type: "voice_state", state: { ...voiceStateOff(), mode } }) + "\n\n");

@@ -38,14 +38,13 @@ function isLaterWrite(node, write, declarationBlock, statement) {
   return true;
 }
 
-// undefined preserves the initializer; null means the reaching value is uncertain.
-function reachingAssignment(context, node, variable, declaration) {
-  if (declaration.parent.kind === "const") return;
+function reachingAssignments(context, node, variable, declaration) {
   const block = declaration.parent.parent;
   let statement = node;
   while (statement.parent && statement.parent !== block) statement = statement.parent;
   const useScope = context.sourceCode.getScope(node).variableScope;
   let latest;
+  const possible = [];
   for (const reference of variable.references) {
     if (!reference.isWrite() || reference.init) continue;
     const identifier = reference.identifier;
@@ -54,38 +53,45 @@ function reachingAssignment(context, node, variable, declaration) {
       identifier.range[1] <= block.range[1] && reference.from.variableScope === useScope &&
       variable.scope.variableScope === useScope;
     if (sameBlock && isLaterWrite(node, identifier, block, statement)) continue;
-    if (!sameBlock) return null;
     const assignment = identifier.parent;
-    if (assignment.type !== "AssignmentExpression" || assignment.operator !== "=" || assignment.left !== identifier ||
-        assignment.parent.type !== "ExpressionStatement" || assignment.parent.parent !== block ||
-        assignment.range[1] > statement.range[0]) return null;
-    if (!latest || latest.range[0] < assignment.range[0]) latest = assignment;
+    if (assignment.type !== "AssignmentExpression" || assignment.operator !== "=" || assignment.left !== identifier) continue;
+    if (sameBlock && assignment.parent.type === "ExpressionStatement" &&
+        assignment.parent.parent === block && assignment.range[1] <= statement.range[0]) {
+      if (!latest || latest.range[0] < assignment.range[0]) latest = assignment;
+    } else {
+      possible.push({ assignment, sameBlock });
+    }
   }
-  return latest?.right;
+  // A conditional write can leave the prior value in place. Only a definite
+  // overwrite displaces it.
+  const values = possible
+    .filter(({ assignment, sameBlock }) => !latest || !sameBlock || assignment.range[0] > latest.range[0])
+    .map(({ assignment }) => assignment.right);
+  if (latest) values.push(latest.right);
+  return { values, overwritten: latest !== undefined };
 }
 
-function matchesLocalValue(context, node, matches) {
+function matchesLocalValue(context, initial, matches) {
   const seen = new Set();
-  while (node && !seen.has(node)) {
+  const pending = [initial];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node || seen.has(node)) continue;
     seen.add(node);
     if (node.type === "TSAsExpression" || node.type === "TSSatisfiesExpression") {
-      node = node.expression;
+      pending.push(node.expression);
       continue;
     }
     const variable = localBinding(context, node);
     const binding = variable?.defs[0]?.name;
     const declaration = variable?.defs[0]?.node;
-    if (declaration?.type === "VariableDeclarator") {
-      const assigned = reachingAssignment(context, node, variable, declaration);
-      if (assigned === null) break;
-      if (assigned) {
-        node = assigned;
-        continue;
-      }
+    if (declaration?.type === "VariableDeclarator" && declaration.parent.kind !== "const") {
+      const { values, overwritten } = reachingAssignments(context, node, variable, declaration);
+      pending.push(...values);
+      if (overwritten) continue;
     }
     if (matches(node, binding)) return true;
-    if (declaration?.type !== "VariableDeclarator" || declaration.id !== binding) break;
-    node = declaration.init;
+    if (declaration?.type === "VariableDeclarator" && declaration.id === binding) pending.push(declaration.init);
   }
   return false;
 }

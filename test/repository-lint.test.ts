@@ -57,6 +57,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "src/server/sessions-before-write.ts": 'export function evict(registry, id) { let sessions = registry.sessions; sessions.delete(id); sessions = new Map(); }',
     "src/server/sessions-before-nested-write.ts": 'export function evict(registry, id, condition) { let sessions = registry.sessions; sessions.delete(id); if (condition) { sessions = new Map(); } }',
     "src/server/sessions-inside-nested-block.ts": 'export function evict(registry, id, condition) { let sessions = registry.sessions; if (condition) { sessions.delete(id); sessions = new Map(); } }',
+    "src/server/conditional-session-write.ts": 'export function evict(registry, id, condition) { let sessions = registry.sessions; if (condition) { sessions = new Map(); } sessions.delete(id); }',
+    "src/server/conditional-registry-alias.ts": 'export function evict(registry, id, condition) { let sessions = new Map(); if (condition) { sessions = registry.sessions; } sessions.delete(id); }',
     "src/server/request-before-nested-write.ts": 'export function read(c, other, condition) { let request = c.req; request.json(); if (condition) { request = other; } }',
     "src/server/agent-before-nested-write.ts": 'export function choose(session, condition) { let selected = session.agent; const match = selected === "claude"; if (condition) { selected = "other"; } return match; }',
     "src/server/agent-name-alias.ts": 'export function choose(agent) { const target = "claude" as const; return agent === target || target === agent; }',
@@ -93,7 +95,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "no-test-ids": 6,
     "parse-request-body": 7,
     "agent-comparison": 6,
-    "registry-eviction": 15,
+    "registry-eviction": 17,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
@@ -114,6 +116,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     ["sessions-before-write", "registry-eviction"],
     ["sessions-before-nested-write", "registry-eviction"],
     ["sessions-inside-nested-block", "registry-eviction"],
+    ["conditional-session-write", "registry-eviction"],
+    ["conditional-registry-alias", "registry-eviction"],
     ["request-before-nested-write", "parse-request-body"],
     ["agent-before-nested-write", "agent-comparison"],
     ["agent-name-alias", "agent-comparison"],

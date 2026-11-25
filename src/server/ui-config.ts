@@ -212,6 +212,7 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
 
 export const uiSkinSetting: SettingDescriptor = {
   ...SKIN_SETTING,
+  control: "skin",
   access: "read-write",
   replacement: "scalar",
   schema: SkinIdSchema,
@@ -220,6 +221,12 @@ export const uiSkinSetting: SettingDescriptor = {
   read: () => getUiConfig(false).skin,
   write: value => setUiConfig({ skin: SkinIdSchema.parse(value) }).skin,
 };
+
+/** Merge a placement change with the latest indicator selection. */
+export function setVoiceConfirmation(confirmation: UiConfig["voice"]["confirmation"]): UiConfig["voice"] {
+  const current = storedVoiceUi();
+  return setUiConfig({ voice: { ...current, confirmation } }).voice;
+}
 
 /** The daemon reads and writes synchronously, so independent checkbox edits compose. */
 export function setVoiceIndicator(id: VoiceIndicatorId, enabled: boolean): UiConfig["voice"] | null {

@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   pipelineRepoKey,
@@ -91,6 +92,7 @@ export interface ConductorState {
 
 /** @param active Whether the permanent Conductor category is the one on screen. */
 export function useConductor(active: boolean): ConductorState {
+  const settingsRevision = useSettingsConfigRevision("pipelines");
   const [view, setViewState] = useState<PipelinesView | null>(null);
   const [workspaceRepos, setWorkspaceRepos] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -147,7 +149,7 @@ export function useConductor(active: boolean): ConductorState {
       alive = false;
       clearInterval(id);
     };
-  }, [active, refresh]);
+  }, [active, refresh, settingsRevision]);
 
   // The existing workspace catalog is fetched only while this destination is active. It is
   // the candidate source; Conductor's probe remains the authority for registration.

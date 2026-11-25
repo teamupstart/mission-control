@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   RepoIndexConfigPatch,
@@ -25,6 +26,7 @@ export interface RepoIndexState {
 
 /** Poll and mutate the machine-local repository-index view while its Settings panel is visible. */
 export function useRepoIndex(enabled = true): RepoIndexState {
+  const settingsRevision = useSettingsConfigRevision("repoIndex");
   const [viewState, setViewState] = useState<RepoIndexView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
@@ -51,7 +53,7 @@ export function useRepoIndex(enabled = true): RepoIndexState {
       alive = false;
       clearInterval(id);
     };
-  }, [enabled, setView]);
+  }, [enabled, setView, settingsRevision]);
 
   const update = useCallback(async (patch: RepoIndexConfigPatch): Promise<boolean> => {
     const current = viewRef.current;

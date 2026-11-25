@@ -1,3 +1,5 @@
+import { retentionShortens } from "@shared/workflow.ts";
+export { retentionShortens };
 import { useEffect, useState } from "react";
 import type {
   WorkflowConfig,
@@ -191,14 +193,6 @@ export function readRetention(
     out[field.key] = value;
   }
   return { ok: true, value: out };
-}
-
-/** Whether the new limits would let the next sweep remove more than the current ones. */
-export function retentionShortens(
-  next: WorkflowConfig["retention"],
-  current: WorkflowConfig["retention"],
-): boolean {
-  return RETENTION_FIELDS.some((field) => next[field.key] < current[field.key]);
 }
 
 /**

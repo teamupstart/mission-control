@@ -123,7 +123,10 @@ requires successful push CI for the release commit and ref.
 
 Route new session-initiated requests for operator input or approval, including MCP session control requests, to the attention inbox. Keep their decision controls out of the conversation window.
 
-For new or changed settings, follow the [setting onboarding contract](CONTRIBUTING.md#onboard-a-setting).
+For new or changed settings, declare the stable searchable key, read/write behavior and access
+policy at the owner. Share dashboard validation and mutation effects. Record the reason for
+protected or operational controls and update coverage. The fixed `mission_settings` tool supports
+find, get and set. See the [setting onboarding contract](CONTRIBUTING.md#onboard-a-setting).
 
 New user-facing features land behind a preview feature flag. Follow [Feature flags](docs/feature-flags.md) for live gates, tests and the preview, default-on, and retirement stages.
 

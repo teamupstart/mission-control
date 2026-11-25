@@ -95,6 +95,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",
+    sessionSetting: "Enables terminal dispatch authority.",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   });
   // Session control requests ships off until the operator opts in.

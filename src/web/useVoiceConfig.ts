@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { newRequestId } from "./lib/request-id.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyVoiceConfigPatch, VOICE_PROVIDER_EDIT_TIMEOUT_MS, VoiceProviderGestureSchema, type VoiceConfig, type VoiceConfigPatch, type VoiceInputDevice, type VoiceProviderIntent } from "@shared/voice.ts";
@@ -99,6 +100,7 @@ interface PendingEdit {
  * The other settings share one queue and retain their edit order.
  */
 export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
+  const settingsRevision = useSettingsConfigRevision("voice");
   const [confirmed, setConfirmedState] = useState<VoiceConfig | null>(null);
   const [pending, setPendingState] = useState<readonly PendingEdit[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +172,7 @@ export function useVoiceConfig(pollWhileOpen: boolean): VoiceConfigState {
       reads.abort();
       clearInterval(id);
     };
-  }, [clock, pollWhileOpen, observeProvider, setConfirmed, unconfirmedProviderEdit]);
+  }, [clock, pollWhileOpen, observeProvider, setConfirmed, unconfirmedProviderEdit, settingsRevision]);
 
   const update = useCallback((patch: VoiceConfigPatch, observedProviderRevision?: string): Promise<boolean> => {
     const { decisionProvider, ...settings } = patch;

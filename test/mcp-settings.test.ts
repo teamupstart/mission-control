@@ -41,7 +41,7 @@ const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts
 const { DatabaseBackupService } = await import("../src/server/database-backups/service.ts");
 const { getDatabaseBackupsConfig } = await import("../src/server/database-backups/config.ts");
 const { getWorktreesConfig, setWorktreesConfig, resolveWorktreePolicy } = await import("../src/server/worktrees/config.ts");
-const { applyFeatureFlagIntent, featureEnabled, reloadFeatureFlags } = await import("../src/server/feature-flags/index.ts");
+const { applyFeatureFlagIntent, featureEnabled, getFeatureFlagsConfig, onFeatureFlagsChanged, reloadFeatureFlags } = await import("../src/server/feature-flags/index.ts");
 const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
 const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
 const { onUiSkinChanged, getUiConfig } = await import("../src/server/ui-config.ts");
@@ -49,7 +49,11 @@ const {
   SETTINGS_CONFIG_BACKUP_ENTRIES, captureSettingsConfig, restoreSettingsConfigInTransaction, stageSettingsConfigRestore,
 } = await import("../src/server/settings-backups/config-registry.ts");
 const { bindTypedSettings, field, choices } = await import("../src/server/typed-settings.ts");
+const { scalarIntent } = await import("../src/server/session-settings-specialized.ts");
 const { registerSessionSettingsRoutes } = await import("../src/server/session-settings.ts");
+const { getShapingConfig } = await import("../src/server/shaping/index.ts");
+const { getVoiceConfig } = await import("../src/server/voice/config.ts");
+const { getTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
 const { dispatchSetting } = await import("../src/server/settings-dispatcher.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 type SettingDescriptor = import("../src/server/settings-dispatcher.ts").SettingDescriptor;
@@ -204,7 +208,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     if (error) assert.deepEqual(body, settingsFailure(error, hint));
     return body;
   }
-  await t.test("a new typed field works through stdio and catalog growth leaves tools/list identical", async () => {
+  await t.test("new typed fields and specialized intents use the fixed stdio definition", async () => {
     const schema = z.object({ synthetic: z.enum(["off", "on"]).optional() }).strict();
     let config = { synthetic: "off" as "on" | "off" };
     const fields = bindTypedSettings({
@@ -229,6 +233,22 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
       assert.equal((await call(claude, { operation: "get", key: "fixture.synthetic" }) as { value: string }).value, "off");
       await call(claude, { operation: "set", key: "fixture.synthetic", value: "on" });
       assert.equal(config.synthetic, "on");
+      let enabled = false;
+      const intentKey = "fixture.intent";
+      const intent = scalarIntent(intentKey, "layout", z.boolean(), {
+        label: "Synthetic specialized intent",
+        read: () => enabled,
+        apply: value => { enabled = value; return enabled; },
+      });
+      extra = [intent];
+      assert.deepEqual(await call(claude, { operation: "find", query: "synthetic specialized intent" }), {
+        ok: true, operation: "find", matches: [{ key: intentKey, access: "read-write", label: "Synthetic specialized intent" }],
+      });
+      assert.deepEqual(await call(claude, { ...get, key: intentKey }), {
+        ok: true, operation: "get", key: intentKey, value: false, type: "boolean",
+      });
+      await call(claude, { ...set, key: intentKey, value: true });
+      assert.equal(enabled, true);
       extra = Array.from({ length: 256 }, (_, n) => ({
         key: `fixture.extra${n}`, label: `Synthetic preference ${n}`, keywords: [],
         access: "read-only", read: () => n,
@@ -243,6 +263,169 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     } finally {
       handleRequest = app.fetch;
     }
+  });
+
+  await t.test("an individual flag choice matching Enable all survives turning Enable all off", async () => {
+    const id = "idle-rail-section-counts";
+    const key = `featureFlags.${id}`;
+    const before = getFeatureFlagsConfig();
+    const read = { ok: true, operation: "get", key, value: true, type: "boolean" };
+    try {
+      assert.equal(before.enableAll, true);
+      assert.equal(Object.hasOwn(before.overrides, id), false);
+      assert.deepEqual(await call(claude, { ...get, key }), read);
+      assert.deepEqual(await call(claude, { ...set, key, value: true }), {
+        ok: true, operation: "set", key, value: true,
+      });
+      const dashboard = await app.request("/api/feature-flags", {
+        method: "PUT", headers, body: JSON.stringify({ kind: "master", enabled: false }),
+      });
+      assert.equal(dashboard.status, 200);
+      assert.equal(getFeatureFlagsConfig().enableAll, false);
+      assert.deepEqual(await call(claude, { ...get, key }), read);
+      assert.equal(getFeatureFlagsConfig().overrides[id], true);
+    } finally {
+      setAppConfig(APP_CONFIG_ENTRIES.featureFlags, before);
+      reloadFeatureFlags();
+    }
+  });
+
+  await t.test("individual flags share live intent and retry behavior while bulk and consent flags stay protected", async () => {
+    const key = "featureFlags.idle-rail-section-counts";
+    const config = getFeatureFlagsConfig();
+    let publishes = 0;
+    const stop = onFeatureFlagsChanged(() => publishes++);
+    try {
+      assert.deepEqual(await call(codex, { ...set, key, value: false }), {
+        ok: true, operation: "set", key, value: false,
+      });
+      await call(claude, { ...set, key, value: false });
+      assert.equal(publishes, 1);
+      assert.deepEqual(getFeatureFlagsConfig(), {
+        ...config, overrides: { ...config.overrides, "idle-rail-section-counts": false },
+      });
+      for (const key of ["featureFlags.enableAll", "featureFlags.overrides", "featureFlags.voice", "featureFlags.inbox",
+        "featureFlags.persona-repository-access", `featureFlags.${SESSION_SETTINGS_FLAG_ID}`]) {
+        await call(claude, { ...set, key, value: true }, "protected", "Manage this setting in Settings > Feature flags.");
+      }
+      assert.equal(publishes, 1);
+      const dashboard = await app.request("/api/feature-flags", {
+        method: "PUT", headers, body: JSON.stringify({ kind: "flag", id: "idle-rail-section-counts", enabled: true }),
+      });
+      assert.equal(dashboard.status, 200);
+      assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: true, type: "boolean" });
+      const piRead = await piTool.execute("flag", { ...get, key });
+      assert.deepEqual(JSON.parse(piRead.content[0]!.text), {
+        ok: true, operation: "get", key, value: true, type: "boolean",
+      });
+    } finally {
+      stop();
+    }
+  });
+
+  await t.test("gated shaping and voice edits validate and keep neighboring preferences and authority", async () => {
+    const shapingKey = "shaping.limits.timeoutMs";
+    const voiceKey = "voice.cancelWindow.seconds";
+    const read = getShapingConfig().limits;
+    applyFeatureFlagIntent({ kind: "flag", id: "task-shaping", enabled: false });
+    await call(claude, { ...get, key: shapingKey }, "unknown_key");
+    applyFeatureFlagIntent({ kind: "flag", id: "task-shaping", enabled: true });
+    await call(claude, { ...set, key: shapingKey, value: "fixture-secret-invalid-timeout" }, "invalid_value");
+    assert.deepEqual(getShapingConfig().limits, read);
+    await call(claude, { ...set, key: shapingKey, value: read.timeoutMs + 1 });
+    assert.deepEqual(getShapingConfig().limits, { ...read, timeoutMs: read.timeoutMs + 1 });
+    await call(claude, { ...set, key: "shaping.caller", value: { name: "fixture-secret" } }, "protected",
+      "Manage this setting in Settings > Task shaping.");
+    const before = getVoiceConfig();
+    await call(claude, { ...set, key: voiceKey, value: before.cancelWindow.seconds + 1 });
+    assert.deepEqual(getVoiceConfig(), { ...before, cancelWindow: { ...before.cancelWindow, seconds: before.cancelWindow.seconds + 1 } });
+    for (const key of ["voice.decisionProvider", "voice.decisionKey", "voice.hotkey", "voice.listeningMode", "voice.muted", "voice.heard"]) {
+      await call(claude, { ...get, key }, "protected", "Manage this setting in Settings > Voice.");
+    }
+    await call(claude, { ...set, key: "voice.inputDevice", value: "fixture-unavailable-device" }, "invalid_value");
+    await call(claude, { ...set, key: "ui.voice", value: { confirmation: "toast" } }, "unknown_key");
+    await call(claude, { ...set, key: "ui.voice.confirmation", value: "toast" });
+    await call(claude, { ...set, key: "ui.voice.indicators.edge", value: true });
+    assert.equal(getUiConfig().voice.confirmation, "toast");
+    assert.ok(getUiConfig().voice.indicators.includes("edge"));
+    await call(claude, { ...get, key: "pipelines.launchRuntime" }, "unknown_key");
+  });
+
+  await t.test("repository index replacements share dashboard invalidation and reject stale or private invalid input", async () => {
+    const key = "repoIndex.directories";
+    const read = await call(claude, { ...get, key });
+    assert.ok(read.ok && read.operation === "get" && read.version);
+    const identities: string[] = [];
+    const stop = registry.subscribe(event => {
+      if (event.type === "repo_index_changed") identities.push(event.identity);
+    });
+    try {
+      const saved = await app.request("/api/repo-index", {
+        method: "PUT", headers, body: JSON.stringify({ directories: [] }),
+      });
+      assert.equal(saved.status, 200);
+      await call(claude, { ...set, key, expectedVersion: read.version, value: [{ path: home }] }, "stale_version");
+      const current = await call(claude, { ...get, key });
+      assert.ok(current.ok && current.operation === "get" && current.version);
+      assert.deepEqual(current.value, []);
+      await call(claude, { ...set, key, expectedVersion: current.version,
+        value: [{ path: "private-relative-directory" }] }, "invalid_value");
+      assert.equal(identities.length, 1);
+      const next = [{ path: home }];
+      assert.deepEqual(await call(claude, { ...set, key, expectedVersion: current.version, value: next }), {
+        ok: true, operation: "set", key, value: next,
+      });
+      assert.equal(identities.length, 2);
+      assert.notEqual(identities[0], identities[1]);
+    } finally {
+      stop();
+    }
+  });
+
+  await t.test("workflow history can be kept longer while destructive edits and report muting retain operator authority", async () => {
+    const key = "workflows.retention.maxCompletedRuns";
+    const current = await call(claude, { ...get, key });
+    assert.ok(current.ok && current.operation === "get" && typeof current.value === "number");
+    await call(claude, { ...set, key, value: current.value - 1 }, "invalid_value");
+    assert.deepEqual(await call(claude, { ...get, key }), current);
+    const value = current.value + 1;
+    assert.deepEqual(await call(claude, { ...set, key, value }), { ok: true, operation: "set", key, value });
+    for (const [key, destination] of [
+      ["workflows.liveEnabled", "Workflows"], ["workflows.checksEnabled", "Workflows"],
+      ["reports.muted", "Reports"], ["settings.restore", "Restore"], ["telemetry.user", "Telemetry"],
+    ]) {
+      await call(claude, { ...get, key }, "protected", `Manage this setting in Settings > ${destination}.`);
+      await call(claude, { ...set, key, value: { credential: "private" } }, "protected",
+        `Manage this setting in Settings > ${destination}.`);
+    }
+  });
+
+  await t.test("task-source leaf edits preserve provider authority and reject stale list replacements", async () => {
+    const entry = APP_CONFIG_ENTRIES.taskSources;
+    setAppConfig(entry, { sources: [{
+      id: "fixture-source", kind: "github-issues", repoRoot: home, config: { repo: "operator/private-repo", assignedToMe: true },
+      writeback: { annotate: true },
+    }] } as never);
+    const prefix = `taskSources.${createHash("sha256").update("fixture-source").digest("base64url")}`;
+    const key = `${prefix}.config.labelsAny`;
+    const original = getTaskSourcesConfig();
+    await call(claude, { ...set, key: `${prefix}.config.unassignedOnly`, value: true }, "invalid_value");
+    assert.deepEqual(getTaskSourcesConfig(), original);
+    await call(claude, { ...get, key: `${prefix}.authority` }, "protected", "Manage this setting in Settings > Task sources.");
+    await call(claude, { ...get, key: `${prefix}.config.repo` }, "unknown_key");
+    const read = await call(claude, { ...get, key });
+    assert.ok(read.ok && read.operation === "get" && read.version);
+    const stale = { ...set, key, expectedVersion: read.version, value: ["bug"] };
+    await call(codex, { ...set, key: `${prefix}.maxPerSweep`, value: 12 });
+    await call(claude, stale, "stale_version");
+    const latest = await call(claude, { ...get, key });
+    assert.ok(latest.ok && latest.operation === "get" && latest.version);
+    assert.deepEqual(await call(claude, { ...stale, expectedVersion: latest.version }), {
+      ok: true, operation: "set", key, value: ["bug"],
+    });
+    const saved = getTaskSourcesConfig().sources[0]!;
+    assert.deepEqual(saved, { ...original.sources[0], maxPerSweep: 12,
+      config: { ...(original.sources[0]!.config as object), labelsAny: ["bug"] } });
   });
 
   await t.test("Harnesses validation and notification are shared by MCP and dashboard edits", async () => {

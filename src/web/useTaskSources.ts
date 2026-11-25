@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskSourcesConfigPatch } from "@shared/protocol.ts";
 import type { SweepReport, TaskSourceInstance, TaskSourcesView } from "@shared/task-source.ts";
@@ -52,6 +53,7 @@ export interface TaskSourcesState {
 }
 
 export function useTaskSources(): TaskSourcesState {
+  const settingsRevision = useSettingsConfigRevision("taskSources");
   const [view, setViewState] = useState<TaskSourcesView | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The view as last seen, readable without making the callbacks depend on it (which
@@ -129,7 +131,7 @@ export function useTaskSources(): TaskSourcesState {
       alive = false;
       clearInterval(id);
     };
-  }, [refresh]);
+  }, [refresh, settingsRevision]);
 
   /**
    * The write already in flight, so the next one can wait for it.

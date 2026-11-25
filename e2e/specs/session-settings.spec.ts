@@ -445,3 +445,32 @@ test("saving Workflow retention from a stale panel preserves a session's judge p
     await client.close();
   }
 });
+
+test("an individual flag intent updates open dashboards and a human edit reads back through the tool", async ({ page, browser, daemon }) => {
+  await enableSettingsPreview(daemon);
+  withDaemonDb(daemon, db => db.prepare("INSERT INTO app_config (key, value) VALUES (?, ?)").run(
+    SESSION_SETTINGS_ACCESS.key, JSON.stringify(true),
+  ));
+  const client = await connect(daemon, await dispatch(daemon, "Show Idle rail section counts"));
+  const peer = await browser.newPage();
+  try {
+    const key = "featureFlags.idle-rail-section-counts";
+    for (const window of [page, peer]) await window.goto(`${daemon.baseURL}/#/settings/feature-flags`);
+    const filter = (window: Page) => window.getByRole("textbox", { name: "Filter feature flags" });
+    for (const window of [page, peer]) await filter(window).fill("Counts on Idle rail sections");
+    const flag = (window: Page) => window.getByRole("button", { name: /^Counts on Idle rail sections:/ });
+    for (const window of [page, peer]) await expect(flag(window)).toHaveAttribute("aria-pressed", "false");
+    expect(await callSettings(client, { operation: "find", query: "counts on idle rail sections" })).toMatchObject({
+      matches: [{ key, access: "read-write" }],
+    });
+    expect(await callSettings(client, { operation: "set", key, value: true })).toMatchObject({ value: true });
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: true });
+    for (const window of [page, peer]) await expect(flag(window)).toHaveAttribute("aria-pressed", "true");
+    await evidence(peer, "specialized-flag-live");
+    await flag(page).click();
+    await expect(flag(peer)).toHaveAttribute("aria-pressed", "false");
+    expect(await callSettings(client, { operation: "get", key })).toMatchObject({ value: false });
+  } finally {
+    await Promise.all([client.close(), peer.close()]);
+  }
+});

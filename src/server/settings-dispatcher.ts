@@ -28,7 +28,7 @@ export type SettingComposite = Extract<SettingsValue, object>;
  * including dashboard edits, through the same owner.
  */
 export type SettingDescriptor = Descriptor & (
-  | { access: "protected"; destination: string }
+  | { access: "protected"; destination: string; reason?: string }
   | ({ access: "read-only"; read(): SettingsValue } & Choices)
   | ({ access: "read-write"; replacement: "scalar"; schema: ZodType<SettingScalar>;
        read(): SettingScalar; write(value: SettingScalar): SettingScalar } & Choices)

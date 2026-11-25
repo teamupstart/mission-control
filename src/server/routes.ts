@@ -1,5 +1,8 @@
 import { disposableWorktreeCensus } from "./worktrees/disposable-census.ts";
 import { backgroundWorktreeRetentionStatus } from "./task-worktree-retention.ts";
+import { specializedSettings, workflowDefaultSettings, pipelineRuntimeSetting } from "./session-settings-specialized.ts";
+import { taskSourceSettings } from "./session-settings-task-sources.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
@@ -38,7 +41,7 @@ import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@s
 import { residentSkillIndex, rescanResidentSkillIndex, ResidentSkillScanCooldownError, ResidentSkillSourcesConflictError, saveResidentSkillSources } from "./residents/skill-index.ts";
 import { canMessage, paneToken } from "@shared/pane.ts";
 import { codeRabbitCandidate, codeRabbitStanding } from "./inspector/code-rabbit-delivery.ts";
-import { claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, getTask as getDurableTaskRow, inTransaction, setStackAwaitReplacement } from "./db.ts";
+import { appConfigRevision, claimCodeRabbit, finishCodeRabbit, claimStackPrompt, finishStackPrompt, getTask as getDurableTaskRow, inTransaction, setStackAwaitReplacement } from "./db.ts";
 import { recheckStackParent, stackParentDiffers, stackPromptCandidate, stackStandingFor } from "./stacking/delivery.ts";
 import type { PrRefs } from "./inspector/github.ts";
 import { activeStackGitHub } from "./stacking/github.ts";
@@ -268,6 +271,7 @@ import {
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
+  type TaskSourcesConfigPatch,
   TaskSourceWritebackRetrySchema,
   SpendReportSchema,
   StandardsRequestSchema,
@@ -756,6 +760,7 @@ import {
   WORKFLOW_RUN_STATUSES,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   legacyCheckCommands,
+  retentionShortens,
 } from "@shared/workflow.ts";
 import type {
   Persona,
@@ -2896,14 +2901,20 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     return null;
   };
+  const applyWorkflowPreferences: SettingsOwners["workflows"] = patch => {
+    const error = patch.kindWorkflowDefaults && workflowDefaultError(patch.kindWorkflowDefaults);
+    if (error) throw new InvalidSettingValue(error);
+    return patchWorkflowPolicy(patch);
+  };
   app.get("/api/workflows/config", (c) => c.json(legacyWorkflowConfig()));
   app.patch("/api/workflows/config", async c => {
     const parsed = await parseBody(c, WorkflowPolicyPatchSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const defaults = parsed.data.kindWorkflowDefaults;
-    const error = defaults && workflowDefaultError(defaults);
-    if (error) return c.json({ error }, 409);
-    patchWorkflowPolicy(parsed.data);
+    try { applyWorkflowPreferences(parsed.data); }
+    catch (error) {
+      if (error instanceof InvalidSettingValue) return c.json({ error: error.message }, 409);
+      throw error;
+    }
     return c.json(legacyWorkflowConfig());
   });
   app.get("/api/workflows/status", (c) => {
@@ -4615,6 +4626,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // The machine-local source of those workspace roots. The environment remains the
   // launch-time authority; when present, the view says so and the saved list is read-only.
+  const applyRepoIndexSettings: typeof setRepoIndexConfig = patch => {
+    const result = setRepoIndexConfig(patch);
+    announceRepoIndexChanged(registry);
+    return result;
+  };
   app.get("/api/repo-index", async (c) => c.json(await repoIndexView()));
   app.put("/api/repo-index", async (c) => {
     const override = repositoryIndexEnvironmentOverride();
@@ -4626,7 +4642,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, RepoIndexConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     try {
-      setRepoIndexConfig(parsed.data);
+      applyRepoIndexSettings(parsed.data);
     } catch (error) {
       if (error instanceof RepoIndexConfigError) {
         return c.json({ error: error.message }, 400);
@@ -4635,7 +4651,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     // The save is persisted from here on, so nothing below may answer as if it failed - a
     // client told "rejected" would keep showing the directories it just replaced.
-    announceRepoIndexChanged(registry);
     return c.json(await repoIndexView());
   });
   app.post("/api/repo-index/rescan", async (c) => {
@@ -8064,15 +8079,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // --- Away mode (localhost only) ---
+  const applyAwayPreferences = (patch: Parameters<typeof setAwayConfig>[0]) => {
+    const next = setAwayConfig(patch);
+    // Close a return window before the operator's follow-up digest read.
+    if (!next.away) away?.flush();
+    return next;
+  };
   app.get("/api/away", (c) => c.json(getAwayConfig()));
   app.put("/api/away", async (c) => {
     const parsed = await parseBody(c, AwayConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    const next = setAwayConfig(parsed.data);
-    // Close the window synchronously on return: the poll tick is up to AWAY_POLL_MS
-    // behind, and the client's follow-up digest read would otherwise beat it.
-    if (!next.away) away?.flush();
-    return c.json(next);
+    return c.json(applyAwayPreferences(parsed.data));
   });
 
   /** Currently-stalled sessions. Empty when stall detection is off. */
@@ -8572,6 +8589,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
   };
 
+  const applyTaskSourceSettings = (patch: TaskSourcesConfigPatch) => {
+    const before = getTaskSourcesConfig();
+    const saved = setTaskSourcesConfig(patch);
+    noteTaskSourceConfigChange(before.sources, saved.sources);
+    publishSettingsStatus(registry);
+    return saved;
+  };
   app.get("/api/task-sources/config", (c) => c.json(taskSourcesView()));
 
   app.post("/api/task-sources/:id/sync/:taskId/resolve", async (c) => {
@@ -8595,6 +8619,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/task-sources/config", async (c) => {
     const parsed = await parseBody(c, TaskSourcesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    const revision = appConfigRevision(APP_CONFIG_ENTRIES.taskSources);
     const before = getTaskSourcesConfig();
     const beforeById = new Map(before.sources.map((source) => [source.id, source]));
     const sources = [];
@@ -8615,12 +8640,10 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       }
       sources.push({ ...s, repoRoot });
     }
-    setTaskSourcesConfig({ sources });
-    noteTaskSourceConfigChange(before.sources, sources);
-    // Removing a failing source, or pausing one, changes the failing count the red dot
-    // reads. `noteTaskSourceConfigChange` has already cleared health for a just-paused
-    // source, so this recompose sees the new count.
-    publishSettingsStatus(registry);
+    if (revision !== appConfigRevision(APP_CONFIG_ENTRIES.taskSources)) {
+      return c.json({ error: "Task sources changed while this edit was being validated. Reload and retry." }, 409);
+    }
+    applyTaskSourceSettings({ sources });
     return c.json(taskSourcesView());
   });
 
@@ -8871,6 +8894,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
    * operator who switches a repository off and keeps looking at the page is entitled to
    * see it happen.
    */
+  const applyPipelineSettings: typeof setPipelinesConfig = config => {
+    const saved = setPipelinesConfig(config);
+    reconcilePipelineConsent(registry);
+    publishSettingsStatus(registry);
+    return saved;
+  };
   app.put("/api/pipelines/config", async (c) => {
     const parsed = await parseBody(c, PipelinesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
@@ -8891,19 +8920,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       seen.add(key);
       repos.push({ ...repo, repoRoot });
     }
-    setPipelinesConfig({
+    applyPipelineSettings({
       enabled: parsed.data.enabled,
       launchRuntime: parsed.data.launchRuntime,
       foremanMechanicalTriage: parsed.data.foremanMechanicalTriage,
       repos,
     });
-    reconcilePipelineConsent(registry);
-    // The tuple carries how many repositories are being observed, and the Runs page draws
-    // its Pipelines tab from that. Published here rather than waited for on the watcher's
-    // once-a-minute presence check, for the same reason the reconciliation above is not
-    // deferred to the next tick: an operator who switches a repository on is entitled to
-    // see the surface it produces without wondering whether they mis-clicked.
-    publishSettingsStatus(registry);
     return c.json(await pipelinesView(false));
   });
 
@@ -9538,7 +9560,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Measure now. The walk runs in the background and can take minutes; the answer is the state
   // it started, and the finished measurement arrives through `storage_health`.
+  const settingsChanged = (key: string) => {
+    const domain = settingsRefreshDomain(key);
+    if (domain) registry.emitSettingsConfigChanged(domain);
+  };
   const getTypedSettings = typedSettings({
+    advisorModelIds: agent => modelCatalogs?.cachedModelIds(agent) ?? [],
+    worktreePoolRoots: () => worktreeOperations?.manager?.store.pools().map(pool => pool.gitCommonDirectory) ?? [],
+    workflows: patch => {
+      const current = getWorkflowPolicy().retention;
+      if (patch.retention && retentionShortens(patch.retention, current)) throw new InvalidSettingValue();
+      return applyWorkflowPreferences(patch);
+    },
     harnesses: patch => {
       try { return applyHarnessesSettings(patch); }
       catch (error) {
@@ -9565,11 +9598,24 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         throw error;
       }
     } : undefined,
-  }, key => {
-    const domain = settingsRefreshDomain(key);
-    if (domain) registry.emitSettingsConfigChanged(domain);
-  });
-  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings, getTypedSettings);
+  }, settingsChanged);
+  const specialized = specializedSettings({
+    away: applyAwayPreferences,
+    repoIndex: patch => {
+      if (repositoryIndexEnvironmentOverride()) throw new InvalidSettingValue();
+      try { return applyRepoIndexSettings(patch); }
+      catch (error) {
+        if (error instanceof RepoIndexConfigError) throw new InvalidSettingValue();
+        throw error;
+      }
+    },
+  }, settingsChanged);
+  const workflowDefaults = workflowDefaultSettings(workflowManager, applyWorkflowPreferences, settingsChanged);
+  const pipelineRuntime = pipelineRuntimeSetting(applyPipelineSettings, settingsChanged);
+  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings, () => [
+    ...getTypedSettings(), ...specialized, ...workflowDefaults, pipelineRuntime,
+    ...taskSourceSettings({ read: getTaskSourcesConfig, apply: applyTaskSourceSettings, changed: settingsChanged }),
+  ]);
 
   app.post("/api/storage/usage/measure", (c) => {
     if (!storageUsage || !storageHealth) return storageUnavailable(c);

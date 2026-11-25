@@ -3,6 +3,7 @@ import { PipelinesConfigSchema, type PipelinesConfig } from "@shared/pipeline.ts
 import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
 import { getWorkflowPolicy } from "./workflows/config.ts";
 import type { WorkflowManager } from "./workflows/manager.ts";
+import { conductorIntegrationEnabled } from "./pipelines/availability.ts";
 import { getPipelinesConfig } from "./pipelines/config.ts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -41,7 +42,7 @@ export function controlMetadata(control: string) {
   if (!metadata) throw new Error(`Missing settings control ${control}`);
   return {
     control, label: metadata.label, keywords: metadata.keywords,
-    available: () => settingsCategoryAvailable(metadata.category, getFeatureFlagsConfig()),
+    available: () => settingsCategoryAvailable(metadata.category, getFeatureFlagsConfig(), conductorIntegrationEnabled()),
     destination: `Settings > ${settingsCategory(metadata.category).label}`,
   };
 }

@@ -76,6 +76,8 @@ const { scalarIntent, settingTargetId } = await import("../src/server/session-se
 const { registerSessionSettingsRoutes } = await import("../src/server/session-settings.ts");
 const { getAwayConfig, setAwayConfig } = await import("../src/server/away/config.ts");
 const { getShapingConfig } = await import("../src/server/shaping/index.ts");
+const { overrideConductorIntegrationForTests } = await import("../src/server/pipelines/availability.ts");
+const { getPipelinesConfig, setPipelinesConfig } = await import("../src/server/pipelines/config.ts");
 const { getVoiceConfig, setVoiceConfig } = await import("../src/server/voice/config.ts");
 const { voiceStateStore } = await import("../src/server/voice/state.ts");
 const { getTaskSourcesConfig } = await import("../src/server/task-sources/config.ts");
@@ -404,6 +406,30 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     assert.equal(getUiConfig().voice.confirmation, "toast");
     assert.ok(getUiConfig().voice.indicators.includes("edge"));
     await call(claude, { ...get, key: "pipelines.launchRuntime" }, "unknown_key");
+  });
+
+  await t.test("Conductor runtime writes preserve observation consent and reject invalid runtimes", async t => {
+    const before = getPipelinesConfig();
+    t.after(() => {
+      overrideConductorIntegrationForTests(null);
+      setPipelinesConfig(before);
+    });
+    overrideConductorIntegrationForTests(true);
+    const original = setPipelinesConfig({
+      enabled: true, launchRuntime: "agent-sdk", foremanMechanicalTriage: true,
+      repos: [{ provider: "ai-conductor", repoRoot: home, enabled: true }],
+    });
+    const key = "pipelines.launchRuntime";
+
+    await assertPreference(key, "agent-sdk");
+    await setPreference(key, "terminal");
+    const expected = { ...original, launchRuntime: "terminal" };
+    assert.deepEqual(getPipelinesConfig(), expected);
+    await assertPreference(key, "terminal");
+
+    await call(claude, { ...set, key, value: "fixture-invalid-runtime" }, "invalid_value");
+    assert.deepEqual(getPipelinesConfig(), expected);
+    await assertPreference(key, "terminal");
   });
 
   await t.test("Voice saves advertised speech and input choices, a backend, and call auto-mute", async t => {

@@ -182,7 +182,8 @@ export class VoiceStateStore {
 
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
-    const granted = this.liveHello()?.hello.microphone === "granted";
+    const hello = this.liveHello()?.hello;
+    const granted = hello?.microphone === "granted";
     const speechKey = this.manager?.directiveKey ?? "";
     const capture = voiceCaptures(state.mode) && granted && !this.manager?.held;
     // Only names travel to the recognizer. Also bind the revision to the destinations
@@ -196,7 +197,9 @@ export class VoiceStateStore {
     const last = this.lastDirective;
     const sameCapture = last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted &&
       last.directive.capture === capture && last.directive.inputDevice === inputDevice && last.recipients === recipients && last.press === press;
-    if (sameCapture && last.directive.endOfSpeechMs === endOfSpeechMs) return last.directive;
+    // Protocol 4.0 reopens its microphone on every revision, dropping the unfinished phrase.
+    const canUpdateTiming = Number(hello?.version.split(".")[1] ?? 0) >= 1;
+    if (sameCapture && (!canUpdateTiming || last.directive.endOfSpeechMs === endOfSpeechMs)) return last.directive;
     // A timing edit wakes pollers but keeps the same authorization for automatic audio already captured.
     const automatic = capture && state.mode === "listening";
     const previousGrant = sameCapture ? last.directive.captureRevision : undefined;

@@ -63,6 +63,8 @@ the words in the same utterance. Changes take effect while listening and persist
 Push-to-talk ends on key release. The separate **Cancel window** starts after routing.
 While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
 “cancel” can reach the router before delivery. The selected delay resumes when the last countdown closes.
+If a protocol 4.0 helper is still running during an upgrade, restart it with the updated listener
+to use live delay changes.
 
 Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default. On macOS it appears under the menu bar on the display with
@@ -163,7 +165,7 @@ closed. Run the development command from a terminal app that already has microph
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
 prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
-On startup and every ten seconds, the helper posts protocol 4.0 to `/voice/listener/hello`.
+On startup and every ten seconds, the helper posts protocol 4.1 to `/voice/listener/hello`.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
 Standalone listeners generate a UUID per process. The desktop supervisor generates its own
 UUID and passes it to each managed helper after the previous child exits. This lets its
@@ -201,9 +203,11 @@ on every poll. Use the same listener UUID that the daemon accepted at hello. The
 After applying the directive, pass the opaque revision back as `?revision=...` to wait for a change or receive the current
 directive after 25 seconds. A heartbeat with identical capture settings leaves the poll open.
 Automatic capture directives also include a `captureRevision` that stays valid across
-silence delay edits. Both listeners send that revision with automatic utterances. Older listeners
-can submit a previously issued poll revision from the same automatic capture grant, including
-when a countdown changes the delay during decoding. Muting or changing the input or roster revokes
+silence delay edits. Both listeners send that revision with automatic utterances. A 4.1 hello
+advertises that the listener can update the open capture in place. A 4.0 listener keeps its
+original directive throughout a capture, including when a countdown opens or expires, so its
+microphone keeps the buffered phrase. A listener can also submit a previously issued poll
+revision from the same automatic capture grant. Muting or changing the input or roster revokes
 all revisions of that grant. The Swift listener
 updates the open microphone's silence boundary in place. When a shorter delay closes a phrase
 immediately, up to 150 ms of quiet audio after the new boundary supplies the next phrase's lead-in.

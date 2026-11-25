@@ -15,7 +15,7 @@ struct Directive: Decodable {
 }
 
 struct Hello: Encodable {
-    let version = "4.0"
+    let version = "4.1"
     let reportsSpeechOnset = true
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))

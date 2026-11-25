@@ -820,13 +820,19 @@ final class ListenerTests: XCTestCase {
             frame.floatChannelData![0].update(from: speech, count: Int(frame.frameLength))
             mic.consume(frame, at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1), sampleTime: 0, atRate: 16_000))
             var received: String?
+            var attempts = 0
             let deadline = ContinuousClock.now + .seconds(3)
             await runTranscriptPreview(isRunning: { received == nil && ContinuousClock.now < deadline },
                 snapshot: { mic.preview }, pendingOnset: { nil }, decode: { segment in
                     XCTAssertFalse(segment.samples.isEmpty)
                     return "Steve"
                 }, report: { _, _, _ in false }, editorFocused: { _ in true },
-                updateEditor: { _, text in received = text }, pause: { await Task.yield() })
+                updateEditor: { _, text in
+                    attempts += 1
+                    if attempts == 1 { throw URLError(.timedOut) }
+                    received = text
+                }, pause: { await Task.yield() })
+            XCTAssertEqual(attempts, 2)
             XCTAssertEqual(received, "Steve")
             XCTAssertTrue(mic.isRunning)
         }

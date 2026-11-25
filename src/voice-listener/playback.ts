@@ -96,13 +96,20 @@ export async function playRecording(client: ListenerClient,
         async update(onset, samples) {
           if (!speech || speech.onset !== onset) {
             await finishSpeech();
-            const dictating = await client.speech(captureRevision, onset, { phase: "start" }, lifetime.signal);
-            speech = { revision: captureRevision, onset, dictating };
+            speech = { revision: captureRevision, onset, dictating: false };
+            speech.dictating = await client.speech(captureRevision, onset, { phase: "start" }, lifetime.signal);
           } else if (!speech.dictating) {
             speech.dictating = await client.speech(captureRevision, onset, { phase: "focus" }, lifetime.signal);
           }
           if (speech.dictating) {
-            const result = await decode(samples, []);
+            let result: Recognition;
+            try {
+              result = await decode(samples, []);
+            } catch {
+              lifetime.signal.throwIfAborted();
+              // A partial prefix can be undecodable even when the full utterance is valid.
+              return;
+            }
             if (result.text.trim()) {
               // Unchanged words can belong to a newly focused field.
               speech.dictating = await client.speech(captureRevision, onset, { phase: "preview", text: result.text }, lifetime.signal);

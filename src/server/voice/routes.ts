@@ -22,7 +22,7 @@ import { endedOnShutdown } from "../http-shutdown.ts";
 import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { createMiddleware } from "hono/factory";
 import {
-  VOICE_FLAG, voiceCaptures,
+  VOICE_FLAG,
   VOICE_BACKENDS,
   VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
   VOICE_CAPTURE_END_HEADER,
@@ -579,32 +579,31 @@ export function registerVoiceUtteranceRoutes(
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const revision = c.req.query("revision");
     const key = speechCaptureKey(owner, revision, parsed.data.speechStartUs);
-    if (parsed.data.phase === "preview" || parsed.data.phase === "focus") {
-      if (!router.hasSpeechOnset(key)) return c.json({ accepted: false });
-      const focused = await router.resolveDictation();
+    const { phase, speechStartUs } = parsed.data;
+    const authorized = () => {
+      if (!voiceStateStore.ownsCapture(owner) || !featureEnabled(VOICE_FLAG)) return false;
       const directive = voiceStateStore.directive();
-      if (!voiceStateStore.ownsCapture(owner) || !directive.capture || !voiceCaptures(voiceStateStore.state().mode) ||
-          voiceStateStore.resolveCaptureRevision(revision, directive) !== directive.revision) return c.json({ accepted: false });
-      const claimed = !!focused && router.bindDictation(key, focused, parsed.data.phase === "preview" ? parsed.data.text : undefined);
+      if (directive.capture && voiceStateStore.resolveCaptureRevision(revision, directive) === directive.revision) return true;
+      const release = phase === "start" && revision && voiceStateStore.releasedCapture(revision);
+      return !!release && withinReleasedHold(speechStartUs, release);
+    };
+    if (phase === "preview" || phase === "focus") {
+      const claimed = await router.probeDictationCapture(key, authorized, parsed.data.phase === "preview" ? parsed.data.text : undefined);
       if (claimed) c.header("x-voice-dictation", "1");
       return c.json({ accepted: claimed });
     }
-    if (parsed.data.phase === "finish") router.speechFinished(key);
+    if (phase === "finish") router.speechFinished(key);
     else {
-      const directive = voiceStateStore.directive();
-      if (!featureEnabled(VOICE_FLAG)) return c.json({ accepted: false });
-      if (!directive.capture || voiceStateStore.resolveCaptureRevision(revision, directive) !== directive.revision) {
-        const release = revision && voiceStateStore.releasedCapture(revision);
-        if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
-      }
+      if (!authorized()) return c.json({ accepted: false });
       // Reserve a possible spoken cancel at receipt, before the focus round trip.
       router.speechStarted(key, parsed.data.speechStartUs);
       // Sherpa reports quiet and audio in order through its transcript endpoint.
       if (voiceStateStore.routingState().backend !== "sherpa-onnx") {
         voiceStateStore.reportTranscript(owner, revision, { phase: "audio", onset: parsed.data.speechStartUs });
       }
-      const field = await router.resolveDictation();
-      if (field && router.bindDictation(key, field)) c.header("x-voice-dictation", "1");
+      const claimed = await router.probeDictationCapture(key, authorized);
+      if (!authorized()) return c.json({ accepted: false });
+      if (claimed) c.header("x-voice-dictation", "1");
     }
     return c.json({ accepted: true });
   });

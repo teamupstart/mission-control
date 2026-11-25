@@ -437,13 +437,13 @@ test("addressed speech reaches its session when the editor's blur report is dela
   }
 });
 
-for (const scenario of ["split text nodes", "overlapping phrases", "refocused correction", "moved number caret", "moved email caret"] as const) {
+for (const scenario of ["split text nodes", "explicit line break", "blurred draft", "overlapping phrases", "refocused correction", "moved number caret", "moved email caret"] as const) {
   test("dictation preserves the editing range across " + scenario, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     const listener = await beListener(daemon);
     try {
       await page.evaluate(scenario => {
-        const field = document.createElement(scenario === "split text nodes" ? "div" : "input");
+        const field = document.createElement((scenario === "split text nodes" || scenario === "explicit line break") ? "div" : "input");
         if (field instanceof HTMLInputElement) {
           if (scenario === "moved number caret" || scenario === "moved email caret") {
             field.type = scenario === "moved number caret" ? "number" : "email";
@@ -486,6 +486,26 @@ for (const scenario of ["split text nodes", "overlapping phrases", "refocused co
         });
         await speech.finish("red pears");
         await expect(lines).toHaveText(["Fruit:", "red pears"]);
+      } else if (scenario === "explicit line break") {
+        await draft.evaluate(field => {
+          const tail = document.createTextNode("tail");
+          field.replaceChildren("abc:", document.createElement("br"), tail);
+          document.getSelection()!.collapse(tail, 0);
+        });
+        await speech.preview("hello");
+        await expect(draft).toHaveText("abc:hellotail");
+        await speech.finish("world");
+        await expect.poll(() => draft.innerText()).toBe("abc:\nworldtail");
+      } else if (scenario === "blurred draft") {
+        await speech.preview("Steve, check");
+        await expect(draft).toHaveValue("Steve, check");
+        const button = page.getByRole("button", { name: "Dispatch", exact: true });
+        await button.focus();
+        await speech.finish("Steve, check the build");
+        await expect.poll(() => frames).toContain("Steve, check the build");
+        await expect(button).toBeFocused();
+        await expect(draft).toHaveValue("Steve, check");
+        expect((await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries).toHaveLength(0);
       } else if (scenario === "overlapping phrases") {
         await speech.preview("one");
         await expect(draft).toHaveValue("one");

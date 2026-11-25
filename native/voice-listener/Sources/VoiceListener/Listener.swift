@@ -295,7 +295,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     decode: @escaping (Segment) async throws -> String?,
     report: @escaping (String, Int64?, String?) async -> Bool,
     editorFocused: @escaping (Int64) async -> Bool = { _ in false },
-    updateEditor: @escaping (Int64, String) async -> Void = { _, _ in },
+    updateEditor: @escaping (Int64, String) async throws -> Void = { _, _ in },
     pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
 ) async {
     var decoding: Task<Void, Never>?
@@ -311,7 +311,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     let editor = await editorFocused(onset)
                     guard (editor || overlay), !Task.isCancelled, let words = try? await decode(segment), !Task.isCancelled, isRunning(),
                           snapshot()?.speechStartHostUs == onset else { return }
-                    if editor { await updateEditor(onset, words) }
+                    if editor {
+                        do {
+                            try await updateEditor(onset, words)
+                        } catch {
+                            guard !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
+                            fputs("Voice listener could not deliver a dictation preview.\n", stderr)
+                        }
+                    }
                     guard overlay else { return }
                     let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
                     if !tail.isEmpty { _ = await report("words", onset, tail) }
@@ -516,7 +523,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                 await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
                             }, editorFocused: { await daemon.shouldPreview($0, revision: captureRevision) },
                             updateEditor: { onset, words in
-                                try? await daemon.preview(words, onset: onset, revision: captureRevision)
+                                try await daemon.preview(words, onset: onset, revision: captureRevision)
                             })
                     }
                     let previous = draining.last?.decoding

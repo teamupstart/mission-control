@@ -20,7 +20,7 @@ import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.
 import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
 import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
-import { awaitingVoiceHold, voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
+import { awaitingVoiceHold, voiceCaptures, VOICE_MAX_HOLD_MS, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
 import type { VoiceDecider } from "./decide.ts";
 
@@ -284,7 +284,13 @@ export class VoiceRouter {
   readonly heard = new RecentlyHeard();
   // An active onset starts unclaimed. Once an editor claims it, a later blur
   // must not turn the draft into a session command.
-  private readonly dictationCaptures = new Map<string, { windowId: string; target: string } | null>();
+  private readonly dictationCaptures = new Map<string, {
+    field?: { windowId: string; target: string };
+    boundSequence: number;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
+  private probeSequence = 0;
+  private expiredDictationThroughUs = -1;
 
   async resolveDictation() {
     return this.questions?.probeDictation ? this.openCards.dictationField(this.questions.probeDictation, this.lifetime.signal) : this.focusedField();
@@ -447,10 +453,16 @@ export class VoiceRouter {
       .reverse().sort((a, b) => offsetUs(b, time) - offsetUs(a, time));
   }
 
-  bindDictation(key: string, field: { windowId: string; target: string }, preview?: string): boolean {
-    if (!this.dictationCaptures.has(key)) return false; // Finished while the DOM probe was in flight.
-    if (!this.dictationCaptures.get(key)) this.releaseSpeechReservation(key);
-    this.dictationCaptures.set(key, field);
+  async probeDictationCapture(key: string, authorized: () => boolean, preview?: string): Promise<boolean> {
+    const capture = this.dictationCaptures.get(key);
+    if (!capture) return false;
+    const sequence = ++this.probeSequence;
+    capture.timeout.refresh();
+    const field = await this.resolveDictation();
+    if (!field || !authorized() || this.dictationCaptures.get(key) !== capture || sequence < capture.boundSequence) return false;
+    if (!capture.field) this.releaseSpeechReservation(key);
+    capture.field = field;
+    capture.boundSequence = sequence;
     if (preview !== undefined) this.questions?.dictate?.(field.windowId, field.target, preview, key, true);
     return true;
   }
@@ -458,9 +470,17 @@ export class VoiceRouter {
   /** Reserve only the action that a cancel at this physical onset could address. */
   speechStarted(key: string, onsetUs: number): void {
     const ageMs = (this.hostNowUs() - onsetUs) / 1000;
-    if (this.dictationCaptures.has(key)) return;
-    this.dictationCaptures.set(key, null);
-    if (this.dictationCaptures.size > HISTORY_LIMIT) this.dictationCaptures.delete(this.dictationCaptures.keys().next().value!);
+    if (this.dictationCaptures.has(key) || onsetUs <= this.expiredDictationThroughUs || ageMs < -MAX_CAPTURE_CLOCK_SKEW_MS) return;
+    // Keep each active phrase independently. A missing finish expires after a
+    // full hold plus the decoder budget since its last probe.
+    const timeout = setTimeout(() => {
+      if (this.dictationCaptures.get(key)?.field) {
+        this.expiredDictationThroughUs = Math.max(this.expiredDictationThroughUs, onsetUs);
+      }
+      this.dictationCaptures.delete(key);
+    }, VOICE_MAX_HOLD_MS + SPEECH_RESULT_TIMEOUT_MS);
+    timeout.unref();
+    this.dictationCaptures.set(key, { boundSequence: 0, timeout });
     if (ageMs < 0 || ageMs > ONSET_TRANSIT_MS || this.speechCaptures.has(key) || this.speechCaptures.size >= HISTORY_LIMIT) return;
     const time = { openedAt: Date.now() - ageMs, openedAtHostUs: onsetUs };
     for (const action of this.actionsAt(time)) {
@@ -485,6 +505,7 @@ export class VoiceRouter {
   }
 
   speechFinished(key: string): void {
+    clearTimeout(this.dictationCaptures.get(key)?.timeout);
     this.dictationCaptures.delete(key);
     this.releaseSpeechReservation(key);
   }
@@ -573,13 +594,17 @@ export class VoiceRouter {
       if (aheadUs > MAX_CAPTURE_CLOCK_SKEW_MS * 1000) return false;
     }
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
+    const capture = timing.captureKey ? this.dictationCaptures.get(timing.captureKey) : undefined;
     const field = (timing.dictation === undefined ? this.focusedField() : timing.dictation)
-      ?? (timing.captureKey ? this.dictationCaptures.get(timing.captureKey) : undefined);
+      ?? capture?.field;
     if (field) {
       this.rememberUtterance(id);
       this.questions?.dictate?.(field.windowId, field.target, utterance.text, timing.captureKey ?? id, false);
       return true;
     }
+    // A very late final with no surviving record might belong to an expired
+    // editor claim. It cannot safely become a command.
+    if (timing.captureKey && !capture && speechStartHostUs !== undefined && speechStartHostUs <= this.expiredDictationThroughUs) return false;
     const leadMs = speechStartHostUs !== undefined && startHostUs !== undefined ? (speechStartHostUs - startHostUs) / 1000 : 0;
     const time = { openedAt: capturedAt + leadMs, openedAtHostUs: onsetUs };
     const unsureCards = this.picksLostThrough && offsetUs(time, this.picksLostThrough) <= 0 ? [] : Array.from(this.open.values())
@@ -1523,7 +1548,9 @@ export class VoiceRouter {
       item.modelStep?.abort();
     }
     for (const capture of this.speechCaptures.values()) clearTimeout(capture.timeout);
+    for (const capture of this.dictationCaptures.values()) clearTimeout(capture.timeout);
     this.dictationCaptures.clear();
+    this.expiredDictationThroughUs = -1;
     this.speechCaptures.clear();
     this.expiredSpeechKeys.clear();
     this.openCards.clear();

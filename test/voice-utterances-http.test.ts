@@ -1852,7 +1852,7 @@ test("an accepted non-cancel transcript after expiry releases the reserved messa
   assert.deepEqual(queued("Will"), ["check the logs"]);
 });
 
-test("dictation binds interim and final speech to the original field even after blur", async () => {
+test("a claimed phrase stays out of session routing after blur", async () => {
   const router = registry.voiceRouter!;
   const disconnect = router.openCards.connect("dashboard", true);
   const target = randomUUID();
@@ -1927,6 +1927,73 @@ test("an active phrase discovers focus after onset and rechecks the editor for e
   assert.deepEqual(await (await phase("preview", "late")).json(), { accepted: false });
   assert.deepEqual(frames, [[first, true, "Steve"], [second, true, "Steve"], [first, false, "Steve check the build"]]);
   assert.deepEqual(await readHeard(), []);
+  assert.deepEqual(queued("Steve"), []);
+});
+
+test("a delayed onset cannot supersede a newer preview binding", async t => {
+  const router = registry.voiceRouter!;
+  const started = deferred(), release = deferred();
+  const first = { windowId: "dashboard", target: randomUUID() };
+  const second = { ...first, target: randomUUID() };
+  let probes = 0;
+  t.mock.method(router, "resolveDictation", async () => {
+    if (++probes === 1) { started.resolve(); await release.promise; return first; }
+    return probes === 2 ? second : undefined;
+  });
+  const frames: string[] = [];
+  t.after(registry.subscribe(event => { if (event.type === "voice_dictation") frames.push(event.target); }));
+  const revision = voiceStateStore.directive().revision;
+  const speechStartUs = voiceHostTimeUs();
+  const path = "/voice/listener/speech?revision=" + revision;
+  const start = post(path, { phase: "start", speechStartUs }, token);
+  await started.promise;
+  assert.equal((await post(path, { phase: "preview", speechStartUs, text: "Steve" }, token)).headers.get("x-voice-dictation"), "1");
+  release.resolve();
+  await start;
+  const result = await app.request(utterancePath(revision), { method: "POST", headers: {
+    "content-type": "application/json", "x-harness-token": token, "x-voice-listener-id": listenerId,
+    "x-voice-capture-start-host-us": String(speechStartUs), "x-voice-speech-start-host-us": String(speechStartUs),
+    "x-voice-capture-end-host-ms": String(Math.ceil(speechStartUs / 1000) + 1),
+  }, body: JSON.stringify(capture("Steve check the build")) });
+  assert.deepEqual(await result.json(), { accepted: true });
+  assert.deepEqual(frames, [second.target, second.target]);
+});
+
+test("a revoked owner cannot claim a field while an onset probe is pending", async t => {
+  const started = deferred(), release = deferred();
+  t.mock.method(registry.voiceRouter!, "resolveDictation", async () => {
+    started.resolve();
+    await release.promise;
+    return { windowId: "dashboard", target: randomUUID() };
+  });
+  const revision = voiceStateStore.directive().revision;
+  const start = post("/voice/listener/speech?revision=" + revision, { phase: "start", speechStartUs: voiceHostTimeUs() }, token);
+  await started.promise;
+  t.mock.method(voiceStateStore, "ownsCapture", () => false);
+  release.resolve();
+  const response = await start;
+  assert.equal(response.headers.get("x-voice-dictation"), null);
+  assert.deepEqual(await response.json(), { accepted: false });
+});
+
+test("new onsets preserve an active dictation claim and abandoned onsets expire", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const router = registry.voiceRouter!;
+  const revision = voiceStateStore.directive().revision;
+  const path = "/voice/listener/speech?revision=" + revision;
+  const onset = voiceHostTimeUs();
+  const key = JSON.stringify([listenerId, revision, onset]);
+  t.mock.method(router, "resolveDictation", async () => ({ windowId: "dashboard", target: "draft" }));
+  assert.equal((await post(path, { phase: "start", speechStartUs: onset }, token)).headers.get("x-voice-dictation"), "1");
+  for (let i = 1; i <= 51; i++) router.speechStarted("other-" + i, onset + i);
+  assert.equal(router.hasSpeechOnset(key), true);
+  assert.equal((await post(path, { phase: "preview", speechStartUs: onset, text: "Steve" }, token)).headers.get("x-voice-dictation"), "1");
+  t.mock.timers.tick(5 * 60_000);
+  assert.equal(router.hasSpeechOnset(key), false);
+  assert.equal(router.hasSpeechOnset("other-51"), false);
+  router.speechStarted(key, onset); // A delayed retry cannot revive an expired claim as a session command.
+  const lateFinal = { ...capture("Steve check the build"), words: [], backend: "fluidaudio" as const };
+  assert.equal(await router.accept(lateFinal, { captureKey: key, speechStartHostUs: onset, dictation: null }), false);
   assert.deepEqual(queued("Steve"), []);
 });
 

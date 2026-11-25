@@ -396,7 +396,7 @@ import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
-import { resolvedSessionIntent } from "@shared/goal.ts";
+import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
@@ -7663,9 +7663,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (isAwaiting(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
       return c.json({ error: "This session is awaiting a background process, so it is not finished yet." }, 409);
     }
+    const expected = parsed.data.expectedIntent;
+    const current = registry.getGoal(session.id);
+    if (expected !== undefined && (expected ? !sessionIntentMatches(current, expected) : current !== null)) {
+      return c.json({ error: "Queue completion intent changed" }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
-    queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
+    if (parsed.data.retire) {
+      queues.setWrapupAnswer(key, "foreman:automatic-wrapup-skipped", Date.now(), true);
+    } else {
+      queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
+    }
     return c.json(queues.get(session.id));
   });
 

@@ -48,6 +48,7 @@ import type {
   SetWorkItemState,
   SpendReportBody,
   SubmitOptions,
+  WrapupAsked,
 } from "@shared/protocol.ts";
 import type { PipelineActionResult, PipelineForemanView, PipelineRun } from "@shared/pipeline.ts";
 import type {
@@ -1409,11 +1410,11 @@ export class ForemanClient implements ForemanActions {
    * stamped and then invisibly swallowed. The DRAIN path must never pass it: there the
    * answer it would clobber is the answer to the ask being raised.
    */
-  async markWrapupAsked(sessionId: string, opts?: { clearAnswer?: boolean }): Promise<void> {
+  async markWrapupAsked(sessionId: string, opts?: WrapupAsked): Promise<void> {
     const res = await send(
       "POST",
       `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`,
-      opts?.clearAnswer ? { clearAnswer: true } : undefined,
+      opts,
     );
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }

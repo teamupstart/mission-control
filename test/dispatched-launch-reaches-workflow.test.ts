@@ -731,22 +731,60 @@ const IMPLEMENTATION_OBJECTIVE = "Implement counts on section headings in the co
 const REPLACEMENT_OBJECTIVE = "Implement heading counts only for collapsed sections in the conversation Idle rail.";
 const DESIGN_SELECTION = "lets go forward with counts on section headings, that is it, 100%";
 
-for (const scenario of ["implementation", "preference only", "ambiguous", "no PR omitted marker", "no PR as steering", "do not submit for review", "do not submit a PR", "no PR for this change", "no PR for this task", "no PR for this work", "no PR for this implementation", "no PR for this feature", "no PR for this feature branch", "do not submit this as a PR", "combined release misses deliverable", "combined release rewrites unrelated text", "explicit stop", "stop working on this", "stop working on this task", "stop work on this", "stop this task", "stop the task", "no PR for this", "do not file a PR", "no PR without approval", "combined stop and no PR", "hold survives replacement", "legacy hold survives replacement", "release from legacy hold", "release judged unclear", "release invents deliverable", "embedded no PR", "comma-separated no PR", "do not make a pull request", "no PR yet", "no PR until approval", "unclear restriction survives replacement", "artifact diff", "stale verdict", "recovery"]) {
+const INITIAL_RESTRICTIONS = new Map([
+  ["no PR omitted marker", `${DESIGN_SELECTION}. Do not submit this for review or open a PR.`],
+  ["embedded no PR", "Implement counts on section headings, but do not open a PR."],
+  ["comma-separated no PR", "Implement counts on section headings, no PR"],
+  ["do not make a pull request", "Implement counts on section headings. Do not make a pull request."],
+  ["no PR yet", "Implement counts on section headings. Do not open a PR yet."],
+  ["no PR until approval", "Implement counts on section headings. Do not open a PR until I approve."],
+  ["no PR for this task", "Implement counts on section headings. Do not open a PR for this task."],
+]);
+const INITIAL_SELECTIONS = new Map([
+  ...INITIAL_RESTRICTIONS,
+  ["preference only", "Counts on section headings is my favorite."],
+  ["ambiguous", "Counts, maybe? I am not sure what to do next."],
+  ["delegates PR", `${DESIGN_SELECTION}. Don’t open a PR, let the bound Workflow open it.`],
+]);
+const FOLLOWUP_RESTRICTIONS = new Map([
+  ["no PR as steering", "Do not open a PR."],
+  ["do not submit a PR", "Do not submit a PR."],
+  ["no PR for this change", "Do not open a PR for this change."],
+  ["no PR for this work", "Do not open a PR for this work."],
+  ["no PR for this implementation", "Do not open a pull request for this implementation."],
+  ["no PR for this feature", "Implement the selected design. Do not open a PR for this feature."],
+  ["no PR for this feature branch", "Do not open a PR for this feature branch."],
+  ["do not submit this as a PR", "Implement the design. Don’t submit this as a PR."],
+  ["combined release misses deliverable", "Do not open a PR."],
+  ["combined release rewrites unrelated text", "Do not open a PR."],
+  ["explicit stop", "Stop here."],
+  ["stop working on this", "Stop working on this."],
+  ["stop working on this task", "Stop working on this task."],
+  ["stop work on this", "Stop work on this."],
+  ["stop this task", "Stop this task."],
+  ["stop the task", "Stop the task."],
+  ["no PR for this", "Do not open a PR for this."],
+  ["do not submit for review", "Do not submit this for review."],
+  ["do not file a PR", "Do not file a PR."],
+  ["no PR without approval", "Do not create a pull request without my approval."],
+  ["combined stop and no PR", "Stop here and don't open a PR."],
+  ["full-length contract", "Do not open a PR without my approval."],
+  ["model contextual hold", "Keep this local until I review it."],
+]);
+
+for (const scenario of [
+  ...INITIAL_SELECTIONS.keys(),
+  ...FOLLOWUP_RESTRICTIONS.keys(),
+  "implementation", "hold survives replacement", "legacy hold survives replacement",
+  "release from legacy hold", "release judged unclear", "release invents deliverable",
+  "unclear restriction survives replacement", "artifact diff", "stale verdict", "recovery",
+]) {
   test(`mockup exploration through the goal model and prompted worker: ${scenario}`, async (t) => {
     const slug = `mockup-transition-${scenario.replaceAll(" ", "-")}`;
     const d = dispatch(slug, { title: MOCKUP_OBJECTIVE, intent: MOCKUP_OBJECTIVE, kind: "bugfix", workflowId: "w" }, false);
     const now = Date.now() - 30_000;
     const transcriptPath = join(home, `${slug}.jsonl`);
-    const selection = scenario === "preference only" ? "Counts on section headings is my favorite."
-      : scenario === "ambiguous" ? "Counts, maybe? I am not sure what to do next."
-        : scenario === "no PR omitted marker" ? `${DESIGN_SELECTION}. Do not submit this for review or open a PR.`
-          : scenario === "embedded no PR" ? "Implement counts on section headings, but do not open a PR."
-            : scenario === "comma-separated no PR" ? "Implement counts on section headings, no PR"
-              : scenario === "do not make a pull request" ? "Implement counts on section headings. Do not make a pull request."
-                : scenario === "no PR yet" ? "Implement counts on section headings. Do not open a PR yet."
-                  : scenario === "no PR until approval" ? "Implement counts on section headings. Do not open a PR until I approve."
-                    : scenario === "no PR for this task" ? "Implement counts on section headings. Do not open a PR for this task."
-                      : DESIGN_SELECTION;
+    const selection = INITIAL_SELECTIONS.get(scenario) ?? DESIGN_SELECTION;
     const unclearRestriction = scenario === "unclear restriction survives replacement";
     const legacyRelease = scenario === "release from legacy hold";
     const legacyHold = scenario === "legacy hold survives replacement";
@@ -754,32 +792,13 @@ for (const scenario of ["implementation", "preference only", "ambiguous", "no PR
     const releaseInventsDeliverable = scenario === "release invents deliverable";
     const releaseAfterReplacement = scenario === "hold survives replacement" || unclearRelease || releaseInventsDeliverable;
     const replaceWhileHeld = releaseAfterReplacement || unclearRestriction || legacyHold;
+    const contextualHold = scenario === "model contextual hold";
+    const fullLengthContract = scenario === "full-length contract";
+    const releaseWithoutReplacement = legacyRelease || contextualHold;
     const unrelatedRewrite = scenario === "combined release rewrites unrelated text";
     const combinedRelease = scenario === "combined release misses deliverable" || unrelatedRewrite;
-    const additionalRestrictions: Record<string, string> = {
-      "do not submit this as a PR": "Implement the design. Don’t submit this as a PR.",
-      "no PR for this feature branch": "Do not open a PR for this feature branch.",
-      "no PR for this feature": "Implement the selected design. Do not open a PR for this feature.",
-      "no PR for this implementation": "Do not open a pull request for this implementation.",
-      "combined release misses deliverable": "Do not open a PR.",
-      "combined release rewrites unrelated text": "Do not open a PR.",
-      "stop the task": "Stop the task.",
-      "stop this task": "Stop this task.",
-      "no PR for this": "Do not open a PR for this.",
-      "stop work on this": "Stop work on this.",
-      "do not submit for review": "Do not submit this for review.",
-      "do not file a PR": "Do not file a PR.",
-      "stop working on this task": "Stop working on this task.",
-      "stop working on this": "Stop working on this.",
-      "no PR without approval": "Do not create a pull request without my approval.",
-    };
-    const followupRestriction = additionalRestrictions[scenario] ?? (scenario === "explicit stop" ? "Stop here."
-      : scenario === "combined stop and no PR" ? "Stop here and don't open a PR."
-        : scenario === "do not submit a PR" ? "Do not submit a PR."
-          : scenario === "no PR for this change" ? "Do not open a PR for this change."
-            : scenario === "no PR for this work" ? "Do not open a PR for this work."
-              : scenario === "no PR as steering" || replaceWhileHeld || legacyRelease ? "Do not open a PR."
-                : null);
+    const followupRestriction = FOLLOWUP_RESTRICTIONS.get(scenario)
+      ?? (replaceWhileHeld || legacyRelease ? "Do not open a PR." : null);
     let instruction = selection;
     let revision = 2;
     const readGoal = () => d.registry.getGoal(d.sessionId);
@@ -818,11 +837,14 @@ for (const scenario of ["implementation", "preference only", "ambiguous", "no PR
           const replace = !initial && teachesTransition
             && !unclear && scenario !== "preference only"
             && !(followupRestriction && revision === 3)
-            && !(legacyRelease && revision === 4)
+            && !(releaseWithoutReplacement && revision === 4)
             && !(releaseAfterReplacement && !releaseInventsDeliverable && revision === 5)
             && !(combinedRelease && !unrelatedRewrite && revision === 4)
             && (scenario !== "recovery" || revision === 3);
-          const objective = releaseInventsDeliverable && revision === 5
+          const addsContextualHold = contextualHold && revision === 3;
+          const objective = addsContextualHold
+            ? `${IMPLEMENTATION_OBJECTIVE}\nAutomatic handoff: operator only`
+            : releaseInventsDeliverable && revision === 5
             ? "Replace the Idle rail with a search bar."
             : unrelatedRewrite && revision === 4
             ? `${IMPLEMENTATION_OBJECTIVE} Run focused tests.`
@@ -925,8 +947,10 @@ for (const scenario of ["implementation", "preference only", "ambiguous", "no PR
       workAndPark(d.registry, d.noteKey, now + 10);
       await waitForRevision(3);
     }
+    const fullObjective = `${IMPLEMENTATION_OBJECTIVE}\nRequirements: ${"x".repeat(3890)}`;
     if (followupRestriction) {
       assert.equal(resolvedSessionIntent(readGoal())?.objective, IMPLEMENTATION_OBJECTIVE);
+      if (fullLengthContract) d.registry.upsertGoal(d.sessionId, { objective: fullObjective });
       revision = 3;
       instruction = followupRestriction;
       recordTranscript([["user", MOCKUP_OBJECTIVE], offered, ["user", selection], ["user", instruction]]);
@@ -970,13 +994,15 @@ for (const scenario of ["implementation", "preference only", "ambiguous", "no PR
       const authorized = resolvedSessionIntent(readGoal());
       assert.equal(authorized?.episodeKey, `intent:${replaceWhileHeld ? 4 : followupRestriction ? 3 : 2}:${revision}`);
       assert.equal(authorized?.objective.split("\n")[0], replaceWhileHeld ? REPLACEMENT_OBJECTIVE : IMPLEMENTATION_OBJECTIVE);
-      if (followupRestriction || scenario === "no PR omitted marker" || scenario === "embedded no PR" || scenario === "comma-separated no PR" || scenario === "do not make a pull request" || scenario === "no PR yet" || scenario === "no PR until approval" || scenario === "no PR for this task") {
-        if (!legacyRelease) assert.ok(authorized?.objective.split("\n").includes("Automatic handoff: operator only"));
+      const expectsHold = followupRestriction || INITIAL_RESTRICTIONS.has(scenario);
+      if (expectsHold && !legacyRelease) {
+        assert.ok(authorized?.objective.split("\n").includes("Automatic handoff: operator only"));
       }
+      if (fullLengthContract) assert.ok(authorized?.objective.startsWith(fullObjective + "\n"));
     }
 
     writes.length = 0;
-    const claimed = scenario === "implementation" || scenario === "recovery";
+    const claimed = ["implementation", "delegates PR", "recovery"].includes(scenario);
     const retired = scenario === "preference only" || scenario === "artifact diff";
     assert.equal(await tick(), claimed || retired);
     if (claimed || scenario === "stale verdict") {
@@ -1032,9 +1058,9 @@ for (const scenario of ["implementation", "preference only", "ambiguous", "no PR
       assert.deepEqual(runs(), []);
       assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, 1);
     }
-    if (releaseAfterReplacement || legacyRelease) {
-      const expectedObjective = legacyRelease ? IMPLEMENTATION_OBJECTIVE : REPLACEMENT_OBJECTIVE;
-      revision = legacyRelease ? 4 : 5;
+    if (releaseAfterReplacement || releaseWithoutReplacement) {
+      const expectedObjective = releaseWithoutReplacement ? IMPLEMENTATION_OBJECTIVE : REPLACEMENT_OBJECTIVE;
+      revision = releaseWithoutReplacement ? 4 : 5;
       instruction = "Resume automatic handoff.";
       submitEcho(d.registry, d.noteKey, instruction, now + 15, transcriptPath);
       workAndPark(d.registry, d.noteKey, now + 16);

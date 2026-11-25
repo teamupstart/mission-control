@@ -66,8 +66,31 @@ export const GOAL_KEPT_AS_STEERING_RATIONALE =
 /** A standalone objective clause reserved for a human's explicit stop or publication restriction. */
 export const GOAL_OPERATOR_HANDOFF_ONLY = "Automatic handoff: operator only";
 
+/** Visit objective lines that are outside Markdown code examples. */
+export function mapUnfencedGoalLines(text: string, map: (line: string) => string): string[] {
+  let fence: string | undefined;
+  return text.split("\n").map((line) => {
+    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    const delimiter = match?.[1];
+    if (fence) {
+      if (delimiter && delimiter[0] === fence[0] && delimiter.length >= fence.length && !match?.[2]?.trim()) fence = undefined;
+      return line;
+    }
+    if (delimiter) {
+      fence = delimiter;
+      return line;
+    }
+    return map(line);
+  });
+}
+
 export function hasOperatorHandoffHold(objective: string | null): boolean {
-  return objective?.split("\n").some((line) => line.trim() === GOAL_OPERATOR_HANDOFF_ONLY) ?? false;
+  let held = false;
+  if (objective) mapUnfencedGoalLines(objective, (line) => {
+    if (line.trim() === GOAL_OPERATOR_HANDOFF_ONLY) held = true;
+    return line;
+  });
+  return held;
 }
 
 export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {

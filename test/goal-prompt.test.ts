@@ -24,5 +24,5 @@ test("the goal prompt distinguishes a choice within implementation from authoriz
   assert.match(rules, /Merely naming or favoring an option does not authorize implementation/);
   assert.match(rules, /When a selection is ambiguous about whether to implement it, use "unclear"/);
   assert.match(rules, /If the human explicitly stops further work or withholds automatic review, shipping or a pull request, include the exact standalone line "Automatic handoff: operator only"/);
-  assert.match(rules, /Keep the line until the human expressly lifts the restriction/);
+  assert.match(rules, /Keep the hold until the human expressly lifts the restriction/);
 });

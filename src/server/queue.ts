@@ -411,12 +411,12 @@ export class QueueManager {
     );
   }
 
-  setWrapupAnswer(key: string, answer: string | null, now = Date.now()): void {
+  setWrapupAnswer(key: string, answer: string | null, now = Date.now(), retire = false): void {
     // Every writer of an answer comes through here: Foreman's automatic wrap-up once its
     // instruction landed, the Ship it? card, and a skipped wrap-up's marker. What an answer
     // durably owes commits with it, so a daemon that stops right after cannot lose it.
     const recorders = answer !== null ? [...this.wrapupRecorders] : [];
-    this.registry.setQueueWrapup(key, { wrapupAnswer: answer }, now,
+    this.registry.setQueueWrapup(key, { wrapupAnswer: answer, ...(retire ? { wrapupAskedAt: now } : {}) }, now,
       recorders.length > 0 ? () => { for (const record of recorders) record(key); } : undefined);
     if (answer !== null) for (const listener of this.wrapupListeners) listener(key);
   }

@@ -77,8 +77,9 @@ RULES:
 - Preserve still-applicable review, evidence and publication restrictions in every objective
   revision. If the human explicitly stops further work or withholds automatic review, shipping
   or a pull request, include the exact standalone line "${GOAL_OPERATOR_HANDOFF_ONLY}" in the objective
-  alongside the actual restriction. If needed to preserve the existing objective on an amendment,
-  append the restriction with "Also", then append the standalone line. Keep the line until the
+  alongside the restriction on its own line prefixed with "Operator handoff restriction: ".
+  This authority decision applies even to steering, and explicit delegation to the bound Workflow
+  leaves the ordinary handoff available. Keep the hold until the
   human expressly lifts the restriction. When the human says "Resume automatic handoff", use
   "replace" to remove the handoff restriction while preserving the rest of the objective.
   The release must be a standalone instruction. If the same turn changes the deliverable,

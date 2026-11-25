@@ -12,7 +12,7 @@ import { isPaused } from "@shared/pause.ts";
 import { hasBlocker, isAwaiting, reportBucket, settledIdle } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
-import { resolvedSessionIntent } from "@shared/goal.ts";
+import { hasOperatorHandoffHold, resolvedSessionIntent } from "@shared/goal.ts";
 import { foremanTriageAuthorized } from "./authorization.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
@@ -23,6 +23,7 @@ import {
 } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
 import { automaticWrapupBlock } from "./wrapup-eligibility.ts";
+import { explicitHandoffRestriction } from "../goal/handoff-restrictions.ts";
 
 // The lifecycle predicates are defined in @shared/queue.ts, not here: the DB's
 // partial unique index is built from the same constant, so the set of in-flight
@@ -404,6 +405,13 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
     const payload = autoWrapupPayload(cfg.wrapup);
     const intentGuard = resolvedSessionIntent(intent);
     if (intent && !intentGuard) return { kind: "none" };
+    // Work items carry human instructions even when their delivery did not revise
+    // the Goal. A newer restriction can hold publication without becoming the
+    // objective used to classify this drain's deliverable.
+    if (intent && items.some((item) => (item.sentAt ?? item.createdAt) >= intent.updatedAt &&
+      (hasOperatorHandoffHold(item.intent) || explicitHandoffRestriction(item.intent)))) {
+      return { kind: "none" };
+    }
     const block = automaticWrapupBlock({
       taskKind: session.task?.kind ?? null,
       workflowId: session.task?.workflowId ?? null,

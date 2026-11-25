@@ -8,7 +8,7 @@ import type { Registry } from "../registry.ts";
 import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
-import { explicitHandoffRestriction, withoutHandoffRestrictions } from "./handoff-restrictions.ts";
+import { contextualHandoffRestriction, explicitHandoffRestriction, withoutHandoffRestrictions } from "./handoff-restrictions.ts";
 import { clampPrompt } from "../util/prompt-text.ts";
 
 // Tier 2: reconcile each human prompt with the durable session objective, in captured
@@ -545,15 +545,23 @@ async function refine(
         rationale = "The operator explicitly released the completion handoff.";
       }
       const preserveHold = hadHold && !released;
+      const contextualRestriction = !requestsRelease && !hadHold && hasOperatorHandoffHold(r.value.objective)
+        ? contextualHandoffRestriction(prompt.prompt)
+        : undefined;
       const restriction = humanRestriction
         ?? explicitHandoffRestriction(objective)
-        ?? (preserveHold ? priorRestriction : undefined);
+        ?? (preserveHold ? priorRestriction : contextualRestriction);
       if ((restriction || preserveHold) && objective && !hasOperatorHandoffHold(objective)) {
         // The accepted human turn can reserve handoff even when the model misses the
         // restriction or calls the turn steering. Keep any accepted implementation
         // objective and record the safety restriction in the same intent revision.
-        const restrictionLine = restriction && !objective.includes(restriction) ? `\n${restriction}` : "";
-        objective = clampPrompt(`${objective}${restrictionLine}\n${GOAL_OPERATOR_HANDOFF_ONLY}`);
+        const storedRestriction = restriction && restriction.length > 480
+          ? contextualHandoffRestriction(restriction)
+          : restriction;
+        const restrictionLine = storedRestriction && !objective.includes(storedRestriction) ? `\n${storedRestriction}` : "";
+        // The accepted objective is already bounded. Account for the small separate
+        // annotation without clamping away any of the accepted requirements.
+        objective = `${objective}${restrictionLine}\n${GOAL_OPERATOR_HANDOFF_ONLY}`;
         handoffContractChanged = true;
         if (relationship === "steer") {
           relationship = "amend";

@@ -346,6 +346,20 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     repoAllowlist: ["/repo"],
   });
 
+  for (const retire of [undefined, true]) {
+    const response = await app.request("/api/sessions/claimed/queue/wrapup/asked", {
+      method: "POST",
+      headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedIntent: { ...PROMPTED_INTENT, objective: "The discarded Goal" },
+        retire,
+      }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal(registry.getQueue("claimed")?.wrapupAskedAt, null);
+    assert.equal(registry.getQueue("claimed")?.wrapupAnswer, null);
+  }
+
   const bindingsBeforeUnbound = workflows.store.listBindings().length;
   assert.deepEqual(await (await request(app, "unbound", "0".repeat(64))).json(), {
     claimed: false,

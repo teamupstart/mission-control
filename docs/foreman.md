@@ -370,7 +370,7 @@ verifies the implementation before claiming the bound Workflow. A drained work q
 the current Goal to decide what is eligible for handoff. The completed items and task title
 supply the contract when there is no Goal. A pending or ambiguous Goal pauses the drain decision.
 
-To recover an implementation that Foreman already retired as a review artifact, first check the
+To recover a prompted completion that Foreman already retired as a review artifact, first check the
 session's completion entry in `foreman.log` for the retired generation and artifact reason. Verify
 that the session still owns the checkout, the intended Foreman-complete binding has no submission,
 and no PR or direct shipping handoff already owns the work. Send a new human instruction naming

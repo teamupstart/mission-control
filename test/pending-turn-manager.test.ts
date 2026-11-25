@@ -2386,6 +2386,29 @@ test("a deadline never answers a blocking review and resumes when the review is 
   f.manager.stop();
 });
 
+test("a message for a turn stopped inside a question call is never steered, and interrupts at three minutes", async (t) => {
+  // The live failure: an agent blocked in a call-mode `request_input` got the operator's
+  // message steered into its turn at one minute. Claude reads a steer only between tool calls,
+  // so the message sat unread for hours and nothing escalated it, because it had left the
+  // outbox. Only an interruption reaches that turn.
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 350000 });
+  const f = steeringFixture("deadline-question-call");
+  const reviews = new ReviewManager(f.registry);
+  reviews.create(f.id, "input", "Post this?", "Post this?", null, { snoozable: true });
+  assert.equal(f.registry.hasPendingReviewCall(f.id), true);
+  const row = f.manager.submit(f.id, "what is happening?").pendingTurn!;
+  assert.equal(f.manager.expedite(f.id, row.id, row.revision, "steer"), false, "Steer now cannot reach this turn");
+  t.mock.timers.tick(65000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(f.sends, [], "no steer at one minute");
+  assert.equal(f.interrupts(), 0);
+  t.mock.timers.tick(120000);
+  for (let i = 0; i < 50 && f.sends.length === 0; i++) await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.interrupts(), 1);
+  assert.deepEqual(f.sends, ["what is happening?"]);
+  f.manager.stop();
+});
+
 test("a message a steer could not deliver interrupts at three minutes and keeps the other rows", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 300000 });
   // Steering is refused for as long as the gate is held, which is what a driver that has

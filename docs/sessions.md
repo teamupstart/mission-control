@@ -380,6 +380,16 @@ A stage the session cannot perform is skipped: native steering is available on e
 Claude, Codex and Pi sessions, so a terminal session waits out the three minutes and is
 interrupted instead. A message stops at most one turn, however that attempt ends.
 
+Steering is also skipped while the agent's turn is stopped inside a call that waits on you,
+such as a `request_input` question that waits in the call or a diff review. An agent reads a
+steered message only between tool calls, so a steer sent then would stay unread until you
+answer the question, and nothing would escalate it. The message waits out the three minutes
+and interrupts the turn instead. Its row offers no **Steer now**, and after 30 seconds it reads
+**The agent is stopped on its question to you, so this message will interrupt it**. The
+question stays open in the inbox, and an answer you give after the interruption reaches the
+agent as a message. A **Steer now** chosen before the question opened falls back to the same
+three-minute interruption.
+
 Each queued row also offers **Steer now**, where supported, and **Interrupt and deliver**,
 for an operator who does not want to wait out the clock. These explicit actions can pass
 messages that are still inside their quiet first minute; among messages whose stage is due,

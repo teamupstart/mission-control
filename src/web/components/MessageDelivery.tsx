@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { PendingTurn, Session } from "@shared/types.ts";
 import { canInterrupt } from "@shared/harness-capabilities.ts";
 import {
-  MESSAGE_WAIT_NOTICE_MS, canExpediteTurn, canSteerMessage, deliveryStage,
+  MESSAGE_WAIT_NOTICE_MS, canExpediteTurn, canSteerRunningTurn, deliveryStage, turnWaitsOnQuestion,
 } from "@shared/message-delivery.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -31,12 +31,14 @@ export function PendingMessageDelivery({ session, turn, busy, onDeliver }: {
     : session.state === "stopping" || session.state === "exited" ? "This session is ending"
     : session.pendingTurns.some(row => row.state !== "queued") ? "Resolve the earlier delivery first"
     : turn.lastError ? "Automatic delivery needs attention"
+    : turnWaitsOnQuestion(session) && stage?.action === "interrupt"
+      ? "The agent is stopped on its question to you, so this message will interrupt it"
     : stage?.action === "interrupt" ? "Interrupting this turn to deliver it"
     : stage ? "Steering it into this turn"
     : "Waiting for this turn to finish";
   return <span className="pending-message-delivery">
     {age >= MESSAGE_WAIT_NOTICE_MS && <span className="pending-message-age">Waiting {Math.floor(age / 1000)}s · {reason}</span>}
-    {canExpediteTurn(turn) && canSteerMessage(session) && <Tooltip label="Send this correction into the current turn, ahead of messages waiting for the next turn">
+    {canExpediteTurn(turn) && canSteerRunningTurn(session) && <Tooltip label="Send this correction into the current turn, ahead of messages waiting for the next turn">
       <button type="button" className="pending-turn-action" disabled={busy || blocked}
         onClick={() => onDeliver("steer")}>Steer now</button>
     </Tooltip>}

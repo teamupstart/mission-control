@@ -1,3 +1,4 @@
+import { quotedReferenceName } from "@shared/voice-names.ts";
 import { useEffect, useState } from "react";
 import type { ReportGuidanceView } from "@shared/protocol.ts";
 import { REPORT_GUIDANCE_RULES, type ReportMute } from "@shared/reports.ts";
@@ -158,6 +159,10 @@ function GuidanceEditor({ initial }: { initial: ReportGuidanceView | null }): Re
   );
 }
 
+function mutedAuthorLabel(mute: ReportMute): string {
+  return mute.isReferenceName ? quotedReferenceName(mute.authorName) : mute.authorName;
+}
+
 function MutedAgents({ mutes, now }: { mutes: readonly ReportMute[]; now?: number }): React.JSX.Element {
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -171,7 +176,7 @@ function MutedAgents({ mutes, now }: { mutes: readonly ReportMute[]; now?: numbe
         return next;
       });
       // A mute already gone (another window unmuted it) is the outcome asked for.
-      if (!result.ok && result.status !== 404) setError(result.error ?? `Could not unmute ${mute.authorName}`);
+      if (!result.ok && result.status !== 404) setError(result.error ?? `Could not unmute ${mutedAuthorLabel(mute)}`);
     });
   };
   return (
@@ -193,13 +198,13 @@ function MutedAgents({ mutes, now }: { mutes: readonly ReportMute[]; now?: numbe
         <ul className="reports-muted-list" aria-label="Muted agents">
           {mutes.map((mute) => (
             <li key={mute.authorKey} className="reports-muted-row">
-              <strong>{mute.authorName}</strong>
+              <strong>{mutedAuthorLabel(mute)}</strong>
               <span className="dim"> · muted {relativeTime(mute.mutedAt, now)}</span>
-              <Tooltip label={`List ${mute.authorName}'s reports in the inbox again, and notify you about its new ones`}>
+              <Tooltip label={`List ${mutedAuthorLabel(mute)}'s reports in the inbox again, and notify you about its new ones`}>
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  aria-label={`Unmute ${mute.authorName}`}
+                  aria-label={`Unmute ${mutedAuthorLabel(mute)}`}
                   disabled={busy.has(mute.authorKey)}
                   onClick={() => unmute(mute)}
                 >

@@ -205,7 +205,7 @@ export function ReviewCard({
   const drawnQuestion = question && voiceAnswers !== null && !snoozing;
   const voiceQuestion = drawnQuestion && (decisions?.length ?? 0) <= 1;
   const pendingAnswer = voiceQuestion ? voiceAnswers.answers.get(review.id) : undefined;
-  const spokenName = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId)?.name;
+  const speaker = useContext(VoiceRosterContext).find(row => row.sessionId === review.sessionId);
   // The daemon owns the deadline. Once the operator edits this preview, the draft
   // owns the inputs immediately, including while the cancel request is in flight.
   const [editCancel, setEditCancel] = useState<{ id: string; status: "requested" | "failed" } | null>(null);
@@ -413,7 +413,7 @@ export function ReviewCard({
           // one silently clears the other; across sessions that is two different agents.
           namePrefix={review.id}
           foremanRecommended={recommendedKeys}
-          planAddress={voicePlan ? spokenName ?? "reply" : undefined}
+          planAddress={voicePlan ? speaker ?? "reply" : undefined}
           voiceLetters={voiceQuestion}
           voicePending={!!preview}
           footer={footer}
@@ -506,7 +506,7 @@ export function ReviewCard({
           </Tooltip>
         </div>
       )}
-      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} decision={decisions?.[0]} />}
+      {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={speaker} decision={decisions?.[0]} />}
       {voiceError && voiceError.id === revision && <p className="review-err">{voiceError.message}</p>}
       {err && <p className="review-err">{err}</p>}
       {foremanOpen && foremanAvailable && foremanNote && (

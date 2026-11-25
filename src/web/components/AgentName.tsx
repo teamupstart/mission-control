@@ -1,9 +1,15 @@
 import { useContext } from "react";
-import { inboxAction, spokenHintText, type InboxActionId } from "@shared/inbox.ts";
+import { inboxAction, spokenHintExample, spokenHintText, type HintName, type InboxActionId } from "@shared/inbox.ts";
 import { voiceButtonActions } from "../lib/voice-inbox.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
 import { VoiceHintsContext, type AgentNameView } from "../lib/agent-names.ts";
 import { Tooltip } from "./Tooltip.tsx";
+
+/** Keep the command's quotation marks around the phrase only when its name is ordinary. */
+export function hintExample(name: HintName, template: string) {
+  const { phrase, quoteCommand } = spokenHintExample(name, template);
+  return quoteCommand ? <q>{phrase}</q> : phrase;
+}
 
 /** An agent's name, in its resident's board colour when a resident name won. */
 export function AgentName({
@@ -29,21 +35,23 @@ export function AgentName({
  * `VoiceHintsContext` turns hints on, which only the voice plan does.
  */
 export function SpokenHint({
-  children,
+  command,
+  instruction,
   action,
   name,
   cardOpen = false,
 }: {
   action: InboxActionId;
-  name: string;
-  children?: React.ReactNode;
+  name: HintName;
+  command?: string;
+  instruction?: string;
   /** Whether the card is open on screen, which adds the action's short form when it has one. */
   cardOpen?: boolean;
 }): React.JSX.Element | null {
   const on = useContext(VoiceHintsContext);
   if (!on) return null;
   const text = spokenHintText(inboxAction(action), name, cardOpen);
-  return text ? <span className="spoken-hint" data-spoken-action={action}>{children ?? text}</span> : null;
+  return text ? <span className="spoken-hint" data-spoken-action={action}>{command ? <>Say {hintExample(name, command)} {instruction}</> : text}</span> : null;
 }
 
 /**
@@ -66,7 +74,7 @@ export function InboxActionButton({
 }: {
   action: InboxActionId;
   /** The agent's display name, for the hint. */
-  name: string;
+  name: HintName;
   tooltip: string;
   onClick: () => void;
   onDictate?: (text: string) => void;

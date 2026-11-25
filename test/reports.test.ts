@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { ServerEvent, Session } from "../src/shared/types.ts";
-import type { ReportItem } from "../src/shared/reports.ts";
+import { reportAuthorLabel, type ReportItem } from "../src/shared/reports.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -93,6 +93,48 @@ test("a schema 47 database, from before the digest mark, gains counted_in_digest
   upgraded.prepare("DELETE FROM reports WHERE id = 'r-mig'").run();
 });
 
+test("schema 64 report labels and historical mutes recover the name source at post and mute time", () => {
+  const store = db.openDb();
+  const revision = store.prepare("INSERT INTO resident_profile_revisions VALUES (?, ?, ?, ?)");
+  revision.run("historic-sage", 1, JSON.stringify({ identity: { name: "Captain", referenceName: "\t Sage \u00a0" } }), 10);
+  revision.run("historic-sage", 2, JSON.stringify({ identity: { name: "Sage" } }), 20);
+  const report = store.prepare(`INSERT INTO reports (id, session_id, author_key, author_resident_profile_id,
+    author_name, author_spoken_name, title, body, root_id, version, created_at, root_created_at)
+    VALUES (?, 'old-session', 'resident:historic-sage', 'historic-sage', 'Captain', 'Sage', 'Review', 'Done', ?, 1, ?, ?)`);
+  report.run("old-reference", "old-reference", 15, 15);
+  report.run("old-profile-name", "old-profile-name", 25, 25);
+  // A later report recorded in the same millisecond as the mute has a different spoken label.
+  store.prepare(`INSERT INTO reports (id, session_id, author_key, author_resident_profile_id,
+    author_name, title, body, root_id, version, created_at, root_created_at)
+    VALUES ('same-tick-report', 'same-tick', 'resident:historic-sage', 'historic-sage',
+      'Captain', 'Review', 'Done', 'same-tick-report', 1, 18, 18)`).run();
+  revision.run("historic-linter", 1, JSON.stringify({ identity: { name: "Linter" } }), 10);
+  store.prepare(`INSERT INTO reports (id, session_id, author_key, author_resident_profile_id,
+    author_name, title, body, root_id, version, created_at, root_created_at)
+    VALUES ('ordinary-report', 'ordinary-session', 'resident:historic-linter', 'historic-linter',
+      'Linter', 'Review', 'Done', 'ordinary-report', 1, 15, 15)`).run();
+  const mute = store.prepare("INSERT INTO report_mutes (author_key, author_name, author_spoken_name, muted_at) VALUES (?, ?, ?, ?)");
+  // Sage was muted after the reference-name report and before the later ordinary-name report.
+  mute.run("resident:historic-sage", "Captain", "Sage", 18);
+  mute.run("resident:historic-linter", "Linter", null, 18);
+  db.closeDb();
+  const raw = new DatabaseSync(join(home, "harness.db"));
+  raw.exec("ALTER TABLE reports DROP COLUMN author_is_reference_name; ALTER TABLE report_mutes DROP COLUMN author_is_reference_name; PRAGMA user_version = 64;");
+  raw.close();
+  const upgraded = db.openDb();
+  const rows = upgraded.prepare("SELECT author_spoken_name, author_is_reference_name FROM reports WHERE session_id = 'old-session' ORDER BY seq").all();
+  assert.deepEqual(rows.map(row => [row.author_spoken_name, row.author_is_reference_name]), [["Sage", 1], ["Sage", 0]]);
+  const mutes = upgraded.prepare("SELECT author_key, author_is_reference_name FROM report_mutes ORDER BY author_key").all();
+  assert.deepEqual(mutes.map(row => [row.author_key, row.author_is_reference_name]), [
+    ["resident:historic-linter", 0], ["resident:historic-sage", 1],
+  ]);
+  upgraded.exec(`
+    DELETE FROM report_mutes WHERE author_key IN ('resident:historic-linter', 'resident:historic-sage');
+    DELETE FROM reports WHERE session_id IN ('ordinary-session', 'old-session', 'same-tick');
+    DELETE FROM resident_profile_revisions WHERE profile_id IN ('historic-linter', 'historic-sage');
+  `);
+});
+
 test("a schema 49 database, from before mutes, gains the empty report_mutes table on open with its reports intact", () => {
   db.openDb().prepare(
     `INSERT INTO reports (id, session_id, author_key, author_name, title, body, root_id, version, created_at, root_created_at)
@@ -106,7 +148,7 @@ test("a schema 49 database, from before mutes, gains the empty report_mutes tabl
   assert.equal((upgraded.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, db.CURRENT_DATABASE_SCHEMA_VERSION);
   assert.ok(db.CURRENT_DATABASE_SCHEMA_VERSION >= 50);
   const columns = (upgraded.prepare("PRAGMA table_info(report_mutes)").all() as Array<{ name: string; pk: number }>);
-  assert.deepEqual(columns.map((c) => [c.name, c.pk]), [["author_key", 1], ["author_name", 0], ["muted_at", 0], ["author_spoken_name", 0]]);
+  assert.deepEqual(columns.map((c) => [c.name, c.pk]), [["author_key", 1], ["author_name", 0], ["muted_at", 0], ["author_spoken_name", 0], ["author_is_reference_name", 0]]);
   assert.equal((upgraded.prepare("SELECT COUNT(*) AS n FROM report_mutes").get() as { n: number }).n, 0);
   const row = upgraded.prepare("SELECT title, read_at, author_name, author_spoken_name FROM reports WHERE id = 'r-mut'").get() as { title: string; read_at: number | null };
   assert.deepEqual({ ...row }, { title: "Kept", read_at: null, author_name: "Mut", author_spoken_name: null });
@@ -174,6 +216,24 @@ test("a resident is one author across its runs: keyed by its profile and named b
     { title: "Weekly sweep done", body: "Nothing broke." },
   );
   assert.deepEqual(report.author, { key: "resident:steve", name: "Steve", residentProfileId: "steve" });
+});
+
+test("reports keep the source of an explicit reference name identical to the profile name", async (t) => {
+  t.after(() => { flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: false }); });
+  flags.applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: true });
+  const { registry, reports } = wired();
+  registry.upsertResidentRun({
+    id: "run-sage", profileId: "sage", taskId: "t-sage",
+    settings: { identity: { name: "Sage", referenceName: "Sage" }, board: { colorId: "violet" } },
+  } as unknown as Parameters<typeof registry.upsertResidentRun>[0]);
+  const session = mkSession({ id: "s-sage", task: mkTaskSummary({ id: "t-sage", kind: "resident" }) });
+  const report = await reports.post(session, { title: "Reviewed", body: "Done." });
+  const stored = reports.get(report.id)!.author;
+  assert.equal(stored.name, "Sage");
+  assert.equal(reportAuthorLabel(stored), '"Sage"');
+  assert.equal(reportAuthorLabel(stored, false), "Sage");
+  assert.equal(reports.mute(stored.key)?.isReferenceName, true);
+  reports.unmute(stored.key);
 });
 
 test("a session's call sign names a report's author only while the voice flag is on", async (t) => {

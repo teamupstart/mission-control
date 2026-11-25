@@ -4,6 +4,7 @@ import {
   SPOKEN_NAME_METER_STEPS,
   spokenNameMeter,
   spokenNameWarningLabel,
+  quotedReferenceName,
   spokenNameWarningText,
   validateSpokenName,
   type SpokenName,
@@ -29,11 +30,13 @@ function MicGlyph(): React.JSX.Element {
 export function SpokenNamePreview({
   name,
   roster,
+  referenceName = false,
   example = SPOKEN_NAME_EXAMPLE,
 }: {
   name: string;
   /** Who else answers to a name, without the agent this name is for. */
-  roster: readonly Pick<SpokenName, "name">[];
+  roster: readonly Pick<SpokenName, "name" | "isReferenceName">[];
+  referenceName?: boolean;
   example?: string;
 }): React.JSX.Element {
   const said = name.trim().replace(/\s+/g, " ");
@@ -52,7 +55,7 @@ export function SpokenNamePreview({
     <>
       <span className="voice-heard">
         <MicGlyph />
-        <span><b>{said},</b> {example}</span>
+        <span><b>{referenceName ? quotedReferenceName(said) : said},</b> {example}</span>
       </span>
       <span className="voice-meter-row">
         <span
@@ -73,7 +76,7 @@ export function SpokenNamePreview({
         </span>
       </span>
       {warnings.map((warning) => (
-        <span key={warning.kind} className="voice-name-warning">{spokenNameWarningText(warning, said)}</span>
+        <span key={warning.kind} className="voice-name-warning">{spokenNameWarningText(warning, said, referenceName)}</span>
       ))}
     </>
   );
@@ -84,7 +87,7 @@ export function SpokenNamePreview({
  * its short label, or nothing while the field is blank. Only the verdict, so typing a letter that
  * changes no warning announces nothing.
  */
-export function spokenNameVerdict(name: string, roster: readonly Pick<SpokenName, "name">[]): string {
+export function spokenNameVerdict(name: string, roster: readonly Pick<SpokenName, "name" | "isReferenceName">[]): string {
   const said = name.trim().replace(/\s+/g, " ");
   if (!said) return "";
   const warnings = validateSpokenName(said, roster);
@@ -105,15 +108,17 @@ export function SpokenNameField({
   roster,
   placeholder,
   disabled = false,
+  referenceName,
   example,
   className = "",
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  roster: readonly Pick<SpokenName, "name">[];
+  roster: readonly Pick<SpokenName, "name" | "isReferenceName">[];
   placeholder: string;
   disabled?: boolean;
+  referenceName?: boolean;
   example?: string;
   className?: string;
 }): React.JSX.Element {
@@ -135,7 +140,7 @@ export function SpokenNameField({
         spellCheck={false}
         onChange={(event) => onChange(event.target.value)}
       />
-      <SpokenNamePreview name={value} roster={roster} example={example} />
+      <SpokenNamePreview referenceName={referenceName} name={value} roster={roster} example={example} />
       <span role="status" aria-live="polite" className="sr-only">{spokenNameVerdict(value, roster)}</span>
     </div>
   );

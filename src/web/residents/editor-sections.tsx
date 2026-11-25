@@ -115,6 +115,7 @@ function IdentitySection({ draft, update, disabled, profileId = null }: Resident
       {voiceNames && (
         <SpokenNameField
           className="resident-reference-name"
+          referenceName
           label="Reference name"
           example="cut the release"
           value={draft.identity.referenceName ?? ""}

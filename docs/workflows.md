@@ -3159,7 +3159,7 @@ The default allowance is **10 executions per workflow run**, shared by all CodeR
 Granting more repair rounds or fully restarting an Inspector-only repair starts a fresh count;
 ordinary repair rounds do not reset it. The default hard timeout is 45 minutes.
 Exhaustion before a node starts reviewing skips with a visible warning, even if the tool is
-unavailable. A node whose latest non-skipped review in this run remains incomplete blocks on
+unavailable. A node whose latest non-skipped review execution in this run remains incomplete blocks on
 exhaustion, including on a fresh submission; it cannot earn approval by spending its allowance.
 A later complete review clears that condition. To recover from an exhausted incomplete review,
 explicitly raise the allowance in Library > Commands, then submit a new round to capture it.
@@ -3193,6 +3193,14 @@ resolved base tip and merge-base. If resolution fails, correct local refs or bas
 same submission. Later ref movement cannot rewrite a successfully pinned comparison. Reviews run
 in the existing commit-pinned supervised lease with `review --agent --gate <severity>
 --committed --base-commit <merge-base>`.
+
+A repair round can reuse the same node's latest non-skipped review execution in the run when it passed
+with zero findings and the pinned comparison is identical. The pass cites the original attempt
+for downstream Personas and spends no execution allowance, even after the allowance is
+exhausted. A changed head, base or review
+configuration requires a fresh review, as does an explicit `--fresh` command. Reviews with
+findings, incomplete reviews and skips never supply a reusable pass. A refusal before the
+review starts leaves previous review evidence available once the preflight problem is fixed.
 
 A complete gate, explicit full coverage and matching exit code pass or return findings for
 repair. The CLI reports coverage in one of two shapes: CLI 0.9.1 prints an unreviewed-file count,

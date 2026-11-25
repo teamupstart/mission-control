@@ -175,6 +175,8 @@ test("Recently Heard from the tray shows history alone and returns to the live p
     await expect(history).toBeHidden();
     await expect(card).toContainText(words);
     expect(parseInt(await countdown.innerText(), 10)).toBeLessThan(initialSeconds);
+    await popover.reload();
+    await expect(card).toContainText(words);
     await card.getByRole("button", { name: "Cancel" }).click();
     await expect(card).toContainText("Cancelled");
 

@@ -940,8 +940,9 @@ export function App(): React.JSX.Element {
   const preferredPlacement = useUiConfig().voice.confirmation;
   const voicePlacement = desktopVoice && voiceCapable(voice, "floating-windows") ? preferredPlacement : "toast";
   const [historyOpen, setHistoryOpen] = useState(false);
+  const closeTrayHistory = useCallback(() => setHistoryOpen(false), []);
   const { root: pillRoot, requestOpen: requestPill } = useVoiceSurface("pill", voicePlacement === "pill");
-  const { root: popRoot, requestOpen: requestPopover } = useVoiceSurface("popover", voicePlacement === "popover" || (trayHistory && historyOpen));
+  const { root: popRoot, requestOpen: requestPopover } = useVoiceSurface("popover", voicePlacement === "popover" || (trayHistory && historyOpen), closeTrayHistory);
   const previousCards = useRef(voiceCards);
   useEffect(() => {
     const previous = previousCards.current;
@@ -959,13 +960,11 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const child = popRoot?.ownerDocument.defaultView;
     if (!historyOpen || !child) return;
-    const close = () => setHistoryOpen(false);
-    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
-    child.addEventListener("blur", close);
-    child.addEventListener("pagehide", close);
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") closeTrayHistory(); };
+    child.addEventListener("blur", closeTrayHistory);
     child.addEventListener("keydown", escape);
-    return () => { child.removeEventListener("blur", close); child.removeEventListener("pagehide", close); child.removeEventListener("keydown", escape); };
-  }, [historyOpen, popRoot]);
+    return () => { child.removeEventListener("blur", closeTrayHistory); child.removeEventListener("keydown", escape); };
+  }, [historyOpen, popRoot, closeTrayHistory]);
   const openVoiceSetup = useCallback(() => openSettingsAnchor("setup", "setup/family-voice"), [openSettingsAnchor]);
   const openForemanTrust = useCallback(
     (): void => openSettingsAnchor("trust", "trust/matrix"),

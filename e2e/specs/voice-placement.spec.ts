@@ -64,6 +64,23 @@ test("moving a selected confirmation keeps its pending Cancel and the other mess
   await expect(popover.getByRole("status")).toContainText("inspect the newer build");
 });
 
+test("reloading the floating pill restores the pending confirmation and its Cancel action", async ({ daemon, dashboard: page }) => {
+  await desktopWith(page, daemon, "floating-windows");
+  const opening = page.waitForEvent("popup");
+  await page.getByRole("radio", { name: /Floating pill/ }).check();
+  const pill = await opening;
+  await say(daemon, "Steve, check the build");
+  const card = pill.getByRole("status");
+  await expect(card).toContainText("check the build");
+
+  await pill.reload();
+  await expect(card).toContainText("check the build");
+  await expect(page.locator(".voice-card")).toHaveCount(0);
+  await captureCard(card, "reloaded-confirmation");
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(card).toContainText("Cancelled");
+});
+
 test("a closed selected popover reopens for a tray request and for the next confirmation", async ({ daemon, dashboard: page }) => {
   await desktopWith(page, daemon, "both");
   const opening = page.waitForEvent("popup");

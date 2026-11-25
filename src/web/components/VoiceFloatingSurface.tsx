@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { TooltipDocument } from "./Tooltip.tsx";
 
-export function useVoiceSurface(surface: "pill" | "popover", enabled: boolean) {
+export function useVoiceSurface(surface: "pill" | "popover", enabled: boolean, onPageHide?: () => void) {
   const [root, setRoot] = useState<HTMLElement | null>(null);
   const opener = useRef<(() => void) | null>(null);
   const requestOpen = useCallback(() => opener.current?.(), []);
@@ -10,8 +10,15 @@ export function useVoiceSurface(surface: "pill" | "popover", enabled: boolean) {
     if (!enabled) return;
     let active = true;
     let child: Window | null = null;
-    const clear = () => { child = null; setRoot(null); };
-    const left = (event: PageTransitionEvent) => { if (event.currentTarget === child) clear(); };
+    const left = (event: PageTransitionEvent) => {
+      // Return the live card to the dashboard before the departing document discards its
+      // event listeners. On reload the same window sends ready from its new document.
+      if (event.currentTarget !== child) return;
+      flushSync(() => {
+        onPageHide?.();
+        setRoot(null);
+      });
+    };
     const close = () => child?.close();
     window.addEventListener("pagehide", close);
     const ready = (event: MessageEvent) => {
@@ -33,9 +40,9 @@ export function useVoiceSurface(surface: "pill" | "popover", enabled: boolean) {
       child?.removeEventListener("pagehide", left);
       window.removeEventListener("pagehide", close);
       close();
-      clear();
+      setRoot(null);
     };
-  }, [enabled, surface, requestOpen]);
+  }, [enabled, surface, requestOpen, onPageHide]);
   return { root: enabled ? root : null, requestOpen };
 }
 

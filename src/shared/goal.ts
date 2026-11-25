@@ -63,6 +63,43 @@ export const GOAL_ACCEPTED_RATIONALE =
 export const GOAL_KEPT_AS_STEERING_RATIONALE =
   "Kept as steering: a newer instruction arrived before this one was clear.";
 
+/** A standalone objective clause reserved for a human's explicit stop or publication restriction. */
+export const GOAL_OPERATOR_HANDOFF_ONLY = "Automatic handoff: operator only";
+
+/** Visit objective lines that are outside Markdown code examples. */
+export function mapUnfencedGoalLines(text: string, map: (line: string) => string): string[] {
+  let fence: string | undefined;
+  return text.split("\n").map((line) => {
+    const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    const delimiter = match?.[1];
+    if (fence) {
+      if (delimiter && delimiter[0] === fence[0] && delimiter.length >= fence.length && !match?.[2]?.trim()) fence = undefined;
+      return line;
+    }
+    if (delimiter) {
+      fence = delimiter;
+      return line;
+    }
+    return map(line);
+  });
+}
+
+export function hasOperatorHandoffHold(objective: string | null): boolean {
+  let held = false;
+  if (objective) mapUnfencedGoalLines(objective, (line) => {
+    if (line.trim() === GOAL_OPERATOR_HANDOFF_ONLY) held = true;
+    return line;
+  });
+  return held;
+}
+
+/** A settled release with no deliverable leaves the queue's existing contract in force. */
+export function isHandoffReleaseOnlyGoal(goal: SessionGoal | null): boolean {
+  return Boolean(goal && goal.handoffReleasedAt !== undefined && !goal.objective &&
+    goal.resolvedPromptRevision === goal.promptRevision && goal.pendingPrompts.length === 0 &&
+    (goal.promptRevision === 0 || goal.relationship === "replace"));
+}
+
 export function resolvedSessionIntent(goal: SessionGoal | null): SessionIntentGuard | null {
   const objective = goal?.objective?.trim() ?? "";
   if (

@@ -5938,6 +5938,16 @@ export const WrapupSchema = z.object({
 });
 export type Wrapup = z.infer<typeof WrapupSchema>;
 
+const SessionIntentGuardSchema = z.object({
+  objective: z.string().trim().min(1).max(INTENT_MAX),
+  objectiveVersion: z.number().int().min(1),
+  promptRevision: z.number().int().min(1),
+  episodeKey: z.string().min(1).max(200),
+}).refine(
+  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+  { message: "Intent episode key does not match its revisions" },
+);
+
 /**
  * Stamp the wrap-up ask.
  *
@@ -5952,18 +5962,10 @@ export type Wrapup = z.infer<typeof WrapupSchema>;
  */
 export const WrapupAskedSchema = z.object({
   clearAnswer: z.boolean().optional(),
+  expectedIntent: SessionIntentGuardSchema.nullable().optional(),
+  retire: z.literal(true).optional(),
 });
 export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
-
-const SessionIntentGuardSchema = z.object({
-  objective: z.string().trim().min(1).max(INTENT_MAX),
-  objectiveVersion: z.number().int().min(1),
-  promptRevision: z.number().int().min(1),
-  episodeKey: z.string().min(1).max(200),
-}).refine(
-  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
-  { message: "Intent episode key does not match its revisions" },
-);
 
 /**
  * Which automated prompted handoff a consumption is authorizing, if any.

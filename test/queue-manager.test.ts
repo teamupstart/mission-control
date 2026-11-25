@@ -106,11 +106,34 @@ test("a terminal delivery retains pickup verification if its session runtime cha
   const sent = queues.markSent(item.id, "base", 0, 1_002);
   assert.ok(sent.ok);
   assert.equal(sent.item.state, "awaiting_pickup");
+  assert.equal(sent.item.firstDeliveredAt, undefined);
+  assert.ok(queues.setState(item.id, { state: "in_progress" }, 1_003).ok);
   assert.ok(queues.setState(item.id, { state: "queued", round: 1 }, 1_003).ok);
   assert.ok(queues.setState(item.id, { state: "sending" }, 1_004).ok);
   const retried = queues.markSent(item.id, "base", 0, 1_005);
   assert.ok(retried.ok);
   assert.equal(retried.item.state, "in_progress", "a new attempt captures its own runtime");
+  assert.equal(retried.item.sentAt, 1_005);
+  assert.equal(getQueueItem(item.id)?.firstDeliveredAt, 1_002);
+});
+
+test("a human edit can establish a new delivery time for the same item", () => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  seedSession(registry, "s-edit-delivery", "agent-edit-delivery");
+  const item = queues.add("s-edit-delivery", "Implement heading counts", 1_000)!;
+  assert.ok(queues.setState(item.id, { state: "sending" }, 1_001).ok);
+  assert.ok(queues.markSent(item.id, "base", 0, 1_002).ok);
+  assert.ok(queues.setState(item.id, { state: "in_progress" }, 1_003).ok);
+  assert.equal(getQueueItem(item.id)?.firstDeliveredAt, 1_002);
+  const queued = queues.setState(item.id, { state: "queued", round: 1 }, 1_004);
+  assert.ok(queued.ok);
+  assert.ok(queues.edit(item.id, "Output: mockups", queued.item.revision, 1_005).ok);
+  assert.equal(getQueueItem(item.id)?.firstDeliveredAt, undefined);
+  assert.ok(queues.setState(item.id, { state: "sending" }, 1_006).ok);
+  assert.ok(queues.markSent(item.id, "base", 0, 1_007).ok);
+  assert.ok(queues.setState(item.id, { state: "in_progress" }, 1_008).ok);
+  assert.equal(getQueueItem(item.id)?.firstDeliveredAt, 1_007);
 });
 
 test("recover adopts a fix round's OWN send time, not the previous round's", () => {

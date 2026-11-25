@@ -1490,6 +1490,12 @@ export interface SessionGoal {
    * never denormalized onto session cards.
    */
   pendingPrompts: GoalPromptRevision[];
+  /** Acceptance time for the latest prompt, retained if an unclear verdict is replayed. */
+  latestPromptAcceptedAt?: number;
+  /** Accepted standalone release timestamp. Queue instructions started later still apply. */
+  handoffReleasedAt?: number;
+  /** When the actual deliverable last changed, excluding handoff restrictions. */
+  deliverableUpdatedAt?: number;
   updatedAt: number;
 }
 
@@ -1502,6 +1508,8 @@ export interface SessionIntentGuard {
 
 export interface GoalPromptRevision {
   revision: number;
+  /** Accepted operator time. Older captured revisions may lack this provenance. */
+  acceptedAt?: number;
   /** Null only for a legacy unresolved revision whose text was already lost before migration. */
   prompt: string | null;
 }
@@ -1622,6 +1630,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** First accepted delivery. Later retries do not renew the item's handoff authority. */
+  firstDeliveredAt?: number;
   /** Runtime captured for this delivery attempt; absent on rows predating this field. */
   deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;

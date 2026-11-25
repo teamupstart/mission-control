@@ -151,6 +151,42 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
   }
 });
 
+test("Setup keeps rejected alpha changes beside the checkbox and rejected update checks in the footer", async ({ dashboard }) => {
+  await dashboard.addInitScript(() => {
+    const snapshot: UpdateSnapshot = {
+      phase: "idle", alpha: false, currentVersion: "1.2.3", lastCheckedAt: null, lastOutcome: null,
+    };
+    Object.defineProperty(window, "missionDesktop", { value: {
+      isDesktop: true, version: async () => "1.2.3", onOpenSettings: () => () => {},
+      updates: {
+        getState: async () => snapshot,
+        setAlpha: async () => { throw new Error("Could not save alpha preference"); },
+        check: async () => { throw new Error("Could not start update check"); },
+        onState: () => () => {},
+      },
+    } });
+  });
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Settings" }).click();
+  await dashboard.getByRole("tab", { name: "Setup" }).click();
+  const tab = dashboard.getByRole("tabpanel");
+  const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
+  const setup = tab.getByRole("navigation", { name: "Setup families" });
+  const footer = tab.getByRole("region", { name: "Application updates" });
+
+  await alpha.click();
+  const alphaAlert = tab.getByRole("alert").filter({ hasText: "Could not save alpha preference" });
+  await expect(alphaAlert).toBeVisible();
+  await expect(alpha).not.toBeChecked();
+  expect((await alphaAlert.boundingBox())!.y).toBeGreaterThan((await alpha.boundingBox())!.y);
+  expect((await alphaAlert.boundingBox())!.y).toBeLessThan((await setup.boundingBox())!.y);
+  await expect(footer.getByRole("alert")).toHaveCount(0);
+
+  await footer.getByRole("button", { name: "Check for updates" }).click();
+  await expect(footer.getByRole("alert")).toHaveText("Could not start update check");
+  await expect(alphaAlert).toBeVisible();
+});
+
 test("the browser settings remain usable without a desktop update bridge", async ({ dashboard }) => {
   await dashboard.getByRole("button", { name: "Settings" }).click();
   await dashboard.getByRole("tab", { name: "Setup" }).click();

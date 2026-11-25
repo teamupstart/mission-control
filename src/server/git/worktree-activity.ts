@@ -175,11 +175,11 @@ const MAX_NESTED_CHECKOUT_DEPTH = 8;
 /**
  * One worktree's, or one task's, Git-visible identity.
  *
- * `known` carries a hex digest and nothing else. `unknown` carries a short internal reason and
+ * `known` carries a hex digest and, for a task probe, its component digests. `unknown` carries a short internal reason and
  * is the answer to every question this module cannot settle - see property (1) above.
  */
 export type ActivityFingerprint =
-  | { kind: "known"; digest: string }
+  | { kind: "known"; digest: string; head?: string; checkouts?: ReadonlyMap<string, string> }
   | { kind: "unknown"; reason: string };
 
 function unknown(reason: string): ActivityFingerprint {
@@ -490,7 +490,7 @@ export async function worktreeActivityFingerprint(
     if (content.kind === "unknown") return content;
     hash.update(`${content.digest}\0`);
   }
-  return { kind: "known", digest: hash.digest("hex") };
+  return { kind: "known", digest: hash.digest("hex"), head: head.kind === "text" ? head.text.trim() : undefined };
 }
 
 /** One `git status -z` record: its two-letter code and the path it is about. */
@@ -691,10 +691,12 @@ export async function taskActivityFingerprint(
   );
   if (refs.length === 0) return unknown("task holds no worktree");
   const hash = createHash("sha256");
+  const checkouts = new Map<string, string>();
   for (const ref of refs) {
     const one = await worktreeActivityFingerprint(ref.worktreePath, deps);
     if (one.kind === "unknown") return one;
+    checkouts.set(ref.worktreePath, one.digest);
     hash.update(`${ref.position}\0${ref.worktreePath}\0${one.digest}\0`);
   }
-  return { kind: "known", digest: hash.digest("hex") };
+  return { kind: "known", digest: hash.digest("hex"), checkouts };
 }

@@ -1189,7 +1189,6 @@ function completionTasks(refuse?: (call: CompletionCall) => Error | null) {
       const current = registryFor.get(tasks)!.getTask(id)!;
       return { ...current, status: "done", outcome };
     },
-    prepareKilledSessionReturn: () => () => {},
   } as unknown as import("../src/server/tasks.ts").TaskManager;
   const registryFor = new Map<unknown, import("../src/server/registry.ts").Registry>();
   const eventsFor = new Map<unknown, string[]>();

@@ -5,7 +5,8 @@ import { nativeStateLockAddonPath } from "../state-ownership-native.ts";
 /** Stable through exec. A different boot or birth at this PID proves the old process exited. */
 export function voiceProcessBirth(pid: number): string {
   if (process.platform === "darwin") {
-    return createRequire(import.meta.url)(nativeStateLockAddonPath()).voiceProcessBirth(pid);
+    const addon = nativeStateLockAddonPath();
+    return createRequire(addon)(addon).voiceProcessBirth(pid);
   }
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   const stat = readFileSync("/proc/" + pid + "/stat", "utf8");

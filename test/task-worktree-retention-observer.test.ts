@@ -282,6 +282,11 @@ test("the generation moves for every cleanup-relevant fact and for none of the b
   }
 });
 
+test("changing a disposable checkout's recorded branch invalidates its retention generation", () => {
+  const task = mkT({ worktreePath: "/wt/task", provider: "git", branch: "harness/original" });
+  assert.notEqual(taskResourceGeneration(task), taskResourceGeneration({ ...task, branch: "harness/replacement" }));
+});
+
 test("rows for tasks that stopped qualifying are pruned", async () => {
   const task = mkT({ id: "o-prune" });
   const { observer, state } = harness({ tasks: [task] });

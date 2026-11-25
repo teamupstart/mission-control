@@ -48,6 +48,9 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
+  "src/cli/claude-cli.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "mctl runs the claude CLI that findClaude resolved (MISSION_CLAUDE_BIN, PATH or a known install place) for its version, plugin list, install and validate calls; the CLI has no locator snapshot and uses no shell" },
+  ],
   "src/pi/generation-lease.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "bounded process-start query protects active Pi generations during collection" },
   ],
@@ -145,6 +148,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
+  ],
+  "src/server/voice/macos-supervisor.ts": [
+    { operation: "execFileSync", command: "command", contract: "fixed-os-utility", reason: "Only the macOS process table can establish that no listener executable remains during recovery." },
   ],
   "src/server/voice/synthesizer.ts": [
     { operation: "fork", command: "speechHelperPath()", contract: "current-runtime", reason: "bundled speech helper uses the owned Node runtime and private IPC" },

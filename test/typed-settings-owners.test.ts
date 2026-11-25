@@ -32,7 +32,8 @@ const phase3Owners = {
   standingInstructions: ["default", "repositories"],
   taskSources: ["sources"],
   voice: ["muted", "hotkey", "listeningMode", "autoMuteDuringCalls", "endOfSpeechMs", "cancelWindow", "speech", "whenUnsure",
-    "planFormsByVoice", "inputDevice", "decisionProvider", "backend"],
+    "planFormsByVoice", "inputDevice", "decisionProvider", "backend",
+    "showTranscript", "transcriptStyle", "transcriptCorner", "transcriptWords"],
 } as const;
 
 // In a covered domain every top-level field must have a published leaf or an exact disposition.

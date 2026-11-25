@@ -204,7 +204,7 @@ function mkApp(
   return buildApp({
     registry,
     reviews: {} as unknown as ReviewManager,
-    tasks: { prepareKilledSessionReturn: () => () => {} } as unknown as TaskManager,
+    tasks: {} as unknown as TaskManager,
     queues: {} as unknown as QueueManager,
     sdkSessions: supervisor,
     handoffDeps,

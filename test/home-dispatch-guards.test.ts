@@ -87,10 +87,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // Foreman's guarded POST /api/sessions/:id/queue/wrapup/drain returns 404 for a missing session.
   // GET /api/inspector/config now includes localReview: false with the Local Inspector preview off.
   // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
+  // POST /voice/listener/transcript also returns 404 with the voice preview off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 496);
+  assert.equal(others.length, 497);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "de174653f65d04968bc4c96b52628ffb06fc79fdc32549d6adf91c7f032497a0");
+    "c49739e0e5328babfedf7a7af284b6162fae8f68f023e3e260e66352e436c563");
 });
 
 function sourceFiles(dir: string): string[] {

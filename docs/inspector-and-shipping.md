@@ -1037,14 +1037,16 @@ had already been written off:
 Only a **merged** pull request does this. One that was closed without merging changes
 nothing, and neither does one still open. A stacked pull request also has to have merged into
 the repository's default branch: one merged into its parent's branch is
-[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome, releases
-dependents, and starts final completion cleanup for task-owned worktrees. Required archives
-are saved before those worktrees are reset and returned.
+[not a merge here](#a-merge-into-the-parents-branch). An upgrade records the merged outcome
+and releases dependents.
 
-Final completion of a task with owned worktrees closes its agent and resets and returns those
-worktrees, including residual local changes, regardless of the Shipping setting. An agent that
-is still working, awaiting input or review, or carrying queued work is not completed from an
-intermediate merge. Its episode must first finish idle with an empty queue.
+Final completion of a task with owned worktrees closes its agent and leaves those worktrees
+under background retention, regardless of the Shipping setting. The grace period begins
+once the daemon confirms the last tracked user has left. When retention cleanup can proceed,
+the daemon saves required archives before it resets or removes the worktrees.
+
+An agent that is still working, awaiting input or review, or carrying queued work is not
+completed from an intermediate merge. Its episode must first finish idle with an empty queue.
 
 **Settings > Shipping > Close assigned sessions after their pull requests merge** controls
 agents without task-owned worktrees:
@@ -1055,8 +1057,8 @@ agents without task-owned worktrees:
 | **on** | Close the idle completed agent to free fleet capacity |
 
 Provider or archive failures preserve the unreturned resource records. See
-[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for safe Kill returns,
-manual reconciliation, quarantine, and the unchanged 30-day fallback.
+[task worktree retention](worktrees-and-checks.md#task-worktree-retention) for the grace period,
+automatic return requirements, and manual reconciliation.
 
 ## Automatic PR branch updates (preview)
 

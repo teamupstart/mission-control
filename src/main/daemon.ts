@@ -22,6 +22,7 @@ import { executableChildEnv } from "../server/executables/locator.ts";
 import { serveProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { serveSessionControlAuthorization } from "./session-control-authorization.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
+import { serveDesktopVoiceVerifier } from "../server/voice/desktop-verifier.ts";
 
 export interface DaemonController {
   /** True when an existing daemon was reused rather than spawned by us. */
@@ -61,6 +62,7 @@ export async function daemonHealthy(timeoutMs = 800, signal?: AbortSignal): Prom
 export interface StartDaemonOptions {
   /** Absolute path to the bundled server entry (dist/server/index.mjs). */
   serverEntry: string;
+  voiceVerifier?: () => string | undefined;
   /** A committed relocation must start its own assets, never adopt the old daemon. */
   requireFresh?: boolean;
   /** Absolute path to the built web UI the daemon should serve. */
@@ -91,10 +93,11 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
     entry: opts.serverEntry,
     serviceName: "mission-control-daemon",
     logPath: opts.logPath,
-    env: executableChildEnv({ ...process.env, MISSION_WEB_DIR: opts.webDir }),
+    env: executableChildEnv({ ...process.env, MISSION_VOICE_DESKTOP_VERIFIER: opts.voiceVerifier ? "1" : undefined, MISSION_WEB_DIR: opts.webDir }),
     // A Report click is armed in the shell over IPC and consumed here over the private
     // utility-process port. A loopback caller has access to neither side of that handoff.
     onSpawn: (child) => {
+      if (opts.voiceVerifier) serveDesktopVoiceVerifier(child, opts.voiceVerifier);
       serveProductIssueAuthorization(child);
       serveSessionControlAuthorization(child);
     },

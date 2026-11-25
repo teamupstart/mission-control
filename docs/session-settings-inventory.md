@@ -138,6 +138,7 @@ describes snapshot behavior independently of session access.
 | Shipping | 3 | Pending and protected | `closeSessionAfterMerge` has lifecycle effects. `codeRabbitAutoResolve` enables automated external follow-up. |
 | Task shaping | 3 | Protected and operational | Per-shaper executable environment, timeout and policies, deletion, and dry-run disclosure are owned by the shaper service |
 | Voice | 3 | Pending and protected | `hotkey`, `speech`, `decisionProvider`, `backend` use listener/runtime owners. Installing models, testing speech, device consent and secret input are operator actions. |
+| Voice live transcript | 3 | Pending | Voice config owns `showTranscript`, `transcriptStyle`, `transcriptCorner` and `transcriptWords`. |
 | Trust and workflow matrix | 3 | Protected and operational | Add/remove staged rows, batch grants and Check arming use consent-aware routes. No writable parent object may include them. |
 | Topbar and app preferences | 3 | Pending and operational | Away stall thresholds and detection use Away config. Away presence, Keep Awake, pause state and the priority session are live machine actions. Per-window local state needs a target and persistence decision. |
 | Library and resident configuration | 3 | Protected and pending | Resident skill source directories and MCP definitions are separately stored. Preserve authority for executable MCP programs, protected env values and resident permissions. Profiles and the Library catalog have their own edit and action flows. |

@@ -140,6 +140,9 @@ struct SpeechGate {
         return segment(samples)
     }
 
+    // A copy-on-write snapshot of this unfinished phrase. Preview decoding never drains the gate.
+    var preview: Segment? { samples.isEmpty ? nil : segment(samples) }
+
     func canRecover(with pending: [Float]) -> Bool {
         overflowPrefix != nil || !samples.isEmpty || (!discarding && pending.contains { abs($0) > Self.activityFloor })
     }
@@ -245,6 +248,7 @@ final class SpeechSegmenter {
 
     deinit { fvad_free(detector) }
 
+    var preview: Segment? { gate.preview }
     var endOfSpeechMs: Int { gate.endOfSpeechMs }
     func updateEndOfSpeechMs(_ duration: Int) -> Segment? { gate.updateEndOfSpeechMs(duration) }
 
@@ -311,6 +315,7 @@ final class SpeechSegmenter {
 final class InputSegmenter {
     private let mono: AVAudioFormat
     private let converter: AVAudioConverter
+    var preview: Segment? { segmenter.preview }
     private var segmenter: SpeechSegmenter
     private let held: Bool
     private let onSegmentDropped: (Int64) -> Void
@@ -501,6 +506,7 @@ struct HeldSpeech {
 
 final class Microphone {
     private let engine: AVAudioEngine
+    var preview: Segment? { tapLock.withLock { segmenter?.preview } }
     var isRunning: Bool { engine.isRunning }
     private var configurationObserver: NSObjectProtocol?
     private let tapLock = NSLock()

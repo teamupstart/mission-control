@@ -155,6 +155,7 @@ export const FIXED_OS_EXECUTABLES = {
   bash: "/bin/bash",
   osascript: "/usr/bin/osascript",
   // The launcher certifies an OS-confined voice process. PATH overrides cannot supply its sandbox.
+  macProcessStatus: "/bin/ps",
   sandboxExec: "/usr/bin/sandbox-exec",
   bubblewrap: "/usr/bin/bwrap",
   // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal

@@ -1,6 +1,12 @@
+import type { ShellVoiceState } from "./voice-state-schema.ts";
 import type { VoiceMode } from "../shared/voice.ts";
 
-export type TrayVoiceState = { mode: VoiceMode | "reconnecting"; muted?: boolean; pushToTalkSession?: string };
+export type TrayVoiceState = {
+  mode: VoiceMode | "reconnecting";
+  muted?: boolean;
+  pushToTalkSession?: string;
+  speech?: ShellVoiceState["speech"];
+};
 
 const modes = {
   listening: ["mic", "listening for names"],

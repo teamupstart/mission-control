@@ -1,5 +1,6 @@
 import { OpenCardsSchema, VOICE_CALIBRATING_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
 import type { VoiceQuestions } from "./questions.ts";
+import { desktopVoiceVerifier } from "./desktop-verifier.ts";
 import { verifySupervisorReport, VOICE_SUPERVISOR_PROOF_HEADER } from "./supervisor-auth.ts";
 import { askAloudPossible, askSentence, SpeechInstanceSchema, VOICE_INSTANCE_HEADER } from "@shared/voice-speech.ts";
 import { z } from "zod";
@@ -34,6 +35,7 @@ import {
   VOICE_RECORDING_ID_HEADER,
   VOICE_SPEECH_START_HEADER,
   VoiceUiConfigPatchSchema,
+  TranscriptSampleSchema,
   VoiceConfigPatchSchema,
   VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
@@ -144,6 +146,7 @@ export function registerVoiceRoutes(
   models: VoiceModelManager = voiceModelManager,
   speechModels: VoiceModelManager = speechModelManager,
 ): void {
+  const loadShellVerifier = desktopVoiceVerifier();
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
   const allowDrain = (supervisorReport = false): MiddlewareHandler => async (c, next) => {
@@ -376,12 +379,15 @@ export function registerVoiceRoutes(
   app.post("/voice/listener/supervised", allowDrain(true), limitBody, async c => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, z.object({ instance: SpeechInstanceSchema, state: z.enum(["started", "exited"]) }));
-    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
-    if (!parsed.ok) return disabled ?? c.json({ error: "invalid_supervisor_report" }, 400);
+    if (!parsed.ok) return disabledFeatureResponse(c, VOICE_FLAG) ?? c.json({ error: "invalid_supervisor_report" }, 400);
     const { instance, state } = parsed.data;
     const proof = c.req.header(VOICE_SUPERVISOR_PROOF_HEADER);
+    const needsShellVerifier = instance.startsWith("shell_") && (state === "exited" || featureEnabled(VOICE_FLAG));
+    const verifierReady = !needsShellVerifier || await loadShellVerifier();
+    const disabled = disabledFeatureResponse(c, VOICE_FLAG);
+    if (disabled && state !== "exited") return disabled;
+    if (!verifierReady) return c.json({ error: "supervisor_verifier_unavailable" }, 503);
     if (disabled) {
-      if (state !== "exited") return disabled;
       // A trusted exit can arrive before its start. Persist it even on a fresh, disabled daemon.
       if (!store.disabledSpeech()?.canRetireLaunch(instance) && !verifySupervisorReport(instance, state, proof, () => false)) return disabled;
       store.speech.setEnabled(false);
@@ -454,6 +460,12 @@ export function registerVoiceRoutes(
       if (served === false) return c.json({ error: "capture_process_unverified", capture: false, speak: null }, 409);
     }
     return c.json(next);
+  });
+  app.post("/voice/listener/transcript", gate, limitBody, async c => {
+    if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, TranscriptSampleSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    return c.json({ accepted: store.reportTranscript(c.req.header(VOICE_LISTENER_ID_HEADER), c.req.query("revision"), parsed.data) });
   });
   app.post("/voice/listener/hello", gate, limitBody, async (c) => {
     if (!authed(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
@@ -564,6 +576,7 @@ export function registerVoiceUtteranceRoutes(
         if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
       }
       router.speechStarted(key, parsed.data.speechStartUs);
+      voiceStateStore.reportTranscript(owner, revision, { phase: "audio", onset: parsed.data.speechStartUs });
     }
     return c.json({ accepted: true });
   });
@@ -621,6 +634,9 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
+    if (!heldBeforeRelease && onsetUs !== undefined) {
+      voiceStateStore.reportTranscript(owner, submitted, { phase: "words", onset: onsetUs, text: parsed.data.text, final: true });
+    }
     // Match the revision the listener used for this segment's onset, even after a timing edit.
     const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, submitted, onsetUs);
     try {

@@ -44,13 +44,21 @@ final class SpokenCancelTests: XCTestCase {
             }
             for segment in segments {
                 let segmented = hostNs()
-                let result = try await recognizer.transcribe(segment, boosting: boosting)
+                var suggestedName: String?
+                var suggestedRange: Range<Int>?
+                let result = try await recognizer.transcribe(segment, boosting: boosting) { name, range in
+                    suggestedName = name
+                    suggestedRange = range
+                }
+                let suggestion = try XCTUnwrap(suggestedName, "Recording must trigger the competing roster correction")
+                XCTAssertEqual(suggestion, "Voice")
+                XCTAssertEqual(suggestedRange, 0..<1)
                 let words = try XCTUnwrap(result)
                 let reply = try await daemon.postUtterance(revision: captureRevision,
                     capture: (segment.startedAtHostUs, segment.speechStartHostUs, segment.endedAt),
                     body: JSONEncoder().encode(words))
                 XCTAssertTrue(try JSONDecoder().decode(Daemon.Acknowledgement.self, from: reply.data).accepted)
-                print("onset=\((segment.speechStartHostUs-start/1000)/1000)ms segmented=\((segmented-start)/1_000_000)ms routed=\((hostNs()-start)/1_000_000)ms transcript=\(words.text)")
+                print("onset=\((segment.speechStartHostUs-start/1000)/1000)ms segmented=\((segmented-start)/1_000_000)ms routed=\((hostNs()-start)/1_000_000)ms suggestion=\(suggestion) transcript=\(words.text)")
                 return
             }
         }

@@ -44,9 +44,11 @@ export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 export const SHAPER_SIGN_IN_FLAG_ID = "shaper-sign-in" as const;
 
 /**
- * The one owner of the resident card names preview's id. While it is on, Settings > Display
- * offers the Resident name choice (`residentCardName`) and a board card draws it; off, the card
- * prints its call sign alone and the stored choice is kept. See `docs/residents.md`.
+ * The one owner of the resident card names preview's id. While it is on, Settings > Display >
+ * Board card offers Resident name with call sign: two independent checkboxes, Subtitle and
+ * Expanding chip, stored as the `residentCardNameStyles` list in UI config, and a board card
+ * draws whichever are on. Off, the card prints its call sign alone and the stored styles are
+ * kept. See `docs/residents.md`.
  */
 export const RESIDENT_CARD_NAMES_FLAG_ID = "resident-card-names" as const;
 

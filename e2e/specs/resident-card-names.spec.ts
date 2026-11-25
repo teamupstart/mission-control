@@ -268,3 +268,65 @@ test("Expanding chip opens on keyboard focus, cuts a long profile name off insid
     listener.stop();
   }
 });
+
+test("a resident with no call sign, or one whose call sign is its profile name, keeps a single name with both styles on", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await enableVoice(daemon);
+  // No reference name: the card is titled by the session name, as before voice.
+  const uncalled = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Harbor Watch", description: "Watches the harbor" },
+    persona: { personaId: PERSONA_ID },
+    board: { colorId: "teal", label: "HBW" },
+  } });
+  // A reference name that is the profile name, in another case: the call sign already says it.
+  const same = await api<ResidentProfile>(daemon, "/api/residents/profiles", { settings: {
+    identity: { name: "Sage", description: "Keeps the notes", referenceName: "sage" },
+    persona: { personaId: PERSONA_ID },
+    board: { colorId: "rose", label: "SGE" },
+  } });
+  for (const profile of [uncalled, same]) {
+    await api(daemon, `/api/residents/profiles/${profile.id}/launch`, { repoRoot: daemon.repo, requestId: profile.id });
+  }
+  await expect.poll(async () => {
+    const sessions = await api<{ state: string; task?: { kind?: string } }[]>(daemon, "/api/sessions");
+    return sessions.filter((session) => session.task?.kind === "resident" && session.state === "idle").length;
+  }, { timeout: 60_000, message: "both residents settled idle" }).toBe(2);
+  await setFlag(daemon, true);
+  await api(daemon, "/api/ui/config", { layout: "board", residentCardNameStyles: ["subtitle", "chip"] }, "PUT");
+  const listener = await beListener(daemon);
+  try {
+    await page.reload();
+    await go(page, "#/");
+    await expect(page.locator("main.board")).toBeVisible();
+    const tiles = page.locator("main.board .tile.is-resident");
+    await expect(tiles).toHaveCount(2);
+
+    const cases = [
+      { tile: tiles.filter({ hasText: "Harbor Watch" }), title: "Harbor Watch", name: "Harbor Watch", shot: "09-board-single-name-no-call-sign" },
+      { tile: tiles.filter({ hasText: '"sage"' }), title: '"sage"', name: "Sage", shot: "10-board-single-name-matching-call-sign" },
+    ];
+    for (const { tile, title, name, shot } of cases) {
+      await expect(tile).toHaveCount(1);
+      await expect(tile.locator(".tile-name")).toHaveText(title);
+      // No subtitle, and the head is not laid out for one.
+      await expect(tile.locator(".tile-name-sub")).toHaveCount(0);
+      await expect(tile.locator(".tile-head")).not.toHaveClass(/\bhas-name-sub\b/);
+      // Pointing at and focusing the card leaves the chip its plain label: nothing to expand.
+      await tile.locator(".tile-goal, .tile-activity").first().hover();
+      await expect(tile.locator(".resident-chip-name")).toHaveCount(0);
+      await tile.getByRole("button", { name: `Open ${title}` }).focus();
+      await expect(tile.locator(".resident-chip-name")).toHaveCount(0);
+      // The name is printed once in the card's head, as it is today.
+      const printed = await tile.locator(".tile-name").evaluate((el) => el.closest(".tile-head")!.textContent ?? "");
+      expect(printed.toLowerCase().split(name.toLowerCase()).length - 1, `${name} printed more than once`).toBe(1);
+      await shoot(tile, shot, true);
+      await page.mouse.move(0, 0);
+    }
+  } finally {
+    listener.stop();
+  }
+});

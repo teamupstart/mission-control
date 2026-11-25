@@ -355,8 +355,6 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await capture(page.locator(".rail-group.tone-idle").locator(".."), "04-console-rail-fact", page);
   await row.click();
   const band = page.getByRole("region", { name: "Session stalled" });
-  // It opens collapsed, like the blocker band: one row with the rule, the first fact and every
-  // fix, and the fact sheet hidden behind the toggle.
   const toggle = band.getByRole("button", { name: /^Stalled\s*Idle with work open/ });
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(toggle).toContainText(task.title);
@@ -373,8 +371,6 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await toggle.click();
   await expect(band.locator("dl")).toBeHidden();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  // A fix's outcome prints under the row even while the band is collapsed: a refused Nudge shows
-  // its error in the band without expanding the facts, and the fix stays pressable.
   const nudgePath = `**/api/sessions/${encodeURIComponent(session.id)}/inbox-message`;
   await page.route(nudgePath, route => route.request().method() === "POST"
     ? route.fulfill({ status: 503, json: { error: "Outbox unavailable" } }) : route.fallback());

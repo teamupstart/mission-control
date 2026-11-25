@@ -42,8 +42,10 @@ test("Files preserves the depth-limit response from an actual resident directory
 test("Files preserves an exhausted directory scan's time-budget response", async (t) => {
   const root = join(home, "slow");
   mkdirSync(root);
-  let reads = 0;
-  t.mock.method(performance, "now", () => reads++ === 0 ? 0 : 15_001);
+  // Request setup can also read the clock. The scan must exhaust its budget
+  // between its own start and deadline check, regardless of earlier reads.
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => elapsed += 15_001);
   const response = await appFor(root).request("/api/sessions/live/files", { headers });
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /time budget/);

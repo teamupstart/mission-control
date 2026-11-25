@@ -47,8 +47,9 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     if (slowLoad) mkdirSync(modelDir);
     const posted: { text: string; revision: string | null }[] = [];
     const captureBounds: { start: unknown; onset: unknown; end: unknown }[] = [];
-    const startAck = Promise.withResolvers<void>();
-    t.after(() => startAck.resolve());
+    let acknowledgeStart!: () => void;
+    const startAck = new Promise<void>(resolve => { acknowledgeStart = resolve; });
+    t.after(acknowledgeStart);
     const heldAttempts: number[] = [];
     const speechReports: { phase: string; speechStartUs: number; revision: string | null }[] = [];
     const polls: { revision: string | null; response: ServerResponse }[] = [];
@@ -73,7 +74,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       if (req.method === "POST" && url.pathname === "/voice/listener/speech") {
         const report = JSON.parse(body);
         speechReports.push({ ...report, revision: url.searchParams.get("revision") });
-        if (report.phase === "start" && ["dropped-segment", "unfinished-segment"].includes(inputDevice)) await startAck.promise;
+        if (report.phase === "start" && ["dropped-segment", "unfinished-segment"].includes(inputDevice)) await startAck;
       }
       if (req.method === "POST" && url.pathname === "/voice/utterances") {
         if (repeatedHeld && JSON.parse(body).text === "first") {
@@ -129,12 +130,12 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
     const initial = await nextPoll(null);
     if (held) initial.setHeader("x-voice-held-revision", "first");
     apply(initial, "first", initialCapture);
-    return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts, speechReports, startAck };
+    return { events, diagnostics, posted, captureBounds, child, closed, nextPoll, apply, hellos, instanceIds, heldAttempts, speechReports, acknowledgeStart };
   }
 
   for (const inputDevice of ["dropped-segment", "unfinished-segment"]) {
     it(inputDevice + " waits for start acknowledgment before releasing its original onset", async t => {
-      const { speechReports, posted, nextPoll, apply, startAck, events } = await launch(t, { inputDevice });
+      const { speechReports, posted, nextPoll, apply, acknowledgeStart, events } = await launch(t, { inputDevice });
       const start = { phase: "start", speechStartUs: 123_456, revision: "first" };
       await until(() => speechReports.some(report => report.phase === "start"), "speech onset POST");
       if (inputDevice === "unfinished-segment") {
@@ -143,7 +144,7 @@ describe("voice listener subprocess protocol and Swift microphone lifecycle", { 
       }
       await delay(150);
       assert.deepEqual(speechReports, [start]);
-      startAck.resolve();
+      acknowledgeStart();
       await until(() => speechReports.length === 2, "finish for the original onset");
       assert.deepEqual(speechReports, [start, { ...start, phase: "finish" }]);
       assert.deepEqual(posted, []);

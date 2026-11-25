@@ -52,6 +52,29 @@ test("fill-only ordinals include the appended approval. Submit requires an open 
   assert.ok(queued("Steve").some(s => s.includes("submit")));
 });
 
+test("an unavailable option and an out-of-range ordinal each show a refusal and preserve the pending draft", async t => {
+  const { review, fill } = await form(3);
+  await say("Steve, first one B, second one A");
+  const draft = structuredClone(fill());
+  assert.deepEqual(draft?.selections.map(s => s.selected), [["b"], ["a"]]);
+
+  let dashboardFills = 0;
+  t.after(registry.subscribe(event => {
+    if (event.type === "voice_form_fill" && event.reviewId === review.id) dashboardFills++;
+  }));
+  for (const [id, words] of [["invalid-option", "Steve, first one C"], ["invalid-ordinal", "Steve, fourth one A"]] as const) {
+    await say(words, id);
+    const notice = cards.at(-1);
+    assert.ok(notice);
+    assert.equal(notice.id, id);
+    assert.equal(notice.reason, "question-notice");
+    assert.equal(notice.detail, "No matching decision. Say its position and option letter.");
+    assert.equal(dashboardFills, 0);
+    assert.deepEqual(fill(), draft);
+    assert.equal(registry.getReview(review.id)?.status, "pending");
+  }
+});
+
 test("named commands require focus among two matching plans while unnamed replies follow the focused card", async () => {
   const { review, fill } = await form(1);
   const other = reviews.create(review.sessionId, "plan-decisions", "Another plan", "Choose", review.decisions!);

@@ -547,6 +547,9 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // unsafe, because the dashboard's Kill and Reset controls would then act on them.
     // 0 switches passive discovery off entirely.
     MISSION_POLL_MS: "0",
+    // Shaper sign-in keeps its fake tokens in daemon memory, so no browser run ever writes an
+    // item to the developer's login Keychain.
+    MISSION_SHAPER_SIGN_IN_STORE: "memory",
     // A fake agent answers instantly, so the dispatch settle windows are pure latency here.
     MISSION_DISPATCH_SETTLE_MS: "0",
     // The same reasoning for the workflow sweep, which is what advances a session action

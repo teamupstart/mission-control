@@ -5,6 +5,13 @@ import type { SpokenName } from "@shared/voice-names.ts";
 import type { VoiceDecider } from "./decide.ts";
 
 export interface VoiceQuestions {
+  inbox?: {
+    forms(): ReviewItem[];
+    formsEnabled(): boolean;
+    markReadTarget(target: SpokenName, openId: string | null): string | undefined;
+    markUndrawnReportRead(id: string): Promise<boolean>;
+    emit(event: import("@shared/voice-answers.ts").VoiceInboxEvent): void;
+  };
   pending(): ReviewItem[];
   forSession(sessionId: string): ReviewItem[];
   resolve(answer: VoiceAnswer): Promise<boolean>;
@@ -51,7 +58,7 @@ export class VoiceOpenCards {
   private readonly confirmations = new Map<number, { windowId: string; finish: (ok: boolean) => void }>();
   private readonly openingQuestions = new Set<() => void>();
 
-  constructor(private readonly changed: () => void = () => {}) {}
+  constructor(private readonly changed: () => void = () => {}, private readonly observed?: (report: OpenCardsReport) => void) {}
 
   connect(windowId: string, browser = false): () => void {
     // The first observation in this stream happens after the dashboard gets its ID.
@@ -102,6 +109,7 @@ export class VoiceOpenCards {
     const receivedAt = sameObservation ? last.receivedAt : performance.now();
     this.reports.set(report.windowId, { report: withdraw ? null : report, focusAtUs, revision, clockOffsetUs: stream.clockOffsetUs,
       observation, observationId, receivedAt, calibrating });
+    if (!withdraw) this.observed?.(report);
     if (!withdraw && report.focused) this.latestFocusUs = Math.max(this.latestFocusUs, focusAtUs);
     // The question was already drawn by the first receipt of this observation.
     const clamp = (stamp: number) => Math.max(stream.connectedAt, Math.min(stamp, receivedAt));
@@ -242,7 +250,7 @@ export class VoiceOpenCards {
     return !!report && !!this.reports.get(report.windowId)?.calibrating;
   }
 
-  private get current(): OpenCardsReport | undefined {
+  get current(): OpenCardsReport | undefined {
     let current: OpenCardsReport | undefined;
     for (const { report, focusAtUs } of this.reports.values()) {
       if (!report?.focused || focusAtUs !== this.latestFocusUs || !this.streams.has(report.windowId)) continue;

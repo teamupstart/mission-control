@@ -1098,6 +1098,7 @@ export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
  * answers stay out of the conversation the human is credited with.
  */
 export const ResolveReviewSchema = z.object({
+  voiceSubmitId: z.uuid().optional(),
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
   selections: z.array(PlanDecisionAnswerSchema).max(PLAN_DECISION_LIMITS.decisions).nullable().optional().default(null),

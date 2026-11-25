@@ -17,6 +17,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-voice-routing-"));
 process.env.MISSION_HOME = home;
 const { buildApp } = await import("../../src/server/routes.ts");
 const { Registry } = await import("../../src/server/registry.ts");
+const { ReportManager } = await import("../../src/server/reports.ts");
 const { ReviewManager } = await import("../../src/server/reviews.ts");
 const { TaskManager } = await import("./task-manager-fixture.ts");
 const { QueueManager } = await import("../../src/server/queue.ts");
@@ -37,7 +38,8 @@ const pending = new PendingTurnManager(registry, sdk, { idleSettleMs: 60_000, no
 const reviews = new ReviewManager(registry);
 export const model = { decide: (questions: readonly VoiceQuestion[]): VoiceDecisionResult =>
   ({ rung: "none", answers: questions.map(() => ({ choice: null, confidence: 0 })), detail: "scripted" }) };
-const app = buildApp({ registry, pendingTurns: pending, sdkSessions: sdk, reviews,
+export const reports = new ReportManager(registry);
+const app = buildApp({ registry, reports, pendingTurns: pending, sdkSessions: sdk, reviews,
   tasks: new TaskManager(registry), queues: new QueueManager(registry), voiceDecider: { ask: async questions => model.decide(questions) } });
 const cards: VoiceCard[] = [];
 registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
@@ -75,6 +77,6 @@ afterEach(() => {
     for (const turn of session.pendingTurns.toReversed()) pending.recall(session.id, turn.id, turn.revision);
   }
 });
-after(() => { stop(); pending.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
+after(() => { stop(); pending.stop(); reports.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
 
 export { act, app, applyFeatureFlagIntent, capture, cards, home, interrupts, name, pending, post, queued, readHeard, registry, reviews, roster, say, sdk, token, voiceStateStore };

@@ -1131,3 +1131,29 @@ If two windows claim focus at the same instant, an unaddressed reply cannot answ
 question. Turning voice back on refreshes the report, even when the dashboard shows no questions.
 A disconnected stream's report expires after ten seconds.
 A window that cannot confirm its state during a companion submit must answer a fresh focus request before it can take over the footer. A dashboard already showing that footer keeps it. Restarting voice preserves the clock calibration for dashboards that stay connected.
+
+### Fill a plan form by voice
+
+Open the plan form in the foreground dashboard. Say “Steve, first one B, second one A”.
+The badges count decisions in display order, including a final approval question when present.
+A blue microphone badge marks a voice selection. Say the position again to change it, or
+edit the same draft by hand. With the form focused, “reply” works in place of the name.
+
+Say “Steve, submit” or click Submit to send the current draft. An incomplete form marks the
+first unanswered decision in amber and shows how to fill it. Closing the inbox keeps the
+draft. A spoken submit while the form is closed, or a dashboard response more than five
+seconds late, leaves it pending. Turn off **Plan forms by voice** in Settings > Voice to
+use addressed speech for messages while filling plans by hand. It starts on.
+
+### Act on an inbox card by voice
+
+An open report or Stuck row lists its available phrases at the foot of the card. For example,
+“Steve, mark read” marks Steve's open unread report, or his only unread report when none
+of his is open. When the target is ambiguous, open the intended report first.
+“Steve, nudge” sends the Stuck row’s fixed status request even while Steve’s Report has
+keyboard focus. If several open cards offer the same command, focus the one you mean.
+Say “reply, …” with a card
+focused to use its reply, follow-up, or message control. The cancel window applies to
+inbox actions. The voice card confirms the action after the dashboard invokes the button.
+If the card closes or the control disappears before then, the voice card reports that the
+action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.

@@ -33,7 +33,7 @@ import type { ServerEvent } from "@shared/types.ts";
  * was moved to chat ("Chat about it"). `chat` is optional so drafts parked before it existed,
  * and every untouched question, read as not moved.
  */
-export type DecisionAnswer = { selected: string[]; other: string; note: string; chat?: boolean };
+export type DecisionAnswer = { selected: string[]; other: string; note: string; chat?: boolean; voice?: boolean };
 export type DecisionAnswers = Record<string, DecisionAnswer>;
 
 /** Everything a review card lets the operator enter before resolving it. */
@@ -126,6 +126,7 @@ function normalize(value: unknown): ReviewDraft | null {
         selected: Array.isArray(d.selected) ? d.selected.filter((x): x is string => typeof x === "string") : [],
         other: typeof d.other === "string" ? d.other : "",
         note: typeof d.note === "string" ? d.note : "",
+        ...(d.voice === true && { voice: true }),
         ...(d.chat === true ? { chat: true } : {}),
       };
     }

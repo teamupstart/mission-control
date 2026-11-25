@@ -175,6 +175,7 @@ export class VoiceStateStore {
       this.modeRevision++;
     }
     return {
+      planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
       mode,
       modeVersion: { source: this.source, revision: this.modeRevision },

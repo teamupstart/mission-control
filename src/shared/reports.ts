@@ -32,6 +32,11 @@ export const REPORT_LIMITS = {
 export const REPORT_READ_BY = ["mark-read", "reply", "follow-up", "mark-all"] as const;
 export type ReportReadBy = (typeof REPORT_READ_BY)[number];
 
+/** The operator's Mark read action, also available for a sole unread report without a drawn card. */
+export function markReportRead<T>(id: string, post: (path: string) => T): T {
+  return post(`/api/reports/${encodeURIComponent(id)}/read`);
+}
+
 /** What kind of document a report may attach. */
 export const REPORT_DOCUMENT_KINDS = ["html", "markdown"] as const;
 export type ReportDocumentKind = (typeof REPORT_DOCUMENT_KINDS)[number];

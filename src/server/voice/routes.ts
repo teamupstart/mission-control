@@ -330,6 +330,22 @@ export function registerVoiceUtteranceRoutes(
   const gate = requireFeature(VOICE_FLAG);
   const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider,
     () => voiceStateStore.hostNowUs(), questions);
+  app.post("/api/voice/form-submit/:id/refuse", gate, limitBody, async c => {
+    const parsed = await parseBody(c, z.object({ missing: z.int().positive() }).strict());
+    if (!parsed.ok) return parsed.res;
+    const ok = router.forms.refuse(c.req.param("id"), parsed.data.missing);
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/api/voice/inbox-actions/:id/claim", gate, c => {
+    const ok = router.claimInbox(c.req.param("id"));
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/api/voice/inbox-actions/:id/complete", gate, limitBody, async c => {
+    const parsed = await parseBody(c, z.object({ invoked: z.boolean() }).strict());
+    if (!parsed.ok) return parsed.res;
+    const ok = router.completeInbox(c.req.param("id"), parsed.data.invoked);
+    return c.json({ ok }, ok ? 200 : 409);
+  });
   app.put("/api/voice/open-cards", gate, limitBody, async c => {
     const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
     if (!parsed.ok) return parsed.res;

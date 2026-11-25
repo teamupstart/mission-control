@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { InboxVoiceFoot } from "./InboxVoiceFoot.tsx";
+import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../lib/voice-roster.ts";
+import { useContext, useState } from "react";
 import { reportUpdatedNote, type ReplyTarget, type ReportItem } from "@shared/reports.ts";
 import { useReportAuthorName, type ReportPublishState } from "../lib/sessionReports.ts";
 import { relativeTime } from "../lib/format.ts";
@@ -89,10 +92,12 @@ export function ReportCard({
   now?: number;
 }): React.JSX.Element {
   const name = useReportAuthorName(report.author);
+  const voice = !!useContext(VoiceAnswersContext);
+  const speaker = useContext(VoiceRosterContext).find(r => r.key === report.author.key || r.taskId && r.taskId === report.taskId || r.sessionId === report.sessionId);
   const updated = reportUpdatedNote(report.version);
   const bodyId = `report-body-${report.id}`;
   return (
-    <article className={`agent-report-card${open ? " is-open" : ""}`} aria-label={`Report: ${report.title}`}>
+    <article data-voice-kind={voice && open ? "report" : undefined} data-voice-id={report.id} data-voice-session={report.sessionId} data-voice-key={speaker?.key} className={`agent-report-card${open ? " is-open" : ""}`} aria-label={`Report: ${report.title}`}>
       <div className="agent-report-head">
         <InboxActionButton
           action="toggle"
@@ -165,6 +170,7 @@ export function ReportCard({
         </div>
       )}
       {error && <p className="inbox-line inbox-error" role="alert">{error}</p>}
+      {voice && open && <InboxVoiceFoot name={speaker?.name} />}
     </article>
   );
 }
@@ -280,6 +286,8 @@ function ReportAnswer({
                 tooltip="Send this reply to the agent as your message. It marks the report read"
                 disabled={busy || !draft.trim()}
                 cardOpen
+                onDictate={text => run(onReply, text)}
+                dictateDisabled={busy}
                 onClick={() => run(onReply, draft)}
               />
             ) : (
@@ -290,6 +298,8 @@ function ReportAnswer({
                 tooltip="Dispatch a new task in this report's repository with your words and the report as context. It marks the report read once the task is dispatched"
                 disabled={busy || !draft.trim()}
                 cardOpen
+                onDictate={text => run(onFollowUp, text)}
+                dictateDisabled={busy}
                 onClick={() => run(onFollowUp, draft)}
               />
             )}

@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -171,6 +172,24 @@ test("a runtime the harness does not offer still falls back, and says which one"
 test("a fresh config uses the Agent SDK for harnesses that declare an embedded driver", () => {
   const config = HarnessesConfigSchema.parse({});
   assert.deepEqual(config.sessionRuntime, { claude: "sdk", codex: "sdk", pi: "terminal" });
+});
+
+test("the dispatcher leaves a task untouched when cleanup holds a checkout", async () => {
+  const registry = new Registry();
+  const path = join(home, "cleanup-reserved-dispatch");
+  const task = mkTask({ id: "cleanup-reserved-dispatch", status: "backlog", worktreePath: path });
+  registry.upsertTask(task);
+  const before = registry.getTask(task.id);
+  const supervisor = fakeSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, async () => {}, {
+    supervisor,
+    resolveBases: async () => assert.fail("cleanup must prevent worktree provisioning"),
+  });
+  using cleanup = reserveWorktreeCleanup([path]);
+  assert.ok(cleanup);
+  await dispatcher.dispatch(task.id);
+  assert.deepEqual(registry.getTask(task.id), before);
+  assert.deepEqual(supervisor.starts, []);
 });
 
 test("with both toggles on, Claude and Codex dispatch through the supervisor without a home", async () => {

@@ -1,3 +1,4 @@
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
 import type { LaunchProcess } from "./launch-process.ts";
 import { readInventory } from "./inventory.ts";
 import { EMULATOR_IDS, MULTIPLEXER_IDS } from "@shared/terminal.ts";
@@ -298,6 +299,8 @@ export async function launchHome(
   deps: HomeDeps = defaultHomeDeps,
   preferredBackend: string | null = null,
 ): Promise<LaunchResult> {
+  using reservation = reserveWorktreeUse([spec.cwd]);
+  if (!reservation) return { ok: false, error: "automatic cleanup currently owns this checkout" };
   if (deps === defaultHomeDeps && underTestRunner()) {
     return { ok: false, error: REAL_BACKEND_UNDER_TEST_RUNNER };
   }

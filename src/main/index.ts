@@ -35,6 +35,7 @@ import { foremanLogPath } from "../server/foreman/decision-log.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, onMainWindowLoaded, showWindow, stopWindowStartup } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray, setTrayVoice } from "./tray.ts";
+import { shellVoiceSigner } from "./voice-signing.ts";
 import { startShellVoice } from "./voice-state.ts";
 import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
@@ -413,11 +414,13 @@ app.whenReady().then(async () => {
   const launchWarning = runningBundle && process.platform === "darwin" ? await unmanagedLaunchMessage(runningBundle) : null;
   if (launchWarning) logMain(`unmanaged app launch: ${launchWarning}`);
 
+  let voiceSigner: Awaited<ReturnType<typeof shellVoiceSigner>>;
   backgroundStart = ownElectronBackgroundStart(
     process.env.MISSION_DEV_SERVER_URL,
     () =>
       startDaemon({
         serverEntry: paths.serverEntry,
+        voiceVerifier: process.platform === "darwin" ? () => voiceSigner?.daemonEnv.MISSION_VOICE_SHELL_PUBLIC_KEY : undefined,
         webDir: paths.webDir,
         // Logs live beside the daemon's own state (honors MISSION_HOME), matching where
         // it keeps its db + token.
@@ -491,7 +494,8 @@ app.whenReady().then(async () => {
     },
   });
   if (process.platform === "darwin" && !isQuitting()) {
-    voice = startShellVoice(join(appRoot, "dist", "native", "voice-listener"), setTrayVoice);
+    voice = startShellVoice(join(appRoot, "dist", "native", "voice-listener"), setTrayVoice, undefined,
+      async () => voiceSigner = await shellVoiceSigner());
   }
   void updaterStart;
 

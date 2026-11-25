@@ -29,6 +29,7 @@ import {
   voiceUnavailableReasons,
   type VoiceBackend,
   type VoiceCapabilities,
+  transcriptTail, type TranscriptSample,
   type VoiceConfig,
   type VoiceInputDevice,
   type VoiceListenerHello,
@@ -175,6 +176,52 @@ export class VoiceStateStore {
 
   ownsCapture(id: string | undefined): boolean {
     return id !== undefined && this.liveHello()?.ownerId === id;
+  }
+
+  private preview?: { grant: string; owner: string; at: number; committed: string; interim: string; onset: number;
+    phase: TranscriptSample["phase"]; text: string };
+  // A delayed partial can outlive the visible words within the same capture.
+  private finalizedTranscript?: { grant: string; owner: string; onset: number };
+
+  reportTranscript(owner: string | undefined, revision: string | undefined, sample: TranscriptSample) {
+    const directive = this.directive();
+    if (!owner || !this.ownsCapture(owner) || !directive.capture ||
+        this.resolveCaptureRevision(revision, directive) !== directive.revision || !this.deps.config().showTranscript) return false;
+    const grant = directive.captureRevision ?? directive.revision;
+    const finalized = this.finalizedTranscript;
+    if (sample.phase !== "ready" && finalized?.grant === grant && finalized.owner === owner && sample.onset <= finalized.onset) return true;
+    const now = this.deps.now();
+    const previous = this.preview;
+    const preview = previous?.grant === grant && previous.owner === owner ? previous :
+      { grant, owner, at: now, committed: "", interim: "", onset: -1, phase: "ready" as TranscriptSample["phase"], text: "" };
+    const previousText = previous?.text;
+    const previousPhase = previous?.phase;
+    if (sample.phase === "ready") {
+      preview.interim = "";
+      preview.phase = "ready";
+    } else if (sample.phase === "words" && sample.final) {
+      // The next onset can arrive while the previous phrase's final decode is pending.
+      preview.committed = transcriptTail(preview.committed + " " + sample.text);
+      this.finalizedTranscript = { grant, owner, onset: sample.onset };
+      if (sample.onset >= preview.onset) {
+        preview.interim = "";
+        preview.onset = sample.onset;
+        preview.phase = "words";
+      }
+    } else if (sample.onset >= preview.onset) {
+      if (sample.onset !== preview.onset) preview.interim = "";
+      preview.onset = sample.onset;
+      if (sample.phase === "words") preview.interim = sample.text;
+      preview.phase = preview.interim ? "words" : "audio";
+    } else {
+      return true;
+    }
+    preview.text = transcriptTail(preview.committed + " " + preview.interim);
+    preview.at = now;
+    this.preview = preview;
+    if (previousText === preview.text && previousPhase === preview.phase) this.arm(this.state());
+    else this.publish();
+    return true;
   }
 
   setCancelWindowOpen(open: boolean): void {
@@ -350,6 +397,7 @@ export class VoiceStateStore {
     if (!this.deps.enabled(VOICE_FLAG)) {
       this.recorder = undefined;
       this.hotkeyTrial = undefined;
+      this.preview = undefined;
       this.lastMode = "off";
       this.pushToTalkSession = undefined;
       return voiceStateOff();
@@ -378,7 +426,7 @@ export class VoiceStateStore {
     delete capabilities.listener;
     if (hello) capabilities.listener = { available: true, reason: null };
     else if (refused) capabilities.listener = { available: false, reason: refused.reason };
-    if (failure) capabilities.listener = { available: false, reason: failure };
+    if (failure) capabilities.listener = failure;
     const output = hello?.speech;
     const model = this.deps.speechBackend?.model() ?? { ...VOICE_MODEL_STATE_NONE };
     const catalog: VoiceSpeechCatalog = {
@@ -386,7 +434,7 @@ export class VoiceStateStore {
       system: (output?.systemVoices ?? []).filter(v => /^en(?:[-_]|$)/iu.test(v.language))
         .map(({ id, name, quality }) => ({ id, name, detail: quality })),
     };
-    const unavailable = failure ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
+    const unavailable = failure?.reason ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
       : !listener?.speechInstance || !manager.announced.has(listener.speechInstance) ? "this listener was not started by a supervisor"
       : !output.audio && !catalog.system.length ? "This listener cannot play speech." : null);
     const resolved = unavailable ? { reason: unavailable, voice: null } : resolveSpeechVoice(config, catalog);
@@ -420,7 +468,15 @@ export class VoiceStateStore {
       this.lastMode = mode;
       this.modeRevision++;
     }
+    const preview = this.preview;
+    if (preview && (!voiceCaptures(mode) || !config.showTranscript || manager.held ||
+        listener?.ownerId !== preview.owner || now - preview.at >= 6000 ||
+        preview.grant !== (this.lastDirective?.directive.captureRevision ?? this.lastDirective?.directive.revision))) {
+      this.preview = undefined;
+    }
     return {
+      ...(this.preview && { transcript: { style: config.transcriptStyle, corner: config.transcriptCorner,
+        phase: this.preview.phase, text: transcriptTail(this.preview.text, config.transcriptWords) } }),
       ...(this.pushToTalkSession && { pushToTalkSession: this.pushToTalkSession }),
       planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
@@ -611,7 +667,13 @@ export class VoiceStateStore {
       this.manager?.stopAll("ask");
     }
     const state = this.state();
-    if (this.lastDirective) this.directive(state);
+    if (this.lastDirective) {
+      const directive = this.directive(state);
+      if (this.preview && this.preview.grant !== (directive.captureRevision ?? directive.revision)) {
+        this.preview = undefined;
+        delete state.transcript;
+      }
+    }
     for (const listener of Array.from(this.listeners)) {
       try { listener(state); }
       catch (error) { console.warn("[voice] state listener failed:", error); }
@@ -627,6 +689,8 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.preview = undefined;
+    this.finalizedTranscript = undefined;
     this.recorder = undefined;
     this.hotkeyTrial = undefined;
     if (this.manager) this.manager.dispose();
@@ -656,6 +720,7 @@ export class VoiceStateStore {
     const waitingForProcess = this.manager?.live?.state === "ready" &&
       (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
     const lapses = [
+      this.preview && this.preview.at + 6000,
       this.hotkeyTrial?.expiresAt,
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,

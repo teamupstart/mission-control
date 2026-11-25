@@ -11,10 +11,12 @@ struct Directive: Decodable {
     let capture: Bool
     let endOfSpeechMs: Int?
     let inputDevice: String
+    let speak: Speak?
     let roster: [String]
 }
 
 struct Hello: Encodable {
+    var speech: SpeechHello?
     let version = "4.1"
     let reportsSpeechOnset = true
     let backend = "fluidaudio"
@@ -33,7 +35,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     let token: String
     let directory: URL
     private let listenerID: String
-    private let speechInstance: String?
+    let speechInstance: String?
     private let captureLockPath: String
     private var captureOffset: Int64?
     private var captureLock: Int32 = -1
@@ -100,9 +102,9 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         completionHandler(nil)
     }
 
-    private enum ServiceError: Error { case unavailable }
+    enum ServiceError: Error { case http(Int) }
 
-    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil) async throws -> Response {
+    func request(_ route: String, revision: String? = nil, capture: CaptureTimes? = nil, body: Data? = nil, allowObsolete: Bool = false) async throws -> Response {
         var url = base.appending(path: route)
         if let revision { url.append(queryItems: [URLQueryItem(name: "revision", value: revision)]) }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: body == nil || capture != nil ? 30 : 5)
@@ -124,12 +126,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             req.httpBody = body
         }
         let (data, response) = try await session.data(for: req)
-        if (response as? HTTPURLResponse)?.statusCode == 409,
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if http.statusCode == 409,
            (try? JSONDecoder().decode([String: String].self, from: data))?["error"] == "listener_in_use" {
             throw CaptureError.listenerInUse
         }
-        if (response as? HTTPURLResponse)?.statusCode == 503 { throw ServiceError.unavailable }
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw URLError(.badServerResponse) }
+        guard http.statusCode == 200 || (allowObsolete && http.statusCode == 409) else {
+            throw ServiceError.http(http.statusCode)
+        }
         return (data, http)
     }
 
@@ -149,6 +153,19 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         } catch {
             fputs("Voice listener could not report a speech boundary.\n", stderr)
         }
+    }
+
+    func reportPreview(_ phase: String, revision: String, onset: Int64? = nil, text: String? = nil) async -> Bool {
+        struct Sample: Encodable { let phase: String; let onset: Int64?; let text: String? }
+        do {
+            let body = try JSONEncoder().encode(Sample(phase: phase, onset: onset, text: text))
+            let (data, _) = try await request("voice/listener/transcript", revision: revision, body: body)
+            return try JSONDecoder().decode(Acknowledgement.self, from: data).accepted
+        } catch { return false }
+    }
+
+    func pendingOnset(revision: String) -> Int64? {
+        speechLock.withLock { starts.keys.filter { $0.revision == revision }.map(\.onset).max() }
     }
 
     // Register synchronously on the tap. Each segment waits only for its own onset POST.
@@ -200,7 +217,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         while true {
             try Task.checkCancellation()
             do { return try await request("voice/listener/directive", revision: revision) }
-            catch ServiceError.unavailable where microphonePaused {
+            catch ServiceError.http(503) where microphonePaused {
                 try await Task.sleep(for: .milliseconds(backoff))
                 backoff = min(2000, backoff * 2)
             }
@@ -243,9 +260,40 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 }
 
+@MainActor func runTranscriptPreview(
+    isRunning: @escaping () -> Bool, snapshot: @escaping () -> Segment?, pendingOnset: () -> Int64?,
+    decode: @escaping (Segment) async throws -> String?,
+    report: @escaping (String, Int64?, String?) async -> Bool,
+    pause: () async -> Void = { try? await Task.sleep(for: .milliseconds(800)) }
+) async {
+    var decoding: Task<Void, Never>?
+    defer { decoding?.cancel() }
+    while !Task.isCancelled && isRunning() {
+        if let segment = snapshot() {
+            let onset = segment.speechStartHostUs
+            // Renew capture independently of recognition, even while a slow decode is in flight.
+            if await report("audio", onset, nil), decoding == nil, !Task.isCancelled {
+                decoding = Task { @MainActor in
+                    defer { decoding = nil }
+                    guard let words = try? await decode(segment), !Task.isCancelled, isRunning(),
+                          snapshot()?.speechStartHostUs == onset else { return }
+                    let tail = words.split(whereSeparator: { $0.isWhitespace }).suffix(100).joined(separator: " ")
+                    if !tail.isEmpty { _ = await report("words", onset, tail) }
+                }
+            }
+        } else if let onset = pendingOnset() {
+            _ = await report("audio", onset, nil)
+        } else {
+            _ = await report("ready", nil, nil)
+        }
+        await pause()
+    }
+}
+
 @MainActor private final class Capture {
     let revision: String
     var mic: Microphone?
+    var previewTask: Task<Void, Never>?
     var decoding: Task<Void, Never>?
     var releasedAt: Int64?
     var releasedSegments: [Segment] = []
@@ -260,6 +308,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     func release(at time: Int64) {
         guard releasedAt == nil else { return }
+        previewTask?.cancel()
         releasedAt = time
         mic?.whenCaptured(through: time) { [weak self] in
             guard let self, let mic else { return }
@@ -273,6 +322,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 
     func cancel() {
         onInputClosed = nil
+        previewTask?.cancel()
         decoding?.cancel()
         mic?.stop()
         daemon.closeSpeech(revision: revision)
@@ -288,6 +338,15 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     private var draining: [Capture] = []
     private var directivePoll: Task<Daemon.Response, Error>?
     private var pendingHello: Task<Void, Error>?
+
+    private lazy var playback = Playback(player: MacSpeechPlayer(), fetch: { [daemon] id in
+        try await daemon.request("voice/speech/jobs/\(id)/audio").data
+    }, report: { [daemon] id, type, outcome in
+        var body = ["type": type]
+        body["outcome"] = outcome
+        _ = try await daemon.request("voice/speech/jobs/\(id)/events", body: JSONEncoder().encode(body), allowObsolete: type == "ended")
+    })
+    private var speech: SpeechHello? { daemon.speechInstance.map { _ in SpeechHello() } }
 
     func hello() async throws {
         let previous = pendingHello
@@ -305,7 +364,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         if first && status == "not-determined" {
             fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
         }
-        let body = Hello(modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
+        let body = Hello(speech: speech, modelLoaded: recognizer != nil, primingAvailable: recognizer?.ctc != nil, microphone: status)
         defer {
             if status == "denied" {
                 fputs("Microphone access denied by macOS.\n", stderr)
@@ -324,6 +383,15 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     func run() async throws {
+        playback.changed = { [weak self] in self?.directivePoll?.cancel() }
+        // A pipe inherited across the confined startup gate closes on supervisor death.
+        if daemon.speechInstance != nil {
+            DispatchQueue.global().async {
+                var byte: UInt8 = 0
+                while read(STDIN_FILENO, &byte, 1) > 0 {}
+                exit(0)
+            }
+        }
         try await hello()
         let heartbeat = Task {
             while !Task.isCancelled {
@@ -352,7 +420,10 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             }
             let (data, http) = try response.get()
             let next = try JSONDecoder().decode(Directive.self, from: data)
-            let capture = next.capture && permission() == "granted"
+            if next.speak != nil && daemon.speechInstance == nil { throw URLError(.badServerResponse) }
+            if next.speak != nil || playback.busy { close() }
+            try await playback.apply(next.speak)
+            let capture = next.speak == nil && !playback.busy && next.capture && permission() == "granted"
             if next.revision != revision || capture != (current?.mic?.isRunning == true) {
                 let releasedRevision = http.value(forHTTPHeaderField: "x-voice-release-revision")
                 var allowed = Set((http.value(forHTTPHeaderField: "x-voice-draining-revisions") ?? "")
@@ -401,6 +472,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                         self.directivePoll?.cancel()
                     })
                     batch.mic = microphone
+                    batch.previewTask = Task { [daemon] in
+                        await runTranscriptPreview(isRunning: { microphone.isRunning }, snapshot: { microphone.preview },
+                            pendingOnset: { daemon.pendingOnset(revision: captureRevision) },
+                            decode: { try await recognizer.transcribe($0, boosting: nil)?.text },
+                            report: { phase, onset, text in
+                                await daemon.reportPreview(phase, revision: captureRevision, onset: onset, text: text)
+                            })
+                    }
                     let previous = draining.last?.decoding
                     batch.decoding = Task { [segments = microphone.segments] in
                         defer {

@@ -16,6 +16,18 @@ import type { Task } from "@shared/types.ts";
 // writing rather than by a caller that checked a moment earlier. `db.ts` and the retention
 // service both import it here, which is what keeps that from being a circular import.
 
+/** Ordered checkout ownership shared by the durable generation and the final teardown guard. */
+export function taskCheckoutIdentities(task: Task) {
+  return taskRepoRefs(task).map((ref) => [
+    ref.position,
+    ref.repoRoot,
+    ref.worktreePath,
+    ref.provider,
+    ref.worktreeLeaseId,
+    ...(ref.provider === "git" && ref.worktreePath ? [ref.branch] : []),
+  ]);
+}
+
 /**
  * The identity of everything a cleanup of this task would ACT ON, as one digest.
  *
@@ -32,6 +44,7 @@ import type { Task } from "@shared/types.ts";
  *    the tuple teardown itself reads. A slot returned and re-leased at the same path under a
  *    new lease id is a different tree wearing the same name, and a partial release that
  *    cleared one repository's path is a different set of resources than the one observed.
+ *    Disposable Git checkouts use their recorded branch as part of their ownership proof.
  *  - `homeName`, `homeBackend`, `terminalResourceId`, `sessionId` - terminal ownership,
  *    which reclaim can stop
  *    or clear. A generation blind to them would survive a mutation that changed what cleanup
@@ -52,13 +65,7 @@ export function taskResourceGeneration(task: Task): string {
     homeBackend: task.homeBackend ?? null,
     terminalResourceId: task.terminalResourceId,
     sessionId: task.sessionId,
-    repos: taskRepoRefs(task).map((ref) => [
-      ref.position,
-      ref.repoRoot,
-      ref.worktreePath,
-      ref.provider,
-      ref.worktreeLeaseId,
-    ]),
+    repos: taskCheckoutIdentities(task),
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { VOICE_SPEECH_STOP_UNCONFIRMED, type VoiceCapability } from "@shared/voice.ts";
 import {
   VOICE_SPEECH_CONFIRM_LIMIT_MS, VOICE_SPEECH_END_MARGIN_MS, VOICE_SPEECH_PREPARE_LIMIT_MS, VOICE_SPEECH_START_LIMIT_MS,
   VOICE_SPEECH_SYSTEM_LIMIT_MS, type SpeakDirective, type VoiceSpeechJob, type VoiceSpeechState, type VoiceSpeechVoice,
@@ -123,9 +124,12 @@ export class VoiceSpeechManager {
     return this.announced.has(instance) || this.ledger.knowsLaunch(instance) || this.holds().some(hold =>
       "instance" in hold ? hold.instance === instance : hold.supervisor === announcementName(instance));
   }
-  get listenerFailure() {
-    if (this.unknown) return "the record of unfinished speech could not be read";
-    return this.items().some(i => i.unanswered) ? "the listener did not confirm that speech had stopped" : null;
+  get listenerFailure(): VoiceCapability | null {
+    if (this.unknown) return { available: false, reason: "the record of unfinished speech could not be read" };
+    if (this.items().some(i => i.unanswered)) {
+      return { available: false, code: VOICE_SPEECH_STOP_UNCONFIRMED, reason: "the listener did not confirm that speech had stopped" };
+    }
+    return null;
   }
   private handoffClock(recovered: boolean) {
     return { wall: (this.deps.wallNow ?? Date.now)(), monotonic: this.deps.now(), recovered };

@@ -69,6 +69,19 @@ const CancelWindowSchema = z.object({
   seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max).default(4),
 }).prefault({});
 
+const TranscriptStyle = z.enum(["card", "capsule"]);
+const TranscriptCorner = z.enum(["bottom-right", "bottom-left"]);
+export const TranscriptSampleSchema = z.discriminatedUnion("phase", [
+  z.object({ phase: z.literal("ready") }),
+  z.object({ phase: z.literal("audio"), onset: z.int().nonnegative() }),
+  z.object({ phase: z.literal("words"), onset: z.int().nonnegative(), text: z.string().trim().min(1).max(4096), final: z.literal(true).optional() }),
+]);
+export type TranscriptSample = z.infer<typeof TranscriptSampleSchema>;
+export const TRANSCRIPT_WORD_LIMIT = 100;
+const TranscriptWords = z.int().min(1).max(TRANSCRIPT_WORD_LIMIT);
+export function transcriptTail(text: string, limit = TRANSCRIPT_WORD_LIMIT): string {
+  return text.trim().split(/\s+/u).slice(-limit).join(" ");
+}
 const ListeningModeSchema = z.enum(["always-on", "push-to-talk"]);
 
 /**
@@ -87,6 +100,10 @@ export const VoiceConfigSchema = z.object({
    */
   hotkey: ChordSchema.nullable().default("cmd+ctrl+alt+v"),
   autoMuteDuringCalls: z.boolean().default(true),
+  showTranscript: z.boolean().default(true),
+  transcriptWords: TranscriptWords.default(20),
+  transcriptStyle: TranscriptStyle.default("card"),
+  transcriptCorner: TranscriptCorner.default("bottom-right"),
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
   endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
@@ -113,6 +130,10 @@ export const VoiceConfigPatchSchema = z.object({
   muted: z.boolean(),
   hotkey: ChordSchema.nullable(),
   autoMuteDuringCalls: z.boolean(),
+  showTranscript: z.boolean(),
+  transcriptWords: TranscriptWords,
+  transcriptStyle: TranscriptStyle,
+  transcriptCorner: TranscriptCorner,
   endOfSpeechMs: EndOfSpeechMsSchema,
   cancelWindow: z.object({
     enabled: z.boolean(),
@@ -249,10 +270,14 @@ export const VOICE_CAPABILITY_IDS = [
 ] as const;
 export type VoiceCapabilityId = (typeof VOICE_CAPABILITY_IDS)[number];
 
+export const VOICE_SPEECH_STOP_UNCONFIRMED = "speech_stop_unconfirmed";
+
 export interface VoiceCapability {
   available: boolean;
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
+  /** Set by the daemon when the listener misses a speech stop confirmation. */
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED;
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
@@ -318,6 +343,8 @@ export interface VoiceHotkeyError {
  * follow it.
  */
 export interface VoiceState {
+  transcript?: { style: VoiceConfig["transcriptStyle"]; corner: VoiceConfig["transcriptCorner"];
+    phase: TranscriptSample["phase"]; text: string };
   /** Present only in dedicated push-to-talk. The desktop echoes this generation on each edge. */
   pushToTalkSession?: string;
   /** Saved manual mute for Always-on, including while unavailable. */
@@ -452,12 +479,13 @@ export function canonicalVoiceState(state: VoiceState): string {
   const capabilities: Record<string, VoiceCapability> = {};
   for (const id of VOICE_CAPABILITY_IDS) {
     const entry = state.capabilities[id];
-    if (entry) capabilities[id] = { available: entry.available, reason: entry.reason };
+    if (entry) capabilities[id] = { available: entry.available, reason: entry.reason, code: entry.code };
   }
   const { voice, reason, catalog, model, job, lastAudition } = state.speech;
   const entries = (voices: typeof catalog.system) => voices.map(v => [v.id, v.name, v.detail]);
   return JSON.stringify([
     state.mode,
+    state.transcript,
     state.modeVersion?.source,
     state.modeVersion?.revision,
     state.muted ?? false,

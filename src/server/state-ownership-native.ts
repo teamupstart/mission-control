@@ -10,6 +10,7 @@ export interface NativeStateLockBinding {
 type RequireFn = (id: string) => unknown;
 
 export function nativeStateLockAddonPath(moduleUrl = import.meta.url): string {
+  if (!moduleUrl && typeof __dirname === "string") return resolve(__dirname, "../native/state-lock.node");
   return resolve(dirname(fileURLToPath(moduleUrl)), "../../dist/native/state-lock.node");
 }
 
@@ -28,7 +29,7 @@ export function validateNativeStateLockBinding(value: unknown): NativeStateLockB
 }
 
 export function loadNativeStateLockBinding(
-  requireFn: RequireFn = createRequire(import.meta.url),
+  requireFn: RequireFn = createRequire(nativeStateLockAddonPath()),
 ): NativeStateLockBinding {
   return validateNativeStateLockBinding(requireFn(nativeStateLockAddonPath()));
 }

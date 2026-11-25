@@ -238,6 +238,7 @@ export class VoiceRouter {
     private readonly emitCard: (card: VoiceCard) => void,
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
+    private readonly speech?: { unsure(card: VoiceCard): void; stop(cardId: string): void },
   ) {}
 
   private publish(card: VoiceCard): void {
@@ -499,6 +500,7 @@ export class VoiceRouter {
       item.timer.unref?.();
     }
     this.publish(card);
+    if (card.state === "unsure" && this.open.get(card.id) === item) this.speech?.unsure(card);
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.
@@ -514,6 +516,7 @@ export class VoiceRouter {
     const item = this.open.get(id);
     if (!item) return false;
     if (item.card.deadline !== null && Date.now() >= item.card.deadline) return false;
+    this.speech?.stop(id);
     this.take(item, capturedAt);
     item.modelStep?.abort();
     item.entry.outcome = "cancelled";
@@ -560,6 +563,7 @@ export class VoiceRouter {
       parts = [{ target: first, text: split.head }, { target, text: split.tail }];
     }
     if (parts.some(part => !this.checkedTarget(roster, part.target, split ? "deliver" : "single-pick"))) return false;
+    this.speech?.stop(id);
     if (item.remainingSplits?.length) {
       const card: VoiceCard = { ...item.card, reason: "second-name", parts };
       this.closeChoices(item, pickedAt);

@@ -282,7 +282,10 @@ test("a finished task opens a separate follow-up draft and preserves the regular
   const leave = page.getByRole("dialog", { name: "Leave with unsaved changes" });
   await expectContentClearsBorder(leave);
   await expect(dialog).toHaveCount(0);
-  await leave.getByRole("button", { name: "Cancel" }).click();
+  // Browser navigation back to the accepted address supersedes the held follow-up.
+  await page.evaluate(() => window.dispatchEvent(new HashChangeEvent("hashchange")));
+  await expect(leave).toHaveCount(0);
+  await expect(dialog).toHaveCount(0);
   await expect(nameField).toHaveValue("Unfinished reviewer");
   await followUp.click();
   await leave.getByRole("button", { name: "Discard and leave" }).click();

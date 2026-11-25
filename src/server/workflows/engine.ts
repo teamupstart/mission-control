@@ -256,6 +256,17 @@ function edgesFrom(
   return graph.edges.filter((edge) => edge.source === nodeId && edge.sourcePort === port);
 }
 
+function latestCodeRabbitReview(attemptsWithExecutionClaims: readonly WorkflowNodeAttempt[]) {
+  // A refusal before launch and a reused pass both leave the actual review history intact.
+  for (const attempt of attemptsWithExecutionClaims) {
+    const { output } = attempt;
+    if (!output || typeof output !== "object" || Array.isArray(output)) continue;
+    const parsed = CodeRabbitReviewSummarySchema.safeParse(output.review);
+    if (!parsed.success || parsed.data.status === "skipped") continue;
+    return { attempt, review: parsed.data };
+  }
+}
+
 const MAX_PERSONA_CHECK_OUTPUT_BYTES = 96_000;
 
 function upstreamNodeIds(
@@ -1577,6 +1588,15 @@ export class WorkflowEngine {
       ? { ...(catalogCommand ?? emptyWorkflowCommandView(node.slot)),
           ...(frozenComparison ? { maxRuns: frozenComparison.maxRuns, timeoutMs: frozenComparison.timeoutMs } : {}) }
       : catalogCommand;
+    const previousReview = node.slot === "coderabbit"
+      ? latestCodeRabbitReview(this.store.listCheckAttemptsWithExecutionClaim(run.id, node.id, node.slot))
+      : undefined;
+    const priorCleanReview = previousReview?.attempt.state === "completed"
+      && previousReview.attempt.submissionId !== submission.id
+      && previousReview.review.status === "complete"
+      && Object.values(previousReview.review.counts).every(count => count === 0)
+      ? WorkflowCheckOutcomeSchema.safeParse(previousReview.attempt.output)
+      : null;
     // On the fallback path the slot is only taken around the executor, after the attempt ref
     // is bound, so the ref carries a handle onto whichever slot that wrapper holds.
     let fallbackSlot: CheckSlot | undefined;
@@ -1615,13 +1635,11 @@ export class WorkflowEngine {
         coderabbit: node.slot === "coderabbit" ? {
           yaml: context.data.evidence.coderabbit,
           dirty: context.data.evidence.workingTreeDirty && !context.data.evidence.reviewCommit,
-          // Carry an unresolved review across submissions. A later complete review clears
-          // it; a skip cannot. The store orders attempts from oldest to newest.
-          incompleteReview: this.store.listAttemptsForRun(submission.runId).reduce((incomplete, attempt) => {
-            if (attempt.nodeId !== node.id || !attempt.output || typeof attempt.output !== "object" || Array.isArray(attempt.output)) return incomplete;
-            const parsed = CodeRabbitReviewSummarySchema.safeParse(attempt.output.review);
-            return parsed.success && parsed.data.status !== "skipped" ? parsed.data.status === "incomplete" : incomplete;
-          }, false),
+          incompleteReview: previousReview?.review.status === "incomplete",
+          ...(priorCleanReview?.success && priorCleanReview.data.status === "passed" && previousReview
+            ? { priorCleanReview: { attemptId: previousReview.attempt.id, review: previousReview.review } }
+            : {}),
+          readRunsSpent: () => this.store.checkRunsSpent(run.id, node.slot, run.checkBudgetEpochRound ?? null),
           retryAt: this.codeRabbitRetryAt(submission.id),
           comparison: async () => this.store.getCodeRabbitComparison(submission.id)
             ?? this.store.freezeCodeRabbitComparison(submission.id, await resolveCodeRabbitComparison({

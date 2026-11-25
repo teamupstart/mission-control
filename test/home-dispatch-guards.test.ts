@@ -83,10 +83,11 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The synthesis model adds gated POST and DELETE /api/voice/speech/model/download.
   // Form submit refusal and inbox action claim and completion return 404 with Voice off.
   // The listener reports speech onset and completion through one additional voice-gated route.
+  // Foreman's guarded POST /api/sessions/:id/queue/wrapup/drain returns 404 for a missing session.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 490);
+  assert.equal(others.length, 491);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "2639f9ba47587548a1be1229c15e3845b32992be6a49727b4d4072b2b04cf6ae");
+    "ac86c8b03707994c5ddc8d651f5205d8a29173bb146c7c28f1c4f23160e016c8");
 });
 
 function sourceFiles(dir: string): string[] {

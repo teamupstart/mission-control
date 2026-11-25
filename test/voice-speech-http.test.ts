@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { fork, spawn, spawnSync } from "node:child_process";
 import { createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { once } from "node:events";
+import { MessageChannel } from "node:worker_threads";
 import { Socket } from "node:net";
 import { voiceProcessBirth } from "../src/server/voice/process-birth.ts";
 import { text } from "node:stream/consumers";
@@ -86,6 +87,50 @@ async function expectReplacementCapture(server = app) {
   assert.equal((await replacement.hello()).status, 200);
   assert.equal((await replacement.poll()).capture, true);
 }
+
+test("an unanswered desktop verifier request returns 503 without recording a launch, then a verified retry succeeds", { timeout: 10000 }, async t => {
+  const { port1: daemonPort, port2: shellPort } = new MessageChannel();
+  const server = new Hono();
+  // Route registration captures the private port that Electron supplies in a utility process.
+  Object.assign(process, { parentPort: daemonPort });
+  try { registerVoiceRoutes(server, store); }
+  finally { Reflect.deleteProperty(process, "parentPort"); }
+  const originalEnv = process.env;
+  process.env = { ...originalEnv, MISSION_VOICE_DESKTOP_VERIFIER: "1" };
+  delete process.env.MISSION_VOICE_SHELL_PUBLIC_KEY;
+  t.after(() => { process.env = originalEnv; shellPort.close(); daemonPort.close(); });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const shell = player(listenerId, server);
+  const receipt = join(supervised, announcementName(shell.instance) + ".json");
+  const firstRequest = once(shellPort, "message");
+  let settled = false;
+  const firstStart = Promise.resolve(shell.report("started")).finally(() => { settled = true; });
+  const [first] = await firstRequest;
+  assert.equal(first.type, "mission:voice-shell-verifier");
+  t.mock.timers.tick(1999);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  const refused = await firstStart;
+  assert.equal(refused.status, 503);
+  assert.deepEqual(await refused.json(), { error: "supervisor_verifier_unavailable" });
+  assert.throws(() => statSync(receipt), { code: "ENOENT" });
+  assert.equal((await shell.hello()).status, 200);
+  const unavailable = await shell.request("/api/voice/speech/audition", {});
+  assert.equal(unavailable.status, 409);
+  assert.match((await unavailable.json()).reason, /not started by a supervisor/);
+
+  const nextRequest = once(shellPort, "message");
+  const retry = shell.report("started");
+  const [next] = await nextRequest;
+  assert.equal(next.type, first.type);
+  assert.notEqual(next.id, first.id);
+  shellPort.postMessage({ data: { ...next, key: fixtureSupervisorEnv.MISSION_VOICE_SHELL_PUBLIC_KEY } });
+  assert.equal((await retry).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(receipt, "utf8")), { instance: shell.instance });
+  assert.equal((await shell.request("/api/voice/speech/audition", {})).status, 200);
+});
 
 test("a signed exit revokes an outstanding directive and prevents a late hello from restoring capture", async () => {
   const holder = player();

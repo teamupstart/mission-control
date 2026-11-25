@@ -199,6 +199,32 @@ identify which listeners need to confirm silence.
 
 #### Voice supervisor credentials
 
+The packaged macOS shell can provision its own durable signing key for the daemon
+it launches. When Voice is enabled or an earlier listener needs recovery, the shell
+opens the key asynchronously using Electron safeStorage and the macOS Keychain.
+The desktop window and daemon can start while a Keychain prompt is pending. If
+the model and microphone are ready and there is no earlier listener to recover,
+a capture-only helper can listen during the prompt. Once the key is available,
+the shell waits for that helper to exit before transferring its capture lease
+to a supervised helper. An owned daemon reads the public verifier over its
+private Electron port when a supervisor report arrives. An adopted daemon keeps
+its own trust settings. The encrypted value lives in the owner-only
+`voice/shell-credential.json`. An external
+launch service supplies `MISSION_VOICE_SHELL_CREDENTIAL_FD` or
+`MISSION_VOICE_DEV_CREDENTIAL_FD` to the corresponding launcher and the matching
+public verifier to the daemon. Pass the descriptor directly to the launcher process
+(for development, `node --import tsx scripts/run-voice-listener.ts`). An unprovisioned
+development listener supports capture only.
+
+Each macOS supervisor atomically maintains `voice/supervised/shell.json` or
+`voice/supervised/dev.json` (0600 in a 0700 directory). The record initially contains
+the launch instance. Before the child can pass its startup gate it also contains
+`pid` and `startedAt`, the OS process birth identity. The slot survives a daemon
+outage until the daemon accepts that exact exit. It is machine-local runtime state.
+Each supervisor holds its own advisory lock and can relay the other supervisor's
+signed exit after checking the process has gone. A missing signature still requires
+the originating launch service.
+
 Provision a distinct Ed25519 private key once for each shell or dev supervisor.
 Keep it in the launch service's protected credential store throughout launcher
 and daemon restarts. Provisioning a new key for each launcher process strands

@@ -5,6 +5,7 @@ import type { ReviewItem } from "@shared/types.ts";
 import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
   routeUtterance,
+  voiceCardCanExpire,
   type HeardEntry,
   type VoiceAddressedCommand,
   type VoiceCard,
@@ -13,6 +14,7 @@ import {
   type VoiceSplitPoint,
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
+import { randomUUID } from "node:crypto";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
 import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
@@ -63,13 +65,32 @@ const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
+  private readonly epoch = randomUUID();
+  private revision = 0;
+  private receipts = new Map<string, { revision: number; card: VoiceCard }>();
+  get receiptCursor(): string { return this.epoch + ":" + this.revision; }
+  recordCard(card: VoiceCard): void {
+    this.receipts.delete(card.id);
+    if (!voiceCardCanExpire(card)) return;
+    this.receipts.set(card.id, { revision: ++this.revision, card });
+    if (this.receipts.size > HISTORY_LIMIT) this.receipts.delete(this.receipts.keys().next().value!);
+  }
+  receiptsAfter(cursor?: string): VoiceCard[] {
+    if (!cursor?.startsWith(this.epoch + ":")) return [];
+    const revision = Number(cursor.slice(this.epoch.length + 1));
+    if (!Number.isSafeInteger(revision) || revision < 0 || cursor !== this.epoch + ":" + revision) return [];
+    return [...this.receipts.values()].filter(entry => entry.revision > revision).map(entry => entry.card);
+  }
   list(): readonly HeardEntry[] { return this.entries; }
   record(entry: HeardEntry): void {
     const index = this.entries.findIndex((existing) => existing.time <= entry.time);
     this.entries.splice(index < 0 ? this.entries.length : index, 0, entry);
     if (this.entries.length > HISTORY_LIMIT) this.entries.pop();
   }
-  clear(): void { this.entries = []; }
+  clear(): void {
+    this.entries = [];
+    this.receipts.clear();
+  }
 }
 
 interface AnswerCapture extends ActionTime {
@@ -280,12 +301,17 @@ export class VoiceRouter {
     private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
-    private readonly publish: (card: VoiceCard) => void,
+    private readonly emitCard: (card: VoiceCard) => void,
     private readonly decider: VoiceDecider = NO_DECIDER,
     private readonly hostNowUs: () => number = voiceHostTimeUs,
     private readonly questions?: VoiceQuestions,
     private readonly speech?: { resolving?(): void; unsure(card: VoiceCard): void; stop(cardId: string): void },
   ) {}
+
+  private publish(card: VoiceCard): void {
+    this.heard.recordCard(card);
+    this.emitCard(card);
+  }
 
   /** The model step for an utterance, while it runs: settles once its card is resolved. */
   resolution(id: string): Promise<void> | undefined {

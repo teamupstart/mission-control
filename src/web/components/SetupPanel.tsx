@@ -24,6 +24,8 @@ import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { formatBytes } from "@shared/format-bytes.ts";
 import type { VoiceModelState, VoiceState } from "@shared/voice.ts";
+import { formatChord } from "@shared/keyboard-chords.ts";
+import { confirmedVoiceHotkey } from "./VoiceIndicators.tsx";
 import { voiceModelSetupStatus } from "@shared/voice-models.ts";
 import { FeatureFlagsContext } from "../useFeatureFlag.ts";
 import {
@@ -1001,7 +1003,9 @@ function SetupRow({
 }): React.JSX.Element {
   const status = row.status;
   const satisfied = status.state === "satisfied";
-  const liveLabel = liveStatusLabel(row, useContext(SetupVoiceContext));
+  const voice = useContext(SetupVoiceContext);
+  const liveLabel = liveStatusLabel(row, voice);
+  const hotkey = row.remedy.kind === "microphone-access" && voice ? confirmedVoiceHotkey(voice) : null;
   const main = (
     <div className="setup-row-main">
       <div className="setup-row-title">
@@ -1042,6 +1046,7 @@ function SetupRow({
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
+      {hotkey && <p className="setup-source">Tap <kbd>{formatChord(hotkey)}</kbd> to mute voice from any app.</p>}
       {row.guide && (
         <div className="setup-guide">
           <Tooltip label={row.guide.label}>

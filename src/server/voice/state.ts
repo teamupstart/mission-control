@@ -36,7 +36,7 @@ import {
 } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
-import { getVoiceConfig, onVoiceConfigChanged } from "./config.ts";
+import { getVoiceConfig, onVoiceConfigChanged, setVoiceConfig } from "./config.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
 import { NeuralSynthesizer } from "./synthesizer.ts";
 import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
@@ -50,6 +50,7 @@ export interface VoiceStateDeps {
   speechBackend?: { neural(): VoiceSpeechCatalog["neural"]; model(): VoiceModelState; synthesizer: VoiceSynthesizer };
   enabled(id: FeatureFlagId): boolean;
   config(): VoiceConfig;
+  saveHotkey?(chord: string): void;
   /** The speech model's state (contract H's manager). Absent, the model reads as nothing known. */
   model?(): VoiceModelState;
   /** Schedules the recompute that publishes a lapse. Unref'd, so it never holds the process. */
@@ -65,11 +66,34 @@ export type VoiceHelloResult =
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
  * listener hello and the latest shell report, and published to whoever subscribes.
  *
+ * Readings and shortcut trials are transient. Only a confirmed shortcut edit is saved.
  * Microphone grants outlive a daemon restart. A hello counts for `VOICE_HELLO_LAPSE_MS` and a shell report for
  * `VOICE_SHELL_REPORT_LAPSE_MS`; a timer set at the next lapse publishes the change a lapse
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
+  private recorder?: string;
+  private hotkeyTrial?: { id: string; chord: string; previous: string | null; requestedAtUs: number; expiresAt: number };
+
+  proposeHotkey(chord: string | null) {
+    const previous = this.deps.config().hotkey;
+    this.hotkeyTrial = chord && chord !== previous ? {
+      id: randomUUID(), chord, previous, requestedAtUs: this.hostNowUs(), expiresAt: this.deps.now() + VOICE_SHELL_REPORT_LAPSE_MS,
+    } : undefined;
+    this.publish();
+  }
+
+  beginHotkeyRecording() {
+    if (this.recorder || !this.deps.enabled(VOICE_FLAG)) return;
+    this.hotkeyTrial = undefined;
+    const id = this.recorder = randomUUID();
+    this.publish();
+    return { id, end: () => {
+      if (this.recorder !== id) return;
+      this.recorder = undefined;
+      this.publish();
+    } };
+  }
   private readonly source = randomUUID();
   private lastMode: VoiceState["mode"] = "off";
   private modeRevision = 0;
@@ -283,11 +307,15 @@ export class VoiceStateStore {
   /** The state now. Lapsed readings are dropped here, so a read never returns a stale mode. */
   state(): VoiceState {
     if (!this.deps.enabled(VOICE_FLAG)) {
+      this.recorder = undefined;
+      this.hotkeyTrial = undefined;
       this.lastMode = "off";
       return voiceStateOff();
     }
     const now = this.deps.now();
     const config = this.deps.config();
+    if (this.hotkeyTrial && this.hotkeyTrial.previous !== config.hotkey) this.hotkeyTrial = undefined;
+    const trial = this.hotkeyTrial;
     const listener = this.liveHello();
     const hello = listener?.hello ?? null;
     const refused = this.refused && now - this.refused.at < VOICE_HELLO_LAPSE_MS ? this.refused : null;
@@ -344,6 +372,13 @@ export class VoiceStateStore {
       reasons,
       capabilities,
       configuredHotkey: config.hotkey,
+      ...(trial && (now < trial.expiresAt
+        ? { pendingHotkey: trial.chord, pendingHotkeyId: trial.id }
+        : { expiredHotkey: trial.chord })),
+      ...(this.recorder && {
+        recordingHotkey: true, recordingHotkeyId: this.recorder,
+        ...(report?.registeredHotkey === null && report.capabilities.hotkey?.recordingId === this.recorder && { recordingHotkeyReady: true }),
+      }),
       registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
@@ -484,6 +519,15 @@ export class VoiceStateStore {
       this.releases.set(held.revision, { issuedAt, pressedAtUs: heldSince, at: Math.floor(eventAt / 1000) });
       this.latestRelease = held.revision;
     }
+    const trial = this.hotkeyTrial;
+    if (trial && !this.recorder && order !== undefined && order > trial.requestedAtUs &&
+        this.state().pendingHotkey === trial.chord && report.capabilities.hotkey?.available) {
+      if (report.hotkeyError?.trialId === trial.id) this.hotkeyTrial = undefined;
+      else if (!report.hotkeyError && report.registeredHotkey === trial.chord) {
+        this.deps.saveHotkey?.(trial.chord);
+        this.hotkeyTrial = undefined;
+      }
+    }
     this.publish();
   }
 
@@ -518,6 +562,8 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
+    this.recorder = undefined;
+    this.hotkeyTrial = undefined;
     if (this.manager) this.manager.dispose();
     else this.deps.speechBackend?.synthesizer.stop();
     this.manager = undefined;
@@ -543,11 +589,12 @@ export class VoiceStateStore {
     const waitingForProcess = this.manager?.live?.state === "ready" &&
       (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
     const lapses = [
+      this.hotkeyTrial?.expiresAt,
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,
-    ].filter((at): at is number => at !== null && at > now);
+    ].filter((at): at is number => at != null && at > now);
     if (lapses.length === 0) return;
     const wait = Math.min(...lapses) - now;
     const set = this.deps.setTimer ?? ((fn: () => void, ms: number) => {
@@ -573,6 +620,7 @@ export const voiceStateStore = new VoiceStateStore({
   now: () => performance.now(),
   enabled: featureEnabled,
   config: getVoiceConfig,
+  saveHotkey: hotkey => { setVoiceConfig({ hotkey }); },
   model: () => voiceModelManager.state(),
   speechBackend: {
     model: () => speechModelManager.state(),

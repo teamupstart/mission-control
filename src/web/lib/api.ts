@@ -2552,8 +2552,8 @@ export const api = {
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
   voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
     "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
-  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, signal: AbortSignal) =>
-    put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation, expectedVersion }, { signal }),
+  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, writeId: string, signal: AbortSignal) =>
+    put<VoiceUiWriteResult & { writeId?: string }>("/api/voice/confirmation", { confirmation, expectedVersion, writeId }, { signal }),
   voiceAnswerAction: (id: string, action: "cancel" | "send-now", windowId?: string, editedReview?: string) =>
     request<ActionResult>("POST", `/api/voice/cards/${encodeURIComponent(id)}/${action}` + (windowId && action === "send-now" ? "?windowId=" + encodeURIComponent(windowId) : ""),
       undefined, { signal: AbortSignal.timeout(10_000), ...(editedReview && { headers: { "x-voice-edit-review": editedReview } }) }),

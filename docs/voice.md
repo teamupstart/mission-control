@@ -19,6 +19,8 @@ Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answ
 the send button names the agent who will receive the remaining message. With the cancel
 window off, delivery begins immediately. Sent and queued cards show the open question count. A queued receipt names the recipient. It mentions a current turn when the session is working and unpaused.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
+When the dashboard reconnects, it recovers missed delivery outcomes from the daemon’s latest 50 receipts. A freshly opened dashboard starts with active cards. Clearing Recently heard, disabling Voice or restarting the daemon clears the receipt history.
+A dashboard disconnected during a history clear can still recover deliveries that settle afterward on the same daemon.
 With Sound enabled, the pending chime plays only while the card still offers Cancel.
 A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled
@@ -60,6 +62,7 @@ The floating pill is the default preference. The dashboard shows a corner toast 
 choices until the desktop implements the floating windows. It saves the selected placement
 for those windows. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
 cannot replace the newer saved choice, even when that save reaffirms the current placement.
+If the daemon saved the first choice but its reply was lost, choosing again uses the confirmed revision to finish the new save.
 Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
 cards regardless of the saved preference. Each
 route gives an open cancel window priority over a newer outcome. When the displayed
@@ -209,7 +212,10 @@ If the gap falls between utterances, the helper clears the lead-in and accepts t
 The shell timestamps every snapshot, including idle heartbeats, at observation time with
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
 monotonic host clock. Serialize snapshot creation and use distinct timestamps, including
-across shell restarts. Retried snapshots keep their original timestamp. The daemon ignores
+across shell restarts. The desktop sends each hold and release immediately, even while a previous
+shell report awaits its response. If key-up fails or stays unconfirmed for 500 ms, the desktop
+retries it up to twice, after 100 ms and 250 ms respectively. A newer hold supersedes the retry.
+Retried snapshots keep their original timestamp. The daemon ignores
 older, duplicate, future-dated and expired snapshots before applying state. A dated
 snapshot's 15-second lifetime starts when observed, including time spent in transit.
 Once it has accepted an ordered snapshot, it also ignores reports with a missing or invalid observation time.
@@ -701,9 +707,10 @@ Below that are the behavior rows:
 
 | Row | Field | Default |
 | --- | --- | --- |
-| Auto-mute during calls | `autoMuteDuringCalls` | on |
-| Cancel window (switch and length) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
-| When routing is unsure (Show on screen or Ask aloud) | `whenUnsure` | `show` |
+| Mute hotkey | `hotkey` | Control+Command+Option+V |
+| Auto-mute on calls | `autoMuteDuringCalls` | on |
+| Cancel window (duration or Off) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
+| Unsure (Ask or Show) | `whenUnsure` | `show` |
 | Plan forms by voice | `planFormsByVoice` | on |
 
 ### Faster routing
@@ -752,7 +759,7 @@ never wrote needs no migration.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `muted` | `false` | Mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
-| `hotkey` | `ctrl+alt+m` | The mute chord in the format the Keyboard panel records, or null for none. Nothing registers it yet |
+| `hotkey` | `cmd+ctrl+alt+v` | The mute chord in the format the Keyboard panel records, or null for none |
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
 | `whenUnsure` | `show` | `show` the candidates, or `ask` aloud |
@@ -995,7 +1002,7 @@ Dashboard routes live under `/api/voice/` behind the loopback gate:
   retry. If the change times out, it reads the current configuration and provider from the daemon.
   The daemon binds that deadline to the signed ticket and rejects a write that arrives after expiry.
   Fields replace, `cancelWindow` and `speech` merge per key, and an unknown field or out-of-range value is a 400.
-- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. While voice is enabled,
+- `POST /api/voice/mute { muted }` sets `muted` and returns `{ state }`. A hotkey tap sends `{ toggle: true }` so even successive taps before a state update toggle the current value. While voice is enabled,
   the reply and the event stream carry the same daemon-scoped `modeVersion`. The dashboard
   displays the newest confirmed mode whichever arrives first.
 - `GET /api/voice/devices` returns `{ devices, listener }`: the live listener's input devices, empty
@@ -1017,14 +1024,43 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build
-  does not know are dropped rather than refused.
+  does not know are dropped rather than refused. When a shortcut trial fails, the desktop
+  echoes its `pendingHotkeyId` in `hotkeyError.trialId`. Only a matching refusal ends that trial.
 
-[Phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md) introduces the shell report producer.
-[Phase 11](plans/voice-addressing-for-agents/phase-11-hotkey-and-calls.md) connects it to the native hotkey registrar.
-On successful registration, Electron must include the registrar's confirmed chord in `registeredHotkey` on each report.
-If replacing a chord fails, it reports the chord still in force and the registration error. With no registration,
-it reports `null`. The producer regression test belongs alongside the registrar and checks the outgoing report
-after a successful registration, a failed replacement, and unregistration.
+### Desktop hotkey and microphone contention
+
+Choose **Settings > Voice > Mute hotkey**, then press a chord. Escape cancels recording.
+A tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
+the tray opens with the result of a fresh status check. During call auto-mute, hold for 350 ms
+to talk and release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
+the warning names the chord still registered, or says when none is in force. Settings saves a
+replacement only after the desktop confirms registration. While waiting, the row shows the
+proposed chord. If confirmation takes longer than 15 seconds, the row identifies the edit
+that expired and the shortcut that remains saved. Restarting the desktop after a refusal
+restores the saved shortcut. If the trial expires, Voice releases its temporary binding
+even when another app has since claimed the saved shortcut.
+Settings waits for the desktop to release the shortcut for the current recording request.
+Recording the same chord again keeps the binding without toggling mute. Setup and the
+hold-to-talk hint continue to show a saved shortcut that the desktop confirms is still active.
+When VoiceOver is on, Voice leaves Control+Command+Option+V available for VoiceOver’s next
+visited link command. Choose a different mute shortcut in Settings to use both at once.
+If you keep the default, Voice registers it again when VoiceOver turns off.
+Typing and navigation keys require Command, Control, or Option.
+On upgrade, the stored Phase 1 default Control+Option+M moves to Control+Command+Option+V.
+Older saves could not distinguish choosing that exact chord from inheriting it. You can
+select it again after upgrading. Voice remaps the shortcut when the keyboard layout changes.
+
+On macOS 14.2 and later the shell samples CoreAudio running input every 500 ms. It excludes
+the shell and its listener by process ID. Any other process using input, including a recorder,
+can engage auto-mute. If a poll fails, Settings reports the error and Voice keeps the last
+confirmed input state until a poll succeeds. You can still turn auto-mute off during a polling error. On November 23, 2026, CoreAudio reported Zoom 7.1.9 (88375) using input
+in all eight polls while Zoom was muted during a call and in none of the eight polls after
+leaving the call. Other call apps are untested. [S6 microphone observations](voice-spike-findings.md#s6-another-app-on-the-microphone)
+
+Earlier macOS releases
+show call detection as unavailable. Turning off the Voice preview releases the shortcut and
+stops sampling. The desktop report includes the current registration and dates physical
+key edges on the audio host clock.
 
 ### Following it
 

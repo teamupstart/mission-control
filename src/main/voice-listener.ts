@@ -17,6 +17,8 @@ export class VoiceListener {
 
   constructor(private readonly launch: (directory: string) => ChildProcess, private readonly log = logMain) {}
 
+  get pid() { return this.child?.pid ?? -1; }
+
   update(state: ShellVoiceState, permitted: boolean): void {
     const directory = state.mode !== "off" && state.model.status === "ready" &&
       state.model.backend === "fluidaudio" && permitted ? state.model.directory : null;

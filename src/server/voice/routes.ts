@@ -16,6 +16,9 @@ import {
 } from "@shared/voice-decide.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { streamSSE } from "hono/streaming";
+import { endedOnShutdown } from "../http-shutdown.ts";
+import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { createMiddleware } from "hono/factory";
 import {
   VOICE_FLAG,
@@ -28,6 +31,7 @@ import {
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
+  VOICE_RECORDING_ID_HEADER,
   VOICE_SPEECH_START_HEADER,
   VoiceUiConfigPatchSchema,
   VoiceConfigPatchSchema,
@@ -100,6 +104,7 @@ function waitForDirective(store: VoiceStateStore, revision: string, signal: Abor
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
  * - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
  * - `POST /api/voice/mute { muted }` mutes or unmutes and returns `{ state }`.
+ * - `GET /api/voice/mute` reads the current state after an unconfirmed shortcut.
  * - `GET /api/voice/devices` returns `{ devices, listener }`: the input devices the live listener
  *   listed in its hello, which Voice settings offers beside the built-in microphone and the
  *   system default, and whether a listener is live at all.
@@ -182,6 +187,7 @@ export function registerVoiceRoutes(
     if (!task) return c.json({ error: "The finished task could not be found." }, 404);
     return c.json({ repoRoot: task.repoRoot });
   });
+  let lastPlacementWrite: { id: string; revision: number } | undefined;
   // Older callers omit the version. Capture theirs before even the body limiter can wait for bytes.
   const observePlacement = createMiddleware<{ Variables: { placementVersion: VoiceRevision } }>(async (c, next) => {
     c.set("placementVersion", voiceIndicatorVersion(storedVoiceUi()));
@@ -190,6 +196,7 @@ export function registerVoiceRoutes(
   app.put("/api/voice/confirmation", gate, observePlacement, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }).extend({
       expectedVersion: VoiceRevisionSchema.optional(),
+      writeId: z.uuid().optional(),
     }));
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
@@ -197,10 +204,13 @@ export function registerVoiceRoutes(
     const version = voiceIndicatorVersion(current);
     const expected = parsed.data.expectedVersion ?? c.get("placementVersion");
     if (expected.source !== version.source || expected.revision !== version.revision) {
-      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version }, 409);
+      const writeId = lastPlacementWrite?.revision === version.revision ? lastPlacementWrite.id : undefined;
+      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version, writeId }, 409);
     }
     const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
-    return c.json({ ok: true, ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
+    const saved = voiceIndicatorVersion(voice);
+    lastPlacementWrite = parsed.data.writeId ? { id: parsed.data.writeId, revision: saved.revision } : undefined;
+    return c.json({ ok: true, ...voice, voiceIndicatorVersion: saved });
   });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
@@ -218,13 +228,48 @@ export function registerVoiceRoutes(
       return c.json({ error: "The settings change expired.", config: getVoiceConfig() }, 409);
     }
     const ticket = c.req.header("x-voice-provider-ticket");
-    const config = setVoiceConfig(parsed.data, ticket);
+    const { hotkey, ...settings } = parsed.data;
+    // Removing a shortcut needs no OS reservation. A replacement is committed only
+    // when a fresh shell report confirms that exact chord.
+    const patch = hotkey === null ? parsed.data : settings;
+    const config = Object.keys(patch).length || ticket ? setVoiceConfig(patch, ticket) : getVoiceConfig();
+    if (config && hotkey !== undefined) store.proposeHotkey(hotkey);
     return config ? c.json({ config, ...(ticket && { providerRevision: providerRevision() }) }) : c.json(providerConflict(), 409);
+  });
+  // The browser owns the reservation only while this request is open. Closing the
+  // window, cancelling capture, or a lost client releases it without another PUT.
+  app.post("/api/voice/hotkey-recording", gate, c => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const recording = store.beginHotkeyRecording();
+    if (!recording) return c.json({ error: "Another window is recording a shortcut." }, 409);
+    c.header(VOICE_RECORDING_ID_HEADER, recording.id);
+    return streamSSE(c, endedOnShutdown(async stream => {
+      let finish!: () => void;
+      const done = new Promise<void>(resolve => { finish = resolve; });
+      stream.onAbort(finish);
+      const timeout = setTimeout(finish, 60_000);
+      const unsubscribe = store.onChange(state => { if (!state.recordingHotkey) finish(); });
+      try {
+        await stream.writeSSE({ data: "recording" });
+        if (!stream.aborted && store.state().recordingHotkey) await done;
+      } finally {
+        unsubscribe();
+        clearTimeout(timeout);
+        recording.end();
+      }
+    }));
+  });
+  // A lost reply to a toggle is ambiguous. The desktop reads the authoritative
+  // state through the same pinned endpoint without issuing a second toggle.
+  app.get("/api/voice/mute", gate, c => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ state: store.state() });
   });
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    setVoiceConfig({ muted: parsed.data.muted });
+    if ("toggle" in parsed.data && store.state().recordingHotkey) return c.json({ state: store.state() });
+    setVoiceConfig({ muted: "toggle" in parsed.data ? !getVoiceConfig().muted : parsed.data.muted });
     return c.json({ state: store.state() });
   });
   app.get("/api/voice/devices", gate, (c) => {

@@ -45,6 +45,9 @@ struct Recognizer {
     static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String],
                                        text: inout String, words: inout [TimedWord]) {
         guard range.lowerBound == 0, !range.isEmpty, range.upperBound <= words.count else { return }
+        // Let the router interpret a standalone Cancel, including its original quotation marks.
+        // A roster suggestion for that one word would erase the control before routing.
+        guard text.trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines)).lowercased() != "cancel" else { return }
         let tokens = text.split(maxSplits: range.count, whereSeparator: { $0.isWhitespace }).prefix(range.count)
         guard tokens.count == range.count, let first = tokens.first, let last = tokens.last,
               let start = first.firstIndex(where: { $0.isLetter || $0.isNumber }),

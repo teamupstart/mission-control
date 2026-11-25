@@ -276,7 +276,8 @@ speech before the next silence boundary. During a key hold, the prefix remains r
 for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
 When CTC is available, the helper uses the directive's roster to rescore those same samples.
 Only a correction aligned to the leading address can change the transcript and its timing
-labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.
+labels. The helper preserves a standalone “cancel” and its punctuation even when CTC suggests a roster name.
+The rest of the decoder transcript, including its punctuation, passes through verbatim.
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
 While listening, two completed phrases can wait in capture order behind a busy recognizer

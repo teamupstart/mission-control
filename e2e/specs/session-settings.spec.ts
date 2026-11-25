@@ -8,7 +8,7 @@ const ACCESS_ENDPOINT = "/api/session-settings-access";
 const ACCESS_LABEL = "Allow sessions to access Mission Control settings";
 
 async function openDisplay(page: Page) {
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: /^Settings\b/ }).click();
   await page.getByRole("tab", { name: "Display", exact: true }).click();
   return page.getByRole("radiogroup", { name: "Skin" });
 }

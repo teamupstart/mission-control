@@ -23,22 +23,30 @@ function annotation(identifier) {
   return type?.type === "TSTypeReference" ? name(type.typeName) : undefined;
 }
 
-function initializerApplies(context, node, variable, declaration) {
-  if (declaration.parent.kind === "const") return true;
+// undefined preserves the initializer; null means the reaching value is uncertain.
+function reachingAssignment(context, node, variable, declaration) {
+  if (declaration.parent.kind === "const") return;
   const block = declaration.parent.parent;
   let statement = node;
   while (statement.parent && statement.parent !== block) statement = statement.parent;
   const useScope = context.sourceCode.getScope(node).variableScope;
-  return !variable.references.some((reference) => {
-    if (!reference.isWrite() || reference.init) return false;
-    // A later statement in the same scope cannot change an earlier use of this initializer.
-    const laterInBlock = (block.type === "BlockStatement" || block.type === "Program") && statement.parent === block &&
-      statement.range[1] <= reference.identifier.range[0] &&
-      reference.identifier.range[1] <= block.range[1] &&
-      reference.from.variableScope === useScope &&
+  let latest;
+  for (const reference of variable.references) {
+    if (!reference.isWrite() || reference.init) continue;
+    const identifier = reference.identifier;
+    const sameBlock = (block.type === "BlockStatement" || block.type === "Program") &&
+      statement.parent === block && identifier.range[0] >= block.range[0] &&
+      identifier.range[1] <= block.range[1] && reference.from.variableScope === useScope &&
       variable.scope.variableScope === useScope;
-    return !laterInBlock;
-  });
+    if (!sameBlock) return null;
+    if (statement.range[1] <= identifier.range[0]) continue;
+    const assignment = identifier.parent;
+    if (assignment.type !== "AssignmentExpression" || assignment.operator !== "=" || assignment.left !== identifier ||
+        assignment.parent.type !== "ExpressionStatement" || assignment.parent.parent !== block ||
+        assignment.range[1] > statement.range[0]) return null;
+    if (!latest || latest.range[0] < assignment.range[0]) latest = assignment;
+  }
+  return latest?.right;
 }
 
 function matchesLocalValue(context, node, matches) {
@@ -51,10 +59,17 @@ function matchesLocalValue(context, node, matches) {
     }
     const variable = localBinding(context, node);
     const binding = variable?.defs[0]?.name;
-    if (matches(node, binding, variable)) return true;
-    const declaration = binding?.parent;
+    const declaration = variable?.defs[0]?.node;
+    if (declaration?.type === "VariableDeclarator") {
+      const assigned = reachingAssignment(context, node, variable, declaration);
+      if (assigned === null) break;
+      if (assigned) {
+        node = assigned;
+        continue;
+      }
+    }
+    if (matches(node, binding)) return true;
     if (declaration?.type !== "VariableDeclarator" || declaration.id !== binding) break;
-    if (!initializerApplies(context, node, variable, declaration)) break;
     node = declaration.init;
   }
   return false;
@@ -69,6 +84,10 @@ function selectsAgent(context, node) {
 }
 
 const agentNames = new Set(["claude", "codex", "pi"]);
+function isAgentName(context, node) {
+  return matchesLocalValue(context, node, (value) => agentNames.has(name(value, true)));
+}
+
 const equalityOperators = new Set(["===", "!==", "==", "!="]);
 const testLibraries = /^(?:jsdom|@testing-library|vitest|@vitest|jest|@jest)(?:\/|$)|^jest-/;
 
@@ -150,11 +169,11 @@ export default {
         return {
           BinaryExpression(node) {
             if (!equalityOperators.has(node.operator)) return;
-            if ((agentNames.has(name(node.left, true)) && selectsAgent(context, node.right)) ||
-                (agentNames.has(name(node.right, true)) && selectsAgent(context, node.left))) report(node);
+            if ((isAgentName(context, node.left) && selectsAgent(context, node.right)) ||
+                (isAgentName(context, node.right) && selectsAgent(context, node.left))) report(node);
           },
           SwitchCase(node) {
-            if (agentNames.has(name(node.test, true)) && selectsAgent(context, node.parent.discriminant)) report(node.test);
+            if (isAgentName(context, node.test) && selectsAgent(context, node.parent.discriminant)) report(node.test);
           },
         };
       },
@@ -167,7 +186,7 @@ export default {
         return {
           CallExpression(node) {
             if (!member(node.callee, "delete")) return;
-            const isRegistryMap = matchesLocalValue(context, node.callee.object, (value, binding, variable) => {
+            const isRegistryMap = matchesLocalValue(context, node.callee.object, (value, binding) => {
               let owner;
               if (member(value, "sessions")) {
                 owner = value.object;
@@ -175,9 +194,10 @@ export default {
                 const property = binding?.parent;
                 if (property?.type !== "Property" || property.value !== binding ||
                     name(property.key, property.computed) !== "sessions" || property.parent.type !== "ObjectPattern") return false;
-                const declaration = property.parent.parent;
-                if (declaration.type !== "VariableDeclarator" || declaration.id !== property.parent ||
-                    !initializerApplies(context, value, variable, declaration)) return false;
+                const pattern = property.parent;
+                const declaration = pattern.parent;
+                if (declaration.type !== "VariableDeclarator") return annotation(pattern) === "Registry";
+                if (declaration.id !== pattern) return false;
                 owner = declaration.init;
               }
               return matchesLocalValue(context, owner, (candidate, ownerBinding) => {

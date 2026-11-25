@@ -396,6 +396,9 @@ test("a failed reply yields to the next PR and retries pending replies from the 
     const blocked = prompt.match(/Blocked question \d/);
     if (blocked) {
       calls.push(blocked[0]);
+      if (blocked[0] === "Blocked question 1") {
+        return JSON.stringify({ reply: "The guard still applies.", resolved: false });
+      }
       now += modelDuration;
       throw new Error("fake reply timeout");
     }
@@ -428,8 +431,8 @@ test("a failed reply yields to the next PR and retries pending replies from the 
   assert.deepEqual(sweeps.map(({ calls }) => calls), [
     ["Blocked question 0", "healthy reply", "review"],
     [],
-    ["Blocked question 0"],
-  ], "each failure ends its reply batch and only the eligible PR runs during backoff");
+    ["Blocked question 1", "Blocked question 2"],
+  ], "the next eligible batch gives the other replies a turn before retrying the failure");
   assert.deepEqual(
     sweeps.map(({ failed }) => [failed.failCount, failed.updatedAt, failed.nextAttemptAt]),
     [
@@ -447,12 +450,13 @@ test("a failed reply yields to the next PR and retries pending replies from the 
   assert.equal(retry.failed.lastFailKind, "persistent");
   assert.match(retry.failed.lastError ?? "", /fake reply timeout/);
   assert.equal(retry.failed.headSha, null, "reply failure never certifies a review");
-  assert.deepEqual(readGithubState().actions, ["replied to comment 205"]);
+  assert.deepEqual(readGithubState().actions, ["replied to comment 205", "replied to comment 203"]);
   const pending = loadInspectorComments(failing);
   assert.equal(pending.length, 3);
   for (const finding of pending) {
-    assert.equal(finding.answeredCommentId, null);
-    assert.equal(finding.replies, 0);
+    const answered = finding.id === "prior-1";
+    assert.equal(finding.answeredCommentId, answered ? 203 : null);
+    assert.equal(finding.replies, answered ? 1 : 0);
     assert.equal(finding.status, "open");
   }
 });

@@ -267,6 +267,8 @@ Inspector answers waiting follow-ups in order before reviewing the PR. A failed 
 work on that PR for the sweep, so Inspector can observe and process the next PR. Unanswered
 questions stay pending, and the retry wait starts when the failure occurs. Inspector keeps
 observing the PR during backoff, including checking whether a new head can end the wait.
+When reply work resumes, untried questions go first. Previously failed replies get a turn in
+failure order.
 
 ### Whether a finding reached GitHub
 

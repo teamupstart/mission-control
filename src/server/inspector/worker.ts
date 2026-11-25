@@ -672,6 +672,7 @@ async function processPr(
   cfg: InspectorConfig,
   pr: InspectorPr,
   now: number,
+  replyRetryOrder: Map<string, Set<number | null>>,
   onObserved: ((snapshot: PrSnapshot, observedAt: number) => void) | null = null,
   workflowGate: (prKey: string) => WorkflowGateStanding = () => "none",
 ): Promise<boolean> {
@@ -735,6 +736,7 @@ async function processPr(
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
   // keeps the audit trail of what was said on a PR that has since landed.
   if (s.state !== "OPEN") {
+    replyRetryOrder.delete(pr.key);
     updateInspectorPr(
       pr.key,
       {
@@ -821,9 +823,19 @@ async function processPr(
   //    Only when we could actually send the answer: a reply has no `drafted` state, so
   //    running one we cannot post spends a model call to produce nothing.
   const waiting = post ? threadsAwaitingUs(s, rows, login) : [];
-  if (waiting.length) {
+  const deferred = replyRetryOrder.get(pr.key) ?? new Set<number | null>();
+  const ordered = waiting.filter((w) => !deferred.has(w.newest.databaseId));
+  for (const id of deferred) {
+    const reply = waiting.find((w) => w.newest.databaseId === id);
+    if (reply) ordered.push(reply);
+    else deferred.delete(id);
+  }
+  replyRetryOrder.delete(pr.key);
+  if (ordered.length) {
     const diff = await readDiff();
-    for (const w of waiting) {
+    for (const w of ordered) {
+      const id = w.newest.databaseId;
+      deferred.delete(id);
       const replied = await answerFollowUp(
         cfg,
         pr,
@@ -841,7 +853,13 @@ async function processPr(
       if (replied) acted = true;
       // Leave the other questions pending and let the sweep move on to the next PR.
       // Check the failure flag even if the reply posted before thread resolution failed.
-      if (tick.failed) return acted;
+      if (tick.failed) {
+        // Untried questions go first next time. If failures recur, retry them in
+        // failure order so one thread cannot keep taking the first slot.
+        if (!replied) deferred.add(id);
+        if (deferred.size) replyRetryOrder.set(pr.key, deferred);
+        return acted;
+      }
     }
   }
 
@@ -1619,6 +1637,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
   // One PR at a time. A review is an Opus run with tool round-trips inside it; a
   // dashboard with six open PRs must not fork six of them.
   const limit = createLimiter(1);
+  const replyRetryOrder = new Map<string, Set<number | null>>();
 
   // The hook's signal is transient, so it has to be caught as it happens.
   //
@@ -1689,6 +1708,7 @@ export function startInspector(registry: Registry, options: InspectorStartOption
             getInspectorConfig(),
             fresh,
             Date.now(),
+            replyRetryOrder,
             (snapshot, observedAt) => {
               observed.value = { headSha: snapshot.headSha, state: snapshot.state, at: observedAt };
               notifyInspection(registry, fresh.key, snapshot.headSha, snapshot.state, observedAt);

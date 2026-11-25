@@ -794,11 +794,11 @@ client that obtained the tokens, and the connection itself. Mission Control neve
 record to its own files, to `app_config`, to its own backups or settings snapshots, or to the
 browser, never logs one, and never puts one in an error message. Saving it starts no command,
 so a token never appears in a process argument list. The one place it is written is the
-Keychain below, and the login Keychain is itself a file in your home folder: a backup of the
-whole Mac, such as Time Machine, normally includes it, still encrypted.
+Keychain below, and a keychain is itself a file in your home folder: a backup of the whole
+Mac, such as Time Machine, normally includes it, still encrypted.
 
-- **On macOS** each record is one generic password item in your login Keychain, with the
-  service name **`Mission Control shaper sign-in`** and a label that adds the server's host.
+- **On macOS** each record is one generic password item in your default keychain, which is
+  your login Keychain unless you have made another keychain the default, with the service name **`Mission Control shaper sign-in`** and a label that adds the server's host.
   Its account is a 16-character tag of the daemon's state directory, a `/`, and the
   connection's id, so a daemon run from a checkout and the desktop app, which use different
   state directories, never read each other's sign-ins. The item is never marked for iCloud
@@ -809,15 +809,15 @@ whole Mac, such as Time Machine, normally includes it, still encrypted.
   stops. [Shaper sign-in storage](configuration.md#shaper-sign-in-storage) has the switch.
 
 **What the Keychain protects against, and what it does not.** The item is encrypted at rest
-with your login Keychain and is unreadable while it is locked. It is not a boundary against
+with the keychain that holds it and is unreadable while that keychain is locked. It is not a boundary against
 a program that runs as you: such a program can ask the Keychain for the item as the daemon
 does. macOS ties the item to the program that created it, so when a different program asks
 to read it, such as the desktop app reading an item the daemon wrote from a checkout, or
 after an update replaces the program, macOS asks you whether to allow it. **Always Allow**
 lets that program read the item from then on without asking; **Allow** asks again next time.
 
-**Removing a sign-in by hand.** Open **Keychain Access**, choose the **login** keychain,
-search for `Mission Control shaper sign-in`, and delete the item whose label names the
+**Removing a sign-in by hand.** Open **Keychain Access**, choose your default keychain
+(**login**, unless you changed it), search for `Mission Control shaper sign-in`, and delete the item whose label names the
 server. A daemon that is running may still hold that sign-in in memory, so quit it first, or
 restart it afterwards, for the removal to take effect.
 

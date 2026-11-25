@@ -181,7 +181,8 @@ export interface KeychainSignInStoreDeps {
 }
 
 /**
- * One generic password per record, in the login Keychain, never synced to iCloud.
+ * One generic password per record, in the default keychain (the login Keychain unless the user
+ * made another one the default), never synced to iCloud.
  *
  * Calls run one at a time, in the order they were made, as the memory backend applies them.
  * Each addon call runs on a libuv pool thread, so two calls left to run at once could finish

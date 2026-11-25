@@ -103,7 +103,10 @@ bool CopyString(CFStringRef text, std::string* out) {
 /**
  * The query every call starts from: one generic password, by service and (optionally)
  * account. Not synchronizable, so iCloud Keychain never holds it, and no data protection
- * keychain, so the item lives in the login Keychain.
+ * keychain, so the item lives in a file-based keychain: `SecItemAdd` writes to the user's
+ * default keychain, which is the login Keychain unless the user made another one the default,
+ * and lookups search the user's keychain search list. No keychain is pinned, because naming
+ * one takes a `SecKeychainRef` from the `SecKeychain` API, deprecated since macOS 10.10.
  */
 CFMutableDictionaryRef CreateQuery(const std::string& service, const std::string* account) {
   CFMutableDictionaryRef query = CFDictionaryCreateMutable(

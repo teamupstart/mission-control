@@ -167,7 +167,11 @@ test("tray history opens without floating-window support while the pending card 
   await expect(toast.getByRole("button", { name: "Cancel" })).toBeVisible();
   await captureCard(popover.locator(".voice-standalone"), "tray-only-history");
   await captureCard(toast, "tray-only-confirmation-toast");
-  await popover.keyboard.press("Escape");
+  // Escape closes this history-only window on keydown, sometimes before Playwright can send keyup.
+  expect(popover.isClosed()).toBe(false);
+  await popover.keyboard.press("Escape").catch(error => {
+    if (!popover.isClosed() || !String(error).includes("Target page, context or browser has been closed")) throw error;
+  });
   await expect.poll(() => popover.isClosed()).toBe(true);
   await toast.getByRole("button", { name: "Cancel" }).click();
   await expect(toast).toContainText("Cancelled");

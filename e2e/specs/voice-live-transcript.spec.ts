@@ -123,3 +123,28 @@ test("all 100 long words remain readable in a short window with the status in vi
     }
   } finally { listener.stop(); }
 });
+
+test("live transcript controls use the same typography as the other settings rows", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const group = page.getByRole("group", { name: "Live transcript" });
+  const font = (el: Element) => {
+    const css = getComputedStyle(el);
+    return { family: css.fontFamily, size: css.fontSize, weight: css.fontWeight };
+  };
+  const reference = await page.getByText("Listening mode", { exact: true }).evaluate(font);
+  for (const name of ["Show live transcript", "Transcript style", "Maximum transcript words", "Corner card placement"]) {
+    expect(await group.getByText(name, { exact: true }).first().evaluate(font), name).toEqual(reference);
+  }
+  const selectFont = await page.getByLabel("Listening mode", { exact: true }).evaluate(font);
+  expect(await group.getByLabel("Transcript style").evaluate(font)).toEqual(selectFont);
+  expect(await group.getByLabel("Corner card placement").evaluate(font)).toEqual(selectFont);
+  const numberFont = await group.getByLabel("Maximum transcript words").evaluate(font);
+  if (process.env.MC_E2E_EVIDENCE) {
+    const dir = artifactsDir("live-transcript");
+    mkdirSync(dir, { recursive: true });
+    await page.screenshot({ path: join(dir, "settings-typography.png") });
+  }
+  await page.goto(daemon.baseURL + "/#/settings/worktrees");
+  expect(numberFont).toEqual(await page.getByRole("spinbutton", { name: "Retention window (days)" }).evaluate(font));
+});

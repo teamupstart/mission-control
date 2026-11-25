@@ -1334,6 +1334,7 @@ async function request<T extends ActionResult = ActionResult>(
       signal: options.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
+    options.signal?.throwIfAborted();
     if (!res.ok) {
       return { ...data, ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     }
@@ -2692,9 +2693,9 @@ export const api = {
     ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
-  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization) =>
-    put("/api/session-settings-access", input),
-  setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
+  setSessionSettingsAccess: (input: import("@shared/session-control-authorization.ts").SessionSettingsAuthorization, signal: AbortSignal) =>
+    put("/api/session-settings-access", input, { signal }),
+  setUiConfig: (cfg: UiConfigPatch, signal?: AbortSignal) => put(`/api/ui/config`, cfg, { signal }),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- First-run setup reminder ---

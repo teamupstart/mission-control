@@ -121,6 +121,48 @@ test("the Trust access checkbox stays disabled when the initial read fails", asy
   await evidence(page, "trust-access-read-failed");
 });
 
+test("a stalled theme save releases the next choice and reconciles open dashboards", async ({ dashboard: page, daemon, browser }) => {
+  const peer = await browser.newPage();
+  try {
+    const peerReady = peer.waitForResponse(response => response.url().endsWith("/api/ui/skin") && response.ok());
+    await peer.goto(daemon.baseURL);
+    await peerReady;
+    const picker = await openDisplay(page);
+    await expect(picker.getByRole("radio", { name: "Default", exact: true })).toBeChecked();
+
+    const stalled = page.waitForEvent("requestfailed", {
+      predicate: request => request.url().endsWith("/api/ui/config") && request.method() === "PUT"
+        && request.postDataJSON()?.skin === "daylight",
+      timeout: 8_000,
+    });
+    void stalled.catch(() => {});
+    await page.route("**/api/ui/config", async route => {
+      const request = route.request();
+      if (request.method() !== "PUT" || request.postDataJSON()?.skin !== "daylight") return route.continue();
+      await stalled.catch(() => {});
+      await route.abort().catch(() => {});
+    });
+
+    const firstWrite = page.waitForRequest(request => request.url().endsWith("/api/ui/config")
+      && request.method() === "PUT" && request.postDataJSON()?.skin === "daylight");
+    await picker.getByRole("radio", { name: "Daylight", exact: true }).click();
+    await firstWrite;
+    const saved = page.waitForResponse(response => response.url().endsWith("/api/ui/config")
+      && response.request().method() === "PUT" && response.request().postDataJSON()?.skin === "paper" && response.ok());
+    const paper = picker.getByRole("radio", { name: "Paper", exact: true });
+    await paper.click();
+    await stalled;
+    await saved;
+    await expect(paper).toBeChecked();
+    await expect(peer.locator("html")).toHaveAttribute("data-skin", "paper");
+    expect(await api(daemon, "/api/ui/config")).toMatchObject({ config: { skin: "paper" } });
+    await paper.scrollIntoViewIfNeeded();
+    await evidence(page, "paper-after-stalled-save");
+  } finally {
+    await peer.close();
+  }
+});
+
 test("a desktop Trust click revokes access across dashboards and a refused save can retry", async ({ daemon, browser }) => {
   test.skip(process.platform !== "darwin", "the sandboxed desktop fixture requires macOS");
   await api(daemon, "/api/feature-flags", { kind: "master", enabled: true }, "PUT");
@@ -166,21 +208,42 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
       expect(await callSettings(client, { operation: "get", key: "ui.skin" })).toMatchObject({ ok: true });
       let refuseWrite = true;
       let refuseRead = false;
+      let stalled: Promise<unknown> | undefined;
       await page.route(`**${ACCESS_ENDPOINT}`, route => {
         if (route.request().method() === "GET" && refuseRead) return route.fulfill({ status: 503 });
         if (route.request().method() === "PUT" && refuseWrite) {
           refuseWrite = false;
           return route.fulfill({ status: 503 });
         }
+        if (route.request().method() === "PUT" && stalled) {
+          const failed = stalled;
+          stalled = undefined;
+          return failed.catch(() => {}).then(() => route.abort()).catch(() => {});
+        }
         return route.continue();
       });
       const alert = page.getByRole("alert").filter({ hasText: "Could not save session settings access." });
+      const readAlert = page.getByRole("alert").filter({ hasText: "Could not read session settings access." });
       await access.click();
       await expect(alert).toBeVisible();
       await expect(access).toBeChecked();
       await expect(access).toBeEnabled();
       expect(await api(daemon, ACCESS_ENDPOINT)).toEqual({ enabled: true });
       await evidence(page, "trust-access-save-failed");
+
+      const failed = page.waitForEvent("requestfailed", {
+        predicate: request => request.url().endsWith(ACCESS_ENDPOINT) && request.method() === "PUT",
+        timeout: 8_000,
+      });
+      void failed.catch(() => {});
+      stalled = failed;
+      await access.click();
+      await expect(access).toBeDisabled();
+      await failed;
+      await expect(alert).toBeVisible();
+      await expect(access).toBeChecked();
+      await expect(access).toBeEnabled();
+      await evidence(page, "trust-retry-after-stalled-save");
 
       await access.click();
       await expect(alert).toBeHidden();
@@ -208,7 +271,6 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
         && response.request().method() === "PUT" && response.ok());
       await access.click();
       expect(await (await saved).json()).toEqual({ enabled: false });
-      const readAlert = page.getByRole("alert").filter({ hasText: "Could not read session settings access." });
       await expect(readAlert).toBeVisible();
       await expect(access).not.toBeChecked();
       await expect(access).toBeDisabled();
@@ -222,10 +284,23 @@ test("a desktop Trust click revokes access across dashboards and a refused save 
       await expect(readAlert).toBeHidden();
       await expect(access).not.toBeChecked();
       await expect(access).toBeEnabled();
+
+      // A definite save refusal leaves the known choice usable. If a subsequent reconnect
+      // cannot read the choice, the alert explains why the checkbox is now disabled.
+      refuseWrite = true;
+      await access.click();
+      await expect(alert).toBeVisible();
+      await expect(access).toBeEnabled();
+      refuseRead = true;
       await application.evaluate(() =>
         (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
       await startDaemon();
+      await expect(readAlert).toBeVisible();
+      await expect(alert).toBeHidden();
+      await expect(access).not.toBeChecked();
+      await expect(access).toBeDisabled();
       expect(await api(daemon, ACCESS_ENDPOINT)).toEqual({ enabled: false });
+      await evidence(page, "trust-read-error-after-refused-save");
     } finally {
       await client.close();
     }

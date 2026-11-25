@@ -198,8 +198,8 @@ export function setUiConfig(patch: UiConfigPatch): UiConfig {
       catch (error) { console.warn("[voice] indicator listener failed:", error); }
     }
   }
+  if (patch.skin !== undefined) syncWindowBackground(next.skin);
   if (patch.skin !== undefined && stored?.skin !== next.skin) {
-    syncWindowBackground(next.skin);
     for (const listener of skinListeners) {
       try { listener(); }
       catch { console.warn("[ui-config] could not publish the skin change"); }

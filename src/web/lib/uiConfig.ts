@@ -53,6 +53,7 @@ const writeGeneration = new Map<keyof UiConfig, number>();
 let confirmedSkin = current.skin;
 let skinReadGeneration = 0;
 let skinRefreshPending = false;
+const SKIN_REQUEST_TIMEOUT_MS = 5_000;
 const SKIN_RETRY_MS = 1_000;
 const SKIN_MAX_RETRY_MS = 30_000;
 let skinRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -70,7 +71,7 @@ export async function refreshUiSkin(): Promise<void> {
 
 async function readUiSkin(generation: number, delay: number): Promise<void> {
   if (!hydrated || pendingSkinWrites > 0) return;
-  const view = await fetchUiSkin(AbortSignal.timeout(5000));
+  const view = await fetchUiSkin(AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS));
   if (generation !== skinReadGeneration) return;
   if (!view || !isSkinId(view.skin)) {
     skinRetryTimer = setTimeout(() => {
@@ -208,7 +209,9 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
   }
   commit(optimistic);
   // Serialize skin writes from this window so rapid clicks save in the order they were made.
-  const request = skin === undefined ? api.setUiConfig(patch) : skinWriteTail.then(() => api.setUiConfig(patch));
+  const request = skin === undefined
+    ? api.setUiConfig(patch)
+    : skinWriteTail.then(() => api.setUiConfig(patch, AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS)));
   if (skin !== undefined) skinWriteTail = request.then(() => {});
   const res = await request;
   if (skin !== undefined) {

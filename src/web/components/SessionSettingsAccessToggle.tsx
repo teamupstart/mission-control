@@ -7,6 +7,8 @@ import { authorizeSessionSettings, canAuthorizeSessionSettings } from "../lib/se
 import { onSessionSettingsAccessChanged } from "../lib/session-settings-access.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
+const ACCESS_REQUEST_TIMEOUT_MS = 5_000;
+
 export function SessionSettingsAccessToggle() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
@@ -18,7 +20,7 @@ export function SessionSettingsAccessToggle() {
     read.current?.abort();
     const request = new AbortController();
     read.current = request;
-    const access = await fetchSessionSettingsAccess(AbortSignal.any([request.signal, AbortSignal.timeout(5000)]));
+    const access = await fetchSessionSettingsAccess(AbortSignal.any([request.signal, AbortSignal.timeout(ACCESS_REQUEST_TIMEOUT_MS)]));
     if (request.signal.aborted) return;
     setReadFailed(!access);
     setEnabled(access?.enabled ?? null);
@@ -40,13 +42,14 @@ export function SessionSettingsAccessToggle() {
     }
     setSaving(true);
     setSaveError(null);
-    const result = await api.setSessionSettingsAccess(input);
-    if (result.ok) await refresh();
-    else setSaveError("Could not save session settings access.");
+    const result = await api.setSessionSettingsAccess(input, AbortSignal.timeout(ACCESS_REQUEST_TIMEOUT_MS));
+    if (!result.ok) setSaveError("Could not save session settings access.");
+    // Losing the reply can leave the daemon's choice different from the one we showed.
+    if (result.ok || result.status === undefined) await refresh();
     setSaving(false);
   }
 
-  const error = saveError ?? (readFailed ? "Could not read session settings access." : null);
+  const error = readFailed ? "Could not read session settings access." : saveError;
   return (
     <div data-anchor={SESSION_SETTINGS_ACCESS.anchor}>
       <label className={`settings-toggle${enabled ? " is-on" : ""}`}>

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   applyVoiceIndicatorSelection, hydrateUiConfig, refreshUiSkin, uiConfig, updateUiConfig,
 } from "../src/web/lib/uiConfig.ts";
+import { api } from "../src/web/lib/api.ts";
 
 test("out-of-order skin refreshes preserve newer peer selections, local writes and independent voice state", async (t) => {
   const reads: Array<(response: Response) => void> = [];
@@ -89,4 +90,21 @@ test("failed skin reads retry with backoff until refreshed or superseded", async
   t.mock.timers.tick(30_000);
   assert.equal(reads.length, 5, "a new invalidation cancels the previous backoff");
   assert.equal(uiConfig().skin, "default");
+});
+
+test("an aborted settings response body is a failed save even after successful headers", async (t) => {
+  const controller = new AbortController();
+  t.mock.method(globalThis, "fetch", async (path: string, init?: RequestInit) => {
+    assert.equal(path, "/api/ui/config");
+    assert.equal(init?.signal, controller.signal);
+    return new Response(new ReadableStream({
+      start(stream) {
+        controller.signal.addEventListener("abort", () => stream.error(controller.signal.reason), { once: true });
+      },
+    }));
+  });
+
+  const result = api.setUiConfig({ skin: "paper" }, controller.signal);
+  controller.abort(new DOMException("Save deadline expired", "TimeoutError"));
+  assert.deepEqual(await result, { ok: false, error: "Save deadline expired" });
 });

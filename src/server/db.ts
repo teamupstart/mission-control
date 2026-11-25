@@ -15799,40 +15799,20 @@ export function recordPendingTurnInterrupt(id: string, revision: number, now: nu
     .run(now, id, revision).changes === 1;
 }
 
-/** Move the newest still-editable row back to the composer. */
+/** Recall the newest editable row, or the exact spoken turn named by a held voice card. */
 export function recallPendingTurn(
   noteKey: string,
   id: string,
   revision: number,
+  heldVoiceTurn = false,
 ): PendingTurn | null {
-  const d = openDb();
-  d.exec("BEGIN IMMEDIATE");
-  try {
-    const newest = d
-      .prepare(
-        `SELECT * FROM pending_turns
-          WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1`,
-      )
-      .get(noteKey) as unknown as PendingTurnRow | undefined;
-    if (!newest || newest.id !== id || newest.revision !== revision) {
-      d.exec("COMMIT");
-      return null;
-    }
-    const changed = d
-      .prepare(`DELETE FROM pending_turns WHERE id = ? AND state = 'queued' AND revision = ?`)
-      .run(id, revision).changes;
-    if (changed !== 1) {
-      d.exec("ROLLBACK");
-      return null;
-    }
-    d.exec("COMMIT");
-    return rowToPendingTurn(newest);
-  } catch (err) {
-    try {
-      d.exec("ROLLBACK");
-    } catch {}
-    throw err;
-  }
+  const row = openDb().prepare(`DELETE FROM pending_turns
+    WHERE note_key = ? AND id = ? AND state = 'queued' AND revision = ?
+      AND ((? = 1 AND spoken_words IS NOT NULL) OR id = (
+        SELECT id FROM pending_turns WHERE note_key = ? AND state = 'queued' ORDER BY seq DESC LIMIT 1
+      ))
+    RETURNING *`).get(noteKey, id, revision, Number(heldVoiceTurn), noteKey) as PendingTurnRow | undefined;
+  return row ? rowToPendingTurn(row) : null;
 }
 
 function transitionPendingTurn(

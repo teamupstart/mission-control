@@ -46,6 +46,7 @@ interface LiveSession {
   id: string;
   state: string;
   sessionControlEnabled?: boolean;
+  sessionInspectionOnly?: boolean;
   task: { id: string; kind: string } | null;
 }
 
@@ -92,6 +93,16 @@ async function launchDesktop(daemon: DaemonHandle) {
   return electron.launch({
     args: [fileURLToPath(new URL("../fixtures/desktop-session-control.cjs", import.meta.url)), authorizationModule],
   });
+}
+
+async function startDesktopDaemon(application: Awaited<ReturnType<typeof launchDesktop>>, daemon: DaemonHandle): Promise<void> {
+  const pid = await application.evaluate(async (_electron, config) =>
+    (globalThis as unknown as { startControlDaemon(config: unknown): Promise<number> }).startControlDaemon(config),
+  daemon.desktopLaunchConfig());
+  await expect.poll(async () => {
+    const response = await fetch(`${daemon.baseURL}/api/health`).catch(() => null);
+    return response?.ok ? (await response.json() as { pid: number }).pid : null;
+  }, { timeout: 60_000 }).toBe(pid);
 }
 
 /** A profile with Control other sessions on and a default repository, authored over HTTP. */
@@ -238,18 +249,9 @@ test("desktop Launch and Restart on new profile clicks grant session control, an
   // bypass exists for it.
   await daemon.crash();
   const application = await launchDesktop(daemon);
-  const startDaemon = async (): Promise<void> => {
-    const pid = await application.evaluate(async (_electron, config) =>
-      (globalThis as unknown as { startControlDaemon(config: unknown): Promise<number> }).startControlDaemon(config),
-    daemon.desktopLaunchConfig());
-    await expect.poll(async () => {
-      const response = await fetch(`${daemon.baseURL}/api/health`).catch(() => null);
-      return response?.ok ? (await response.json() as { pid: number }).pid : null;
-    }, { timeout: 60_000 }).toBe(pid);
-  };
   try {
     const dashboard = await application.firstWindow();
-    await startDaemon();
+    await startDesktopDaemon(application, daemon);
     await api(daemon, "/api/ui/config", { layout: "console", conversationView: "chat", residentPlacement: "fleet" }, "PUT");
     const profile = await createControlProfile(daemon);
 
@@ -295,7 +297,7 @@ test("desktop Launch and Restart on new profile clicks grant session control, an
 
     // Restart the daemon. The same conversation comes back through SDK restore, and its grant with it.
     await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
-    await startDaemon();
+    await startDesktopDaemon(application, daemon);
     await expect.poll(async () => {
       const sessions = await residentSessions(daemon);
       return sessions.length === 1 && sessions[0]!.id === resident.id ? sessions[0]!.sessionControlEnabled : null;
@@ -339,6 +341,50 @@ test("a desktop app attached to a daemon it did not start launches without sessi
     await expect(residentBand.getByRole("status").filter({ hasText: "control not granted" })).toBeVisible();
     await capture(dashboard, "08-band-adopted-daemon-control-not-granted");
   } finally {
+    await application.close();
+  }
+});
+
+test("desktop Launch grants Bug Fix Inspector read-only inspection and Off revokes it", async ({ daemon }) => {
+  test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
+  await daemon.crash();
+  const application = await launchDesktop(daemon);
+  try {
+    const dashboard = await application.firstWindow();
+    await startDesktopDaemon(application, daemon);
+    await api(daemon, "/api/ui/config", { layout: "console", residentPlacement: "fleet" }, "PUT");
+    await api(daemon, "/api/feature-flags", { kind: "flag", id: "bug-fix-inspector", enabled: true }, "PUT");
+    await dashboard.goto(`${daemon.baseURL}/#/residents/builtin%3Abug-fix-inspector`);
+    await dashboard.getByRole("region", { name: "Resident profile Bug Fix Inspector" }).getByRole("button", { name: "Launch" }).click();
+    const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+    await expect(dialog.getByRole("note")).toContainText("Launch grants read-only access");
+    await dialog.getByRole("button", { name: "Launch resident" }).click();
+    await expect(dialog).toBeHidden();
+    await idleResident(daemon);
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    await dashboard.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Bug Fix Inspector/ }).first().click();
+    const detail = dashboard.locator(".console-detail");
+    await expect(detail.getByRole("status").filter({ hasText: "Read-only inspection" })).toBeVisible();
+    const live = async () => (await residentSessions(daemon))[0];
+    expect(await live()).toMatchObject({ sessionInspectionOnly: true, sessionControlEnabled: false });
+    await capture(detail, "13-inspector-read-only");
+    const inspectorId = (await live())!.id;
+    await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
+    await startDesktopDaemon(application, daemon);
+    await expect.poll(live, { timeout: 60_000 }).toMatchObject({ id: inspectorId, sessionInspectionOnly: true, sessionControlEnabled: false });
+    await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+    await dashboard.getByRole("navigation", { name: "Sessions" }).getByRole("button", { name: /Bug Fix Inspector/ }).first().click();
+    await detail.getByRole("button", { name: "Session control: Read-only", exact: true }).click();
+    const menu = dashboard.getByRole("menu", { name: "Control other sessions" });
+    await expect(menu).toContainText("Inspection can resume after a restart if the same resident run and conversation return.");
+    await expect(menu).toContainText("Choose Off in the desktop app to revoke it.");
+    await capture(menu, "15-inspector-restored-menu");
+    await menu.getByRole("menuitemradio", { name: "Off", exact: true }).click();
+    await expect.poll(live).toMatchObject({ sessionInspectionOnly: false, sessionControlEnabled: false });
+    await expect(detail.getByRole("button", { name: "Session control: Off", exact: true })).toBeVisible();
+    await capture(detail, "14-inspector-revoked");
+  } finally {
+    await application.evaluate(() => (globalThis as unknown as { stopControlDaemon(): Promise<void> }).stopControlDaemon());
     await application.close();
   }
 });

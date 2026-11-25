@@ -732,6 +732,7 @@ export interface Session {
   launchWorkUnitId?: string | null;
   /** Explicit controller grant for this live work episode; absent means off. */
   sessionControlEnabled?: boolean;
+  sessionInspectionOnly?: boolean;
   /**
    * This session's own pending ask to be granted `sessionControlEnabled`, raised through the
    * `request_session_control` MCP tool, or null/absent when it has none. RESOLVED by the
@@ -4083,10 +4084,15 @@ export type ServerEvent =
        */
       voice?: import("./voice.ts").VoiceState;
       /** Current indicator selection on connect or reconnect, only while voice is enabled. */
+      voiceConfirmation?: import("./voice.ts").VoiceConfirmationPlacement;
       voiceIndicators?: string[];
       voiceIndicatorVersion?: import("./voice.ts").VoiceRevision;
       /** Cards still awaiting delivery or a pick when this window connects. */
       voiceCards?: import("./voice-routing.ts").VoiceCard[];
+      /** When this SSE connection reached the daemon, paired with the browser request start. */
+      voiceStreamStartedAt?: number;
+      /** Daemon wall time at transmission, used to translate cancel windows into local time. */
+      voiceServerTime?: number;
       /**
        * The settings status tuple at connect time, so the rail dots and gear are right
        * from the first render rather than blank until the next config write happens to
@@ -4268,9 +4274,9 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
-  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard }
+  | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
-  | { type: "voice_indicators"; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
+  | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session
    * started or stopped (contract C of the voice plan). Carries the whole roster, which replaces

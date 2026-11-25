@@ -6,7 +6,7 @@ import type { VoiceCard } from "@shared/voice-routing.ts";
 import { canonicalVoiceRoster, canonicalVoiceState, VOICE_FLAG, voiceStateOff, type VoiceState } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { voiceStateStore } from "./voice/state.ts";
-import { storedVoiceIndicators, voiceIndicatorVersion } from "./ui-config.ts";
+import { storedVoiceUi, voiceIndicatorVersion } from "./ui-config.ts";
 import { reportToRead, type ReportItem, type ReportMute } from "@shared/reports.ts";
 import { agentKeepsWorking, ASYNC_INPUT_FLAG, questionHoldsCompletion } from "@shared/async-input.ts";
 import { canonicalJson, type ShapingConfigView } from "@shared/shaping.ts";
@@ -190,6 +190,7 @@ import {
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
 // because it runs per session per sweep.
 import { listSchedules as loadActiveSchedules } from "./schedules/store.ts";
+import type { SessionGrantScope } from "@shared/residents.ts";
 import { listLiveResidentProfiles, listOpenResidentRuns } from "./residents/store.ts";
 // The Line's fold. Pure and input-driven (see `line-summary.ts`), so this import brings no
 // store with it: everything it reads is gathered by `lineSummaryNow` below.
@@ -1070,7 +1071,7 @@ export class Registry extends EventEmitter {
   private workflowReset: ((noteKey: string) => void) | null = null;
   private checkWorkflowReset: ((noteKey: string) => string | null) | null = null;
   /** Explicit grants, bounded by live sessions and never persisted. */
-  private sessionControlGrants = new Map<string, string>();
+  private sessionControlGrants = new Map<string, { identity: string; scope: SessionGrantScope }>();
   /**
    * Each session's pending ask for a grant, keyed by session id. `SessionControlRequests` is
    * the only writer; the registry only decorates it onto every session it emits, as it does
@@ -1472,6 +1473,7 @@ export class Registry extends EventEmitter {
     featureFlags: FeatureFlagsConfig;
     shaping?: ShapingConfigView;
     voice?: VoiceState;
+    voiceConfirmation?: import("@shared/voice.ts").VoiceConfirmationPlacement;
     voiceIndicators?: string[];
     voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
     voiceCards?: VoiceCard[];
@@ -1481,7 +1483,7 @@ export class Registry extends EventEmitter {
     storageHealth: StorageHealth | null;
     latestSettingsRestore: SettingsRestoredEvent | null;
   } {
-    const indicators = featureEnabled(VOICE_FLAG) ? storedVoiceIndicators() : undefined;
+    const voiceUi = featureEnabled(VOICE_FLAG) ? storedVoiceUi() : undefined;
     return {
       sessionTransfers: sessionTransferPage(),
       sessions: [...this.sessions.values()].map(sessionShapingForReads),
@@ -1526,9 +1528,9 @@ export class Registry extends EventEmitter {
       // window is handed them. The view, never raw envelopes.
       ...(featureEnabled("task-shaping") ? { shaping: daemonShapingView(getShapingConfig()) } : {}),
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
-      ...(indicators ? {
+      ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
-        voiceIndicators: indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators),
+        voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
       // first render, not blank until the next config write happens to change something.
@@ -1632,7 +1634,7 @@ export class Registry extends EventEmitter {
     const voiceWasOn = this.lastFeatureFlags && resolveFeatureFlag(VOICE_FLAG, this.lastFeatureFlags);
     this.lastFeatureFlags = { ...config, overrides: { ...config.overrides } };
     this.emitEvent({ type: "feature_flags", config });
-    if (!voiceWasOn && resolveFeatureFlag(VOICE_FLAG, config)) this.emitVoiceIndicators(storedVoiceIndicators());
+    if (!voiceWasOn && resolveFeatureFlag(VOICE_FLAG, config)) this.emitVoiceIndicators(storedVoiceUi().indicators);
     if (shapingWasOn === false && resolveFeatureFlag("task-shaping", config)) this.republishShaping();
   }
 
@@ -1675,7 +1677,9 @@ export class Registry extends EventEmitter {
   }
 
   emitVoiceIndicators(indicators: string[]): void {
-    if (featureEnabled(VOICE_FLAG)) this.emitEvent({ type: "voice_indicators", indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+    if (!featureEnabled(VOICE_FLAG)) return;
+    const selection = { confirmation: storedVoiceUi().confirmation, indicators };
+    this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
   }
 
   emitVoiceCard(card: VoiceCard): void {
@@ -1848,22 +1852,22 @@ export class Registry extends EventEmitter {
   }
 
   /** Grants never survive a daemon restart, reset, or replacement work episode. */
-  sessionControlEnabled(id: string): boolean {
+  sessionControlEnabled(id: string, required: SessionGrantScope = "control"): boolean {
     const grant = this.sessionControlGrants.get(id);
     if (!grant) return false;
-    const valid = grant === this.sessionControlIdentity(id);
+    const valid = grant.identity === this.sessionControlIdentity(id);
     if (!valid) this.sessionControlGrants.delete(id);
-    return valid;
+    return valid && (required === "read" || grant.scope === "control");
   }
 
-  setSessionControlEnabled(id: string, enabled: boolean): boolean {
+  setSessionControlEnabled(id: string, enabled: boolean, scope: SessionGrantScope = "control"): boolean {
     const session = this.sessions.get(id);
     if (!session || session.state === "exited" || session.state === "stopping") return false;
     const identity = this.sessionControlIdentity(id);
     if (enabled && !identity) return false;
-    if (enabled) this.sessionControlGrants.set(id, identity!);
+    if (enabled) this.sessionControlGrants.set(id, { identity: identity!, scope });
     else this.sessionControlGrants.delete(id);
-    const next = { ...session, sessionControlEnabled: enabled };
+    const next = { ...session, sessionControlEnabled: enabled && scope === "control", sessionInspectionOnly: enabled && scope === "read" };
     this.sessions.set(id, next);
     this.emitSession(next);
     return true;
@@ -2408,6 +2412,7 @@ export class Registry extends EventEmitter {
       console.error(`[registry] could not judge the wait of session ${s.id}:`, err);
     }
     s.sessionControlEnabled = this.sessionControlEnabled(s.id);
+    s.sessionInspectionOnly = !s.sessionControlEnabled && this.sessionControlEnabled(s.id, "read");
     s.sessionControlRequest = this.sessionControlRequests.get(s.id) ?? null;
     s.pause = this.sessionPauses.get(s.id) ?? null;
     s.resumedAt = this.sessionResumes.get(s.id) ?? null;
@@ -3152,6 +3157,7 @@ export class Registry extends EventEmitter {
       // Resolved below with note/goal, once the overlay may have supplied the binding
       // that decides the key.
       foremanInvite: null,
+      sessionInspectionOnly: prev?.sessionInspectionOnly ?? false,
       sessionControlEnabled: prev?.sessionControlEnabled ?? false,
       sessionControlRequest: this.sessionControlRequests.get(d.syntheticId) ?? null,
       // Daemon-owned like the grant above: a sweep carries the manager's answer, and an
@@ -12735,6 +12741,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // reads it from the snapshot.
   launchWorkUnitId: byValue,
   sessionControlEnabled: byValue,
+  sessionInspectionOnly: byValue,
   // Nested, and moves on its own: an ask arriving or settling changes nothing else on the session.
   sessionControlRequest: byJson,
   // Nested and moves on its own, like `blocker`: a declaration, a wake or a clear changes

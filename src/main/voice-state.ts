@@ -22,6 +22,7 @@ const ShellVoiceStateSchema = z.object({
   pendingHotkey: z.string().optional(),
   pendingHotkeyId: z.uuid().optional(),
   recordingHotkey: z.literal(true).optional(),
+  recordingHotkeyId: z.uuid().optional(),
   muted: z.boolean().optional(),
   model: z.object({
     status: z.enum(VOICE_MODEL_STATUSES),
@@ -165,7 +166,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
         () => hardware?.layoutChanged());
     }
-    hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId);
+    hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
     listener.update(state, installed && microphone === "granted");

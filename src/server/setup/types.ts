@@ -59,6 +59,13 @@ export interface SetupDeps {
   /** Whether the cmux app is open AND admitting the daemon, neither of which installation answers. */
   cmuxControl(): Promise<CmuxControl>;
   ghBin(): string;
+  /** The daemon's own environment. Absent reads as empty. */
+  processEnv?(): NodeJS.ProcessEnv;
+  /**
+   * Which of these variables the operator's login shell sets, never their values. Absent
+   * means the login shell is not consulted.
+   */
+  loginShellVariableNames?(names: readonly string[]): Promise<string[]>;
   /** Jira sites the configured acli task sources read, as bare hosts. */
   acliSourceSites?(): string[];
   resolveBinPath(bin: string): Promise<string | null>;

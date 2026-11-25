@@ -96,6 +96,7 @@ import type {
   ShippingConfigPatch,
   SetNote,
   SkillsConfigPatch,
+  UiConfig,
   UiConfigPatch,
   UiConfigView,
   PipelinesConfigPatch,
@@ -498,6 +499,7 @@ export const fetchPersonaDefaults = () => fetchJson<PersonaDefaultsView>("/api/p
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 export const fetchFeatureFlags = () => fetchJson<{ config: FeatureFlagsConfig }>("/api/feature-flags");
+type VoiceUiWriteResult = ActionResult & Partial<UiConfig["voice"]> & { voiceIndicatorVersion?: VoiceRevision };
 export interface VoiceDashboardSnapshot {
   providerRevision: string;
   snapshotOrder: number;
@@ -518,6 +520,16 @@ function keyWriteRequest({ revision, expiresAt, signal }: VoiceKeyWriteOptions) 
 /** Voice settings, or null while the `voice` flag is off (the route answers 404) or on a failed read. */
 export const fetchVoiceConfig = (signal?: AbortSignal) => fetchJson<VoiceDashboardSnapshot & { config: VoiceConfig }>("/api/voice/config",
   { signal, headers: { "x-voice-provider-revision": "read" } });
+/** A card with an uncertain countdown only needs the daemon clock. Voice settings stay lazy. */
+export async function fetchVoiceCardTime(signal: AbortSignal): Promise<number | null> {
+  try {
+    const res = await fetch("/api/voice/config", { method: "HEAD", signal, cache: "no-store" });
+    const stamp = res.headers.get("X-Voice-Server-Time-Ms");
+    return res.ok && stamp && Number.isFinite(Number(stamp)) ? Number(stamp) : null;
+  } catch {
+    return null;
+  }
+}
 export const fetchRecentlyHeard = (signal: AbortSignal) =>
   fetchJsonWithSignal<{ entries: HeardEntry[] }>("/api/voice/heard", signal);
 /** The live listener's input devices, or null while the `voice` flag is off or on a failed read. */
@@ -2032,10 +2044,10 @@ export const api = {
     focused,
     typed,
   }),
-  recallPendingTurn: (id: string, turnId: string, revision: number) =>
+  recallPendingTurn: (id: string, turnId: string, revision: number, signal?: AbortSignal) =>
     post<ActionResult & { text?: string }>(
       `/api/sessions/${encodeURIComponent(id)}/pending-turns/${encodeURIComponent(turnId)}/recall`,
-      { revision },
+      { revision }, { signal },
     ),
   retryPendingTurn: (id: string, turnId: string, revision: number) =>
     post(
@@ -2536,9 +2548,22 @@ export const api = {
     put<ActionResult & { config?: VoiceConfig; providerRevision?: string }>("/api/voice/config", patch,
       { signal, headers: { ...(ticket && { "x-voice-provider-ticket": ticket }),
         ...(settingsExpiry !== undefined && { "x-voice-config-expires-at": String(settingsExpiry) }) } }),
+  voiceFollowUpRepository: (id: string) => request<ActionResult & { repoRoot?: string }>(
+    "GET", `/api/voice/tasks/${encodeURIComponent(id)}/follow-up`, undefined, { signal: AbortSignal.timeout(5000) }),
+  setVoicePlacement: (confirmation: import("@shared/voice.ts").VoiceConfirmationPlacement, expectedVersion: VoiceRevision, signal: AbortSignal) =>
+    put<VoiceUiWriteResult>("/api/voice/confirmation", { confirmation, expectedVersion }, { signal }),
+  voiceCardAction: async (id: string, action: "cancel" | "send-now" | "pick", options: { candidateId?: string; deadline?: number | null } = {}) => {
+    // Leave the transport alive through the possible delivery window, plus a short
+    // grace period for the reply. The card can offer a retry independently.
+    const remaining = options.deadline == null ? 0 : Math.max(0, options.deadline - performance.now());
+    const signal = AbortSignal.timeout(Math.ceil(remaining) + 2000);
+    const result = await post(`/api/voice/cards/${encodeURIComponent(id)}/${action}`,
+      options.candidateId ? { id: options.candidateId } : undefined, { signal });
+    return signal.aborted ? { ok: false, error: "The request timed out." } : result;
+  },
   clearRecentlyHeard: (signal: AbortSignal) => request("DELETE", "/api/voice/heard", undefined, { signal }),
   setVoiceIndicator: (id: VoiceIndicatorId, enabled: boolean, signal: AbortSignal) =>
-    put<ActionResult & { indicators?: string[]; voiceIndicatorVersion?: VoiceRevision }>("/api/voice/indicators", { id, enabled }, { signal }),
+    put<VoiceUiWriteResult>("/api/voice/indicators", { id, enabled }, { signal }),
   setVoiceMuted: (muted: boolean, signal: AbortSignal) =>
     post<ActionResult & { state?: VoiceState }>("/api/voice/mute", { muted }, { signal }),
   /** A 409 carries `reason` when there is no model to download. */

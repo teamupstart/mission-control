@@ -76,6 +76,8 @@ test("five selected indicators follow the daemon and advertise only a registered
     await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
     expect((await report(null, true, true)).ok()).toBe(true);
     await expect(status).toHaveAccessibleName("Voice: talk. Mute");
+    expect((await report({ reason: "Replacement refused", chordInForce: "cmd+ctrl+alt+v" }, true)).ok()).toBe(true);
+    await expect(status).toContainText("Hold ⌘⌃⌥V to talk");
     expect((await report({ reason: "Already in use", chordInForce: null })).ok()).toBe(true);
     await expect(status.locator("kbd")).toHaveCount(0);
     if (capture) {

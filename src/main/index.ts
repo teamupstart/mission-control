@@ -12,6 +12,7 @@ import { inspectMigrationIntegrations, repairMigrationIntegrations } from "./mig
 // hides-on-close and keeps a menu-bar presence so alerts fire with no window
 // open. The daemon and UI are reused unchanged.
 
+import { registerVoiceCardNotifications } from "./voice-card-notification.ts";
 import { app, dialog, ipcMain, Notification, session, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
@@ -229,6 +230,7 @@ function pushUpdateSnapshot(snapshot: UpdateSnapshot): void {
 }
 
 function registerIpc(updateController: UpdateController): void {
+  registerVoiceCardNotifications(ipcMain, getMainWindow, Notification);
   ipcMain.handle("mission:voice-microphone", (event, action?: string) => {
     if (event.sender === getMainWindow()?.webContents && event.senderFrame === event.sender.mainFrame) {
       if (!voice) return "unavailable";

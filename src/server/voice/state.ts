@@ -60,7 +60,7 @@ export type VoiceHelloResult =
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
-  private recorder?: symbol;
+  private recorder?: string;
   private hotkeyTrial?: { id: string; chord: string; previous: string | null; requestedAtUs: number; expiresAt: number };
 
   proposeHotkey(chord: string | null) {
@@ -71,16 +71,16 @@ export class VoiceStateStore {
     this.publish();
   }
 
-  beginHotkeyRecording(): (() => void) | undefined {
+  beginHotkeyRecording() {
     if (this.recorder || !this.deps.enabled(VOICE_FLAG)) return;
     this.hotkeyTrial = undefined;
-    const owner = this.recorder = Symbol();
+    const id = this.recorder = randomUUID();
     this.publish();
-    return () => {
-      if (this.recorder !== owner) return;
+    return { id, end: () => {
+      if (this.recorder !== id) return;
       this.recorder = undefined;
       this.publish();
-    };
+    } };
   }
   private readonly source = randomUUID();
   private lastMode: VoiceState["mode"] = "off";
@@ -212,7 +212,10 @@ export class VoiceStateStore {
       ...(trial && (now < trial.expiresAt
         ? { pendingHotkey: trial.chord, pendingHotkeyId: trial.id }
         : { expiredHotkey: trial.chord })),
-      ...(this.recorder && { recordingHotkey: true }),
+      ...(this.recorder && {
+        recordingHotkey: true, recordingHotkeyId: this.recorder,
+        ...(report?.registeredHotkey === null && report.capabilities.hotkey?.recordingId === this.recorder && { recordingHotkeyReady: true }),
+      }),
       registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },

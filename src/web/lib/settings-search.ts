@@ -591,6 +591,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("derived-status"),
   },
   {
+    id: "voice-confirmation",
+    label: "Confirmation card",
+    description: "Choose where routed voice messages appear.",
+    category: "voice",
+    anchor: "voice/confirmation",
+    keywords: ["placement", "toast", "pill", "popover"],
+    kind: "jump",
+    backup: backupDomains("ui"),
+  },
+  {
     id: "voice-indicators",
     label: "In the window",
     description: "Select voice indicators and preview their modes.",

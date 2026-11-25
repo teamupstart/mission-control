@@ -320,6 +320,8 @@ export interface VoiceState {
   expiredHotkey?: string;
   /** A focused Settings recorder is waiting for the desktop to release its reservation. */
   recordingHotkey?: true;
+  recordingHotkeyId?: string;
+  recordingHotkeyReady?: true;
   /** Shortcut the shell last confirmed it registered, or null without a current confirmation. */
   registeredHotkey: string | null;
   /** From the latest shell report; null with no report. */
@@ -435,6 +437,8 @@ export function canonicalVoiceState(state: VoiceState): string {
     state.pendingHotkeyId,
     state.expiredHotkey,
     state.recordingHotkey,
+    state.recordingHotkeyId,
+    state.recordingHotkeyReady,
     state.registeredHotkey,
     state.hotkeyError ? [state.hotkeyError.reason, state.hotkeyError.chordInForce, state.hotkeyError.trialId] : null,
     canonicalVoiceModel(state.model),
@@ -474,6 +478,7 @@ export function voiceStateOff(): VoiceState {
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
 export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.0`;
+export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** Response headers on the capture-off directive for an explicit push-to-talk key release. */
 export const VOICE_RELEASE_REVISION_HEADER = "x-voice-release-revision";
@@ -517,6 +522,8 @@ export function voiceProtocolMajor(version: string): number {
 }
 
 const VoiceCapabilityReportSchema = z.object({
+  /** The hotkey producer released its reservation for this recorder. */
+  recordingId: z.uuid().optional(),
   available: z.boolean(),
   reason: z.string().max(VOICE_LIMITS.reasonChars).nullable().default(null),
 });

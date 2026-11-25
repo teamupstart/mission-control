@@ -28,6 +28,28 @@ test("reports the chord in force after first refusal, replacement, and unregistr
   hardware.stop();
 });
 
+test("an expired trial releases its binding even when the saved shortcut is now reserved", () => {
+  let occupied = false;
+  let reservation: string | null = null;
+  const hardware = new VoiceHardware({ value: {
+    register(chord) {
+      if (occupied && chord === "ctrl+k") throw Error("Reserved");
+      reservation = chord;
+      return true;
+    },
+    unregister() { reservation = null; },
+  } }, { reason: "Unavailable" }, () => -1, () => {}, () => {}, () => 1);
+  hardware.update("ctrl+k", "listening");
+  hardware.update("ctrl+k", "listening", false, "ctrl+j", "trial");
+  assert.equal(reservation, "ctrl+j");
+  occupied = true;
+  hardware.update("ctrl+k", "listening");
+  assert.equal(reservation, null);
+  assert.equal(hardware.report().registeredHotkey, null);
+  assert.deepEqual(hardware.report().hotkeyError, { reason: "macOS refused ⌃K: Reserved", chordInForce: null });
+  hardware.stop();
+});
+
 test("stopping active voice hardware releases the mute shortcut and stops microphone polling", t => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   let shortcut: ((down: boolean, at: number) => void) | undefined;

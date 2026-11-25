@@ -64,12 +64,23 @@ test("Voice settings records a chord, explains refusal, and follows call and key
       expect((await controls.locator(selector).boundingBox())?.width).toEqual((await approved.locator(selector).boundingBox())?.width);
     }
     await mock.close();
+    let previousRecording: string | null = null;
     const beginRecording = async () => {
       const opened = page.waitForResponse(r => r.url().endsWith("/api/voice/hotkey-recording"));
       await capture.click();
-      expect((await opened).status()).toBe(200);
-      // Carbon has released its reservation. The browser may now receive the same chord.
-      await report({ registeredHotkey: null });
+      const response = await opened;
+      expect(response.status()).toBe(200);
+      const id = await response.headerValue("x-voice-recording-id");
+      expect(id).toBeTruthy();
+      const release = (recordingId: string | null) => report({ registeredHotkey: null,
+        capabilities: { hotkey: { available: true, recordingId }, "call-detection": { available: true } } });
+      if (previousRecording) {
+        await release(previousRecording);
+        await expect(capture).toHaveAttribute("aria-busy", "true");
+        await expect(capture).toHaveAttribute("aria-pressed", "false");
+      }
+      await release(id);
+      previousRecording = id;
       await expect(capture).toHaveAttribute("aria-pressed", "true");
     };
     const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config;
@@ -123,6 +134,11 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect(row.getByRole("alert")).toContainText("⌃K is still your hotkey.");
     expect((await saved()).hotkey).toBe("ctrl+k");
     await screenshot("refused-after-reload");
+    await page.goto(daemon.baseURL + "/#/settings/setup");
+    await openSetupFamily(page, "voice");
+    await expect(mic).toContainText("Tap ⌃K to mute voice from any app.");
+    if (captureDir) await mic.screenshot({ path: join(captureDir, "setup-after-refusal.png") });
+    await page.goto(daemon.baseURL + "/#/settings/voice");
     const letterTrial = await recordReplacement("v", "v");
     await report({ hotkeyError: spaceError });
     await expect(row.getByRole("status")).toHaveText("Waiting for the desktop to confirm v.");

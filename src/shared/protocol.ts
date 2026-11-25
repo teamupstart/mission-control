@@ -9845,9 +9845,18 @@ export interface SessionControlRequestResult {
   detail?: string;
 }
 const ControlIdSchema = z.string().min(1).max(256);
+/** A history cursor comes from the previous page of this live conversation. */
+const SessionHistoryPageSchema = z.union([z.literal("latest"), z.object({
+  before: z.number().int().safe().nonnegative(),
+  remaining: z.number().int().safe().positive().optional(),
+  conversationId: ControlIdSchema,
+  fileId: z.string().min(1).max(256),
+}).strict()]);
+export type SessionHistoryPageRequest = z.infer<typeof SessionHistoryPageSchema>;
 export const SessionControlReadSchema = z.object({
   sessionId: ControlIdSchema.optional(),
   transcript: z.boolean().optional().default(false),
+  history: SessionHistoryPageSchema.optional(),
   /** List form only: true lists only sessions that stand on a blocker. */
   blocked: z.boolean().optional(),
   /** List form only: true lists only sessions that declared a wait on a background process. */

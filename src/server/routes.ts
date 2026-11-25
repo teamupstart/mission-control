@@ -16,7 +16,7 @@ import type { PauseManager } from "./pause/manager.ts";
 import { registerPauseRoutes } from "./pause/routes.ts";
 import { HibernationManager } from "./hibernation/manager.ts";
 import { registerHibernationRoutes } from "./hibernation/routes.ts";
-import { getResidentProfile as stateProfile } from "./residents/store.ts";
+import { getAvailableResidentProfile as stateProfile } from "./residents/store.ts";
 import { InvalidTaskCursorError, readTaskPage, taskReadSnapshot } from "./mcp-task-reads.ts";
 import {
   CreateResidentMcpServerSchema,
@@ -9452,7 +9452,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const turn = result.pendingTurn;
       if (!turn) return { outcome: "failed", detail: result.error || "Queue refused the message." };
       reviews.tryFileForQueuedSpeech(session.id);
-      const held = registry.hasPendingReviewCall(session.id) || registry.getSession(session.id)?.state === "awaiting_review";
+      const held = registry.hasPendingReviewCall(session.id);
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider);

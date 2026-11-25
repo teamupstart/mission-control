@@ -2,6 +2,7 @@ import { ConsoleSwitch } from "./settings-console.tsx";
 import { useEffect, useState } from "react";
 import { useChordCapture } from "../lib/useChordCapture.ts";
 import { formatChord } from "../lib/keybindings.ts";
+import { VoiceCardPlacement } from "./VoiceCardPlacement.tsx";
 import { VoiceIndicatorSettings } from "./VoiceIndicators.tsx";
 import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
@@ -10,6 +11,7 @@ import {
   VOICE_INPUT_DEVICE_BUILT_IN,
   VOICE_INPUT_DEVICE_SYSTEM_DEFAULT,
   VOICE_MODE_LABEL,
+  VOICE_RECORDING_ID_HEADER,
   VOICE_REASON_TEXT,
   type VoiceDecisionProvider,
   type VoiceMode,
@@ -360,7 +362,7 @@ function FasterRoutingGroup({ state, keys }: {
 function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceState | null }) {
   const [recordingLabel, setRecordingLabel] = useState<string | null>(null);
   const [captureError, setCaptureError] = useState("");
-  const [leaseGranted, setLeaseGranted] = useState(false);
+  const [leaseId, setLeaseId] = useState<string | null>(null);
   const available = !!voice?.capabilities.hotkey?.available && !!state.config;
   const pending = voice?.pendingHotkey;
   const expired = voice?.expiredHotkey;
@@ -368,7 +370,7 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
   const chord = error ? error.chordInForce : voice ? voice.configuredHotkey : state.config?.hotkey;
   const label = chord ? formatChord(chord) : "Unset";
   const requested = recordingLabel !== null;
-  const recording = requested && leaseGranted && voice?.recordingHotkey && voice.registeredHotkey === null;
+  const recording = requested && leaseId && voice?.recordingHotkeyId === leaseId && voice.recordingHotkeyReady;
   useEffect(() => {
     if (!requested) return;
     if (!available) { setRecordingLabel(null); return; }
@@ -382,7 +384,9 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
         });
         if (!response.ok) throw Error(response.status === 409
           ? "Another window is recording a shortcut." : "Could not start shortcut recording.");
-        if (!controller.signal.aborted) setLeaseGranted(true);
+        const id = response.headers.get(VOICE_RECORDING_ID_HEADER);
+        if (!id) throw Error("The desktop could not confirm the recording request.");
+        if (!controller.signal.aborted) setLeaseId(id);
         await response.text();
       } catch (error) {
         if (!controller.signal.aborted) setCaptureError(error instanceof Error ? error.message : "Could not record shortcut.");
@@ -392,7 +396,7 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
     })();
     return () => {
       controller.abort();
-      setLeaseGranted(false);
+      setLeaseId(null);
       window.removeEventListener("blur", cancel);
     };
   }, [requested, available]);
@@ -587,6 +591,7 @@ export function VoiceSettingsPanel({
       </div>
 
       <FasterRoutingGroup state={state} keys={keys} />
+      <VoiceCardPlacement state={voice} />
       <VoiceIndicatorSettings />
       <RecentlyHeard roster={voice?.roster ?? []} />
     </section>

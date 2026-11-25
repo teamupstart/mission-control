@@ -8,13 +8,80 @@ The daemon accepts text captures from a token-authenticated listener. It resolve
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
 recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
-and Linux. The on-screen confirmation card belongs to a later phase.
+and Linux. The corner confirmation card names the recipient and shows the spoken words.
+Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now.
+Tab to an overflowing transcript and use the arrow keys or End to read it. The countdown bar and
+seconds count down together. On a slow connection, `≤` marks the longest time that could
+remain. You can still try Cancel, and the daemon confirms whether it arrived in time.
+When several cards share the corner, open cancel windows stay nearest the corner, ahead of delivery results.
+Click Cancel, say “cancel”, or click Send now. If the daemon is slow to answer, the card offers a retry while the original request can still reach it. A split offers
+“Send both now” when both messages are waiting. With a mention or an already-issued stop,
+the send button names the agent who will receive the remaining message. With the cancel
+window off, delivery begins immediately. Sent and queued cards show the open question count. A queued receipt names the recipient. It mentions a current turn when the session is working and unpaused.
+Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
+With Sound enabled, the pending chime plays only while the card still offers Cancel.
+A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
+dashboard repeats the spoken words in a desktop notification if notifications are enabled
+in Mission Control, notification permission is granted, and the platform supports desktop
+notifications. If you switch away while the card is counting down, the notification shows
+the time left in the window. If you return before the desktop shows it, switching away
+again can still show it before the deadline. A split card shows an immediate stop’s result as soon as it arrives. The
+desktop notification identifies that stop separately and counts down only the waiting
+delivery. Its Cancel remaining and Send remaining now buttons control that delivery.
+If a desktop action fails, the dashboard card names the unconfirmed action and shows
+the reason. Its controls remain available for a retry while the cancel window is open.
+The desktop measures the remaining interval on its own monotonic clock. Reloading or
+closing the dashboard dismisses the native notice for that page.
+The browser closes its notification at the cancel deadline even if its connection to the daemon drops.
+If the clock estimate is uncertain, the card and notification allow at most one configured
+cancel window from the first time the dashboard receives that pending delivery.
+At the deadline the card removes its delivery controls. If the outcome has yet to arrive,
+it shows “Awaiting delivery confirmation”.
+
+A settled card stays visible while one of its controls has focus or its action is in
+progress, including when the dashboard reconnects to the daemon. Once both end, the card
+gives you another eight seconds to read the result or retry.
+When a queued message changes to Sent, its reading interval starts again before the card fades.
+If a blocking question opens while the message is still queued, the dashboard shows a Held
+card with **Open question** and **Cancel message**, even if the Queued card has already faded.
+If you remove the task’s call sign, its held turn remains recallable after a daemon restart or after you switch Voice off and back on.
+The restored card uses the session’s display name. **Open question** opens the question named on the card, even when the session has several pending requests.
+Each Held card shows the spoken words its **Cancel message** button recalls and names
+a question that still blocks delivery. A plan already filed for a later answer
+can remain open while the agent receives the message.
+If the daemon takes more than two seconds to confirm a held message’s recall, the card
+shows that recall is unconfirmed and lets you retry or open the blocking question.
+Each follow-up opens a fresh draft on the finished task’s repository. The regular Dispatch
+draft stays available when the follow-up closes. If you leave the follow-up through a setup
+or launch repair link, reopening Dispatch restores its instructions and attachments.
+
+Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
+The floating pill is the default preference. The dashboard shows a corner toast for all three
+choices until the desktop implements the floating windows. It saves the selected placement
+for those windows. If a save times out, select the placement you want to keep. You can select the checked placement again. A delayed request
+cannot replace the newer saved choice, even when that save reaffirms the current placement.
+Opening either reserved route (`#/voice/pill` or `#/voice/popover`) shows
+cards regardless of the saved preference. Each
+route gives an open cancel window priority over a newer outcome. When the displayed
+countdown expires, it switches to another open window even if the event stream is disconnected.
+With no countdown open or message selected, an address awaiting a recipient choice appears
+ahead of delivery results, including messages held behind a question.
+When several messages remain, the Voice message selector lets you revisit their cards,
+including individual turns held for the same agent. A new countdown takes priority even
+when you selected another pending delivery. A stop receipt updates its own card and keeps
+the current countdown selected. When the new window closes, the surface returns to your
+selection if its card is still available and eligible.
+If a countdown interrupts a relaunch, the standalone card keeps the result for up to one minute
+while hidden. Returning to the card starts a fresh eight-second reading interval. Switching
+between the dashboard and either standalone route preserves the relaunch progress and feedback.
+Retrying uses the same launch request.
 Setup also reports microphone permission and downloads and verifies the speech model.
 
-With the flag off nothing on this page is drawn: every voice route answers 404, the reconnect
-snapshot has no `voice` field, and neither the Settings category, the Setup family, nor the Call
-sign and Reference name fields is drawn. A call sign or reference name already saved is kept, and
-names no agent until the flag is on again.
+With the flag off, gated voice endpoints on the server return HTTP 404 and the reconnect
+snapshot omits the `voice` field. The dashboard redirects both `#/voice/pill` and
+`#/voice/popover` to Fleet (`#/fleet`), including when the flag is turned off while either
+view is open. It also hides the Voice settings category, the Voice setup family, and the
+Call sign and Reference name fields. Saved names become available again when the flag is on.
 
 ## Listening from the desktop app
 
@@ -306,6 +373,8 @@ the pick. A cancel spoken before that instant leaves the picked card pending eve
 arrives after the pick.
 The loopback card routes are `POST /api/voice/cards/:id/cancel`,
 `/send-now` and `/pick` (body `{ id: candidateId }`). A stale action returns 409.
+A finished card reads its stored task’s repository from `GET /api/voice/tasks/:id/follow-up`,
+including tasks that have aged out of the dashboard’s recent list.
 
 `GET /api/voice/heard` returns `{ entries }` for the 50 most recent captures, sorted by capture
 time with the latest arrival first for ties. Entries include
@@ -315,6 +384,8 @@ card history exist only in memory and disappear on daemon restart or disabling v
 toggle, the daemon remembers the last 50 accepted capture IDs so a retried “cancel” cannot dismiss
 a newly opened card. A daemon restart clears those IDs. A message
 actually submitted to the operator queue follows the queue’s normal durable delivery lifecycle.
+After a restart, each spoken turn still queued behind a blocking question gets a held card
+with its own recall control when the daemon restores its session.
 
 ## The model step
 
@@ -373,16 +444,17 @@ both captured sessions to still match the roster. An answer that comes after the
 cancelled, is dropped: nothing is ever sent late. Once a split is confirmed, the daemon checks
 each captured session immediately before delivering its part. Addressed stops interrupt as soon
 as the split is confirmed. Ordinary message parts keep their cancel window and delivery order.
-Cancelling the remaining message leaves an interrupt that already ran in the delivery history. If a session
+Cancelling the remaining message marks that part as cancelled. The card shows the other
+recipient's stop as in progress until its result arrives. If a session
 has left or been replaced, the other recipient can still receive their part. Recently heard
 lists each recipient and delivery result. The card carries the worse of the two outcomes.
 The `detail` also says which rung answered and what it decided, for example `job on codex answered: split`.
 
-Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. None of
-the five moments in the selected **Roster rows** design (variant B) has a rendered outcome card
-in this phase. Phase 6 draws the on-screen candidate picker, the stopped resident and finished
+Phase 4 publishes these outcomes through `voice_card` and the `voiceCards` snapshot. The confirmation card draws the on-screen candidate picker, the stopped resident and finished
 session with their respective actions, the message held behind a blocking question, and the
-two-message split or one-message mention. It also supplies the clickable rows used when asking
+two-message split or one-message mention. A finished session opens a separate follow-up
+draft on its repository. Reopening regular Dispatch restores the operator's original draft.
+The card also supplies the clickable rows used when asking
 aloud. Phase 12 adds the spoken question, listening state and Recently heard link. The roster
 in Voice settings lists addressable agents independently of these outcomes.
 [Selected routing-exceptions mock-up](plans/voice-addressing-for-agents/mockup-routing-exceptions.html#b)
@@ -420,7 +492,9 @@ commit the queue update. After three failed preparations it reports the failure,
 Foreman, and lets the following message proceed.
 A stopped agent receives nothing. The
 dashboard identifies the stopped agent and suggests relaunching a resident or starting a
-follow-up task.
+follow-up task. A follow-up opens a separate Dispatch draft for the finished task’s repository.
+If you exit the See the work tour during the repository lookup, the draft opens when the lookup
+finishes. An already open follow-up stays available after tour exit.
 
 At the first claim, the daemon appends the agent’s open asks, a reminder of any unseen reports,
 and “When you have finished this, post a report.” A retry uses that exact text. The conversation
@@ -924,9 +998,12 @@ the warning names the chord still registered, or says when none is in force. Set
 replacement only after the desktop confirms registration. While waiting, the row shows the
 proposed chord. If confirmation takes longer than 15 seconds, the row identifies the edit
 that expired and the shortcut that remains saved. Restarting the desktop after a refusal
-restores the saved shortcut.
-Voice releases the current shortcut while Settings records, so recording it again keeps the
-same binding without muting. Typing and navigation keys require Command, Control, or Option.
+restores the saved shortcut. If the trial expires, Voice releases its temporary binding
+even when another app has since claimed the saved shortcut.
+Settings waits for the desktop to release the shortcut for the current recording request.
+Recording the same chord again keeps the binding without toggling mute. Setup and the
+hold-to-talk hint continue to show a saved shortcut that the desktop confirms is still active.
+Typing and navigation keys require Command, Control, or Option.
 On upgrade, the stored Phase 1 default Control+Option+M moves to Control+Command+Option+V.
 Older saves could not distinguish choosing that exact chord from inheriting it. You can
 select it again after upgrading. Voice remaps the shortcut when the keyboard layout changes.
@@ -967,7 +1044,7 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 - `test/voice-utterances-http.test.ts`: the routes, the cancel order and delivery, with a scripted
   model step, including a split queued to each agent.
 - `test/voice-config-http.test.ts`: defaults, patches, mute, the token routes, the frames, and
-  every route answering 404 with the flag off.
+  HTTP 404 responses from gated server endpoints with the flag off.
 - `test/setup-probes.test.ts`: the **Voice previews**, **Microphone access** and **Voice speech
   model** rows, and the family following the flag.
 - `test/voice-models.test.ts`: the manifest's shape, that every URL is pinned to a commit, and that

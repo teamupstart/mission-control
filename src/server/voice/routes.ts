@@ -15,6 +15,7 @@ import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { endedOnShutdown } from "../http-shutdown.ts";
 import { trustedLoopbackJsonRequest } from "../loopback.ts";
+import { createMiddleware } from "hono/factory";
 import {
   VOICE_FLAG,
   VOICE_BACKENDS,
@@ -25,18 +26,23 @@ import {
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
+  VOICE_RECORDING_ID_HEADER,
   VOICE_SPEECH_START_HEADER,
+  VoiceUiConfigPatchSchema,
   VoiceConfigPatchSchema,
   VoiceIndicatorSelectionSchema,
   VoiceListenerHelloSchema,
   VoiceMuteRequestSchema,
   VoiceProviderIntentSchema,
+  VoiceRevisionSchema,
   VoiceShellReportSchema,
+  type VoiceRevision,
 } from "@shared/voice.ts";
+import { getTask } from "../db.ts";
 import { checkToken } from "../auth.ts";
 import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feature-flags/index.ts";
 import { parseBody } from "../http-body.ts";
-import { setVoiceIndicator, voiceIndicatorVersion } from "../ui-config.ts";
+import { setUiConfig, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
 import { voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
@@ -138,6 +144,10 @@ export function registerVoiceRoutes(
   });
   app.get("/api/voice/config", gate, (c) => {
     c.header("Cache-Control", "no-store");
+    if (c.req.method === "HEAD") {
+      c.header("X-Voice-Server-Time-Ms", String(Date.now()));
+      return c.body(null);
+    }
     return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
   });
   app.post("/api/voice/config/provider-intent", gate, limitBody, async (c) => {
@@ -147,13 +157,38 @@ export function registerVoiceRoutes(
     const ticket = reserveProviderWrite(parsed.data);
     return ticket ? c.json({ ticket, intentReceipt: providerIntentReceipt() }) : c.json({ ...providerConflict(), intentWindow: providerIntentWindow() }, 409);
   });
+  app.get("/api/voice/tasks/:id/follow-up", gate, c => {
+    const task = getTask(c.req.param("id"));
+    if (!task) return c.json({ error: "The finished task could not be found." }, 404);
+    return c.json({ repoRoot: task.repoRoot });
+  });
+  // Older callers omit the version. Capture theirs before even the body limiter can wait for bytes.
+  const observePlacement = createMiddleware<{ Variables: { placementVersion: VoiceRevision } }>(async (c, next) => {
+    c.set("placementVersion", voiceIndicatorVersion(storedVoiceUi()));
+    await next();
+  });
+  app.put("/api/voice/confirmation", gate, observePlacement, limitBody, async (c) => {
+    const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }).extend({
+      expectedVersion: VoiceRevisionSchema.optional(),
+    }));
+    if (!parsed.ok) return parsed.res;
+    if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
+    const current = storedVoiceUi();
+    const version = voiceIndicatorVersion(current);
+    const expected = parsed.data.expectedVersion ?? c.get("placementVersion");
+    if (expected.source !== version.source || expected.revision !== version.revision) {
+      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version }, 409);
+    }
+    const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
+    return c.json({ ok: true, ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
+  });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    const indicators = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
-    return indicators === null
+    const voice = setVoiceIndicator(parsed.data.id, parsed.data.enabled);
+    return voice === null
       ? c.json({ error: "The indicator selection is full." }, 409)
-      : c.json({ indicators, voiceIndicatorVersion: voiceIndicatorVersion(indicators) });
+      : c.json({ ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
   });
   app.put("/api/voice/config", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceConfigPatchSchema, { strict: true });
@@ -175,8 +210,9 @@ export function registerVoiceRoutes(
   // window, cancelling capture, or a lost client releases it without another PUT.
   app.post("/api/voice/hotkey-recording", gate, c => {
     if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
-    const end = store.beginHotkeyRecording();
-    if (!end) return c.json({ error: "Another window is recording a shortcut." }, 409);
+    const recording = store.beginHotkeyRecording();
+    if (!recording) return c.json({ error: "Another window is recording a shortcut." }, 409);
+    c.header(VOICE_RECORDING_ID_HEADER, recording.id);
     return streamSSE(c, endedOnShutdown(async stream => {
       let finish!: () => void;
       const done = new Promise<void>(resolve => { finish = resolve; });
@@ -189,7 +225,7 @@ export function registerVoiceRoutes(
       } finally {
         unsubscribe();
         clearTimeout(timeout);
-        end();
+        recording.end();
       }
     }));
   });

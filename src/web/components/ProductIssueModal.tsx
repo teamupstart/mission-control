@@ -1,3 +1,4 @@
+import { newRequestId } from "../lib/request-id.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PRODUCT_ISSUE_LIMITS,
@@ -778,17 +779,4 @@ export function ProductIssueLayer({
  */
 function productIssueClient(): "browser" | "electron" {
   return typeof window !== "undefined" && window.missionDesktop ? "electron" : "browser";
-}
-
-function newRequestId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  // Only reachable in a non-secure context, where `randomUUID` is absent. The id is a
-  // duplicate guard, not a secret, so a v4-shaped fallback is sufficient and the daemon
-  // validates its shape either way.
-  const hex = "0123456789abcdef";
-  const pick = (): string => hex[Math.floor(Math.random() * 16)]!;
-  const block = (n: number): string => Array.from({ length: n }, pick).join("");
-  return `${block(8)}-${block(4)}-4${block(3)}-${"89ab"[Math.floor(Math.random() * 4)]}${block(3)}-${block(12)}`;
 }

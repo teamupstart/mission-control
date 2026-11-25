@@ -74,7 +74,7 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
 
 export function confirmedVoiceHotkey(state: VoiceState): string | null {
   const chord = state.registeredHotkey;
-  return chord && chord === state.configuredHotkey && !state.pendingHotkey && voiceCapable(state, "hotkey") && !state.hotkeyError ? chord : null;
+  return chord && chord === state.configuredHotkey && !state.pendingHotkey && voiceCapable(state, "hotkey") && (!state.hotkeyError || state.hotkeyError.chordInForce === chord) ? chord : null;
 }
 
 const modes = {

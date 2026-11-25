@@ -419,11 +419,13 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     }) + "\n\n");
     await until(() => reports.at(-1)?.registeredHotkey === chord);
     assert.equal(await canAcquireShortcut(), false, "Voice owns the shortcut while listening");
-    const record = (recordingHotkey?: true) => events!.write("data: " + JSON.stringify({
-      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey: chord, recordingHotkey },
+    const record = (recordingHotkeyId?: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey: chord, recordingHotkey: recordingHotkeyId ? true : undefined, recordingHotkeyId },
     }) + "\n\n");
-    record(true);
-    await until(() => reports.at(-1)?.registeredHotkey === null);
+    const recordingId = crypto.randomUUID();
+    record(recordingId);
+    await until(() => reports.at(-1)?.capabilities.hotkey?.recordingId === recordingId);
+    assert.equal(reports.at(-1)?.registeredHotkey, null);
     assert.equal(await canAcquireShortcut(), true, "the focused recorder can receive the active chord");
     record();
     await until(() => reports.at(-1)?.registeredHotkey === chord);

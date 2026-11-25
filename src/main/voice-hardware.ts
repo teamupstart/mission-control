@@ -20,6 +20,7 @@ const reasonOf = (error: unknown) => String(error instanceof Error ? error.messa
 export class VoiceHardware {
   private desired?: string | null;
   private trialId?: string;
+  private recordingId?: string;
   private suspended?: string | null;
   private registeredHotkey: string | null = null;
   private hotkeyError: VoiceHotkeyError | null = null;
@@ -38,7 +39,7 @@ export class VoiceHardware {
     this.callCapability = activity.value ? available : unavailable(activity.reason);
   }
 
-  update(saved: string | null, mode: VoiceMode, recording = false, pending?: string, trialId?: string) {
+  update(saved: string | null, mode: VoiceMode, recording: boolean | string = false, pending?: string, trialId?: string) {
     const chord = pending ?? saved;
     this.mode = mode;
     if (mode !== "auto-muted" && mode !== "push-to-talk" && this.pushToTalk) this.cancelPress();
@@ -46,18 +47,23 @@ export class VoiceHardware {
       this.sample();
       this.poll = setInterval(() => this.sample(), 500);
     }
+    this.recordingId = typeof recording === "string" ? recording : undefined;
     if (recording) {
       if (this.suspended === undefined) {
-        this.suspended = this.registeredHotkey;
+        this.suspended = this.trialId && this.desired === this.registeredHotkey ? saved : this.registeredHotkey;
         this.bind(null);
       }
       return;
     }
     if (this.suspended === undefined && this.desired === chord && this.trialId === trialId) return;
-    // A fresh desktop can first see an in-flight edit. Establish its saved fallback
-    // before trying the replacement, just as when resuming from the recorder.
+    // An unconfirmed reservation belongs only to its trial. Drop it before restoring
+    // the saved shortcut so even a failed restoration cannot keep the trial active.
+    if (this.trialId && this.registeredHotkey === this.desired && this.registeredHotkey !== saved && this.registeredHotkey !== pending) {
+      this.bind(null);
+    }
     const fallback = pending ? saved : this.suspended;
     this.suspended = undefined;
+    // Restore the durable fallback before trying a replacement after recording or restart.
     if (chord && fallback !== undefined && fallback !== chord && fallback !== this.registeredHotkey) this.bind(fallback);
     const retained = !pending && this.hotkeyError && chord === this.registeredHotkey;
     this.desired = chord;
@@ -152,7 +158,7 @@ export class VoiceHardware {
   report() {
     return {
       capabilities: {
-        hotkey: this.registrar.value ? available : unavailable(this.registrar.reason),
+        hotkey: this.registrar.value ? { ...available, ...(this.recordingId && this.registeredHotkey === null && { recordingId: this.recordingId }) } : unavailable(this.registrar.reason),
         "call-detection": this.callCapability,
       },
       reportedAtHostUs: this.clock(), registeredHotkey: this.registeredHotkey, hotkeyError: this.hotkeyError,

@@ -11,6 +11,23 @@ export class VoiceCardClock {
   private lower = -Infinity;
   private upper = Infinity;
 
+  private streamStart?: number;
+  private requestStart?: number;
+  epoch = 0;
+
+  /** A stream spans many frames. Move old bounds into the new daemon epoch after a clock step. */
+  observeStream(sent: number, received: number, serverStart: number, serverEnd: number) {
+    const shift = this.requestStart === sent ? (this.streamStart ?? serverStart) - serverStart : 0;
+    if (Math.abs(shift) > 2) {
+      this.epoch++;
+      this.lower += shift;
+      this.upper += shift;
+    }
+    this.requestStart = sent;
+    this.streamStart = serverStart;
+    return this.observe(sent, received, serverStart, serverEnd);
+  }
+
   observe(sent: number, received: number, serverStart: number, serverEnd: number): Estimate {
     const lower = sent - serverStart - 1; // The daemon clock has millisecond resolution.
     const upper = received - serverEnd + 1;

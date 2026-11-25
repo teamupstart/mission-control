@@ -1,7 +1,9 @@
+import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 // Voice state (contract B): the pure mode rule, the reasons, and the daemon's store with a fake
 // clock - a hello and a shell report lapsing, a refused protocol version, and capabilities.
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before } from "node:test";
+import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import {
   canonicalVoiceState,
   VOICE_CONFIG_DEFAULTS,
@@ -23,6 +25,9 @@ import {
 } from "../src/shared/voice.ts";
 import { VoiceStateStore } from "../src/server/voice/state.ts";
 import { voiceMicrophoneSetupStatus } from "../src/shared/voice-models.ts";
+
+Object.assign(process.env, fixtureSupervisorEnv);
+before(() => ensureNativeStateLockAddon());
 
 const base: VoiceModeInputs = {
   enabled: true, reasons: [], muted: false, callActive: false, autoMuteDuringCalls: true, pushToTalk: false,
@@ -68,7 +73,7 @@ test("the config schema holds every contract A field with its default", () => {
     hotkey: "ctrl+alt+m",
     autoMuteDuringCalls: true,
     cancelWindow: { enabled: true, seconds: 4 },
-    whenUnsure: "show",
+    whenUnsure: "show", speech: { voice: null },
     planFormsByVoice: true,
     inputDevice: "built-in",
     decisionProvider: null,
@@ -245,7 +250,7 @@ test("a dated key-down can authorize capture only for the lease remaining since 
 test("a shell report's capabilities and hotkey error are copied, and lapse with it", () => {
   const h = harness();
   h.store.acceptHello(listenerId, HELLO);
-  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null } });
+  assert.deepEqual(h.store.state().capabilities, { listener: { available: true, reason: null }, "speech-output": { available: false, reason: "This listener cannot play speech." } });
   assert.equal(h.store.state().registeredHotkey, null);
   assert.equal(h.store.state().hotkeyError, null);
   h.store.acceptShellReport({
@@ -398,4 +403,22 @@ test("canonicalVoiceState ignores key order and nothing else", () => {
   const b: VoiceState = { ...a, capabilities: { hotkey: { available: false, reason: "x" }, tray: { available: true, reason: null } } };
   assert.equal(canonicalVoiceState(a), canonicalVoiceState(b));
   assert.notEqual(canonicalVoiceState(a), canonicalVoiceState({ ...a, mode: "muted" }));
+});
+
+test("speech output belongs to the daemon and needs a supervised, capable listener and a ready voice", () => {
+  const h = harness();
+  const { instance, proof } = fixtureVoiceSupervisor();
+  const speech = { audio: true, systemVoices: [{ id: "speaker", name: "Speaker", language: "en-US", quality: "premium" as const }] };
+  const capability = () => h.store.state().capabilities["speech-output"];
+  h.store.acceptShellReport({ ...REPORT, capabilities: { "speech-output": { available: true, reason: null } } });
+  assert.match(capability()?.reason ?? "", /No listener/);
+  h.store.acceptHello(listenerId, HELLO);
+  assert.match(capability()?.reason ?? "", /cannot play/);
+  h.store.acceptHello(listenerId, { ...HELLO, speech }, instance);
+  assert.match(capability()?.reason ?? "", /not started by a supervisor/);
+  h.store.speech.supervised(instance, "started", proof("started"));
+  assert.deepEqual(capability(), { available: true, reason: null });
+  h.store.acceptHello(listenerId, { ...HELLO, speech: { ...speech, systemVoices: [] } }, instance);
+  assert.match(capability()?.reason ?? "", /No voice is ready/);
+  assert.equal(JSON.stringify(h.published).includes(instance), false);
 });

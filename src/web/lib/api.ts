@@ -2571,6 +2571,7 @@ export const api = {
     post<ActionResult & { model?: VoiceModelState; reason?: string }>("/api/voice/model/download"),
   cancelVoiceModelDownload: () =>
     request<ActionResult & { model?: VoiceModelState }>("DELETE", "/api/voice/model/download"),
+  stopVoiceSpeech: (id: string) => post("/api/voice/speech/stop", { id }, { signal: AbortSignal.timeout(5000) }),
   /** Save one provider's decision-model key. The answer is the report, never the key. */
   saveVoiceDecisionKey: (provider: VoiceKeyProvider, key: string, options: VoiceKeyWriteOptions) =>
     put<ActionResult & Partial<VoiceDecisionKeyReport> & { reason?: string }>("/api/voice/decision-key", { provider, key },

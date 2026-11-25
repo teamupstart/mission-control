@@ -748,6 +748,7 @@ export function useWorkflowRoute(dirty: boolean): MissionRouter {
         setPendingRoute(next);
         return;
       }
+      if (pendingRef.current) setPendingRoute(null);
       accepted.current = next;
       setRoute(next);
       // Same canonicalization the mount effect does, for a legacy link followed mid-session

@@ -1039,6 +1039,9 @@ even when another app has since claimed the saved shortcut.
 Settings waits for the desktop to release the shortcut for the current recording request.
 Recording the same chord again keeps the binding without toggling mute. Setup and the
 hold-to-talk hint continue to show a saved shortcut that the desktop confirms is still active.
+When VoiceOver is on, Voice leaves Control+Command+Option+V available for VoiceOver’s next
+visited link command. Choose a different mute shortcut in Settings to use both at once.
+If you keep the default, Voice registers it again when VoiceOver turns off.
 Typing and navigation keys require Command, Control, or Option.
 On upgrade, the stored Phase 1 default Control+Option+M moves to Control+Command+Option+V.
 Older saves could not distinguish choosing that exact chord from inheriting it. You can

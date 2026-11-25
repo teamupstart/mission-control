@@ -40,11 +40,11 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   }
   const eventFixture = join(root, "queue.node");
   execFileSync("xcrun", ["clang++", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
-    "-I", resolve(process.execPath, "../../include/node"), "test/fixtures/voice-hotkey-event.cc", "-o", eventFixture]);
+    "-I", resolve(process.execPath, "../../include/node"), "-framework", "AppKit", "test/fixtures/voice-hotkey-event.mm", "-o", eventFixture]);
   const layoutAddon = join(root, "layout-hotkey.node");
   execFileSync("xcrun", ["clang++", "-std=c++17", "-bundle", "-undefined", "dynamic_lookup", "-framework", "Carbon",
     "-framework", "CoreFoundation", "-I", resolve(process.execPath, "../../include/node"),
-    "native/voice-hotkey/hotkey.mm", "test/fixtures/voice-hotkey-layout.cc", "-o", layoutAddon]);
+    "-framework", "AppKit", "-DMCVoiceOverObserver=MCLayoutTestVoiceOverObserver", "native/voice-hotkey/hotkey.mm", "test/fixtures/voice-hotkey-layout.cc", "-o", layoutAddon]);
   let events: ServerResponse | undefined;
   let connects = 0;
   let unavailableHandshakes = 1;
@@ -442,6 +442,44 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
     assert.equal(await canAcquireShortcut(), true, "a second owner can acquire the shortcut once Voice is off");
     await new Promise(resolve => setTimeout(resolve, 1100));
     assert.equal(await polls(), stoppedPolls, "no native input query across two polling intervals while off");
+  });
+  await t.test("Voice yields its default to VoiceOver at startup and on live changes, and accepts a different shortcut", async () => {
+    const chord = "cmd+ctrl+alt+v";
+    const publish = (configuredHotkey: string) => events!.write("data: " + JSON.stringify({
+      type: "voice_state", state: { ...voiceStateOff(), mode: "listening", configuredHotkey },
+    }) + "\n\n");
+    const voiceOver = (enabled?: boolean) => app.evaluate((_, { path, enabled }) => {
+      const fixture = process.getBuiltinModule("node:module").createRequire(path)(path);
+      if (enabled === undefined) fixture.setVoiceOver();
+      else fixture.setVoiceOver(enabled);
+    }, { path: eventFixture, enabled });
+    const defaultIsFree = () => app.evaluate(({ globalShortcut }) => {
+      const accelerator = "Command+Control+Alt+V";
+      if (!globalShortcut.register(accelerator, () => {})) return false;
+      globalShortcut.unregister(accelerator);
+      return true;
+    });
+    const yielded = () => reports.at(-1)?.registeredHotkey === null &&
+      !!reports.at(-1)?.hotkeyError?.reason.includes("VoiceOver uses this shortcut");
+    try {
+      await voiceOver(true);
+      publish(chord);
+      await until(yielded);
+      assert.equal(await defaultIsFree(), true);
+      await voiceOver(false);
+      await until(() => reports.at(-1)?.registeredHotkey === chord);
+      assert.equal(await defaultIsFree(), false);
+      await voiceOver(true);
+      await until(yielded);
+      assert.equal(await defaultIsFree(), true);
+      publish("cmd+ctrl+shift+F9");
+      await until(() => reports.at(-1)?.registeredHotkey === "cmd+ctrl+shift+F9");
+      assert.equal(reports.at(-1)?.hotkeyError, null);
+    } finally {
+      events!.write("data: " + JSON.stringify({ type: "voice_state", state: voiceStateOff() }) + "\n\n");
+      await until(async () => (await read()).mode === "off");
+      await voiceOver();
+    }
   });
   await t.test("Carbon moves the same V shortcut from US to Dvorak and reuses an unchanged physical binding", async () => {
     const changes = await app.evaluate((_, paths) => {

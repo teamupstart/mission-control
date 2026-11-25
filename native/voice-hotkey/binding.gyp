@@ -18,6 +18,7 @@
             },
             "link_settings": {
               "libraries": [
+                "-framework AppKit",
                 "-framework Carbon",
                 "-framework CoreFoundation"
               ]

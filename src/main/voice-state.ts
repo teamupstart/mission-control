@@ -164,7 +164,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       hardware = macVoiceHardware(dirname(binary), () => listener.pid,
         () => void toggleFromHotkey(), () => void requestReport());
       layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
-        () => hardware?.layoutChanged());
+        () => hardware?.refreshRegistration());
     }
     hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.

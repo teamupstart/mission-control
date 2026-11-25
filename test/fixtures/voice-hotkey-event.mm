@@ -1,4 +1,6 @@
 // Post only to this fixture's Carbon queue. No system keyboard events or input permissions.
+#import <AppKit/AppKit.h>
+#import <objc/runtime.h>
 #include <Carbon/Carbon.h>
 #include <node_api.h>
 
@@ -57,6 +59,29 @@ static napi_value layoutKeysAvailable(napi_env env, napi_callback_info) {
   return physicalKeysAvailable(env, cmdKey | controlKey | optionKey | shiftKey, kVK_ANSI_V, kVK_ANSI_Period);
 }
 
+// Change only this fixture process's NSWorkspace getter and send real KVO.
+static bool fixtureVoiceOver;
+static IMP originalVoiceOver;
+static BOOL readVoiceOver(id, SEL) { return fixtureVoiceOver; }
+
+static napi_value setVoiceOver(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value value;
+  napi_get_cb_info(env, info, &argc, &value, nullptr, nullptr);
+  NSWorkspace* workspace = NSWorkspace.sharedWorkspace;
+  Method getter = class_getInstanceMethod([NSWorkspace class], @selector(isVoiceOverEnabled));
+  [workspace willChangeValueForKey:@"voiceOverEnabled"];
+  if (argc) {
+    napi_get_value_bool(env, value, &fixtureVoiceOver);
+    if (!originalVoiceOver) originalVoiceOver = method_setImplementation(getter, (IMP)readVoiceOver);
+  } else if (originalVoiceOver) {
+    method_setImplementation(getter, originalVoiceOver);
+    originalVoiceOver = nullptr;
+  }
+  [workspace didChangeValueForKey:@"voiceOverEnabled"];
+  return nullptr;
+}
+
 NAPI_MODULE_INIT() {
   // A separate owner forces a real Carbon refusal while the original chord is live.
   if (RegisterEventHotKey(kVK_F10, cmdKey | controlKey | shiftKey, {'Test', 1},
@@ -66,6 +91,7 @@ NAPI_MODULE_INIT() {
   }
   napi_add_env_cleanup_hook(env, cleanup, nullptr);
   napi_property_descriptor props[] = {
+    {"setVoiceOver", nullptr, setVoiceOver, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"post", nullptr, post, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"releaseReservation", nullptr, releaseReservation, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"plusKeysAvailable", nullptr, plusKeysAvailable, nullptr, nullptr, nullptr, napi_default, nullptr},

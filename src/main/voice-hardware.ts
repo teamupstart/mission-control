@@ -9,6 +9,7 @@ interface Registrar {
   /** False when the same physical key and modifiers are already registered. */
   register(chord: string, onEdge: Edge): boolean;
   unregister(): void;
+  watchVoiceOver?(changed?: () => void): void;
 }
 interface InputActivity { running(listenerPid: number): boolean }
 type Binding<T> = { value: T; reason?: never } | { value?: never; reason: string };
@@ -36,6 +37,7 @@ export class VoiceHardware {
   constructor(private registrar: Binding<Registrar>, private activity: Binding<InputActivity>,
     private listenerPid: () => number, private toggle: () => void, private changed: () => void,
     private clock: () => number) {
+    registrar.value?.watchVoiceOver?.(() => this.refreshRegistration());
     this.callCapability = activity.value ? available : unavailable(activity.reason);
   }
 
@@ -73,7 +75,7 @@ export class VoiceHardware {
     this.bind(chord, false, trialId);
   }
 
-  layoutChanged() {
+  refreshRegistration() {
     if (!this.desired || this.suspended !== undefined) return;
     const previous = this.registeredHotkey;
     // A refused preference may have left a different shortcut in force. Remap it too.
@@ -169,6 +171,8 @@ export class VoiceHardware {
   }
 
   stop() {
+    this.desired = undefined;
+    this.registrar.value?.watchVoiceOver?.();
     clearInterval(this.poll);
     this.registrar.value?.unregister();
     this.cancelPress();

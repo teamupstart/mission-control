@@ -142,16 +142,16 @@ test("an input-source change remaps a retained shortcut and retries the refused 
   hardware.update("ctrl+k", "listening");
   assert.equal(physical, 9);
   layout = new Map([["ctrl+v", 47]]);
-  hardware.layoutChanged();
+  hardware.refreshRegistration();
   assert.equal(physical, 47);
   assert.equal(hardware.report().hotkeyError?.chordInForce, "ctrl+v");
   layout.clear();
-  hardware.layoutChanged();
+  hardware.refreshRegistration();
   assert.equal(physical, undefined);
   assert.equal(hardware.report().registeredHotkey, null);
   assert.equal(hardware.report().hotkeyError?.chordInForce, null);
   layout.set("ctrl+k", 40);
-  hardware.layoutChanged();
+  hardware.refreshRegistration();
   assert.equal(physical, 40);
   assert.equal(hardware.report().registeredHotkey, "ctrl+k");
   assert.equal(hardware.report().hotkeyError, null);
@@ -174,7 +174,7 @@ test("recording releases the chord in force, then restores it when a replacement
   hardware.update("alt+Space", "listening");
   assert.equal(bound, "ctrl+k");
   hardware.update("alt+Space", "listening", true);
-  hardware.layoutChanged();
+  hardware.refreshRegistration();
   assert.equal(bound, null);
   assert.equal(hardware.report().registeredHotkey, null);
   hardware.update("alt+Space", "listening");

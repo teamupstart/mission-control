@@ -1,3 +1,4 @@
+#import <AppKit/AppKit.h>
 #include <Carbon/Carbon.h>
 #include <node_api.h>
 #include <algorithm>
@@ -7,6 +8,22 @@
 #include <optional>
 #include <utility>
 
+// AppKit can deliver KVO notifications outside Electron's main thread.
+@interface MCVoiceOverObserver : NSObject {
+@public
+  napi_threadsafe_function notify;
+}
+@end
+
+@implementation MCVoiceOverObserver
+- (void)observeValueForKeyPath:(NSString*)path ofObject:(id)object
+                        change:(NSDictionary*)change context:(void*)context {
+  @synchronized(self) {
+    if (notify) napi_call_threadsafe_function(notify, nullptr, napi_tsfn_nonblocking);
+  }
+}
+@end
+
 // Electron main owns the application event target and dispatches both Carbon events.
 namespace {
 constexpr OSType signature = 'McVc';
@@ -15,6 +32,39 @@ EventHotKeyRef active;
 UInt32 activeCode, activeModifiers;
 UInt32 generation;
 napi_threadsafe_function callback;
+
+MCVoiceOverObserver* voiceOverObserver;
+
+void stopWatchingVoiceOver(void*) {
+  if (!voiceOverObserver) return;
+  [[NSWorkspace sharedWorkspace] removeObserver:voiceOverObserver forKeyPath:@"voiceOverEnabled"];
+  @synchronized(voiceOverObserver) {
+    napi_release_threadsafe_function(voiceOverObserver->notify, napi_tsfn_abort);
+    voiceOverObserver->notify = nullptr;
+  }
+  [voiceOverObserver release];
+  voiceOverObserver = nil;
+}
+
+napi_value watchVoiceOver(napi_env env, napi_callback_info info) {
+  stopWatchingVoiceOver(nullptr);
+  size_t argc = 1;
+  napi_value fn, name;
+  napi_get_cb_info(env, info, &argc, &fn, nullptr, nullptr);
+  if (!argc) return nullptr;
+  napi_create_string_utf8(env, "VoiceOver status", NAPI_AUTO_LENGTH, &name);
+  napi_threadsafe_function notify;
+  if (napi_create_threadsafe_function(env, fn, nullptr, name, 0, 1, nullptr, nullptr, nullptr,
+                                      nullptr, &notify) != napi_ok) {
+    napi_throw_error(env, nullptr, "Cannot observe VoiceOver status.");
+    return nullptr;
+  }
+  voiceOverObserver = [[MCVoiceOverObserver alloc] init];
+  voiceOverObserver->notify = notify;
+  [[NSWorkspace sharedWorkspace] addObserver:voiceOverObserver forKeyPath:@"voiceOverEnabled"
+                                   options:0 context:nullptr];
+  return nullptr;
+}
 
 struct Edge { UInt32 generation; bool down; double hostUs; };
 
@@ -137,6 +187,8 @@ napi_value replace(napi_env env, napi_callback_info info) {
     modifiers |= mod->second;
     key.erase(0, plus + 1);
   }
+  if (key == "v" && modifiers == (cmdKey | controlKey | optionKey) && NSWorkspace.sharedWorkspace.voiceOverEnabled)
+    return fail(env, "VoiceOver uses this shortcut for the next visited link. Choose a different mute shortcut.");
   std::optional<UInt32> code;
   auto special = nonTypingKeys.find(key);
   // Only function keys may be reserved without a primary modifier. Navigation keys
@@ -186,10 +238,12 @@ napi_value unregister(napi_env, napi_callback_info) { clear(nullptr); return nul
 
 NAPI_MODULE_INIT() {
   napi_add_env_cleanup_hook(env, clear, nullptr);
+  napi_add_env_cleanup_hook(env, stopWatchingVoiceOver, nullptr);
   napi_property_descriptor props[] = {
+    {"watchVoiceOver", nullptr, watchVoiceOver, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"register", nullptr, replace, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"unregister", nullptr, unregister, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  napi_define_properties(env, exports, 2, props);
+  napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
   return exports;
 }

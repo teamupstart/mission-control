@@ -40,6 +40,13 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await report({ registeredHotkey: "cmd+ctrl+alt+v" });
     await expect(capture).toHaveText("⌘⌃⌥V");
     await screenshot("default");
+    const voiceOverReason = "macOS refused ⌘⌃⌥V: VoiceOver uses this shortcut for the next visited link. Choose a different mute shortcut.";
+    await report({ registeredHotkey: null, hotkeyError: { reason: voiceOverReason, chordInForce: null } });
+    await expect(row.getByRole("alert")).toHaveText(voiceOverReason + " No hotkey is in force.");
+    await expect(capture).toBeEnabled();
+    await screenshot("voiceover");
+    await report({ registeredHotkey: "cmd+ctrl+alt+v" });
+    await expect(row.getByRole("alert")).toHaveCount(0);
     await page.goto(daemon.baseURL + "/#/settings/setup");
     await openSetupFamily(page, "voice");
     const mic = setupRow(page, "dependency-voice-microphone");

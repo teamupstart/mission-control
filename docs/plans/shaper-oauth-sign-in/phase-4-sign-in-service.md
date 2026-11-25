@@ -86,7 +86,7 @@ Not here: routes, the event, the transports, Settings.
    that name it are gone: after a sign-out, a cancelled or expired pending sign-in, or a
    sign-in that ended. It stays in the key, for reuse, until room is needed. So the
    sign-in that was refused has room once a sign-out leaves a registration that nothing
-   names. A registration leaves the key in
+   names. The service takes a registration out of the key in
    two ways only: dropped as above while not named, or removed when the authorization
    server rejects its client (step 9).
 3. **State.** Per connection, in memory: the target, the record or none, where it is kept,
@@ -171,8 +171,9 @@ Not here: routes, the event, the transports, Settings.
 ## Data, API and compatibility
 
 - One new `app_config` key, `shaping.signIn`. It holds no secret. It is in no backup
-  domain, so a settings snapshot and a restore never carry it. An older build does not read
-  it.
+  domain, so a settings snapshot and a settings restore never carry it. A full-database
+  recovery point is a copy of SQLite, so it holds this key, and it holds no token. An
+  older build does not read it.
 - **A crash between a refresh reply and the store write** leaves the spent refresh token in
   the store. The next start gets `sign_in_again`, unless the server's reuse grace covers it.
 - **A changed daemon port** changes the redirect URI. The next sign-in registers again.
@@ -181,6 +182,10 @@ Not here: routes, the event, the transports, Settings.
 - **Sixteen registrations, every one named**, refuse the next sign-in that needs another,
   with a reason and no registration request. Nothing held is lost, and a sign-out that
   leaves a registration with nothing naming it makes room.
+- **A database restored from a recovery point** takes `shaping.signIn` back to what it
+  held then, while the Keychain keeps its records. A record whose client the restored key
+  does not hold still refreshes, because it carries the client's id (step 9). Only reuse
+  is lost: the next sign-in for that issuer, redirect URI and scope registers again.
 - **The flag switched off** deletes nothing. Stored records may lapse meanwhile.
 - With both flags off, which is the default, the daemon reads no store and makes no request.
 
@@ -218,6 +223,10 @@ the memory store, and a store that can be made to fail.
   port, lists the held sign-in and refreshes it with the client its record names. A
   sign-in for another connection with the same scope registers again under the new port,
   and the registration that record names is still in the key.
+- **A key that lost a registration.** A service starts over a store that holds a record
+  and a key that does not hold that record's client, as after a database restore. The
+  sign-in is listed and refreshes with the client id in its record, and a new sign-in
+  with the same scope registers once.
 - **Two sign-ins started together.** Two `begin` calls made at once, for two connections
   that share issuer and scope, send one registration request.
 - `state`: a second use, an unknown value, an expired one, an `iss` that does not match, an
@@ -260,7 +269,8 @@ Also `test/settings-backup-coverage.test.ts` for the new key. Run those files,
   read it is refused the same way, with the reason that says to restart, and it begins
   after a restart that reads the store.
 - After a port change, the registration that a held record names is still in the key.
-  Two sign-ins started together for the same issuer and scope register once.
+  Two sign-ins started together for the same issuer and scope register once. A record
+  whose registration the key does not hold, as after a database restore, still refreshes.
 - After a restart, a stored sign-in that no shaper names is listed by its URL and scope, is
   not refreshed, and can be signed out.
 - The record, the client registration and the view never hold a token outside the store and

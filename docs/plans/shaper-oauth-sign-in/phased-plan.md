@@ -92,6 +92,8 @@ and the SDK. These shaped the split:
     `begin` runs at a time, so two sign-ins started
     together cannot register twice for the same three values. A client the authorization
     server rejects ends every sign-in that names it before its registration is removed.
+    A database restore can take the key back to before a registration that a record
+    names. That record still refreshes, because it carries its client's id.
     Phase 4 owns the rule and tests the limit.
 
 ## Size and phase count

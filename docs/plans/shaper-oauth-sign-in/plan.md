@@ -328,7 +328,7 @@ puts it there, and whatever it passes through does not keep it.
 | PKCE verifier | At most 10 minutes, single use | Never | The token endpoint, once, at the exchange | The browser, an API reply, an event |
 | `state` | At most 10 minutes, single use | Never | The authorization URL, so the sign-in reply and the browser, and the browser's redirect to the callback | The sign-in list, an event, the snapshot, the callback page |
 | Authorization code | For the one exchange | Never | The browser's redirect to the callback, then the token endpoint, once | An API reply, an event, the snapshot, the callback page |
-| `client_id`, with its issuer, redirect URI, scope and registration time | While the daemon runs | `app_config` key `shaping.signIn`, at most 16 registrations, value class `operational`, in no backup domain. One that a sign-in names is never dropped to make room. The id alone is also in each record that client obtained, beside the tokens. | The `client_id` only: the authorization URL, so the sign-in reply and the browser, and requests to the authorization server | A backup, a settings snapshot, the sign-in list, an event, the snapshot. It is not a secret. |
+| `client_id`, with its issuer, redirect URI, scope and registration time | While the daemon runs | `app_config` key `shaping.signIn`, at most 16 registrations, value class `operational`, in no backup domain. One that a sign-in names is never dropped to make room. The id alone is also in each record that client obtained, beside the tokens. | The `client_id` only: the authorization URL, so the sign-in reply and the browser, and requests to the authorization server | A settings backup, a settings snapshot, the sign-in list, an event, the snapshot. It is not a secret. A full-database recovery point is a copy of SQLite, so it holds this key, and it holds no token. |
 | The connection's URL, scope and issuer | While the daemon runs | The shaper's definition, and the record in the Keychain item beside the tokens | The sign-in list: the API reply, the event and the snapshot | They are not secrets |
 | The marker | While the daemon runs | The shaper's definition, in `app_config.shaping` or a manifest | The config view, as any definition | It names no value |
 | Server metadata | Until the daemon stops, and read again after a restart | Never | | |
@@ -432,6 +432,11 @@ refreshed, so they may lapse.
   matches, so the next sign-in registers again. Held tokens keep refreshing, because a
   refresh does not use the redirect URI. The registration that a held sign-in names stays
   in `app_config` however many sign-ins register under the new port.
+- **A database restored from a recovery point** takes the registration key back to what
+  it held then. The Keychain is not in the database, so held sign-ins stay. One whose
+  registration the restored key does not hold still refreshes, because its record carries
+  the client id, and the next sign-in for that authorization server, redirect URI and
+  scope registers again.
 - **A crash between a refresh reply and the store write** loses the rotated pair. The stored
   refresh token is then already spent, and the next start ends in "sign in again" unless
   the server's reuse grace still covers it.

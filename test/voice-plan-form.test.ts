@@ -52,6 +52,27 @@ test("fill-only ordinals include the appended approval. Submit requires an open 
   assert.ok(queued("Steve").some(s => s.includes("submit")));
 });
 
+for (const surface of ["closed inbox", "focused Report reply"] as const) {
+  test(`a named fill for a closed plan is refused with a ${surface}`, async () => {
+    const { review, fill } = await form(1);
+    await say("Steve, first one A");
+    const report = { kind: "report", id: "report", sessionId: review.sessionId, focused: true, actions: ["reply"] };
+    const open = await put("/api/voice/open-cards", { windowId: "dashboard", focused: true,
+      cards: surface === "closed inbox" ? [] : [report] });
+    assert.equal(open.status, 200);
+    await say("Steve, first one B", "closed-plan-fill");
+    const notice = cards.at(-1);
+    assert.equal(notice?.id, "closed-plan-fill");
+    assert.equal(notice.reason, "form-not-open");
+    assert.equal(notice.state, "cancelled");
+    assert.match(notice.detail ?? "", /Open Steve's plan form and say your choice again/);
+    assert.deepEqual(registry.voiceRouter!.activeCards(), []);
+    assert.deepEqual(queued("Steve"), []);
+    assert.deepEqual(fill()?.selections[0]?.selected, ["a"]);
+    assert.equal(registry.getReview(review.id)?.status, "pending");
+  });
+}
+
 test("an unavailable option and an out-of-range ordinal each show a refusal and preserve the pending draft", async t => {
   const { review, fill } = await form(3);
   await say("Steve, first one B, second one A");

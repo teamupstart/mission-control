@@ -549,11 +549,14 @@ export class VoiceRouter {
     const form = plan && forms.find(f => f.id === plan.id);
     const windowId = report?.windowId;
     const name = owner?.name ?? "reply";
-    const notOpen = () => notice(owner ? "Open " + name + "'s plan form to submit it" : "Open the plan form to submit it", "form-not-open");
+    const notOpen = () => {
+      const formName = owner ? name + "'s plan form" : "the plan form";
+      return notice("Open " + formName + (submit ? " to submit it" : " and say your choice again"), "form-not-open");
+    };
     if (planCommand && target && !plan && candidates.some(c => c.kind === "plan")) {
       return notice("Focus the plan form you want and say it again.", "question-notice");
     }
-    if (submit && target && forms.some(f => f.sessionId === target.sessionId) && !form) return notOpen();
+    if (planCommand && target && !form && forms.some(f => f.sessionId === target.sessionId)) return notOpen();
     if (form && windowId) {
       const signal = this.lifetime.signal;
       const current = () => {

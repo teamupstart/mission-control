@@ -1389,8 +1389,10 @@ has focus. If the agent has multiple open plans, focus the one you want. With th
 Say “Steve, submit” or click Submit to send the current draft. If a spoken choice is still
 being matched, wait for the selection to appear and say “Steve, submit” again. An incomplete form marks the
 first unanswered decision in amber and shows how to fill it. Closing the inbox keeps the
-draft. A spoken submit while the form is closed, or a dashboard response more than five
-seconds late, leaves it pending. Turn off **Plan forms by voice** in Settings > Voice to
+draft. With the plan still pending, a named choice or submit while the form is closed asks
+you to reopen it. The draft stays as it was, even if a Report reply box has focus.
+A dashboard response more than five seconds after a spoken submit leaves the plan pending.
+Turn off **Plan forms by voice** in Settings > Voice to
 use addressed speech for messages while filling plans by hand. It starts on.
 
 ### Act on an inbox card by voice

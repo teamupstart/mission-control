@@ -57,9 +57,14 @@ test("ordinal badges mirror fills into the editable draft and only a complete, o
   const closed = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && !r.request().postDataJSON().cards.length);
   await page.keyboard.press("Escape");
   await closed;
+  await say(daemon, "Steve, first one A");
+  const fillRefused = page.getByRole("status").filter({ hasText: "Open Steve's plan form and say your choice again" });
+  await expect(fillRefused).toBeVisible();
+  await captureCard(fillRefused, "closed-plan-fill-notice");
   await say(daemon, "Steve, submit");
   await expect(page.getByText("Open Steve's plan form to submit it")).toBeVisible();
   expect((await read(second)).status).toBe("pending");
   await open(second);
   await expect(card.getByRole("radio", { checked: true })).toHaveCount(3);
+  await expect(card.getByRole("radio", { name: /Postgres/ })).toBeChecked();
 });

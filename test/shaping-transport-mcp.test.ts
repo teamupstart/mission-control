@@ -14,7 +14,9 @@ import { z } from "zod";
 
 const home = mkdtempSync(join(tmpdir(), "mission-shaping-mcp-"));
 process.env.MISSION_HOME = home;
-const { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingContextSchema } = await import("../src/shared/shaping.ts");
+const { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingContextSchema, SIGN_IN_REASONS } = await import("../src/shared/shaping.ts");
+const { SHAPER_SIGN_IN_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { callMcp, foldedContextBlock, mcpToolArguments, sseResumeTracker } = await import("../src/server/shaping/transports/mcp.ts");
 const { runScope, shapeTask } = await import("../src/server/shaping/engine.ts");
 const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
@@ -1525,4 +1527,82 @@ test("a selector and a router on one server share the run's connection", async (
     assert.equal(data(await callMcp(routeRequest(), router, run)).guidance[0].id, "raw");
     assert.equal(raw.initializes(), 1, "keyed by the server definition, not by the shaper");
   } finally { await raw.close(); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Shaper sign-in, phase 3: a marked shaper is never called, and an unmarked one is unchanged.
+
+function setSignIn(enabled: boolean): void {
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: SHAPER_SIGN_IN_FLAG_ID, enabled }).ok, true);
+}
+
+test("an MCP server that signs in answers unavailable with the flag off and on, and receives nothing", async () => {
+  const http = await startGuidanceHttp({ mode: "ok" });
+  try {
+    // An unset reference proves the guard runs before any header is resolved.
+    const marked = ShaperSchema.parse({
+      id: "signed", label: "Signed", stage: "select",
+      transport: {
+        type: "mcp", tool: "get_guidance",
+        server: { type: "http", url: http.url, headers: { "x-api-key": "{env:SHAPING_MCP_UNSET_KEY}" }, auth: { type: "oauth", scope: "mcp:context" } },
+      },
+    }) as ShaperOf<"mcp">;
+    for (const [enabled, reason] of [[false, SIGN_IN_REASONS.flagOff], [true, SIGN_IN_REASONS.signedOut]] as const) {
+      setSignIn(enabled);
+      const reply = await callMcp(request(false), marked, ctx({ trace: TRACE, workUnitId: "wu_1" }));
+      assert.deepEqual(reply, { kind: "unavailable", reason }, `flag ${enabled ? "on" : "off"}`);
+    }
+    assert.equal(http.requests.length, 0, "no request at all");
+  } finally {
+    setSignIn(false);
+    await http.close();
+  }
+});
+
+test("an unmarked MCP server is sent exactly today's request headers, with the flag off and on", async () => {
+  // Every request of one call: initialize, initialized, the event-stream GET and tools/call.
+  const common = {
+    connection: "keep-alive",
+    traceparent: TRACE.traceparent,
+    tracestate: TRACE.tracestate,
+    "x-work-unit-id": "wu_1",
+    "x-caller": "declared-user",
+    "accept-language": "*",
+    "sec-fetch-mode": "cors",
+    "user-agent": "node",
+    "accept-encoding": "gzip, deflate",
+  };
+  const post = { ...common, "content-type": "application/json", accept: "application/json, text/event-stream" };
+  const pinned = [
+    { method: "POST", headers: post },
+    { method: "POST", headers: { ...post, "mcp-protocol-version": "2025-11-25" } },
+    { method: "GET", headers: { ...common, accept: "text/event-stream", "mcp-protocol-version": "2025-11-25" } },
+    { method: "POST", headers: { ...post, "mcp-protocol-version": "2025-11-25" } },
+  ];
+  // The event-stream GET is opened beside the call, so compare the requests in a fixed order.
+  // Each entry's header names are sorted first, so its JSON text is the same whatever order they came in.
+  const ordered = (list: Array<{ method: string; headers: Record<string, unknown> }>) => list.map((entry) => JSON.stringify(entry)).sort();
+  const sorted = (entry: { method: string; headers: Record<string, unknown> }) =>
+    ({ method: entry.method, headers: Object.fromEntries(Object.entries(entry.headers).sort(([a], [b]) => (a < b ? -1 : 1))) });
+  try {
+    for (const enabled of [false, true]) {
+      setSignIn(enabled);
+      const http = await startGuidanceHttp({ mode: "ok" });
+      try {
+        const run = ctx({ trace: TRACE, workUnitId: "wu_1" });
+        data(await callMcp(request(false), shaper({ type: "http", url: http.url, headers: { "x-caller": "{caller.user}" } }), run));
+        // The SDK opens the event stream without waiting for it, so a loaded machine may record it late.
+        for (let wait = 0; wait < 200 && !http.requests.some(({ method }) => method === "GET"); wait++) {
+          await new Promise((done) => setTimeout(done, 10));
+        }
+        (run.scope as ReturnType<typeof runScope>).close();
+        const seen = http.requests.map(({ method, headers }) => {
+          const { host, "content-length": _length, ...rest } = headers as Record<string, unknown>;
+          assert.equal(host, new URL(http.url).host);
+          return sorted({ method: String(method), headers: rest });
+        });
+        assert.deepEqual(ordered(seen), ordered(pinned.map(sorted)), `flag ${enabled ? "on" : "off"}`);
+      } finally { await http.close(); }
+    }
+  } finally { setSignIn(false); }
 });

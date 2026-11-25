@@ -17,6 +17,7 @@ import {
 } from "./command.ts";
 import {
   callHeaders, callSignal, dataReply, egressRefusal, failure, MCP_OWNED_HEADERS, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds,
+  signInRefusal,
   withoutOwnedHeaders,
 } from "./remote.ts";
 import type { ShaperOf, ShapingTransport, TransportContext } from "./types.ts";
@@ -701,6 +702,9 @@ export const callMcp: ShapingTransport<"mcp"> = async (request, shaper, ctx) => 
   if (server.type === "http") {
     const refused = egressRefusal(server.url);
     if (refused) return { kind: "unavailable", reason: refused };
+    // Phase 5 replaces this guard: a shaper that signs in is not called until it can sign in.
+    const signIn = signInRefusal(shaper);
+    if (signIn) return { kind: "unavailable", reason: signIn };
     const resolution = callHeaders(server.headers, request, ctx, MCP_OWNED_HEADERS);
     if (!resolution.ok) return { kind: "unavailable", reason: resolution.reason };
     http = { headers: resolution.headers, resolved: resolution.resolved };

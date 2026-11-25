@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { ShaperSchema, type ShapingRequest } from "../src/shared/shaping.ts";
+import { ShaperSchema, SIGN_IN_REASONS, type ShapingRequest } from "../src/shared/shaping.ts";
+import { SHAPER_SIGN_IN_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
+import { applyFeatureFlagIntent } from "../src/server/feature-flags/index.ts";
 import { callHttp } from "../src/server/shaping/transports/http.ts";
 import { shapeTask } from "../src/server/shaping/engine.ts";
 import { SHAPING_CONFIG_DEFAULTS } from "../src/shared/shaping.ts";
@@ -424,4 +426,60 @@ test("an echoed caller value resolved into a header comes back redacted and mark
   for (const value of ["declared-user", "claude", "t_1"]) assert.equal(text.includes(value), false, `${value} is not in the reply`);
   assert.equal(JSON.parse(data(reply).guidance[0].body).headers["x-caller"],
     "[caller.user redacted]/[caller.agent redacted]/[caller.conversation redacted]");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Shaper sign-in, phase 3: a marked shaper is never called, and an unmarked one is unchanged.
+
+function setSignIn(enabled: boolean): void {
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: SHAPER_SIGN_IN_FLAG_ID, enabled }).ok, true);
+}
+
+function markedShaper(path: string, headers: Record<string, string> = {}): ShaperOf<"http"> {
+  return ShaperSchema.parse({
+    id: "signed", label: "Signed", stage: "select",
+    transport: { type: "http", url: `${base}${path}`, headers, auth: { type: "oauth", scope: "mcp:context" } },
+  }) as ShaperOf<"http">;
+}
+
+test("a shaper that signs in answers unavailable with the flag off and on, and its server receives nothing", async () => {
+  const count = seen.length;
+  // An unset reference proves the guard runs before any header is resolved.
+  const marked = markedShaper("/ok", { "x-api-key": "{env:SHAPING_HTTP_UNSET_KEY}" });
+  try {
+    for (const [enabled, reason] of [[false, SIGN_IN_REASONS.flagOff], [true, SIGN_IN_REASONS.signedOut]] as const) {
+      setSignIn(enabled);
+      const reply = await callHttp(request(), marked, ctx({ trace: TRACE, workUnitId: "wu_1" }));
+      assert.deepEqual(reply, { kind: "unavailable", reason }, `flag ${enabled ? "on" : "off"}`);
+    }
+  } finally { setSignIn(false); }
+  assert.equal(seen.length, count, "no request at all");
+});
+
+test("an unmarked shaper sends exactly today's request headers, with the flag off and on", async () => {
+  const pinned = {
+    connection: "keep-alive",
+    "x-caller": "declared-user",
+    traceparent: TRACE.traceparent,
+    tracestate: TRACE.tracestate,
+    "x-work-unit-id": "wu_1",
+    "content-type": "application/json",
+    accept: "application/json",
+    "accept-language": "*",
+    "sec-fetch-mode": "cors",
+    "user-agent": "node",
+    "accept-encoding": "gzip, deflate",
+  };
+  try {
+    for (const enabled of [false, true]) {
+      setSignIn(enabled);
+      const count = seen.length;
+      data(await callHttp(request(), shaper("/ok", { "x-caller": "{caller.user}" }), ctx({ trace: TRACE, workUnitId: "wu_1" })));
+      assert.equal(seen.length, count + 1, "one request");
+      const { host, "content-length": length, ...headers } = last().headers;
+      assert.equal(host, new URL(base).host);
+      assert.match(String(length), /^\d+$/);
+      assert.deepEqual(headers, pinned, `flag ${enabled ? "on" : "off"}`);
+    }
+  } finally { setSignIn(false); }
 });

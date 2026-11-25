@@ -1015,6 +1015,54 @@ and a longer one is `failed` without being read further. The call's timeout abor
   keeps its arguments: `params._meta` is part of the envelope, not of the tool's input. The
   rules, including when there is none, are in [Work units](work-units.md#task-shaping).
 
+### A shaper that signs in
+
+A remote server can require an OAuth sign-in. Its definition says so with an `auth` marker,
+on the `server` of an `mcp` shaper reached over HTTP or on the `transport` of an `http`
+shaper:
+
+```json
+{
+  "type": "mcp",
+  "tool": "get_guidance",
+  "server": {
+    "type": "http",
+    "url": "https://tools.acme.example/mcp",
+    "headers": { "x-acme-user": "{caller.user}" },
+    "auth": { "type": "oauth", "scope": "mcp:context" }
+  }
+}
+```
+
+- `type` is `oauth`, the one kind this build knows.
+- `scope` is required: 1 to 256 characters, one or more scope tokens separated by single
+  spaces. A token is visible ASCII with no `"` and no `\`. It is sent as written, with no
+  default and no fallback to the scopes the server advertises.
+- `issuer` is optional: the authorization server's URL, when it is not on the server's own
+  origin. It is HTTPS, or plain HTTP to this machine's loopback, with no user name, password,
+  query or fragment. Without it, the authorization server must be on the server's origin.
+- With `auth`, a header named `authorization`, in any letter case, is refused, because the
+  sign-in sets that header.
+- A server started locally (`stdio`) and a `command` shaper cannot carry `auth`, so a token
+  never reaches a child process.
+
+The marker names no value. The token a sign-in obtains is never part of the definition, the
+stored config or a settings backup. Settings states the sign-in wherever it states what a
+shaper calls: the import review and the shaper's row show **Signs in** with the scope and the
+authorization server's origin, and "What it is sent" names the access token and that it goes
+only to the server's origin.
+
+The sign-in itself arrives in later releases. Until then a marked shaper is a known shaper
+that is listed but never called: it is `unavailable` before any header is resolved or any
+request is made. While the **Shaper sign-in** preview (`shaper-sign-in`, see
+[Feature flags](feature-flags.md#shipped-flags)) is off its reason says the flag is off, and
+while it is on its reason says the shaper is not signed in. Both point to Settings > Task
+shaping. The schema accepts the marker whatever the flag says. A shaper with no marker sends
+exactly the requests it sent before, with the flag on or off.
+
+An older build that reads a marked shaper does not know `auth`, so it lists the shaper as
+unsupported, keeps it on every write and never calls it.
+
 ## The built-in gatherer
 
 `repository-files` ships inside Mission Control, so an operator can have named files added as

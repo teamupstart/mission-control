@@ -157,7 +157,10 @@ import {
   type TelemetryService,
 } from "./telemetry/index.ts";
 import { configureOrganizationLaunchMode } from "./environment/organization.ts";
+import { trustSystemCertificates } from "./system-trust.ts";
 
+// Before any outbound request: a TLS-inspecting proxy's root lives only in the system store.
+trustSystemCertificates();
 // Every launch mode owns the same executable snapshot before any subsystem can detect or
 // start a child. An adopted daemon ran this in its own process when it originally launched.
 await initializeExecutableEnvironment();

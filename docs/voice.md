@@ -587,6 +587,11 @@ to a commit, its exact size and its SHA-256 digest, measured by the voice spike
 a 40-character commit does not parse. The `fluidaudio` entry holds two models, 568,273,745 bytes
 (about 542 MiB) together:
 
+The daemon verifies Hugging Face's certificate against Node's bundled roots, any
+`NODE_EXTRA_CA_CERTS` it inherited, and the operating system's certificate store, so a download
+through a TLS-inspecting proxy whose root the machine already trusts succeeds even when the daemon
+was started from the Finder. Verification is never turned off.
+
 | Model | Repository and commit | Why |
 | --- | --- | --- |
 | Parakeet TDT 0.6B v2, Core ML | `FluidInference/parakeet-tdt-0.6b-v2-coreml` at `ee09c569f73759e6d44c9bd16766f477b2b36d39`: the Encoder, Decoder, JointDecision and Preprocessor models and `parakeet_vocab.json` | The recognizer |

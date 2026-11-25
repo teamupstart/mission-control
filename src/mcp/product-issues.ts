@@ -100,7 +100,7 @@ function submitResult(result: ProductIssueSubmitResult): ProductIssueMcpResult {
  * seeing the exact public content first.
  */
 export async function reportProductIssueWithConfirmation(
-  draft: ProductIssueDraft,
+  { expectedTarget, ...draft }: ProductIssueDraft & { expectedTarget?: string },
   client: ProductIssueRequest["client"],
   deps: ProductIssueMcpDependencies,
 ): Promise<ProductIssueMcpResult> {
@@ -122,6 +122,12 @@ export async function reportProductIssueWithConfirmation(
     return { text: `Could not prepare the public product issue: ${detail}`, isError: true };
   }
   const preview = parsedPreview.data;
+  if (expectedTarget !== undefined && preview.target.toLowerCase() !== expectedTarget.toLowerCase()) {
+    return {
+      text: "The configured issue repository differs from the one searched. Check reporting preflight and search the current destination for duplicates before requesting approval again.",
+      isError: true,
+    };
+  }
   const reviewId = await deps.createReview({
     title: `Report product issue: ${preview.draft.title}`,
     body: formatProductIssueReview(preview),

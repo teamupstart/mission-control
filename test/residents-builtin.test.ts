@@ -86,6 +86,30 @@ test("Agent Shepherd ships as a launchable built-in whose whole role is its docu
   assert.equal(manager().settingsProblem(shepherd.settings), null, "the shipped settings are launchable");
 });
 
+test("Bug Fix Inspector ships with a fixed 45-minute cadence and rolling $20 guardrail", () => {
+  store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 1);
+  const inspector = store.getResidentProfile(builtinResidentProfileId("bug-fix-inspector"))!;
+  assert.equal(inspector.builtin, true);
+  assert.equal(inspector.name, "Bug Fix Inspector");
+  const { execution, loop, authority } = inspector.settings;
+  assert.deepEqual(execution, { agent: "claude", model: "claude-sonnet-5-5", effort: "xhigh" });
+  assert.deepEqual([loop.delaySeconds, loop.minDelaySeconds, loop.maxDelaySeconds], [2700, 2700, 2700]);
+  assert.equal(loop.spendCapUsd, 20);
+  assert.match(inspector.settings.identity.description, /Launching this resident asks it to prepare GitHub issue drafts.*first and scheduled passes/);
+  assert.match(inspector.settings.instructions.markdown, /standing request to prepare drafts for this run/);
+  assert.match(inspector.settings.instructions.markdown, /On the first pass and every scheduled pass, call `report_product_issue` for each new confirmed defect/);
+  assert.match(inspector.settings.instructions.markdown, /Only the operator selecting \*\*Submit public issue\*\* for that draft authorizes publication/);
+  assert.match(inspector.settings.instructions.markdown, /last successfully inspected time/);
+  assert.match(inspector.settings.instructions.markdown, /retry the oldest uncovered interval first/);
+  assert.match(inspector.settings.instructions.markdown, /Follow `history.next` as the next call’s `history` until the pages cover the missed interval/);
+  assert.match(inspector.settings.instructions.markdown, /record the source, time range and reason as unavailable/);
+  assert.match(inspector.settings.instructions.markdown, /stop retrying it, and continue/);
+  assert.match(inspector.settings.instructions.markdown, /`expectedTarget` set to the exact owner\/repository you searched/);
+  assert.equal(authority.inspectOtherSessions, true);
+  assert.equal(authority.controlOtherSessions, false);
+  assert.equal(manager().settingsProblem(inspector.settings), null);
+});
+
 test("a document without settings, or settings without a document, fails at load", () => {
   assert.throws(() => builtinResidentsFrom([{ slug: "orphan", instructionsMarkdown: "# Orphan\n" }], {}), /has no settings/);
   assert.throws(() => builtinResidentsFrom([], { ghost: {} }), /has no residents\/ghost\.md/);
@@ -185,7 +209,7 @@ test("an operator profile that held the name before it shipped keeps it and its 
   store.reconcileBuiltinResidentProfiles(BUILTIN_RESIDENTS, 2);
 
   const live = store.listLiveResidentProfiles();
-  assert.deepEqual(live.map((profile) => profile.id).sort(), ["builtin:agent-shepherd", "mine"]);
+  assert.deepEqual(live.map((profile) => profile.id).sort(), [SHEPHERD, "mine"]);
   const saved = store.updateResidentProfile({ id: "mine", expectedRevision: 1, settings: settings("Agent Shepherd", "edited"), at: 3 });
   assert.equal(saved.status, "ok", "keeping its own name is not a rename into the built-in's");
 

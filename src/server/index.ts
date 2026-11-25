@@ -5,7 +5,7 @@
 import "./migrate-state.ts";
 import { unseenReportsNote } from "@shared/reports.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "./feature-flags/index.ts";
-import { SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { BUG_FIX_INSPECTOR_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
@@ -107,7 +107,7 @@ import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
 import { ResidentManager } from "./residents/manager.ts";
 import { BUILTIN_RESIDENTS } from "./residents/builtin-residents.ts";
-import { reconcileBuiltinResidentProfiles } from "./residents/store.ts";
+import { listLiveResidentProfiles, reconcileBuiltinResidentProfiles } from "./residents/store.ts";
 import { ResidentMcpCatalogCache, readGlobalMcp } from "./residents/mcp-catalog.ts";
 import { startScheduleManager } from "./schedules/loop.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -237,7 +237,15 @@ try {
 }
 const registry = new Registry();
 // One bridge for every writer, including settings restore and daemon listeners.
-const stopFeatureFlags = onFeatureFlagsChanged((config) => registry.emitFeatureFlags(config));
+let inspectorAvailable = featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+const stopFeatureFlags = onFeatureFlagsChanged((config) => {
+  registry.emitFeatureFlags(config);
+  const available = featureEnabled(BUG_FIX_INSPECTOR_FLAG_ID);
+  if (available !== inspectorAvailable) {
+    inspectorAvailable = available;
+    registry.replaceResidentProfiles(listLiveResidentProfiles());
+  }
+});
 // A declared wait holds idle automation, so it must not outlive the preview that draws it on the
 // card: switching the preview off ends every wait, and a daemon starting with it off keeps none.
 const endAwaitingsWhenOff = (): void => {

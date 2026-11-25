@@ -135,8 +135,8 @@ export function matchesResidentDrawerFilter(
       ...residentLoopActions(mark).map(({ label }) => label),
       actionError ?? null,
     );
-    if (mark.controlOtherSessions || session.sessionControlEnabled === true) {
-      fields.push(residentControlBadge(session.sessionControlEnabled === true));
+    if (mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) {
+      fields.push(session.sessionInspectionOnly ? "Read-only inspection" : residentControlBadge(session.sessionControlEnabled === true));
     }
   }
   return matchesEveryWord(fields, query);
@@ -504,7 +504,7 @@ function ResidentDrawerCard({ entry, selected, collapsed, onSelect, onOpen, onOp
             </Tooltip>
             <ResidentLoopControls mark={mark} feedback={loopFeedback} />
             <span className="residents-pop-spacer" aria-hidden />
-            {(mark.controlOtherSessions || session.sessionControlEnabled === true) && (
+            {(mark.controlOtherSessions || session.sessionControlEnabled === true || session.sessionInspectionOnly === true) && (
               <ResidentControlStatus session={session} name={mark.name} badge />
             )}
           </div>

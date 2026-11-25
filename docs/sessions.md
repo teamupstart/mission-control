@@ -2891,9 +2891,9 @@ The MCP tools are:
   with the same label (compared ignoring case and surrounding spaces), since the answer
   comes back as the chosen label. The tool returns `Not asked: <reason>` as an error, and
   nothing waits on the human
-- `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
-  explicitly asks for a Mission Control product report, prepare a public GitHub issue and
-  **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
+- `report_product_issue(type, title, details, attachmentUploadIds?, expectedTarget?)` - prepare a draft when the user
+  requests a Mission Control report. Launching the built-in Bug Fix Inspector is a standing request
+  for drafts on that run's first and scheduled passes. For each issue, **block** on a dashboard review containing the exact daemon-derived repository, labels, body,
   and safe environment summary. The only publishing choice is **Submit public issue**; Dismiss
   and any non-human or malformed answer publish nothing. `attachmentUploadIds` may contain up to
   five unique daemon-issued image locators, never filesystem paths; screenshots require `gh`

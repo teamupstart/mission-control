@@ -3,7 +3,8 @@
 // so no engine and no model tokens are involved.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LAUNCHER_ENABLED } from "../src/mod/constants.ts";
+import { register } from "../src/mod/register.ts";
+import { DISPATCH_TOOL_ID, LAUNCHER_ENABLED } from "../src/mod/constants.ts";
 import { runDispatchCommand, runLauncher } from "../src/mod/flows/command.ts";
 import { PANE_WIDER_NOTICE } from "../src/mod/flows/command.ts";
 import { createFlowGate } from "../src/mod/flows/gate.ts";
@@ -30,6 +31,7 @@ import {
   CANNED_INBOX,
   FAKE_REPO_ROOT,
   FAKE_SESSION_ID,
+  FAKE_TOKEN,
   createFakeDaemon,
   createFakeModHost,
   type FakeDaemon,
@@ -114,6 +116,51 @@ function world(options: { host?: Omit<FakeModHostOptions, "daemon">; refuseRepo?
 }
 
 const createdDrafts = (daemon: FakeDaemon) => daemon.requests.filter((r) => r.pattern === "/dispatch/drafts");
+
+// The installed Claude kit has no tool.run. Exercise the actual registered hook
+// on a host that supplies that post-permission event and the approved arguments.
+test("only an allowed tool execution can create a dispatch draft and return the receipt", async () => {
+  type Hook = Parameters<Parameters<typeof register>[0]>[2];
+  const hooks = new Map<string, Hook>();
+  register((name, ...args: unknown[]) => { hooks.set(name, args.at(-1) as Hook); }, {});
+  const { daemon, filed } = world();
+  const noop = () => {};
+  const engine = {
+    env: { get: async name => name === "MISSION_API_TOKEN" ? FAKE_TOKEN : undefined },
+    fs: { read: async () => FAKE_TOKEN }, session: { id: async () => FAKE_SESSION_ID },
+    command: { register: async () => {} }, tool: { register: async () => {} },
+    http: { fetch: async (url, init) => daemon.handle(init?.method ?? "GET", url,
+      init?.body ? JSON.parse(init.body) : undefined, init?.headers) },
+    clock: { every: () => ({ cancel: noop }) },
+    ui: { invalidate: noop, log: noop, toast: noop, status: noop, open: async () => ({ isPlaced: true }),
+      close: async () => {}, ask: async () => "Start now", resolve: () => { throw Error("unused"); } },
+    state: { set: async () => {}, get: async () => undefined }, prompt: { fill: async () => ({ isFilled: true }) },
+  } satisfies Parameters<Hook>[0];
+  const event = { cwd: FAKE_REPO_ROOT, isInteractive: true, tool: DISPATCH_TOOL_ID, brief: "original brief" };
+  const pass = Object.assign(noop, { event: "session.start" });
+  const tool = hooks.get("tool.*")!;
+  const run = Object.assign(() => assert.fail("tool.run fell through"), { event: "tool.run" });
+  assert.match(JSON.stringify(await tool(engine, event, run)), /not available in this session/);
+  await hooks.get("session.start")!(engine, event, pass);
+  await new Promise(resolve => setImmediate(resolve));
+  try {
+    assert.match(JSON.stringify(await tool(engine, { ...event, brief: " " }, run)), /needs a brief/);
+    const approved = { ...event, brief: "approved brief", context: "approved context" };
+    const pending = tool(engine, event, Object.assign(() => {
+      assert.equal(createdDrafts(daemon).length, 0);
+      return tool(engine, approved, run);
+    }, { event: "tool.call" }));
+    assert.match(JSON.stringify(await tool(engine, approved, run)), /already open/);
+    assert.match(JSON.stringify(await pending), /Started mc-new1/);
+    const drafts = createdDrafts(daemon);
+    assert.equal(drafts.length, 1);
+    assert.equal(HomeDispatchDraftCreateSchema.parse(drafts[0]!.body).words, approved.brief);
+    assert.equal(HomeDispatchDraftCreateSchema.parse(drafts[0]!.body).context, approved.context);
+    assert.deepEqual(filed.map(f => f.choice), ["start"]);
+  } finally {
+    await hooks.get("session.end")!(engine, event, pass);
+  }
+});
 
 test("the fast path: a kind and the description start the dialogs at After work, and Start now files and starts the task", async () => {
   const { daemon, fake, filed } = world();

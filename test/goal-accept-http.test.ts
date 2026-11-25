@@ -127,16 +127,19 @@ test("200 resolves the pending instruction as steering, emits once, and is idemp
   assert.equal(readSessionGoalSteering(key, 2).length, 1);
 });
 
-test("accepting the objective leaves a pending no-PR instruction unresolved", async () => {
+for (const [scope, restriction] of [
+  ["no-pr", "Do not open a PR."],
+  ["keep-local", "Keep this local until I review it."],
+]) test(`accepting the objective leaves a pending ${scope} instruction unresolved`, async () => {
   const registry = new Registry();
   const app = mkApp(registry);
-  const s = sdkSession(registry, "accept-handoff-pending");
-  const key = "agent:accept-handoff-pending";
+  const s = sdkSession(registry, `accept-handoff-pending-${scope}`);
+  const key = `agent:accept-handoff-pending-${scope}`;
   registry.captureAcceptedPrompt(s.id, "Implement heading counts.", key);
   registry.resolveGoal(s.id, {
     relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [],
   }, "Implement heading counts.");
-  registry.captureAcceptedPrompt(s.id, "Do not open a PR.", key);
+  registry.captureAcceptedPrompt(s.id, restriction, key);
   registry.captureAcceptedPrompt(s.id, "Run focused tests.", key);
   const pending = registry.getGoal(s.id);
   const response = await accept(app, s.id);

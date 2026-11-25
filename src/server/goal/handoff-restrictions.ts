@@ -4,6 +4,7 @@ const STOP_DIRECTIVE = /^(?:please\s+)?stop(?:\s+(?:here|now|for now|(?:this|the
 const NO_PR_DIRECTIVE = /^(?:please\s+)?(?:no\s+|(?:do not|don['’]t)\s+(?:open|create|make|raise|publish|file|submit(?:\s+(?:this|it)\s+as)?)\s+(?:(?:a|the|any)\s+)?)(?:pr|pull request)s?(?:\s+for\s+this(?:\s+(?!yourself\b)[a-z][a-z0-9-]*)*)?$/i;
 const NO_REVIEW_DIRECTIVE = /^(?:please\s+)?(?:do not|don['’]t)\s+(?:submit|send)\s+(?:(?:this|it|the (?:work|change))\s+)?for\s+review(?:\s+or\s+open\s+(?:a\s+)?(?:pr|pull request))?$/i;
 const NO_SHIPPING_DIRECTIVE = /^(?:please\s+)?(?:do not|don['’]t)\s+ship(?:\s+(?:this|it|the (?:work|change)))?$/i;
+const KEEP_LOCAL_DIRECTIVE = /^(?:please\s+)?keep\s+(?:this|it|the (?:work|change))\s+local$/i;
 const DIRECTIVE_JOIN = /(\s*,\s*(?:(?:and|but)\s+)?|\s+(?:and|but)\s+)/i;
 const LIST_MARKER = /^\s*(?:[-+*]|\d+[.)])\s+/;
 
@@ -31,6 +32,7 @@ function restrictionParts(clause: string, listItem: boolean, nextClause = ""): b
     const holdsPublication = NO_PR_DIRECTIVE.test(unconditional) || NO_REVIEW_DIRECTIVE.test(unconditional);
     return (holdsPublication && (!delegates || unconditional !== directive))
       || NO_SHIPPING_DIRECTIVE.test(unconditional)
+      || KEEP_LOCAL_DIRECTIVE.test(unconditional)
       || PERSONAL_PR.test(directive)
       || (STOP_DIRECTIVE.test(directive) && (!/^stop$/i.test(directive) || (!listItem && parts.length === 1)));
   });

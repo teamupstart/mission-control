@@ -55,6 +55,7 @@ test("release removes recognized and annotated restrictions and preserves the de
     "- Do not open a PR.",
     "1. Do not open a PR.",
     "Do not ship this yet.",
+    "Keep this local until I review it.",
     "Leave opening the PR to me.",
     contextualHandoffRestriction("Keep this local until I review it."),
   ]) {

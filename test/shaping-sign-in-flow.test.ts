@@ -266,13 +266,16 @@ test("an exchange the server refuses for its client is client_rejected, never a 
   secrets.add(code);
   const stranger: SignInClient = { ...begun.client, clientId: "fake-client-unknown" };
   const from = fake.requests.length;
-  failed(await exchange(target(fake), discovery, stranger, { code, codeVerifier: begun.codeVerifier, redirectUri: REDIRECT_URI }, options), "client_rejected");
+  const rejected = failed(await exchange(target(fake), discovery, stranger, { code, codeVerifier: begun.codeVerifier, redirectUri: REDIRECT_URI }, options), "client_rejected");
+  // The token endpoint's own OAuth error reaches the reason, not only a fixed sentence.
+  assert.match(rejected.reason, /no longer accepts this client: the server answered invalid_client\./);
   assert.deepEqual(paths(since(fake, from)), ["POST /token"]);
 
   const wrongVerifier = `${begun.codeVerifier.slice(0, -2)}xx`;
   secrets.add(wrongVerifier);
   const again = fake.requests.length;
-  failed(await exchange(target(fake), discovery, begun.client, { code, codeVerifier: wrongVerifier, redirectUri: REDIRECT_URI }, options), "sign_in_again");
+  const spent = failed(await exchange(target(fake), discovery, begun.client, { code, codeVerifier: wrongVerifier, redirectUri: REDIRECT_URI }, options), "sign_in_again");
+  assert.match(spent.reason, /refused the grant: the server answered invalid_grant: the code or its verifier does not match/);
   assert.deepEqual(paths(since(fake, again)), ["POST /token"]);
   // The code was never spent, so the right verifier still finishes the sign-in.
   noteTokens(ok(await exchange(target(fake), discovery, begun.client, { code, codeVerifier: begun.codeVerifier, redirectUri: REDIRECT_URI }, options)).tokens);
@@ -559,13 +562,99 @@ test("a discovery made for another target, or a client bound to another issuer o
   assert.match(failed(await begin(target(fake), signed.discovery, otherRedirect, REDIRECT_URI, options), "refused").reason, /registered for another redirect URI/);
   assert.match(failed(await exchange(target(fake), signed.discovery, otherRedirect, grant, options), "refused").reason, /registered for another redirect URI/);
   // A refresh or a revocation with a client bound elsewhere sends its token nowhere.
-  assert.match(failed(await refresh(signed.discovery, otherIssuer, signed.tokens.refreshToken!, options), "retry").reason, /registered with another authorization server/);
+  assert.match(failed(await refresh(signed.discovery, otherIssuer, signed.tokens.refreshToken!, options), "sign_in_again").reason, /registered with another authorization server/);
   assert.match(failed(await revoke(signed.discovery, otherIssuer, signed.tokens.refreshToken!, options), "refused").reason, /registered with another authorization server/);
   assert.match(failed(await revoke(signed.discovery, otherIssuer, signed.tokens.accessToken, options), "refused").reason, /registered with another authorization server/);
 
   assert.deepEqual(since(fake, from), []);
   // The refused attempts spent nothing: the real client still refreshes.
   noteTokens(ok(await refresh(signed.discovery, signed.client, signed.tokens.refreshToken!, options)).tokens);
+});
+
+test("a definite answer from the token endpoint stops the retrying, and only a transient one is retry", async () => {
+  fake.resetModes();
+  const signed = await signIn(fake, target(fake));
+  const token = signed.tokens.refreshToken!;
+  // Each status page repeats the request it got, the refresh token included.
+  const cases = [
+    [{ status: { "/token": 403 } }, "sign_in_again", /HTTP 403/],
+    [{ status: { "/token": 404 } }, "sign_in_again", /HTTP 404/],
+    [{ refresh: "invalid_scope" }, "sign_in_again", /invalid_scope: the scope is no longer granted/],
+    [{ redirect: "/token" }, "sign_in_again", /redirected the sign-in elsewhere/],
+    [{ status: { "/token": 408 } }, "retry", /HTTP 408/],
+    [{ status: { "/token": 429 } }, "retry", /HTTP 429/],
+    [{ status: { "/token": 502 } }, "retry", /HTTP 502/],
+  ] as const;
+  for (const [mode, code, reason] of cases) {
+    fake.resetModes();
+    fake.setMode(mode);
+    const from = fake.requests.length;
+    const failure = failed(await refresh(signed.discovery, signed.client, token, options), code);
+    assert.match(failure.reason, reason, JSON.stringify(mode));
+    assert.ok(!failure.reason.includes(token), JSON.stringify(mode));
+    assert.deepEqual(paths(since(fake, from)), ["POST /token"], JSON.stringify(mode));
+  }
+  fake.resetModes();
+  // None of those spent the refresh token.
+  noteTokens(ok(await refresh(signed.discovery, signed.client, token, options)).tokens);
+
+  // At the exchange a definite answer is failed, since the code is single use, and a 5xx is retry.
+  for (const [status, code] of [[403, "failed"], [503, "retry"]] as const) {
+    const { discovery } = ok(await discover(target(fake), options));
+    const begun = ok(await begin(target(fake), discovery, null, REDIRECT_URI, options));
+    secrets.add(begun.codeVerifier);
+    const authorizationCode = (await authorizeInBrowser(begun.authorizationUrl)).get("code")!;
+    secrets.add(authorizationCode);
+    fake.setMode({ status: { "/token": status } });
+    const failure = failed(await exchange(target(fake), discovery, begun.client, { code: authorizationCode, codeVerifier: begun.codeVerifier, redirectUri: REDIRECT_URI }, options), code);
+    assert.match(failure.reason, new RegExp(`HTTP ${status}`));
+    assert.ok(!failure.reason.includes(authorizationCode) && !failure.reason.includes(begun.codeVerifier), failure.reason);
+    fake.resetModes();
+  }
+});
+
+test("a blank scope is refused before any request, never widened to what the server advertises", async () => {
+  fake.resetModes();
+  const signed = await signIn(fake, target(fake));
+  const grant = { code: "fake-code-blank", codeVerifier: signed.codeVerifier, redirectUri: REDIRECT_URI };
+  secrets.add(grant.code);
+  const from = fake.requests.length;
+  for (const scope of ["", "   "]) {
+    const blank = target(fake, { scope });
+    assert.match(failed(await begin(blank, signed.discovery, null, REDIRECT_URI, options), "refused").reason, /names no scope/);
+    assert.match(failed(await begin(blank, signed.discovery, signed.client, REDIRECT_URI, options), "refused").reason, /names no scope/);
+    assert.match(failed(await exchange(blank, signed.discovery, signed.client, grant, options), "refused").reason, /names no scope/);
+  }
+  assert.deepEqual(since(fake, from), []);
+});
+
+test("resource metadata is absent only on a 404 or a 410; a 408, 429 or 5xx is retry and any other status a refusal", async () => {
+  const wellKnown = "/.well-known/oauth-protected-resource/mcp";
+  const cases = [[408, "retry"], [429, "retry"], [503, "retry"], [401, "refused"], [403, "refused"]] as const;
+  for (const [status, code] of cases) {
+    fake.resetModes();
+    fake.setMode({ status: { [wellKnown]: status } });
+    const from = fake.requests.length;
+    const failure = failed(await discover(target(fake), options), code);
+    assert.match(failure.reason, new RegExp(`HTTP ${status} for its resource metadata`));
+    // Neither is taken for absence, so the root URL and the authorization server are never asked.
+    assert.deepEqual(paths(since(fake, from)), [`GET ${wellKnown}`], String(status));
+  }
+
+  // A 410 falls back to the root URL, as a 404 does, and the server is then its own authorization server.
+  fake.resetModes();
+  fake.setMode({ status: { [wellKnown]: 410 } });
+  const gone = ok(await discover(target(fake), options)).discovery;
+  assert.equal(gone.resourceMetadata, null);
+  assert.equal(gone.resource, null);
+
+  // The authorization server's metadata: a 503 and a 429 are retry, not "publishes none".
+  for (const status of [503, 429]) {
+    fake.resetModes();
+    fake.setMode({ status: { "/.well-known/oauth-authorization-server": status } });
+    assert.match(failed(await discover(target(fake), options), "retry").reason, new RegExp(`HTTP ${status}`));
+  }
+  fake.resetModes();
 });
 
 test("no sign-in request carries a cookie, a carrier or baggage, and codes and refresh tokens reach only /token", () => {

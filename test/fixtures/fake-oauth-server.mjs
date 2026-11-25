@@ -15,7 +15,7 @@
 // single use and rotate.
 //
 // Modes, set with `setMode`:
-//   refresh        "ok" | "invalid_grant" | "invalid_client" | "503" | "close"
+//   refresh        "ok" | "invalid_grant" | "invalid_client" | "invalid_scope" | "503" | "close"
 //   registration   "ok" | "secret" | "refuse" | "auth-method" (registers a client_secret_basic client with no secret)
 //   metadata       "ok" | "wrong-issuer" | "foreign-endpoint" | "no-s256" | "no-registration" | "no-code"
 //   resourceMetadata "ok" | "none" | "foreign-issuer" (names elsewhereUrl as its authorization server)
@@ -24,6 +24,7 @@
 //   stall          a path that never answers
 //   oversize       a path that answers 100 KiB
 //   redirect       a path that answers 307 to elsewhereUrl
+//   status         { [path]: status }: that path answers an HTML status page repeating the request body
 //   iss            true: the `/authorize` redirect carries `iss`; or a string to send instead
 //   tokens         "full" | "no-refresh" (no refresh token, and a refresh does not rotate) | "no-expiry" | "no-scope"
 //   revoke         "ok" | "400" | "429" | "503" | "close"; each error body repeats the token
@@ -36,7 +37,7 @@ const SCOPES_ADVERTISED = ["mcp:context", "mcp:other", "mcp", "offline_access"];
 
 const DEFAULT_MODES = {
   refresh: "ok", registration: "ok", metadata: "ok", resourceMetadata: "ok", shape: "ok",
-  stall: null, oversize: null, redirect: null, iss: false, tokens: "full", revoke: "ok",
+  stall: null, oversize: null, redirect: null, status: null, iss: false, tokens: "full", revoke: "ok",
 };
 
 async function listen(handler) {
@@ -152,6 +153,11 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     if (modes.stall === path) return new Promise(() => {});
     if (modes.oversize === path) return json(res, 200, { padding: "x".repeat(100 * 1024) });
     if (modes.redirect === path) { res.writeHead(307, { location: `${elsewhere.origin}${path}${url.search}` }).end(); return; }
+    // A status page that is not an OAuth reply, as a gateway or proxy answers, repeating the request it got.
+    if (modes.status?.[path]) {
+      res.writeHead(modes.status[path], { "content-type": "text/html" }).end(`<html><body>HTTP ${modes.status[path]} for ${path}: ${body}</body></html>`);
+      return;
+    }
     const held = holds.get(path);
     if (held) await held.promise;
 
@@ -216,6 +222,7 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
         switch (modes.refresh) {
           case "invalid_grant": return oauthError(res, 400, "invalid_grant", "the refresh token was revoked");
           case "invalid_client": return oauthError(res, 401, "invalid_client", "the client is no longer accepted");
+          case "invalid_scope": return oauthError(res, 400, "invalid_scope", "the scope is no longer granted");
           case "503": res.writeHead(503, { "content-type": "text/plain" }).end(`unavailable for ${form.get("refresh_token")}`); return;
           case "close": req.socket.destroy(); return;
         }

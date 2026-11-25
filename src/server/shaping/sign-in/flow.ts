@@ -21,7 +21,7 @@
 import { randomBytes } from "node:crypto";
 import { auth, discoverAuthorizationServerMetadata, refreshAuthorization, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
-  InvalidClientError, InvalidGrantError, OAuthError, ServerError, TemporarilyUnavailableError, TooManyRequestsError,
+  InvalidClientError, InvalidGrantError, OAuthError, TemporarilyUnavailableError, TooManyRequestsError,
   UnauthorizedClientError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import {
@@ -79,8 +79,10 @@ export interface SignInTokens {
 /**
  * Why a step failed. `refused`: Mission Control's own rules refused it, and nothing was sent past
  * the refusal. `client_rejected`: the server no longer accepts the client. `sign_in_again`: the
- * grant is spent or refused. `retry`: the server or the network failed, and a later try may work.
- * `failed`: the server refused for another reason.
+ * grant is spent or refused. `retry`: a transient failure that a later try may get past - the
+ * network, a timeout, a 5xx, a 408, a 429 or `temporarily_unavailable`. `failed`: the server gave
+ * a definite answer that the same request will get again, such as any other 4xx, a status page
+ * that is not an OAuth reply, or an unfollowed redirect.
  */
 export type SignInFailureCode = "refused" | "client_rejected" | "sign_in_again" | "retry" | "failed";
 
@@ -138,6 +140,7 @@ export function signInClientMetadata(redirectUri: string): OAuthClientMetadata {
  */
 export async function discover(target: SignInTarget, options: FlowOptions = {}): Promise<DiscoverResult> {
   const secrets: ResolvedValue[] = [];
+  let seen: Seen | undefined;
   try {
     const server = parseUrl(target.url);
     if (!server) return refused("The shaper's server URL is not a URL.");
@@ -151,7 +154,9 @@ export async function discover(target: SignInTarget, options: FlowOptions = {}):
     }
     const authOrigin = issuer?.origin ?? server.origin;
     const origins = [...new Set([server.origin, authOrigin])];
-    const fetchFn = signInFetch(origins, options);
+    const watch = watched(signInFetch(origins, options));
+    seen = watch.seen;
+    const fetchFn = watch.fetchFn;
 
     const resourceMetadata = await readResourceMetadata(server, fetchFn);
     let authorizationServer: string;
@@ -178,13 +183,21 @@ export async function discover(target: SignInTarget, options: FlowOptions = {}):
       authorizationServer = own;
     }
 
+    const mark = watch.seen.statuses.length;
     const metadata = await discoverAuthorizationServerMetadata(authorizationServer, { fetchFn });
-    if (!metadata) return refused(`${authOrigin} publishes no authorization server metadata.`);
+    if (!metadata) {
+      // The SDK moves past any 4xx to the next well-known URL, so a 408 or a 429 can read as absence.
+      const transient = watch.seen.statuses.slice(mark).find(transientStatus);
+      if (transient !== undefined) {
+        return { ok: false, code: "retry", reason: `${authOrigin} answered HTTP ${transient} for its authorization server metadata; a later try may work.` };
+      }
+      return refused(`${authOrigin} publishes no authorization server metadata.`);
+    }
     const problem = metadataProblem(metadata, authorizationServer, authOrigin);
     if (problem) return refused(`The authorization server's metadata was refused: ${problem}`);
     return { ok: true, discovery: { serverUrl: target.url, configuredIssuer: target.issuer, authorizationServer, resource, resourceMetadata, metadata, origins } };
   } catch (error) {
-    return failure(classify(error), "Could not read the server's sign-in metadata:", error, secrets);
+    return failure(classify(error, seen), "Could not read the server's sign-in metadata:", error, secrets, seen);
   }
 }
 
@@ -204,8 +217,9 @@ export async function begin(
 ): Promise<BeginResult> {
   const now = options.now ?? Date.now;
   const secrets: ResolvedValue[] = [];
+  const { fetchFn, seen } = watched(signInFetch(discovery.origins, options));
   try {
-    const mismatch = discoveryMismatch(target, discovery) ?? (client ? clientMismatch(client, discovery, redirectUri) : null);
+    const mismatch = scopeProblem(target) ?? discoveryMismatch(target, discovery) ?? (client ? clientMismatch(client, discovery, redirectUri) : null);
     if (mismatch) return refused(mismatch, secrets);
     const state = randomBytes(32).toString("base64url");
     let registered: SignInClient | null = client;
@@ -222,7 +236,7 @@ export async function begin(
       },
       onRedirect: (url) => { authorizationUrl = url; },
     });
-    const result = await auth(provider, { serverUrl: target.url, scope: target.scope, fetchFn: signInFetch(discovery.origins, options) });
+    const result = await auth(provider, { serverUrl: target.url, scope: target.scope, fetchFn });
     const url = authorizationUrl as URL | null;
     if (result !== "REDIRECT" || !url || !codeVerifier || !registered) {
       return refused("The sign-in did not produce an authorization URL.", secrets);
@@ -231,7 +245,7 @@ export async function begin(
     if (urlProblem) return refused(`The authorization URL was refused: ${urlProblem}.`, secrets);
     return { ok: true, authorizationUrl: url.href, state, codeVerifier, client: registered };
   } catch (error) {
-    return failure(classify(error), "Could not start the sign-in:", error, secrets);
+    return failure(classify(error, seen), "Could not start the sign-in:", error, secrets, seen);
   }
 }
 
@@ -253,8 +267,9 @@ export async function exchange(
     { name: "authorization code", value: grant.code },
     { name: "PKCE verifier", value: grant.codeVerifier },
   ];
+  const { fetchFn, seen } = watched(signInFetch(discovery.origins, options));
   try {
-    const mismatch = discoveryMismatch(target, discovery) ?? clientMismatch(client, discovery, grant.redirectUri);
+    const mismatch = scopeProblem(target) ?? discoveryMismatch(target, discovery) ?? clientMismatch(client, discovery, grant.redirectUri);
     if (mismatch) return refused(mismatch, secrets);
     if (grant.iss != null && !issuersMatch(grant.iss, discovery.metadata.issuer)) {
       return refused(`The sign-in was answered by ${quote(grant.iss)}, not the authorization server it was started with.`, secrets);
@@ -268,22 +283,25 @@ export async function exchange(
       },
     });
     const result = await auth(provider, {
-      serverUrl: target.url, scope: target.scope, authorizationCode: grant.code, fetchFn: signInFetch(discovery.origins, options),
+      serverUrl: target.url, scope: target.scope, authorizationCode: grant.code, fetchFn,
     });
     const tokens = saved as OAuthTokens | null;
     if (result !== "AUTHORIZED" || !tokens) return { ok: false, code: "failed", reason: "The authorization server issued no tokens." };
     return { ok: true, tokens: signInTokens(tokens, target.scope, now()) };
   } catch (error) {
-    return failure(classify(error), "Could not finish the sign-in:", error, secrets);
+    return failure(classify(error, seen), "Could not finish the sign-in:", error, secrets, seen);
   }
 }
 
 /**
  * Exchanges a refresh token for a new pair at the token endpoint, with the client that obtained
- * it. Answers the new tokens, or `sign_in_again` (`invalid_grant`), `client_rejected`
- * (`invalid_client`, `unauthorized_client`), or `retry` for anything else: a network error, a
- * timeout, a 5xx, `temporarily_unavailable`, a 429. A refresh token the server does not rotate
- * is kept.
+ * it. Answers the new tokens, or `client_rejected` (`invalid_client`, `unauthorized_client`),
+ * `retry` for a transient failure (a network error, a timeout, a 5xx, a 408, a 429,
+ * `temporarily_unavailable`), or `sign_in_again` for every definite answer: `invalid_grant`, any
+ * other OAuth error or 4xx, a status page that is not an OAuth reply, a refused redirect, or a
+ * client bound to another authorization server. Those get the same answer however often they
+ * are asked, so retrying them would never end and never ask the operator to sign in. A refresh
+ * token the server does not rotate is kept.
  */
 export async function refresh(
   discovery: SignInDiscovery,
@@ -293,22 +311,23 @@ export async function refresh(
 ): Promise<RefreshResult> {
   const now = options.now ?? Date.now;
   const secrets: ResolvedValue[] = [{ name: "refresh token", value: refreshToken }];
+  const { fetchFn, seen } = watched(signInFetch(discovery.origins, options));
   try {
     const mismatch = clientMismatch(client, discovery, client.redirectUri);
-    if (mismatch) return { ok: false, code: "retry", reason: bound(redactResolved(mismatch, secrets)) };
+    if (mismatch) return { ok: false, code: "sign_in_again", reason: bound(redactResolved(mismatch, secrets)) };
     const tokens = await refreshAuthorization(discovery.authorizationServer, {
       metadata: discovery.metadata,
       clientInformation: sdkClient(client, discovery),
       refreshToken,
       ...(discovery.resource ? { resource: discovery.resource } : {}),
-      fetchFn: signInFetch(discovery.origins, options),
+      fetchFn,
     });
     secrets.push(...tokenSecrets(tokens));
     return { ok: true, tokens: signInTokens(tokens, client.scope, now()) };
   } catch (error) {
-    const code = classify(error);
-    const narrowed = code === "sign_in_again" || code === "client_rejected" ? code : "retry";
-    return failure(narrowed, "Could not renew the sign-in:", error, secrets);
+    const code = classify(error, seen);
+    const narrowed = code === "client_rejected" || code === "retry" ? code : "sign_in_again";
+    return failure(narrowed, "Could not renew the sign-in:", error, secrets, seen);
   }
 }
 
@@ -337,7 +356,7 @@ export async function revoke(
       body: new URLSearchParams({ token, client_id: client.clientId }),
     });
     if (response.ok) return { ok: true, revoked: true };
-    const code: SignInFailureCode = response.status >= 500 || response.status === 429 ? "retry" : "failed";
+    const code: SignInFailureCode = transientStatus(response.status) ? "retry" : "failed";
     return { ok: false, code, reason: bound(redactResolved(`The authorization server did not revoke the token: HTTP ${response.status}.`, secrets)) };
   } catch (error) {
     return failure(classify(error), "Could not revoke the token:", error, secrets);
@@ -414,6 +433,16 @@ function sdkClient(client: SignInClient, discovery: SignInDiscovery): OAuthClien
   };
 }
 
+/**
+ * Why `target` names no scope to ask for, or null. Given none, the SDK asks for every scope the
+ * server advertises (`auth.js` line 274), and an empty string counts as none (S5).
+ */
+function scopeProblem(target: SignInTarget): string | null {
+  return target.scope.trim() === ""
+    ? "The sign-in names no scope. Mission Control asks only for the connection's own scope, never for every scope the server advertises."
+    : null;
+}
+
 /** Why `discovery` may not serve `target`: made for another server URL, or for another configured issuer (D6). */
 function discoveryMismatch(target: SignInTarget, discovery: SignInDiscovery): string | null {
   if (target.url !== discovery.serverUrl) return "The discovery was made for another server than this sign-in's.";
@@ -447,9 +476,10 @@ function tokenSecrets(tokens: OAuthTokens): ResolvedValue[] {
 }
 
 /**
- * RFC 9728 protected resource metadata: the path-aware well-known URL, then the root one. A 4xx
- * at both means the server publishes none, and it is then its own authorization server. Any
- * other answer is refused rather than taken for absence, and no redirect is followed.
+ * RFC 9728 protected resource metadata: the path-aware well-known URL, then the root one. A 404
+ * or a 410 at both means the server publishes none, and it is then its own authorization server.
+ * A 408, a 429 or a 5xx is a request error a later try may get past, and any other answer is
+ * refused rather than taken for absence. No redirect is followed.
  */
 async function readResourceMetadata(server: URL, fetchFn: SignInFetch): Promise<OAuthProtectedResourceMetadata | null> {
   const path = server.pathname.replace(/\/$/, "");
@@ -459,7 +489,12 @@ async function readResourceMetadata(server: URL, fetchFn: SignInFetch): Promise<
   ];
   for (const url of candidates) {
     const response = await fetchFn(url, { headers: { accept: "application/json" } });
-    if (response.status >= 400 && response.status < 500) continue;
+    // Only "not here" means none is published. A 401, a 403 or a 429 is the server answering,
+    // and reading it as absence would sign in without the resource indicator.
+    if (response.status === 404 || response.status === 410) continue;
+    if (transientStatus(response.status)) {
+      throw new SignInRequestError(`${server.origin} answered HTTP ${response.status} for its resource metadata; a later try may work.`);
+    }
     if (!response.ok) throw new SignInRefusal(`${server.origin} answered HTTP ${response.status} for its resource metadata.`);
     const parsed = OAuthProtectedResourceMetadataSchema.safeParse(await response.json().catch(() => null));
     if (!parsed.success) throw new SignInRefusal(`${server.origin} published resource metadata that is not valid.`);
@@ -493,25 +528,70 @@ function issuersMatch(a: string, b: string): boolean {
   return x === y || (x.endsWith("/") && x.slice(0, -1) === y) || (y.endsWith("/") && y.slice(0, -1) === x);
 }
 
-function classify(error: unknown): SignInFailureCode {
+/** What a step's requests were answered: every status in order, and the last OAuth error a reply carried. */
+interface Seen {
+  statuses: number[];
+  oauthError: { error: string; description: string | null } | null;
+}
+
+/**
+ * `fetchFn`, noting what each reply answered. The SDK wraps a reply that is not OAuth JSON in a
+ * `ServerError` whatever its status, and `auth()` hands a refused grant or client to
+ * `invalidateCredentials` without its error, so the status and the OAuth error are read here.
+ */
+function watched(fetchFn: SignInFetch): { fetchFn: SignInFetch; seen: Seen } {
+  const seen: Seen = { statuses: [], oauthError: null };
+  return {
+    seen,
+    fetchFn: async (input, init) => {
+      const response = await fetchFn(input, init);
+      seen.statuses.push(response.status);
+      if (!response.ok && response.body) {
+        const body: unknown = await response.clone().json().catch(() => null);
+        if (body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string") {
+          const { error, error_description: description } = body as { error: string; error_description?: unknown };
+          seen.oauthError = { error, description: typeof description === "string" ? description : null };
+        }
+      }
+      return response;
+    },
+  };
+}
+
+/** A status a later try may get past: a 5xx, a request timeout or too many requests. */
+function transientStatus(status: number): boolean {
+  return status >= 500 || status === 408 || status === 429;
+}
+
+function classify(error: unknown, seen?: Seen): SignInFailureCode {
   if (error instanceof Invalidated) return error.scope === "tokens" ? "sign_in_again" : "client_rejected";
   if (error instanceof InvalidClientError || error instanceof UnauthorizedClientError) return "client_rejected";
   if (error instanceof InvalidGrantError) return "sign_in_again";
   if (error instanceof SignInRefusal) return "refused";
   if (error instanceof SignInRequestError) return "retry";
-  if (error instanceof ServerError || error instanceof TemporarilyUnavailableError || error instanceof TooManyRequestsError) return "retry";
-  return "failed";
+  if (error instanceof TemporarilyUnavailableError || error instanceof TooManyRequestsError) return "retry";
+  // Anything else, an OAuth `server_error` and the SDK's plain errors included, by the status
+  // that was answered: definite unless it was transient.
+  const status = seen?.statuses.at(-1);
+  return status !== undefined && transientStatus(status) ? "retry" : "failed";
 }
 
-function describe(error: unknown): string {
-  if (error instanceof Invalidated || error instanceof SignInRefusal || error instanceof SignInRequestError) return error.message;
+function describe(error: unknown, seen?: Seen): string {
+  if (error instanceof Invalidated) {
+    const answered = seen?.oauthError;
+    if (!answered) return error.message;
+    return `${error.message.replace(/\.$/, "")}: the server answered ${answered.error}${answered.description ? `: ${answered.description}` : "."}`;
+  }
+  if (error instanceof SignInRefusal || error instanceof SignInRequestError) return error.message;
   if (error instanceof OAuthError) return `the server answered ${error.errorCode}${error.message ? `: ${error.message}` : "."}`;
   if (error instanceof Error && error.message) return error.message;
   return "an unexpected error.";
 }
 
-function failure<Code extends SignInFailureCode>(code: Code, prefix: string, error: unknown, secrets: readonly ResolvedValue[]): SignInFailure<Code> {
-  return { ok: false, code, reason: bound(redactResolved(`${prefix} ${describe(error)}`, secrets)) };
+function failure<Code extends SignInFailureCode>(
+  code: Code, prefix: string, error: unknown, secrets: readonly ResolvedValue[], seen?: Seen,
+): SignInFailure<Code> {
+  return { ok: false, code, reason: bound(redactResolved(`${prefix} ${describe(error, seen)}`, secrets)) };
 }
 
 function refused(reason: string, secrets: readonly ResolvedValue[] = []): SignInFailure<"refused"> {

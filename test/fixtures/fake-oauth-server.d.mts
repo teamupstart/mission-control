@@ -10,7 +10,7 @@ export interface FakeOAuthRequest {
 }
 
 export interface FakeOAuthModes {
-  refresh: "ok" | "invalid_grant" | "invalid_client" | "503" | "close";
+  refresh: "ok" | "invalid_grant" | "invalid_client" | "invalid_scope" | "503" | "close";
   registration: "ok" | "secret" | "refuse" | "auth-method";
   metadata: "ok" | "wrong-issuer" | "foreign-endpoint" | "no-s256" | "no-registration" | "no-code";
   resourceMetadata: "ok" | "none" | "foreign-issuer" | "wrong-resource";
@@ -18,6 +18,8 @@ export interface FakeOAuthModes {
   stall: string | null;
   oversize: string | null;
   redirect: string | null;
+  /** Paths that answer an HTML status page, not an OAuth reply, repeating the request body. */
+  status: Record<string, number> | null;
   iss: boolean | string;
   tokens: "full" | "no-refresh" | "no-expiry" | "no-scope";
   revoke: "ok" | "400" | "429" | "503" | "close";

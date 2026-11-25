@@ -1,8 +1,9 @@
 import type { Page } from "@playwright/test";
+import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { captureCard, setupCards } from "../fixtures/voice-cards.ts";
-import { say, voiceToken } from "../fixtures/voice.ts";
+import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
+import { beSpeaker, say, voiceToken } from "../fixtures/voice.ts";
 
 test.beforeEach(async ({ daemon, dashboard: page }) => {
   await setupCards(page, daemon);
@@ -28,6 +29,42 @@ async function desktopWith(page: Page, daemon: DaemonHandle, capability: "floati
       ? { tray: { available: true }, "floating-windows": { available: true } } : { [capability]: { available: true } } },
   })).ok()).toBe(true);
 }
+
+test.describe("floating Ask aloud", () => {
+  test.use({ daemonEnv: fixtureSupervisorEnv });
+
+  test("the pill can stop the spoken question and open its Recently heard history", async ({ daemon, dashboard: page }) => {
+    await desktopWith(page, daemon, "both");
+    await runningAgent(page, daemon, "Will");
+    const speaker = await beSpeaker(daemon, { holdPlayback: true, ignoreStop: true });
+    try {
+      await page.getByRole("radio", { name: "Ask aloud" }).check();
+      const opening = page.waitForEvent("popup");
+      await page.getByRole("radio", { name: /Floating pill/ }).check();
+      const pill = await opening;
+      const words = "Steven ask Will about the deployment";
+      await speaker.say(words);
+      const card = pill.getByRole("status");
+      await expect(card).toContainText("Asking aloud");
+      await expect(card.getByRole("button", { name: /Will/ })).toBeEnabled();
+      await expect(page.locator(".voice-card")).toHaveCount(0);
+      await expect.poll(() => speaker.playing).toBe(true);
+      await captureCard(card, "floating-ask-aloud");
+      await card.getByRole("button", { name: "Stop", exact: true }).click();
+      await expect(card).toContainText("Who is this for?");
+      await expect(card).toContainText("Pick a row now, or speak once playback ends.");
+      expect((await speaker.poll()).capture).toBe(false);
+      await speaker.end("stopped");
+      await expect(card).toContainText("Say the name again");
+      expect((await speaker.poll()).capture).toBe(true);
+
+      const historyOpening = page.waitForEvent("popup");
+      await card.getByRole("button", { name: "Recently heard" }).click();
+      const history = await historyOpening;
+      await expect(history.getByRole("region", { name: "Recently heard" })).toContainText(words);
+    } finally { await speaker.exit(); }
+  });
+});
 
 test("moving a selected confirmation keeps its pending Cancel and the other message separate", async ({ daemon, dashboard: page }) => {
   await desktopWith(page, daemon, "floating-windows");

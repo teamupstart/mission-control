@@ -109,3 +109,14 @@ html.voice-window, html.voice-window body, html.voice-window #root { background:
 .rh-pop footer { padding: 8px 12px; }
 .rh-pop .rh-privacy { flex: 1; margin: 0; font-size: 11px; }
 .rh-pop-empty { padding: 16px 12px; }
+
+.vc-ask {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: color-mix(in oklab, var(--working) 9%, transparent);
+  border: 1px solid color-mix(in oklab, var(--working) 30%, var(--border));
+  border-radius: 8px;
+  padding: 5px 9px;
+}
+.vc-ask .vc-icon { color: var(--working); }

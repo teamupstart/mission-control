@@ -427,15 +427,16 @@ export function useEventStream(): MissionState {
     function sampleCardClock(frame: { voiceStreamStartedAt?: number; voiceServerTime?: number }, hasCountdown: boolean) {
       const now = performance.now();
       const stamp = frame.voiceServerTime ?? Date.now();
-      const sample = voiceClock.observe(connectionStartedAt, now, frame.voiceStreamStartedAt ?? stamp, stamp);
+      const sample = voiceClock.observeStream(connectionStartedAt, now, frame.voiceStreamStartedAt ?? stamp, stamp);
       // A long SSE handshake does not tell us which direction was slow. Take an
       // independent timestamped read and refine only the windows still using that estimate.
       if (hasCountdown && sample.uncertain && !clockProbe && now - lastProbeAt > 1000) {
+        const epoch = voiceClock.epoch;
         const probe = new AbortController();
         clockProbe = probe;
         lastProbeAt = now;
         void fetchVoiceCardTime(AbortSignal.any([probe.signal, AbortSignal.timeout(5000)])).then(stamp => {
-          if (clockProbe !== probe || stamp === null) return;
+          if (clockProbe !== probe || stamp === null || voiceClock.epoch !== epoch) return;
           const refined = voiceClock.observe(now, performance.now(), stamp, stamp);
           setVoiceCards(current => {
             const next = new Map(current);

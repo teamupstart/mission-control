@@ -5,18 +5,18 @@ import { say } from "../fixtures/voice.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 test("countdown sends once, click and spoken cancel stop delivery, and disabling the window sends immediately", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon, 4);
+  await setupCards(page, daemon, 10);
   const steve = await runningAgent(page, daemon, "Steve");
   await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: steve.name }).first().click();
   const pending = page.getByRole("status").filter({ hasText: "To Steve" }).filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
   await say(daemon, "Steve, check the build");
   await expect(pending).toContainText("check the build");
   await expect(pending).toHaveCSS("width", "300px");
-  await expect(pending).toContainText("3s");
+  await expect(pending.locator(".vc-seconds")).toHaveText(/\d+s/);
   await captureCard(page, "pending");
   await expectCardGeometry(pending, "confirmation-card", "#a .cc-card");
   const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
-  await expect(sent).toBeVisible();
+  await expect(sent).toBeVisible({ timeout: 15_000 });
   await captureCard(sent, "sent");
   await expect(page.getByText(/Mock reply to: check the build/).first()).toBeVisible();
   for (const method of ["click", "speech"]) {
@@ -35,8 +35,12 @@ test("countdown sends once, click and spoken cancel stop delivery, and disabling
     await expect(pending).toHaveCount(0);
     await expect(page.getByRole("status").filter({ hasText: "Cancelled" }).last()).toBeVisible();
   }
-  await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
-  await say(daemon, "Steve, immediate delivery");
+  const changed = await page.request.put(daemon.baseURL + "/api/voice/config", { data: { cancelWindow: { enabled: false } } });
+  expect(changed.ok()).toBe(true);
+  expect((await changed.json()).config.cancelWindow.enabled).toBe(false);
+  const immediate = await say(daemon, "Steve, immediate delivery");
+  expect((await immediate.json()).accepted).toBe(true);
+  await expect(pending).toHaveCount(0);
   await expect(page.getByText(/Mock reply to: immediate delivery/).first()).toBeVisible();
   await expect(pending).toHaveCount(0);
   expect(withDaemonDb(daemon, db => db.prepare("SELECT spoken_words FROM session_spoken_turns ORDER BY rowid").all().map(r => r.spoken_words))).toEqual(["check the build", "immediate delivery"]);

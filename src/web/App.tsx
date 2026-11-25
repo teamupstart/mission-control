@@ -4221,7 +4221,7 @@ export function App(): React.JSX.Element {
       // bare-key rebinding must stay behind the typing guard, or that character would open
       // the palette from inside any input.
       if (
-        chord === bindings.settingsSearch &&
+        route.page !== "voice-card" && chord === bindings.settingsSearch &&
         (!typing || chordHasCommandModifier(bindings.settingsSearch)) &&
         overlaysRef.current.onlyOpen(OVERLAY_IDS.palette)
       ) {
@@ -5138,7 +5138,7 @@ export function App(): React.JSX.Element {
   const voiceCardHost = <VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : surfaceRoot && voicePlacement !== "toast" ? voicePlacement : undefined}
     sound={alertSettings.sound} notifications={alertSettings.notifications}
-    actions={{ sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
+    actions={{ speechJob: voice?.speech?.job, sessions, roster: voiceRoster, reviews: pendingReviews, setVoiceCardRetention,
       openRecentlyHeard: () => trayHistory ? openTrayHistory() : openSettingsAnchor("voice", "voice/heard"),
       openQuestion: (sessionId, questionId) => { if (surfaceRoot) window.missionDesktop?.revealVoiceDashboard?.(); navigate({ page: "fleet" }, allowed => {
         if (allowed) setReviewRequest({ sessionId, questionId });

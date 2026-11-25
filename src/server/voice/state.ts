@@ -179,28 +179,30 @@ export class VoiceStateStore {
   }
 
   private preview?: { grant: string; owner: string; at: number; committed: string; interim: string; onset: number;
-    finalOnset: number; phase: TranscriptSample["phase"]; text: string };
+    phase: TranscriptSample["phase"]; text: string };
+  // A delayed partial can outlive the visible words within the same capture.
+  private finalizedTranscript?: { grant: string; owner: string; onset: number };
 
   reportTranscript(owner: string | undefined, revision: string | undefined, sample: TranscriptSample) {
     const directive = this.directive();
     if (!owner || !this.ownsCapture(owner) || !directive.capture ||
         this.resolveCaptureRevision(revision, directive) !== directive.revision || !this.deps.config().showTranscript) return false;
     const grant = directive.captureRevision ?? directive.revision;
+    const finalized = this.finalizedTranscript;
+    if (sample.phase !== "ready" && finalized?.grant === grant && finalized.owner === owner && sample.onset <= finalized.onset) return true;
     const now = this.deps.now();
     const previous = this.preview;
     const preview = previous?.grant === grant && previous.owner === owner ? previous :
-      { grant, owner, at: now, committed: "", interim: "", onset: -1, finalOnset: -1, phase: "ready" as TranscriptSample["phase"], text: "" };
+      { grant, owner, at: now, committed: "", interim: "", onset: -1, phase: "ready" as TranscriptSample["phase"], text: "" };
     const previousText = previous?.text;
     const previousPhase = previous?.phase;
     if (sample.phase === "ready") {
       preview.interim = "";
       preview.phase = "ready";
-    } else if (sample.onset <= preview.finalOnset) {
-      return true;
     } else if (sample.phase === "words" && sample.final) {
       // The next onset can arrive while the previous phrase's final decode is pending.
       preview.committed = transcriptTail(preview.committed + " " + sample.text);
-      preview.finalOnset = sample.onset;
+      this.finalizedTranscript = { grant, owner, onset: sample.onset };
       if (sample.onset >= preview.onset) {
         preview.interim = "";
         preview.onset = sample.onset;
@@ -688,6 +690,7 @@ export class VoiceStateStore {
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
     this.preview = undefined;
+    this.finalizedTranscript = undefined;
     this.recorder = undefined;
     this.hotkeyTrial = undefined;
     if (this.manager) this.manager.dispose();

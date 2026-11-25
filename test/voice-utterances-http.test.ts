@@ -1852,39 +1852,43 @@ test("an accepted non-cancel transcript after expiry releases the reserved messa
   assert.deepEqual(queued("Will"), ["check the logs"]);
 });
 
-test("a failed preview decode still delivers the completed message to its addressed resident", async () => {
-  voiceStateStore.reset();
-  const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
-  assert.equal(config.status, 200);
-  const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => app.request(url, init));
-  const pcm = Float32Array.of(0.1, 0.2);
-  const attempted = deferred();
-  let previewAttempts = 0;
-  let exhausted = false;
-  await playRecording(client, () => ({
-    get exhausted() { return exhausted; },
-    async next({ observe }) {
-      assert.ok(observe);
-      observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
-      await attempted.promise;
-      assert.equal(voiceStateStore.state().transcript?.phase, "audio");
-      assert.deepEqual(queued("Steve"), []);
-      exhausted = true;
-      return { done: false, value: { samples: pcm, onset: 1 } };
-    },
-  }), async samples => {
-    assert.equal(samples, pcm);
-    return { text: "Steve, check the build", tokens: [], durations: [], timestamps: [] };
-  }, async () => {
-    previewAttempts++;
-    attempted.resolve();
-    throw new Error("fixture partial decoder failed");
+for (const failure of ["synchronous", "asynchronous"] as const) {
+  test(`${failure} preview decode failure still delivers the completed message once to its addressed resident`, async () => {
+    voiceStateStore.reset();
+    const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+    assert.equal(config.status, 200);
+    const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => app.request(url, init));
+    const pcm = Float32Array.of(0.1, 0.2);
+    const attempted = deferred();
+    let previewAttempts = 0;
+    let exhausted = false;
+    await playRecording(client, () => ({
+      get exhausted() { return exhausted; },
+      async next({ observe }) {
+        assert.ok(observe);
+        observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+        await attempted.promise;
+        assert.equal(voiceStateStore.state().transcript?.phase, "audio");
+        assert.deepEqual(queued("Steve"), []);
+        exhausted = true;
+        return { done: false, value: { samples: pcm, onset: 1 } };
+      },
+    }), async samples => {
+      assert.equal(samples, pcm);
+      return { text: "Steve, check the build", tokens: [], durations: [], timestamps: [] };
+    }, () => {
+      previewAttempts++;
+      attempted.resolve();
+      const error = new Error("fixture partial decoder failed");
+      if (failure === "synchronous") throw error;
+      return Promise.reject(error);
+    });
+    assert.equal(previewAttempts, 1);
+    assert.deepEqual(queued("Steve"), ["check the build"]);
+    assert.equal(voiceStateStore.state().transcript?.text, "Steve, check the build");
   });
-  assert.equal(previewAttempts, 1);
-  assert.deepEqual(queued("Steve"), ["check the build"]);
-  assert.equal(voiceStateStore.state().transcript?.text, "Steve, check the build");
-});
+}
 
 test("a rejected transcript request still delivers the completed phrase once to its addressed resident", async () => {
   voiceStateStore.reset();

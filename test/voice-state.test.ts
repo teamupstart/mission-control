@@ -619,6 +619,9 @@ test("live transcript is ephemeral, grant-bound and replaces partial hypotheses 
   h.advance(6100);
   assert.equal(h.store.state().transcript, undefined);
   h.store.reportTranscript(listenerId, revision, sample);
+  assert.equal(h.store.state().transcript, undefined, "a late partial for the finalized onset cannot revive the expired overlay");
+  h.store.reportTranscript(listenerId, revision, { ...sample, onset: 3, text: "new phrase" });
+  assert.equal(h.store.state().transcript?.text, "new phrase");
   h.setConfig({ inputDevice: "system-default" });
   assert.equal(h.store.publish().transcript, undefined, "the input switch clears the overlay in the published frame");
   h.setConfig({ muted: true });

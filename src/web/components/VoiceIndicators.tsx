@@ -61,15 +61,17 @@ export function VoiceWindowProvider({ state, enabled, acknowledgeVoiceMode, open
   const value = useMemo(() => enabled && state ? {
     state, openSetup, setMuted, mutePending: pendingMute !== null,
   } : null, [enabled, state, openSetup, setMuted, pendingMute]);
+  const transcript = enabled && state && voiceCaptures(state.mode) ? state.transcript : undefined;
+  const phaseLabel = transcript && { ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[transcript.phase];
   return <VoiceWindow.Provider value={value}>
     {children}
-    {enabled && state?.transcript && voiceCaptures(state.mode) && <aside aria-label="Live voice transcript"
-      className={`voice-transcript vt-${state.transcript.style} vt-${state.transcript.corner} vt-${state.transcript.phase}`}>
-      <strong>{{ ready: "Microphone ready", audio: "Audio detected", words: "Transcribing" }[state.transcript.phase]}</strong>
-      {state.transcript.text && <VoiceTranscriptText as="span" className="vt-text" text={state.transcript.text} />}
+    {transcript && <aside aria-label="Live voice transcript"
+      className={`voice-transcript vt-${transcript.style} vt-${transcript.corner} vt-${transcript.phase}`}>
+      <strong>{phaseLabel}</strong>
+      {transcript.text && <VoiceTranscriptText as="span" className="vt-text" text={transcript.text} />}
     </aside>}
-    {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status">
-      {pendingMute !== null && (pendingMute ? "Muting voice…" : "Unmuting voice…")}
+    {enabled && <div className={pendingMute === null ? "sr-only" : "vi-window-feedback"} role="status" aria-label="Voice feedback">
+      {pendingMute === null ? phaseLabel : (pendingMute ? "Muting voice…" : "Unmuting voice…")}
     </div>}
     {showFailure && <div className="vi-window-feedback">
       <span role="alert">{failure.message}</span>

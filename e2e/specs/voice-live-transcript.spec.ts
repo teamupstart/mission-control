@@ -8,6 +8,7 @@ test("live capture shows readiness, onset and rolling words in the saved overlay
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");
   const overlay = page.getByRole("complementary", { name: "Live voice transcript" });
+  const status = page.getByRole("status", { name: "Voice feedback" });
   const show = page.getByLabel("Show live transcript");
   const style = page.getByLabel("Transcript style");
   const corner = page.getByLabel("Corner card placement");
@@ -31,19 +32,24 @@ test("live capture shows readiness, onset and rolling words in the saved overlay
     const onset = 1;
     await expect(page.getByRole("button", { name: "Voice: listening. Mute" })).toBeVisible();
     await expect(overlay).toHaveCount(0);
+    await expect(status).toBeEmpty();
     expect(await transcriptSample(daemon, { phase: "ready" })).toBe(true);
     await expect(overlay).toHaveText("Microphone ready");
+    await expect(status).toHaveText("Microphone ready");
     await capture("ready");
     expect(await transcriptSample(daemon, { phase: "audio", onset })).toBe(true);
     await expect(overlay).toHaveText("Audio detected");
+    await expect(status).toHaveText("Audio detected");
     await capture("audio");
     const words = "a few ordinary words from the microphone before any name matches are already visible in this corner as the speaker continues talking".split(" ");
     const phrase = (n: number) => transcriptSample(daemon, { phase: "words", onset, text: words.slice(0, n).join(" ") });
     expect(await phrase(3)).toBe(true);
     await expect(overlay.locator("span")).toHaveText("a few ordinary");
+    await expect(status).toHaveText("Transcribing");
     expect(await phrase(words.length)).toBe(true);
     await expect(overlay.locator("span")).toHaveText(words.slice(-20).join(" "));
     await expect(overlay.locator("strong")).toHaveText("Transcribing");
+    await expect(status).toHaveText("Transcribing");
     const viewport = page.viewportSize()!;
     const right = (await overlay.boundingBox())!;
     expect(right.x + right.width).toBeCloseTo(viewport.width - 16);
@@ -77,10 +83,13 @@ test("live capture shows readiness, onset and rolling words in the saved overlay
     expect(await phrase(3)).toBe(false);
     await capture("muted");
     await page.getByRole("button", { name: "Voice: muted. Unmute" }).click();
+    await expect.poll(() => phrase(4)).toBe(true);
+    await expect(overlay.locator("span")).toHaveText("a few ordinary words");
     listener.stop();
     await sendHello(daemon, { microphone: "denied" });
     await expect(page.getByRole("button", { name: "Voice: not listening. Open Setup" })).toBeVisible();
     await expect(overlay).toHaveCount(0);
+    await expect(status).toBeEmpty();
     const disabled = await page.request.put(daemon.baseURL + "/api/feature-flags", {
       data: { kind: "flag", id: "voice", enabled: false },
     });

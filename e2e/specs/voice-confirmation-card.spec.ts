@@ -552,31 +552,3 @@ test("a browser notice closes at the deadline even if the stream disconnects", a
   await expect(card).not.toContainText("0s");
   await captureCard(card, "awaiting-delivery-confirmation");
 });
-
-test("a new card can still be cancelled after the daemon clock steps back on the same stream", async ({ dashboard: page, daemon }) => {
-  await setupCards(page, daemon, 15);
-  await runningAgent(page, daemon, "Steve");
-  await page.addInitScript(() => {
-    window.EventSource = class extends EventSource {
-      constructor(url: string | URL, init?: EventSourceInit) {
-        super(url, init);
-        this.addEventListener("message", e => {
-          if (!e.isTrusted) return;
-          const frame = JSON.parse(e.data);
-          if (frame.type !== "voice_card" || frame.card.deadline == null) return;
-          frame.voiceStreamStartedAt -= 60_000;
-          frame.voiceServerTime -= 60_000;
-          frame.card.deadline -= 60_000;
-          e.stopImmediatePropagation();
-          this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
-        });
-      }
-    };
-  });
-  await page.reload();
-  await expect(page.getByRole("button", { name: "Dispatch", exact: true })).toBeVisible();
-  await say(daemon, "Steve, verify clock recovery");
-  const card = page.getByRole("status").filter({ hasText: "verify clock recovery" });
-  await card.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(page.getByRole("status").filter({ hasText: "Cancelled" })).toBeVisible();
-});

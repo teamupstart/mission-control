@@ -1,10 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { MOD_NAME as PLUGIN_NAME } from "../mod/constants.ts";
 
 /** A state-home override must not register a pooled checkout, including through a symlink. */
-export async function refuseCheckoutDestination(path: string): Promise<void> {
+export async function refuseCheckoutDestination(path: string, home: string = homedir()): Promise<void> {
+  // The walk stops at the user's home directory without looking in it: someone who keeps dotfiles in
+  // a git repository there has not put the mod inside a project checkout, and the default state
+  // directory is directly under their home. A destination outside home is walked up to the root.
+  let homeReal: string | null = null;
+  try { homeReal = await realpath(home); } catch { /* an unreadable home just does not bound the walk */ }
   const missing: string[] = [];
   let ancestor = resolve(path);
   while (true) {
@@ -16,6 +22,7 @@ export async function refuseCheckoutDestination(path: string): Promise<void> {
     }
   }
   while (true) {
+    if (homeReal !== null && ancestor === homeReal) return;
     let checkout = false;
     try {
       const metadata = await stat(join(ancestor, ".git"));
@@ -149,6 +156,8 @@ interface StageOptions {
   validate?: (stagingDir: string) => Promise<void>;
   /** How long to wait for another run that is staging the same mod, in ms. Default 30 s. */
   lockTimeoutMs?: number;
+  /** The user's home directory, where the checkout guard stops. Defaults to the real one. */
+  home?: string;
   /** The caller already holds the lock through `withModLock`, and so `stageMod` must not take it again. */
   locked?: boolean;
 }
@@ -272,7 +281,7 @@ export async function withModLock<T>(dest: string, fn: () => Promise<T>, timeout
 }
 
 export async function stageMod(options: StageOptions): Promise<StagedMod> {
-  await refuseCheckoutDestination(options.dest);
+  await refuseCheckoutDestination(options.dest, options.home);
   if (options.locked) return stageModLocked(options);
   const release = await acquireLock(options.dest, options.lockTimeoutMs ?? 30_000);
   try {

@@ -89,7 +89,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   // `mctl setup` waits for this one, rather than acting on the same stale listing and undoing it.
   try {
     // Refused before the lock is taken: the lock is a folder beside the destination.
-    await refuseCheckoutDestination(modDir);
+    await refuseCheckoutDestination(modDir, deps.home);
     return await withModLock(modDir, () => installLocked(claude, bin, deps, modDir));
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error));
@@ -97,6 +97,13 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
 }
 
 async function installLocked(claude: ClaudeCli, bin: string, deps: SetupDeps, modDir: string): Promise<SetupStepResult> {
+  // A registration that points somewhere else is refused before anything is staged: a refusal is a no-op.
+  const marketplace = await readModMarketplace(claude, deps);
+  if ("error" in marketplace) return failed(marketplace.error);
+  if (marketplace.path !== null && marketplace.path !== modDir) {
+    return failed(`The mission-control marketplace points to ${marketplace.path}, not ${modDir}. Remove it before running setup.`);
+  }
+
   let version: string;
   // The verdict on the copy about to be published. It is kept for the closing doctor step only once
   // the publish has succeeded: until then the published mod may still be the old build, or absent.
@@ -110,6 +117,7 @@ async function installLocked(claude: ClaudeCli, bin: string, deps: SetupDeps, mo
         source: deps.modSource,
         dest: modDir,
         locked: true,
+        home: deps.home,
         // The copy must pass the same `mod-calls` check doctor runs, with `claude plugin validate`,
         // before it replaces anything: a build setup cannot certify never displaces a working one.
         validate: async (staging) => {
@@ -127,16 +135,16 @@ async function installLocked(claude: ClaudeCli, bin: string, deps: SetupDeps, mo
   }
 
   if (deps.runCache && certified) deps.runCache.modCalls = certified;
-  const marketplace = await readModMarketplace(claude, deps);
-  if ("error" in marketplace) return failed(marketplace.error);
-  if (marketplace.path !== null && marketplace.path !== modDir) {
-    return failed(`The mission-control marketplace points to ${marketplace.path}, not ${modDir}. Remove it before running setup.`);
-  }
   const before = await readInstalledMod(claude, deps);
   if ("error" in before) return installFailure(before.error, deps.stateDir, bin);
   const installed = before.mod;
   const replacing = installed?.scope === "user";
-  if (marketplace.path === modDir && installed && installed.enabled && installed.scope === "user" && installed.version === version && installed.errors.length === 0) {
+  if (marketplace.path === modDir && installed && installed.enabled && installed.scope === "user" && installed.version === version) {
+    // Right version, right scope, but it did not load: installing the same build again would not change
+    // that, so say so rather than print "installed" and let the closing check contradict it.
+    if (installed.errors.length > 0) {
+      return failed("the mod " + version + " is installed at user scope but failed to load: " + installed.errors.join("; ") + ". Installing the same build again would not change that; fix the error, then run `mctl setup`.");
+    }
     if (deps.runCache) deps.runCache.installed = before;
     return { id, status: "ok", message: "the mod " + version + " is already installed (claude " + claude.version + ")" };
   }

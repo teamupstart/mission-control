@@ -248,9 +248,20 @@ test("staging refuses checkout destinations including symlinks", async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("setup refuses a conflicting registered marketplace before uninstalling", async () => {
+test("setup refuses a conflicting registered marketplace before staging or uninstalling", async () => {
   const r = await rig({ version: "2.3.0" });
   try {
+    // A fresh machine: the refusal happens before anything is staged, so nothing is written.
+    r.claude.update({ marketplaces: [join(r.home, "elsewhere")] });
+    const fresh = await r.run("setup");
+    assert.equal(fresh.code, 1);
+    assert.match(fresh.out, /marketplace points to/);
+    assert.equal(existsSync(join(r.state, "mod")), false, "nothing was staged");
+
+    // A machine that was set up and then had its marketplace moved: the stale install is not uninstalled,
+    // and doctor names the mismatch against the staged mod.
+    r.claude.update({ marketplaces: [] });
+    assert.equal((await r.run("setup")).code, 0);
     r.claude.setInstalledVersion("2.1.0");
     r.claude.update({ marketplaces: [join(r.home, "elsewhere")] });
     const result = await r.run("setup");
@@ -1453,18 +1464,63 @@ test("an unexpected setup argument is reported with usage, and only --service is
   }
 });
 
-test("an install at the right version that failed to load is not called already installed", async () => {
+test("an install at the right version that failed to load is reported as failed to load, not as already installed, and is not reinstalled", async () => {
   const r = await rig();
   try {
     assert.equal((await r.run("setup")).code, 0);
     r.claude.update({ plugins: [{ id: MOD_ID, version: "2.2.0", scope: "user", enabled: true, errors: ["hook failed"] }] });
     const before = pluginCalls(r.claude).length;
     const mod = await runModStep({ live: false, deps: { env: r.env } });
-    assert.equal(mod.status, "ok", mod.message);
-    assert.doesNotMatch(mod.message, /already installed/, "a plugin that failed to load is not reported as fine");
+    assert.equal(mod.status, "failed");
+    assert.match(mod.message, /installed at user scope but failed to load: hook failed/);
+    assert.doesNotMatch(mod.message, /already installed/);
     const calls = pluginCalls(r.claude).slice(before);
-    assert.ok(calls.includes("uninstall") && calls.includes("install"), "it is replaced: " + calls.join(","));
-    assert.deepEqual(r.claude.state().plugins[0]?.errors ?? [], []);
+    assert.ok(!calls.includes("uninstall") && !calls.includes("install"), "the same build is not installed again: " + calls.join(","));
+  } finally {
+    await r.cleanup();
+  }
+});
+
+test("the checkout guard stops at the user's home, so a git-tracked home does not block the default state directory", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mission-guard-"));
+  try {
+    const gitDir = (root: string) => {
+      mkdirSync(join(root, ".git"), { recursive: true });
+      writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    };
+    // A home directory that is itself a git repository (dotfiles), with the default state dir under it.
+    const home = join(dir, "home");
+    gitDir(home);
+    await refuseCheckoutDestination(join(home, ".mission-control", "mod"), home);
+    // A project checkout inside that home is still refused, and so is one above a destination outside home.
+    const project = join(home, "code", "project");
+    gitDir(project);
+    await assert.rejects(refuseCheckoutDestination(join(project, "state", "mod"), home), /inside a checkout/);
+    const elsewhere = join(dir, "elsewhere");
+    gitDir(elsewhere);
+    await assert.rejects(refuseCheckoutDestination(join(elsewhere, "state", "mod"), home), /inside a checkout/);
+    // stageMod applies the same guard with the home it is given.
+    const source = join(dir, "build");
+    writeModBuild(source, "1.0.0");
+    assert.equal((await stageMod({ source, dest: join(home, ".mission-control", "mod"), home })).version, "1.0.0");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a marketplace registered somewhere else is refused before the mod is staged, so nothing is overwritten", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    assert.equal((await r.run("setup")).code, 0);
+    const dest = join(r.state, "mod");
+    const inode = statSync(dest).ino;
+    writeModBuild(r.source, "2.3.0", 'fetch("/api/health"); // a new build');
+    r.claude.update({ marketplaces: ["/somewhere/else/mod"] });
+    const result = await r.run("setup");
+    assert.equal(result.code, 1);
+    assert.match(result.out, /marketplace points to \/somewhere\/else\/mod/);
+    assert.equal(statSync(dest).ino, inode, "the published mod was not touched by the refusal");
+    assert.doesNotMatch(readFileSync(join(dest, "mission-control", "hooks", "register.js"), "utf8"), /a new build/);
   } finally {
     await r.cleanup();
   }

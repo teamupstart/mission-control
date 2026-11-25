@@ -2264,9 +2264,17 @@ depend on running before the spec that dispatches a second.
 
 ## What this layer still cannot see
 
-Playwright drives web contents. Native Electron shell behaviour - drag regions, traffic
-lights, window chrome, vibrancy - is invisible to CDP and to synthetic clicks, and stays a
-manual check.
+Playwright drives web contents. Native Electron shell behaviour such as drag regions,
+traffic lights and vibrancy needs a native fixture or a manual check.
+
+On macOS, `desktop-voice-edge.spec.ts` posts clicks through AppKit and checks the native
+hit target below the edge microphone. Where macOS permits desktop input, it drags the
+title bar and checks that the window moves. To exercise movement manually on a Mac
+without that permission, run the focused spec and drag the green dot when it appears.
+
+```sh
+MC_E2E_MANUAL_WINDOW_DRAG=1 npm run test:e2e -- desktop-voice-edge.spec.ts
+```
 
 ## Pi installation and terminal dispatch
 
@@ -2302,7 +2310,7 @@ one window changes a second window without a reload. `headless-mode-flag.spec.ts
 `headless-mode` row, its second window and its daemon gates, and `task-shaping-flag.spec.ts` does
 the same for the Task shaping row and the daemon's `/api/shaping` gate. `feature-flags-populated.spec.ts`
 uses `fixtures/feature-flags-build.ts` to build the production dashboard and daemon with only
-`feature-flag-registry.ts` replaced by fixture data (two preview and two default-on flags).
+`feature-flag-registry.ts` replaced by fixture data with preview and default-on flags.
 Use this build when a spec needs populated flag controls, search, palette or daemon writes.
 The spec owns and cleans up its private bundles. Both flag build helpers restore `NODE_ENV`
 after Vite builds, so reused workers still launch real development dashboards. `MC_E2E_EVIDENCE=1` retains panel screenshots

@@ -47,11 +47,12 @@ import {
   registerSessionControlRoutes, sessionControlActor, sessionControlCaller, sessionControlCallerRefusal,
 } from "./session-control.ts";
 import { registerReportRoutes } from "./report-routes.ts";
-import { followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts";
+import { getVoiceConfig } from "./voice/config.ts";
+import { markReportRead, reportToRead, resolveMarkReadTarget, sessionAuthorKey, followUpIntent, followUpKind, followUpTitle } from "@shared/reports.ts";
 import type { ReportManager } from "./reports.ts";
 import { noteOtherSend, releaseDelegatedTurn, reserveDelegatedTurn, withdrawOtherSend } from "./delegated-turns.ts";
 import { registerWorkflowMcpRoutes } from "./workflows/mcp.ts";
-import type { AuthorizeSessionControl } from "./session-control-authorization.ts";
+import type { AuthorizeSessionControl, AuthorizeSessionSettings } from "./session-control-authorization.ts";
 import { hostIsLoopback, trustedLoopbackJsonRequest } from "./loopback.ts";
 import { parseBody } from "./http-body.ts";
 import {
@@ -101,6 +102,7 @@ import { dismissAttentionItems, listAttentionDismissals } from "./attention-dism
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { registerSessionSettingsRoutes } from "./session-settings.ts";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { TypeOf, ZodTypeAny } from "zod";
@@ -396,7 +398,7 @@ import { TerminalLaunchError } from "./terminal/launch-error.ts";
 import { resumeLeaseDiagnostic } from "./terminal/resume-lease.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { activePaneDialog, hasBlocker, isAwaiting, reportBucket, sessionWorkspaceRoot } from "@shared/session.ts";
-import { resolvedSessionIntent } from "@shared/goal.ts";
+import { isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import {
   harnessOffersRuntime,
   interruptUnsupportedWhy,
@@ -540,7 +542,7 @@ import {
 } from "./foreman/pipeline-triage.ts";
 import { ingestConductorEvents, MAX_INGEST_BYTES } from "./pipelines/ingest.ts";
 import { shellCommand } from "./terminal/shell.ts";
-import { setUiConfig, uiConfigView } from "./ui-config.ts";
+import { getUiConfig, setUiConfig, uiConfigView } from "./ui-config.ts";
 import { environmentCheckViews } from "./environment/index.ts";
 import type { EnvironmentChecksView } from "@shared/environment-checks.ts";
 import {
@@ -1375,6 +1377,7 @@ export interface RouteDeps {
   sdkSessions?: SdkSupervisor;
   /** Private desktop authorization; defaults to the owning utility-process channel. */
   authorizeSessionControl?: AuthorizeSessionControl;
+  authorizeSessionSettings?: AuthorizeSessionSettings;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
@@ -1505,6 +1508,7 @@ export const ROUTE_DEP_NAMES = [
   "ensembles",
   "sdkSessions",
   "authorizeSessionControl",
+  "authorizeSessionSettings",
   "handoffDeps",
   "launchSessionTerminal",
   "sessionActions",
@@ -1843,6 +1847,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ensembles,
     sdkSessions,
     authorizeSessionControl,
+    authorizeSessionSettings,
     handoffDeps,
     launchSessionTerminal,
     sessionActions,
@@ -5191,6 +5196,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // --- hook ingest (token-guarded) ---
   app.post("/hooks/:event", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    // oxlint-disable-next-line repository/parse-request-body -- Hook ingest preserves its JSON error and adds the event from the path before validation.
     const body = await c.req.json().catch(() => null);
     if (!body) return c.json({ error: "invalid json" }, 400);
     const parsed = HookIngestSchema.safeParse({ ...(body as object), event: c.req.param("event") });
@@ -6339,7 +6345,21 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
     const by = sessionControlActor(c.req.raw) ?? parsed.data.by;
-    const result = resolveReview(c.req.param("id"), parsed.data, by);
+    const id = c.req.param("id");
+    if (parsed.data.voiceSubmitId) {
+      const review = registry.getReview(id);
+      if (!featureEnabled(VOICE_FLAG) || !getVoiceConfig().planFormsByVoice || by !== "human" ||
+          parsed.data.action !== "answer" || review?.kind !== "plan-decisions" || review.status !== "pending" ||
+          !registry.voiceRouter?.forms.take(parsed.data.voiceSubmitId, id)) {
+        return c.json({ error: "The voice submit request expired." }, 409);
+      }
+      const complete = review.decisions?.every(d => {
+        const answer = parsed.data.selections?.find(s => s.decisionId === d.id);
+        return answer && (answer.chat || (d.allowOther && answer.other?.trim()) || answer.selected.some(id => d.options.some(o => o.id === id)));
+      });
+      if (!complete) return c.json({ error: "Answer every decision first." }, 400);
+    }
+    const result = resolveReview(id, parsed.data, by);
     return result.kind === "committed" ? c.json(result.review) : c.json({ error: result.error }, result.status);
   });
 
@@ -7654,8 +7674,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // work, decide to ask, and then silently drop the question. Creating the row is not a
   // side effect being smuggled in: `ensureQueue` writes cwd/branch and nothing else, an
   // itemless queue renders no item list, and `addItem` already creates one this way.
-  app.post("/api/sessions/:id/queue/wrapup/asked", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
+  const recordWrapupAsk = async (c: Context, sessionId: string, guardedDrain: boolean) => {
+    const session = registry.getSession(sessionId);
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, WrapupAskedSchema);
     if (!parsed.ok) return parsed.res;
@@ -7670,11 +7690,28 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (isAwaiting(registry.getSession(session.id) ?? session) && !parsed.data.clearAnswer) {
       return c.json({ error: "This session is awaiting a background process, so it is not finished yet." }, 409);
     }
+    const expected = parsed.data.expectedIntent;
+    if (guardedDrain !== (expected !== undefined) || (guardedDrain ? parsed.data.clearAnswer : parsed.data.retire)) {
+      return c.json({ error: "Wrap-up mode does not match its route" }, 400);
+    }
+    const current = registry.getGoal(session.id);
+    if (expected !== undefined && (expected
+      ? !sessionIntentMatches(current, expected)
+      : current !== null && !isHandoffReleaseOnlyGoal(current))) {
+      return c.json({ error: "Queue completion intent changed" }, 409);
+    }
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
-    queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
+    if (parsed.data.retire) {
+      queues.setWrapupAnswer(key, "foreman:automatic-wrapup-skipped", Date.now(), true);
+    } else {
+      queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
+    }
     return c.json(queues.get(session.id));
-  });
+  };
+  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => recordWrapupAsk(c, c.req.param("id"), false));
+  // A worker talking to an older daemon gets a 404, never an unguarded ask.
+  app.post("/api/sessions/:id/queue/wrapup/drain", (c) => recordWrapupAsk(c, c.req.param("id"), true));
 
   // Consume one durable prompted work-cycle generation. `ask` atomically raises the
   // matching Ship it? card too; splitting those writes can spend a verified generation
@@ -7859,6 +7896,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = registry.acceptGoalObjective(c.req.param("id"));
     if (!result) return c.json({ error: "no goal for this session" }, 404);
     if (!result.accepted) {
+      if (result.reason === "handoff_pending") {
+        return c.json({ error: "The operator's handoff instruction is still being reconciled." }, 409);
+      }
       return c.json({ error: "this session has no objective to accept yet" }, 409);
     }
     return c.json(result.goal);
@@ -9021,6 +9061,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
   });
 
+  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings);
+
   // --- Dashboard UI preferences (localhost only) ---
   //
   // Layout, keybindings, alert delivery, rich text. The daemon only stores these; nothing
@@ -9031,6 +9073,9 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // defaults, and the dashboard's one-time adoption of pre-rename `localStorage` MUST NOT
   // fire against a config the operator already has.
   app.get("/api/ui/config", (c) => c.json(uiConfigView()));
+  // Skin invalidations and reconnects only need this scalar. Keep the separate voice revisions
+  // and full config hydration on their existing read path.
+  app.get("/api/ui/skin", (c) => c.json({ skin: getUiConfig(false).skin }));
   app.put("/api/ui/config", async (c) => {
     const parsed = await parseBody(c, UiConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
@@ -9405,6 +9450,25 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return { outcome: held ? "held" : "queued", turnId: turn.id };
     },
   }, (card) => registry.emitVoiceCard(card), voiceDecider, {
+    inbox: {
+      forms: () => registry.pendingReviews().filter(q => q.kind === "plan-decisions"),
+      formsEnabled: () => getVoiceConfig().planFormsByVoice,
+      emit: event => registry.emitQuestionEvent(event),
+      markReadTarget: (target, openId) => {
+        if (!reports || !featureEnabled(INBOX_FLAG)) return undefined;
+        const key = target.kind === "resident" ? target.key : target.sessionId && sessionAuthorKey(target.sessionId);
+        if (openId !== null) {
+          const report = reports.get(openId);
+          if (!report || !reportToRead(report)) return undefined;
+          // A task keeps its call sign when redispatched under a new session author.
+          const sameTask = target.kind === "session" && target.taskId !== null && target.taskId === report.taskId;
+          return report.author.key === key || sameTask ? report.id : undefined;
+        }
+        return key ? resolveMarkReadTarget(key, reports.openReportsBy(key), null)?.id : undefined;
+      },
+      markUndrawnReportRead: async id => (await markReportRead(id, path =>
+        app.request(path, { method: "POST", headers: { host: "localhost" } }))).ok,
+    },
     pending: () => registry.pendingReviews().filter(voiceQuestion),
     forSession: sessionId => registry.reviewsFor(sessionId).filter(voiceQuestion),
     publish: (reviewId, answer) => registry.emitQuestionEvent({ type: "voice_answer", reviewId, answer }),

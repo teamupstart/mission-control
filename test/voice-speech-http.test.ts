@@ -1987,6 +1987,41 @@ test("a backward wall-clock step during playback excludes buffered frames under 
   assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh"))).json(), { accepted: true });
 });
 
+for (const playing of [false, true]) {
+  test(`switching to Push-to-talk stops a ${playing ? "playing" : "ready"} Ask through the holder`, async () => {
+    const p = player();
+    await p.announce(); await p.hello();
+    const configure = async (data: object) => {
+      const response = await app.request("/api/voice/config", { method: "PUT",
+        headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(data) });
+      assert.equal(response.status, 200);
+    };
+    await configure({ whenUnsure: "ask" });
+    const ask = store.speech.open("ask", "Which session?", crypto.randomUUID())!;
+    assert.equal(ask.state, "ready");
+    if (playing) {
+      assert.equal((await p.pickup()).speak.id, ask.id);
+      assert.equal((await p.event(ask.id, "started")).status, 200);
+      assert.equal(ask.state, "speaking");
+    }
+    await configure({ listeningMode: "push-to-talk" });
+    assert.equal(ask.state, "stopping");
+    const { configuredHotkey, pushToTalkSession } = store.state();
+    const press = store.hostNowUs();
+    assert.equal((await post("/voice/shell-report", { registeredHotkey: configuredHotkey, pushToTalkSession,
+      capabilities: { hotkey: { available: true } }, pushToTalk: true, reportedAtHostUs: press,
+      pushToTalkPressedAtHostUs: press }, token)).status, 200);
+    const directive = await p.poll();
+    assert.deepEqual(directive.speak, { id: ask.id, stop: true });
+    assert.equal(directive.capture, false);
+    assert.ok(store.speech.held);
+    assert.equal((await p.event(ask.id, "ended")).status, 200);
+    assert.equal(ask.state, "stopped");
+    assert.equal(store.speech.held, false);
+    assert.equal((await p.poll()).capture, true, "the held shortcut captures once the player confirms silence");
+  });
+}
+
 test("a late start or a stop before pickup waits for the holder; muting permits only an audition", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   t.mock.method(performance, "now", Date.now);
@@ -1994,6 +2029,7 @@ test("a late start or a stop before pickup waits for the holder; muting permits 
   await p.announce(); await p.hello();
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
     body: JSON.stringify({ whenUnsure: "ask" }) });
+  const resolving = t.mock.method(store, "warmForAsk");
   for (const action of ["cancel", "pick", "mute"]) {
     t.mock.timers.tick(1);
     const { revision } = await p.poll();
@@ -2013,6 +2049,7 @@ test("a late start or a stop before pickup waits for the holder; muting permits 
     await p.event(ask.id, "ended");
     assert.equal(ask.state, "stopped");
   }
+  assert.equal(resolving.mock.callCount(), 3, "each card considered warm-up upon entering resolving");
   assert.equal(store.speech.open("ask", "Muted?", "muted")?.state, "failed");
   const id = await audition();
   const job = store.speech.live!;
@@ -2355,7 +2392,10 @@ test("only the holder can fetch prepared audio, until stopping, completion or th
     speechDirectory: directory, speechBackend: {
       model: () => ({ ...VOICE_MODEL_STATE_NONE, status: "ready" }),
       neural: () => [{ id: VOICE_SPEECH_DEFAULT_NEURAL, name: "F4", detail: "" }],
-      synthesizer: { warm() {}, stop() {}, synthesize: async () => ({ durationMs: 42, wav: new Uint8Array([82, 73, 70, 70]) }) },
+      synthesizer: { warm() {}, stop() {}, synthesize: async (_text, voice) => {
+        assert.deepEqual(voice, { engine: "neural", id: VOICE_SPEECH_DEFAULT_NEURAL });
+        return { durationMs: 42, wav: new Uint8Array([82, 73, 70, 70]) };
+      } },
     } });
   const server = new Hono();
   registerVoiceRoutes(server, s);
@@ -2365,7 +2405,8 @@ test("only the holder can fetch prepared audio, until stopping, completion or th
   const id = (await (await holder.request("/api/voice/speech/audition", {})).json()).id;
   const path = "/voice/speech/jobs/" + id + "/audio";
   assert.equal((await holder.request(path)).status, 404);
-  assert.equal((await holder.pickup()).speak.id, id);
+  assert.deepEqual((await holder.pickup()).speak, { id, kind: "audio", durationMs: 42 });
+  assert.equal(s.speech.live?.state, "ready");
   assert.equal(await (await holder.request(path)).text(), "RIFF");
   assert.equal((await other.request(path)).status, 404);
   assert.equal((await server.request(path + "?instance=" + holder.instance, { headers: { "x-harness-token": token } })).status, 404);

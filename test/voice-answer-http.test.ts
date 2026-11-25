@@ -1,22 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, app, applyFeatureFlagIntent, post, registry, say } from "./helpers/voice-http.ts";
+import { act, app, applyFeatureFlagIntent, post, registry, say, voiceStateStore } from "./helpers/voice-http.ts";
 import { answers, mockCaptureClock, put, question, show } from "./helpers/voice-question.ts";
 
 test("the deadline resolves through the human click path, correction restarts it", async t => {
   mockCaptureClock(t);
   const q = question();
   await show([q.id]);
+  const ordinaryDelay = voiceStateStore.directive().endOfSpeechMs;
   await say("Steve, option B", "answer");
+  assert.equal(voiceStateStore.directive().endOfSpeechMs, 500);
   t.mock.timers.tick(500);
   await say("no, A");
   assert.equal((await act("answer", "send-now")).status, 409);
   assert.equal(answers()[0]?.text, "SQLite");
   t.mock.timers.tick(501);
   assert.equal(registry.getReview(q.id)?.status, "pending");
+  assert.equal(voiceStateStore.directive().endOfSpeechMs, 500);
   t.mock.timers.tick(500);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(registry.getReview(q.id)?.status, "answered");
+  assert.equal(voiceStateStore.directive().endOfSpeechMs, ordinaryDelay);
   assert.deepEqual(registry.getReview(q.id)?.selections, [{ decisionId: "q", selected: ["sqlite"], other: null }]);
   assert.match(registry.getReview(q.id)!.response!, /SQLite/);
   assert.equal((await act("answer", "send-now")).status, 409);

@@ -5,6 +5,17 @@ declare module "sherpa-onnx-node" {
     samples: Float32Array;
   }
 
+  export class OfflineTts {
+    constructor(config: {
+      model: {
+        supertonic: Record<"durationPredictor" | "textEncoder" | "vectorEstimator" | "vocoder" | "ttsJson" | "unicodeIndexer" | "voiceStyle", string>;
+        numThreads: number; provider: "cpu"; debug: number;
+      };
+      maxNumSentences: number;
+    });
+    generate(request: { text: string; generationConfig: { sid: number; speed: number; numSteps: number; extra: { lang: string } } }): Waveform;
+  }
+
   interface OfflineStream {
     acceptWaveform(wave: Waveform): void;
   }
@@ -27,13 +38,14 @@ declare module "sherpa-onnx-node" {
 
   export class Vad {
     constructor(config: {
-      sileroVad: { model: string; windowSize: number; minSilenceDuration: number; minSpeechDuration: number };
+      sileroVad: { model: string; windowSize: number; minSilenceDuration: number; minSpeechDuration: number; maxSpeechDuration: number };
       numThreads: number;
       sampleRate: number;
     }, bufferSeconds: number);
     acceptWaveform(samples: Float32Array): void;
     flush(): void;
     isEmpty(): boolean;
+    isDetected(): boolean;
     front(): { start: number; samples: Float32Array };
     pop(): void;
     reset(): void;

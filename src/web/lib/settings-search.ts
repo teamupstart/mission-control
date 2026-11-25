@@ -1,3 +1,4 @@
+import { SESSION_SETTINGS_ACCESS, SKIN_SETTING } from "@shared/session-settings-metadata.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { resolveFeatureFlag, type FeatureFlagDefinition, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import type { FeatureFlagsSettings } from "../useFeatureFlagsSettings.ts";
@@ -220,12 +221,9 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   },
   {
     id: "skin",
-    label: "Skin",
+    ...SKIN_SETTING,
     description: "Repaint the whole dashboard in another colour theme, live, such as the light Daylight skin.",
     category: "display",
-    anchor: "display/skin",
-    // "theme", "dark" and "light" are what someone types who has never heard the word skin.
-    keywords: ["skin", "theme", "dark", "light", "daylight", "colour", "color", "appearance"],
     kind: "jump",
     backup: backupDomains("ui"),
   },
@@ -631,8 +629,38 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("voice"),
   },
   {
+    id: "voice-listening-mode",
+    label: "Listening mode",
+    description: "Choose Always-on listening or hold the global hotkey to speak.",
+    category: "voice",
+    anchor: "voice/listening-mode",
+    keywords: ["push-to-talk", "microphone", "hold", "always-on"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-end-of-speech",
+    label: "End-of-speech delay",
+    description: "How long the listener waits for more speech before submitting an automatic capture.",
+    category: "voice",
+    anchor: "voice/end-of-speech",
+    keywords: ["silence", "pause", "microphone", "seconds", "utterance"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
+    id: "voice-hotkey",
+    label: "Mute hotkey",
+    description: "Record a system-wide shortcut to mute voice or hold to talk during call auto-mute.",
+    category: "voice",
+    anchor: "voice/hotkey",
+    keywords: ["keyboard", "chord", "shortcut", "push to talk"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-auto-mute",
-    label: "Auto-mute during calls",
+    label: "Auto-mute on calls",
     description: "Stop listening while another app, such as a call, is using the microphone.",
     category: "voice",
     anchor: "voice/auto-mute",
@@ -1379,6 +1407,14 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     keywords: ["stack", "stacked", "dependency", "dependent", "base branch", "parent", "after merge", "depth"],
     kind: "jump",
     backup: backupDomains("shipping"),
+  },
+  {
+    id: "session-settings-access",
+    ...SESSION_SETTINGS_ACCESS,
+    category: "trust",
+    kind: "toggle",
+    risky: true,
+    backup: backupNotApplicable("operational-action"),
   },
   {
     id: "trust-grants",

@@ -30446,6 +30446,10 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.rail-name-shared {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .rail-sub {
   grid-column: 2;
   min-width: 0;
@@ -34313,32 +34317,103 @@ span.line-run-prov {
 }
 /* The same facts and fixes as a band in the session detail (`StalledBand`), for the Console and
    the Board's drill-in, where the rail row has room only for its mark. Drawn like the Awaiting
-   band beside it, in the Stalled yellow. */
+   band beside it, in the Stalled yellow.
+
+   It collapses like the blocker band (`.blocker-band`): the row is its whole collapsed face -
+   the rule, the first fact and the fixes - and is sticky when expanded, so the fixes never
+   scroll away under a long Foreman note. The summary never wraps, which bounds the row's height
+   by its controls; the expanded fact sheet carries every fact whole. */
 .stalled-band {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 9px 12px 8px;
   border: 1px solid color-mix(in oklab, var(--stalled) 38%, var(--border));
   border-left: 3px solid var(--stalled);
   border-radius: 8px;
   background: color-mix(in oklab, var(--stalled) 6%, var(--panel));
   font-size: 12.5px;
 }
-.stalled-band-top {
+.stalled-band-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 10px 7px 12px;
+  background: inherit;
+  border-radius: 7px;
+}
+.stalled-band-toggle {
+  flex: 1 1 22rem;
+  min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 8px;
+  padding: 2px 4px;
+  margin: 0 0 0 -4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stalled-band-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
 }
 .stalled-band-flag {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
+  flex: none;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.3px;
   text-transform: uppercase;
   color: var(--stalled);
 }
 .stalled-band-rule {
+  flex: none;
+  font-weight: 650;
+}
+.stalled-band-summary {
+  min-width: 0;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stalled-band-chevron {
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 6px;
+  margin-left: 2px;
+  background: var(--select-chevron) no-repeat center;
+  transition: transform 120ms ease;
+}
+.stalled-band.is-open .stalled-band-chevron {
+  transform: rotate(180deg);
+}
+.stalled-band-row > .stalled-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+.stalled-band-more {
+  margin: 0;
+  padding: 9px 14px 11px;
+  border-top: 1px dashed color-mix(in oklab, var(--stalled) 30%, var(--border));
+}
+.stalled-band-more[hidden] {
+  display: none;
+}
+.stalled-band.is-open .stalled-band-row {
+  border-bottom: 1px dashed color-mix(in oklab, var(--stalled) 30%, var(--border));
+  border-radius: 7px 7px 0 0;
+}
+.stalled-band.is-open .stalled-band-row + .stalled-band-more {
+  border-top: 0;
 }
 /* Board tiles mark sessions held by an open workflow run. */
 .tile-held {
@@ -41221,6 +41296,20 @@ body.foreman-sidecar-open .modal-backdrop {
   max-width: 1060px;
 }
 
+.setup-update-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.setup-update-footer > section {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.setup-update-footer p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .setup-row-title,
 .setup-command {
   align-items: center;
@@ -43406,7 +43495,7 @@ body.foreman-sidecar-open .modal-backdrop {
 .vi-listening {
   --vi: var(--voice-listening);
 }
-.vi-muted {
+.vi-muted, .vi-waiting-for-key {
   --vi: var(--voice-muted);
 }
 .vi-auto-muted, .vi-unavailable {
@@ -43457,13 +43546,13 @@ button.vi { cursor: pointer; }
 .app > .vi-floating { position: fixed; bottom: 12px; left: 12px; z-index: 5; }
 .app:has(> .vi-status-line) > .vi-floating { bottom: 38px; }
 .vi-floating .vi-word, .vi-composer .vi-word, .vi-expanded { display: none; }
-button.vi-floating:is(:hover, :focus-visible) {
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) {
   width: auto; border-radius: 999px; padding: 0 13px 0 10px; gap: 6px;
   color: var(--fg); box-shadow: var(--shadow); font: 12px var(--sans);
 }
-button.vi-floating:is(:hover, :focus-visible) :is(.vi-word, .vi-expanded) { display: inline; }
-button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
-.vi-floating.vi-muted { box-shadow: var(--shadow); border-color: var(--border); }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) :is(.vi-word, .vi-expanded) { display: inline; }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) svg { color: var(--vi); }
+.vi-floating:is(.vi-muted, .vi-waiting-for-key) { box-shadow: var(--shadow); border-color: var(--border); }
 .vi-edge-line {
   position: relative; height: 3px; background: var(--vi);
   box-shadow: 0 0 14px 1px color-mix(in oklab, var(--vi) 65%, transparent);
@@ -43478,7 +43567,19 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .app > .vi-edge-line .vi-edge { height: var(--vi-edge-tab-height); }
 /* Keep the centered mute tab above the measured row, including its topmost click targets. */
 .app > .vi-edge-line ~ header.topbar { padding-top: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)); }
-.vi-edge-line.vi-muted { box-shadow: none; background: var(--border); }
+/* The edge tab overlaps the header's padding. Keep Electron's native drag
+   surface below it so the window manager delivers clicks to the microphone. */
+.is-desktop .app > .vi-edge-line ~ header.topbar {
+  -webkit-app-region: none;
+}
+.is-desktop .app > .vi-edge-line ~ header.topbar::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)) 0 0;
+  z-index: -1;
+  -webkit-app-region: drag;
+}
+.vi-edge-line:is(.vi-muted, .vi-waiting-for-key) { box-shadow: none; background: var(--border); }
 .vi-edge {
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%); pointer-events: auto;
   display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
@@ -43490,7 +43591,7 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
   background: color-mix(in oklab, var(--vi) 13%, var(--panel-2));
   border: 1px solid color-mix(in oklab, var(--vi) 55%, var(--border));
 }
-.vi-composer.vi-muted { background: var(--panel-2); border-color: var(--border); }
+.vi-composer:is(.vi-muted, .vi-waiting-for-key) { background: var(--panel-2); border-color: var(--border); }
 .vi-settings { border: 0; min-width: 0; padding: 0; }
 .vi-choice { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .vi-choice label { cursor: pointer; }
@@ -43540,6 +43641,21 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .topbar[data-rung~="5"]:has(.vi-topbar) .glyph-btn { min-width: 26px; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg:has(.pulse-n) .pulse-dot,
 .topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn .kb-hint { display: none; }
+
+.voice-hardware-settings {
+  display: grid;
+  line-height: 1.5;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 10px;
+}
+.voice-hardware-settings .kb-row { padding: 6px 8px; }
+.voice-hardware-settings .kb-capture { min-width: 66px; }
+.voice-hardware-settings .kb-row-desc:empty { display: none; }
+
+.voice-settings { container-type: inline-size; }
+@container (max-width: 460px) {
+  .voice-hardware-settings { grid-template-columns: 1fr; }
+}
 
 /* Conversation Idle rail preview. The count stays visible when its section is collapsed. */
 .idle-rail-total {

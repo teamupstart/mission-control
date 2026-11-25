@@ -27,7 +27,7 @@ export async function connectUpdateController(page: Page, controller: UpdateCont
     };
     Object.defineProperty(window, "missionDesktop", {value: {
       isDesktop: true, onOpenSettings: () => () => {},
-      ...(binary ? {binaryInstallation: {getState: async () => ({action: null, destination: "/Applications/Mission Control.app", message: "This destination is already managed."})}} : {}),
+      ...(binary ? {binaryInstallation: {getState: async () => ({action: null, destination: "/Applications/Mission Control.app", message: "Managed installation."})}} : {}),
       updates: {dismissOutcome: (outcome: UpdateApplyOutcome) => (window as unknown as {dismissUpdateOutcome(outcome: UpdateApplyOutcome): Promise<boolean>}).dismissUpdateOutcome(outcome), getState: () => command("state"), check: () => command("check"), apply: () => command("apply"),
         install: () => command("install"), cancel: () => command("cancel"), defer: () => command("defer"), setAlpha: (alpha: boolean) => command("alpha", alpha),
         onState: (listener: (value: UpdateSnapshot) => void) => {listeners.add(listener); return () => listeners.delete(listener);},

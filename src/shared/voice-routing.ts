@@ -60,6 +60,7 @@ export interface HeardEntry {
   outcome: VoiceCard["state"] | "control" | "ignored";
   rule: string;
   matchedName: string | null;
+  matchedReferenceName?: true;
   pauseMs: number | null;
   detail: string;
 }
@@ -138,7 +139,7 @@ type Decision =
       target: SpokenName; match: "exact" | "phonetic";
       /** Each later name that could start a message of its own, in the order it was said. */
       splits: VoiceSplitPoint[] }
-  | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string };
+  | { kind: "ignored"; reason: "near-miss" | "no-name" | "no-message" | "ambiguous-pick"; closest?: string; closestReferenceName?: true };
 
 const BOUNDARY_PUNCTUATION = /^[\p{P}\s]+|[\p{P}\s]+$/gu;
 
@@ -338,7 +339,7 @@ export function routeUtterance(utterance: VoiceUtterance, context: {
     const first = leadingNames[0];
     const near = names.filter(({ name }) => Math.abs(name.length - first.length) <= 1 && editDistance(first, name) === 1);
     if (!near.length) return { kind: "ignored", reason: "no-name" };
-    if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name };
+    if (near.length === 1) return { kind: "ignored", reason: "near-miss", closest: near[0]!.target.name, ...(near[0]!.target.isReferenceName && { closestReferenceName: true }) };
     return { kind: "ignored", reason: "near-miss" };
   }
   const { body, offset, wrappersClosed } = bodyAfter(tokens[count - 1]!);

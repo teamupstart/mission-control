@@ -1,3 +1,4 @@
+import { SESSION_SETTINGS_ACCESS } from "./session-settings-metadata.ts";
 import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
 import { ShapingConfigSchema } from "./shaping.ts";
 import { VoiceConfigSchema, type VoiceConfig } from "./voice.ts";
@@ -326,8 +327,10 @@ const uiFields = {
  */
 const voiceFields = {
   muted: "operational",
+  listeningMode: "setting",
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
+  endOfSpeechMs: "setting",
   cancelWindow: "setting",
   speech: "setting",
   whenUnsure: "setting",
@@ -442,6 +445,8 @@ export const APP_CONFIG_ENTRIES = {
   shipping: fieldsEntry("shipping", ShippingConfigSchema, "shipping", shippingFields),
   pipelines: fieldsEntry("pipelines", PipelinesConfigSchema, "pipelines", pipelinesFields),
   ui: fieldsEntry("ui", UiConfigSchema, "ui", uiFields, "ui"),
+  // Installation consent stays outside settings snapshots, so a restore cannot undo revocation.
+  sessionSettingsAccess: wholeEntry(SESSION_SETTINGS_ACCESS.key, z.boolean(), "operational", null),
   foremanLease: wholeEntry("foreman.lease", ForemanLeaseSchema, "operational", null),
   // This records what one operator has already seen about this machine. Restoring it from
   // another installation could suppress a new break or resurrect a reminder already handled.

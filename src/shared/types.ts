@@ -1490,6 +1490,12 @@ export interface SessionGoal {
    * never denormalized onto session cards.
    */
   pendingPrompts: GoalPromptRevision[];
+  /** Acceptance time for the latest prompt, retained if an unclear verdict is replayed. */
+  latestPromptAcceptedAt?: number;
+  /** Accepted standalone release timestamp. Queue instructions started later still apply. */
+  handoffReleasedAt?: number;
+  /** When the actual deliverable last changed, excluding handoff restrictions. */
+  deliverableUpdatedAt?: number;
   updatedAt: number;
 }
 
@@ -1502,6 +1508,8 @@ export interface SessionIntentGuard {
 
 export interface GoalPromptRevision {
   revision: number;
+  /** Accepted operator time. Older captured revisions may lack this provenance. */
+  acceptedAt?: number;
   /** Null only for a legacy unresolved revision whose text was already lost before migration. */
   prompt: string | null;
 }
@@ -1622,6 +1630,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** First accepted delivery. Later retries do not renew the item's handoff authority. */
+  firstDeliveredAt?: number;
   /** Runtime captured for this delivery attempt; absent on rows predating this field. */
   deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;
@@ -4276,12 +4286,16 @@ export type ServerEvent =
    * is on, plus one frame with the mode `off` when it is switched off, which is how a follower
    * that reads no feature flag (the shell) learns voice is off. Emitted only when it changed.
    */
+  | import("./voice-answers.ts").VoiceInboxEvent
   | { type: "voice_answer"; reviewId: string; answer: import("./voice-answers.ts").VoiceAnswer | null; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_open_question"; windowId: string; reviewId: string; sessionId: string }
   | { type: "voice_confirm_focus"; windowId: string; sequence: number }
   | { type: "voice_card_remove"; id: string }
   | { type: "voice_card"; card: import("./voice-routing.ts").VoiceCard; voiceServerTime?: number; voiceStreamStartedAt?: number }
   | { type: "voice_state"; state: import("./voice.ts").VoiceState }
+  /** Bounded invalidation for the shared dashboard skin, with no config values on the stream. */
+  | { type: "ui_skin_changed" }
+  | { type: "session_settings_access_changed" }
   | { type: "voice_indicators"; confirmation?: import("./voice.ts").VoiceConfirmationPlacement; indicators: string[]; voiceIndicatorVersion?: import("./voice.ts").VoiceRevision }
   /**
    * Who can be addressed changed: a resident profile or run, a task's call sign, or a session

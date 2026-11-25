@@ -263,6 +263,14 @@ check the repair. Follow-up replies keep the provider's default. The
 timings above were measured at default effort, so a review now takes longer than they show,
 and the review timeout is 1200 seconds to allow for it.
 
+Inspector answers waiting follow-ups in order before reviewing the PR. A failed reply ends
+work on that PR for the sweep, so Inspector can observe and process the next PR. Unanswered
+questions stay pending, and the retry wait starts when the failure occurs. Inspector keeps
+observing the PR during backoff, including checking whether a new head can end the wait.
+Waiting questions and pending thread resolutions share one queue. Work carried over from the
+previous sweep runs before newly discovered work. A failed operation moves behind the other
+queued work.
+
 ### Whether a finding reached GitHub
 
 Every finding records whether, and when, it was posted. The time is stamped when GitHub

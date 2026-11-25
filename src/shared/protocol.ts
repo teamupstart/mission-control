@@ -5,7 +5,7 @@ export type { ShapingConfigView, UnsupportedShaperView } from "./shaping.ts";
 import type { TaskSkillPrompt } from "./shaping.ts";
 import { INBOX_MESSAGE_KINDS, type InboxMessageKind } from "./inbox.ts";
 import { TASK_RETENTION_DEFAULT_DAYS, TASK_RETENTION_MIN_DAYS, TASK_RETENTION_MAX_DAYS } from "./worktree-retention.ts";
-import { PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
+import { PLAN_APPROVAL_DECISION, PlanIdentitySchema, PlanReviewInputSchema, TaskPlanInputChangeSchema, TaskPlanInputsSchema } from "./managed-plans.ts";
 import { workflowFindingReason } from "./workflow-reasons.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "./builtin-workflow.ts";
 import { z } from "zod";
@@ -633,6 +633,8 @@ export const PLAN_DECISION_LIMITS = {
   decisions: 100,
   options: 50,
 } as const;
+// A managed form may append one final-bundle approval to the agent's questions.
+export const MAX_PLAN_DECISIONS_WITH_APPROVAL = PLAN_DECISION_LIMITS.decisions + 1;
 
 export const PlanDecisionOptionSchema = z.object({
   id: z.string().min(1),
@@ -1099,9 +1101,13 @@ export type PlanDecisionAnswerInput = z.infer<typeof PlanDecisionAnswerSchema>;
  * answers stay out of the conversation the human is credited with.
  */
 export const ResolveReviewSchema = z.object({
+  voiceSubmitId: z.uuid().optional(),
   action: z.enum(["approve", "reject", "answer", "dismiss"]),
   response: z.string().nullable().optional().default(null),
-  selections: z.array(PlanDecisionAnswerSchema).max(PLAN_DECISION_LIMITS.decisions).nullable().optional().default(null),
+  selections: z.array(PlanDecisionAnswerSchema).max(MAX_PLAN_DECISIONS_WITH_APPROVAL)
+    .refine(answers => answers.length <= PLAN_DECISION_LIMITS.decisions || answers.some(a => a.decisionId === PLAN_APPROVAL_DECISION),
+      "The extra decision is reserved for final-bundle approval.")
+    .nullable().optional().default(null),
   by: AnswerActorSchema,
   /**
    * "Approve all future bundles for this task", ticked on a managed plan's final-bundle form.
@@ -5929,6 +5935,16 @@ export const WrapupSchema = z.object({
 });
 export type Wrapup = z.infer<typeof WrapupSchema>;
 
+const SessionIntentGuardSchema = z.object({
+  objective: z.string().trim().min(1).max(INTENT_MAX),
+  objectiveVersion: z.number().int().min(1),
+  promptRevision: z.number().int().min(1),
+  episodeKey: z.string().min(1).max(200),
+}).refine(
+  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
+  { message: "Intent episode key does not match its revisions" },
+);
+
 /**
  * Stamp the wrap-up ask.
  *
@@ -5943,18 +5959,10 @@ export type Wrapup = z.infer<typeof WrapupSchema>;
  */
 export const WrapupAskedSchema = z.object({
   clearAnswer: z.boolean().optional(),
+  expectedIntent: SessionIntentGuardSchema.nullable().optional(),
+  retire: z.literal(true).optional(),
 });
 export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
-
-const SessionIntentGuardSchema = z.object({
-  objective: z.string().trim().min(1).max(INTENT_MAX),
-  objectiveVersion: z.number().int().min(1),
-  promptRevision: z.number().int().min(1),
-  episodeKey: z.string().min(1).max(200),
-}).refine(
-  (intent) => intent.episodeKey === `intent:${intent.objectiveVersion}:${intent.promptRevision}`,
-  { message: "Intent episode key does not match its revisions" },
-);
 
 /**
  * Which automated prompted handoff a consumption is authorizing, if any.

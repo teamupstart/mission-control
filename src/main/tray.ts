@@ -20,6 +20,7 @@ interface ReportCounts {
 
 export interface TrayHandlers {
   setMuted: (muted: boolean) => Promise<boolean>;
+  onRecentlyHeard: () => void;
   onOpen: () => void;
   onCheckForUpdates: () => void;
   onInstallIntegrations: () => void;
@@ -34,9 +35,16 @@ let muteError = "";
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
 
+export function showVoiceMuteError(message: string): void {
+  if (!presentation) return;
+  muteError = message;
+  refreshMenu?.();
+  if (menu) tray?.popUpContextMenu(menu);
+}
+
 export function setTrayVoice(state: TrayVoiceState): void {
-  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
-  if (next?.nextMuted !== presentation?.nextMuted) {
+  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted", state.pushToTalkSession);
+  if (next?.nextMuted !== presentation?.nextMuted || next?.action !== presentation?.action) {
     clearTimeout(muteConfirmation);
     muteConfirmation = undefined;
     muteError = "";
@@ -50,6 +58,8 @@ export function setTrayVoice(state: TrayVoiceState): void {
 let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
+
+export function voiceTrayBounds() { return tray?.getBounds(); }
 
 function trayImage(iconPath: string): Electron.NativeImage {
   if (iconPath && existsSync(iconPath)) {
@@ -80,9 +90,7 @@ async function requestMute(handlers: TrayHandlers, muted: boolean): Promise<void
     if (muteConfirmation !== deadline) return;
     clearTimeout(deadline);
     muteConfirmation = undefined;
-    muteError = `${muted ? "Mute" : "Unmute"} not confirmed. Try again.`;
-    render(handlers);
-    if (menu) tray?.popUpContextMenu(menu);
+    showVoiceMuteError(`${muted ? "Mute" : "Unmute"} not confirmed. Try again.`);
   }
 }
 
@@ -116,7 +124,8 @@ function render(handlers: TrayHandlers): void {
     template.splice(3, 0,
       { label: status, enabled: false },
       ...(muteError ? [{ label: muteError, enabled: false }] : []),
-      { label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) },
+      ...(action ? [{ label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) }] : []),
+      { label: "Recently Heard", click: handlers.onRecentlyHeard },
       { type: "separator" },
     );
   }
@@ -150,7 +159,7 @@ export function createTray(iconPath: string, voiceImageDir: string, handlers: Tr
   updateImage = image => tray?.setImage(trayImage(image ? join(voiceImageDir, image) : iconPath));
   refreshMenu = () => render(handlers);
   tray.on("click", () => {
-    if (presentation) void requestMute(handlers, presentation.nextMuted);
+    if (presentation?.action) void requestMute(handlers, presentation.nextMuted);
     else handlers.onOpen();
   });
   tray.on("right-click", () => {

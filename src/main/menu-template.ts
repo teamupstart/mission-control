@@ -77,6 +77,8 @@ function zoomWindow(window: unknown, step: number | "reset"): void {
 }
 
 export interface AppMenuState {
+  /** Present while a confirmation is visible in a native voice window. */
+  focusVoiceConfirmation?: () => void;
   /**
    * Whether the dashboard is currently claiming ⌘0/⌘-/⌘= for the fleet's session jumps.
    *
@@ -147,6 +149,10 @@ export function appMenuTemplate(
       // `⌃R` is a dashboard chord and is not `⌘R`.
       label: "View",
       submenu: [
+        ...(state.focusVoiceConfirmation ? [{
+          id: "focus-voice-confirmation", label: "Focus Voice Confirmation", accelerator: "CmdOrCtrl+Alt+V",
+          click: state.focusVoiceConfirmation,
+        }, { type: "separator" as const }] : []),
         { role: "reload" },
         { role: "forceReload" },
         { role: "toggleDevTools" },

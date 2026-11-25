@@ -1,8 +1,10 @@
+import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { fixtureVoiceSupervisor } from "../../test/helpers/voice-supervisor.ts";
 import type { VoiceUtterance } from "../../src/shared/voice-routing.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createTlsServer } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
 import { VOICE_INSTANCE_HEADER } from "../../src/shared/voice-speech.ts";
 import type { AddressInfo } from "node:net";
@@ -103,6 +105,24 @@ async function postUtterance(daemon: VoiceDaemon, utterance: VoiceUtterance): Pr
   }
 }
 
+/** End detection and transcription may finish after the countdown on any card surface. */
+export async function startSpokenCancel(daemon: VoiceDaemon) {
+  const headers = { "content-type": "application/json", "x-harness-token": voiceToken(daemon), [VOICE_LISTENER_ID_HEADER]: listenerId };
+  const directive = await fetch(daemon.baseURL + "/voice/listener/directive", { headers });
+  const { revision } = await directive.json() as VoiceListenerDirective;
+  const speechStartUs = voiceHostTimeUs();
+  const capturedAt = Date.now();
+  const query = "?revision=" + encodeURIComponent(revision);
+  const start = await fetch(daemon.baseURL + "/voice/listener/speech" + query, {
+    method: "POST", headers, body: JSON.stringify({ speechStartUs, phase: "start" }),
+  });
+  if (!(await start.json()).accepted) throw new Error("Listener speech onset refused");
+  return () => fetch(daemon.baseURL + "/voice/utterances" + query, { method: "POST",
+    headers: { ...headers, "x-voice-capture-start-host-us": String(speechStartUs),
+      "x-voice-speech-start-host-us": String(speechStartUs), "x-voice-capture-end-host-ms": String(Math.ceil(voiceHostTimeUs() / 1000)) },
+    body: JSON.stringify({ id: crypto.randomUUID(), text: "Cancel.", capturedAt, backend: LISTENER_HELLO.backend }) });
+}
+
 const lastCapturePost = new Map<string, Promise<Response>>();
 
 /** Post in capture order so a cancel or pick cannot overtake the utterance it acts on. */
@@ -154,7 +174,7 @@ export interface ModelServer {
  * The daemon reads both variables at launch, so start this before the daemon (as a fixture the
  * `daemonEnv` option depends on) and keep it for the test's life.
  */
-export async function startModelServer(): Promise<ModelServer> {
+export async function startModelServer(options: { tls?: { key: string; cert: string } } = {}): Promise<ModelServer> {
   const files = [
     { file: "Encoder.mlmodelc/weights/weight.bin", body: randomBytes(4 * 1024 * 1024) },
     { file: "Encoder.mlmodelc/coremldata.bin", body: randomBytes(600) },
@@ -166,7 +186,7 @@ export async function startModelServer(): Promise<ModelServer> {
   const requests: string[] = [];
   const open = new Set<ServerResponse>();
   const prefix = `/${MODEL_REPOSITORY}/resolve/${MODEL_COMMIT}/`;
-  const server = createServer((request, response) => {
+  const handle = (request: IncomingMessage, response: ServerResponse): void => {
     const file = (request.url ?? "").startsWith(prefix) ? request.url!.slice(prefix.length) : "";
     const entry = files.find((candidate) => candidate.file === file);
     if (!entry) {
@@ -191,9 +211,12 @@ export async function startModelServer(): Promise<ModelServer> {
       return;
     }
     response.end(entry.body);
-  });
+  };
+  // With `tls`, the stand-in is served over HTTPS with the given chain, so a spec can decide which
+  // roots the daemon has to trust to reach it.
+  const server = options.tls ? createTlsServer(options.tls, handle) : createServer(handle);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const origin = `${options.tls ? "https" : "http"}://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const manifest: VoiceModelManifest = {
     revision: "parakeet-e2e-fixture",
     label: "Parakeet fixture",

@@ -1,3 +1,4 @@
+import { spokenNameLabel } from "@shared/voice-names.ts";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { voiceCardDeadline, voiceCardRetryDelay, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -6,8 +7,8 @@ import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
-  card: DashboardVoiceCard; actions: VoiceCardActions; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
+function Card({ card, actions, surface, hidden, fading, notify, sound, notifications }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ state: DashboardVoiceCard["state"]; message: string } | null>(null);
@@ -59,10 +60,10 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
   const waiting = card.parts.filter(part => !part.immediateStop);
   const stops = card.parts.filter(part => part.immediateStop);
   const scope = waiting.length > 1 ? "both" : stops.length ? "remaining" : "single";
-  const recipient = waiting.length > 1 ? "Two messages" : "To " + (waiting[0]?.target?.name ?? "agent");
+  const recipient = waiting.length > 1 ? "Two messages" : "To " + (waiting[0]?.target ? spokenNameLabel(waiting[0].target) : "agent");
   const body = [
-    ...waiting.map(part => waiting.length > 1 ? part.target?.name + ": " + part.text : part.text),
-    ...stops.map(part => "Stop requested for " + (part.target?.name ?? "agent") + " separately."),
+    ...waiting.map(part => waiting.length > 1 ? (part.target ? spokenNameLabel(part.target) : "agent") + ": " + part.text : part.text),
+    ...stops.map(part => "Stop requested for " + (part.target ? spokenNameLabel(part.target) : "agent") + " separately."),
   ].join("\n");
   useEffect(() => {
     if (!notify || !deadline || state !== "pending" || !waiting.length) return;
@@ -128,7 +129,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       dismiss?.();
     };
   }, [cardId, wireDeadline, deadline, card.windowMs, card.provisionalDeadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
+  return <VoiceCardView surface={surface} card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 
 export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, notifications }: {
@@ -166,13 +167,13 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     <div className="sr-only" role="region" aria-live="polite" aria-relevant="additions" aria-label="Voice countdown">
       {pending.filter(card => !selected || card === selected).map(card => <CountdownAnnouncement key={JSON.stringify([card.id, card.deadline])} card={card} deadline={voiceCardDeadline(card)!} />)}
     </div>
-    {pending.concat(others).map(card => <Card key={JSON.stringify([card.id, card.deadline])} card={card} actions={actions} hidden={!!selected && card !== selected}
+    {pending.concat(others).map(card => <Card surface={surface} key={JSON.stringify([card.id, card.deadline])} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
     {choices.length > 1 && selected && <label className="vc-switch">Voice message
       <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>
         setSelection({ id: event.target.value, openWindows: new Map(pending.map(card => [card.id, card.deadline])) })}>
         {choices.map(card => <option key={card.id} value={card.id}>
-          {card.parts.map(part => [part.target?.name ?? part.restoredSession?.name, card.questionTitle, part.text].filter(Boolean).join(": ")).join(" · ")}
+          {card.parts.map(part => [part.target ? spokenNameLabel(part.target) : part.restoredSession?.name, card.questionTitle, part.text].filter(Boolean).join(": ")).join(" · ")}
         </option>)}
       </select></Tooltip>
     </label>}

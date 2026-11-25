@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { HeardRow } from "../src/web/components/RecentlyHeard.tsx";
 import { before, test } from "node:test";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { RecentlyHeard, VoiceRouter } from "../src/server/voice/router.ts";
@@ -35,6 +38,28 @@ test("a daemon-dated dashboard pick and timestamped speech stay ordered across a
   assert.equal(router.heard.list().find(entry => entry.id === "early")?.time, unix);
   assert.equal(await say("future", "Will skip", wallNow, hostNow + 1_000_001), false);
   assert.equal(await say("unix-only-future", "Will skip", unix), false);
+});
+
+test("Recently Heard quotes only configured resident reference names after a near miss", async t => {
+  for (const configured of [true, false]) {
+    const resident: SpokenName = {
+      key: "resident:watcher", name: "Cat", kind: "resident", sessionId: null, taskId: null,
+      role: "", colorId: null, agent: "codex", state: "not-running",
+      ...(configured && { isReferenceName: true }),
+    };
+    const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: "listening", roster: [resident] }),
+      () => ({ enabled: false, seconds: 1 }), { deliver: async () => assert.fail("near miss delivered") }, () => {});
+    t.after(() => router.reset());
+    await router.accept({ id: "miss", text: "Pat help", capturedAt: 1, backend: "fluidaudio", words: [] });
+    const [entry] = router.heard.list();
+    assert.ok(entry);
+    assert.equal(entry.rule, "near-miss");
+    assert.equal(entry.matchedName, "Cat");
+    // The resident may have left the roster before the operator opens history.
+    const row = renderToStaticMarkup(createElement(HeardRow, { entry, roster: [], now: 1 }));
+    const label = configured ? "&quot;Cat&quot;" : "Cat";
+    assert.ok(row.includes(`Closest is <strong>${label}</strong>, a weak match`), row);
+  }
 });
 
 test("Recently heard retains the newest 50 reasons and clears in memory", async () => {
@@ -182,4 +207,26 @@ test("a split interrupts its second recipient before waiting for the first one's
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(cards.at(-1)?.state, "queued");
   assert.match(cards.at(-1)!.detail!, /Part 1 \(Steve\) queued\. Part 2 \(Will\) sent\./);
+});
+
+test("reconnect receipts retain the latest outcome per card within the history bound and clear with heard speech", () => {
+  const history = new RecentlyHeard();
+  const start = history.receiptCursor;
+  const card: VoiceCard = { id: "one", state: "queued", reason: "exact", parts: [], candidates: [], deadline: null, openQuestions: 0 };
+  history.recordCard(card);
+  const queued = history.receiptCursor;
+  history.recordCard({ ...card, state: "held" });
+  assert.deepEqual(history.receiptsAfter(start), []);
+  history.recordCard({ ...card, state: "sent" });
+  assert.deepEqual(history.receiptsAfter(queued).map(row => row.state), ["sent"]);
+  assert.deepEqual(history.receiptsAfter(history.receiptCursor), []);
+  assert.deepEqual(history.receiptsAfter(undefined), []);
+  for (let i = 0; i < 51; i++) history.recordCard({ ...card, id: String(i) });
+  assert.equal(history.receiptsAfter(start).length, 50);
+  assert.equal(history.receiptsAfter(start)[0]?.id, "1");
+  history.clear();
+  assert.deepEqual(history.receiptsAfter(start), []);
+  history.recordCard(card);
+  assert.deepEqual(history.receiptsAfter(start), [card]);
+  assert.deepEqual(history.receiptsAfter(new RecentlyHeard().receiptCursor), []);
 });

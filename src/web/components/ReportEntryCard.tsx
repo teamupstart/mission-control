@@ -1,4 +1,4 @@
-import { useReportAuthorName } from "../lib/sessionReports.ts";
+import { useReportAuthorIdentity } from "../lib/sessionReports.ts";
 import { useState } from "react";
 import { reportEntryStatus, reportToRead, type ReportItem } from "@shared/reports.ts";
 import { InboxActionButton } from "./AgentName.tsx";
@@ -37,7 +37,7 @@ export function ReportEntryCard({
   onOpenDocument: () => void;
 }): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
-  const name = useReportAuthorName(report.author);
+  const name = useReportAuthorIdentity(report.author);
   const waiting = reportToRead(report);
   const bodyId = `report-entry-body-${report.id}`;
   const status = reportEntryStatus(report);

@@ -900,6 +900,8 @@ export interface SdkLaunchOptions {
   mcp: MissionMcpDescriptor | null;
   /** Task-backed extension harnesses must retain healthy Mission tools through replacement. */
   missionToolsRequired?: boolean;
+  /** Private MCP caller binding for an installed extension running inside the daemon. */
+  missionToolCaller?: { sessionId: string; locator: string };
   /**
    * A resident run's pinned MCP set, or absent for every other launch, which keeps the
    * harness's native MCP behaviour. When present the driver starts exactly `mcp` plus these.

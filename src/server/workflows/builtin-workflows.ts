@@ -265,6 +265,7 @@ function appendGpt6Version(
   versions: BuiltinWorkflowSource["versions"],
 ): BuiltinWorkflowSource["versions"] {
   const previous = versions.at(-1);
+  // oxlint-disable-next-line repository/agent-comparison -- The migration applies to persisted Codex runner defaults.
   if (!previous || previous.personaExecution?.default?.runner !== "codex") {
     throw new Error("GPT-6 workflow upgrade requires a Codex-routed previous version");
   }
@@ -274,6 +275,7 @@ function appendGpt6Version(
       "gpt-5.6-terra": "gpt-6-sol",
       "gpt-5.6-luna": "gpt-6-luna",
     }[execution.model];
+    // oxlint-disable-next-line repository/agent-comparison -- The migration applies to persisted Codex runner defaults.
     if (!model || execution.runner !== "codex") {
       throw new Error(`unexpected built-in workflow model ${execution.runner}/${execution.model}`);
     }

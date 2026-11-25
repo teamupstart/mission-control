@@ -1,4 +1,5 @@
-import { useReportAuthorName } from "../lib/sessionReports.ts";
+import { spokenNameLabel } from "@shared/voice-names.ts";
+import { useReportAuthorIdentity } from "../lib/sessionReports.ts";
 import { useEffect, useRef, useState } from "react";
 import type { ReportItem } from "@shared/reports.ts";
 import { api } from "../lib/api.ts";
@@ -27,7 +28,7 @@ export function ReportDocumentReader({
   report: ReportItem;
   onClose: () => void;
 }): React.JSX.Element {
-  const authorName = useReportAuthorName(report.author);
+  const authorName = spokenNameLabel(useReportAuthorIdentity(report.author));
   const document = report.document;
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   const frame = useRef<HTMLIFrameElement>(null);

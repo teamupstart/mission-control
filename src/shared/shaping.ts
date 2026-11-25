@@ -1,15 +1,19 @@
 import { z } from "zod";
+import { residentMcpLoopbackHost } from "./resident-mcp.ts";
 import { holdsSecretShape } from "./secret-shapes.ts";
 import { taskKindLaunchesHarness } from "./task.ts";
 import { AGENT_TYPES, TASK_KINDS, type TaskKind } from "./types.ts";
 import { boundedRecord, partialPatch } from "./zod-shapes.ts";
 import {
+  SHAPING_AUTH_KINDS,
   SHAPING_BUILTINS,
   SHAPING_LIFECYCLE_POINTS,
   SHAPING_ORIGINS,
   SHAPING_OUTCOMES,
   SHAPING_PROMPT_STATES,
   SHAPING_REFERENCE_KINDS,
+  SHAPING_SIGN_IN_STATES,
+  SHAPING_SIGN_IN_STORAGE,
   SHAPING_SKILL_STATES,
   SHAPING_STAGES,
   SHAPING_TRANSPORTS,
@@ -32,6 +36,9 @@ export type ShapingReferenceKind = (typeof SHAPING_REFERENCE_KINDS)[number];
 export type ShapingLifecyclePoint = (typeof SHAPING_LIFECYCLE_POINTS)[number];
 export type ShapingSkillState = (typeof SHAPING_SKILL_STATES)[number];
 export type ShapingPromptState = (typeof SHAPING_PROMPT_STATES)[number];
+export type ShapingAuthKind = (typeof SHAPING_AUTH_KINDS)[number];
+export type ShapingSignInState = (typeof SHAPING_SIGN_IN_STATES)[number];
+export type ShapingSignInStorage = (typeof SHAPING_SIGN_IN_STORAGE)[number];
 
 export const SHAPING_PROTOCOL = 1;
 
@@ -246,6 +253,60 @@ const UrlSchema = z.string().max(2048).refine((value) => {
 }, { message: "A URL is http or https." });
 
 // ---------------------------------------------------------------------------------------------
+// The sign-in marker
+
+/** One scope token (RFC 6749 section 3.3): visible ASCII other than `"` and `\`. */
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
+
+/** Sent as written, so there is no default and no fallback to what the server advertises. */
+const SignInScopeSchema = z.string().min(1).max(256).refine(
+  (value) => value.split(" ").every((token) => SCOPE_TOKEN.test(token)),
+  { message: "A scope is one or more scope tokens separated by single spaces. A token is visible ASCII with no \" and no \\." },
+);
+
+/** Why `value` cannot name an authorization server, or null. Form only: sign-in checks the metadata. */
+function issuerProblem(value: string): string | null {
+  let url: URL;
+  try { url = new URL(value); } catch { return "An issuer is a URL."; }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && residentMcpLoopbackHost(url))) {
+    return "An issuer is https, or plain http only to this machine's loopback.";
+  }
+  if (url.username || url.password) return "An issuer cannot carry a user name or password.";
+  if (hasQueryString(value)) return "An issuer cannot carry a query string.";
+  if (value.includes("#")) return "An issuer cannot carry a fragment.";
+  return null;
+}
+
+const SignInIssuerSchema = z.string().max(2048).superRefine((value, ctx) => {
+  const problem = issuerProblem(value);
+  if (problem) ctx.addIssue({ code: "custom", message: problem });
+});
+
+/**
+ * The `auth` marker a remote server may carry (D7): the server needs a sign-in, made in
+ * Settings > Task shaping, and the scope it asks for. It names no value: the token it leads to
+ * lives in the Keychain or in memory, never in a definition. `issuer` names the authorization
+ * server when it is not on the server's own origin (D6).
+ */
+const SignInMarkerSchema = z.strictObject({
+  type: z.enum(SHAPING_AUTH_KINDS),
+  scope: SignInScopeSchema,
+  issuer: SignInIssuerSchema.optional(),
+});
+
+/** With a marker, the sign-in sets `Authorization`, so the definition cannot configure one too. */
+function signInOwnsAuthorization(value: { headers: Record<string, string>; auth?: unknown }, ctx: z.RefinementCtx): void {
+  if (value.auth === undefined) return;
+  for (const name of Object.keys(value.headers)) {
+    if (name.toLowerCase() !== "authorization") continue;
+    ctx.addIssue({
+      code: "custom", path: ["headers", name],
+      message: "This server signs in, and the sign-in sets the authorization header, so the shaper cannot configure one. Remove it, or remove auth.",
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Shaper definitions
 
 const CommandTransportSchema = z.strictObject({
@@ -263,7 +324,8 @@ const McpServerSchema = z.discriminatedUnion("type", [
     args: z.array(ArgSchema).max(64).default([]),
     env: z.array(EnvNameSchema).max(32).default([]),
   }),
-  z.strictObject({ type: z.literal("http"), url: UrlSchema, headers: HeadersSchema }),
+  z.strictObject({ type: z.literal("http"), url: UrlSchema, headers: HeadersSchema, auth: SignInMarkerSchema.optional() })
+    .superRefine(signInOwnsAuthorization),
 ]);
 
 /**
@@ -284,7 +346,8 @@ const HttpTransportSchema = z.strictObject({
   type: z.literal("http"),
   url: UrlSchema,
   headers: HeadersSchema,
-});
+  auth: SignInMarkerSchema.optional(),
+}).superRefine(signInOwnsAuthorization);
 
 const RepoRelativePathSchema = z.string().min(1).max(1024)
   .refine((value) => !value.includes("\u0000"), { message: "A path cannot contain NUL." });
@@ -834,6 +897,63 @@ export const ShaperSchema = ShaperObjectSchema
   .superRefine(builtinStageDeclared)
   .superRefine(registeredCommandResolvable);
 export type Shaper = z.output<typeof ShaperSchema>;
+
+/**
+ * What one sign-in covers, a connection: the server's URL, the scope and the authorization
+ * server the marker names, `issuer` null when it names none. Two shapers with the same three
+ * values share one sign-in.
+ */
+export interface SignInTarget {
+  url: string;
+  scope: string;
+  issuer: string | null;
+}
+
+/**
+ * The connection a shaper's `auth` marker names, or null for a shaper with no marker. The one
+ * reader of a shaper's sign-in target: the transports, the sign-in service and Settings all ask
+ * here.
+ */
+export function shaperSignInTarget(shaper: Shaper): SignInTarget | null {
+  const transport = shaper.transport;
+  const remote = transport.type === "http" ? transport
+    : transport.type === "mcp" && transport.server.type === "http" ? transport.server
+      : null;
+  if (!remote?.auth) return null;
+  return { url: remote.url, scope: remote.auth.scope, issuer: remote.auth.issuer ?? null };
+}
+
+/**
+ * One connection's sign-in as it leaves the daemon. It never holds a token, a code, a `state`,
+ * a verifier or an authorization URL.
+ */
+export interface ShapingSignInView {
+  /** The connection id the daemon derives from the target. */
+  id: string;
+  url: string;
+  scope: string;
+  issuer: string | null;
+  state: ShapingSignInState;
+  storage: ShapingSignInStorage;
+  /** Epoch milliseconds when the access token expires, or null when none is held. */
+  expiresAt: number | null;
+  /** One of `SIGN_IN_REASONS`, or null when there is nothing to say. */
+  reason: string | null;
+  /** The ids of the known shapers that name this connection. Empty for an unused one. */
+  shapers: string[];
+}
+
+/**
+ * Why a shaper that signs in was not called. Fixed sentences: a reason is shown as written and
+ * never names a value. Each points to Settings > Task shaping, where the sign-in is made.
+ */
+export const SIGN_IN_REASONS = Object.freeze({
+  flagOff: "This shaper signs in to its server, and the Shaper sign-in feature flag (shaper-sign-in) is off, so it was not called. Turn the flag on, then sign in at Settings > Task shaping.",
+  signedOut: "This shaper is not signed in to its server, so it was not called. Sign in at Settings > Task shaping.",
+  renewing: "This shaper's sign-in is being renewed, so it was not called. If it does not recover, sign in again at Settings > Task shaping.",
+  refused: "This shaper's server refused its sign-in, so its reply was not used. The sign-in is being renewed; if it does not recover, sign in again at Settings > Task shaping.",
+} as const);
+export type SignInReason = keyof typeof SIGN_IN_REASONS;
 
 /**
  * A manifest in the shapers folder: the strict definition plus whether it starts switched on.

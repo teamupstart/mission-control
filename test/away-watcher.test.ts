@@ -264,14 +264,14 @@ test("a call sign or reference name names a digest line only while voice is on a
     applyFeatureFlagIntent({ kind: "flag", id: "voice", enabled: !voice });
     assert.deepEqual(w.takePending()?.events.map((event) => event.title).sort(), voice
       ? ["Fix the parser went idle", "Linter watcher went idle"]
-      : ["Alice went idle", "Sage went idle"]);
+      : ['"Sage" went idle', "Alice went idle"]);
     w.stop();
     setAwayConfig({ away: false }, 2000);
     return titles;
   };
   // Voice off: a saved call sign and reference name are kept, and name nothing.
   assert.deepEqual(titlesWith(false), ["Fix the parser went idle", "Linter watcher went idle"]);
-  assert.deepEqual(titlesWith(true), ["Alice went idle", "Sage went idle"]);
+  assert.deepEqual(titlesWith(true), ['"Sage" went idle', "Alice went idle"]);
 });
 
 test("with the inbox flag on, a report is buffered while away and the digest names who posted", (t) => {

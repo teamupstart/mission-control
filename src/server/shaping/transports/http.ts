@@ -2,7 +2,7 @@ import { fetchOnOrigin, readCappedBody } from "../../origin-fetch.ts";
 import type { ShapingTransport } from "./types.ts";
 import {
   callHeaders, callSignal, dataReply, egressRefusal, failure, HTTP_OWNED_HEADERS, quoted, REMOTE_REPLY_BYTES, requestFailure, seconds,
-  withoutOwnedHeaders,
+  signInRefusal, withoutOwnedHeaders,
 } from "./remote.ts";
 
 /**
@@ -15,6 +15,9 @@ export const callHttp: ShapingTransport<"http"> = async (request, shaper, ctx) =
   const { url } = shaper.transport;
   const refused = egressRefusal(url);
   if (refused) return { kind: "unavailable", reason: refused };
+  // Phase 5 replaces this guard: a shaper that signs in is not called until it can sign in.
+  const signIn = signInRefusal(shaper);
+  if (signIn) return { kind: "unavailable", reason: signIn };
   const resolution = callHeaders(shaper.transport.headers, request, ctx, HTTP_OWNED_HEADERS);
   if (!resolution.ok) return { kind: "unavailable", reason: resolution.reason };
   const { resolved } = resolution;

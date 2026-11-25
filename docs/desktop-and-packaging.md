@@ -104,7 +104,7 @@ installation after verifying the exact published bytes again.
 
 A signed DMG can be downloaded manually from the canonical GitHub Release and copied to your
 personal Applications directory, `/Applications`, or a persistent custom folder. Open the
-copied app, then use **Settings > Setup > Application updates > Enroll this copied app**.
+copied app, then choose **Enroll this copied app** in the footer of **Settings → Setup**.
 Enrollment uses native `gh` to fetch and compare that exact publication, then writes a schema-2
 binary receipt under the shared writer lock. It refuses a different managed destination or
 modified copied bytes. The displayed destination makes system enrollment explicit. Launching
@@ -316,8 +316,8 @@ through [`install-identity.ts`](../src/main/install-identity.ts):
   valid. Everything proceeds as before.
 - **unmanaged**: no usable receipt, which is what the updater already reported.
 - **mismatched**: a receipt describing some other bundle, or a different build at the receipt's
-  own path. The app runs; the updater stands down and says why in **Settings → Setup →
-  Application updates**, because the only bundle it could update is not this one.
+  own path. The app runs, and the updater explains the mismatch in the **Settings → Setup**
+  footer.
 - **redirect**: the one validated exception. The exact `/Applications/Mission Control.app`, whose
   trusted receipt names this account's own `~/Applications/Mission Control.app` and matches that
   bundle's identity, opens it and exits. This happens before the single-instance lock is taken,
@@ -465,7 +465,7 @@ guidance. Missing assets, unsupported protocols or OS versions never select a so
 
 ### Alpha updates
 
-Enable **Settings → Setup → Application updates → Alpha updates** to follow signed binaries for unreleased commits
+Enable **Alpha updates** at the top of **Settings → Setup** to follow signed binaries for unreleased commits
 on `main`. The setting defaults off, persists across restarts and upgrades, and starts an
 immediate background check when changed. Alpha then checks every five minutes with up to
 30 seconds of jitter, including a check after waking if that interval has elapsed. Checks
@@ -474,7 +474,7 @@ the version number is unchanged. Multiple commits between checks produce one off
 latest tip. An older installation without source metadata is offered the latest main build
 once to establish its identity.
 
-**Check for updates** in Settings and **Check for Updates…** in the menu or tray query the
+**Check for updates** in the Setup footer and **Check for Updates…** in the menu or tray query the
 selected channel immediately. An alpha offer names the commit, shows its message, and includes
 news and notes for a newer stable release when available. Every alpha upgrade installs the
 selected main commit. A release-news lookup failure does not block a main update, while a
@@ -1030,5 +1030,9 @@ five seconds. Switching voice off, losing the model or quitting stops the owned 
 quit the shell waits for the listener before draining the daemon.
 
 The native tray retains the need-you count. While voice is on, left click toggles manual mute
-and right click opens the existing menu with voice status and a mute action. Switching voice
+and right click opens the menu with voice status, mute and Recently Heard. The shell reports
+`floating-windows` on macOS. The dashboard renders its existing card into a same-origin
+window on the reserved pill or popover route. Its card clock and action handlers stay live
+through minimize. The shell positions the pill on the pointer display and the popover under
+the tray icon. Switching voice
 off restores the standard image and click behavior. See [Voice addressing](voice.md).

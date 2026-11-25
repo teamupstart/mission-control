@@ -103,7 +103,7 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await expect(rule).toContainText("stalled");
   await expect(rule).toContainText("Went quiet with work still open.");
   await expect(rule.locator(".fleet-section-n")).toHaveText("2");
-  await expect(idle.locator(".board-col-n.n-stalled")).toHaveText("2 stalled");
+  await expect(idle.locator(".board-col-head").getByText(/\d+ stalled/)).toHaveCount(0);
 
   // Each card says what is open and what it last did, and offers the fixes for open work.
   const factsA = facts(page, a.session);

@@ -1,7 +1,9 @@
 import type { TaskKind } from "@shared/types.ts";
+import { hasOperatorHandoffHold } from "@shared/goal.ts";
+import { explicitHandoffRestriction } from "../goal/handoff-restrictions.ts";
 
 /**
- * Why Foreman must retire a completion without handing it to a review Workflow or PR prompt.
+ * Why Foreman must withhold the automatic handoff to a review Workflow or PR prompt.
  *
  * These are policy reasons, not persisted ids. They stay structured so callers can log the
  * stable explanation while tests assert the decision without depending on prose.
@@ -14,6 +16,7 @@ type AutomaticScoutWrapupBlock = { kind: "scout"; reason: string };
 export type AutomaticWrapupBlock =
   | AutomaticHumanEndedWrapupBlock
   | AutomaticScoutWrapupBlock
+  | { kind: "operator_hold"; reason: string }
   | { kind: "review_artifact"; reason: string };
 
 export interface AutomaticWrapupInput {
@@ -193,6 +196,10 @@ function classifiesAsReviewArtifact(kind: TaskKind | null): boolean {
  * operator actions stay outside this predicate.
  */
 export function automaticWrapupBlock(input: AutomaticWrapupInput): AutomaticWrapupBlock | null {
+  if (hasOperatorHandoffHold(input.objective) || explicitHandoffRestriction(input.objective)) {
+    return { kind: "operator_hold", reason: "the operator reserved the completion handoff" };
+  }
+
   if (
     input.taskKind !== null &&
     KIND_REQUIRES_EXPLICIT_WORKFLOW[input.taskKind] &&

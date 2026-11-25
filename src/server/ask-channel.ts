@@ -160,6 +160,7 @@ export async function askChannelContribution(
   cwd?: string,
   stateHome?: string,
 ): Promise<AskChannelContribution> {
+  // oxlint-disable-next-line repository/agent-comparison -- The Claude integration is the sole source of Ask Channel requests.
   if (agent !== "claude") return { ...ASK_CHANNEL_OFF };
 
   try {

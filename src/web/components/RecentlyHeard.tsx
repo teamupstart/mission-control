@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { VOICE_MODE_LABEL, type VoiceMode } from "@shared/voice.ts";
 import type { HeardEntry } from "@shared/voice-routing.ts";
-import type { SpokenName } from "@shared/voice-names.ts";
+import { quotedReferenceName, type SpokenName } from "@shared/voice-names.ts";
 import { fetchRecentlyHeard } from "../lib/api.ts";
 import { clearVoiceHistory, useVoiceSettingsActions } from "../lib/voice-settings-actions.ts";
 import { residentAccentStyle } from "../residents/marker.ts";
@@ -19,7 +20,7 @@ const outcomes: Record<HeardEntry["outcome"], string> = {
   queued: "Queued", held: "Held", "not-running": "Not running", failed: "Failed", control: "Control", ignored: "Not routed",
 };
 
-export function HeardRow({ entry, roster, now }: { entry: HeardEntry; roster: readonly SpokenName[]; now: number }) {
+export function HeardRow({ entry, roster, now, compact }: { entry: HeardEntry; roster: readonly SpokenName[]; now: number; compact?: boolean }) {
   const { text, matchedName, outcome, rule, detail } = entry;
   const miss = rule === "near-miss";
   const openingName = rule === "exact" || rule === "phonetic" ? matchedName : null;
@@ -30,9 +31,16 @@ export function HeardRow({ entry, roster, now }: { entry: HeardEntry; roster: re
   const end = last ? last.index + last[0].length : 0;
   const seconds = Math.max(0, Math.floor((now - entry.time) / 1000));
   const ago = seconds < 60 ? seconds + "s" : seconds < 3600 ? Math.floor(seconds / 60) + "m" : Math.floor(seconds / 3600) + "h";
-  const color = roster.find(agent => agent.name === matchedName)?.colorId;
-  const name = <strong className={color ? "agent-name-resident" : undefined} style={color ? residentAccentStyle(color) : undefined}>{matchedName}</strong>;
+  const color = roster.find(agent => agent.name === matchedName && agent.isReferenceName === entry.matchedReferenceName)?.colorId;
+  const name = <strong className={color ? "agent-name-resident" : undefined} style={color ? residentAccentStyle(color) : undefined}>{entry.matchedReferenceName && matchedName ? quotedReferenceName(matchedName) : matchedName}</strong>;
   const tone = outcome === "sent" || outcome === "queued" ? "routed" : outcome === "cancelled" || outcome === "failed" ? "cancel" : "not";
+  if (compact) return <li className="rh-pop-row">
+    <span className={`rh-pop-icon is-${tone}`} aria-label={outcomes[outcome]}>{tone === "routed" ? "✓" : tone === "cancel" || outcome === "ignored" ? "×" : "·"}</span>
+    <q>{text}</q><time>{ago}</time>
+    <span className="rh-pop-reason">{tone === "routed" && matchedName ? <>To {name}</> : outcomes[outcome]} · {miss && matchedName
+      ? <>near miss: {name} is only a weak match</> : rule === "phonetic" ? <>{words[0]?.[0]} sounds like {name}</>
+      : detail || (outcome === "cancelled" ? "cancelled before delivery" : ruleLabels[rule] ?? rule)}</span>
+  </li>;
   return <tr>
     <td className="rh-mono">{ago}</td>
     <td>{end ? <>{text.slice(0, start)}<mark className={miss ? "is-miss" : undefined}>{text.slice(start, end)}</mark>{text.slice(end)}</> : text}</td>
@@ -44,7 +52,7 @@ export function HeardRow({ entry, roster, now }: { entry: HeardEntry; roster: re
   </tr>;
 }
 
-export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
+export function RecentlyHeard({ roster, mode }: { roster: readonly SpokenName[]; mode?: VoiceMode }) {
   const [entries, setEntries] = useState<HeardEntry[] | null>(null);
   const [readError, setReadError] = useState("");
   const { clearing, clearError } = useVoiceSettingsActions();
@@ -74,6 +82,15 @@ export function RecentlyHeard({ roster }: { roster: readonly SpokenName[] }) {
   const now = Date.now();
   const knownEmpty = !readError && entries?.length === 0;
   const readStatus = readError ? "History unavailable." : "Loading…";
+  if (mode) return <section aria-label="Recently heard" className="rh-pop">
+    <header>Recently heard <span className="rh-pop-mode"><i data-mode={mode} />{VOICE_MODE_LABEL[mode]}</span></header>
+    {clearError && <p role="alert">{clearError}</p>}{readError && <p role="alert">{readError}</p>}
+    {entries?.length ? <ul>{entries.map(entry => <HeardRow key={entry.id} entry={entry} roster={roster} now={now} compact />)}</ul>
+      : <div className="rh-pop-empty">{knownEmpty ? <p className="rh-empty"><b>Nothing heard yet.</b>Start with an agent's name, then say your message. Nothing is heard while voice is muted.</p> : readStatus}</div>}
+    <footer><p className="rh-privacy">In memory only. Cleared on quit. Audio is never stored.</p>
+      <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={clearing || knownEmpty}
+        onClick={() => void clear()}>Clear</button></Tooltip></footer>
+  </section>;
   return <section aria-label="Recently heard" className="rh-dialog" data-anchor="voice/heard">
     <header className="rh-dialog-head"><strong>Recently heard</strong><span className="dim">{entries && !readError && `${entries.length} recent`}</span>
       <Tooltip label="Clear recently heard utterances"><button type="button" className="btn rh-btn-sm" disabled={clearing} onClick={() => void clear()}>Clear</button></Tooltip>

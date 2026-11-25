@@ -40,4 +40,3 @@ export function runInspectorReview(
     run, prompt, raw => parseModelReply(raw, InspectorVerdictSchema), "The inspector",
   );
 }
-

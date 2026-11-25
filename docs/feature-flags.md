@@ -5,6 +5,7 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Resident active hours](residents.md#active-hours),
 [Automatic PR branch updates](inspector-and-shipping.md#automatic-pr-branch-updates-preview),
 **Headless mode** (`headless-mode`), **Hibernate tasks** (below), [Task shaping](task-shaping.md),
+[Shaper sign-in](task-shaping.md#a-shaper-that-signs-in) (`shaper-sign-in`),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
@@ -77,12 +78,12 @@ off keeps individually enabled flags on. **Advanced** starts collapsed and conta
 that are on by default, with a count of those switched off. A filter matching only Advanced
 opens it. Settings search can toggle individual flags; the master result opens its panel.
 
-Switching on **Alpha updates** in **Settings > Setup > Application updates** also switches on
+Switching on **Alpha updates** at the top of **Settings → Setup** also switches on
 Enable all, so an alpha operator gets every current and future preview feature by default. It is
 the same write as the master switch without "Turn them on too": flags you switched off stay off.
 Switching alpha off changes no flag, and you can still switch Enable all or any flag off while
 on alpha. Alpha is saved first and stays on if that write fails, because the alpha
-switch must keep working while the daemon is down; the Application updates section then says
+switch must keep working while the daemon is down. The message below the checkbox says
 Enable all could not be switched on and offers **Retry**. That failure survives moving between
 Settings categories, and a pending write never locks the alpha switch. A write that gets no
 answer within 10 seconds counts as failed, so Retry is never stuck behind a stalled request.
@@ -184,6 +185,11 @@ Do not skip the default-on release: it gives operators a way to disable a proble
 feature becomes permanent. Removing a flag makes the feature unconditional by deleting its
 gates, not by resolving an unknown id as on.
 
+Session settings through MCP starts as an opt-in preview. Even with all previews enabled, the
+operator must turn on **Allow sessions to access Mission Control settings** in **Settings > Trust**
+in the desktop app. Trust starts off when there is no saved choice and remains independent of the
+rollout flag, including after the flag retires.
+
 ## Shipped flags
 
 | Id | Stage | Gates | Guide |
@@ -192,8 +198,10 @@ gates, not by resolving an unknown id as on.
 | `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
+| `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Let a session change the theme](skills-and-settings.md#let-a-session-change-the-theme) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
+| `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until the sign-in arrives in later releases. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the inbox Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |

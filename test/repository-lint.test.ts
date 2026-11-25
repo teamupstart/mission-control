@@ -50,7 +50,7 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "e2e/locator.ts": 'export const locate = (page) => page["getByTestId"]("view");',
   };
   const run = () => spawnSync(process.execPath, [
-    join(checkout, "node_modules/oxlint/bin/oxlint"), "--quiet", "src", "test", "e2e",
+    join(checkout, "node_modules/oxlint/bin/oxlint"), "--format", "unix", "--quiet", "src", "test", "e2e",
   ], { cwd: root, encoding: "utf8" });
 
   const allowed = run();
@@ -70,8 +70,8 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
   }
-  const testIdDiagnostics = output.split("\n").filter((line) => line.includes("error repository(no-test-ids):"));
-  assert.match(output, /src\/server\/satisfies-event\.ts:\d+:\d+: error repository\(registry-eviction\):/);
+  const testIdDiagnostics = output.split("\n").filter((line) => line.endsWith("[Error/repository(no-test-ids)]"));
+  assert.match(output, /src\/server\/satisfies-event\.ts:\d+:\d+: [^\n]*\[Error\/repository\(registry-eviction\)\]/);
   t.diagnostic("Rejected the session removal event wrapped in satisfies.");
   for (const path of Object.keys(testIdSeeds)) {
     assert.ok(testIdDiagnostics.some((line) => line.startsWith(`${path}:`)), output);

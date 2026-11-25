@@ -136,7 +136,12 @@ test("an owned daemon reads the deferred verifier over its private Electron port
   } finally { await shell.close(); }
 });
 
-for (const refusalStatus of [403, 404]) test(`an adopted daemon returning ${refusalStatus} launches one capture-only listener after deferred Keychain access`, {
+for (const { title, startStatus, pendingRecovery } of [
+  { title: "a supervised helper takes over the live capture lease after deferred Keychain access", startStatus: 200 },
+  { title: "an adopted daemon returning 403 keeps capture available across deferred Keychain access", startStatus: 403 },
+  { title: "an adopted daemon returning 404 waits for earlier recovery before starting capture with deferred Keychain access",
+    startStatus: 404, pendingRecovery: true },
+]) test(title, {
   skip: process.platform !== "darwin", timeout: 60_000,
 }, async t => {
   assertElectronGuiLaunchAllowed();
@@ -173,13 +178,14 @@ for (const refusalStatus of [403, 404]) test(`an adopted daemon returning ${refu
   voice.mode = "listening";
   voice.model = { ...voice.model, backend: "fluidaudio", directory: root, status: "ready" };
   const reports: string[] = [];
-  const helperPids = new Set<number>();
-  let readyHello = false;
-  let speechAdvertised = false;
-  let instanceHeaderSent = false;
-  let captureGranted = false;
+  const owners = new Set<string | undefined>();
+  const capturePids = new Set<number>();
+  const capturing = new Set<string | number>();
+  const readySpeech = new Map<string | number, boolean>();
+  const exits: string[] = [];
+  let announcedInstance: string | undefined;
   let signedStart = false;
-  let refusal: ServerResponse | undefined;
+  let announcement: ServerResponse | undefined;
   let events: ServerResponse | undefined;
   const lifetime = new AbortController();
   t.after(() => lifetime.abort());
@@ -197,20 +203,26 @@ for (const refusalStatus of [403, 404]) test(`an adopted daemon returning ${refu
       const { instance, state } = JSON.parse(body);
       reports.push(state);
       const proof = req.headers[VOICE_SUPERVISOR_PROOF_HEADER];
-      signedStart = state === "started" && typeof proof === "string" && supervisorIssuer(instance, state, proof)?.name === "shell";
-      if (state === "started") refusal = res;
-      else res.end("{}");
+      if (state === "started") {
+        signedStart = typeof proof === "string" && supervisorIssuer(instance, state, proof)?.name === "shell";
+        announcedInstance = instance;
+        announcement = res;
+      } else {
+        exits.push(instance);
+        res.end("{}");
+      }
       return;
     }
     if (url.pathname === "/voice/listener/hello" || url.pathname === "/voice/listener/directive") {
-      helperPids.add(Number(req.headers["x-voice-capture-pid"]));
-      instanceHeaderSent ||= req.headers["x-mission-voice-instance"] !== undefined;
+      owners.add(req.headers["x-voice-listener-id"] as string | undefined);
+      const instance = req.headers["x-mission-voice-instance"];
+      const helper = typeof instance === "string" ? instance : Number(req.headers["x-voice-capture-pid"]);
+      if (typeof helper === "number") capturePids.add(helper);
       if (url.pathname === "/voice/listener/hello") {
         const hello = JSON.parse(body);
-        readyHello ||= hello.modelLoaded === true;
-        speechAdvertised ||= "speech" in hello;
+        if (hello.modelLoaded) readySpeech.set(helper, "speech" in hello);
       } else {
-        if (url.searchParams.get("revision") === "capture") captureGranted = true;
+        if (url.searchParams.get("revision") === "capture") capturing.add(helper);
         else res.end(JSON.stringify({ revision: "capture", capture: true, roster: [], inputDevice: "built-in" }));
         return;
       }
@@ -218,7 +230,8 @@ for (const refusalStatus of [403, 404]) test(`an adopted daemon returning ${refu
     res.end("{}");
   }, desktopVoiceEndpointPath(root), lifetime.signal);
   const shell = await launchVoiceShellFixture(root, entry);
-  let fallbackPid = 0;
+  const slot = join(root, "voice", "supervised", "shell.json");
+  let finalPid = 0;
   try {
     const page = await shell.firstWindow();
     type Desktop = { keyRequests: number; allowAccess(): void; voiceMode?: string };
@@ -228,33 +241,60 @@ for (const refusalStatus of [403, 404]) test(`an adopted daemon returning ${refu
     });
     await t.waitFor(async () => assert.deepEqual(await desktop(), { keyRequests: 0, voiceMode: "off" }));
     assert.ok(events);
-    events.write("data: " + JSON.stringify({ type: "voice_state", state: voice }) + "\n\n");
+    if (pendingRecovery) {
+      mkdirSync(join(root, "voice", "supervised"), { recursive: true, mode: 0o700 });
+      writeFileSync(slot, "{}", { mode: 0o600 });
+    }
+    const enable = () => events!.write("data: " + JSON.stringify({ type: "voice_state", state: voice }) + "\n\n");
+    enable();
     await t.waitFor(async () => assert.deepEqual(await desktop(), { keyRequests: 1, voiceMode: "listening" }));
     assert.equal(await page.evaluate(() => document.readyState), "complete");
+    if (pendingRecovery) {
+      // sync() has returned to Electron after the ready state. A launch would already be logged.
+      const log = join(root, "daemon.log");
+      assert.doesNotMatch(existsSync(log) ? readFileSync(log, "utf8") : "", /Voice listener launch/);
+      rmSync(slot); // Earlier recovery has completed while Keychain is still pending.
+      enable();
+    }
+    await t.waitFor(() => assert.equal(capturing.size, 1), { timeout: 10_000 });
+    const [initialPid] = capturePids;
+    assert.ok(initialPid && Number.isSafeInteger(initialPid) && initialPid > 1);
+    assert.equal(readySpeech.get(initialPid), false);
+    assert.ok(capturing.has(initialPid));
+    process.kill(initialPid, 0);
     assert.deepEqual(reports, []);
-    assert.equal(helperPids.size, 0);
     await shell.evaluate(() => (globalThis as unknown as Desktop).allowAccess());
-    const start = await t.waitFor(() => { assert.ok(refusal); return refusal; }, { timeout: 10_000 });
+    const start = await t.waitFor(() => { assert.ok(announcement); return announcement; }, { timeout: 10_000 });
     assert.ok(signedStart);
-    assert.equal(helperPids.size, 0);
-    start.writeHead(refusalStatus).end();
-    await t.waitFor(() => assert.ok(captureGranted), { timeout: 10_000 });
-    assert.equal(helperPids.size, 1);
-    const [pid] = helperPids;
-    assert.ok(pid && Number.isSafeInteger(pid) && pid > 1);
-    fallbackPid = pid;
-    process.kill(pid, 0);
-    assert.ok(readyHello);
-    assert.equal(speechAdvertised, false);
-    assert.equal(instanceHeaderSent, false);
-    assert.equal(existsSync(join(root, "voice", "supervised", "shell.json")), false);
+    assert.throws(() => process.kill(initialPid, 0), { code: "ESRCH" });
+    start.writeHead(startStatus).end();
+    await t.waitFor(() => assert.equal(capturing.size, 2), { timeout: 10_000 });
+    assert.ok(!owners.has(undefined) && owners.size === 1, "the daemon capture lease survives the handoff");
+    if (startStatus === 200) {
+      assert.ok(announcedInstance && capturing.has(announcedInstance));
+      assert.equal(readySpeech.get(announcedInstance), true);
+      assert.equal(capturePids.size, 1);
+      const record = JSON.parse(readFileSync(slot, "utf8"));
+      assert.equal(record.instance, announcedInstance);
+      finalPid = record.pid;
+    } else {
+      assert.equal(capturePids.size, 2);
+      const fallback = [...capturePids].find(pid => pid !== initialPid);
+      assert.ok(fallback && capturing.has(fallback));
+      assert.equal(readySpeech.get(fallback), false);
+      assert.equal(existsSync(slot), false);
+      finalPid = fallback;
+    }
+    assert.ok(Number.isSafeInteger(finalPid) && finalPid > 1);
+    process.kill(finalPid, 0);
   } finally {
-    if (refusal && !refusal.writableEnded) refusal.writeHead(refusalStatus).end();
+    if (announcement && !announcement.writableEnded) announcement.writeHead(startStatus).end();
     try { await shell.evaluate(() => (globalThis as unknown as { stopVoice?(): Promise<void> }).stopVoice?.()); }
     finally { await shell.close(); }
   }
-  assert.throws(() => process.kill(fallbackPid, 0), { code: "ESRCH" });
-  assert.deepEqual(reports, ["started"]);
+  assert.throws(() => process.kill(finalPid, 0), { code: "ESRCH" });
+  assert.deepEqual(reports.filter(state => state === "started"), ["started"]);
+  assert.deepEqual(new Set(exits), new Set(startStatus === 200 ? [announcedInstance] : []));
 });
 
 test("Electron keeps one template tray in sync while minimized, handles both clicks and restores the off menu", {

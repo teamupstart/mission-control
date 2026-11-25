@@ -1,5 +1,6 @@
 import { shell, systemPreferences } from "electron";
 import { EventSource } from "eventsource";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { macVoiceHardware, type VoiceHardware } from "./voice-hardware.ts";
 import { dirname } from "node:path";
@@ -21,6 +22,7 @@ import { ShellVoiceStateSchema, type ShellVoiceState } from "./voice-state-schem
 /** Owned by Electron main. Window hide, reload and minimize never interrupt this subscription. */
 export function startShellVoice(binary: string, onState: (state: TrayVoiceState) => void, heartbeatMs = EVENT_STREAM_HEARTBEAT_MS, loadSigner?: () => Promise<VoiceSigner | undefined>) {
   let connection: ReturnType<typeof desktopVoiceConnection>;
+  const captureOwner = randomUUID();
   const createListener = (signer?: VoiceSigner) => nativeVoiceListener(binary, () => {
     if (!connection) throw new Error("Voice listener has no daemon connection");
     return connection;
@@ -31,9 +33,9 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       if (state === "started" && (res?.status === 403 || res?.status === 404 || res?.status === 409)) return false;
       throw new Error("Voice supervisor report unacknowledged.");
     }
-  });
+  }, captureOwner);
   let listener = loadSigner ? undefined : createListener();
-  let loading = false;
+  let signerRequested = false;
   let stream: EventSource | undefined;
   let hasSnapshot = false;
   let streamDeadline: NodeJS.Timeout | undefined;
@@ -166,7 +168,11 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId, state.pushToTalkSession);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
-    listener?.update(state, installed && microphone === "granted");
+    const permitted = installed && microphone === "granted";
+    if (!listener && permitted && state.model.status === "ready" && !hasPendingMacListenerRecovery(stateDir())) {
+      listener = createListener();
+    }
+    listener?.update(state, permitted);
     if (installed && state.model.status === "ready" && microphone === "not-determined" && !prompt && Date.now() >= nextPromptAt) {
       void ask().then(sync).catch(() => {});
     }
@@ -174,9 +180,12 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   }
   function update(next: ShellVoiceState) {
     state = next;
-    if (hasSnapshot && !listener && !loading && loadSigner && (next.mode !== "off" || hasPendingMacListenerRecovery(stateDir()))) {
-      loading = true;
-      void loadSigner().then(signer => {
+    if (hasSnapshot && !signerRequested && loadSigner && (next.mode !== "off" || hasPendingMacListenerRecovery(stateDir()))) {
+      signerRequested = true;
+      void loadSigner().then(async signer => {
+        if (!signer || lifetime.signal.aborted) return;
+        // Transfer the same daemon capture lease only after the capture-only child exits.
+        if (listener) await listener.stop();
         if (lifetime.signal.aborted) return;
         listener = createListener(signer);
         if (hasSnapshot) listener.reconnect();

@@ -202,10 +202,14 @@ identify which listeners need to confirm silence.
 The packaged macOS shell can provision its own durable signing key for the daemon
 it launches. When Voice is enabled or an earlier listener needs recovery, the shell
 opens the key asynchronously using Electron safeStorage and the macOS Keychain.
-The desktop window and daemon can start while a Keychain prompt is pending. An
-owned daemon reads the public verifier over its private Electron port when a
-supervisor report arrives. An adopted daemon keeps its own trust settings. The
-encrypted value lives in the owner-only `voice/shell-credential.json`. An external
+The desktop window and daemon can start while a Keychain prompt is pending. If
+the model and microphone are ready and there is no earlier listener to recover,
+a capture-only helper can listen during the prompt. Once the key is available,
+the shell waits for that helper to exit before transferring its capture lease
+to a supervised helper. An owned daemon reads the public verifier over its
+private Electron port when a supervisor report arrives. An adopted daemon keeps
+its own trust settings. The encrypted value lives in the owner-only
+`voice/shell-credential.json`. An external
 launch service supplies `MISSION_VOICE_SHELL_CREDENTIAL_FD` or
 `MISSION_VOICE_DEV_CREDENTIAL_FD` to the corresponding launcher and the matching
 public verifier to the daemon. Pass the descriptor directly to the launcher process

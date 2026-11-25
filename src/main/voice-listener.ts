@@ -111,9 +111,8 @@ export class VoiceListener {
   }
 }
 
-export function nativeVoiceListener(executable: string, endpoint: () => { origin: string; certificate: string }, signer?: VoiceSigner, report?: SupervisorReporter): VoiceListener {
-  // The supervisor waits for close before replacing its child, so only one helper uses this lease at a time.
-  const owner = randomUUID();
+export function nativeVoiceListener(executable: string, endpoint: () => { origin: string; certificate: string },
+  signer?: VoiceSigner, report?: SupervisorReporter, owner = randomUUID()): VoiceListener {
   const supervisor = signer && report ? new MacListenerSupervisor(stateDir(), "shell", signer, executable, report) : undefined;
   return new VoiceListener(directory => {
     const { origin, certificate } = endpoint();

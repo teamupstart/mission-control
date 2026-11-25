@@ -347,7 +347,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   });
 
   for (const retire of [undefined, true]) {
-    const response = await app.request("/api/sessions/claimed/queue/wrapup/asked", {
+    const response = await app.request("/api/sessions/claimed/queue/wrapup/drain", {
       method: "POST",
       headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
       body: JSON.stringify({
@@ -359,6 +359,13 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     assert.equal(registry.getQueue("claimed")?.wrapupAskedAt, null);
     assert.equal(registry.getQueue("claimed")?.wrapupAnswer, null);
   }
+  const unguardedDrain = await app.request("/api/sessions/claimed/queue/wrapup/drain", {
+    method: "POST",
+    headers: { host: "127.0.0.1:7317", "content-type": "application/json" },
+    body: JSON.stringify({ retire: true }),
+  });
+  assert.equal(unguardedDrain.status, 400);
+  assert.equal(registry.getQueue("claimed")?.wrapupAskedAt, null);
 
   const bindingsBeforeUnbound = workflows.store.listBindings().length;
   assert.deepEqual(await (await request(app, "unbound", "0".repeat(64))).json(), {

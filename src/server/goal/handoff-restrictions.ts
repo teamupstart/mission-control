@@ -1,12 +1,13 @@
 import { GOAL_OPERATOR_HANDOFF_ONLY, goalLine, mapUnfencedGoalLines } from "@shared/goal.ts";
 
 const STOP_DIRECTIVE = /^(?:please\s+)?stop(?:\s+(?:here|now|for now|(?:this|the)\s+task|work(?:ing)?\s+on\s+this(?:\s+task)?))?$/i;
-const NO_PR_DIRECTIVE = /^(?:please\s+)?(?:no\s+|(?:do not|don['’]t)\s+(?:open|create|make|raise|publish|file|submit(?:\s+(?:this|it)\s+as)?)\s+(?:(?:a|the|any)\s+)?)(?:pr|pull request)s?(?:\s+for\s+this(?:\s+(?!yourself\b)[a-z][a-z0-9-]*)*)?(?:\s+(?:yet|(?:until|before)\s+\S.*|without\s+my\s+approval))?$/i;
+const NO_PR_DIRECTIVE = /^(?:please\s+)?(?:no\s+|(?:do not|don['’]t)\s+(?:open|create|make|raise|publish|file|submit(?:\s+(?:this|it)\s+as)?)\s+(?:(?:a|the|any)\s+)?)(?:pr|pull request)s?(?:\s+for\s+this(?:\s+(?!yourself\b)[a-z][a-z0-9-]*)*)?$/i;
 const NO_REVIEW_DIRECTIVE = /^(?:please\s+)?(?:do not|don['’]t)\s+(?:submit|send)\s+(?:(?:this|it|the (?:work|change))\s+)?for\s+review(?:\s+or\s+open\s+(?:a\s+)?(?:pr|pull request))?$/i;
 const DIRECTIVE_JOIN = /(\s*,\s*(?:(?:and|but)\s+)?|\s+(?:and|but)\s+)/i;
 
 export const HANDOFF_RESTRICTION_PREFIX = "Operator handoff restriction: ";
 const WORKFLOW_DELEGATION = /\b(?:let|have)\s+(?:the\s+)?(?:bound\s+)?workflow\s+(?:open|create|make|raise|publish|file|submit)(?:\s+it|\s+(?:the|a)\s+(?:pr|pull request))?\b/i;
+const APPROVAL_CONDITION = /\s+(?:yet|(?:until|before)\s+\S.*|without\s+my\s+approval)$/i;
 const PERSONAL_PR = /^leave opening the (?:pr|pull request) to me$/i;
 
 export function contextualHandoffRestriction(instruction: string): string {
@@ -19,7 +20,9 @@ function restrictionParts(clause: string): boolean[] {
   return parts.map((part, index) => {
     if (index % 2) return false;
     const directive = part.trim().replace(/^also\s+/i, "");
-    return (!delegates && (NO_PR_DIRECTIVE.test(directive) || NO_REVIEW_DIRECTIVE.test(directive) || PERSONAL_PR.test(directive)))
+    const unconditional = directive.replace(APPROVAL_CONDITION, "");
+    const holdsPublication = NO_PR_DIRECTIVE.test(unconditional) || NO_REVIEW_DIRECTIVE.test(unconditional);
+    return (holdsPublication && (!delegates || unconditional !== directive)) || PERSONAL_PR.test(directive)
       || (STOP_DIRECTIVE.test(directive) && (!/^stop$/i.test(directive) || parts.length === 1));
   });
 }

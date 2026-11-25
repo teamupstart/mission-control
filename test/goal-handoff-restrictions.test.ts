@@ -20,6 +20,17 @@ test("a bound workflow can own the PR while the operator reserves other actions"
   assert.equal(explicitHandoffRestriction("Stop here. " + delegation), "Stop here");
 });
 
+test("delegation cannot remove a prior approval condition", () => {
+  for (const restriction of [
+    "Do not open a PR until I approve",
+    "Do not open a pull request before I approve",
+    "Do not submit this for review without my approval",
+  ]) {
+    const objective = `${restriction}, then let the bound workflow open it.`;
+    assert.equal(explicitHandoffRestriction(objective), restriction);
+  }
+});
+
 test("release removes recognized and annotated restrictions and preserves the deliverable", () => {
   const work = "Add start, stop, and restart buttons.";
   for (const restriction of [

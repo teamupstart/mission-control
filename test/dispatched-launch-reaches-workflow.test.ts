@@ -768,6 +768,7 @@ const FOLLOWUP_RESTRICTIONS = new Map([
   ["do not file a PR", "Do not file a PR."],
   ["no PR without approval", "Do not create a pull request without my approval."],
   ["combined stop and no PR", "Stop here and don't open a PR."],
+  ["delegation requires approval", "Do not open a PR until I approve, then let the bound workflow open it."],
   ["full-length contract", "Do not open a PR without my approval."],
   ["model contextual hold", "Keep this local until I review it."],
 ]);

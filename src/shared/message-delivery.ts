@@ -51,8 +51,12 @@ export function canSteerMessage(session: Pick<Session, "agent" | "runtime">): bo
   return capabilitiesFor(session.agent).steering?.runtimes.includes(session.runtime) ?? false;
 }
 
-/** The session fields that decide which delivery actions can reach the running turn. */
-export type DeliverySession = Pick<Session, "agent" | "runtime"> & Partial<Pick<Session, "pendingReviews">>;
+/**
+ * The session fields that decide which delivery actions can reach the running turn.
+ * `pendingReviews` is required: a caller that left it out would read as "not waiting on a
+ * question" and steer into a turn that cannot read it, so an omission must fail to compile.
+ */
+export type DeliverySession = Pick<Session, "agent" | "runtime" | "pendingReviews">;
 
 /**
  * Whether the running turn is stopped inside a call that waits on the operator: a call-mode
@@ -64,7 +68,7 @@ export type DeliverySession = Pick<Session, "agent" | "runtime"> & Partial<Pick<
  * because the outbox already handed it over. Interruption is what reaches that turn.
  */
 export function turnWaitsOnQuestion(session: DeliverySession): boolean {
-  return (session.pendingReviews ?? 0) > 0;
+  return session.pendingReviews > 0;
 }
 
 /** Whether a steered message would be read by this session's running turn. */

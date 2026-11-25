@@ -20,7 +20,7 @@ function claimSpoken(key: string, words: string, text: string) {
 }
 
 test("spoken rows wait for idle even with a persisted steer or interrupt override", () => {
-  const session = { agent: "codex", runtime: "sdk" } as const;
+  const session = { agent: "codex", runtime: "sdk", pendingReviews: 0 } as const;
   const key = "spoken-expedite";
   for (const action of ["steer", "interrupt"] as const) {
     const turn = db.createPendingTurn({ noteKey: key, id: key + action, text: "inspect", spokenWords: "inspect", now: 1 });

@@ -3509,6 +3509,7 @@ for (const { id, description, query, severity } of [
   { id: "local-inspector-without-query", description: "rejects a terminal verdict without a verified repository query", query: false, severity: "major" },
   { id: "local-inspector-saved-severity", description: "uses the saved minor threshold to fail before Pull Request", query: true, severity: "minor" },
   { id: "local-inspector-revoked", description: "does not dispatch if Commands permission is revoked while waiting for a review slot", query: false, severity: "major" },
+  { id: "local-inspector-retention", description: "spends the allowance after review and blocks a skip retry when retention failed", query: true, severity: "major" },
 ] as const) {
   test(`Local Inspector ${description}`, async t => {
     const { execFileSync } = await import("node:child_process");
@@ -3557,13 +3558,17 @@ for (const { id, description, query, severity } of [
         { id: "end", source: "pr", sourcePort: "complete", target: "end", targetPort: "terminal" },
       ],
     }, context, repo);
-    if (severity === "minor") {
+    const retentionFailed = id === "local-inspector-retention";
+    if (severity === "minor" || retentionFailed) {
       const { WorkflowCommandManager } = await import("../src/server/workflows/commands.ts");
       const catalog = new WorkflowCommandManager(new Registry(), store);
       const command = catalog.get("inspector");
       assert.ok(command);
       assert.equal(command.inspectorSeverity, "major");
-      const saved = catalog.replace("inspector", { ...command, expectedRevision: command.revision, inspectorSeverity: "minor" });
+      const saved = catalog.replace("inspector", {
+        ...command, expectedRevision: command.revision, inspectorSeverity: severity,
+        ...(retentionFailed ? { maxRuns: 1, onBudgetExhausted: "skip" } : {}),
+      });
       assert.ok(saved.ok);
       t.after(() => {
         assert.ok(catalog.replace("inspector", { ...command, expectedRevision: saved.view.revision }).ok);
@@ -3591,8 +3596,10 @@ for (const { id, description, query, severity } of [
     const removeFindingFile = id === "local-inspector-removal";
     let allowed = true;
     let providerCalls = 0;
+    const commandArtifacts = new WorkflowCommandArtifactService();
+    if (retentionFailed) t.mock.method(commandArtifacts, "retainFindings", () => { throw new Error("fixture disk failure"); });
     const options: ConstructorParameters<typeof WorkflowEngine>[2] = {
-      commandArtifacts: new WorkflowCommandArtifactService(),
+      commandArtifacts,
       workflowPolicy: () => ({ ...DEFAULT_WORKFLOW_POLICY, checksEnabled: true, repoAllowlist: allowed ? [repo] : [] }),
       ...(id === "local-inspector-revoked" ? { schedule: async fn => {
         allowed = false;
@@ -3655,6 +3662,23 @@ for (const { id, description, query, severity } of [
       const outcome = WorkflowCheckOutcomeSchema.parse(store.latestAttemptForNode(first, "inspect")?.output);
       assert.equal(outcome.status, "failed");
       assert.partialDeepStrictEqual(outcome.localInspector, { status: "failed", blockingSeverity: "minor", findingCount: 1 });
+    }
+    if (retentionFailed) {
+      await waitFor(() => store.getRun(runId)?.currentPhase === "command_action_required");
+      const blocked = store.latestAttemptForNode(first, "inspect")!;
+      assert.match(blocked.error ?? "", /fixture disk failure/);
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), 1);
+      await engine.stop();
+      store.manualInfrastructureRetry(runId, first, blocked, randomUUID(), randomUUID(), Date.now());
+      engine = new WorkflowEngine(store, undefined, options);
+      engine.start();
+      engine.activateSubmission(first);
+      await waitFor(() => store.getRun(runId)?.currentPhase === "command_action_required");
+      assert.match(store.latestAttemptForNode(first, "inspect")?.error ?? "", /earlier review could not be completed/i);
+      assert.equal(store.checkRunsSpent(runId, "inspector", null), 1);
+      assert.equal(store.latestAttemptForNode(first, "pr"), null);
+      assert.equal(providerCalls, 1);
+      return;
     }
     await waitFor(() => store.getRun(runId)?.status === (query ? "waiting_for_session" : "blocked"));
     assert.equal(store.latestAttemptForNode(first, "pr"), null);

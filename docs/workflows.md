@@ -3145,8 +3145,10 @@ The defaults in **Library > Commands > Local Inspector** are **Major and above**
 per run**, a **10-minute timeout** and **Block for operator action** on exhaustion. Lower-severity
 findings are advisory. Blocking findings return a repair packet to the session. The session can
 repair and resubmit before the workflow opens a pull request or runs CI. The workflow's repair
-limit applies to those rounds. If the execution allowance runs out with blocking findings
-still open, the stage pauses for operator action even when its exhaustion policy is **Skip**.
+limit applies to those rounds. A returned repository review spends an execution even if its
+findings cannot be retained. If the allowance runs out with blocking findings still open or
+a review result that could not be processed, the stage pauses for operator action even when
+its exhaustion policy is **Skip**.
 
 Submission capture records whether local review is enabled. When the preview, Inspector or
 local review is off, the stage skips with a note. An enabled stage blocks for operator action

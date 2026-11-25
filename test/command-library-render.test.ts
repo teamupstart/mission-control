@@ -640,6 +640,14 @@ test("CodeRabbit authoring explains YAML defaults and conditional blocking witho
  assert.match(workflowCommandFact(view,true),/YAML-enabled defaults/);
  assert.doesNotMatch(workflowCommandStatusSentence(view,true),/Nothing is configured/);
 });
+test("the Local Inspector palette explains checkout review and the saved threshold", () => {
+  const view = emptyWorkflowCommandView("inspector");
+  assert.match(workflowCommandStatusSentence(view, true), /major severity or above/);
+  const tuned = workflowCommandStatusSentence({ ...view, inspectorSeverity: "minor" }, true);
+  assert.match(tuned, /reviews the submitted worktree and blocks on findings at minor severity or above/);
+  assert.match(tuned, /skips if Local review is off/);
+  assert.doesNotMatch(tuned, /Nothing is configured/);
+});
 test("restoring CodeRabbit tuning to its saved values clears dirty state regardless of property order",()=>{
  const view={...emptyWorkflowCommandView("coderabbit"),overrides:[{repoRoot:"/repo",command:[],review:{kind:"coderabbit" as const,baseRef:"main",severity:"major" as const}}]};
  const draft=commandDraftFrom(view);

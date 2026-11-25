@@ -3341,10 +3341,16 @@ export function workflowCommandFact(
 export function workflowCommandStatusSentence(
   view: (Pick<WorkflowCommandView, "defaultCommand" | "overrides" | "inspectorSeverity"> & { slot?: WorkflowCheckSlot }) | null | undefined,
   hasSnapshot: boolean,
+  slot = view?.slot,
 ): string {
-  if (view?.slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
+  if (slot === "coderabbit") return `${CODERABBIT_COMMAND_STATUS_NOTE} ${COMMAND_AUTHORIZATION_NOTE}`;
   if (!view && !hasSnapshot) {
     return `${WORKFLOW_COMMAND_UNKNOWN}, so what this Command runs here is not known yet.`;
+  }
+  if (slot === "inspector") {
+    const severity = view?.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY;
+    return "When Inspector and Local review are enabled in Settings, this stage reviews the submitted worktree "
+      + `and blocks on findings at ${severity} severity or above. It skips if Local review is off.`;
   }
   const overrides = view?.overrides.length ?? 0;
   // OVERRIDES, never repositories. An override is keyed by path, so a monorepo puts two of

@@ -399,8 +399,8 @@ export function planLocalReview(input: {
   const raised = new Map<string, LocalInspectorFinding>();
   for (const raw of verdict.findings) {
     const path = findingPath(raw.path);
-    if (!changedPaths.has(path)) continue;
     const finding = normalizeFinding(raw, path);
+    if (!changedPaths.has(path) && !prior.has(finding.fingerprint)) continue;
     const duplicate = raised.get(finding.fingerprint);
     if (!duplicate || SEVERITY_RANK[finding.severity] < SEVERITY_RANK[duplicate.severity]) {
       raised.set(finding.fingerprint, finding);

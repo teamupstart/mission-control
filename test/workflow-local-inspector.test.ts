@@ -34,11 +34,17 @@ test("local planning uses real lines, scrubs findings, and rejects findings outs
   assert.deepEqual(repaired.findings.map(f => f.severity), ["minor"]);
   assert.equal(subsequent([fingerprint], new Set([fingerprint]), "minor").blocked, true);
   const reRaised = planLocalReview({
-    verdict: InspectorVerdictSchema.parse({ summary: "", findings: [{ ...major, severity: "minor" }], resolved: [fingerprint] }),
-    changedPaths: new Set(["app.ts"]), previous: plan.findings, prompted: new Set([fingerprint]), blockingSeverity: "major",
+    verdict: InspectorVerdictSchema.parse({
+      summary: "", findings: [{ ...major, severity: "minor", line: 43 }, { ...major, path: "unrelated.ts" }],
+      resolved: [fingerprint],
+    }),
+    changedPaths: new Set(["notes.ts"]), previous: plan.findings, prompted: new Set([fingerprint]), blockingSeverity: "major",
   });
   assert.equal(reRaised.blocked, true);
-  assert.equal(reRaised.findings[0]?.severity, "major");
+  assert.deepEqual(reRaised.findings.map(f => [f.fingerprint, f.line, f.severity]), [
+    [fingerprint, 43, "major"],
+    [plan.findings[1]!.fingerprint, 42, "minor"],
+  ]);
 });
 
 test("Local Inspector skips when preview or review is off, even when Commands are denied", async () => {
@@ -77,13 +83,13 @@ test("Local Inspector handles Block and Skip for exhaustion and returns a missin
   const finding = { ...major, path: "app.ts", fingerprint: "a".repeat(12) };
   const skipCommand = { ...input.command!, onBudgetExhausted: "skip" } as const;
   const knownBlocker = await runCheck({ ...cap, command: skipCommand,
-    localInspector: { ...input.localInspector!, previous: () => [finding] },
+    localInspector: { ...input.localInspector!, previous: () => ({ findings: [finding] }) },
   });
   assert.equal(knownBlocker.kind, "action_required");
   assert.match(knownBlocker.reason, /blocking findings remain unresolved/);
   assert.partialDeepStrictEqual(knownBlocker.localInspector, { status: "blocked", findingCount: 1 });
   const advisory = await runCheck({ ...cap, command: skipCommand,
-    localInspector: { ...input.localInspector!, previous: () => [{ ...finding, severity: "minor" }] },
+    localInspector: { ...input.localInspector!, previous: () => ({ findings: [{ ...finding, severity: "minor" }] }) },
   });
   assert.equal(advisory.kind === "outcome" && advisory.outcome.status, "budget_spent");
   let released = 0;
@@ -133,7 +139,7 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
     localInspector: {
       ...input.localInspector!, hasArtifact: () => true, goal: "Fix the workflow", round: 2,
       compare: async () => ({ head, mergeBase: base, baseRef: "origin/main", baseTip: base, empty: false, error: null }),
-      previous: () => previous,
+      previous: () => ({ findings: previous }),
       review: async prompt => {
         calls++;
         assert.match(prompt, /<run-goal>\nFix the workflow\n<\/run-goal>/);
@@ -170,10 +176,20 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
     assert.equal(releases, releasesBefore + 1);
   });
 
+  await t.test("accepts an unambiguous captured abbreviation even when a ref shadows it", async () => {
+    const abbreviation = head.slice(0, 12);
+    git("branch", abbreviation, base);
+    const callsBefore = calls;
+    const result = await runCheck({ ...enabled, headSha: abbreviation });
+    assert.equal(result.kind, "outcome");
+    assert.equal(result.outcome.status, "passed");
+    assert.equal(calls, callsBefore + 1);
+  });
+
   await t.test("blocks when a valid finding cannot be retained", async () => {
     const before = releases;
     const result = await runCheck({ ...enabled, localInspector: { ...enabled.localInspector!,
-      previous: () => [],
+      previous: () => ({ findings: [] }),
       review: async () => JSON.stringify({ summary: "An issue remains", findings: [major] }),
       retain: findings => {
         assert.deepEqual(findings.map(({ path, severity, title }) => ({ path, severity, title })), [
@@ -185,7 +201,17 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
     assert.equal(result.kind, "action_required");
     assert.equal(result.localInspector?.status, "blocked");
     assert.match(result.reason, /Local Inspector findings could not be retained/);
-    assert.equal(releases, before + 1);
+    assert.equal(releases, before, "a returned review uses one execution even if findings were not retained");
+  });
+
+  await t.test("charges a returned review whose verdict cannot be parsed", async () => {
+    const before = releases;
+    const result = await runCheck({ ...enabled, localInspector: { ...enabled.localInspector!,
+      review: async () => "not a verdict",
+    } });
+    assert.equal(result.kind, "action_required");
+    assert.equal(result.localInspector?.status, "blocked");
+    assert.equal(releases, before);
   });
 
   await t.test("applies the Command severity and retains a minor finding on both pass and fail", async () => {
@@ -201,7 +227,7 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
     for (const { command, threshold, status } of cases) {
       const retained: LocalInspectorFinding[] = [];
       const result = await runCheck({ ...enabled, command, localInspector: { ...enabled.localInspector!,
-        previous: () => [],
+        previous: () => ({ findings: [] }),
         review: async () => JSON.stringify({ summary: "Advisory finding", findings: [minor] }),
         retain: findings => {
           retained.push(...findings);
@@ -222,8 +248,8 @@ test("Local Inspector uses the pinned diff and carries findings, while an oversi
   process.env.MISSION_INSPECTOR_MAX_DIFF_BYTES = "16";
   const oversized = await runCheck(enabled);
   assert.match(oversized.kind === "action_required" ? oversized.reason : "", /diff exceeds the Inspector byte cap/);
-  assert.equal(calls, 1);
-  assert.equal(releases, 4);
+  assert.equal(calls, 2);
+  assert.equal(releases, 3);
 });
 
 function preflight(): RunCheckInput {
@@ -236,7 +262,7 @@ function preflight(): RunCheckInput {
       preview: true, enabled: true, localReview: true, captured: undefined,
       hasArtifact: () => false, compare: async () => ({ head: "b".repeat(40), baseRef: "origin/main",
         baseTip: "a".repeat(40), mergeBase: "a".repeat(40), empty: false, error: null }),
-      goal: "", round: 1, previous: () => [], review: unreachable, retain: () => [],
+      goal: "", round: 1, previous: () => ({ findings: [] }), review: unreachable, retain: () => [],
     },
   };
 }

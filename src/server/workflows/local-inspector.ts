@@ -7,6 +7,7 @@ import { buildLocalReviewPrompt } from "../inspector/prompt.ts";
 import { renderLocalInspectorFindings } from "../inspector/findings-text.ts";
 import { scrubSecrets } from "../inspector/scrub.ts";
 import { run } from "../util/exec.ts";
+import { FULL_SHA, resolveCapturedCommit } from "./commit-id.ts";
 import { reviewChangedPaths, type ReviewComparison } from "./review-comparison.ts";
 import type { CheckResult, RunCheckInput } from "./checks.ts";
 
@@ -21,7 +22,7 @@ export interface LocalInspectorInput {
   retain: (findings: readonly LocalInspectorFinding[]) => WorkflowCheckOutcome["artifacts"];
   goal: string;
   round: number;
-  previous: () => readonly LocalInspectorFinding[];
+  previous: () => { findings: readonly LocalInspectorFinding[]; incomplete?: boolean };
 }
 
 export function localInspectorFindingsText(findings: readonly LocalInspectorFinding[], budgetBytes: number) {
@@ -108,20 +109,25 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
   if (denied) return block(`Local Inspector requires permission to read the submitted worktree. ${denied}`);
 
   const reservation = input.reserveRun?.();
-  let completed = false;
+  let reviewReturned = false;
   try {
-    const previous = local.previous();
+    const { findings: previous, incomplete } = local.previous();
     if (reservation && !reservation.granted) {
       const note = `Local Inspector execution allowance is exhausted (${reservation.spent}/${command.maxRuns}).`;
       const knownBlockers = previous.some(finding => SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[threshold]);
-      if (command.onBudgetExhausted === "skip" && !knownBlockers) return skip(`${note} Review skipped.`, "budget_spent");
-      return block(`${note}${knownBlockers ? " Earlier blocking findings remain unresolved." : ""} Raise the allowance in Library > Commands and retry.`, previous.length);
+      if (command.onBudgetExhausted === "skip" && !knownBlockers && !incomplete) return skip(`${note} Review skipped.`, "budget_spent");
+      const blockers = knownBlockers ? " Earlier blocking findings remain unresolved." : "";
+      const unfinished = incomplete ? " An earlier review could not be completed." : "";
+      return block(`${note}${blockers}${unfinished} Raise the allowance in Library > Commands and retry.`, previous.length);
     }
     if (!input.repoRoot) return block("Local Inspector could not locate the submitted repository.");
     const comparison = await local.compare();
     provenance.baseRef = comparison.baseRef;
     provenance.mergeBase = comparison.mergeBase;
-    if (comparison.error || !comparison.head || comparison.head !== input.headSha || !comparison.mergeBase) {
+    const submittedHead = input.headSha && !FULL_SHA.test(input.headSha) && !comparison.error
+      ? await resolveCapturedCommit(input.repoRoot, input.headSha)
+      : input.headSha;
+    if (comparison.error || !comparison.head || comparison.head !== submittedHead || !comparison.mergeBase) {
       return block("Local Inspector could not resolve the submitted comparison. Check the local origin/HEAD or stacked base and retry.");
     }
     if (!provenance.publicationTree || !local.hasArtifact()) {
@@ -135,6 +141,7 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
     const offDiffFindings = new Map(previous.filter(finding => prompted.has(finding.fingerprint) && !changedPaths.has(finding.path))
       .map(finding => [finding.fingerprint, finding.path]));
     const raw = await local.review(prompt, timeoutMs, offDiffFindings);
+    reviewReturned = true;
     const verdict = InspectorVerdictSchema.parse(JSON.parse(raw));
     const plan = planLocalReview({
       verdict, changedPaths, previous, prompted,
@@ -146,7 +153,6 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
     }
     const status = plan.blocked ? "failed" : "passed";
     const count = plan.findings.length;
-    completed = true;
     return { kind: "outcome", outcome: {
       slot: "inspector", status, command: null, exitCode: null, artifacts, timeoutMs,
       localInspector: { ...provenance, status, findingCount: count },
@@ -159,6 +165,6 @@ export async function runLocalInspector(input: RunCheckInput): Promise<CheckResu
   } catch (error) {
     return block(`Local Inspector could not complete repository review. ${scrubSecrets(error instanceof Error ? error.message : "Retry after checking repository access and provider setup.").slice(0, 1000)}`);
   } finally {
-    if (!completed && reservation?.granted) reservation.release?.();
+    if (!reviewReturned && reservation?.granted) reservation.release?.();
   }
 }

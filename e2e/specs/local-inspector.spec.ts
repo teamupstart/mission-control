@@ -109,6 +109,8 @@ test("preview exposes the setting, tuning and stage picker before Pull Request",
 
 test("the Graph palette adds the visible Command after the Local Inspector preview turns off", async ({ dashboard, daemon }) => {
   await flag(daemon, true);
+  const command = await api<WorkflowCommandView>(daemon, commandUrl);
+  await api(daemon, commandUrl, { ...command, expectedRevision: command.revision, inspectorSeverity: "minor" }, "PUT");
   const { workflow } = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", { name: "Local Inspector palette fixture" });
   await dashboard.goto(`${daemon.baseURL}/#/library/workflows/${workflow.id}`);
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
@@ -116,6 +118,9 @@ test("the Graph palette adds the visible Command after the Local Inspector previ
   const picker = palette.getByLabel("Slot for new Command node");
   await picker.selectOption("inspector");
   await expect(palette.getByRole("link", { name: /Configure inspector in Library/ })).toBeVisible();
+  await expect(palette.getByText(/reviews the submitted worktree/)).toContainText("blocks on findings at minor severity or above");
+  await expect(palette.getByText(/reviews the submitted worktree/)).toContainText("skips if Local review is off");
+  await screenshot(palette, "palette-inspector-threshold-coderabbit");
 
   await flag(daemon, false);
   await expect(picker.getByRole("option", { name: "Local Inspector" })).toHaveCount(0);
@@ -124,7 +129,7 @@ test("the Graph palette adds the visible Command after the Local Inspector previ
   await palette.getByRole("button", { name: "＋ Command" }).click();
   await expect(dashboard.getByLabel("Workflow graph")).toContainText("Command · test");
   await expect(dashboard.getByLabel("Workflow graph")).not.toContainText("Command · inspector");
-  await screenshot(palette, "palette-preview-off-inspector-r4");
+  await screenshot(palette, "palette-preview-off-inspector-coderabbit");
 });
 
 async function start(page: Page, daemon: DaemonHandle, options: {

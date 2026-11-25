@@ -912,6 +912,7 @@ export function WorkflowLibrary({
               {workflowCommandStatusSentence(
                 workflowCommands.find((view) => view.slot === paletteSlot),
                 hasSnapshot,
+                paletteSlot,
               )}{" "}
               <Tooltip label={`Set what the ${paletteSlot} Command runs on this machine`}>
                 <a

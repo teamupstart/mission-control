@@ -1662,7 +1662,7 @@ export class WorkflowEngine {
           hasArtifact: () => this.store.hasActiveRepositoryClaim(submission.id),
           goal: context.data.primaryGoal.openingAsk ?? context.data.primaryGoal.refined ?? context.data.primaryGoal.rawPrompt,
           round: submission.round,
-          previous: () => this.previousLocalInspectorFindings(run.id, node.id, claimed.id),
+          previous: () => this.previousLocalInspectorReview(run.id, node.id, claimed.id),
           compare: async () => this.store.getLocalInspectorComparison(submission.id)
             ?? this.store.freezeLocalInspectorComparison(submission.id, await resolveReviewComparison({
               repoRoot: binding.sessionRepoRoot ?? "", headSha: reviewHead,
@@ -1795,20 +1795,23 @@ export class WorkflowEngine {
     this.onRunChanged(run.id);
   }
 
-  private previousLocalInspectorFindings(runId: string, nodeId: string, currentAttemptId: string) {
+  private previousLocalInspectorReview(runId: string, nodeId: string, currentAttemptId: string) {
+    let incomplete = false;
     for (const attempt of this.store.listCheckAttemptsWithExecutionClaim(runId, nodeId, "inspector")) {
-      if (attempt.id === currentAttemptId || attempt.state !== "completed") continue;
+      if (attempt.id === currentAttemptId) continue;
+      if (attempt.state === "error" || attempt.state === "cancelled") incomplete = true;
+      if (attempt.state !== "completed") continue;
       const outcome = WorkflowCheckOutcomeSchema.safeParse(attempt.output);
       const review = outcome.data?.localInspector;
       if (!review || (review.status !== "passed" && review.status !== "failed")) continue;
-      if (review.findingCount === 0) return [];
+      if (review.findingCount === 0) return { findings: [], incomplete };
       const artifact = outcome.data?.artifacts.find(a => a.kind === "findings");
       if (!artifact || !this.commandArtifacts) throw new Error("Earlier Local Inspector findings are unavailable");
       const findings = this.commandArtifacts.readLocalInspectorFindings(runId, attempt.id, artifact.id);
       if (findings.length !== review.findingCount) throw new Error("Earlier Local Inspector findings are incomplete");
-      return findings;
+      return { findings, incomplete };
     }
-    return [];
+    return { findings: [], incomplete };
   }
 
   private async reviewLocally(

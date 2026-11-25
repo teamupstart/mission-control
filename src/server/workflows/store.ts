@@ -244,6 +244,16 @@ const repositoryCleanupForRun = `SELECT 1 FROM workflow_llm_calls l
   LEFT JOIN workflow_repository_local_owners o ON o.workload_id=w.id
   WHERE l.run_id=r.id AND (o.workload_id IS NOT NULL OR w.state IN ('running','cancellation_pending','interrupted'))`;
 
+// An Inspector review that returned a verified result spends its claim even if processing
+// that result fails. The durable model-call record distinguishes it from an interrupted launch.
+const countedCheckRun = `(
+  a.state NOT IN ('error', 'cancelled') OR a.check_run_slot = 'coderabbit'
+  OR (a.check_run_slot = 'inspector' AND EXISTS (
+    SELECT 1 FROM workflow_llm_calls l WHERE l.submission_id = a.submission_id
+      AND l.node_attempt_id = a.id AND l.purpose = 'inspector_review' AND l.state = 'succeeded'
+  ))
+)`;
+
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 /**
@@ -9136,6 +9146,8 @@ export class WorkflowStore {
    * `cancelled` is excluded because a submission that stopped discards the answer it bought.
    * CodeRabbit keeps charged claims even on error or cancellation. Its runner explicitly
    * releases claims for infrastructure failures, while vendor failures can still spend a slot.
+   * Local Inspector keeps claims after a verified provider result, even if post-review
+   * processing fails.
    *
    * `round >= epoch` implements the two operator escape hatches. A null epoch counts the whole
    * run, which is both the pre-column behaviour and the behaviour of a run nobody intervened in.
@@ -9155,7 +9167,7 @@ export class WorkflowStore {
           WHERE s.run_id = ?
             AND a.check_run_slot = ?
             AND s.round >= ?
-            AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))
+            AND ${countedCheckRun}
             AND a.id <> ?`,
       ).get(runId, slot, epochRound ?? 0, attemptId) as { n: number };
       const spent = Number(row.n);
@@ -9244,7 +9256,7 @@ export class WorkflowStore {
         WHERE s.run_id = ?
           AND a.check_run_slot = ?
           AND s.round >= ?
-          AND (a.check_run_slot = 'coderabbit' OR a.state NOT IN ('error', 'cancelled'))`,
+          AND ${countedCheckRun}`,
     ).get(runId, slot, epochRound ?? 0) as { n: number };
     return Number(row.n);
   }
@@ -9287,12 +9299,13 @@ export class WorkflowStore {
     ).all(submissionId) as unknown[]).map(parseWorkflowNodeAttemptRow);
   }
 
-  /** Newest first. Attempts that could not start return their execution claim. */
+  /** Newest first. For Local Inspector, exclude uncharged attempts interrupted before review. */
   listCheckAttemptsWithExecutionClaim(runId: string, nodeId: string, slot: WorkflowCheckSlot): WorkflowNodeAttempt[] {
     return (this.db.prepare(
       `SELECT a.* FROM workflow_node_attempts a
          JOIN workflow_submissions s ON s.id = a.submission_id
         WHERE s.run_id = ? AND a.node_id = ? AND a.check_run_slot = ?
+          AND (a.check_run_slot <> 'inspector' OR ${countedCheckRun})
         ORDER BY s.round DESC, s.segment DESC, a.created_at DESC, a.attempt DESC`,
     ).all(runId, nodeId, slot) as unknown[]).map(parseWorkflowNodeAttemptRow);
   }

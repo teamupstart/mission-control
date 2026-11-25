@@ -1,4 +1,4 @@
-import { INSPECTOR_SEVERITIES } from "@shared/inspector-review.ts";
+import { DEFAULT_LOCAL_INSPECTOR_SEVERITY, INSPECTOR_SEVERITIES } from "@shared/inspector-review.ts";
 import { PERSONA_REPOSITORY_ACCESS_MODES } from "@shared/workflow.ts";
 import { z } from "zod";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
@@ -99,7 +99,9 @@ export const SettingsBackupWorkflowCommandSchema = z.object({
 }).refine((value) => value.slot !== "coderabbit" || value.defaultCommand === null
   || CodeRabbitCommandSchema.safeParse(value.defaultCommand).success, {
   path: ["defaultCommand"], message: "Invalid default CodeRabbit command",
-});
+}).transform(value => value.slot === "inspector"
+  ? { ...value, inspectorSeverity: value.inspectorSeverity ?? DEFAULT_LOCAL_INSPECTOR_SEVERITY }
+  : value);
 
 export const SettingsBackupWorkflowDefinitionSchema = z.object({
   id,

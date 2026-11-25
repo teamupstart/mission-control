@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MOD_NAME } from "../../mod/constants.ts";
 import { findClaude, type ClaudeCli } from "../claude-cli.ts";
-import { readModVersion, refuseCheckoutDestination, stageMod } from "../../server/mod-stage.ts";
+import { readModVersion, refuseCheckoutDestination, stageMod, withModLock } from "../../server/mod-stage.ts";
 import { MOD_PLUGIN_ID, checkModCallsAt, claudeCommand, readInstalledMod, readModMarketplace, recoveryCommands } from "./checks.ts";
 import { resolveDeps, type SetupDeps } from "./context.ts";
 import type { DoctorCheck, SetupStepOptions, SetupStepResult } from "./types.ts";
@@ -85,12 +85,23 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
   const bin = claudeCommand(claude);
   const modDir = join(deps.stateDir, "mod");
 
+  // Staging and the `claude plugin` calls after it are one sequence on one shared state: a second
+  // `mctl setup` waits for this one, rather than acting on the same stale listing and undoing it.
+  try {
+    // Refused before the lock is taken: the lock is a folder beside the destination.
+    await refuseCheckoutDestination(modDir);
+    return await withModLock(modDir, () => installLocked(claude, bin, deps, modDir));
+  } catch (error) {
+    return failed(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function installLocked(claude: ClaudeCli, bin: string, deps: SetupDeps, modDir: string): Promise<SetupStepResult> {
   let version: string;
   // The verdict on the copy about to be published. It is kept for the closing doctor step only once
   // the publish has succeeded: until then the published mod may still be the old build, or absent.
   let certified: DoctorCheck | null = null;
   try {
-    await refuseCheckoutDestination(modDir);
     if (await publishedIsCurrent(deps.modSource, modDir)) {
       // Already published and certified when it was staged: nothing to copy, validate or swap.
       version = await readModVersion(modDir);
@@ -98,6 +109,7 @@ export async function run(options: SetupStepOptions): Promise<SetupStepResult> {
       await stageMod({
         source: deps.modSource,
         dest: modDir,
+        locked: true,
         // The copy must pass the same `mod-calls` check doctor runs, with `claude plugin validate`,
         // before it replaces anything: a build setup cannot certify never displaces a working one.
         validate: async (staging) => {

@@ -149,6 +149,8 @@ interface StageOptions {
   validate?: (stagingDir: string) => Promise<void>;
   /** How long to wait for another run that is staging the same mod, in ms. Default 30 s. */
   lockTimeoutMs?: number;
+  /** The caller already holds the lock through `withModLock`, and so `stageMod` must not take it again. */
+  locked?: boolean;
 }
 
 async function stageModLocked(options: StageOptions): Promise<StagedMod> {
@@ -255,8 +257,23 @@ async function acquireLock(dest: string, timeoutMs: number): Promise<() => Promi
   }
 }
 
+/**
+ * Runs `fn` while holding the lock that serializes everything that changes the published mod and its
+ * installation. A caller that goes on to run `claude plugin` commands holds it across them too, and
+ * passes `locked: true` to `stageMod`, so two overlapping runs cannot act on the same stale snapshot.
+ */
+export async function withModLock<T>(dest: string, fn: () => Promise<T>, timeoutMs = 30_000): Promise<T> {
+  const release = await acquireLock(dest, timeoutMs);
+  try {
+    return await fn();
+  } finally {
+    await release();
+  }
+}
+
 export async function stageMod(options: StageOptions): Promise<StagedMod> {
   await refuseCheckoutDestination(options.dest);
+  if (options.locked) return stageModLocked(options);
   const release = await acquireLock(options.dest, options.lockTimeoutMs ?? 30_000);
   try {
     return await stageModLocked(options);

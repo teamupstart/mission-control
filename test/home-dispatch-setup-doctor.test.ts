@@ -1418,3 +1418,21 @@ test("a setup run whose mod is already published and installed stages nothing, a
     await r.cleanup();
   }
 });
+
+test("two overlapping setups share one install sequence: the stale build is uninstalled and installed once, and both report success", async () => {
+  const r = await rig({ version: "2.3.0" });
+  try {
+    r.claude.setInstalledVersion("2.1.0");
+    const results = await Promise.all([runModStep({ live: false, deps: { env: r.env } }), runModStep({ live: false, deps: { env: r.env } }), runModStep({ live: false, deps: { env: r.env } })]);
+    assert.deepEqual(results.map((x) => x.status), ["ok", "ok", "ok"], results.map((x) => x.message).join(" | "));
+    const calls = pluginCalls(r.claude);
+    assert.equal(calls.filter((c) => c === "uninstall").length, 1, "only the first run removes the stale build: " + calls.join(","));
+    assert.equal(calls.filter((c) => c === "install").length, 1);
+    assert.equal(r.claude.state().plugins.length, 1);
+    assert.equal(r.claude.state().plugins[0]?.version, "2.3.0");
+    assert.equal(results.filter((x) => /already installed/.test(x.message)).length, 2, "the others find it current once the first finishes");
+    assert.deepEqual(readdirSync(r.state), ["mod"], "the lock is released");
+  } finally {
+    await r.cleanup();
+  }
+});

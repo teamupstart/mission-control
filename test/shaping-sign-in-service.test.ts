@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, test, type TestContext } from "node:test";
 import type { ShapingSignInClient, ShapingSignInView, SignInTarget } from "../src/shared/shaping.ts";
 import type { SignInStore, StoredSignIn } from "../src/server/shaping/sign-in/store.ts";
-import type { ShaperSignInService, SignInFlow, SignInRegistrations, SignInUse, TimerHandle } from "../src/server/shaping/sign-in/service.ts";
+import type { BeginAnswer, ShaperSignInService, SignInFlow, SignInRegistrations, SignInUse, TimerHandle } from "../src/server/shaping/sign-in/service.ts";
 import type { FakeOAuthRequest, FakeOAuthServer } from "./fixtures/fake-oauth-server.mjs";
 
 // A fixture state home for the one test that reads the real `app_config` and a settings
@@ -254,7 +254,13 @@ async function harness(t: TestContext, options: HarnessOptions = {}): Promise<Ha
     svc.start();
     await svc.idle();
   }
-  t.after(() => svc.stop());
+  // stop() waits for work in flight within STOP_DEADLINE_MS on this fake clock. Firing that
+  // deadline here means a test that fails while it holds work still finishes, never stalls.
+  t.after(async () => {
+    const stopping = svc.stop();
+    clock.fireDue(STOP_DEADLINE_MS);
+    await stopping;
+  });
   return { svc, clock, store, regs, fake, flags, changes, warnings, storesBuilt: () => built };
 }
 
@@ -1291,20 +1297,27 @@ test("a begin queued across a flag reset waits for the new load, so it never dro
   const flags = flagSwitch(true);
   const h = await harness(t, { fake, store, regs, flags, start: false });
   h.svc.start();
-  while (reads === 0) await new Promise((done) => setTimeout(done, 5));
-  // Queued behind the first load, for a scope that needs a new registration.
-  const answer = h.svc.begin(target(fake, { scope: "mcp:fresh" }));
-  // Let it start waiting on the first load before the flags are reset.
-  await new Promise((done) => setImmediate(done));
-  flags.set(false);
-  flags.set(true);
-  await secondStarted;
-  // The first load stops early. The begin must not go on while the second is still reading.
-  releaseFirst();
-  await new Promise((done) => setTimeout(done, 50));
-  assert.equal(registrationsSeen(fake).length, 0, "no registration request while the new load is still reading");
-  const keyBefore = regs.read();
-  releaseSecond();
+  let answer: Promise<BeginAnswer>;
+  let keyBefore: ShapingSignInClient[];
+  try {
+    while (reads === 0) await new Promise((done) => setTimeout(done, 5));
+    // Queued behind the first load, for a scope that needs a new registration.
+    answer = h.svc.begin(target(fake, { scope: "mcp:fresh" }));
+    // Let it start waiting on the first load before the flags are reset.
+    await new Promise((done) => setImmediate(done));
+    flags.set(false);
+    flags.set(true);
+    await secondStarted;
+    // The first load stops early. The begin must not go on while the second is still reading.
+    releaseFirst();
+    await new Promise((done) => setTimeout(done, 50));
+    assert.equal(registrationsSeen(fake).length, 0, "no registration request while the new load is still reading");
+    keyBefore = regs.read();
+  } finally {
+    // Both loads are let go even when an assertion above fails, in the same order as normally.
+    releaseFirst();
+    releaseSecond();
+  }
   assert.equal((await answer as { code: string }).code, "registration_limit", "every registration is named once the load has read them");
   assert.equal(registrationsSeen(fake).length, 0);
   assert.deepEqual(regs.read(), keyBefore, "no registration a stored sign-in names was dropped");

@@ -536,7 +536,7 @@ export function VoiceSettingsPanel({
                   aria-label="Cancel window"
                   onChange={({ target: { value } }) => {
                     const cancelWindow = value === "off" ? { enabled: false }
-                      : { seconds: Number(value), ...(config?.cancelWindow.enabled ? {} : { enabled: true }) };
+                      : { enabled: true, seconds: Number(value) };
                     void update({ cancelWindow });
                   }}
                 >

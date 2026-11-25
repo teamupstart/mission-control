@@ -388,12 +388,23 @@ test("Voice settings edits are saved in order, and a refused first edit leaves a
   await expect.poll(async () => (await voiceConfig(daemon)).planFormsByVoice).toBe(false);
   expect((await voiceConfig(daemon)).cancelWindow.seconds, "the daemon never took the refused edit").toBe(4);
   // In order, one at a time: the second request left only after the first was answered.
-  expect(writes.map((write) => write.body)).toEqual([{ cancelWindow: { seconds: 8 } }, { planFormsByVoice: false }]);
   expect(writes[1]!.at).toBeGreaterThanOrEqual(firstAnsweredAt);
   await capture(page, "settings-edits-in-order");
 
+  // Another window disables cancellation before this window's numeric selection reaches the daemon.
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() === "PUT") {
+      const off = await page.request.put(route.request().url(), { data: { cancelWindow: { enabled: false } } });
+      expect(off.ok()).toBe(true);
+    }
+    await route.fallback();
+  });
   await length.selectOption("6");
-  await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(6);
+  await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: true, seconds: 6 });
+  expect(writes.map(write => write.body)).toEqual([
+    { cancelWindow: { enabled: true, seconds: 8 } }, { planFormsByVoice: false },
+    { cancelWindow: { enabled: true, seconds: 6 } },
+  ]);
   await expect(panel.getByText(/That change didn't stick/)).toHaveCount(0);
   await expect(planForms).not.toBeChecked();
 });

@@ -267,8 +267,9 @@ Inspector answers waiting follow-ups in order before reviewing the PR. A failed 
 work on that PR for the sweep, so Inspector can observe and process the next PR. Unanswered
 questions stay pending, and the retry wait starts when the failure occurs. Inspector keeps
 observing the PR during backoff, including checking whether a new head can end the wait.
-When reply work resumes, waiting questions and pending thread resolutions take turns. A failed
-operation moves behind the remaining work, and new questions join the end of the queue.
+Waiting questions and pending thread resolutions share one queue. Work carried over from the
+previous sweep runs before newly discovered work. A failed operation moves behind the other
+queued work.
 
 ### Whether a finding reached GitHub
 

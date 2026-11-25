@@ -829,10 +829,12 @@ async function processPr(
     }
     // Only a previously authorized resolution on an owned thread may be retried.
     for (const [fingerprint, thread] of ourThreads(s, login)) {
-      if (!rows.get(fingerprint)?.resolutionPending) continue;
+      const pending = rows.get(fingerprint);
+      if (!pending?.resolutionPending) continue;
       const key = resolutionKey(thread.threadId);
       work.set(key, async () => {
-        if (!rows.get(fingerprint)?.resolutionPending) return null;
+        // A new reply may have superseded this intent after the snapshot was read.
+        if (rows.get(fingerprint) !== pending) return null;
         const resolved = thread.isResolved ? { ok: true } : await resolveThread(dir, thread.threadId);
         if (!resolved.ok) {
           noteFailure(pr, "could not resolve the answered thread", tick);
@@ -846,11 +848,16 @@ async function processPr(
     }
   }
 
-  const order = new Set([...(replyRetryOrder.get(pr.key) ?? []), ...work.keys()]);
-  replyRetryOrder.delete(pr.key);
+  const order = new Set(post ? [...(replyRetryOrder.get(pr.key) ?? []), ...work.keys()] : []);
+  if (post) replyRetryOrder.delete(pr.key);
   for (const key of order) {
-    order.delete(key);
     const run = work.get(key);
+    if (run && inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) !== "live") {
+      // A settings change pauses the queue without moving the current slot or adding backoff.
+      replyRetryOrder.set(pr.key, order);
+      return acted;
+    }
+    order.delete(key);
     if (!run) continue;
     const failure = await run();
     if (failure === null) continue;
@@ -1006,6 +1013,7 @@ async function answerFollowUp(
 
   const reply = scrubSecrets(answer.reply.trim());
   if (!reply) return false;
+  if (inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) !== "live") return false;
 
   // Same marker fingerprint as the thread it belongs to, so a reply of ours is
   // recognisable as ours on the next read - which is what stops us answering our own
@@ -1037,10 +1045,13 @@ async function answerFollowUp(
   // it belongs to closes - the reverse reads as a thread closed without an answer.
   //
   // AFTER the reply is stamped, so a failure here cannot cost a duplicate public comment.
-  if (answer.resolved) {
-    const resolved = w.thread.isResolved || resolvedThreadIds.has(w.thread.id)
-      ? { ok: true }
-      : await resolveThread(dir, w.thread.id);
+  // A thread that looked resolved before the model ran may have reopened. Leave its
+  // intent pending for the next snapshot instead of closing the row from the old state.
+  if (
+    answer.resolved && !w.thread.isResolved && !resolvedThreadIds.has(w.thread.id)
+    && inspectorPosture(getInspectorConfig(), pr.cwd, pr.repoRoot) === "live"
+  ) {
+    const resolved = await resolveThread(dir, w.thread.id);
     if (resolved.ok) {
       closeRow(rows, w.row.fingerprint, now);
       resolvedThreadIds.add(w.thread.id);

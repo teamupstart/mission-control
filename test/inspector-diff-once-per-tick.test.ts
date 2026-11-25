@@ -120,7 +120,7 @@ if (args[0] === "api" && args[1] === "user") {
   const number = args.find((arg) => arg.startsWith("number=")).slice("number=".length);
   const threads = state.threadsByPr[number].map(({ id, marker, question }) => ({
     id: "T_" + id,
-    isResolved: false,
+    isResolved: state.resolvedThread === id,
     path: "src/example.ts",
     comments: { nodes: [
       { databaseId: 101 + id, body: marker, createdAt: "2026-07-30T12:00:00Z", author: { login: "operator" } },
@@ -185,7 +185,7 @@ if (args[0] === "api" && args[1] === "user") {
 );
 chmodSync(ghPath, 0o755);
 
-const { openDb, getInspectorPr, loadInspectorComments, upsertInspectorComment } = await import(
+const { openDb, getInspectorPr, loadInspectorComments, updateInspectorPr, upsertInspectorComment } = await import(
   "../src/server/db.ts"
 );
 const { setInspectorConfig } = await import("../src/server/inspector/config.ts");
@@ -205,6 +205,7 @@ interface FakeGithubState {
   threadsByPr: Record<number, FakeThread[]>;
   closedPr?: number;
   resolutionSucceeds?: boolean;
+  resolvedThread?: number;
   diffTooLarge: boolean;
   snapshots: number;
   diffCalls: number;
@@ -607,4 +608,83 @@ test("a newly arrived question gets its turn behind a repeatedly refused resolut
   assert.equal(answered?.answeredCommentId, 203);
   assert.equal(answered?.replies, 1);
   assert.equal(getInspectorPr(key)?.failCount, 3);
+});
+
+test("revoking live consent during a reply pauses the pending resolution without backoff", async (t) => {
+  const key = adopt(14);
+  const threads = [seedThread(key, 0, "Answered question"), seedThread(key, 1, "Waiting question")];
+  const answered = loadInspectorComments(key).find((row) => row.id === "prior-0")!;
+  upsertInspectorComment({ ...answered, answeredCommentId: 202, replies: 1, resolutionPending: true });
+  writeGithubState({
+    headSha: "head-pause-resolution",
+    threadsByPr: { 14: threads },
+    resolutionSucceeds: true,
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+  const model = t.mock.method(claudeRunner, "run", async () => {
+    setInspectorConfig({ enabled: false });
+    return JSON.stringify({ reply: "I checked the guard.", resolved: false });
+  });
+
+  let done = false;
+  const stop = startInspector(registryStub(() => {
+    stop();
+    done = true;
+  }));
+  t.after(stop);
+  await waitFor("the paused reply queue", () => done);
+
+  assert.equal(model.mock.callCount(), 1);
+  assert.deepEqual(readGithubState().actions, [], "no reply or resolution is sent after revocation");
+  assert.equal(loadInspectorComments(key).find((row) => row.id === "prior-0")?.resolutionPending, true);
+  assert.equal(loadInspectorComments(key).find((row) => row.id === "prior-1")?.answeredCommentId, null);
+  assert.equal(getInspectorPr(key)?.nextAttemptAt, null);
+  assert.equal(getInspectorPr(key)?.failCount, 0);
+});
+
+test("a thread reopened while a reply runs stays pending until the next GitHub snapshot", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const key = adopt(15, now);
+  const headSha = "head-reopened-thread";
+  updateInspectorPr(key, { headSha, reviewedBaseRef: "main", reviewPosture: "live", reviewComplete: true }, now);
+  seedThread(key, 1, "Another open finding");
+  writeGithubState({
+    headSha,
+    threadsByPr: { 15: [seedThread(key, 0, "Check the fix")] },
+    resolvedThread: 0,
+    resolutionSucceeds: true,
+    diffTooLarge: false,
+    snapshots: 0,
+    diffCalls: 0,
+    actions: [],
+  });
+  const model = t.mock.method(claudeRunner, "run", async () => {
+    const github = readGithubState();
+    delete github.resolvedThread;
+    writeGithubState(github);
+    return JSON.stringify({ reply: "The guard is fixed.", resolved: true });
+  });
+
+  const finding = () => loadInspectorComments(key).find((row) => row.id === "prior-0");
+  const sweeps: { status: string | undefined; pending: boolean | undefined; actions: string[] }[] = [];
+  const stop = startInspector(registryStub(() => {
+    if (getInspectorPr(key)?.observedAt !== now) return;
+    const row = finding();
+    sweeps.push({ status: row?.status, pending: row?.resolutionPending, actions: readGithubState().actions });
+    if (sweeps.length === 2) stop();
+    now += pollMs;
+  }));
+  t.after(stop);
+  await waitFor("the next snapshot and confirmed resolution", () => sweeps.length === 2);
+
+  assert.deepEqual(sweeps, [
+    { status: "open", pending: true, actions: ["replied to comment 202"] },
+    { status: "resolved", pending: undefined, actions: ["replied to comment 202", "resolved T_0"] },
+  ]);
+  assert.equal(model.mock.callCount(), 1);
+  assert.equal(finding()?.answeredCommentId, 202);
 });

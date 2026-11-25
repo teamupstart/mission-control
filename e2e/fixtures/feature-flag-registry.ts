@@ -17,6 +17,7 @@ export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
 export const FEATURE_FLAGS = [
+  { id: SESSION_SETTINGS_FLAG_ID, label: "Session settings through MCP", description: "Session settings route fixture", stage: "preview", keywords: [] },
   { id: "preview-navigation", label: "Preview navigation", description: "Try a new way to move between sessions while keeping your existing workspace, preferences and running tasks exactly where you left them.", stage: "preview", keywords: ["wayfinding"] },
   { id: "preview-timeline", label: "Preview timeline", description: "See a chronological overview of session activity.", stage: "preview", keywords: ["chronology"] },
   { id: "compact-history", label: "Compact history", description: "Group older activity into a compact history view.", stage: "default-on", keywords: ["archive"] },

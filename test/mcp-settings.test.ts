@@ -10,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 import { SESSION_SETTINGS_FLAG_ID } from "../src/shared/feature-flag-registry.ts";
-import type { SettingsRequest, SettingsResult } from "../src/shared/settings-mcp.ts";
+import type { SettingsErrorCode, SettingsRequest, SettingsResult } from "../src/shared/settings-mcp.ts";
 import { settingsFailure } from "../src/shared/settings-mcp.ts";
 import { SKINS } from "../src/shared/skins.ts";
 import type { PiApi, PiContext, PiTool } from "../src/pi/api.ts";
@@ -173,12 +173,12 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     ["choiceCursor", "cursor", "expectedVersion", "key", "operation", "query", "value"]);
   assert.doesNotMatch(JSON.stringify(definition), /ui\.skin|Daylight/);
 
-  async function call(client: Client, args: Record<string, unknown>, error?: string): Promise<SettingsResult> {
+  async function call(client: Client, args: Record<string, unknown>, error?: SettingsErrorCode, hint?: string): Promise<SettingsResult> {
     const response = await client.callTool({ name: "mission_settings", arguments: args });
     assert.equal(Boolean(response.isError), Boolean(error), JSON.stringify(response.content));
     const [part] = response.content as Array<{ text: string }>;
     const body = JSON.parse(part!.text);
-    if (error) assert.deepEqual(body, { ok: false, error, hint: body.hint });
+    if (error) assert.deepEqual(body, settingsFailure(error, hint));
     return body;
   }
   assert.deepEqual(await call(claude, find), {
@@ -198,8 +198,10 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
 
   await call(claude, { ...get, key: "ui.layout" }, "unknown_key");
   await call(claude, { ...set, value: "invalid-private-value" }, "invalid_value");
-  await call(claude, { ...set, key: "sessionSettings.access", value: true }, "protected");
-  await call(claude, { ...set, key: `featureFlags.${SESSION_SETTINGS_FLAG_ID}`, value: true }, "protected");
+  await call(claude, { ...set, key: "sessionSettings.access", value: true }, "protected",
+    "Manage this setting in Settings > Trust.");
+  await call(claude, { ...set, key: `featureFlags.${SESSION_SETTINGS_FLAG_ID}`, value: true }, "protected",
+    "Manage this setting in Settings > Feature flags.");
   await call(claude, { ...get, value: false }, "invalid_request");
   await call(claude, { ...set, value: "x".repeat(20_000) }, "value_too_large");
 

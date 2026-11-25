@@ -27,13 +27,14 @@ function sessionSettingsAccess(): boolean {
 }
 
 const rollout = FEATURE_FLAGS.find(flag => flag.id === SESSION_SETTINGS_FLAG_ID);
+if (!rollout) throw new Error(`Session settings requires a registered ${SESSION_SETTINGS_FLAG_ID} feature flag.`);
 const catalog: readonly SettingDescriptor[] = [
   uiSkinSetting,
   { ...SESSION_SETTINGS_ACCESS, access: "protected", destination: "Settings > Trust" },
-  ...(rollout ? [{
+  {
     key: `featureFlags.${rollout.id}`, label: rollout.label, keywords: rollout.keywords,
     access: "protected", destination: "Settings > Feature flags",
-  } as const] : []),
+  },
 ];
 
 export function registerSessionSettingsRoutes(

@@ -16,9 +16,9 @@ export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as co
 export const IDLE_STALLED_FLAG_ID = "idle-stalled" as const;
 export const MARKDOWN_QUESTIONS_FLAG_ID = "markdown-questions" as const;
 
-// Replaces only the registry module in reader tests.
-export const FEATURE_FLAGS = [{
-  id: "fixture-preview", label: "Fixture preview", description: "Reader test fixture",
-  stage: "preview", keywords: [],
-}] as const satisfies readonly FeatureFlagDefinition[];
+// Replaces only the registry module in reader tests. The composed daemon requires the session settings entry.
+export const FEATURE_FLAGS = [
+  { id: "fixture-preview", label: "Fixture preview", description: "Reader test fixture", stage: "preview", keywords: [] },
+  { id: SESSION_SETTINGS_FLAG_ID, label: "Session settings through MCP", description: "Session settings route fixture", stage: "preview", keywords: [] },
+] as const satisfies readonly FeatureFlagDefinition[];
 export const RETIRED_FEATURE_FLAG_IDS = [] as const;

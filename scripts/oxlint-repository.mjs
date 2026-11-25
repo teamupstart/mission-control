@@ -23,6 +23,21 @@ function annotation(identifier) {
   return type?.type === "TSTypeReference" ? name(type.typeName) : undefined;
 }
 
+function isLaterWrite(node, write, declarationBlock, statement) {
+  if (statement.range[1] <= write.range[0]) return true;
+  // A nested conditional or plain block executes at most once per entry to
+  // the declaration block. A loop body can carry a later write into its next use.
+  let inner = node;
+  while (inner !== statement && inner.parent.type !== "BlockStatement") inner = inner.parent;
+  if (inner === statement || inner.range[1] > write.range[0]) return false;
+  const block = inner.parent;
+  if (write.range[1] > block.range[1]) return false;
+  for (let container = block; container !== declarationBlock; container = container.parent) {
+    if (container.type !== "BlockStatement" && container.type !== "IfStatement") return false;
+  }
+  return true;
+}
+
 // undefined preserves the initializer; null means the reaching value is uncertain.
 function reachingAssignment(context, node, variable, declaration) {
   if (declaration.parent.kind === "const") return;
@@ -38,8 +53,8 @@ function reachingAssignment(context, node, variable, declaration) {
       statement.parent === block && identifier.range[0] >= block.range[0] &&
       identifier.range[1] <= block.range[1] && reference.from.variableScope === useScope &&
       variable.scope.variableScope === useScope;
+    if (sameBlock && isLaterWrite(node, identifier, block, statement)) continue;
     if (!sameBlock) return null;
-    if (statement.range[1] <= identifier.range[0]) continue;
     const assignment = identifier.parent;
     if (assignment.type !== "AssignmentExpression" || assignment.operator !== "=" || assignment.left !== identifier ||
         assignment.parent.type !== "ExpressionStatement" || assignment.parent.parent !== block ||

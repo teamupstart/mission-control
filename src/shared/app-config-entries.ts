@@ -326,6 +326,7 @@ const uiFields = {
  */
 const voiceFields = {
   muted: "operational",
+  listeningMode: "setting",
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
   endOfSpeechMs: "setting",

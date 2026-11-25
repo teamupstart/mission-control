@@ -7,6 +7,7 @@ import { VOICE_BACKENDS, VOICE_MODEL_STATUSES, VOICE_MODES, VoiceRevisionSchema 
 export const ShellVoiceStateSchema = z.object({
   mode: z.enum(VOICE_MODES),
   modeVersion: VoiceRevisionSchema.optional(),
+  pushToTalkSession: z.uuid().optional(),
   configuredHotkey: z.string().nullable().optional(),
   pendingHotkey: z.string().optional(),
   pendingHotkeyId: z.uuid().optional(),

@@ -46,9 +46,9 @@ export function showVoiceMuteError(message: string, speechJob?: string): void {
 }
 
 export function setTrayVoice(state: TrayVoiceState): void {
-  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
+  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted", state.pushToTalkSession);
   const stopExpired = !!stopErrorJob && stopErrorJob !== hotkeySpeechJob(state);
-  if (next?.nextMuted !== presentation?.nextMuted) {
+  if (next?.nextMuted !== presentation?.nextMuted || next?.action !== presentation?.action) {
     clearTimeout(muteConfirmation);
     muteConfirmation = undefined;
     muteError = "";
@@ -132,7 +132,7 @@ function render(handlers: TrayHandlers): void {
     template.splice(3, 0,
       { label: status, enabled: false },
       ...(muteError ? [{ label: muteError, enabled: false }] : []),
-      { label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) },
+      ...(action ? [{ label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) }] : []),
       { label: "Recently Heard", click: handlers.onRecentlyHeard },
       { type: "separator" },
     );
@@ -167,7 +167,7 @@ export function createTray(iconPath: string, voiceImageDir: string, handlers: Tr
   updateImage = image => tray?.setImage(trayImage(image ? join(voiceImageDir, image) : iconPath));
   refreshMenu = () => render(handlers);
   tray.on("click", () => {
-    if (presentation) void requestMute(handlers, presentation.nextMuted);
+    if (presentation?.action) void requestMute(handlers, presentation.nextMuted);
     else handlers.onOpen();
   });
   tray.on("right-click", () => {

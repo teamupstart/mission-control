@@ -227,6 +227,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
   );
   assert.deepEqual(APP_CONFIG_ENTRIES.voice.classification.fields, {
     muted: "operational",
+    listeningMode: "setting",
     hotkey: "setting",
     autoMuteDuringCalls: "setting",
     endOfSpeechMs: "setting",

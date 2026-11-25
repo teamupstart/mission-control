@@ -42,6 +42,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
   let hardware: VoiceHardware | undefined;
   let layoutSubscription: number | undefined;
   let state: ShellVoiceState = voiceStateOff();
+  let lastPushToTalkSession: string | undefined;
   let lastEnabledMute: boolean | undefined;
   let hotkeyAttempt = 0;
   let nextPromptAt = 0;
@@ -162,7 +163,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       layoutSubscription = systemPreferences.subscribeNotification("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged",
         () => hardware?.refreshRegistration());
     }
-    hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId);
+    hardware.update(state.configuredHotkey ?? null, state.mode, state.recordingHotkeyId ?? state.recordingHotkey, state.pendingHotkey, state.pendingHotkeyId, state.pushToTalkSession);
     // Only FluidAudio has a verified desktop capture path. Sherpa runs from the file launcher.
     const installed = state.model.backend === "fluidaudio" && existsSync(binary);
     listener?.update(state, installed && microphone === "granted");
@@ -183,6 +184,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       });
     }
     if (next.mode === "off") hotkeyAttempt++;
+    lastPushToTalkSession = next.pushToTalkSession;
     lastEnabledMute = next.mode === "off" ? undefined : (next.muted ?? next.mode === "muted");
     onState(state);
     void sync();
@@ -208,7 +210,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
     disconnect();
     state = voiceStateOff();
     if (!existsSync(desktopVoiceEndpointPath())) lastEnabledMute = undefined;
-    onState(lastEnabledMute === undefined ? state : { mode: "reconnecting", muted: lastEnabledMute });
+    onState(lastEnabledMute === undefined ? state : { mode: "reconnecting", muted: lastEnabledMute, pushToTalkSession: lastPushToTalkSession });
     void sync();
     reconnect = setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000);

@@ -602,6 +602,33 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
         publish(chord);
       }
     });
+    await t.test("dedicated push-to-talk opens the app from the tray without a mute action and reports Carbon edges", async () => {
+      const pushToTalkSession = crypto.randomUUID();
+      events!.write("data: " + JSON.stringify({ type: "voice_state",
+        state: { ...voiceStateOff(), mode: "waiting-for-key", configuredHotkey: chord, pushToTalkSession },
+      }) + "\n\n");
+      await until(() => reports.at(-1)?.pushToTalkSession === pushToTalkSession);
+      assert.equal(reports.at(-1)?.pushToTalk, false);
+      const before = toggles;
+      const muteRequests = requests.length;
+      await click("right-click");
+      const { labels, opens } = await read();
+      assert.ok(labels.includes("Voice: waiting for hotkey"));
+      assert.ok(!labels.includes("Mute Voice") && !labels.includes("Unmute Voice"));
+      await click("click");
+      assert.equal((await read()).opens, opens + 1);
+      await post(true);
+      await until(() => reports.at(-1)?.pushToTalk === true);
+      const press = reports.at(-1)!.pushToTalkPressedAtHostUs!;
+      await post(false);
+      await until(() => !reports.at(-1)?.pushToTalk && !!reports.at(-1)?.pushToTalkReleasedAtHostUs);
+      assert.ok(reports.at(-1)!.pushToTalkReleasedAtHostUs! >= press);
+      assert.equal(toggles, before);
+      assert.equal(requests.length, muteRequests);
+      publish(chord);
+      await until(() => reports.at(-1)?.pushToTalkSession === undefined);
+    });
+
     await t.test("key-up reaches the daemon while both the press and routine report responses are stalled", async t => {
       if (released.capabilities["call-detection"]?.reason?.includes("requires macOS")) return t.skip("No call detection");
       await call(true);
@@ -877,8 +904,9 @@ test("Electron keeps one template tray in sync while minimized, handles both cli
   assert.ok(stamps.every(us => us !== undefined && us <= voiceHostTimeUs()));
   assert.equal(new Set(stamps).size, reports.length);
   assert.equal(new Set(images).size, 4);
+  const opensBeforeOffClick = (await read()).opens;
   await click("click");
-  assert.equal((await read()).opens, 2);
+  assert.equal((await read()).opens, opensBeforeOffClick + 1);
   assert.equal(await app.evaluate(() => (globalThis as unknown as {fixture: Fixture}).fixture.voice.fixMicrophone()), "unavailable");
   await t.test("rapid tray clicks send one request until the published mute state changes", async () => {
     const publish = (mode: VoiceMode) => events!.write("data: " + JSON.stringify({type: "voice_state", state: {...voiceStateOff(), mode}}) + "\n\n");

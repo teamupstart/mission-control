@@ -1336,9 +1336,11 @@ A window that cannot confirm its state during a companion submit must answer a f
 Open the plan form in the foreground dashboard. Say “Steve, first one B, second one A”.
 The badges count decisions in display order, including a final approval question when present.
 A blue microphone badge marks a voice selection. Say the position again to change it, or
-edit the same draft by hand. With the form focused, “reply” works in place of the name.
+edit the same draft by hand. A named command selects that agent’s open plan even when a Report
+has focus. If the agent has multiple open plans, focus the one you want. With the form focused, “reply” works in place of the name.
 
-Say “Steve, submit” or click Submit to send the current draft. An incomplete form marks the
+Say “Steve, submit” or click Submit to send the current draft. If a spoken choice is still
+being matched, wait for the selection to appear and say “Steve, submit” again. An incomplete form marks the
 first unanswered decision in amber and shows how to fill it. Closing the inbox keeps the
 draft. A spoken submit while the form is closed, or a dashboard response more than five
 seconds late, leaves it pending. Turn off **Plan forms by voice** in Settings > Voice to
@@ -1351,6 +1353,7 @@ An open report or Stuck row lists its available phrases at the foot of the card.
 of his is open. When the target is ambiguous, open the intended report first.
 “Steve, nudge” sends the Stuck row’s fixed status request even while Steve’s Report has
 keyboard focus. If several open cards offer the same command, focus the one you mean.
+A named inbox command that none of the agent’s open inbox cards offers gives an unavailable notice.
 Say “reply, …” with a card
 focused to use its reply, follow-up, or message control. The cancel window applies to
 inbox actions. The voice card confirms the action after the dashboard invokes the button.

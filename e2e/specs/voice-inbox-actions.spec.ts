@@ -93,6 +93,61 @@ test("Steve's Nudge runs from Report focus, Open report runs from Stuck focus, a
   await expect(row.getByRole("status")).toHaveText("Message sent.");
 });
 
+test("named plan fills and submit use the visible plan while Steve's Report has focus", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const planId = await postCachePlan(daemon, steve);
+  const report = await postReport(daemon, steve, "Review notes");
+  const dialog = page.getByRole("dialog", { name: "Attention inbox" });
+  const form = dialog.locator(".review-plan-decisions");
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  await expect(form).toBeVisible();
+  const focused = page.waitForResponse(r => {
+    if (!r.ok() || !r.url().endsWith("/api/voice/open-cards")) return false;
+    const { cards } = r.request().postDataJSON() as OpenCardsReport;
+    return cards.some(c => c.id === planId) && cards.some(c => c.id === report.id && c.focused);
+  });
+  const card = await openReportCard(page, report);
+  await card.getByRole("textbox").focus();
+  await expect(card.getByRole("textbox")).toBeFocused();
+  await focused;
+  await say(daemon, "Steve, first one B, second one A, third one A");
+  await expect(form.locator(".pd-ord.is-voice")).toHaveCount(3);
+  await expect(card.getByRole("textbox")).toBeFocused();
+  await captureCard(form, "named-plan-from-report-focus");
+  await say(daemon, "Steve, first one A");
+  await say(daemon, "Steve, submit");
+  await expect.poll(async () => {
+    const response = await page.request.get(daemon.baseURL + "/api/reviews/" + planId);
+    const review = await response.json();
+    return [review.status, review.selections?.map((answer: { selected: string[] }) => answer.selected)];
+  }).toEqual(["answered", [["a"], ["a"], ["a"]]]);
+  expect((await storedReport(daemon, report.id)).readAt).toBeNull();
+});
+
+test("an unavailable named Publish action leaves the focused report unread and sends no reply", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 1);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const report = await postReport(daemon, steve, "Report without a document");
+  const replies: string[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith(`/api/reports/${report.id}/reply`)) replies.push(request.postData() ?? "");
+  });
+  const focused = page.waitForResponse(r => r.ok() && r.url().endsWith("/api/voice/open-cards") &&
+    (r.request().postDataJSON() as OpenCardsReport).cards.some(c => c.id === report.id && c.focused));
+  const card = await openReportCard(page, report);
+  await expect(card.getByRole("button", { name: "Publish as scout" })).toHaveCount(0);
+  await card.getByRole("textbox").focus();
+  await focused;
+  await say(daemon, "Steve, publish as scout");
+  const notice = page.getByRole("status").filter({ hasText: "The inbox action is no longer available." });
+  await expect(notice).toBeVisible();
+  await captureCard(notice, "unavailable-publish-notice");
+  await expect(card.getByRole("textbox")).toHaveValue("");
+  expect((await storedReport(daemon, report.id)).readAt).toBeNull();
+  expect(replies).toEqual([]);
+});
+
 test("turning off Plan forms by voice in Settings preserves manual answers while spoken Mark read still works", async ({ dashboard: page, daemon }) => {
   await page.setViewportSize({ width: 1920, height: 1400 });
   await setupCards(page, daemon, 1);

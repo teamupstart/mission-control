@@ -58,6 +58,13 @@ export function focusedVoiceCard(cards: DrawnVoiceCard[]) {
   return choices.length === 1 ? choices[0] : undefined;
 }
 
+/** A named plan command identifies the card type. Unnamed "reply" follows keyboard focus. */
+export function planVoiceTarget(cards: DrawnVoiceCard[], address: Address) {
+  const candidates = address ? addressedCards(cards, address).filter(c => c.kind === "plan") : cards;
+  const card = focusedVoiceCard(candidates);
+  return card?.kind === "plan" ? card : undefined;
+}
+
 export type VoiceInboxEvent = { address: Address } & (
   | ({ type: "voice_form_fill"; windowId: string } & VoiceFormFill)
   | { type: "voice_form_submit"; reviewId: string; submitId: string; windowId: string }

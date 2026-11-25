@@ -1,7 +1,7 @@
 import { PLAN_APPROVAL_DECISION } from "../src/shared/managed-plans.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cards, post, queued, registry, reviews, say, readHeard, act } from "./helpers/voice-http.ts";
+import { cards, model, post, queued, registry, reviews, say, readHeard, act } from "./helpers/voice-http.ts";
 import { mockCaptureClock, put, question, answers } from "./helpers/voice-question.ts";
 
 async function form(count = 3) {
@@ -50,6 +50,66 @@ test("fill-only ordinals include the appended approval. Submit requires an open 
   await say("Steve, submit", "plain");
   await act("plain", "send-now");
   assert.ok(queued("Steve").some(s => s.includes("submit")));
+});
+
+test("named commands require focus among two matching plans while unnamed replies follow the focused card", async () => {
+  const { review, fill } = await form(1);
+  const other = reviews.create(review.sessionId, "plan-decisions", "Another plan", "Choose", review.decisions!);
+  const focus = (id: string) => put("/api/voice/open-cards", { windowId: "dashboard", focused: true, cards: [
+    ...[review, other].map(r => ({ id: r.id, kind: "plan", sessionId: r.sessionId, focused: id === r.id })),
+    { id: "report", kind: "report", sessionId: review.sessionId, focused: id === "report", actions: ["reply"] },
+  ] });
+  await focus("report");
+  await say("Steve, first one A");
+  assert.match(cards.at(-1)?.detail ?? "", /focus the plan/i);
+  await say("Steve, submit");
+  assert.match(cards.at(-1)?.detail ?? "", /focus the plan/i);
+  assert.equal(fill(), undefined);
+  assert.equal(registry.voiceRouter!.forms.get(other.id), undefined);
+  await say("reply, first one A", "dictate");
+  assert.equal(registry.voiceRouter!.activeCards().find(c => c.id === "dictate")?.reason, "inbox-action");
+  await focus(review.id);
+  await say("Steve, first one B");
+  assert.deepEqual(fill()?.selections[0]?.selected, ["b"]);
+  assert.equal(registry.voiceRouter!.forms.get(other.id), undefined);
+});
+
+test("a spoken submit refuses a complete form during an earlier async fill and a retry uses the new choice", async t => {
+  const { review, fill } = await form(1);
+  await say("Steve, first one A");
+  assert.deepEqual(fill()?.selections[0]?.selected, ["a"]);
+  let start!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>(resolve => { start = resolve; });
+  const released = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(model, "decide", async () => {
+    start();
+    await released;
+    return { rung: "job", answers: [{ choice: "b", confidence: 1 }], detail: "delayed match" };
+  });
+  let submitId = "";
+  t.after(registry.subscribe(event => {
+    if (event.type === "voice_form_submit") submitId = event.submitId;
+  }));
+  const changing = say("Steve, first one the alternative database");
+  await started;
+  try {
+    await say("Steve, submit");
+    assert.equal(submitId, "");
+    assert.match(cards.at(-1)?.detail ?? "", /still matching/i);
+    assert.equal(registry.getReview(review.id)?.status, "pending");
+  } finally {
+    release();
+    await changing;
+  }
+  assert.deepEqual(fill()?.selections[0]?.selected, ["b"]);
+  await say("Steve, submit");
+  assert.ok(submitId);
+  const response = await post(`/api/reviews/${review.id}/resolve`, {
+    action: "answer", response: "Second", selections: fill()?.selections, voiceSubmitId: submitId,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(registry.getReview(review.id)?.selections?.[0]?.selected, ["b"]);
 });
 
 test("resolve refuses an incomplete selection payload with a live voice submit ID and leaves the review pending", async t => {
@@ -111,11 +171,15 @@ test("a slow option lookup preserves later picks and cannot repopulate a retired
   const older = forms.beginFill(review.id, 10);
   const later = forms.beginFill(review.id, 11);
   const choice = (decisionId: string, option: string) => ({ decisionId, selected: [option], other: null });
-  later([choice("cache", "a")]);
-  assert.deepEqual(older([choice("cache", "b"), choice("expiry", "b")]), [choice("expiry", "b")]);
+  later.apply([choice("cache", "a")]);
+  assert.deepEqual(older.apply([choice("cache", "b"), choice("expiry", "b")]), [choice("expiry", "b")]);
+  later.finish();
+  assert.ok(forms.isMatching(review.id), "the other request is still matching");
   assert.deepEqual(fill()?.selections, [choice("cache", "a"), choice("expiry", "b")]);
   forms.clear();
   forms.observed(review.id);
-  assert.equal(later([choice("cache", "b")]), null);
+  assert.equal(forms.isMatching(review.id), false);
+  older.finish();
+  assert.equal(later.apply([choice("cache", "b")]), null);
   assert.equal(fill(), undefined);
 });

@@ -50,6 +50,9 @@ test("named commands and follow-up dictation select their unique offer and use f
   assert.deepEqual(await speak("reply, open report"), [["stuck", "message", "open report"]]);
   await focus("second");
   assert.deepEqual(await speak("Steve, open report"), [["second", "open-report", ""]]);
+  assert.deepEqual(await speak("Steve, publish as scout"), []);
+  assert.equal(cards.at(-1)?.detail, "The inbox action is no longer available.");
+  assert.deepEqual(await speak("reply, publish as scout"), [["second", "reply", "publish as scout"]]);
   assert.deepEqual(await speak("Steve, send the results"), [["second", "reply", "send the results"]]);
 });
 

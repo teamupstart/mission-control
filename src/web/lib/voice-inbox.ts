@@ -1,5 +1,5 @@
 import type { InboxActionId } from "@shared/inbox.ts";
-import { addressedCards, focusedVoiceCard, VOICE_INBOX_ACTION_TIMEOUT_MS, type DrawnVoiceCard, type VoiceInboxEvent } from "@shared/voice-answers.ts";
+import { planVoiceTarget, VOICE_INBOX_ACTION_TIMEOUT_MS, type DrawnVoiceCard, type VoiceInboxEvent } from "@shared/voice-answers.ts";
 import { updateReviewDraft } from "./review-drafts.ts";
 
 const selector = "[data-voice-question], [data-voice-kind]";
@@ -35,7 +35,7 @@ export async function receiveInboxEvent(event: VoiceInboxEvent) {
     el.dataset.voiceKind === (event.type === "voice_inbox_action" ? event.kind : "plan"));
   const card = findCard();
   if (!card) return;
-  if (event.type !== "voice_inbox_action" && focusedVoiceCard(addressedCards(drawnVoiceCards(), event.address))?.id !== id) return;
+  if (event.type !== "voice_inbox_action" && planVoiceTarget(drawnVoiceCards(), event.address)?.id !== id) return;
   if (event.type === "voice_form_submit") {
     card.dispatchEvent(new CustomEvent("voice-form-submit", { detail: event.submitId }));
   } else if (event.type === "voice_form_fill") {

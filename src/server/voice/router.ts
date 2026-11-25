@@ -1,6 +1,6 @@
 import { namedInboxCommand, spokenInboxAction } from "@shared/voice-inbox.ts";
 import { VoicePlanForms, formChoices, isFormChoice } from "./plan-forms.ts";
-import { addressedCards, focusedVoiceCard, spokenOrdinal, VOICE_DASHBOARD_CONFIRM_MS, VOICE_INBOX_ACTION_TIMEOUT_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
+import { addressedCards, focusedVoiceCard, planVoiceTarget, spokenOrdinal, VOICE_DASHBOARD_CONFIRM_MS, VOICE_INBOX_ACTION_TIMEOUT_MS, voiceFocusClockSkewMs, type VoiceAnswer } from "@shared/voice-answers.ts";
 import type { ReviewItem } from "@shared/types.ts";
 import { matchAnswer, requestedChoice, spokenIndex, VoiceOpenCards, type VoiceQuestions } from "./questions.ts";
 import {
@@ -517,24 +517,31 @@ export class VoiceRouter {
       return true;
     };
     const submit = /^submit[.!?]*$/iu.test(body);
-    const fill = card?.kind === "plan" && isFormChoice(body);
-    const forms = (submit || fill) && inbox.formsEnabled() ? inbox.forms() : [];
-    const form = card?.kind === "plan" && forms.find(f => f.id === card.id);
+    const planCommand = (submit || isFormChoice(body)) && inbox.formsEnabled();
+    const plan = planCommand && report ? planVoiceTarget(report.cards, address) : undefined;
+    const forms = planCommand ? inbox.forms() : [];
+    const form = plan && forms.find(f => f.id === plan.id);
     const windowId = report?.windowId;
     const name = owner?.name ?? "reply";
     const notOpen = () => notice(owner ? "Open " + name + "'s plan form to submit it" : "Open the plan form to submit it", "form-not-open");
+    if (planCommand && target && !plan && candidates.some(c => c.kind === "plan")) {
+      return notice("Focus the plan form you want and say it again.", "question-notice");
+    }
     if (submit && target && forms.some(f => f.sessionId === target.sessionId) && !form) return notOpen();
     if (form && windowId) {
       const signal = this.lifetime.signal;
       const current = () => {
         const live = this.openCards.current;
-        return !signal.aborted && live?.windowId === windowId && focusedVoiceCard(addressedCards(live.cards, address))?.id === form.id &&
+        return !signal.aborted && live?.windowId === windowId && planVoiceTarget(live.cards, address)?.id === form.id &&
           inbox.formsEnabled() && inbox.forms().some(f => f.id === form.id);
       };
       if (this.openCards.captureTiming(time.openedAt, this.questionTime(time)) === "before") return notice("The open card changed. Say it again.", "question-notice");
       entry.rule = submit ? "form-submit" : "form-fill";
       entry.outcome = "control";
       if (submit) {
+        if (this.forms.isMatching(form.id)) {
+          return notice("Still matching a plan choice. When the selection appears, say “" + name + ", submit” again.", "question-notice");
+        }
         const submitId = this.forms.request(form.id, missing => {
           if (missing === undefined) notOpen();
           else notice("Not sent. The " + spokenOrdinal(missing) + " one has no answer yet. Say “" + name + ", " + spokenOrdinal(missing) + " one A”.", "form-incomplete");
@@ -542,14 +549,14 @@ export class VoiceRouter {
         inbox.emit({ type: "voice_form_submit", address, windowId, reviewId: form.id, submitId });
         return true;
       }
-      const apply = this.forms.beginFill(form.id, this.questionTime(time));
+      const match = this.forms.beginFill(form.id, this.questionTime(time));
       return formChoices(form, body, this.decider, owner, signal).then(selections => {
         if (!selections || !current()) return notice("No matching decision. Say its position and option letter.", "question-notice");
-        const changes = apply(selections);
+        const changes = match.apply(selections);
         if (!changes) return notice("Open the plan form and say your selection again.", "question-notice");
         if (changes.length) inbox.emit({ type: "voice_form_fill", address, windowId, reviewId: form.id, selections: changes });
         return true;
-      });
+      }).finally(match.finish);
     }
     // Explicit question-answer phrases retain their phase 13 meaning even beside an inbox reply box.
     if (target && (requestedChoice(body) !== undefined || /^(?:my\s+answer\s+is\b|answer\s*[:,])/iu.test(body))) return false;
@@ -573,6 +580,8 @@ export class VoiceRouter {
             return invoked ? "invoked" : "unavailable";
           };
         }
+      } else if (command && !offering.length && candidates.some(c => c.kind === "report" || c.kind === "stuck")) {
+        return notice(inboxActionDetails.unavailable, "inbox-action");
       } else if (offering.length && (command || !card || card.kind === "report" || card.kind === "stuck")) {
         actionCard = selected;
         if (!actionCard && command) return notice("Focus the card you want and say it again.", "question-notice");

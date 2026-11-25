@@ -41,6 +41,7 @@ export class VoicePlanForms {
   private readonly observations = new Map<string, {
     timer: NodeJS.Timeout;
     latest: Map<string, { capture: number; sequence: number }>;
+    matching: Set<number>;
   }>();
   private sequence = 0;
   private readonly submits = new Map<string, { reviewId: string; timer: NodeJS.Timeout; refuse(missing?: number): void }>();
@@ -52,15 +53,19 @@ export class VoicePlanForms {
       this.fills.delete(reviewId);
       this.observations.delete(reviewId);
     }, 600_000).unref();
-    this.observations.set(reviewId, { timer, latest: previous?.latest ?? new Map() });
+    this.observations.set(reviewId, { timer, latest: previous?.latest ?? new Map(), matching: previous?.matching ?? new Set() });
   }
+
+  isMatching(reviewId: string) { return !!this.observations.get(reviewId)?.matching.size; }
 
   /** Bind an asynchronous option lookup to this form's lifetime and the order of speech.
    * An older lookup may still fill a different decision, but cannot undo a newer pick. */
   beginFill(reviewId: string, capture: number) {
-    const latest = this.observations.get(reviewId)?.latest;
+    const observation = this.observations.get(reviewId);
+    const latest = observation?.latest;
     const sequence = ++this.sequence;
-    return (selections: PlanDecisionAnswer[]) => {
+    observation?.matching.add(sequence);
+    const apply = (selections: PlanDecisionAnswer[]) => {
       if (!latest || this.observations.get(reviewId)?.latest !== latest) return null;
       const merged = new Map(this.fills.get(reviewId)?.selections.map(s => [s.decisionId, s]));
       const changes: PlanDecisionAnswer[] = [];
@@ -74,6 +79,7 @@ export class VoicePlanForms {
       this.fills.set(reviewId, { reviewId, selections: [...merged.values()] });
       return changes;
     };
+    return { apply, finish: () => observation?.matching.delete(sequence) };
   }
 
   get(reviewId: string) { return this.fills.get(reviewId); }

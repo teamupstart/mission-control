@@ -7,7 +7,7 @@ import { CHAT_ABOUT_IT, formatResponse } from "@shared/review-item.ts";
 import { isAnswered } from "../lib/reviews.ts";
 import { ForemanPickMark } from "./ForemanRecommendation.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import type { DecisionAnswer as Answer, DecisionAnswers as Answers } from "../lib/review-drafts.ts";
+import { readReviewDraft, type DecisionAnswer as Answer, type DecisionAnswers as Answers } from "../lib/review-drafts.ts";
 
 const EMPTY: Answer = { selected: [], other: "", note: "" };
 
@@ -208,16 +208,20 @@ export function DecisionForm({
   const missing = decisions.findIndex((d, i) => !isAnswered(d, payload[i]));
   const marked = missing >= 0 && decisions[missing]?.id === refused;
   useLayoutEffect(() => {
-    const card = formRef.current?.closest("[data-voice-kind=plan]");
-    if (!planAddress || !card) return;
+    const card = formRef.current?.closest<HTMLElement>("[data-voice-kind=plan]");
+    const reviewId = card?.dataset.voiceId;
+    if (!planAddress || !card || !reviewId) return;
     const submit = (event: Event) => {
       const id = (event as CustomEvent<string>).detail;
       if (busy) return;
-      if (complete) onSubmit(formatResponse(decisions, payload, lead), payload, id);
-      else if (missing >= 0) {
-        setRefused(decisions[missing]!.id);
+      // A fill event can update the parked draft just before this event, between renders.
+      const current = toDecisionAnswers(decisions, readReviewDraft(reviewId).decisions);
+      const firstMissing = decisions.findIndex((d, i) => !isAnswered(d, current[i]));
+      if (firstMissing < 0 && decisions.length) onSubmit(formatResponse(decisions, current, lead), current, id);
+      else if (firstMissing >= 0) {
+        setRefused(decisions[firstMissing]!.id);
         void fetch("/api/voice/form-submit/" + id + "/refuse", { method: "POST",
-          headers: { "content-type": "application/json" }, body: JSON.stringify({ missing: missing + 1 }) }).catch(() => {});
+          headers: { "content-type": "application/json" }, body: JSON.stringify({ missing: firstMissing + 1 }) }).catch(() => {});
       }
     };
     card.addEventListener("voice-form-submit", submit);

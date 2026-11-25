@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "../config-patch-storage.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import {
   databaseBackupsConfigFrom,
@@ -5,7 +6,7 @@ import {
   type DatabaseBackupsConfig,
   type DatabaseBackupsConfigPatch,
 } from "@shared/database-backups.ts";
-import { getAppConfig, setAppConfig } from "../db.ts";
+import { getAppConfig } from "../db.ts";
 import type { DatabaseBackupService } from "./service.ts";
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.backups;
@@ -43,14 +44,15 @@ export function setDatabaseBackupsConfig(
   backups: Pick<DatabaseBackupService, "prune"> & Partial<Pick<DatabaseBackupService, "plannedRemovals">>,
   expectRemove?: readonly string[],
 ): DatabaseBackupsConfig {
-  const next = DatabaseBackupsConfigSchema.parse({ ...getDatabaseBackupsConfig(), ...patch });
+  const current = getDatabaseBackupsConfig();
+  const next = DatabaseBackupsConfigSchema.parse({ ...current, ...patch });
   // Checked and saved in one synchronous step, so no capture can publish or prune between the
   // check and the prune below: what is deleted is exactly what the operator was shown.
   if (expectRemove && backups.plannedRemovals) {
     const planned = backups.plannedRemovals(next);
     if (!sameSet(expectRemove, planned)) throw new StaleBackupPreviewError(planned);
   }
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, current, next, patch);
   try {
     backups.prune();
   } catch (error) {

@@ -1,5 +1,6 @@
 import { Fragment, useState } from "react";
-import type { WorkflowConfig, WorkflowSummary } from "@shared/workflow.ts";
+import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
+import type { WorkflowSummary } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
 import type { SkillsState } from "../useSkills.ts";
 import {
@@ -57,10 +58,10 @@ export function TaskSettingsPanel({
   const grill = view?.skills.find((row) => row.id === GRILL_SKILL);
   const grillOff = view !== null && (!view.enabled || grill?.enabled !== true);
 
-  const save = async (next: WorkflowConfig): Promise<void> => {
+  const save = async (patch: WorkflowPolicyPatch): Promise<void> => {
     setBusy(true);
     try {
-      await update(next);
+      await update(patch);
     } finally {
       setBusy(false);
     }
@@ -88,7 +89,6 @@ export function TaskSettingsPanel({
               const { [kind]: _previous, ...rest } = config.kindWorkflowDefaults;
               const value = event.target.value;
               void save({
-                ...config,
                 kindWorkflowDefaults: value === BUILTIN_OPTION
                   ? rest
                   : { ...rest, [kind]: value === NONE_OPTION ? null : value },

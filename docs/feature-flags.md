@@ -192,7 +192,7 @@ rollout flag, including after the flag retires.
 | `bug-fix-inspector` | preview | Built-in Bug Fix Inspector profile discovery and new launches | [Residents](residents.md#built-in-residents) |
 | `resident-active-hours` | preview | A resident's active hours | [Residents](residents.md#active-hours) |
 | `automatic-pr-branch-update` | preview | Automatic PR branch updates | [Inspector and shipping](inspector-and-shipping.md#automatic-pr-branch-updates-preview) |
-| `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Let a session change the theme](skills-and-settings.md#let-a-session-change-the-theme) |
+| `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Discover and edit typed settings](skills-and-settings.md#discover-and-edit-typed-settings) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until the sign-in arrives in later releases. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |

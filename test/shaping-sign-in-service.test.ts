@@ -61,6 +61,8 @@ class FakeClock {
   fireDue(ms: number): void {
     this.t += ms;
     for (const timer of this.live().filter((due) => due.at <= this.t).sort((a, b) => a.at - b.at)) {
+      // An earlier callback may have cleared it, as a real timer would then never fire.
+      if (timer.cleared) continue;
       timer.cleared = true;
       timer.callback();
     }
@@ -1094,6 +1096,133 @@ test("a long-lived token never sets a timer longer than a day, and still refresh
   assert.equal(viewOf(h, unused.id)?.state, "renewing", "the unused connection's expiry was reported");
   assert.equal(refreshesSeen(fake, from).length, 1, "the unused connection was never refreshed");
   assert.ok(longest() <= MAX_TIMER_MS);
+});
+
+test("a completion superseded during its write leaves nothing stored when the newer completion then fails", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const h = await harness(t, { store });
+  const a = target(h.fake);
+  const id = connectionId(a);
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  const writes = store.holdWrites();
+  const first = h.svc.complete(callback(back));
+  await writes.started;
+  // A newer sign-in for the same connection takes over, and its code exchange fails.
+  const newer = await begun(h, a);
+  const state = new URL(newer.authorizationUrl).searchParams.get("state");
+  writes.release();
+  assert.equal((await h.svc.complete({ state, code: "fake-code-unknown", error: null, iss: null })).ok, false);
+  assert.equal((await first as { code: string }).code, "cancelled");
+  await settle(h);
+  assert.equal(await records.read(id), null, "the superseded write is not left in the store");
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+});
+
+test("idle waits for a revoke that outlasts signOut's 5 second bound", async (t) => {
+  const h = await harness(t);
+  const a = target(h.fake);
+  const { id } = await signIn(h, a);
+  const release = h.fake.hold("/revoke");
+  const signingOut = h.svc.signOut(id);
+  while (!h.fake.requests.some((request) => request.path === "/revoke")) await new Promise((done) => setTimeout(done, 5));
+  h.clock.fireDue(REVOKE_DEADLINE_MS);
+  assert.equal(await signingOut, true, "signOut answers at its bound");
+  let idle = false;
+  const idling = h.svc.idle().then(() => { idle = true; });
+  await new Promise((done) => setTimeout(done, 30));
+  assert.equal(idle, false, "the revoke still running is work in flight");
+  release();
+  await idling;
+  assert.equal(idle, true);
+});
+
+test("a refresh that falls due while an older refresh is still running is started once that one ends", async (t) => {
+  const held = holdableFlow();
+  const h = await harness(t, { flow: held });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  const release = held.holdRefreshReplies();
+  // The first record's 75% refresh starts and its reply is held.
+  h.clock.fireDue(46 * MINUTE);
+  while (held.replies.length === 0) await new Promise((done) => setTimeout(done, 5));
+  // A new sign-in replaces the record while that refresh runs; its own refresh then falls due.
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  assert.equal((await h.svc.complete(callback(back))).ok, true);
+  const replacement = (await h.store.records.read(id))!;
+  h.clock.fireDue(46 * MINUTE);
+  const from = h.fake.requests.length;
+  release();
+  await settle(h);
+  await h.clock.advance(0);
+  const refreshed = refreshesSeen(h.fake, from).map((request) => form(request).get("refresh_token"));
+  assert.deepEqual(refreshed, [replacement.refreshToken], "the replacement's refresh ran once the slot freed");
+  assert.equal(viewOf(h, id)?.state, "signed_in");
+});
+
+test("a load switched off while it reads stops before reading another record", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  for (let n = 0; n < 3; n++) {
+    const { id, record } = seededRecord(fake, n, `fake-seeded-client-${n}`, `mcp:seed-${n}`);
+    await records.write(id, record);
+  }
+  const store = controlledStore("memory", records);
+  const reads = store.holdReads();
+  const flags = flagSwitch(true);
+  const h = await harness(t, { fake, store, flags, start: false });
+  h.svc.start();
+  await reads.started;
+  flags.set(false);
+  reads.release();
+  await settle(h);
+  assert.equal(store.calls.filter((call) => call.startsWith("read ")).length, 1, "no read after the flag went off");
+});
+
+test("a begin that timed out while queued makes no request, and one whose flag went off during discovery registers nothing", async (t) => {
+  const regs = memoryRegistrations();
+  const flags = flagSwitch(true);
+  const h = await harness(t, { regs, flags });
+  const release = h.fake.hold("/.well-known/oauth-authorization-server");
+  const first = h.svc.begin(target(h.fake));
+  const queued = h.svc.begin(target(h.fake, { url: h.fake.shapeUrl, scope: "mcp:other" }));
+  while (!h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server")) {
+    await new Promise((done) => setTimeout(done, 5));
+  }
+  h.clock.fireDue(BEGIN_DEADLINE_MS);
+  assert.equal((await first as { code: string }).code, "timeout");
+  assert.equal((await queued as { code: string }).code, "timeout");
+  release();
+  await settle(h);
+  assert.equal(h.fake.requests.filter((request) => request.path === "/.well-known/oauth-protected-resource/shape").length, 0,
+    "the queued begin never started discovery");
+  assert.equal(registrationsSeen(h.fake).length, 0);
+
+  // The flag goes off while discovery is held.
+  const holdAgain = h.fake.hold("/.well-known/oauth-authorization-server");
+  const from = h.fake.requests.length;
+  const offDuring = h.svc.begin(target(h.fake, { scope: "mcp:third" }));
+  while (!since(h.fake, from).some((request) => request.path === "/.well-known/oauth-authorization-server")) {
+    await new Promise((done) => setTimeout(done, 5));
+  }
+  flags.set(false);
+  holdAgain();
+  assert.equal((await offDuring as { code: string }).code, "flag_off");
+  await settle(h);
+  assert.equal(registrationsSeen(h.fake).length, 0, "no registration request after the flag went off");
+  assert.equal(regs.writes, 0);
+});
+
+test("the test clock does not fire a timer that an earlier callback cleared", () => {
+  const clock = new FakeClock();
+  const fired: string[] = [];
+  let second: TimerHandle | null = null;
+  clock.setTimer(() => { fired.push("first"); if (second) clock.clearTimer(second); }, 10);
+  second = clock.setTimer(() => fired.push("second"), 20);
+  clock.fireDue(30);
+  assert.deepEqual(fired, ["first"]);
 });
 
 test("every row of the accessToken table", async (t) => {

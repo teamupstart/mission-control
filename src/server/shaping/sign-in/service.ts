@@ -252,6 +252,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   let started = false;
   let stopped = false;
   let active = false;
+  /** Counts the times both flags turned on; a load reads only while its own activation lasts. */
+  let activation = 0;
   let stopFlags: (() => void) | null = null;
   let loading: Promise<void> = Promise.resolve();
   /** The last load could not read the whole store, so its records may name clients this service cannot see. */
@@ -449,22 +451,28 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
    * turn comes and again when the write is done: a refresh asks whether the record it started
    * from is still the connection's, a completion whether it was signed out meanwhile. When it
    * answers no, nothing more is written or kept and the answer is false. A record written and
-   * then not kept is removed by the sign-out queued behind it.
+   * then not kept is undone in the same turn: the store is put back to what memory holds, so a
+   * later write for the connection, which runs after this turn, still stands.
    */
   const commit = (conn: Connection, record: StoredSignIn, stillWanted: () => boolean, newSignIn: boolean): Promise<boolean> =>
     enqueue(conn, async () => {
       if (!stillWanted()) return false;
       let storage: SignInStorage = getStore().kind;
       let reason: SignInReason | null = null;
+      let written = false;
       try {
         await getStore().write(conn.id, record);
+        written = true;
       } catch (error) {
         storage = "memory";
         reason = "memoryOnly";
         warn(`a sign-in is kept in memory only: ${error instanceof Error ? error.message : String(error)}`);
       }
-      // Signed out meanwhile: the removal queued behind this write clears what it wrote.
-      if (!stillWanted()) return false;
+      if (!stillWanted()) {
+        // Signed out, superseded or replaced meanwhile: what this turn wrote is not left behind.
+        if (written) await restoreStored(conn);
+        return false;
+      }
       conn.record = record;
       conn.generation += 1;
       conn.storage = storage;
@@ -481,6 +489,16 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       notify();
       return true;
     });
+
+  /** Puts the store back to what memory holds for the connection: its record, or none. */
+  const restoreStored = async (conn: Connection): Promise<void> => {
+    try {
+      if (conn.record) await getStore().write(conn.id, conn.record);
+      else await getStore().remove(conn.id);
+    } catch (error) {
+      warn(`a stored sign-in could not be put back: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   /** Clears the record from memory at once, then removes the stored one in its turn. */
   const remove = (conn: Connection, reason: SignInReason | null): StoredSignIn | null => {
@@ -536,7 +554,9 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       timer = setTimer(done, REVOKE_DEADLINE_MS);
       timer.unref?.();
     });
-    return track(Promise.race([work, deadline]).finally(() => { if (timer) clearTimer(timer); }));
+    // The work is tracked until it settles, so `idle()` waits for every revoke; the bound is only for the caller.
+    void track(work);
+    return Promise.race([work, deadline]).finally(() => { if (timer) clearTimer(timer); });
   };
 
   // ---- refresh ----
@@ -617,6 +637,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       warn(`a refresh failed: ${error instanceof Error ? error.message : String(error)}`);
     }).finally(() => {
       conn.refreshing = null;
+      // A refresh that fell due while this one ran was not started: plan it now.
+      plan(conn);
     });
     conn.refreshing = track(run);
   };
@@ -652,6 +674,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
 
   const loadStore = async (): Promise<void> => {
     const source = getStore();
+    const own = activation;
     let incomplete = false;
     let ids: string[] = [];
     try {
@@ -661,6 +684,8 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       warn(`the stored sign-ins could not be listed: ${error instanceof Error ? error.message : String(error)}`);
     }
     for (const id of ids) {
+      // Switched off, or switched on again with a load of its own: this one reads no further.
+      if (!active || activation !== own) return;
       let record: StoredSignIn | null;
       try {
         record = await source.read(id);
@@ -686,6 +711,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     if (on === active) return;
     active = on;
     if (on) {
+      activation += 1;
       for (const conn of connections.values()) {
         conn.refusals = 0;
         conn.lastRefusalRefreshAt = null;
@@ -738,9 +764,12 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   };
 
   const beginNow = async (target: SignInTarget, abandoned: () => boolean): Promise<BeginAnswer> => {
+    // Timed out while waiting its turn: no request at all.
+    if (abandoned()) return refusal("timeout");
     if (!active) return refusal("flag_off");
     const found = await deps.flow.discover(target, flowOptions());
     if (!found.ok) return { ok: false, code: found.code, reason: found.reason };
+    if (!active) return refusal("flag_off");
     const discovery = found.discovery;
     const conn = ensure(connectionId(target), target);
     conn.discovery = discovery;
@@ -760,6 +789,7 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       }
       result = await deps.flow.begin(target, discovery, null, deps.redirectUri, flowOptions());
       if (result.ok && abandoned()) return refusal("timeout");
+      if (result.ok && !active) return refusal("flag_off");
       if (result.ok) {
         // In one write: room made from what is held now, and the new registration saved.
         let kept = deps.registrations.read();

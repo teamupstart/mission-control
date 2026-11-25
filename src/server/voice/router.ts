@@ -60,7 +60,7 @@ const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
-  private epoch = randomUUID();
+  private readonly epoch = randomUUID();
   private revision = 0;
   private receipts = new Map<string, { revision: number; card: VoiceCard }>();
   get receiptCursor(): string { return this.epoch + ":" + this.revision; }
@@ -85,8 +85,6 @@ export class RecentlyHeard {
   clear(): void {
     this.entries = [];
     this.receipts.clear();
-    this.epoch = randomUUID();
-    this.revision = 0;
   }
 }
 

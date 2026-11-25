@@ -567,6 +567,8 @@ test("a reconnect shows the delivery receipt missed during the cancel window", a
     await expect(page.getByRole("status").filter({ hasText: "To Steve" })).toContainText("Cancel");
     tunnel.disconnect();
     await expect(page.locator("html")).toHaveAttribute("data-stream-dropped", "true");
+    // Clearing the history in another dashboard must still let this one see later receipts.
+    expect((await page.request.delete(daemon.baseURL + "/api/voice/heard")).ok()).toBe(true);
     expect((await page.request.post(daemon.baseURL + "/api/voice/cards/followup-reconnect/send-now")).ok()).toBe(true);
     const sent = page.getByRole("status").filter({ hasText: "Sent to Steve" });
     await expect(sent).toBeVisible({ timeout: 10000 });

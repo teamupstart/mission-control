@@ -247,11 +247,10 @@ async function reconcileVoiceIndicators(): Promise<void> {
 }
 
 let placementAttempt = 0;
-let unconfirmedPlacementWrite: string | undefined;
+const unconfirmedPlacementWrites = new Set<string>();
 /** Apply the confirmed pair before the radio group releases its saving state. */
 export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
   const attempt = ++placementAttempt;
-  const previous = unconfirmedPlacementWrite;
   const writeId = newRequestId();
   const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
   const expected = latestIndicatorVersion ?? (await fetchUiConfig(deadline))?.voiceIndicatorVersion;
@@ -259,14 +258,15 @@ export async function updateVoicePlacement(placement: VoiceConfirmationPlacement
   let result = await api.setVoicePlacement(placement, expected, writeId, deadline);
   // A lost reply may be the only reason our revision is stale. Retry this new
   // operator choice once against that committed write, keeping the same timeout.
-  if (attempt === placementAttempt && !deadline.aborted && previous !== undefined &&
-      result.status === 409 && result.writeId === previous && result.voiceIndicatorVersion?.source === expected.source) {
+  if (attempt === placementAttempt && !deadline.aborted && result.status === 409 && result.writeId &&
+      unconfirmedPlacementWrites.has(result.writeId) && result.voiceIndicatorVersion?.source === expected.source) {
     result = await api.setVoicePlacement(placement, result.voiceIndicatorVersion, writeId, deadline);
   }
   if (attempt !== placementAttempt) return false;
-  unconfirmedPlacementWrite = !result.ok && result.status === undefined ? writeId : undefined;
   if (!result.ok) {
+    if (result.status === undefined) unconfirmedPlacementWrites.add(writeId);
     if (result.status === 409 && result.indicators && result.confirmation && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
+      unconfirmedPlacementWrites.clear();
       commitVoiceSelection(result.indicators, result.confirmation);
       return false;
     }
@@ -274,6 +274,7 @@ export async function updateVoicePlacement(placement: VoiceConfirmationPlacement
     void reconcileVoiceIndicators();
     return false;
   }
+  unconfirmedPlacementWrites.clear();
   if (result.indicators && result.confirmation) {
     if (acceptIndicatorVersion(result.voiceIndicatorVersion)) commitVoiceSelection(result.indicators, result.confirmation);
   } else {

@@ -20,6 +20,7 @@ the send button names the agent who will receive the remaining message. With the
 window off, delivery begins immediately. Sent and queued cards show the open question count. A queued receipt names the recipient. It mentions a current turn when the session is working and unpaused.
 Countdowns use the time remaining on the daemon, including when a LAN dashboard’s clock differs.
 When the dashboard reconnects, it recovers missed delivery outcomes from the daemon’s latest 50 receipts. A freshly opened dashboard starts with active cards. Clearing Recently heard, disabling Voice or restarting the daemon clears the receipt history.
+A dashboard disconnected during a history clear can still recover deliveries that settle afterward on the same daemon.
 With Sound enabled, the pending chime plays only while the card still offers Cancel.
 A successful addressed stop displays “Stop sent to” and the recipient’s name. During the cancel window, an unfocused
 dashboard repeats the spoken words in a desktop notification if notifications are enabled

@@ -471,8 +471,12 @@ test("disabled voice links open Fleet and disabling voice closes an active stand
   await captureCard(page, "disabled-route-fleet");
 });
 
-for (const reaffirmed of [false, true]) {
-  test(reaffirmed ? "a delayed retry preserves another dashboard’s reaffirmed placement" : "one selection retries a committed placement whose reply was lost", async ({ dashboard: page, daemon }) => {
+for (const [scenario, title] of [
+  ["lost", "one selection retries a committed placement whose reply was lost"],
+  ["reaffirmed", "a delayed retry preserves another dashboard’s reaffirmed placement"],
+  ["offline", "a retry remembers the committed placement after an intervening network failure"],
+] as const) {
+  test(title, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     await allowStreamDisconnect(page);
     await page.goto(daemon.baseURL + "/#/settings/voice");
@@ -487,7 +491,14 @@ for (const reaffirmed of [false, true]) {
     await group.getByRole("radio", { name: /Floating pill/ }).click();
     await expect(group.getByRole("alert")).toContainText("Could not save", { timeout: 8000 });
     const popover = group.getByRole("radio", { name: /Tray popover/ });
-    if (reaffirmed) {
+    if (scenario === "offline") {
+      await page.route(url, route => route.abort("connectionfailed"), { times: 1 });
+      const failed = page.waitForEvent("requestfailed", request => request.url() === url);
+      await popover.click();
+      await failed;
+      await expect(popover).toBeEnabled();
+    }
+    if (scenario === "reaffirmed") {
       await page.route(url, async route => {
         // Another dashboard saves the same value after the retry has already left this one.
         const other = await page.request.put(url, { data: { confirmation: "pill" } });
@@ -498,7 +509,7 @@ for (const reaffirmed of [false, true]) {
     await popover.click();
     await expect(popover).toBeEnabled();
     const persisted = (await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation;
-    if (reaffirmed) {
+    if (scenario === "reaffirmed") {
       expect(persisted).toBe("pill");
       await expect(group.getByRole("radio", { name: /Floating pill/ })).toBeChecked();
       await expect(group.getByRole("alert")).toContainText("Could not save");

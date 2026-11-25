@@ -200,6 +200,8 @@ test("reconnect receipts retain the latest outcome per card within the history b
   assert.equal(history.receiptsAfter(start).length, 50);
   assert.equal(history.receiptsAfter(start)[0]?.id, "1");
   history.clear();
-  history.recordCard(card);
   assert.deepEqual(history.receiptsAfter(start), []);
+  history.recordCard(card);
+  assert.deepEqual(history.receiptsAfter(start), [card]);
+  assert.deepEqual(history.receiptsAfter(new RecentlyHeard().receiptCursor), []);
 });

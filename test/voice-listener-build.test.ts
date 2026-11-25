@@ -195,6 +195,10 @@ for (const credential of [false, true]) {
     const closed = once(child, "close");
     const keyPipe = child.stdio[3];
     assert.ok(keyPipe instanceof Writable);
+    // Refusing file input leaves the supplied key unread. Linux can reset the socket on child exit.
+    keyPipe.on("error", (error: NodeJS.ErrnoException) => {
+      assert.ok(credential && (error.code === "ECONNRESET" || error.code === "EPIPE"), error.message);
+    });
     keyPipe.end(credential ? generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" }) : undefined);
     let diagnostic = "";
     assert.ok(child.stderr);

@@ -399,6 +399,7 @@ export class VoiceStateStore {
       this.modeRevision++;
     }
     return {
+      planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
       mode,
       speech: { ...resolved, job, lastAudition: manager.lastAudition, catalog, model },

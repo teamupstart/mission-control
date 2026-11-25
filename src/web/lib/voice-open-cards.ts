@@ -1,10 +1,11 @@
 import { createContext, useEffect, useRef } from "react";
-import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceTimeBounds } from "@shared/voice-answers.ts";
+import { VOICE_CALIBRATING_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER, voiceFocusClockSkewMs, voiceReplyState, type OpenCardsReport, type VoiceInboxEvent, type VoiceTimeBounds } from "@shared/voice-answers.ts";
 
+import { drawnVoiceCards, receiveInboxEvent } from "./voice-inbox.ts";
 import { fetchVoiceCardTime } from "./api.ts";
 import { VoiceCardClock, type DashboardVoiceAnswer } from "./voice-card-clock.ts";
 
-export const VoiceAnswersContext = createContext<{ answers: ReadonlyMap<string, DashboardVoiceAnswer>; windowId?: string } | null>(null);
+export const VoiceAnswersContext = createContext<{ planFormsByVoice?: boolean; answers: ReadonlyMap<string, DashboardVoiceAnswer>; windowId?: string } | null>(null);
 
 /** Read the drawn cards in the top overlay, including keyboard focus. Supersede stale requests;
  * per-window revisions also order writes that reach the daemon after a timeout. */
@@ -45,11 +46,7 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
         focused = hasFocus;
         clock.focusAtUs = Math.max(clock.focusAtUs + 1, Math.round((clock.timeOrigin + performance.now()) * 1000));
       }
-      const top = document.querySelector("[data-overlay-top=true]");
-      const elements = !dashboard ? [] : Array.from((top ?? document).querySelectorAll<HTMLElement>("[data-voice-question]"))
-        .filter(el => el.getClientRects().length && !el.closest("[inert]"));
-      const payload: OpenCardsReport = { windowId, focused: hasFocus,
-        cards: elements.map(el => ({ kind: "question", id: el.dataset.voiceQuestion!, focused: el.contains(document.activeElement) })) };
+      const payload: OpenCardsReport = { windowId, focused: hasFocus, cards: dashboard ? drawnVoiceCards() : [] };
       const state = voiceReplyState(payload);
       if (state !== observed?.state) observed = state ? { state, at: performance.now(), id: ++clock.revision } : undefined;
       const body = JSON.stringify(payload);
@@ -91,11 +88,19 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       else retry = setTimeout(report, 500);
     };
     void report();
+    // An unchanged form remains open across long editing sessions. Renew its daemon
+    // retention without treating the heartbeat as a new focus transition.
+    const heartbeat = setInterval(() => {
+      if (!pending && dashboard && document.querySelector("[data-voice-kind=plan]")) {
+        last = "";
+        void report();
+      }
+    }, 60_000);
     const observer = new MutationObserver(() => void report());
     const events = ["focus", "blur", "focusin", "focusout", "visibilitychange"];
     if (dashboard) {
       observer.observe(document.body, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["data-overlay-top", "data-voice-question", "inert", "hidden"] });
+        attributeFilter: ["data-overlay-top", "data-voice-question", "data-voice-id", "data-voice-kind", "data-voice-key", "data-voice-action", "inert", "hidden"] });
       for (const event of events) window.addEventListener(event, report, true);
     }
     const confirm = (event: Event) => {
@@ -105,9 +110,18 @@ export function useVoiceOpenCards(windowId: string | undefined, dashboard: boole
       void report();
     };
     window.addEventListener("voice-confirm-focus", confirm);
+    const inboxEvent = (event: Event) => {
+      const message = (event as CustomEvent<VoiceInboxEvent>).detail;
+      if (dashboard && message.windowId === windowId) void receiveInboxEvent(message, cardClock).catch(() => {
+        console.warn("Voice event handler failed", message.type, message.type === "voice_inbox_action" ? message.requestId : message.reviewId);
+      });
+    };
+    window.addEventListener("voice-inbox-event", inboxEvent);
     return () => {
+      window.removeEventListener("voice-inbox-event", inboxEvent);
       controller.abort();
       clearTimeout(retry);
+      clearInterval(heartbeat);
       observer.disconnect();
       for (const event of events) window.removeEventListener(event, report, true);
       window.removeEventListener("voice-confirm-focus", confirm);

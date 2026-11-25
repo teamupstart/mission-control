@@ -1,4 +1,4 @@
-import type { ReportItem } from "@shared/reports.ts";
+import { markReportRead, type ReportItem } from "@shared/reports.ts";
 import type { InboxMessageKind } from "@shared/inbox.ts";
 import type { TaskPlanInputChange } from "@shared/managed-plans.ts";
 import type { FeatureFlagIntent, FeatureFlagsConfig } from "@shared/feature-flags.ts";
@@ -2222,7 +2222,7 @@ export const api = {
   /** Record that the operator opened an agent report. Idempotent; the first time is kept. */
   openReport: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/opened`),
   /** Mark an agent report read. Idempotent; the first time and way are kept. */
-  markReportRead: (id: string) => post(`/api/reports/${encodeURIComponent(id)}/read`),
+  markReportRead: (id: string) => markReportRead(id, post),
   /** Reply to an agent report: delivered as the operator's message, and marks it read. */
   replyToReport: (id: string, text: string) => post(`/api/reports/${encodeURIComponent(id)}/reply`, { text }),
   /**
@@ -2287,8 +2287,9 @@ export const api = {
     response?: string | null,
     selections?: PlanDecisionAnswer[] | null,
     approveFutureBundles = false,
+    voiceSubmitId?: string,
   ) =>
-    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles }),
+    post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections, approveFutureBundles, voiceSubmitId }),
   /**
    * "Remind me later" on a `request_input` question: park it for `delay` and release the agent
    * with what to do meanwhile. The daemon adds the delay to its own clock.

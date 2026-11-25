@@ -656,7 +656,7 @@ export function App(): React.JSX.Element {
     onReply: async (report, text) => {
       const result = await api.replyToReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not send the reply";
-      clearReportDraft(report.rootId);
+      clearReportDraft(report.rootId, text);
       setOpenReportId((current) => (current === report.id ? null : current));
       refreshPinned(report.id);
       return null;
@@ -664,7 +664,7 @@ export function App(): React.JSX.Element {
     onFollowUp: async (report, text) => {
       const result = await api.followUpReport(report.id, text);
       if (!result.ok) return result.error ?? "Could not start the follow-up task";
-      clearReportDraft(report.rootId);
+      clearReportDraft(report.rootId, text);
       setOpenReportId((current) => (current === report.id ? null : current));
       refreshPinned(report.id);
       return null;
@@ -5189,7 +5189,7 @@ export function App(): React.JSX.Element {
       <PausedResidentsContext.Provider value={pausedResidents}>
       <ResidentNamesContext.Provider value={residentNames}>
       <VoiceWindowProvider enabled={spokenNames && !standalone} state={voice} acknowledgeVoiceMode={acknowledgeVoiceMode} openSetup={openVoiceSetup}>
-      <VoiceAnswersContext.Provider value={voiceHints ? { answers: voiceAnswers, windowId: connected ? voiceWindowId : undefined } : null}>
+      <VoiceAnswersContext.Provider value={voiceHints ? { planFormsByVoice: voice?.planFormsByVoice ?? true, answers: voiceAnswers, windowId: connected ? voiceWindowId : undefined } : null}>
       <VoiceRosterContext.Provider value={voiceRoster}>
       <InboxReplyBoxesContext.Provider value={inboxReplyBoxes}>
       <LaunchFailureProvider value={launchFailureControls}>

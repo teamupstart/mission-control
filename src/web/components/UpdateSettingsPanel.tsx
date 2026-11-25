@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useContext, useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { UpdateSnapshot } from "@shared/update.ts";
 import { pendingBuildNotice } from "@shared/update-copy.ts";
 import { subscribeToDesktopUpdates } from "../useDesktopUpdates.ts";
@@ -58,6 +58,7 @@ function noteEnableAllOn(): void {
 
 /** The desktop updater owns this setting, even when the daemon cannot start. */
 export function UpdateSettingsPanel({ children }: { children: ReactNode }): React.JSX.Element {
+  const alphaDisclosureId = useId();
   const updates = typeof window === "undefined" ? undefined : window.missionDesktop?.updates;
   const [snapshot, setSnapshot] = useState<UpdateSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
@@ -111,11 +112,16 @@ export function UpdateSettingsPanel({ children }: { children: ReactNode }): Reac
   return (
     <>
       <div className="settings-section">
-        <Tooltip label="Track unreleased main commits instead of stable releases. This also enables preview feature flags, except those you switched off.">
+        <Tooltip label="Track unreleased main commits instead of stable releases.">
           <label className={`settings-toggle${snapshot?.alpha ? " is-on" : ""}`}>
-            <input type="checkbox" checked={snapshot?.alpha ?? false}
+            <input type="checkbox" aria-label="Alpha updates" aria-describedby={alphaDisclosureId} checked={snapshot?.alpha ?? false}
               disabled={busy || snapshot?.phase === "disabled"} onChange={(event) => { void change(event.target.checked); }} />
-            <span className="settings-toggle-label">Alpha updates</span>
+            <span className="settings-toggle-text">
+              <span className="settings-toggle-label">Alpha updates</span>
+              <span className="settings-toggle-desc" id={alphaDisclosureId}>
+                Turns on Enable all for preview features, except those you switched off. Enable all stays on when you turn Alpha off.
+              </span>
+            </span>
           </label>
         </Tooltip>
         {enableAllError && <div role="alert">

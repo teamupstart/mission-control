@@ -84,7 +84,8 @@ test("shipped preview, live master and individual changes, reload, search, and a
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
   await page.reload();
   const alpha = page.getByRole("checkbox", { name: "Alpha updates" });
-  await expect(alpha).toHaveAccessibleDescription(/enables preview feature flags, except those you switched off/);
+  await expect(page.getByText("Turns on Enable all for preview features, except those you switched off. Enable all stays on when you turn Alpha off.")).toBeVisible();
+  await expect(alpha).toHaveAccessibleDescription(/Enable all stays on when you turn Alpha off/);
   await expect(alpha).not.toBeChecked();
   await expect(peerMaster).not.toBeChecked();
   await alpha.check();
@@ -252,14 +253,14 @@ test("a failure that lands after another window switched Enable all on never com
   await page.reload();
   const tab = page.getByRole("tabpanel");
   const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
-  const updates = page.getByRole("region", { name: "Application updates" });
+  const featureFlagsLink = tab.getByRole("link", { name: "Feature flags", exact: true });
   const alert = tab.getByRole("alert").filter({ hasText: "Enable all feature flags could not be switched on" });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   await alpha.check();
   await expect.poll(() => writes).toBe(1);
   await peerMaster.check();
   // This window has seen the peer's Enable all before its own write settles.
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).toBeChecked();
   await page.getByRole("tab", { name: /Setup/ }).click();
   release();
@@ -267,7 +268,7 @@ test("a failure that lands after another window switched Enable all on never com
   await expect(alert).toHaveCount(0);
   // Switching Enable all off again must not resurface the superseded failure.
   await peerMaster.uncheck();
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).not.toBeChecked();
   await page.getByRole("tab", { name: /Setup/ }).click();
   await expect(alpha).toBeChecked();
@@ -296,20 +297,20 @@ test("a failure landing after Enable all went on and off elsewhere offers no Ret
   await page.reload();
   const tab = page.getByRole("tabpanel");
   const alpha = tab.getByRole("checkbox", { name: "Alpha updates" });
-  const updates = page.getByRole("region", { name: "Application updates" });
+  const featureFlagsLink = tab.getByRole("link", { name: "Feature flags", exact: true });
   const master = page.getByRole("checkbox", { name: /Enable all feature flags/ });
   const setup = page.getByRole("tab", { name: /Setup/ });
   await alpha.check();
   await expect.poll(() => writes).toBe(1);
   // Enable all goes on, and this window sees it while its own write is still pending...
   await peerMaster.check();
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).toBeChecked();
   await setup.click();
   await expect(alpha).toBeChecked();
   // ...then the operator switches it off again before that write fails.
   await peerMaster.uncheck();
-  await updates.getByRole("link", { name: "Feature flags" }).click();
+  await featureFlagsLink.click();
   await expect(master).not.toBeChecked();
   await setup.click();
   release();

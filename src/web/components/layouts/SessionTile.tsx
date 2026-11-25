@@ -231,7 +231,7 @@ export function SessionTile({
   // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
   // refusal cannot disagree about one tile.
   const droppable = canAcceptTask(session, draggingRepo, workflowRuns);
-  const openName = session.name ? sessionTitleDetail(session) : "unnamed session";
+  const openName = resident?.listeningTitle ?? (session.name ? sessionTitleDetail(session) : "unnamed session");
 
   // Which optional items this operator asked the card to draw. ONE registry
   // (`lib/board-card.ts`) owns the ids and the prose the settings panel prints, and this
@@ -439,7 +439,7 @@ export function SessionTile({
         {kindMark === "chip" && <TaskKindMark kind={taskKind!} variant="chip" />}
         {residentMark && <ResidentChip mark={residentMark} title={residentMarkTitle(residentMark)} />}
         <Tooltip label={`Open ${openName}`}>
-          <span className="tile-name">{session.name || "(unnamed)"}</span>
+          <span className="tile-name">{resident?.listeningTitle || session.name || "(unnamed)"}</span>
         </Tooltip>
         {/* Says the same thing as the section rule this tile sits under, and is not redundant
             with it: the rule scrolls off the top of a full column, and a tile dragged into view

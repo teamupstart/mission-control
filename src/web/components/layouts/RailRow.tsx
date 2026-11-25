@@ -165,7 +165,8 @@ export function RailRow({
   const residentMark = useDisplayItems()("residentMarker") ? resident : null;
   // The priority mark is aria-hidden, and the state word says only "working", so the priority
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
-  const description = `${session.name || "(unnamed)"} - ${st.label}${priority ? ". Priority session" : ""}${
+  const cardName = resident?.listeningTitle || session.name || "(unnamed)";
+  const description = `${cardName} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;
   const keyshortcuts = [shortcutChord && ariaKeyshortcuts(shortcutChord), sectionNavigation && "Home"]
@@ -186,7 +187,7 @@ export function RailRow({
         }${session.pause ? " is-paused" : ""}${priority ? " is-priority" : ""}`}
         style={residentMark ? residentAccentStyle(residentMark.colorId) : undefined}
         aria-current={selected}
-        aria-label={session.name || "(unnamed)"}
+        aria-label={cardName}
         aria-describedby={[descriptionId, ...actionWaitRuns.map(run => `${actionWaitId}-${run.id}`)].join(" ")}
         /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
            the chord is announced here instead - on the control it actually drives, which for
@@ -198,7 +199,7 @@ export function RailRow({
         <Tooltip label={description}>
           <span className="rail-name">
             {residentMark && <ResidentChip mark={residentMark} tooltip={false} />}
-            {session.name || "(unnamed)"}
+            {cardName}
           </span>
         </Tooltip>
         <span className="rail-sub">{firstFact ? `${firstFact.label}: ${firstFact.value}` : session.goal?.text ?? session.activity ?? ""}</span>

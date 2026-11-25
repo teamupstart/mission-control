@@ -30,6 +30,7 @@ export interface ResidentChipMark extends ResidentMarker {
  * same answer.
  */
 export interface ResidentSessionMark extends ResidentChipMark {
+  listeningTitle?: string;
   loop?: ResidentLoopStatus & Pick<ResidentRunSummary, "compaction"> & Partial<Pick<ResidentRunSummary, "settings">>;
   runId: string;
   /** The task the run launched, so a control can name it - Restart's completion prompt does. */
@@ -54,6 +55,7 @@ export function residentMarksBySession(
   sessions: readonly Session[],
   runs: readonly ResidentRunSummary[],
   profiles: readonly ResidentProfile[],
+  listening = false,
 ): ReadonlyMap<string, ResidentSessionMark> {
   const out = new Map<string, ResidentSessionMark>();
   if (runs.length === 0) return out;
@@ -63,7 +65,7 @@ export function residentMarksBySession(
     const taskId = session.task?.id;
     const run = taskId ? runByTask.get(taskId) : undefined;
     if (!run) continue;
-    out.set(session.id, residentSessionMark(run, profileById.get(run.profileId) ?? null));
+    out.set(session.id, residentSessionMark(run, profileById.get(run.profileId) ?? null, listening));
   }
   return out;
 }
@@ -128,9 +130,12 @@ export function residentReplacementsBySession(
 export function residentSessionMark(
   run: ResidentRunSummary,
   profile: ResidentProfile | null,
+  listening = false,
 ): ResidentSessionMark {
   const marker = residentMarker(run.settings);
+  const referenceName = (profile ?? run).settings.identity.referenceName?.trim();
   return {
+    ...(listening && referenceName ? { listeningTitle: `"${referenceName}"` } : {}),
     runId: run.id,
     taskId: run.taskId,
     loop: run,

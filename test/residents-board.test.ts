@@ -34,6 +34,7 @@ const {
   residentMarksBySession,
   residentProfileMark,
   residentReplacementsBySession,
+  residentSessionMark,
 } = await import("../src/web/residents/marker.ts");
 const { DISPLAY_ITEMS } = await import("../src/web/lib/board-card.ts");
 const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
@@ -125,6 +126,21 @@ test("the palette ids are append-only and each names a CSS token", async () => {
 });
 
 // ---- the run summary and the join ----
+
+test("a resident card quotes the current reference name only while listening", () => {
+  const run = summary({ taskId: "t1" });
+  run.settings.identity.referenceName = "Original";
+  const current = profile();
+  current.settings.identity.referenceName = "Marlowe";
+
+  assert.equal(residentSessionMark(run, current, true).listeningTitle, '"Marlowe"');
+  assert.equal(residentSessionMark(run, current, false).listeningTitle, undefined);
+  assert.equal(residentSessionMark(run, null, true).listeningTitle, '"Original"');
+
+  const cleared = residentSessionMark(run, profile(), true);
+  assert.equal(cleared.listeningTitle, undefined);
+  assert.equal(cleared.name, "Triage Bot");
+});
 
 test("only a live run has a wire summary", () => {
   const run = {
@@ -900,7 +916,6 @@ test("the edge tab lights for working, for needs you, and for both at once", () 
 
 test("a visitor card says it opens the resident's conversation, on the Board and in the rail", async () => {
   const { ResidentVisitorCard } = await import("../src/web/residents/ResidentVisitorCard.tsx");
-  const { residentSessionMark } = await import("../src/web/residents/marker.ts");
   const mark = residentSessionMark(summary({ taskId: "t1" }), profile());
   const session = mkSession({ id: "s1", pendingReviews: 1, task: mkTaskSummary({ id: "t1", kind: "resident" }) });
   for (const variant of ["tile", "rail"] as const) {

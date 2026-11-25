@@ -32,7 +32,7 @@ export function ResidentVisitorCard({ session, mark, variant, selected, register
     (el: HTMLElement | null) => registerEl?.(session.id, el),
     [registerEl, session.id],
   );
-  const name = mark.name || session.name || "(unnamed)";
+  const name = mark.listeningTitle || mark.name || session.name || "(unnamed)";
   const label = `${name} needs you - resident, opens its conversation`;
   const open = (): void => onOpen(session.id);
   const hint = `Open ${name}'s conversation; it needs you`;

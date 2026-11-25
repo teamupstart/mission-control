@@ -32,6 +32,7 @@ import type { Task } from "@shared/types.ts";
  *    the tuple teardown itself reads. A slot returned and re-leased at the same path under a
  *    new lease id is a different tree wearing the same name, and a partial release that
  *    cleared one repository's path is a different set of resources than the one observed.
+ *    Disposable Git checkouts use their recorded branch as part of their ownership proof.
  *  - `homeName`, `homeBackend`, `terminalResourceId`, `sessionId` - terminal ownership,
  *    which reclaim can stop
  *    or clear. A generation blind to them would survive a mutation that changed what cleanup
@@ -58,6 +59,7 @@ export function taskResourceGeneration(task: Task): string {
       ref.worktreePath,
       ref.provider,
       ref.worktreeLeaseId,
+      ...(ref.provider === "git" && ref.worktreePath ? [ref.branch] : []),
     ]),
   });
   return createHash("sha256").update(canonical).digest("hex");

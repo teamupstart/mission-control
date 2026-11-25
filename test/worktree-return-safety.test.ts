@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { run } from "../src/server/util/exec.ts";
 import { worktreeReturnBlocker } from "../src/server/git/worktree-return-safety.ts";
 
 function fixture(t: TestContext) {
@@ -67,6 +68,51 @@ test("offline origin, missing checkout, nested path and malformed evidence fail 
   mkdirSync(join(path, "nested"));
   assert.match((await worktreeReturnBlocker(join(path, "nested")))!, /identity/);
   assert.match((await worktreeReturnBlocker(path, { execute: async (_cmd, args) => ({
-    code: 0, stderr: "", outcomeUnknown: false, overflowed: false, stdout: args.includes("rev-parse") ? path : args.includes("rev-list") ? "not a count" : "",
+    code: 0, stderr: "", outcomeUnknown: false, overflowed: false, stdout: args.includes("--show-toplevel") ? path : args.includes("rev-parse") ? "a".repeat(40) :
+      args.includes("rev-list") ? "not a count" : "",
   }) }))!, /compared/);
 });
+
+test("the final clean status must describe the commit checked for publication", async (t) => {
+  const { path, git } = fixture(t);
+  const published = git("rev-parse", "HEAD");
+  const blocked = await worktreeReturnBlocker(path, {
+    execute: async (command, args, options) => {
+      const result = await run(command, args, options);
+      if (args.includes("rev-list")) {
+        assert.ok(args.includes(published));
+        git("commit", "--allow-empty", "-m", "unpublished commit after reachability check");
+      }
+      return result;
+    },
+  });
+  assert.equal(git("status", "--porcelain"), "");
+  assert.match(blocked ?? "", /HEAD changed/);
+});
+
+test("publication of a different HEAD cannot satisfy the final activity check", async (t) => {
+  const { path, git } = fixture(t);
+  const expectedHead = git("rev-parse", "HEAD");
+  git("commit", "--allow-empty", "-m", "new published commit");
+  git("push", "origin", "main");
+  assert.match(await worktreeReturnBlocker(path, { readActivity: async () => ({ head: expectedHead }) }) ?? "", /Git activity changed/);
+});
+
+for (const flag of ["assume-unchanged", "skip-worktree"] as const) {
+  test(`final safety refuses ${flag} edits after publication has been checked`, async (t) => {
+    const { path, git } = fixture(t);
+    const blocked = await worktreeReturnBlocker(path, {
+      strictIndex: true,
+      execute: async (command, args, options) => {
+        const result = await run(command, args, options);
+        if (args.includes("rev-list")) {
+          git("update-index", `--${flag}`, "tracked");
+          writeFileSync(join(path, "tracked"), "keep this hidden edit");
+        }
+        return result;
+      },
+    });
+    assert.equal(git("status", "--porcelain"), "");
+    assert.match(blocked ?? "", /index has hidden changes/);
+  });
+}

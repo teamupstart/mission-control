@@ -269,6 +269,17 @@ export class CheckLeaseStore {
     return (rows as Record<string, unknown>[]).map((r) => String(r.lease_path));
   }
 
+  /** Look up durable provenance for a bounded, read-only scan of disposable paths. */
+  statesForPaths(paths: readonly string[]): Map<string, CheckLeaseState> {
+    if (!paths.length) return new Map();
+    const rows = this.db.prepare(`
+      SELECT lease_path, cleanup_state FROM workflow_check_leases
+      WHERE lease_path IN (${paths.map(() => "?").join(",")})
+      ORDER BY updated_at
+    `).all(...paths);
+    return new Map(rows.map((row) => [String(row.lease_path), row.cleanup_state as CheckLeaseState]));
+  }
+
   /** Contract R's answer, from this table alone - never a join retention can break. */
   hasLiveForNode(submissionId: string, nodeId: string): boolean {
     const row = this.db

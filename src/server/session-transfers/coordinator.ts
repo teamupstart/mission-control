@@ -1,3 +1,4 @@
+import { reserveWorktreeUse } from "../worktrees/use-reservation.ts";
 import type { Session, Task, ReviewItem } from "@shared/types.ts";
 import { taskKindTerminalHandoffRefusal } from "@shared/task.ts";
 import { isActiveTask } from "@shared/task-status.ts";
@@ -159,6 +160,8 @@ export class SessionTransferCoordinator {
     const prior = transferForNote(noteKeyFor(source));
     if (prior) return this.result(prior);
     if (!source.cwd || !source.agentSessionId) return { ok: false, error: "This conversation has no checkout or native identity to resume" };
+    using reservation = reserveWorktreeUse([source.cwd, source.workspaceRoot ?? source.cwd]);
+    if (!reservation) return { ok: false, error: "Automatic cleanup currently owns this checkout" };
     if (this.registry.sessionResetInProgress(source.id)) return { ok: false, error: "This session is being reset" };
     const task = this.registry.listTasks().find((t) => t.sessionId === source.id && isActiveTask(t.status)) ?? null;
     if (task && (transferForTask(task.id) || this.options.taskBlocked?.(task.id))) return { ok: false, error: "This task already has an ownership operation in progress" };

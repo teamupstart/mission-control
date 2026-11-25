@@ -761,99 +761,51 @@ and every foreign lease has been reviewed. `MISSION_POOL_REAP_MS` is retired and
 
 ### Task worktree retention
 
-Final task completion closes its owned session, saves required archives, and resets and returns
-all task-owned worktrees. Remaining local changes are discarded. The initial agent handoff to
-a shipping workflow keeps the checkout until the task reaches final completion. Native slots
-become available only after the allocator verifies the reset. A refused or uncertain return
-keeps its resource records for retry or manual reconciliation; a failed native reset may quarantine
-the slot rather than making it available.
+Final completion records the outcome and closes the owned session. Kill requests a stop, and
+the normal exit handling settles a task whose session disappears. All three paths leave the
+checkout for background retention. The initial handoff to a shipping workflow keeps the
+checkout while the workflow owns the work.
 
-**Kill** keeps its existing failed-task outcome. Once the session has actually left, Mission
-Control returns its worktrees automatically only if **every** attached checkout is clean
-(including untracked and ignored files), its commits are reachable from freshly fetched origin refs, and
-no session or process still occupies it. Unreadable Git state, an unreachable origin, ambiguous
-ownership or unknown occupancy all preserve the checkout. Reset retains its lease and session;
-a subsequent safe Kill can return it even after Reset detached the task binding. Cancel keeps
-its existing immediate cleanup behavior. Ignored files also block safe Kill because provider
-removal or a reset onto a different commit can discard them; this includes ignored caches.
+The clock starts at the first verified owner-free observation after the last tracked session
+leaves. Idle sessions and exiting cards still in their linger period hold their checkouts.
+Board filters and folding do not change that inventory. Hidden discoveries, subdirectory users,
+attached repositories, hibernation, and launch, resume and transfer reservations also count.
+SDK sessions keep their additional checkout grants through exit linger and restart, including
+sessions launched without a task binding.
+If a session returns, it invalidates the deadline and any pending cleanup claim. Its next
+verified departure earns a fresh window. Restart preserves a verified deadline. An older ledger
+without a verified departure earns a full window on its first eligible observation.
 
-Retained work remains available through **Clean up** and **Settings > Worktrees**. The fallback
-is unchanged: **Mission Control removes a terminal task's retained worktrees automatically after
-the configured retention window without a Git-visible change.** The best-effort safe-Kill intent
-is in memory; a daemon
-restart before it runs falls back to that retention policy. New final completions record an
-explicit return obligation atomically with completion and any session closure. Those durable
-obligations resume after discovery. Refused completion returns wait 30 seconds after the attempt
-finishes, then double the delay on each refusal up to 30 minutes. Partial progress or changed
-ownership restarts the delay; daemon restart also starts fresh from the durable obligation. Tasks
-completed before this policy keep their existing retained checkouts and activity window;
-upgrade never infers return permission from an old done status or session-closure record.
-Another live session or process always blocks automatic return. Settings > Worktrees shows up to
-four blocking PIDs and bounded commands in each native slot. Return logs carry the same detail
-and the next retry time; quarantine, recovery and release logs identify the pool and slot ordinal.
-These observations never terminate an operator shell or an orphaned program automatically.
+One task has one deadline across its primary and attached repositories. Changes to HEAD, the
+index, tracked files, or non-ignored untracked files grant a fresh window from observation.
+Ignored file churn leaves the clock alone. Ignored files still block deletion because their
+contents may include local work. The observer runs every six hours, so the deadline is the
+earliest possible release.
 
-The policy is destructive at the boundary. Staged changes, unstaged changes,
-untracked files, local commits, and commits that were never pushed are all deleted when the
-window expires. None of them exempts a tree, and push, upstream, pull request, and merge status
-are deliberately not consulted at all. What they do is **reset the clock**: any change to the
-observable Git state grants another full configured window from the moment it is observed.
+At release, the daemon rechecks task and provider ownership, Git registration and activity,
+and process occupancy. After occupancy and publication verification, it fingerprints
+Git activity and confirms the published HEAD in a clean status scan that includes ignored
+files. A final index check protects files hidden by Git index flags. The commit must be reachable from a freshly verified origin branch.
+For disposable Git worktrees, the final status must also match the task's recorded branch. Missing metadata, unknown occupancy, unpublished commits,
+local files, or an unsettled required archive hold the checkout. Ordinary failures are retried
+with backoff capped at a day. A partial return clears only the repos the provider returned,
+and a surviving checkout with a changed resource generation gets a fresh window. Automatic
+Git removal also preserves the local branch. Native leases return under the slot lock.
+Explicit Cancel, Clean up and Delete keep their own rules. Workflow checks release their
+own attempt leases after proving the process group empty.
 
-See the [task worktree retention setting](configuration.md#task-worktree-retention) for its
-location, storage, default, and bounds. The configured window applies to every provider.
-The observer reads the current
-value after each probe. On the next successful observation after a setting change, an unclaimed
-deadline is recomputed from `last_changed_at + window`, subject to the grace rules below.
-Shortening grants at least six hours from that observation,
-so saving never deletes a tree and delayed or unreadable observations only add grace. The
-applied window is persisted beside the deadline so restarts and repeated passes do not renew
-that grace. Lengthening recomputes unclaimed deadlines, including retries, while preserving an
-outstanding six-hour grace period if it ends later than `last_changed_at + window`. A deadline
-already protected by that later grace period therefore stays unchanged. Active claims and retry
-backoff are unchanged. Native task-owned slots show the persisted deadline in Worktrees.
+The daemon-only preview setting `MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` records
+seven-day deadlines and evaluates due checkouts against read-only evidence, including locally
+available origin refs. Set it to `enforce` to enable seven-day automatic return with fresh
+publication checks. When the setting is unset, retention uses the existing
+[configured window](configuration.md#task-worktree-retention), with the same safety checks.
+An unrecognized nonempty value selects report-only. These modes leave stored settings intact.
 
-What counts as a change:
-
-- `HEAD`, including a new local commit;
-- the complete index - anything staged, unstaged, or removed from staging;
-- tracked worktree content, including deletions, mode changes, and symlink targets; and
-- every non-ignored untracked file and its current content.
-
-What does not: anything `.gitignore` covers. Warm dependency directories, build caches, and log
-files churn without anybody working, and a tree pinned by them would never be reclaimed.
-
-**One task has one deadline.** A multi-repository task's primary and attached checkouts are
-combined into a single fingerprint in repository order, so the most recently touched tree
-protects the whole set, and the task is reclaimed as one operation.
-
-**How the clock is kept.** The daemon observes each eligible task's checkouts on a fixed
-internal cadence, well inside the window, and persists the result - the fingerprint, when it
-last changed, and the resulting deadline - so a restart resumes the boundary that was actually
-granted rather than starting over. A restart preserves failed or cancelled tasks' worktrees under the same retention rule. Final
-completed tasks resume explicitly recorded closure and return obligations after session discovery.
-
-**The clock starts when the tree is first observed, not when the task ended.** No timestamp in
-the database can prove when a checkout was last touched, so every tree that existed before this
-shipped - and every tree whose resources are replaced - is seeded at its first successful
-observation and gets one full window from there.
-
-**Uncertainty retries; it never deletes.** A checkout Git cannot be read, a provider that
-refuses, a process still occupying a tree, a scout report that cannot be published, or a
-partial multi-repository release all keep every durable resource fact, record a bounded reason,
-and try again with exponential backoff capped at a day. The tree stays past due - a failed
-cleanup never buys it another full window - and the ordinary **Clean up** action still reaches it.
-While a due cleanup is retrying, the task's card says so, separately from its outcome or
-failure reason.
-
-Cleanup runs through the same provider-aware teardown as **Clean up**, so a native slot, a
-disposable Git worktree, and a historical Treehouse lease are each released under the provider
-and lease identity recorded on the task. At most one automatic cleanup touches a given physical
-repository at a time, and it releases at background priority, so a large stale fleet cannot
-stand in front of a dispatch that needs a slot now.
-
-This policy applies only to worktrees Mission Control provisioned for a task. Manual
-development worktrees, [check leases](#check-leases), and Git worktrees Mission Control does not
-own are never touched by it.
+The existing local `GET /api/worktrees` diagnostics include `retention` with eligibility times
+and blockers, and `disposable` with a bounded, read-only census of the task and check roots.
+The census reports checkout metadata and task or check provenance when available. It provides
+review evidence for unowned directories, check residue and broken Git links. Those entries
+do not authorize cleanup.
 
 ### Check leases
 

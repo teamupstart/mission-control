@@ -1,3 +1,4 @@
+import { reserveWorktreeCleanup } from "../src/server/worktrees/use-reservation.ts";
 import { MISSION_TEST_MCP_DEPS } from "./helpers/mission-mcp-deps.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { test, after, beforeEach } from "node:test";
@@ -395,6 +396,22 @@ test("hibernate is refused while a snoozed question filed without stopping is ou
   assert.equal(f.registry.getTask("snoozed-ask")?.status, "running");
   assert.equal(f.registry.getReview(asked.id)?.status, "snoozed", "the question is still answerable");
   reviews.resolve(asked.id, "dismiss", null, "human");
+});
+
+test("hibernation resume refuses a checkout reserved by cleanup", async (t) => {
+  const f = fleet();
+  t.after(() => f.tasks.stopMissionSessionClosures());
+  const path = checkout("cleanup-reserved-wake");
+  await hibernated(f, t, "cleanup-reserved-wake", path);
+  const fake = withFakeDriver(async () => boundTo(fakeHandle(), "conv-cleanup-reserved-wake"));
+  t.after(fake.restore);
+  const before = f.registry.getTask("cleanup-reserved-wake");
+  using cleanup = reserveWorktreeCleanup([path]);
+  assert.ok(cleanup);
+  const result = await f.hibernation.resume("cleanup-reserved-wake");
+  assert.deepEqual(result, { ok: false, status: 409, error: "Automatic cleanup currently owns this checkout." });
+  assert.equal(fake.calls.length, 0);
+  assert.deepEqual(f.registry.getTask("cleanup-reserved-wake"), before);
 });
 
 test("resume reopens the same conversation under the same session id and binds the task back", async (t) => {

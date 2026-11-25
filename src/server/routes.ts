@@ -1,3 +1,5 @@
+import { disposableWorktreeCensus } from "./worktrees/disposable-census.ts";
+import { backgroundWorktreeRetentionStatus } from "./task-worktree-retention.ts";
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
@@ -2183,7 +2185,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/worktrees", async (c) => {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     try {
-      return c.json(await worktreeOperations.inventory());
+      const taskRows = registry.listTasks();
+      const [inventory, disposable] = await Promise.all([
+        worktreeOperations.inventory(), disposableWorktreeCensus(taskRows),
+      ]);
+      return c.json({ ...inventory, retention: backgroundWorktreeRetentionStatus(taskRows), disposable });
     } catch (error) {
       const failure = worktreeFailure(error);
       return c.json(failure.body, failure.status);
@@ -7145,12 +7151,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const acceptReturn = tasks.prepareKilledSessionReturn(session);
+    // Retention observes the normal session eviction after either Kill or unrequested loss.
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
     const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
-    if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
     // both real, and neither implies the other.

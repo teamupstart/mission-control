@@ -1,3 +1,4 @@
+import { noteWorktreeUse } from "./worktrees/use-reservation.ts";
 import { explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
@@ -1445,6 +1446,15 @@ export class Registry extends EventEmitter {
     if (serialized === this.lastTransferPage && !changed) return;
     this.lastTransferPage = serialized;
     this.emitEvent({ type: "session_transfers", page, ...(changed ? { changed: transferSummary(changed) } : {}) });
+  }
+
+  /** Daemon inventory includes exited cards through their linger and hidden discoveries. */
+  worktreeSessionInventory(): { sessions: readonly Session[]; hiddenCwds: ReadonlySet<string> } {
+    return { sessions: [...this.sessions.values()], hiddenCwds: this.hiddenCwds };
+  }
+
+  sdkLaunchTaskId(sessionId: string): string | null {
+    return this.sdkLaunchTasks.get(sessionId)?.taskId ?? null;
   }
 
   snapshot(): {
@@ -2999,6 +3009,7 @@ export class Registry extends EventEmitter {
     terminals: readonly TerminalEnumeration[] = [],
     hiddenCwds: ReadonlySet<string> = new Set<string>(),
   ): void {
+    noteWorktreeUse([...hiddenCwds].filter((cwd) => !this.hiddenCwds.has(cwd)));
     this.hiddenCwds = hiddenCwds;
     this.terminalInventory = terminals;
     this.verifiedLaunchesSinceDiscovery.clear();

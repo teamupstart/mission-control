@@ -96,6 +96,8 @@ export interface SdkSessionRow {
   agent: AgentType | null;
   agentSessionId: string | null;
   cwd: string;
+  /** Undefined for legacy rows; null when a saved grant is unreadable. */
+  extraDirs: string[] | null | undefined;
   taskId: string | null;
   model: string | null;
   effort: ThinkingLevel | null;
@@ -133,6 +135,7 @@ export interface SdkSessionWrite {
   agent: AgentType;
   agentSessionId: string | null;
   cwd: string;
+  extraDirs?: readonly string[];
   taskId: string | null;
   model: string | null;
   effort: ThinkingLevel | null;
@@ -149,6 +152,7 @@ interface Row {
   agent: string;
   agent_session_id: string | null;
   cwd: string;
+  extra_dirs_json: string | null;
   task_id: string | null;
   model: string | null;
   effort: string | null;
@@ -161,6 +165,18 @@ interface Row {
   updated_at: number;
 }
 
+const ExtraDirs = z.array(z.string().min(1));
+
+function readExtraDirs(value: string | null): SdkSessionRow["extraDirs"] {
+  if (value === null) return undefined;
+  try {
+    const parsed = ExtraDirs.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function mapRow(r: Row): SdkSessionRow {
   return {
     ...(r.resident_compaction_token_limit !== null && Number.isSafeInteger(r.resident_compaction_token_limit) && r.resident_compaction_token_limit > 0
@@ -169,6 +185,7 @@ function mapRow(r: Row): SdkSessionRow {
     agent: readPersistedEnum(AGENT_TYPES, r.agent),
     agentSessionId: r.agent_session_id,
     cwd: r.cwd,
+    extraDirs: readExtraDirs(r.extra_dirs_json),
     taskId: r.task_id,
     model: r.model,
     effort: readPersistedEnum(THINKING_LEVELS, r.effort),
@@ -203,7 +220,7 @@ export function sdkSessionIsLive(row: SdkSessionRow): boolean {
 export function listSdkSessions(conversationId?: string): SdkSessionRow[] {
   return openDb()
     .prepare(
-      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
+      `SELECT id, agent, agent_session_id, cwd, extra_dirs_json, task_id, model, effort, advisor_model, permission_mode,
               status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
          FROM sdk_sessions ${conversationId === undefined ? "" : "WHERE agent_session_id = ?"} ORDER BY created_at ASC`,
     )
@@ -227,7 +244,7 @@ export function sdkSessionIdsForTask(taskId: string): string[] {
 export function getSdkSession(id: string): SdkSessionRow | null {
   const row = openDb()
     .prepare(
-      `SELECT id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model, permission_mode,
+      `SELECT id, agent, agent_session_id, cwd, extra_dirs_json, task_id, model, effort, advisor_model, permission_mode,
               status, turn_in_progress, display_name, resident_compaction_token_limit, created_at, updated_at
          FROM sdk_sessions WHERE id = ?`,
     )
@@ -245,13 +262,14 @@ export function getSdkSession(id: string): SdkSessionRow | null {
 export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void {
   openDb()
     .prepare(
-      `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, task_id, model, effort, advisor_model,
+      `INSERT INTO sdk_sessions (id, agent, agent_session_id, cwd, extra_dirs_json, task_id, model, effort, advisor_model,
                                  permission_mode, status, turn_in_progress, resident_compaction_token_limit, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          agent = excluded.agent,
          agent_session_id = excluded.agent_session_id,
          cwd = excluded.cwd,
+         extra_dirs_json = COALESCE(excluded.extra_dirs_json, sdk_sessions.extra_dirs_json),
          task_id = excluded.task_id,
          model = excluded.model,
          effort = excluded.effort,
@@ -268,6 +286,7 @@ export function upsertSdkSession(write: SdkSessionWrite, now = Date.now()): void
       write.agent,
       write.agentSessionId,
       write.cwd,
+      write.extraDirs === undefined ? null : JSON.stringify(write.extraDirs),
       write.taskId,
       write.model,
       write.effort,

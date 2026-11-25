@@ -115,12 +115,13 @@ test("the Graph palette adds the visible Command after the Local Inspector previ
   await dashboard.goto(`${daemon.baseURL}/#/library/workflows/${workflow.id}`);
   await dashboard.getByRole("button", { name: "Graph", exact: true }).click();
   const palette = dashboard.getByRole("complementary", { name: "Workflow library and node palette" });
+  const paletteControls = palette.locator(".workflow-palette");
   const picker = palette.getByLabel("Slot for new Command node");
   await picker.selectOption("inspector");
   await expect(palette.getByRole("link", { name: /Configure inspector in Library/ })).toBeVisible();
   await expect(palette.getByText(/reviews the submitted worktree/)).toContainText("blocks on findings at minor severity or above");
   await expect(palette.getByText(/reviews the submitted worktree/)).toContainText("skips if Local review is off");
-  await screenshot(palette, "palette-inspector-threshold-coderabbit");
+  await screenshot(paletteControls, "palette-inspector-threshold-coderabbit");
 
   await flag(daemon, false);
   await expect(picker.getByRole("option", { name: "Local Inspector" })).toHaveCount(0);
@@ -129,7 +130,7 @@ test("the Graph palette adds the visible Command after the Local Inspector previ
   await palette.getByRole("button", { name: "＋ Command" }).click();
   await expect(dashboard.getByLabel("Workflow graph")).toContainText("Command · test");
   await expect(dashboard.getByLabel("Workflow graph")).not.toContainText("Command · inspector");
-  await screenshot(palette, "palette-preview-off-inspector-coderabbit");
+  await screenshot(paletteControls, "palette-preview-off-inspector-coderabbit");
 });
 
 async function start(page: Page, daemon: DaemonHandle, options: {

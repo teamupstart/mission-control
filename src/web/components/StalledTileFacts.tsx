@@ -54,7 +54,6 @@ export function StalledTileFacts(props: StalledFactsProps): React.JSX.Element | 
   );
 }
 
-/** The stall's fact sheet: what is open, what the session last did and what Foreman made of it. */
 function StalledFactList({ rows }: { rows: ReturnType<typeof stalledFactRows> }): React.JSX.Element {
   return (
     <dl>

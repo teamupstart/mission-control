@@ -363,7 +363,6 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await expect(band.locator("dl")).toBeHidden();
   await expect(band.getByRole("button")).toHaveText([/^Stalled/, "Nudge", "Message…", "Mark done", "Dismiss"]);
   await capture(band, "03-console-stalled-band-collapsed", page);
-  // Expanded, it carries the whole fact sheet, and the fixes stay where they were.
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(band.locator("dt")).toHaveText(["Task", "Last", "Foreman"]);
@@ -371,7 +370,6 @@ test("in the Console layout the stalled rail row's detail carries the facts, the
   await expect(band.locator("dd").last()).toHaveText(brief);
   await expect(band.getByRole("button", { name: "Nudge", exact: true })).toBeVisible();
   await capture(band, "03-console-stalled-band", page);
-  // And it collapses again.
   await toggle.click();
   await expect(band.locator("dl")).toBeHidden();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");

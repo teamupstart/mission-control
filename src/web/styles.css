@@ -34379,7 +34379,6 @@ span.line-run-prov {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The shared dropdown chevron, as on the blocker band. */
 .stalled-band-chevron {
   flex: none;
   align-self: center;
@@ -34397,7 +34396,6 @@ span.line-run-prov {
   flex: none;
   margin-left: auto;
 }
-/* Everything under the row: the expanded fact sheet and a fix's outcome. */
 .stalled-band-more {
   margin: 0;
   padding: 9px 14px 11px;

@@ -384,6 +384,9 @@ jobs:
   package:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
+    # The voice-listener manifest requires Swift tools 6.2.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     name: package (macOS arm64)
     timeout-minutes: 60
     steps:

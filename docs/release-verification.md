@@ -357,6 +357,15 @@ release pull request Release Please opens for it. Its tag CI then runs only Linu
 distribution signs, notarizes and publishes the DMG, ZIP and ready manifest. Confirm the release's
 assets, then confirm `scripts/install.sh` selects the stable release instead of an alpha.
 
+## Swift toolchain selection (2026-11-25 UTC)
+
+The [failed distribution run](https://github.com/teamupstart/mission-control/actions/runs/45536158734)
+stopped during compilation. The macOS runner selected Swift 6.1, while
+`native/voice-listener/Package.swift` requires Swift tools 6.2. Both macOS package jobs set
+`DEVELOPER_DIR` to the installed Xcode 26.3 bundle. When updating the runner or toolchain,
+check the arm64 image inventory for the bundle path and the Xcode compiler version against
+the package manifest. [Runner inventory](https://github.com/actions/runner-images/blob/macos-15-arm64/20261118.0550/images/macos/macos-15-arm64-Readme.md) · [Apple Xcode version table](https://developer.apple.com/xcode/system-requirements)
+
 ## Choosing the release version
 
 Release Please computes the next version from the Conventional Commit subjects merged since the

@@ -456,30 +456,28 @@ test("a shaper that signs in answers unavailable with the flag off and on, and i
   assert.equal(seen.length, count, "no request at all");
 });
 
-test("an unmarked shaper sends exactly today's request headers, with the flag off and on", async () => {
-  const pinned = {
-    connection: "keep-alive",
-    "x-caller": "declared-user",
-    traceparent: TRACE.traceparent,
-    tracestate: TRACE.tracestate,
-    "x-work-unit-id": "wu_1",
-    "content-type": "application/json",
-    accept: "application/json",
-    "accept-language": "*",
-    "sec-fetch-mode": "cors",
-    "user-agent": "node",
-    "accept-encoding": "gzip, deflate",
+test("an unmarked shaper sends the same request with the flag off and on, and no authorization header", async () => {
+  // What the client library adds (user-agent, accept-encoding and the like) is not Mission
+  // Control's to pin. What is: the flag changes nothing, and the headers this code sets.
+  const capture = async (enabled: boolean): Promise<Seen> => {
+    setSignIn(enabled);
+    const count = seen.length;
+    data(await callHttp(request(), shaper("/ok", { "x-caller": "{caller.user}" }), ctx({ trace: TRACE, workUnitId: "wu_1" })));
+    assert.equal(seen.length, count + 1, `one request with the flag ${enabled ? "on" : "off"}`);
+    return last();
   };
   try {
-    for (const enabled of [false, true]) {
-      setSignIn(enabled);
-      const count = seen.length;
-      data(await callHttp(request(), shaper("/ok", { "x-caller": "{caller.user}" }), ctx({ trace: TRACE, workUnitId: "wu_1" })));
-      assert.equal(seen.length, count + 1, "one request");
-      const { host, "content-length": length, ...headers } = last().headers;
-      assert.equal(host, new URL(base).host);
-      assert.match(String(length), /^\d+$/);
-      assert.deepEqual(headers, pinned, `flag ${enabled ? "on" : "off"}`);
-    }
+    const off = await capture(false);
+    const on = await capture(true);
+    assert.deepEqual(on, off, "the flag changes nothing an unmarked shaper sends");
+    assert.equal(off.method, "POST");
+    assert.equal(off.headers.authorization, undefined);
+    assert.deepEqual(
+      Object.fromEntries(["x-caller", "traceparent", "tracestate", "x-work-unit-id", "content-type", "accept"].map((name) => [name, off.headers[name]])),
+      {
+        "x-caller": "declared-user", traceparent: TRACE.traceparent, tracestate: TRACE.tracestate,
+        "x-work-unit-id": "wu_1", "content-type": "application/json", accept: "application/json",
+      },
+    );
   } finally { setSignIn(false); }
 });

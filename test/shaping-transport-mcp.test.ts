@@ -1559,50 +1559,38 @@ test("an MCP server that signs in answers unavailable with the flag off and on, 
   }
 });
 
-test("an unmarked MCP server is sent exactly today's request headers, with the flag off and on", async () => {
-  // Every request of one call: initialize, initialized, the event-stream GET and tools/call.
-  const common = {
-    connection: "keep-alive",
-    traceparent: TRACE.traceparent,
-    tracestate: TRACE.tracestate,
-    "x-work-unit-id": "wu_1",
-    "x-caller": "declared-user",
-    "accept-language": "*",
-    "sec-fetch-mode": "cors",
-    "user-agent": "node",
-    "accept-encoding": "gzip, deflate",
+test("an unmarked MCP server is sent the same requests with the flag off and on, and no authorization header", async () => {
+  // Which requests the SDK makes, and what the client library adds to each, is not Mission
+  // Control's to pin. What is: the flag changes nothing, and the headers this code sets.
+  type Seen = { method: string; headers: Record<string, unknown> };
+  const http = await startGuidanceHttp({ mode: "ok" });
+  const capture = async (enabled: boolean): Promise<Seen[]> => {
+    setSignIn(enabled);
+    const from = http.requests.length;
+    const run = ctx({ trace: TRACE, workUnitId: "wu_1" });
+    try {
+      data(await callMcp(request(false), shaper({ type: "http", url: http.url, headers: { "x-caller": "{caller.user}" } }), run));
+    } finally { (run.scope as ReturnType<typeof runScope>).close(); }
+    return http.requests.slice(from).map(({ method, headers }) => ({ method: String(method), headers: headers as Record<string, unknown> }));
   };
-  const post = { ...common, "content-type": "application/json", accept: "application/json, text/event-stream" };
-  const pinned = [
-    { method: "POST", headers: post },
-    { method: "POST", headers: { ...post, "mcp-protocol-version": "2025-11-25" } },
-    { method: "GET", headers: { ...common, accept: "text/event-stream", "mcp-protocol-version": "2025-11-25" } },
-    { method: "POST", headers: { ...post, "mcp-protocol-version": "2025-11-25" } },
-  ];
-  // The event-stream GET is opened beside the call, so compare the requests in a fixed order.
-  // Each entry's header names are sorted first, so its JSON text is the same whatever order they came in.
-  const ordered = (list: Array<{ method: string; headers: Record<string, unknown> }>) => list.map((entry) => JSON.stringify(entry)).sort();
-  const sorted = (entry: { method: string; headers: Record<string, unknown> }) =>
-    ({ method: entry.method, headers: Object.fromEntries(Object.entries(entry.headers).sort(([a], [b]) => (a < b ? -1 : 1))) });
+  // The SDK opens its event-stream GET beside the call without waiting for it, so whether it
+  // has arrived when the call returns is timing. The POSTs, which carry the call, are compared.
+  const posts = (requests: Seen[]) => requests.filter(({ method }) => method === "POST");
   try {
-    for (const enabled of [false, true]) {
-      setSignIn(enabled);
-      const http = await startGuidanceHttp({ mode: "ok" });
-      try {
-        const run = ctx({ trace: TRACE, workUnitId: "wu_1" });
-        data(await callMcp(request(false), shaper({ type: "http", url: http.url, headers: { "x-caller": "{caller.user}" } }), run));
-        // The SDK opens the event stream without waiting for it, so a loaded machine may record it late.
-        for (let wait = 0; wait < 200 && !http.requests.some(({ method }) => method === "GET"); wait++) {
-          await new Promise((done) => setTimeout(done, 10));
-        }
-        (run.scope as ReturnType<typeof runScope>).close();
-        const seen = http.requests.map(({ method, headers }) => {
-          const { host, "content-length": _length, ...rest } = headers as Record<string, unknown>;
-          assert.equal(host, new URL(http.url).host);
-          return sorted({ method: String(method), headers: rest });
-        });
-        assert.deepEqual(ordered(seen), ordered(pinned.map(sorted)), `flag ${enabled ? "on" : "off"}`);
-      } finally { await http.close(); }
+    const off = await capture(false);
+    const on = await capture(true);
+    assert.ok(posts(off).length > 0, "the call was made");
+    assert.deepEqual(posts(on), posts(off), "the flag changes nothing an unmarked MCP server is sent");
+    for (const { method, headers } of [...off, ...on]) {
+      assert.equal(headers.authorization, undefined, `${method} carries no authorization header`);
+      assert.deepEqual(
+        Object.fromEntries(["x-caller", "traceparent", "tracestate", "x-work-unit-id"].map((name) => [name, headers[name]])),
+        { "x-caller": "declared-user", traceparent: TRACE.traceparent, tracestate: TRACE.tracestate, "x-work-unit-id": "wu_1" },
+        `${method} carries the configured header, the trace context and the work unit id`,
+      );
     }
-  } finally { setSignIn(false); }
+  } finally {
+    setSignIn(false);
+    await http.close();
+  }
 });

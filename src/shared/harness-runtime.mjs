@@ -71,11 +71,12 @@ export const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
 export function stateDir(env = process.env) {
   const override = envVar("HOME", env);
   if (override) return override;
+  const home = (process.platform === "win32" ? env.USERPROFILE : env.HOME) || homedir();
   for (const name of STATE_DIRS) {
-    const p = join(homedir(), name);
+    const p = join(home, name);
     if (existsSync(p)) return p;
   }
-  return join(homedir(), STATE_DIRS[0]);
+  return join(home, STATE_DIRS[0]);
 }
 
 /** Public TLS identity published by the daemon that owns this state home and API port. */

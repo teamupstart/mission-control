@@ -22,7 +22,7 @@ function runClaude(executable: string, args: readonly string[], env: NodeJS.Proc
 
 /** Operator override, inherited PATH, then supported native/npm locations. An override is authoritative. */
 export async function detectClaude(env: NodeJS.ProcessEnv, cwd: string): Promise<ClaudeCli | null> {
-  const locator = new ExecutableLocator({ env, probeLoginShell: async () => ({ path: env.PATH ?? "", problem: null }) });
+  const locator = new ExecutableLocator({ env: { ...env }, probeLoginShell: async () => ({ path: env.PATH ?? "", problem: null }) });
   const spec = EXECUTABLE_SPECS.claude;
   // resolveCommand's explicit child PATH avoids the daemon locator's automatic per-user
   // toolchain ranking, which would put ~/.local/bin ahead of this CLI's documented order.

@@ -10,7 +10,8 @@ import { detectClaude } from "../src/cli/claude-cli.ts";
 import { runCli } from "../src/cli/index.ts";
 import { runSetup } from "../src/cli/commands/setup.ts";
 import { doctorChecks } from "../src/cli/setup-checks.ts";
-import { MOD_ID, type SetupContext } from "../src/cli/setup-context.ts";
+import { createSetupContext, MOD_ID, type SetupContext } from "../src/cli/setup-context.ts";
+import { readClientToken, stateDir } from "../src/shared/harness-runtime.mjs";
 import { stageMod } from "../src/server/mod-stage.ts";
 import { createFakeClaude, createFakeDaemon } from "./helpers/home-dispatch-fakes.ts";
 
@@ -96,6 +97,36 @@ test("staging replaces by rename, preserves readers of the previous inode, and c
   await symlink(f.root, join(f.context.buildRoot, "escape"));
   await assert.rejects(stageMod(f.context.buildRoot, f.context.stateHome), /symlink/);
   assert.equal(await readFile(target, "utf8"), 'const changed = "/api/health";');
+});
+
+test("Claude discovery accepts a frozen environment without changing caller or process PATH", async (t) => {
+  const f = await fixture(t);
+  const originalPath = process.env.PATH;
+  for (const frozen of [false, true]) {
+    const env = { HOME: f.root, PATH: dirname(process.execPath), MISSION_CLAUDE_BIN: f.fake.path };
+    const before = { ...env };
+    assert.equal((await detectClaude(frozen ? Object.freeze(env) : env, f.root))?.path, f.fake.path);
+    assert.deepEqual(env, before);
+    assert.equal(process.env.PATH, originalPath);
+  }
+});
+
+test("an explicit home selects setup state and credentials without inheriting the process home", async (t) => {
+  const f = await fixture(t);
+  const env = { [process.platform === "win32" ? "USERPROFILE" : "HOME"]: f.root };
+  assert.equal(stateDir(env), join(f.root, ".mission-control"));
+  assert.equal(createSetupContext({ ...f.context.io, env }, "doctor").stateHome, join(f.root, ".mission-control"));
+  const legacy = join(f.root, ".fleet-control");
+  await mkdir(legacy);
+  await writeFile(join(legacy, "token"), "caller-home-token\n");
+  assert.equal(stateDir(env), legacy);
+  assert.equal(readClientToken(env), "caller-home-token");
+  const current = join(f.root, ".mission-control");
+  await mkdir(current);
+  await writeFile(join(current, "token"), "current-home-token\n");
+  assert.equal(stateDir(env), current);
+  assert.equal(readClientToken(env), "current-home-token");
+  assert.equal(stateDir({ ...env, MISSION_HOME: f.context.stateHome }), f.context.stateHome);
 });
 
 test("setup installs once at a stable path and doctor is read-only; off touches only the flag", async (t) => {

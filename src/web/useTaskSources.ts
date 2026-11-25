@@ -113,12 +113,12 @@ export function useTaskSources(): TaskSourcesState {
    */
   const refresh = useCallback(
     async (seqAtRequest: number = editSeq.current, confirming = false): Promise<void> => {
-      // Polls cannot displace a confirming read while a save is in flight.
-      if (batch.current && !confirming) return;
       const readAtRequest = ++readSeq.current;
       const genAtRequest = writeGen.current;
       const v = await fetchTaskSources();
-      if (!v || !readIsCurrent(readAtRequest, readSeq.current)) return;
+      // A poll can supersede another poll. A confirming read is serialized with its save,
+      // so polls started while it is pending cannot replace it or apply over the batch.
+      if (!v || (!confirming && !readIsCurrent(readAtRequest, readSeq.current))) return;
       if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
       if (!readIsCurrent(genAtRequest, writeGen.current)) return;
       if (batch.current && !confirming) return;

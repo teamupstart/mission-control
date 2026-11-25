@@ -2264,9 +2264,17 @@ depend on running before the spec that dispatches a second.
 
 ## What this layer still cannot see
 
-Playwright drives web contents. Native Electron shell behaviour - drag regions, traffic
-lights, window chrome, vibrancy - is invisible to CDP and to synthetic clicks, and stays a
-manual check.
+Playwright drives web contents. Native Electron shell behaviour such as drag regions,
+traffic lights and vibrancy needs a native fixture or a manual check.
+
+On macOS, `desktop-voice-edge.spec.ts` posts clicks through AppKit and checks the native
+hit target below the edge microphone. Where macOS permits desktop input, it drags the
+title bar and checks that the window moves. To exercise movement manually on a Mac
+without that permission, run the focused spec and drag the green dot when it appears.
+
+```sh
+MC_E2E_MANUAL_WINDOW_DRAG=1 npm run test:e2e -- desktop-voice-edge.spec.ts
+```
 
 ## Pi installation and terminal dispatch
 

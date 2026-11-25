@@ -43553,6 +43553,18 @@ button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
 .app > .vi-edge-line .vi-edge { height: var(--vi-edge-tab-height); }
 /* Keep the centered mute tab above the measured row, including its topmost click targets. */
 .app > .vi-edge-line ~ header.topbar { padding-top: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)); }
+/* The edge tab overlaps the header's padding. Keep Electron's native drag
+   surface below it so the window manager delivers clicks to the microphone. */
+.is-desktop .app > .vi-edge-line ~ header.topbar {
+  -webkit-app-region: none;
+}
+.is-desktop .app > .vi-edge-line ~ header.topbar::before {
+  content: "";
+  position: absolute;
+  inset: calc(var(--vi-edge-strip-height) + var(--vi-edge-tab-height)) 0 0;
+  z-index: -1;
+  -webkit-app-region: drag;
+}
 .vi-edge-line.vi-muted { box-shadow: none; background: var(--border); }
 .vi-edge {
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%); pointer-events: auto;

@@ -320,6 +320,16 @@ test("the GitHub review prompt stays byte-identical with the local subject avail
     "f0787a359c906bd25b54e7d82ea7fb8fe220dfc4133c68cb7d4e620872537644");
 });
 
+test("the first local review uses absence-aware reads for optional repository guidance", () => {
+  const { prompt } = buildLocalReviewPrompt({ goal: "Review the change", diff: "", changedPaths: [], open: [], round: 1 });
+  assert.match(prompt, /verifyAbsence: true for optional guidance/);
+  assert.match(prompt, /personas\/INSPECTOR\.md, then INSPECTOR\.md/);
+  assert.match(prompt, /first nonempty brief/);
+  assert.match(prompt, /fall back to the brief below/);
+  assert.match(prompt, /AGENTS\.md, CLAUDE\.md, and applicable directory standards/);
+  assert.match(prompt, /Skip optional guidance paths that report absent: true/);
+});
+
 test("the local policy distinguishes new findings from carried issues outside the diff", () => {
   const finding = { fingerprint: "older", path: "src/earlier.ts", line: 3,
     severity: "major" as const, title: "Repair the route", body: "The original defect remains." };

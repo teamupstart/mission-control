@@ -48,6 +48,15 @@ async function review(mcp, prompt) {
     const call = async (name, args) => JSON.parse((await request("tools/call", { name, arguments: args })).content[0].text);
     if (inspector) {
       if (prompt.includes("E2E_LOCAL_INSPECTOR_NO_QUERY")) return inspectorResult("Prompt only");
+      if (prompt.includes("E2E_LOCAL_INSPECTOR_OPTIONAL_GUIDANCE")) {
+        const verifyAbsence = prompt.includes("verifyAbsence: true for optional guidance");
+        for (const path of ["personas/INSPECTOR.md", "INSPECTOR.md", "AGENTS.md", "CLAUDE.md"]) {
+          const guidance = await call("read", verifyAbsence ? { path, verifyAbsence } : { path });
+          if (guidance.items[0]?.path !== path || guidance.items[0].metadata?.absent !== true) {
+            throw Error("The optional guidance path was not verified absent");
+          }
+        }
+      }
       const outsideDiff = await call("read", { path: "README.md" });
       const changed = await call("read", { path: "submitted.txt", verifyAbsence: true });
       const file = changed.items[0];

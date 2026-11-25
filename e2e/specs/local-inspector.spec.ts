@@ -183,7 +183,7 @@ async function start(page: Page, daemon: DaemonHandle, options: {
 
 test("Codex reads outside the diff, returns a repair packet, then releases the Pull Request action", async ({ dashboard, daemon }) => {
   test.setTimeout(120_000);
-  const run = await start(dashboard, daemon);
+  const run = await start(dashboard, daemon, { marker: "E2E_LOCAL_INSPECTOR_OPTIONAL_GUIDANCE" });
   // Mutating the session checkout after capture must not change either the diff or the MCP view.
   await expect.poll(async () => (await run.detail()).events.some(event => event.kind === "submission_captured")).toBe(true);
   writeFileSync(run.file, "fixed after capture\n");
@@ -201,6 +201,11 @@ test("Codex reads outside the diff, returns a repair packet, then releases the P
   ).get(run.run.id)?.payload)).toContain("Replace the local placeholder");
   const audits = withDaemonDb(daemon, db => db.prepare("SELECT audit_json FROM workflow_repository_queries").all());
   expect(JSON.stringify(audits)).toContain("README.md");
+  const absentGuidance = audits.flatMap(row => {
+    const audit = JSON.parse(String(row.audit_json));
+    return audit.absentWorktreePath ? [audit.absentWorktreePath] : [];
+  });
+  expect(absentGuidance).toEqual(expect.arrayContaining(["personas/INSPECTOR.md", "INSPECTOR.md", "AGENTS.md", "CLAUDE.md"]));
 
   await dashboard.goto(daemon.baseURL + `/#/runs/${run.run.id}`);
   const card = dashboard.getByRole("article").filter({ hasText: "Reviewed the submitted worktree with read-only repository access." });

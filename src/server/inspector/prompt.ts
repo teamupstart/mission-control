@@ -296,9 +296,10 @@ Rules for local review:
 
 - Use the repository MCP to read the exact submitted checkout. Open the affected code
   and its callers or tests, including files outside the diff. Page reads where needed.
-- Read ${BRIEF_PATHS[0]} or ${BRIEF_PATHS[1]} for the brief. Use the first nonempty one
-  in that order if present, and treat the brief below as the default. Check AGENTS.md,
-  CLAUDE.md, and applicable directory standards in the submitted checkout.
+- In the worktree layer, use the repository read tool with verifyAbsence: true for optional guidance.
+  Skip optional guidance paths that report absent: true. For the brief, try ${BRIEF_PATHS[0]}, then ${BRIEF_PATHS[1]}.
+  Use the first nonempty brief or fall back to the brief below. Use the same read option for
+  AGENTS.md, CLAUDE.md, and applicable directory standards in the submitted checkout.
 - Every new finding must name a file changed in the submitted diff. Earlier findings
   stay open until verified against the checkout, even when their files are absent from the diff.
 ${REVIEW_SECRET_RULE}

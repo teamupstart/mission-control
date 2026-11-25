@@ -3133,8 +3133,9 @@ Local Inspector uses the Inspector's provider and model. On both Codex and Claud
 access to the exact submitted checkout through the [read-only repository workload](repository-review-workloads.md),
 including staged, unstaged and nonignored untracked files within the repository policy. The review
 prompt directs the Inspector to read the repository brief and applicable standards from that
-checkout and review the changes against the workflow goal. Before accepting a verdict, the stage
-requires a successful repository query that returns at least one item.
+checkout, skip optional guidance confirmed absent, and review the changes against the workflow
+goal. Before accepting a verdict, the stage requires a successful repository query that returns
+at least one item.
 The run records the publication tree, base ref, merge base, threshold and outcome. Open findings
 carry forward on the next submission and are available under **Load findings**. Closing a
 finding outside the new diff requires an audited read of its file or confirmation that its

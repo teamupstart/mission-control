@@ -4,12 +4,15 @@ import { join } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
 import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
-import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
+import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
+import { beSpeaker, enableVoice, voiceToken } from "../fixtures/voice.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
+
+test.use({ daemonEnv: fixtureSupervisorEnv });
 
 test("Voice settings records a chord, explains refusal, and follows call and key reports", async ({ dashboard: page, daemon, context }) => {
   await enableVoice(daemon);
-  const listener = await beListener(daemon);
+  const listener = await beSpeaker(daemon, { holdPlayback: true });
   try {
     await page.goto(daemon.baseURL + "/#/settings/voice");
     const row = page.locator('[data-anchor="voice/hotkey"]');
@@ -47,6 +50,7 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await mock.goto(new URL("../../docs/plans/voice-addressing-for-agents/mockup-voice-settings.html", import.meta.url).href);
     const approved = mock.locator("#e .vs-grid2");
     await expect(controls.locator(".kb-row-label")).toHaveText(await approved.locator(".kb-row-label").allTextContents());
+    await expect(controls.locator(".display-choice-option")).toHaveText(await approved.locator(".display-choice-option").allTextContents());
     // Compare all four cells at the same grid width, including their row/column offsets.
     const width = (await controls.boundingBox())!.width;
     await approved.evaluate((el, width) => { el.style.width = width + "px"; }, width);
@@ -59,7 +63,7 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     });
     expect(await cells(controls)).toEqual(await cells(approved));
     await expect(controls.getByRole("combobox", { name: "Cancel window" })).toHaveValue("4");
-    await expect(controls.getByRole("radiogroup", { name: "Unsure" }).getByRole("radio", { name: "Show" })).toBeChecked();
+    await expect(controls.getByRole("radiogroup", { name: "When routing is unsure" }).getByRole("radio", { name: "Show" })).toBeChecked();
     for (const selector of [".kb-capture", ".sc-switch-track"]) {
       expect((await controls.locator(selector).boundingBox())?.width).toEqual((await approved.locator(selector).boundingBox())?.width);
     }
@@ -166,8 +170,17 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await controls.locator("label.sc-switch").click();
     await expect(autoMute).toBeChecked();
     await expect(mode).toContainText("Muted for a call");
+    const audition = await page.request.post(daemon.baseURL + "/api/voice/speech/audition");
+    expect(audition.ok()).toBe(true);
+    await expect.poll(() => listener.playing).toBe(true);
     await report({ callActive: true, pushToTalk: true });
     await expect(mode).toContainText("Push to talk");
+    expect((await listener.poll()).capture).toBe(false);
+    await listener.end();
+    await expect.poll(async () => (await listener.poll()).capture).toBe(true);
+    await report({ callActive: true, pushToTalk: false });
+    await expect(mode).toContainText("Muted for a call");
+    expect((await listener.poll()).capture).toBe(false);
     await report({ registeredHotkey: null, hotkeyError: { reason: "Reserved.", chordInForce: null },
       capabilities: { hotkey: { available: true }, "call-detection": { available: false, reason: "Call detection requires macOS 14.2 or later." } } });
     await expect(mode).toContainText("Listening");
@@ -187,6 +200,6 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect(row.getByRole("alert")).toHaveText(expired);
     expect((await saved()).hotkey).toBe("ctrl+k");
   } finally {
-    listener.stop();
+    await listener.exit();
   }
 });

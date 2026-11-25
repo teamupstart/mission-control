@@ -192,12 +192,12 @@ test("the voice flag brings Settings > Voice and the Setup family, and the mode 
 
     await panel.getByRole("combobox", { name: "Cancel window" }).selectOption("8");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow.seconds).toBe(8);
-    await panel.getByRole("radio", { name: "Ask" }).check();
-    await expect.poll(async () => (await voiceConfig(daemon)).whenUnsure).toBe("ask");
+    await expect(panel.getByRole("radio", { name: "Ask aloud" })).toBeDisabled();
+    await expect.poll(async () => (await voiceConfig(daemon)).whenUnsure).toBe("show");
     await peer.reload();
     const reloaded = peer.getByRole("tabpanel", { name: "Voice" });
     await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("8");
-    await expect(reloaded.getByRole("radio", { name: "Ask" })).toBeChecked();
+    await expect(reloaded.getByRole("radio", { name: "Show on screen" })).toBeChecked();
     await reloaded.getByRole("combobox", { name: "Cancel window" }).selectOption("off");
     await expect(reloaded.getByRole("combobox", { name: "Cancel window" })).toHaveValue("off");
     await expect.poll(async () => (await voiceConfig(daemon)).cancelWindow).toEqual({ enabled: false, seconds: 8 });

@@ -114,7 +114,8 @@ function ModeLine({ voice, onOpenSetup }: { voice: VoiceState | null; onOpenSetu
       <strong className="voice-mode-label">{mode ? VOICE_MODE_LABEL[mode] : "Checking…"}</strong>
       <span className="voice-mode-why">
         {reasons.length > 0
-          ? `${sentence(reasons.map((reason) => VOICE_REASON_TEXT[reason]))}.`
+          ? `${sentence(reasons.map(reason => reason === "listener" && voice?.capabilities.listener?.reason
+            ? voice.capabilities.listener.reason.replace(/\.$/, "") : VOICE_REASON_TEXT[reason]))}.`
           : mode === "muted"
             ? "Nothing is heard until you unmute."
             : mode === "auto-muted"
@@ -464,6 +465,7 @@ export function VoiceSettingsPanel({
   const lengths = CANCEL_WINDOW_CHOICES.includes(seconds as (typeof CANCEL_WINDOW_CHOICES)[number])
     ? CANCEL_WINDOW_CHOICES
     : [...CANCEL_WINDOW_CHOICES, seconds].sort((a, b) => a - b);
+  const askReason = voice?.capabilities["speech-output"]?.available ? null : voice?.capabilities["speech-output"]?.reason ?? "No listener is running.";
   const unsure = config?.whenUnsure ?? "show";
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
@@ -548,14 +550,19 @@ export function VoiceSettingsPanel({
           </div>
 
           <div className="kb-row" data-anchor="voice/when-unsure">
-            <div className="kb-row-text"><span className="kb-row-label">Unsure</span></div>
+            <div className="kb-row-text">
+              <span className="kb-row-label">Unsure</span>
+              {askReason && <span className="kb-row-desc">{askReason}</span>}
+            </div>
             <div className="kb-row-controls">
-              <div className="display-choice-options" role="radiogroup" aria-label="Unsure">
+              <div className="display-choice-options" role="radiogroup" aria-label="When routing is unsure">
                 {UNSURE_CHOICES.map((choice) => (
-                  <Tooltip key={choice.id} label={choice.description}>
+                  <Tooltip key={choice.id} label={choice.id === "ask" ? askReason ?? choice.description : choice.description}>
                     <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
                       <input type="radio" name="voice-when-unsure" value={choice.id}
-                        checked={unsure === choice.id} disabled={!config}
+                        aria-label={choice.id === "ask" ? "Ask aloud" : "Show on screen"}
+                        aria-description={choice.id === "ask" ? askReason ?? undefined : undefined}
+                        checked={unsure === choice.id} disabled={!config || (choice.id === "ask" && !!askReason)}
                         onChange={() => void update({ whenUnsure: choice.id })} />
                       {choice.label}
                     </label>

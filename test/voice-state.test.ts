@@ -9,6 +9,7 @@ import {
   VOICE_CONFIG_DEFAULTS,
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_VERSION,
+  VOICE_MAX_HOLD_MS,
   VOICE_MODEL_STATE_NONE,
   VOICE_SHELL_REPORT_LAPSE_MS,
   VoiceConfigSchema,
@@ -125,6 +126,7 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
     flags,
     published,
     setConfig: (patch: Partial<VoiceConfig>) => { config = { ...config, ...patch }; },
+    elapseWithoutTimers(ms: number) { now += ms; },
     /** Move the clock and fire every timer that came due, as the real ones would. */
     advance(ms: number): void {
       now += ms;
@@ -201,6 +203,56 @@ test("dedicated Push-to-talk captures only during the hold on an active call wit
   assert.equal(h.store.state().mode, "waiting-for-key");
   assert.equal(h.store.directive().capture, false);
   assert.equal(h.store.releasedCapture()?.revision, hold.revision);
+});
+
+test("a late listener hello invalidates a held shortcut before renewing the lease", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const session = h.store.state().pushToTalkSession!;
+  const registration = { ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+    capabilities: { hotkey: { available: true, reason: null } } };
+  // The desktop is still live when the listener returns, before its timer gets to run.
+  h.elapseWithoutTimers(VOICE_HELLO_LAPSE_MS - 1);
+  const pressed = h.hostNowUs();
+  const held = { ...registration, pushToTalkSession: session, pushToTalk: true, pushToTalkPressedAtHostUs: pressed };
+  h.store.acceptShellReport({ ...held, reportedAtHostUs: pressed });
+  assert.ok(h.store.directive().capture);
+  h.elapseWithoutTimers(2);
+  assert.ok(h.store.acceptHello(listenerId, HELLO).ok);
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptShellReport({ ...held, reportedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  const recovered = h.store.state().pushToTalkSession;
+  assert.notEqual(recovered, session);
+  h.advance(1);
+  h.store.acceptShellReport({ ...registration, pushToTalkSession: recovered, reportedAtHostUs: h.hostNowUs(),
+    pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  h.advance(1);
+  h.store.acceptShellReport({ ...held, pushToTalkSession: recovered, reportedAtHostUs: h.hostNowUs(),
+    pushToTalkPressedAtHostUs: h.hostNowUs() });
+  assert.ok(h.store.directive().capture);
+});
+
+test("a hold crossing its cutoff during publication schedules immediate capture revocation", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const pressed = h.hostNowUs();
+  h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+    capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
+    pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: pressed, pushToTalkPressedAtHostUs: pressed });
+  assert.ok(h.store.directive().capture);
+  const cutoff = pressed + VOICE_MAX_HOLD_MS * 1000;
+  let hostTime = cutoff - 1;
+  t.mock.method(h.store, "hostNowUs", () => hostTime);
+  h.store.onChange(() => { hostTime = cutoff + 1; });
+  assert.equal(h.store.publish().mode, "push-to-talk");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture(), undefined);
 });
 
 test("dedicated capture expires a lost native key-up even with continuous desktop heartbeats", () => {

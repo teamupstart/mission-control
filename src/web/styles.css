@@ -43532,12 +43532,12 @@ button.vi { cursor: pointer; }
 .app > .vi-floating { position: fixed; bottom: 12px; left: 12px; z-index: 5; }
 .app:has(> .vi-status-line) > .vi-floating { bottom: 38px; }
 .vi-floating .vi-word, .vi-composer .vi-word, .vi-expanded { display: none; }
-button.vi-floating:is(:hover, :focus-visible) {
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) {
   width: auto; border-radius: 999px; padding: 0 13px 0 10px; gap: 6px;
   color: var(--fg); box-shadow: var(--shadow); font: 12px var(--sans);
 }
-button.vi-floating:is(:hover, :focus-visible) :is(.vi-word, .vi-expanded) { display: inline; }
-button.vi-floating:is(:hover, :focus-visible) svg { color: var(--vi); }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) :is(.vi-word, .vi-expanded) { display: inline; }
+.vi-floating:is(button:hover, button:focus-visible, [role="status"]) svg { color: var(--vi); }
 .vi-floating:is(.vi-muted, .vi-waiting-for-key) { box-shadow: var(--shadow); border-color: var(--border); }
 .vi-edge-line {
   position: relative; height: 3px; background: var(--vi);

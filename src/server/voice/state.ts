@@ -510,6 +510,8 @@ export class VoiceStateStore {
     if (ownerId && ownerId !== id && !takesOver) {
       return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
     }
+    // Observe a missed listener lapse before renewal can reuse the desktop's held key.
+    if (this.hello && !live) this.directive();
     // A denied helper exits immediately. Keep its permission reading but release its capture.
     const nextOwnerId = hello.microphone === "denied" ? null : id;
     if (!ownerId || ownerId !== nextOwnerId || live?.hello.backend !== hello.backend) {
@@ -603,15 +605,17 @@ export class VoiceStateStore {
     const becomingMuted = muted && !this.muted;
     this.muted = muted;
     if (becomingMuted) this.manager?.stopAll();
-    else if (enabled && this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS &&
-        automatic && config.autoMuteDuringCalls) this.manager?.stopAll("ask");
+    else if (config?.listeningMode === "push-to-talk" || (automatic && config.autoMuteDuringCalls &&
+        this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS)) {
+      this.manager?.stopAll("ask");
+    }
     const state = this.state();
     if (this.lastDirective) this.directive(state);
     for (const listener of Array.from(this.listeners)) {
       try { listener(state); }
       catch (error) { console.warn("[voice] state listener failed:", error); }
     }
-    this.arm();
+    this.arm(state);
     return state;
   }
 
@@ -644,23 +648,24 @@ export class VoiceStateStore {
     this.disarm();
   }
 
-  private arm(): void {
+  private arm(state: VoiceState): void {
     this.disarm();
     if (!this.deps.enabled(VOICE_FLAG)) return;
     const now = this.deps.now();
     const waitingForProcess = this.manager?.live?.state === "ready" &&
       (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
-    const press = this.report?.report.pushToTalkPressedAtHostUs;
-    const holdDeadline = this.pushToTalkSession && this.report?.report.pushToTalk && press !== undefined
-      ? now + VOICE_MAX_HOLD_MS - (this.hostNowUs() - press) / 1000 : null;
     const lapses = [
-      holdDeadline,
       this.hotkeyTrial?.expiresAt,
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,
     ].filter((at): at is number => at != null && at > now);
+    const press = this.report?.report.pushToTalkPressedAtHostUs;
+    if (state.pushToTalkSession && state.mode === "push-to-talk" && press !== undefined) {
+      // Publication may have crossed the cutoff. Recompute immediately in that case.
+      lapses.push(now + Math.max(0, VOICE_MAX_HOLD_MS - (this.hostNowUs() - press) / 1000));
+    }
     if (lapses.length === 0) return;
     const wait = Math.min(...lapses) - now;
     const set = this.deps.setTimer ?? ((fn: () => void, ms: number) => {

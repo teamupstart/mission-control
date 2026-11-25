@@ -8,6 +8,48 @@ import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 
+test("the floating indicator alone shows Push-to-talk waiting, capture, and the hold hint", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  const listener = await beListener(daemon);
+  try {
+    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await page.getByRole("checkbox", { name: "Floating button" }).check();
+    await page.getByRole("checkbox", { name: "Status line" }).uncheck();
+    await page.getByRole("combobox", { name: "Listening mode" }).selectOption("push-to-talk");
+    await expect(page.getByRole("checkbox", { name: "Auto-mute on calls" })).toBeDisabled();
+    const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
+    await page.goto(daemon.baseURL);
+    const indicator = page.locator(".app > .vi-floating");
+    const report = async (held: boolean) => {
+      const at = voiceHostTimeUs();
+      const response = await page.request.post(daemon.baseURL + "/voice/shell-report", {
+        headers: { "x-harness-token": voiceToken(daemon) },
+        data: { registeredHotkey: state.configuredHotkey, pushToTalkSession: state.pushToTalkSession,
+          capabilities: { hotkey: { available: true } }, reportedAtHostUs: at, pushToTalk: held,
+          ...(held ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) },
+      });
+      expect(response.ok()).toBe(true);
+    };
+    for (const held of [false, true, false]) {
+      await report(held);
+      await expect(indicator.getByText(held ? "Listening while held" : "Waiting for hotkey", { exact: true })).toBeVisible();
+      if (held) await expect(indicator.getByText("Release to finish")).toBeVisible();
+      else {
+        await expect(indicator.getByText(/^Hold .* to talk$/)).toBeVisible();
+        await expect(indicator.locator("kbd")).toHaveText("⌘⌃⌥V");
+      }
+      await expect(page.locator("button.vi")).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE) {
+        const dir = artifactsDir("voice-floating-hold");
+        mkdirSync(dir, { recursive: true });
+        await indicator.screenshot({ path: join(dir, held ? "held.png" : "waiting.png") });
+      }
+    }
+  } finally {
+    listener.stop();
+  }
+});
+
 test("five selected indicators follow the daemon and advertise only a registered chord", async ({ dashboard: page, context, daemon }) => {
   const root = artifactsDir("voice-window");
   let capture: string | undefined;

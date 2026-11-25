@@ -80,6 +80,10 @@ html.voice-window, html.voice-window body, html.voice-window #root { background:
   transform: rotate(45deg); background: var(--panel); border: solid var(--border); border-width: 1px 0 0 1px; }
 .voice-popover:has(.voice-card-surface):not(:has(.voice-card))::before { display: none; }
 .voice-popover .voice-card { width: min(292px, calc(100vw - 8px)); border-left: 1px solid var(--border); border-radius: 11px; }
+/* The tray window sizes itself to this content, so its current viewport height
+   cannot provide a reading budget. Reserve less per transcript in a split. */
+.voice-popover :is(.vc-transcript, .vc-pending .vc-role, .vc-heard) { max-block-size: 16rem; }
+.voice-popover .voice-card:has(.vc-roster ~ .vc-roster) .vc-role { max-block-size: 10rem; }
 .voice-card[data-pill] { position: relative; width: max-content; max-width: min(472px, calc(100vw - 8px)); flex-direction: row; align-items: center;
   gap: 9px; white-space: nowrap; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--border);
   border-radius: 999px; padding: 6px 12px 6px 9px; box-shadow: 0 10px 34px rgba(0,0,0,.5); font-size: 12.5px; }

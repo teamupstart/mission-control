@@ -117,6 +117,40 @@ test("a stalled placement save releases the controls and can be retried", async 
   await expect(pill).toBeChecked();
 });
 
+test("tray popover gives long routing and message transcripts room to scroll", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon, 30);
+  await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Will");
+  expect((await page.request.put(daemon.baseURL + "/api/voice/confirmation", { data: { confirmation: "popover" } })).ok()).toBe(true);
+  await page.goto(daemon.baseURL + "/#/voice/popover");
+  await page.setViewportSize({ width: 356, height: 580 });
+  const words = "Review the deployment notes. ".repeat(60).trim();
+  const card = page.getByRole("status");
+  async function readTranscript(index = 0, minimumHeight = 200) {
+    const transcript = card.getByRole("region", { name: "Spoken message" }).nth(index);
+    await expect(transcript).toBeVisible();
+    expect(await transcript.evaluate(el => el.clientHeight)).toBeGreaterThan(minimumHeight);
+    await transcript.hover();
+    await page.mouse.wheel(0, 160);
+    await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  }
+  await say(daemon, "Steven ask Will about the deployment. " + words);
+  await readTranscript();
+  await captureCard(card, "tray-long-routing");
+  await card.getByRole("button", { name: /Steve/ }).click();
+  await expect(card).toContainText("One message");
+  await readTranscript();
+  await captureCard(card, "tray-long-single");
+  await card.getByRole("button", { name: "Cancel", exact: true }).click();
+  await say(daemon, "Steve, " + words + ", and Will, " + words);
+  await card.getByRole("button", { name: /Will/ }).click();
+  await expect(card).toContainText("Two messages");
+  await readTranscript(0, 140);
+  await readTranscript(1, 140);
+  await expect(card.getByRole("button", { name: "Send both now" })).toBeInViewport({ ratio: 1 });
+  await captureCard(card, "tray-long-split");
+});
+
 for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner toast/]] as const) {
   test(`a timed-out placement save cannot overwrite the operator’s later ${placement} choice`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);

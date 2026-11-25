@@ -1,3 +1,4 @@
+import { newRequestId } from "./request-id.ts";
 import { useSyncExternalStore } from "react";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import type { VoiceConfirmationPlacement, VoiceIndicatorId, VoiceRevision } from "@shared/voice.ts";
@@ -246,24 +247,29 @@ async function reconcileVoiceIndicators(): Promise<void> {
 }
 
 let placementAttempt = 0;
-let unconfirmedPlacement: VoiceConfirmationPlacement | undefined;
+let unconfirmedPlacementWrite: string | undefined;
 /** Apply the confirmed pair before the radio group releases its saving state. */
 export async function updateVoicePlacement(placement: VoiceConfirmationPlacement): Promise<boolean> {
   const attempt = ++placementAttempt;
-  const previous = unconfirmedPlacement;
+  const previous = unconfirmedPlacementWrite;
+  const writeId = newRequestId();
   const deadline = AbortSignal.timeout(INDICATOR_REQUEST_TIMEOUT_MS);
   const expected = latestIndicatorVersion ?? (await fetchUiConfig(deadline))?.voiceIndicatorVersion;
   if (!expected) return false;
-  let result = await api.setVoicePlacement(placement, expected, deadline);
+  let result = await api.setVoicePlacement(placement, expected, writeId, deadline);
   // A lost reply may be the only reason our revision is stale. Retry this new
   // operator choice once against that committed write, keeping the same timeout.
   if (attempt === placementAttempt && !deadline.aborted && previous !== undefined &&
-      result.status === 409 && result.confirmation === previous && result.voiceIndicatorVersion?.source === expected.source) {
-    result = await api.setVoicePlacement(placement, result.voiceIndicatorVersion, deadline);
+      result.status === 409 && result.writeId === previous && result.voiceIndicatorVersion?.source === expected.source) {
+    result = await api.setVoicePlacement(placement, result.voiceIndicatorVersion, writeId, deadline);
   }
   if (attempt !== placementAttempt) return false;
-  unconfirmedPlacement = !result.ok && result.status === undefined ? placement : undefined;
+  unconfirmedPlacementWrite = !result.ok && result.status === undefined ? writeId : undefined;
   if (!result.ok) {
+    if (result.status === 409 && result.indicators && result.confirmation && acceptIndicatorVersion(result.voiceIndicatorVersion)) {
+      commitVoiceSelection(result.indicators, result.confirmation);
+      return false;
+    }
     // The daemon may have committed a write whose response was lost.
     void reconcileVoiceIndicators();
     return false;

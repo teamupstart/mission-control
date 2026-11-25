@@ -157,6 +157,7 @@ export function registerVoiceRoutes(
     if (!task) return c.json({ error: "The finished task could not be found." }, 404);
     return c.json({ repoRoot: task.repoRoot });
   });
+  let lastPlacementWrite: { id: string; revision: number } | undefined;
   // Older callers omit the version. Capture theirs before even the body limiter can wait for bytes.
   const observePlacement = createMiddleware<{ Variables: { placementVersion: VoiceRevision } }>(async (c, next) => {
     c.set("placementVersion", voiceIndicatorVersion(storedVoiceUi()));
@@ -165,6 +166,7 @@ export function registerVoiceRoutes(
   app.put("/api/voice/confirmation", gate, observePlacement, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }).extend({
       expectedVersion: VoiceRevisionSchema.optional(),
+      writeId: z.uuid().optional(),
     }));
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
@@ -172,10 +174,13 @@ export function registerVoiceRoutes(
     const version = voiceIndicatorVersion(current);
     const expected = parsed.data.expectedVersion ?? c.get("placementVersion");
     if (expected.source !== version.source || expected.revision !== version.revision) {
-      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version }, 409);
+      const writeId = lastPlacementWrite?.revision === version.revision ? lastPlacementWrite.id : undefined;
+      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version, writeId }, 409);
     }
     const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
-    return c.json({ ok: true, ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
+    const saved = voiceIndicatorVersion(voice);
+    lastPlacementWrite = parsed.data.writeId ? { id: parsed.data.writeId, revision: saved.revision } : undefined;
+    return c.json({ ok: true, ...voice, voiceIndicatorVersion: saved });
   });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });

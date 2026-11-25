@@ -27,7 +27,7 @@ interface CardReportTiming {
 // The browser and daemon each round their wall-to-monotonic calibration to milliseconds.
 const FOCUS_CLOCK_ROUNDING_US = 2_000;
 // Leave time to submit during even the shortest (one second) cancel window.
-const COMPANION_CONFIRM_MS = 400;
+const BACKGROUND_CONFIRM_MS = 400;
 
 interface CardStream {
   floorUs: number;
@@ -49,6 +49,7 @@ export class VoiceOpenCards {
     observation?: VoiceTimeBounds; observationId?: number; receivedAt: number; calibrating?: boolean }>();
   private confirmationSequence = 0;
   private readonly confirmations = new Map<number, { windowId: string; finish: (ok: boolean) => void }>();
+  private readonly openingQuestions = new Set<() => void>();
 
   constructor(private readonly changed: () => void = () => {}) {}
 
@@ -127,6 +128,7 @@ export class VoiceOpenCards {
       this.changedAt = Date.now();
     }
     this.changed();
+    for (const check of this.openingQuestions) check();
   }
 
   /** Only a report read from the DOM after this request can confirm the surface. */
@@ -150,10 +152,56 @@ export class VoiceOpenCards {
     return await this.confirmReport(windowId, request, signal) && this.current?.windowId === windowId;
   }
 
+  /** Keep the picker until the live dashboard has actually focused the requested card. */
+  async openQuestion(reviewId: string, request: VoiceQuestions["confirmFocus"], open: (windowId: string) => boolean,
+    signal: AbortSignal): Promise<boolean> {
+    const id = this.dashboard;
+    if (!id || !await this.confirmReport(id, request, signal) || this.dashboard !== id || signal.aborted) return false;
+    const stream = this.streams.get(id);
+    return new Promise(resolve => {
+      const finish = (opened: boolean) => {
+        this.openingQuestions.delete(check);
+        signal.removeEventListener("abort", abort);
+        resolve(opened);
+      };
+      const abort = () => finish(false);
+      const check = () => {
+        const report = this.reports.get(id)?.report;
+        if (!report || this.streams.get(id) !== stream) finish(false);
+        else if (report.cards.some(card => card.id === reviewId && card.focused)) finish(true);
+      };
+      this.openingQuestions.add(check);
+      signal.addEventListener("abort", abort, { once: true });
+      if (open(id)) check();
+      else finish(false);
+    });
+  }
+
   async confirmReplyWindow(windows: string[], request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<string | undefined> {
-    const replies = await Promise.all(windows.map(async id => await this.confirmReport(id, request, signal) ? id : undefined));
-    const focused = this.current?.windowId;
-    return focused && replies.includes(focused) ? focused : undefined;
+    const confirmed = new Set<string>();
+    const background = new AbortController();
+    const probe = AbortSignal.any([signal, background.signal]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.all(windows.map(async id => {
+        const stream = this.streams.get(id);
+        if (await this.confirmReport(id, request, probe)) {
+          confirmed.add(id);
+          if (this.current?.windowId === id) {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+              if (confirmed.has(this.current?.windowId ?? "")) background.abort();
+            }, BACKGROUND_CONFIRM_MS);
+          }
+        } else if (stream && background.signal.aborted && !signal.aborted) {
+          this.suspend(id, stream, request);
+        }
+      }));
+      const focused = this.current?.windowId;
+      return !signal.aborted && focused && confirmed.has(focused) ? focused : undefined;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** A cached background or standalone window can have a newer focus report in flight. */
@@ -161,23 +209,27 @@ export class VoiceOpenCards {
     return [...this.streams].filter(([id, stream]) => !stream.resume && (stream.browser || this.reports.has(id))).map(([id]) => id);
   }
 
+  /** A late report from a suspended window must not reclaim a footer or a reply target. */
+  private suspend(id: string, stream: CardStream, request: VoiceQuestions["confirmFocus"]): void {
+    if (this.streams.get(id) !== stream || stream.resume) return;
+    const sequence = ++this.confirmationSequence;
+    stream.resume = { sequence, ask: () => request(id, sequence) };
+    const last = this.reports.get(id);
+    if (last) last.report = null;
+    this.reportChanged();
+    stream.resume.ask();
+  }
+
   async confirmCompanion(reviewId: string, request: VoiceQuestions["confirmFocus"], signal: AbortSignal): Promise<boolean> {
     const confirmed = new Set<string>();
-    const timeout = AbortSignal.timeout(COMPANION_CONFIRM_MS);
+    const timeout = AbortSignal.timeout(BACKGROUND_CONFIRM_MS);
     const probe = AbortSignal.any([timeout, signal]);
     await Promise.all(this.reportingWindows().map(async windowId => {
       const stream = this.streams.get(windowId)!;
       if (await this.confirmReport(windowId, request, probe)) {
         confirmed.add(windowId);
-      } else if (timeout.aborted && !signal.aborted && this.streams.get(windowId) === stream && !stream.resume && this.footerOwner(reviewId) !== windowId) {
-        // A window without this footer cannot block the companion indefinitely.
-        // Fence its delayed reports until it reads its DOM again after suspension.
-        const sequence = ++this.confirmationSequence;
-        stream.resume = { sequence, ask: () => request(windowId, sequence) };
-        const last = this.reports.get(windowId);
-        if (last) last.report = null;
-        this.reportChanged();
-        stream.resume.ask();
+      } else if (timeout.aborted && !signal.aborted && this.footerOwner(reviewId) !== windowId) {
+        this.suspend(windowId, stream, request);
       }
     }));
     // A dashboard may have connected or disappeared during confirmation. Every

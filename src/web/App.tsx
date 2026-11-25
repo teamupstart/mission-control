@@ -5107,8 +5107,10 @@ export function App(): React.JSX.Element {
         );
 
   useEffect(() => {
-    if (openVoiceQuestion) setReviewSessionId(openVoiceQuestion.sessionId);
-  }, [openVoiceQuestion, setReviewSessionId]);
+    if (!openVoiceQuestion) return;
+    if (route.page === "voice-card") consumeVoiceQuestion(openVoiceQuestion);
+    else setReviewSessionId(openVoiceQuestion.sessionId);
+  }, [openVoiceQuestion, setReviewSessionId, consumeVoiceQuestion, route.page]);
 
   const voiceCardHost = spokenNames && <VoiceHintsContext.Provider value={voiceHints}><VoiceCardHost cards={voiceCards} fadingCards={fadingVoiceCards}
     surface={route.page === "voice-card" ? route.placement : undefined}

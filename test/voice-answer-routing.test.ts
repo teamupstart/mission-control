@@ -539,6 +539,57 @@ test("a standalone pick survives a missing dashboard and can open its question o
   assert.deepEqual(answers(), []);
 });
 
+test("a bare question pick survives a dashboard withdrawal during its live check", async t => {
+  const q = question();
+  await show([]);
+  await say("Steve, answer", "pick-before-withdraw");
+  const opened: string[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus") {
+      void put("/api/voice/open-cards?withdraw=1", { windowId: event.windowId, focused: false, cards: [] },
+        { "x-voice-confirm-focus": String(event.sequence) });
+    } else {
+      if (event.type === "voice_open_question") opened.push(event.reviewId);
+      publish(event);
+    }
+  });
+  await act("pick-before-withdraw", "pick", { id: q.id });
+  assert.deepEqual(opened, []);
+  assert.deepEqual(registry.voiceRouter!.activeCards().find(c => c.id === "pick-before-withdraw")?.candidates.map(c => c.id), [q.id]);
+  assert.match(cards.at(-1)?.detail ?? "", /Focus a dashboard/);
+});
+
+test("a confirmed foreground reply fences a suspended background window before the full timeout", async t => {
+  const router = registry.voiceRouter!;
+  const q = question();
+  await show([q.id]);
+  const windowId = "background";
+  t.after(router.openCards.connect(windowId, true));
+  const report = (focused: boolean, sequence?: number) => put("/api/voice/open-cards", {
+    windowId, focused, cards: [{ kind: "question", id: q.id, focused }],
+  }, sequence ? { "x-voice-confirm-focus": String(sequence) } : {});
+  await report(false);
+  const requests: number[] = [];
+  const publish = registry.emitQuestionEvent.bind(registry);
+  t.mock.method(registry, "emitQuestionEvent", (event: Parameters<typeof publish>[0]) => {
+    if (event.type === "voice_confirm_focus" && event.windowId === windowId) requests.push(event.sequence);
+    else publish(event);
+  });
+  await put("/api/voice/config", { cancelWindow: { enabled: true, seconds: 30 } });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const reply = router.accept({ id: "responsive", capturedAt: Date.now(), text: "reply, option B", backend: "fluidaudio", words: [] });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.tick(500);
+  assert.equal(await Promise.race([reply, new Promise<void>(resolve => setImmediate(resolve))]), true);
+  assert.equal(answers()[0]?.footerWindowId, "voice-question-test");
+  assert.equal(requests.length, 2);
+  await report(true, requests[0]);
+  assert.equal(answers()[0]?.footerWindowId, "voice-question-test");
+  await report(true, requests[1]);
+  assert.equal(answers()[0]?.footerWindowId, windowId);
+});
+
 test("spoken option numbers select their position or give a notice without sending a message", async () => {
   const question = "How many?";
   const q = reviews.create("sdk:Steve", "input", question, question, [{ id: "q", question, allowOther: true,

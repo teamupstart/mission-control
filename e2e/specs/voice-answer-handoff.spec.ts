@@ -163,6 +163,7 @@ test("a question that wakes during dictation asks for fresh speech before counti
   expect((await page.request.post(review + "/wake")).ok()).toBe(true);
   await say(daemon, "Steve, answer: today", { capturedAt });
   await expect(page.getByRole("status").filter({ hasText: "This question reopened after you spoke" })).toBeVisible();
+  await captureCard(page.getByRole("status").filter({ hasText: "This question reopened after you spoke" }), "reminder-repeat-r35");
   await expect(page.getByRole("button", { name: "Submit now" })).toHaveCount(0);
   expect((await (await page.request.get(review)).json()).status).toBe("pending");
   await say(daemon, "Steve, answer: tomorrow");
@@ -609,6 +610,75 @@ test("switching the same stream to the standalone surface withdraws the footer a
   await say(daemon, "Steve, answer: tonight");
   await companion.getByRole("button", { name: "Submit now" }).click();
   await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tonight");
+});
+
+test("a bare pick can be retried after the dashboard switches to standalone with its withdrawal in flight", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "Which database?";
+  await file(page, daemon, steve.cwd, title);
+  await say(daemon, "Steve, answer");
+  const picker = page.getByRole("status").filter({ hasText: "Which question?" });
+  await expect(picker).toBeVisible();
+  const release = Promise.withResolvers<void>();
+  const withdrawn = Promise.withResolvers<void>();
+  await page.route("**/api/voice/open-cards?withdraw=1", async route => {
+    if (!route.request().headers()["x-voice-confirm-focus"]) {
+      withdrawn.resolve();
+      await release.promise;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await page.evaluate(() => { location.hash = "/voice/popover"; });
+    await withdrawn.promise;
+    await picker.getByRole("button", { name: title, exact: false }).click();
+    await expect(picker).toContainText("Focus a dashboard");
+    await picker.getByText(/Focus a dashboard/).hover();
+    await captureCard(picker, "retry-bare-pick-r35");
+    release.resolve();
+    const back = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok());
+    await page.evaluate(() => { location.hash = "/fleet"; });
+    await back;
+    await picker.getByRole("button", { name: title, exact: false }).click();
+    const modal = page.getByRole("dialog", { name: "Review request" });
+    await expectContentClearsBorder(modal);
+    await expect(modal.locator(".review").filter({ hasText: title })).toBeFocused();
+    await expect(picker).toHaveCount(0);
+  } finally { release.resolve(); }
+});
+
+test("a suspended dashboard releases a confirmed foreground reply without waiting for the full timeout", async ({ dashboard: background, daemon }) => {
+  await setupCards(background, daemon);
+  const steve = await runningAgent(background, daemon, "Steve");
+  const title = "Which benchmark?";
+  await file(background, daemon, steve.cwd, title);
+  const active = await background.context().newPage();
+  const release = Promise.withResolvers<void>();
+  const probes = new Set<string>();
+  await background.route("**/api/voice/open-cards*", async route => {
+    const sequence = route.request().headers()["x-voice-confirm-focus"];
+    if (sequence) {
+      probes.add(sequence);
+      await release.promise;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await active.goto(daemon.baseURL + "/#/fleet");
+    await active.locator("button.pulse-seg", { hasText: "to answer" }).click();
+    const inbox = active.getByRole("dialog", { name: "Attention inbox" });
+    await expectContentClearsBorder(inbox);
+    await say(daemon, "reply, tomorrow");
+    await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
+    await expect.poll(() => probes.size).toBe(2);
+    await captureCard(inbox.locator(".review").filter({ hasText: title }), "active-answer-suspended-window-r35");
+    await inbox.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+  } finally {
+    release.resolve();
+    await active.close();
+  }
 });
 
 for (const anotherWindow of [true, false]) {

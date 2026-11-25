@@ -22,6 +22,12 @@ beforeEach(() => {
   openDb().prepare("DELETE FROM reviews WHERE kind = 'input' AND status NOT IN ('pending', 'snoozed')").run();
 });
 registry.subscribe(event => {
+  if (event.type === "voice_open_question") {
+    const snapshot = drawn.get(event.windowId);
+    if (snapshot) void put("/api/voice/open-cards", { ...snapshot.body,
+      cards: [{ kind: "question", id: event.reviewId, focused: true }] });
+    return;
+  }
   if (event.type !== "voice_confirm_focus") return;
   confirmations.set(event.windowId, event.sequence);
   const snapshot = drawn.get(event.windowId);

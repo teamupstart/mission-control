@@ -837,10 +837,24 @@ export class VoiceRouter {
       const { target, words, choiceCommand } = item.questionPick;
       const pending = this.questions!.pending().filter(q => q.sessionId === target.sessionId);
       const review = pending.find(q => q.id === candidateId);
-      const dashboard = this.openCards.dashboard;
-      if (review && !words && !dashboard) {
-        item.card = { ...item.card, detail: "Focus a dashboard, then choose this question again." };
-        this.publish(item.card);
+      if (review && !words) {
+        if (item.modelStep) return false;
+        item.modelStep = new AbortController();
+        const isPending = () => this.questions!.pending().some(q => q.id === candidateId && q.sessionId === target.sessionId);
+        const opened = await this.openCards.openQuestion(candidateId, this.questions!.confirmFocus, windowId => {
+          if (!isPending()) return false;
+          this.questions!.open(windowId, review);
+          return true;
+        }, this.confirmationSignal(item.modelStep.signal));
+        if (this.open.get(id) !== item) return false;
+        delete item.modelStep;
+        if (!opened && isPending()) {
+          item.card = { ...item.card, detail: "Focus a dashboard, then choose this question again." };
+          this.publish(item.card);
+        } else {
+          this.take(item, time);
+          this.questionNotice(item, opened ? "Opened question." : "That question is already settled.");
+        }
         return true;
       }
       this.take(item, time);
@@ -856,9 +870,6 @@ export class VoiceRouter {
             this.questionNotice(item, "Could not match an option. Try again.");
           });
         this.trackResolution(id, work);
-      } else if (dashboard) {
-        this.questions!.open(dashboard, review);
-        this.questionNotice(item, "Opened question.");
       }
       return true;
     }

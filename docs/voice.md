@@ -1088,7 +1088,8 @@ closes while speech is being transcribed, the picker offers the remaining questi
 the dashboard can confirm the intended question was already in focus. When a snoozed
 question returns, speak again to start its countdown. “Steve, answer”
 opens the question picker without supplying an answer. If the standalone picker asks you to
-focus a dashboard, choose the question again there. To dictate into Other, open the card before speaking.
+focus a dashboard, choose the question again there. The row stays available until the dashboard
+reports that the selected question has focus. To dictate into Other, open the card before speaking.
 Choosing an older spoken answer from the picker preserves any newer answer already staged for that question. Ordinary addressed speech, such as
 “Steve, check the build”, goes to the agent as a message even while the question is open.
 
@@ -1116,6 +1117,8 @@ Before starting the countdown, the daemon requests a fresh focus report for “r
 answers that depend on an open card. If the transcript overtakes a focus update, the daemon
 checks the question that was drawn at capture against the newly confirmed report.
 The daemon asks each connected reporting window, so a dashboard can confirm a reply after gaining focus or while its first card report is still in transit.
+A confirmed foreground reply gives background windows 400 milliseconds to respond.
+A suspended window must report its current state again before it can take over.
 A reply waiting for calibration stays bound to the observed question and can be cancelled.
 Focusing a manual-only question prevents a reply from filling its neighbor. If speech falls within the
 remaining timing uncertainty, it asks the operator to repeat the reply. Without a clock sample,

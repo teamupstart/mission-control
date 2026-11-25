@@ -790,10 +790,12 @@ that sign-in will keep.
 A remote shaper that needs an OAuth sign-in will have its tokens kept by the daemon, one record
 per connection. A connection is one server URL, scope and authorization server. The record holds
 the access token, the refresh token, when the access token expires, the scope granted, the
-client that obtained the tokens, and the connection itself. A record is never written to a
-file, `app_config`, a backup, a settings snapshot or the browser, never logged, and never put
-in an error message. Saving it starts no command, so a token never appears in a process
-argument list.
+client that obtained the tokens, and the connection itself. Mission Control never writes a
+record to its own files, to `app_config`, to its own backups or settings snapshots, or to the
+browser, never logs one, and never puts one in an error message. Saving it starts no command,
+so a token never appears in a process argument list. The one place it is written is the
+Keychain below, and the login Keychain is itself a file in your home folder: a backup of the
+whole Mac, such as Time Machine, normally includes it, still encrypted.
 
 - **On macOS** each record is one generic password item in your login Keychain, with the
   service name **`Mission Control shaper sign-in`** and a label that adds the server's host.

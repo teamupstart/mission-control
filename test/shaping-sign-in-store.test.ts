@@ -151,6 +151,26 @@ test("the memory switch wins on macOS and never loads the addon", () => {
   );
 });
 
+test("a blank higher-priority switch name does not hide memory set under an older prefix", () => {
+  assert.equal(
+    choose({ platform: "darwin", env: { MISSION_SHAPER_SIGN_IN_STORE: "", FLEET_SHAPER_SIGN_IN_STORE: "memory" } }).kind,
+    "memory",
+  );
+  assert.equal(
+    choose({ platform: "darwin", env: { MISSION_SHAPER_SIGN_IN_STORE: "  ", HARNESS_SHAPER_SIGN_IN_STORE: "memory" } }).kind,
+    "memory",
+  );
+  assert.equal(
+    choose({ platform: "darwin", env: { MISSION_SHAPER_SIGN_IN_STORE: "", FLEET_SHAPER_SIGN_IN_STORE: " ", HARNESS_SHAPER_SIGN_IN_STORE: "memory" } }).kind,
+    "memory",
+  );
+  assert.equal(
+    choose({ platform: "darwin", env: { MISSION_SHAPER_SIGN_IN_STORE: "", FLEET_SHAPER_SIGN_IN_STORE: "" } }).kind,
+    "keychain",
+    "every name blank is the same as unset",
+  );
+});
+
 test("an unrecognised switch value is read as memory, the choice that persists nothing", () => {
   assert.deepEqual(choose({ platform: "darwin", env: { MISSION_SHAPER_SIGN_IN_STORE: "memroy" } }), {
     kind: "memory",
@@ -367,6 +387,89 @@ test("an addon failure rejects with SignInStoreError carrying the status and no 
 
   keychain.failWith = null;
   assert.deepEqual(await store.read("conn"), record(), "a failed call leaves what was stored alone");
+});
+
+/**
+ * A fake whose calls each take the next scripted delay, as real pool-thread calls take
+ * whatever time they take, and which counts how many run at once.
+ */
+class SlowKeychain extends FakeKeychain {
+  delays: number[] = [];
+  failNext = false;
+  inFlight = 0;
+  maxInFlight = 0;
+
+  private async slow<T>(call: () => Promise<T>): Promise<T> {
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, this.delays.shift() ?? 0));
+      if (this.failNext) {
+        this.failNext = false;
+        throw Object.assign(new Error("fail once"), { status: -25293 });
+      }
+      return await call();
+    } finally {
+      this.inFlight--;
+    }
+  }
+
+  override get(service: string, account: string) {
+    return this.slow(() => super.get(service, account));
+  }
+  override set(service: string, account: string, value: string, label: string) {
+    return this.slow(() => super.set(service, account, value, label));
+  }
+  override remove(service: string, account: string) {
+    return this.slow(() => super.remove(service, account));
+  }
+  override accounts(service: string) {
+    return this.slow(() => super.accounts(service));
+  }
+}
+
+test("Keychain calls apply in the order they were made, even when the first is the slowest", async () => {
+  const keychain = new SlowKeychain();
+  const store = createKeychainSignInStore({ binding: keychain, stateHome: home() });
+
+  // Left to run at once, the slow first write would land last and leave the stale token.
+  keychain.delays = [40, 0];
+  await Promise.all([
+    store.write("conn", record({ accessToken: "fake-access-older" })),
+    store.write("conn", record({ accessToken: "fake-access-newer" })),
+  ]);
+  assert.equal((await store.read("conn"))?.accessToken, "fake-access-newer");
+
+  // A slow write followed at once by a remove leaves nothing behind.
+  keychain.delays = [40, 0];
+  await Promise.all([store.write("gone", record()), store.remove("gone")]);
+  assert.equal(await store.read("gone"), null);
+
+  assert.equal(keychain.maxInFlight, 1, "at most one addon call, so one pool thread, at a time");
+});
+
+test("the call order holds across read, ids and remove, and a failure does not stall the queue", async () => {
+  const keychain = new SlowKeychain();
+  const store = createKeychainSignInStore({ binding: keychain, stateHome: home() });
+
+  keychain.delays = [30, 0, 0, 0];
+  const [, readBack, listed] = await Promise.all([
+    store.write("conn", record()),
+    store.read("conn"),
+    store.ids(),
+    store.remove("conn"),
+  ]);
+  assert.deepEqual(readBack, record(), "a read made after a write sees it");
+  assert.deepEqual(listed, ["conn"], "ids made after a write lists it");
+  assert.equal(await store.read("conn"), null, "the remove made last is applied last");
+
+  keychain.failNext = true;
+  const failed = store.write("conn", record({ accessToken: "fake-access-failed" }));
+  const after = store.write("conn", record({ accessToken: "fake-access-after" }));
+  await assert.rejects(failed, SignInStoreError);
+  await after;
+  assert.equal((await store.read("conn"))?.accessToken, "fake-access-after");
+  assert.equal(keychain.maxInFlight, 1);
 });
 
 test("a failing Keychain never falls back to memory in the middle of a call", async () => {

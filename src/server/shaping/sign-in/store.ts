@@ -180,39 +180,78 @@ export interface KeychainSignInStoreDeps {
   service?: string;
 }
 
-/** One generic password per record, in the login Keychain, never synced to iCloud. */
+/**
+ * One generic password per record, in the login Keychain, never synced to iCloud.
+ *
+ * Calls run one at a time, in the order they were made, as the memory backend applies them.
+ * Each addon call runs on a libuv pool thread, so two calls left to run at once could finish
+ * in either order: a `write` then a `write`, or a `write` then a `remove`, could leave the
+ * older token stored. The queue also means at most one pool thread, shared with file and DNS
+ * work, is ever held by the Keychain, even while macOS waits on an approval prompt.
+ */
 export function createKeychainSignInStore(deps: KeychainSignInStoreDeps): SignInStore {
   const { binding, stateHome } = deps;
   const service = deps.service ?? SIGN_IN_KEYCHAIN_SERVICE;
   let tag: Promise<string> | null = null;
   const homeTag = () => (tag ??= stateHomeTag(stateHome));
 
+  let tail: Promise<unknown> = Promise.resolve();
+  /** Queues `run` after every call made before it. A failure does not stop the calls behind it. */
+  const inOrder = <T>(run: () => Promise<T>): Promise<T> => {
+    const result = tail.then(run);
+    tail = result.catch(() => undefined);
+    return result;
+  };
+
   return {
     kind: "keychain",
-    async read(id) {
-      checkId(id);
-      const account = signInAccount(await homeTag(), id);
-      return deserialize(await keychainCall("read", () => binding.get(service, account)));
+    // Each method validates and queues synchronously, so the queue order is the call order.
+    read(id) {
+      try {
+        checkId(id);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      return inOrder(async () => {
+        const account = signInAccount(await homeTag(), id);
+        return deserialize(await keychainCall("read", () => binding.get(service, account)));
+      });
     },
-    async write(id, record) {
-      checkId(id);
-      const value = serialize(record);
-      const account = signInAccount(await homeTag(), id);
-      await keychainCall("write", () => binding.set(service, account, value, itemLabel(service, record)));
+    write(id, record) {
+      let value: string;
+      try {
+        checkId(id);
+        value = serialize(record);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      const label = itemLabel(service, record);
+      return inOrder(async () => {
+        const account = signInAccount(await homeTag(), id);
+        await keychainCall("write", () => binding.set(service, account, value, label));
+      });
     },
-    async remove(id) {
-      checkId(id);
-      const account = signInAccount(await homeTag(), id);
-      await keychainCall("remove", () => binding.remove(service, account));
+    remove(id) {
+      try {
+        checkId(id);
+      } catch (err) {
+        return Promise.reject(err);
+      }
+      return inOrder(async () => {
+        const account = signInAccount(await homeTag(), id);
+        await keychainCall("remove", () => binding.remove(service, account));
+      });
     },
-    async ids() {
-      const prefix = `${await homeTag()}/`;
-      const accounts = await keychainCall("ids", () => binding.accounts(service));
-      return accounts
-        .filter((account) => account.startsWith(prefix))
-        .map((account) => account.slice(prefix.length))
-        .filter((id) => ID.test(id))
-        .sort();
+    ids() {
+      return inOrder(async () => {
+        const prefix = `${await homeTag()}/`;
+        const accounts = await keychainCall("ids", () => binding.accounts(service));
+        return accounts
+          .filter((account) => account.startsWith(prefix))
+          .map((account) => account.slice(prefix.length))
+          .filter((id) => ID.test(id))
+          .sort();
+      });
     },
   };
 }
@@ -232,12 +271,21 @@ export interface SignInStoreDeps {
   warn?: (message: string) => void;
 }
 
-/** The switch, through the usual `MISSION_` / `FLEET_` / `HARNESS_` chain. */
+/**
+ * The switch, through the usual `MISSION_` / `FLEET_` / `HARNESS_` chain, taking the first name
+ * with a non-blank value. A blank higher-priority name does not hide a lower one: the safe
+ * value of this switch is `memory`, the one that keeps nothing, so a stray empty `MISSION_`
+ * must not turn a `FLEET_` or `HARNESS_` `memory` back into the Keychain.
+ *
+ * Not `envVar` from `@shared/harness-runtime.mjs`: it reads only `process.env`, where this store
+ * takes an injected environment so its choice is testable, and it lets a blank value win.
+ */
 function storeSwitch(env: NodeJS.ProcessEnv): string | undefined {
-  const value =
-    env[`MISSION_${SIGN_IN_STORE_ENV}`] ?? env[`FLEET_${SIGN_IN_STORE_ENV}`] ?? env[`HARNESS_${SIGN_IN_STORE_ENV}`];
-  const trimmed = value?.trim().toLowerCase();
-  return trimmed ? trimmed : undefined;
+  for (const prefix of ["MISSION_", "FLEET_", "HARNESS_"]) {
+    const value = env[`${prefix}${SIGN_IN_STORE_ENV}`]?.trim().toLowerCase();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 /**

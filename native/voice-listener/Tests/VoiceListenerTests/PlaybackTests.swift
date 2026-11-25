@@ -173,6 +173,41 @@ import XCTest
         XCTAssertFalse(playback.busy)
     }
 
+    func testStalledStartReportSettlesBeforeStopConfirmationDeadline() async throws {
+        let player = Output()
+        let started = expectation(description: "started POST is in flight")
+        let stopRequested = expectation(description: "player receives stop")
+        let ended = expectation(description: "ended arrives before the daemon's five-second stop deadline")
+        player.onStop = { stopRequested.fulfill() }
+        var events: [String] = []
+        var endReportedAt: ContinuousClock.Instant?
+        let playback = Playback(player: player, fetch: { _ in Data() }, report: { id, type, outcome in
+            events.append([id, type, outcome].compactMap { $0 }.joined(separator: " "))
+            if type == "started" {
+                started.fulfill()
+                defer { events.append("start request settled") }
+                try await Task.sleep(for: .seconds(6))
+            } else {
+                endReportedAt = .now
+                ended.fulfill()
+            }
+        })
+        try await playback.apply(systemJob)
+        await fulfillment(of: [started], timeout: 3)
+        let stop = Task { try await playback.apply(.stop(id: "held")) }
+        await fulfillment(of: [stopRequested], timeout: 3)
+        XCTAssertTrue(playback.busy)
+        XCTAssertNil(endReportedAt)
+
+        let silentAt = ContinuousClock.now
+        try XCTUnwrap(player.ended)("stopped")
+        await fulfillment(of: [ended], timeout: 3)
+        try await stop.value
+        XCTAssertGreaterThanOrEqual(silentAt.duration(to: try XCTUnwrap(endReportedAt)), .milliseconds(250))
+        XCTAssertEqual(events, ["held started", "start request settled", "held ended stopped"])
+        XCTAssertFalse(playback.busy)
+    }
+
     func testFailedStopReportRetriesBeforeFreshCapture() async throws {
         let player = Output()
         var attempts: [String] = []

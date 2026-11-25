@@ -283,7 +283,9 @@ enum SpeechContent: Equatable {
         completion = Task {
             // Let speaker output decay before the end report releases capture.
             if hadPlayer { try await Task.sleep(for: .milliseconds(250)) }
-            // A late started may be refused because the daemon already requested stop.
+            // Once silent, cancel and join any in-flight started POST so ended stays
+            // ordered without spending the daemon's stop deadline on the first reply.
+            reporting?.cancel()
             _ = await reporting?.result
             reporting = nil
             let terminal = stopRequested ? "stopped" : outcome

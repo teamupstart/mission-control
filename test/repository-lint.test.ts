@@ -41,6 +41,9 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   };
   const seed = {
     ...testIdSeeds,
+    "src/server/request-alias.ts": 'export function read(c) { const request = c.req; return request.json(); }',
+    "src/server/agent-alias.ts": 'export function choose(session) { const selected = session.agent; return selected === "claude"; }',
+    "src/server/registry-alias.ts": 'export function evict(registry, id) { const sessions = registry.sessions; return sessions.delete(id); }',
     "src/shared/unowned.ts": 'import "node:fs";',
     "src/shared/nested/unowned.mjs": 'export const builtin = import("node:path");',
     "src/shared/subpath.ts": 'import "node:fs/promises";',
@@ -69,9 +72,9 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
     "no-restricted-imports": 3,
     "test-imports": 5,
     "no-test-ids": 6,
-    "parse-request-body": 3,
-    "agent-comparison": 2,
-    "registry-eviction": 4,
+    "parse-request-body": 4,
+    "agent-comparison": 3,
+    "registry-eviction": 5,
   })) {
     assert.equal(output.split(`(${rule})`).length - 1, count, output);
     t.diagnostic(`Rejected ${count} seeded violations of ${rule}.`);
@@ -79,6 +82,15 @@ test("Oxlint rejects seeded repository policy violations and accepts the owned p
   const testIdDiagnostics = output.split("\n").filter((line) => line.endsWith("[Error/repository(no-test-ids)]"));
   assert.match(output, /src\/server\/satisfies-event\.ts:\d+:\d+: [^\n]*\[Error\/repository\(registry-eviction\)\]/);
   t.diagnostic("Rejected the session removal event wrapped in satisfies.");
+  for (const [file, rule] of [
+    ["request-alias", "parse-request-body"],
+    ["agent-alias", "agent-comparison"],
+    ["registry-alias", "registry-eviction"],
+  ]) {
+    assert.ok(output.split("\n").some((line) =>
+      line.startsWith(`src/server/${file}.ts:`) && line.endsWith(`[Error/repository(${rule})]`)), output);
+    t.diagnostic(`Rejected ${file} with ${rule}.`);
+  }
   for (const path of Object.keys(testIdSeeds)) {
     assert.ok(testIdDiagnostics.some((line) => line.startsWith(`${path}:`)), output);
     t.diagnostic(`Rejected test ID syntax in ${path}.`);

@@ -23,11 +23,26 @@ function annotation(identifier) {
   return type?.type === "TSTypeReference" ? name(type.typeName) : undefined;
 }
 
+function matchesLocalValue(context, node, matches) {
+  const seen = new Set();
+  while (node && !seen.has(node)) {
+    seen.add(node);
+    const binding = bindingIdentifier(context, node);
+    if (matches(node, binding)) return true;
+    const declaration = binding?.parent;
+    if (declaration?.type !== "VariableDeclarator" || declaration.id !== binding ||
+        declaration.parent.kind !== "const") break;
+    node = declaration.init;
+  }
+  return false;
+}
+
 const agentOperands = new Set(["agent", "agentType", "runner"]);
 function selectsAgent(context, node) {
-  return agentOperands.has(name(node)) ||
-    (node?.type === "MemberExpression" && agentOperands.has(name(node.property, node.computed))) ||
-    annotation(bindingIdentifier(context, node)) === "AgentType";
+  return matchesLocalValue(context, node, (value, binding) =>
+    agentOperands.has(name(value)) ||
+    (value.type === "MemberExpression" && agentOperands.has(name(value.property, value.computed))) ||
+    annotation(binding) === "AgentType");
 }
 
 const agentNames = new Set(["claude", "codex", "pi"]);
@@ -91,13 +106,13 @@ export default {
         return {
           CallExpression(node) {
             if (!member(node.callee, "json")) return;
-            const request = node.callee.object;
-            const binding = bindingIdentifier(context, request);
-            const property = binding?.parent;
-            const destructuredRequest = property?.type === "Property" &&
-              property.parent.type === "ObjectPattern" && property.value === binding &&
-              name(property.key, property.computed) === "req";
-            if (member(request, "req") || destructuredRequest) {
+            const isRequest = matchesLocalValue(context, node.callee.object, (value, binding) => {
+              const property = binding?.parent;
+              return member(value, "req") || (property?.type === "Property" &&
+                property.parent.type === "ObjectPattern" && property.value === binding &&
+                name(property.key, property.computed) === "req");
+            });
+            if (isRequest) {
               context.report({ node, message: "Parse request JSON through src/server/http-body.ts." });
             }
           },
@@ -128,12 +143,14 @@ export default {
         }
         return {
           CallExpression(node) {
-            if (!member(node.callee, "delete") || !member(node.callee.object, "sessions")) return;
-            const owner = node.callee.object.object;
-            const ownerType = annotation(bindingIdentifier(context, owner));
-            if (ownerType === "Registry" || (!ownerType && (name(owner) === "registry" || member(owner, "registry")))) {
-              report(node);
-            }
+            if (!member(node.callee, "delete")) return;
+            const isRegistryMap = matchesLocalValue(context, node.callee.object, (value) => {
+              if (!member(value, "sessions")) return false;
+              const owner = value.object;
+              const ownerType = annotation(bindingIdentifier(context, owner));
+              return ownerType === "Registry" || (!ownerType && (name(owner) === "registry" || member(owner, "registry")));
+            });
+            if (isRegistryMap) report(node);
           },
           Property(node) {
             if (node.parent.type !== "ObjectExpression" || name(node.key, node.computed) !== "type") return;

@@ -15,12 +15,12 @@ import {
   type VoiceUtterance,
 } from "@shared/voice-routing.ts";
 import { randomUUID } from "node:crypto";
-import type { SpokenName } from "@shared/voice-names.ts";
+import { spokenNameLabel, type SpokenName } from "@shared/voice-names.ts";
 import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.ts";
 import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
 import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
-import { voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
+import { awaitingVoiceHold, voiceCaptures, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
 import type { VoiceDecider } from "./decide.ts";
 
@@ -70,6 +70,12 @@ const MAX_ACTIVE_CARDS = 50;
 const MAX_SPLIT_QUESTIONS = 8;
 const MAX_UNSURE_CARDS = 5;
 const MAX_CAPTURE_CLOCK_SKEW_MS = 1000;
+
+function recordMatchedName(entry: HeardEntry, target: SpokenName | null | undefined): void {
+  entry.matchedName = target?.name ?? null;
+  if (target?.isReferenceName) entry.matchedReferenceName = true;
+  else delete entry.matchedReferenceName;
+}
 
 export class RecentlyHeard {
   private entries: HeardEntry[] = [];
@@ -558,7 +564,7 @@ export class VoiceRouter {
     const { heldBeforeRelease, startHostUs, speechStartHostUs } = timing;
     const onsetUs = speechStartHostUs ?? startHostUs;
     const { mode, roster, backend } = this.state();
-    if (!(voiceCaptures(mode) || (mode === "auto-muted" && heldBeforeRelease)) || backend !== utterance.backend) return false;
+    if (!(voiceCaptures(mode) || (awaitingVoiceHold(mode) && heldBeforeRelease)) || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
     // Released holds already passed the route's monotonic key-down/key-up bounds.
     if (!heldBeforeRelease) {
@@ -609,6 +615,7 @@ export class VoiceRouter {
     if (decision.kind === "ignored") {
       entry.rule = decision.reason;
       entry.matchedName = decision.closest ?? null;
+      if (decision.closestReferenceName) entry.matchedReferenceName = true;
       return true;
     }
     if (decision.kind === "control") {
@@ -630,7 +637,7 @@ export class VoiceRouter {
       return true;
     }
     entry.rule = decision.match;
-    entry.matchedName = decision.target.name;
+    recordMatchedName(entry, decision.target);
     const card: VoiceCard = {
       id, state: "pending", deadline: null, openQuestions: 0, reason: entry.rule,
       parts: [{ target: decision.target, text: decision.text }], candidates: [],
@@ -668,7 +675,7 @@ export class VoiceRouter {
     const forms = planCommand ? inbox.forms() : [];
     const form = plan && forms.find(f => f.id === plan.id);
     const windowId = report?.windowId;
-    const name = owner?.name ?? "reply";
+    const name = owner ? spokenNameLabel(owner) : "reply";
     const notOpen = () => {
       const formName = owner ? name + "'s plan form" : "the plan form";
       return notice("Open " + formName + (submit ? " to submit it" : " and say your choice again"), "form-not-open");
@@ -766,7 +773,7 @@ export class VoiceRouter {
     }
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     entry.rule = "inbox-action";
-    entry.matchedName = owner?.name ?? null;
+    recordMatchedName(entry, owner);
     this.openCard(item);
     return true;
   }
@@ -858,10 +865,10 @@ export class VoiceRouter {
         (review.status === "pending" || (times?.closed !== undefined && times.closed >= monotonicMs));
     });
     const pending = candidates.filter(q => q.status === "pending");
-    item.entry.matchedName = target?.name ?? null;
+    recordMatchedName(item.entry, target);
     if (!target && !pending.length) return false;
     if (!pending.length) {
-      this.questionNotice(item, target!.name + " has no open questions");
+      this.questionNotice(item, spokenNameLabel(target!) + " has no open questions");
       return true;
     }
     if (!content && target) {
@@ -1042,7 +1049,7 @@ export class VoiceRouter {
   private startModelStep(decision: NeedsModel, utterance: VoiceUtterance, entry: HeardEntry, time: ActionTime): void {
     const { id } = utterance;
     entry.rule = decision.reason;
-    entry.matchedName = decision.reason === "second-name" ? decision.target.name : null;
+    recordMatchedName(entry, decision.reason === "second-name" ? decision.target : null);
     entry.outcome = "resolving";
     const possible = decision.reason === "ambiguous-name" ? new Set([...decision.candidates, ...decision.splits.map(s => s.target)]) : decision.candidates;
     const candidates = [...possible].map(agentRow);
@@ -1086,7 +1093,7 @@ export class VoiceRouter {
         if (target) {
           decision = { ...decision, target, reason: "second-name",
             candidates: [...new Set([target, ...decision.splits.map(s => s.target)])] };
-          entry.matchedName = target.name;
+          recordMatchedName(entry, target);
           this.closeChoices(item);
           item.card = { ...item.card, reason: decision.reason,
             parts: [{ ...item.card.parts[0]!, target }], candidates: decision.candidates.map(agentRow) };
@@ -1114,7 +1121,7 @@ export class VoiceRouter {
         this.openCard({ ...item, timer: undefined, card, pickTargets: decision.candidates });
         return;
       }
-      if (resolved.reason === "model") entry.matchedName = resolved.parts[0]!.target!.name;
+      if (resolved.reason === "model") recordMatchedName(entry, resolved.parts[0]!.target);
       this.openCard({ ...item, timer: undefined, commands: resolved.commands ?? item.commands,
         card: { ...item.card, state: "pending", reason: resolved.reason, candidates: [], parts: resolved.parts,
           ...(resolved.reason === "mention" && decision.reason === "second-name" && { mentions: decision.candidates.filter(t => t.key !== resolved.parts[0]?.target?.key) }) } });
@@ -1302,12 +1309,12 @@ export class VoiceRouter {
       delete item.remainingSplits;
       item.card = card;
       delete item.pickTargets;
-      item.entry.matchedName = target.name;
+      recordMatchedName(item.entry, target);
       this.publish(card);
       return true;
     }
     this.take(item, pickedAt);
-    item.entry.matchedName = parts[0]!.target.name;
+    recordMatchedName(item.entry, parts[0]!.target);
     item.entry.detail = "picked";
     this.openCard({ ...item, time: pickedAt, commands: split ? split.commands : item.commands, card: { ...item.card, state: "pending", reason: split ? "split" : "picked",
       ...(!split && item.splitPicks && { mentions: [...new Set([...item.splitPicks.values()].map(s => s.target))].filter(t => t.key !== target.key) }),
@@ -1340,7 +1347,7 @@ export class VoiceRouter {
       const summary = results.map((part, index) => {
         const status = part.outcome === "not-running" ? "unavailable" : part.outcome;
         const reason = part.outcome === "failed" && part.detail ? " " + part.detail : "";
-        return `Part ${index + 1} (${card.parts[index]!.target!.name}) ${status}.${reason}`;
+        return `Part ${index + 1} (${spokenNameLabel(card.parts[index]!.target!)}) ${status}.${reason}`;
       });
       detail = [routingDetail, summary.join(" ")].filter(Boolean).join("\n");
     }
@@ -1383,7 +1390,7 @@ export class VoiceRouter {
       const stopped = roster.find(row => row.key === part.target?.key && row.state === "not-running");
       latest = stopped ?? latest;
       detail = (stopped || target) && latest
-        ? `${latest.name} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
+        ? `${spokenNameLabel(latest)} isn't running. Nothing was sent. ${latest.kind === "resident" ? "Relaunch the resident." : "Start a follow-up task."}`
         : "The selected session is unavailable.";
     }
     delivery.card.parts[index] = { ...part, target: latest, ...(command && { command }),

@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 
 import { join } from "node:path";
+import { hotkeySpeechJob } from "./voice-hotkey-tap.ts";
 import { voiceTray, type TrayVoiceState } from "./voice-tray.ts";
 
 interface ReportCounts {
@@ -32,25 +33,32 @@ let presentation: ReturnType<typeof voiceTray> = null;
 let menu: Menu | null = null;
 let muteConfirmation: NodeJS.Timeout | undefined;
 let muteError = "";
+let stopErrorJob: string | undefined;
 let updateImage: ((image: string | undefined) => void) | null = null;
 let refreshMenu: (() => void) | null = null;
 
-export function showVoiceMuteError(message: string): void {
+export function showVoiceMuteError(message: string, speechJob?: string): void {
   if (!presentation) return;
+  stopErrorJob = speechJob;
   muteError = message;
   refreshMenu?.();
   if (menu) tray?.popUpContextMenu(menu);
 }
 
 export function setTrayVoice(state: TrayVoiceState): void {
-  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted");
-  if (next?.nextMuted !== presentation?.nextMuted) {
+  const next = voiceTray(state.mode, state.muted ?? state.mode === "muted", state.pushToTalkSession);
+  const stopExpired = !!stopErrorJob && stopErrorJob !== hotkeySpeechJob(state);
+  if (next?.nextMuted !== presentation?.nextMuted || next?.action !== presentation?.action) {
     clearTimeout(muteConfirmation);
     muteConfirmation = undefined;
     muteError = "";
   }
+  if (stopExpired) {
+    muteError = "";
+    stopErrorJob = undefined;
+  }
   if (presentation?.image !== next?.image) updateImage?.(next?.image);
-  if (presentation?.status === next?.status && presentation?.action === next?.action) return;
+  if (!stopExpired && presentation?.status === next?.status && presentation?.action === next?.action) return;
   presentation = next;
   refreshMenu?.();
 }
@@ -124,7 +132,7 @@ function render(handlers: TrayHandlers): void {
     template.splice(3, 0,
       { label: status, enabled: false },
       ...(muteError ? [{ label: muteError, enabled: false }] : []),
-      { label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) },
+      ...(action ? [{ label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) }] : []),
       { label: "Recently Heard", click: handlers.onRecentlyHeard },
       { type: "separator" },
     );
@@ -159,7 +167,7 @@ export function createTray(iconPath: string, voiceImageDir: string, handlers: Tr
   updateImage = image => tray?.setImage(trayImage(image ? join(voiceImageDir, image) : iconPath));
   refreshMenu = () => render(handlers);
   tray.on("click", () => {
-    if (presentation) void requestMute(handlers, presentation.nextMuted);
+    if (presentation?.action) void requestMute(handlers, presentation.nextMuted);
     else handlers.onOpen();
   });
   tray.on("right-click", () => {
@@ -178,6 +186,7 @@ export function destroyTray(): void {
   clearTimeout(muteConfirmation);
   muteConfirmation = undefined;
   muteError = "";
+  stopErrorJob = undefined;
   presentation = null;
   updateImage = refreshMenu = null;
   tray?.destroy();

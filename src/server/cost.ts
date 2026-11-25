@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
 import { CostConfigSchema } from "@shared/protocol.ts";
 import type { CostConfig, CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -67,6 +68,11 @@ export function getCostConfig(): CostConfig {
 export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostConfig {
   const previous = getCostConfig();
   const next = CostConfigSchema.parse({ ...previous, ...patch });
+  // Display preferences do not reconcile telemetry or touch the user's settings file.
+  if (patch.enabled === undefined && patch.exportIntervalMs === undefined) {
+    persistConfigPatch(CONFIG_ENTRY, previous, next, patch);
+    return next;
+  }
   writeOtelEnv(
     next.enabled
       ? {
@@ -76,7 +82,7 @@ export function setCostConfig(patch: CostConfigPatch, now = Date.now()): CostCon
         }
       : null,
   );
-  setAppConfig(CONFIG_ENTRY, next);
+  persistConfigPatch(CONFIG_ENTRY, previous, next, patch);
   // When telemetry is switched ON, start its grace period. The exporter cannot report before it
   // has been asked to, and the `env` block only reaches sessions started AFTER it is written, so
   // there is a stretch where no export has arrived and nothing is wrong. Without this stamp the

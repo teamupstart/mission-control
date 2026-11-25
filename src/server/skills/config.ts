@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "../config-patch-storage.ts";
 import { SkillsConfigSchema } from "@shared/protocol.ts";
 import type { SkillsConfig, SkillsConfigPatch } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
@@ -188,7 +189,8 @@ export function applySkillsConfig(patch: SkillsConfigPatch, now = Date.now()): S
   const asked = merge(before, patch);
   // Live preferences do not reconcile links or advance the reload watermark.
   if (Object.keys(patch).every((key) => key === "commitPlanHtml" || key === "planStorage" || key === "grillFirstKinds" || key === "alwaysDraftPr")) {
-    return { changed: false, linked: [], unlinked: [], blocked: [], problems: [], config: persist(asked, false, now), refused: [] };
+    persistConfigPatch(CONFIG_ENTRY, before, asked, patch);
+    return { changed: false, linked: [], unlinked: [], blocked: [], problems: [], config: asked, refused: [] };
   }
   const catalog = readCatalog();
 

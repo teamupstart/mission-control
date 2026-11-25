@@ -8,7 +8,7 @@
 // count of 2. That is the difference between a log and a digest.
 
 import { reportAlert, type Alert, type AlertKind } from "./alerts.ts";
-import { reportToRead, type ReportItem } from "./reports.ts";
+import { reportAuthorLabel, reportToRead, type ReportItem } from "./reports.ts";
 
 /**
  * One thing that happened, possibly more than once.
@@ -280,7 +280,7 @@ export function reconcileReports(
   const renamed: Alert[] = [];
   for (const event of kept) {
     const report = live.get(event.key);
-    if (report && event.agentName !== report.author.name) renamed.push(reportAlert(report));
+    if (report && event.agentName !== reportAuthorLabel(report.author)) renamed.push(reportAlert(report));
   }
   const refreshed = refreshAlerts(pruned, renamed);
   if (!addUnannounced) return refreshed;

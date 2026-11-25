@@ -1,8 +1,12 @@
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
 import { closeSync, fstatSync, readSync, realpathSync } from "node:fs";
+import { join } from "node:path";
+import { announcementName, readVoiceRecord, retirementDirectory } from "./recovery-files.ts";
 import { voiceProcessBirth } from "./process-birth.ts";
 import { confinedVoiceListener } from "./supervised-listener.ts";
 import { reportBeforeDeadline, SupervisorRetirements } from "./supervisor-retirements.ts";
+
+export class SupervisorStartRefused extends Error {}
 
 export const VOICE_SUPERVISOR_PROOF_HEADER = "x-mission-voice-supervisor-proof";
 export type SupervisorReportState = "started" | "exited";
@@ -66,11 +70,17 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
     return queue;
   };
   return {
+    watched(home: string, instance: string, pid: number, birth: string) {
+      const path = join(retirementDirectory(home), name + "-" + announcementName(instance) + ".json");
+      const watch = JSON.parse(readVoiceRecord(home, path));
+      return instance.startsWith(prefix) && watch.instance === instance && watch.pid === pid &&
+        watch.birth === birth && watch.proof === watchProof(instance, pid, birth);
+    },
     daemonEnv: { [verifierEnv[name]]: der.toString("base64") },
     retryPendingExits: (home: string, report: SupervisorReporter) => retirements(home).resume(report),
     pauseExitRetries: () => { for (const queue of queues.values()) queue.pause(); },
     async launch(stateHome: string, executable: string, args: string[], env: NodeJS.ProcessEnv,
-      report: SupervisorReporter) {
+      report: SupervisorReporter, record?: (instance: string, pid?: number, startedAt?: string) => void) {
       const instance = prefix + randomBytes(32).toString("hex");
       const home = realpathSync(stateHome);
       const start = confinedVoiceListener(home, instance);
@@ -83,20 +93,21 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
       // Until a child PID replaces this entry, no listener can pass the startup gate.
       watch(process.pid, voiceProcessBirth(process.pid));
       let refused = false;
-      let released = false;
+      let observed = false;
       try {
+        record?.(instance);
         refused = await announce() === false;
         if (refused) {
           queue.discardRefused(instance);
-          throw new Error("Voice supervisor start was refused.");
+          throw new SupervisorStartRefused("Voice supervisor start was refused.");
         }
         const { child, lifetime } = await start(executable, args, env);
-        try { watch(lifetime.pid, lifetime.birth); }
+        observed = true;
+        void lifetime.exited.then(retire);
+        try { watch(lifetime.pid, lifetime.birth); record?.(instance, lifetime.pid, lifetime.birth); }
         catch (error) { child.stdin.destroy(); throw error; }
         // Install the observer before release, including for the first child on a fresh home.
-        void lifetime.exited.then(retire);
         // EOF before this line exits the gate. After release only the OS can establish exit.
-        released = true;
         const onBrokenGate = () => {};
         child.stdin.once("error", onBrokenGate);
         await new Promise<void>((resolve, reject) => {
@@ -110,7 +121,7 @@ export function createVoiceSupervisor(name: keyof typeof verifierEnv, credential
           return announce();
         } };
       } catch (error) {
-        if (refused || released) throw error;
+        if (refused || observed) throw error;
         // No OS child started. Keep its signed retirement available across launch
         // service restarts while returning the actual launch error to the caller.
         retire();

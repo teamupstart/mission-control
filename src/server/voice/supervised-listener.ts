@@ -76,7 +76,9 @@ export function confinedVoiceListener(stateHome: string, instance: string) {
         void lifetime.exited.then(cleanup);
         return { child, lifetime };
       } catch (error) {
+        const exited = child.exitCode === null && child.signalCode === null ? once(child, "exit") : undefined;
         child.stdin.destroy(); // No release was sent to the startup gate.
+        await exited;
         throw error;
       }
     } catch (error) {

@@ -1,3 +1,4 @@
+import { deferred } from "./helpers/deferred.ts";
 import { VOICE_HELLO_LAPSE_MS, VOICE_SHELL_REPORT_LAPSE_MS, VOICE_LISTENER_PROTOCOL_VERSION } from "../src/shared/voice.ts";
 import type { HeardEntry } from "../src/shared/voice-routing.ts";
 import assert from "node:assert/strict";
@@ -7,6 +8,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { model, utterancePath, listenerId, act, app, applyFeatureFlagIntent, capture, cards, home, interrupts, name, pending, post, queued, readHeard, registry, roster, say, sdk, token, voiceStateStore } from "./helpers/voice-http.ts";
 
+import { ListenerClient } from "../src/voice-listener/client.ts";
+import { playRecording } from "../src/voice-listener/playback.ts";
 import { FakeVoiceListener } from "./helpers/fake-voice-listener.ts";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
 
@@ -646,6 +649,41 @@ test("a cancel retried after toggling voice cannot dismiss a new card", async ()
   assert.deepEqual((await readHeard()).map((entry) => entry.id), ["new"]);
   await say("cancel", "fresh-cancel");
   assert.deepEqual([cards.at(-1)?.id, cards.at(-1)?.state], ["new", "cancelled"]);
+});
+
+test("a dedicated hold opens the separate Cancel window on release while the microphone stays off", async t => {
+  const configure = (listeningMode: string) => app.request("/api/voice/config", { method: "PUT",
+    headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify({ listeningMode }) });
+  assert.equal((await configure("push-to-talk")).status, 200);
+  t.after(async () => { await configure("always-on"); });
+  const headers = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const poll = () => app.request("/voice/listener/directive", { headers });
+  const { pushToTalkSession, configuredHotkey } = voiceStateStore.state();
+  const report = (down: boolean, at: number) => post("/voice/shell-report", {
+    pushToTalkSession, registeredHotkey: configuredHotkey, capabilities: { hotkey: { available: true } },
+    reportedAtHostUs: at, pushToTalk: down,
+    ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }),
+  }, token);
+  assert.equal((await (await poll()).json()).capture, false);
+  await report(true, voiceHostTimeUs());
+  const hold = await poll();
+  const revision = hold.headers.get("x-voice-held-revision");
+  assert.ok(revision);
+  const start = voiceHostTimeUs();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const up = voiceHostTimeUs();
+  await report(false, up);
+  assert.equal((await (await poll()).json()).capture, false);
+  const utterance = await app.request(utterancePath(revision), { method: "POST", headers: {
+    ...headers, host: "localhost", "content-type": "application/json",
+    "x-voice-capture-start-host-us": String(start), "x-voice-capture-end-host-ms": String(Math.floor(up / 1000)),
+  }, body: JSON.stringify(capture("Steve wait for cancel", "held-message")) });
+  assert.deepEqual(await utterance.json(), { accepted: true });
+  assert.equal(cards.at(-1)?.state, "pending");
+  assert.equal((await (await poll()).json()).capture, false);
+  await act("held-message", "cancel");
+  assert.equal(cards.at(-1)?.state, "cancelled");
+  assert.deepEqual(queued("Steve"), []);
 });
 
 test("at the deadline only the older uncancelled card reaches the real pending-turn queue", async (t) => {
@@ -1969,4 +2007,80 @@ test("a fresh no-editor probe overrides a stale focused report at speech onset",
   assert.deepEqual(await result.json(), { accepted: true });
   assert.equal(cards.at(-1)?.id, "after-blur");
   assert.equal(cards.at(-1)?.state, "pending");
+});
+
+for (const failure of ["synchronous", "asynchronous"] as const) {
+  test(`${failure} preview decode failure still delivers the completed message once to its addressed resident`, async () => {
+    voiceStateStore.reset();
+    const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+    assert.equal(config.status, 200);
+    const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => app.request(url, init));
+    const pcm = Float32Array.of(0.1, 0.2);
+    const attempted = deferred();
+    let previewAttempts = 0;
+    let exhausted = false;
+    await playRecording(client, () => ({
+      get exhausted() { return exhausted; },
+      async next({ observe }) {
+        assert.ok(observe);
+        observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+        await attempted.promise;
+        assert.equal(voiceStateStore.state().transcript?.phase, "audio");
+        assert.deepEqual(queued("Steve"), []);
+        exhausted = true;
+        return { done: false, value: { samples: pcm, onset: 1 } };
+      },
+    }), async samples => {
+      assert.equal(samples, pcm);
+      return { text: "Steve, check the build", tokens: [], durations: [], timestamps: [] };
+    }, () => {
+      previewAttempts++;
+      attempted.resolve();
+      const error = new Error("fixture partial decoder failed");
+      if (failure === "synchronous") throw error;
+      return Promise.reject(error);
+    });
+    assert.equal(previewAttempts, 1);
+    assert.deepEqual(queued("Steve"), ["check the build"]);
+    assert.equal(voiceStateStore.state().transcript?.text, "Steve, check the build");
+  });
+}
+
+test("a rejected transcript request still delivers the completed phrase once to its addressed resident", async () => {
+  voiceStateStore.reset();
+  const config = await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
+    body: JSON.stringify({ showTranscript: true, cancelWindow: { enabled: false } }) });
+  assert.equal(config.status, 200);
+
+  const rejected = deferred();
+  const requests: string[] = [];
+  const client = new ListenerClient("http://localhost", join(home, "token"), async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === "/voice/listener/transcript" && JSON.parse(String(init.body)).text === "unfinished") {
+      requests.push("preview rejected");
+      rejected.resolve();
+      return new Response("Preview temporarily unavailable", { status: 503 });
+    }
+    if (path === "/voice/utterances") requests.push("final utterance");
+    return app.request(url, init);
+  });
+  const pcm = Float32Array.of(0.1, 0.2);
+  let exhausted = false;
+  await playRecording(client, () => ({
+    get exhausted() { return exhausted; },
+    async next({ observe }) {
+      assert.ok(observe);
+      observe({ preview: "audio", onset: 1, samples: pcm.subarray(0, 1) });
+      await rejected.promise;
+      assert.deepEqual(requests, ["preview rejected"]);
+      assert.deepEqual(queued("Steve"), []);
+      exhausted = true;
+      return { done: false, value: { samples: pcm, onset: 1 } };
+    },
+  }), async () => ({ text: "Steve, check the build", tokens: [], timestamps: [], durations: [] }),
+  async () => ({ text: "unfinished", tokens: [], timestamps: [], durations: [] }));
+
+  assert.deepEqual(requests, ["preview rejected", "final utterance"]);
+  assert.deepEqual(queued("Steve"), ["check the build"]);
 });

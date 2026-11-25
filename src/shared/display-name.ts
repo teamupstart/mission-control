@@ -6,7 +6,7 @@
 
 import { residentMarkerColor, type ResidentMarkerColorId, type ResidentRunSummary } from "./residents.ts";
 import type { Session } from "./types.ts";
-import { taskKindTakesCallSign } from "./voice-names.ts";
+import { quotedReferenceName, taskKindTakesCallSign } from "./voice-names.ts";
 
 /**
  * What an agent might be called, highest rank first:
@@ -44,6 +44,10 @@ export interface AgentDisplayName {
   source: AgentDisplayNameSource;
   /** Whether a person may say this name to address the agent: only the first two ranks. */
   spoken: boolean;
+}
+
+export function agentNameLabel(display: AgentDisplayName): string {
+  return display.source === "reference-name" ? quotedReferenceName(display.name) : display.name;
 }
 
 /** What an agent is called when nothing names it. */

@@ -73,7 +73,14 @@ or launch repair link, reopening Dispatch restores its instructions and attachme
 In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long the listener
 waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
 the words in the same utterance. Changes take effect while listening and persist after restart.
-Push-to-talk ends on key release. The separate **Cancel window** starts after routing.
+**Listening mode** defaults to **Always-on**. Choose **Push-to-talk** to keep the
+microphone closed between holds. Hold the configured desktop hotkey to speak and
+release it to finish the utterance, including during calls. A missing shortcut
+or disconnected desktop keeps capture off. A missing key-up discards the hold
+after two minutes. Tap-to-mute, manual mute, call auto-mute, and the automatic
+end-of-speech delay apply to Always-on. Switching back restores their saved values.
+
+The separate **Cancel window** starts after routing.
 While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
 “cancel” can reach the router before delivery. The selected delay resumes when the last countdown closes.
 If a protocol 4.0 helper is still running during an upgrade, restart it with the updated listener
@@ -229,12 +236,29 @@ only the onset lead-in for replay. A change in capture
 authorization discards that audio, including a mute and unmute between polls.
 `pauseMs` is optional and unused. This daemon sends null.
 
+The live microphone helper posts display updates to `/voice/listener/transcript?revision=...`
+with the same token and listener ID. It reports `ready` while the input is open and quiet,
+`audio` with the detected onset in host microseconds, and `words` with that onset and the
+current recognized text. Each update for an unfinished phrase replaces its previous words.
+The daemon publishes the configured word window in voice state. Muting, disabling the overlay,
+or losing the capture grant clears it. Six seconds without a fresh reading also clears it.
+Quiet readings discard unfinished words and keep finalized words. In a short window, tab to
+the overflowing text and scroll to read it while the status stays visible.
+Only the completed utterance goes to the address router.
+
+The Sherpa listener uses the same overlay protocol while reading its supported WAV input on
+Linux and macOS. Quiet input reports ready. During detected speech it decodes growing PCM
+prefixes for the display in the background, keeping only the latest waiting prefix.
+The completed segment goes directly to recognition with the spoken roster for addressing.
+Its final `words` update carries `final: true` to replace the last partial and retain those
+words when the next phrase starts.
+
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
 response header. The native helper retains completed phrases in capture order and decodes
 them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
 The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
 If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
-When releasing push-to-talk returns a call to auto-mute, the capture-off response includes
+When releasing push-to-talk returns Voice to waiting for the hotkey or to call auto-mute, the capture-off response includes
 `x-voice-release-revision` (the held capture revision) and `x-voice-release-host-ms` (monotonic
 host milliseconds). A helper applying that exact held revision uses key-up as the boundary for
 the unfinished phrase. If its input tap still owes samples through that time, the helper
@@ -289,7 +313,8 @@ speech before the next silence boundary. During a key hold, the prefix remains r
 for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
 When CTC is available, the helper uses the directive's roster to rescore those same samples.
 Only a correction aligned to the leading address can change the transcript and its timing
-labels. The rest of the decoder transcript, including its punctuation, passes through verbatim.
+labels. The helper preserves a standalone “cancel” and its punctuation even when CTC suggests a roster name.
+The rest of the decoder transcript, including its punctuation, passes through verbatim.
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
 While listening, two completed phrases can wait in capture order behind a busy recognizer
@@ -660,7 +685,9 @@ Memory use during a file could have been higher. [Sherpa spike findings](voice-s
 On macOS or Linux, build the helper, select sherpa in the daemon, download its model
 in Setup, unmute, then run
 `npm run voice:listener -- --backend sherpa-onnx --input-file sample.wav` from the
-checkout. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit float samples.
+checkout. File input requires Sherpa. If the daemon selects FluidAudio, the development
+launcher rejects the recording before starting a microphone, with or without a supervisor
+credential. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit float samples.
 The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
 The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
@@ -777,7 +804,7 @@ Below that are the behavior rows:
 
 | Row | Field | Default |
 | --- | --- | --- |
-| Mute hotkey | `hotkey` | Control+Command+Option+V |
+| Mute hotkey / Push-to-talk hotkey | `hotkey` | Control+Command+Option+V |
 | Auto-mute on calls | `autoMuteDuringCalls` | on |
 | Cancel window (duration or Off) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
 | Unsure (Ask or Show) | `whenUnsure` | `show` |
@@ -828,8 +855,9 @@ never wrote needs no migration.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `muted` | `false` | Mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
-| `hotkey` | `cmd+ctrl+alt+v` | The mute chord in the format the Keyboard panel records, or null for none |
+| `listeningMode` | `always-on` | Select `push-to-talk` for held capture |
+| `muted` | `false` | Always-on manual mute, by the tray, the hotkey or the dashboard. Operational: a settings restore leaves it alone |
+| `hotkey` | `cmd+ctrl+alt+v` | The shared desktop shortcut in the format the Keyboard panel records, or null for none |
 | `autoMuteDuringCalls` | `true` | Stop listening while another app uses the microphone |
 | `endOfSpeechMs` | `2000` | Silence before automatic submission, in milliseconds (500, 800, 1000, 1500, 2000, 3000 or 5000) |
 | `cancelWindow` | `{ enabled: true, seconds: 4 }` | How long a routed message waits for "cancel" (1 to 30 seconds) |
@@ -838,13 +866,17 @@ never wrote needs no migration.
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
+| `showTranscript` | `true` | Show the live transcript during capture |
+| `transcriptStyle` | `card` | `card` or `capsule` |
+| `transcriptCorner` | `bottom-right` | `bottom-left` or `bottom-right` |
+| `transcriptWords` | `20` | Whole number from 1 to 100 |
 | `backend` | `auto` | `auto`, `fluidaudio` or `sherpa-onnx` |
 
 The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. Click any indicator to mute or unmute. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
+The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator and status line display the hold hint while waiting and “Release to finish” during capture. Hover over or focus a compact indicator to read the same guidance. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
 
 If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
 
@@ -916,6 +948,7 @@ calls a resident by one.
 
 A resident profile's **Identity** card pairs **Name** with an optional **Reference name**.
 For example, a resident named "Release Captain" can answer to "Sage". The reference name
+appears in double quotes on cards, identity labels, and the Voice roster. It
 is `identity.referenceName` in the profile's revision JSON, optional with no
 default, so a revision saved before it existed reads exactly as before. Clearing it saves it
 blank, which means none: a save that left the key out would carry the previous revision's forward.
@@ -1021,9 +1054,10 @@ The daemon publishes one voice state. Its `mode` is one of:
 | --- | --- |
 | `off` | The `voice` flag is off |
 | `unavailable` | At least one reason below holds |
-| `muted` | `muted` is on |
-| `auto-muted` | A live shell report says another app has the microphone, and auto-mute is on |
-| `push-to-talk` | As `auto-muted`, while the shell reports the hotkey held |
+| `waiting-for-key` | Push-to-talk is selected and the confirmed shortcut is idle |
+| `muted` | Always-on is selected and manual mute is on |
+| `auto-muted` | In Always-on, a live shell report says another app has the microphone, and auto-mute is on |
+| `push-to-talk` | The desktop confirms a hold in Push-to-talk mode or during Always-on call auto-mute |
 | `listening` | Otherwise |
 
 `voiceMode(inputs)` in `src/shared/voice.ts` is the one rule, applied in that order. The reasons,
@@ -1033,8 +1067,10 @@ in the order they are listed:
 - `listener`: no listener hello in the last 30 seconds;
 - `model`: the listener's hello says no model is loaded;
 - `microphone`: a hello or a live shell report says access is denied.
+- `shortcut`: Push-to-talk is selected and the desktop has no current confirmation of the configured shortcut.
 
 The state also carries `speech`, `capabilities`, `configuredHotkey`, `registeredHotkey`, `hotkeyError`, `model` and `roster`.
+In Push-to-talk mode the state includes a fresh `pushToTalkSession` for the desktop to echo. A report from a prior mode or disconnected desktop cannot resume a hold.
 Every window receives the saved chord and current shell registration together when either changes.
 The dashboard shows a shortcut only when the shell confirms the exact configured chord,
 reports the hotkey capability and has no registration error. Until then the indicator shows its
@@ -1043,7 +1079,9 @@ click action. A missing or expired confirmation yields `registeredHotkey: null`.
 absent and `hotkeyError` is null. `listener` is the daemon's own reading, never the shell's: available while a
 hello is live, unavailable with the reason while a hello was refused for its protocol version, and
 absent otherwise. The daemon also owns `speech-output` and reports the reason while a listener cannot speak.
-An unconfirmed stop can make the listener unavailable even while its hello is live.
+A missed speech stop confirmation makes the listener unavailable even while its hello is live.
+The daemon sets `capabilities.listener.code` to `speech_stop_unconfirmed`, which tells the shell
+to replace the helper. The accompanying `reason` supplies the display text.
 `model` is the speech model manager's reading (see [The speech model](#the-speech-model)), and
 `roster` is [who can be addressed](#who-can-be-addressed).
 
@@ -1102,7 +1140,7 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   The final utterance carries the same onset and capture revision.
   A `finish` releases a segment that produced no accepted transcript, including overlong
   audio once it can no longer be recovered at key-up.
-- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
+- `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkSession?, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
   sent by the desktop shell. A dated report lapses 15 seconds after observation. An
   accepted undated report lapses 15 seconds after arrival. Capability ids this build
   does not know are dropped rather than refused. When a shortcut trial fails, the desktop
@@ -1110,10 +1148,11 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
 
 ### Desktop hotkey and microphone contention
 
-Choose **Settings > Voice > Mute hotkey**, then press a chord. Escape cancels recording.
-A tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
+Choose the hotkey row in **Settings > Voice**, then press a chord. Escape cancels recording.
+In Always-on mode, a tap toggles manual mute from any app. If the daemon refuses the toggle or its reply is lost,
 the tray opens with the result of a fresh status check. During call auto-mute, hold for 350 ms
-to talk and release to resume auto-mute. Manual mute takes priority. When macOS refuses a shortcut,
+to talk and release to resume auto-mute. If key-up is lost, capture closes two minutes after
+the press and the unfinished utterance is discarded. Manual mute takes priority. When macOS refuses a shortcut,
 the warning names the chord still registered, or says when none is in force. Settings saves a
 replacement only after the desktop confirms registration. While waiting, the row shows the
 proposed chord. If confirmation takes longer than 15 seconds, the row identifies the edit
@@ -1225,10 +1264,92 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 When routing is unsure, **Ask aloud** asks one question using the two or three
 candidate names. The card shows the question and a Stop button. The operator can
 choose a row during playback or wait for playback to finish and answer aloud. Selecting a
-candidate, cancelling the card or muting also requests a stop. Asking requires
-listening mode and a supervised listener with a ready voice. The setting keeps
+candidate, cancelling the card, muting, or switching to Push-to-talk requests a stop.
+Capture waits for the player to confirm silence. Asking requires Always-on listening and a supervised listener with a ready voice. The setting keeps
 its saved value when unavailable and the usual on-screen choices still work.
 A sample requested through the audition route can play while muted.
+
+**Mac playback is currently unavailable.** The supervised FluidAudio helper sends
+`speech.audio: false` and an empty system voice list. Ask aloud falls back to the
+on-screen candidate rows. Answering by name remains available after capture resumes.
+
+The macOS playback implementation consumes neural WAV bytes in memory and speaks system
+voices live. Its voice catalog reads the installed English voices and their quality tiers,
+including Enhanced and Premium. To install another voice, open System Settings >
+Accessibility > Read & Speak and manage system voices. The helper closes input and discards
+its recognition segment before playback. It holds capture through the player’s completion
+or stop callback and another 250 ms before reporting the end. The next capture directive
+starts a fresh segment. During a live job the mute shortcut requests a stop and preserves
+the manual mute setting. If the daemon fails to acknowledge the stop while the same job
+is active, the tray prompts you to try the shortcut again.
+
+The original [S9 trials](voice-spike-findings.md#s9-system-speech-feedback) measured the
+exit of `say`. On November 24, 2026, the new players repeated the comparison on a Mac mini
+using its speakers and a NexiGo webcam microphone. Mission Control F4 and Samantha each
+said “Will, check the build. Steve, run the tests.” A second supervised listener kept its
+microphone open for the positive controls. In the paused trials only the playing helper
+received capture after completion. Each measurement included four seconds after the
+post-playback directive. A dash means the recognizer returned no words.
+
+| Additional delay | Voice | Open controls recognizing the sentence | Words recognized after pause, by trial |
+| --- | --- | --- | --- |
+| None | F4 | 3/3 | “Yeah.” / – / “Okay.” |
+| None | Samantha | 3/3 | “Yeah.” / – / – |
+| 250 ms | F4 | 3/3 | – / – / – |
+| 250 ms | Samantha | 3/3 | “Yeah.” / – / “Yeah.” |
+
+All three silent controls in the delayed run returned no words. The repeated “Yeah.”
+after Samantha was absent from the test sentence, but its source could not be established.
+That result did not qualify playback for release.
+
+On November 25, the same Mac, speakers and microphone were tested with the 250 ms
+playback delay. Each player had three open-microphone trials and three paused trials.
+After each paused trial, a silent control repeated the microphone stop and restart
+without playing the question. At the end of each paused or silent observation
+window, a separate process spoke “Purple bicycle” through the same speakers to
+check that the freshly opened microphone could recognize speech.
+
+| End-of-speech setting | F4 open controls recognizing both clauses | Samantha open controls recognizing both clauses | Paused trials with words before the probe | Silent controls with words before the probe | Probes recognized after reopening |
+| --- | --- | --- | --- | --- | --- |
+| 2 seconds (default) | 1/3 | 0/3 | 0/6 | 0/6 | 0/12 |
+| 500 ms | 2/3 | 3/3 | 6/6 | 6/6 | 12/12 |
+
+At 500 ms, the remaining F4 open control recognized the second clause. The resumed
+listener recognized neither clause in any paused trial. It returned “Yeah” after
+two of three Samantha playbacks and in all three matching silent controls. The
+word can occur with no playback. Its source in the original trials remains unknown,
+and the default setting missed too many controls to establish silence. Mac playback
+therefore remains unavailable.
+
+In a quiet-room repeat on November 25, an isolated test sent the release helper the
+actual question “Steve or Will?” with the same 250 ms playback delay and 500 ms
+end-of-speech setting. The open microphone recognized the full question in all
+three F4 and all three Samantha trials. After the normal pause, neither name was
+recognized in any of the six trials. Other words appeared in one F4 trial, one
+Samantha trial and four of the six matched silent controls. The resumed listener
+recognized “Purple bicycle” in all twelve probe trials. In two Samantha trials
+the probe appeared in a segment that began during the preceding silent observation
+window. The source of the other words remains uncertain. The run did not qualify
+playback. With Samantha explicitly selected, the unmodified daemon and release
+helper offered Steve and Will on screen, accepted the Steve selection and issued
+zero playback directives.
+
+In a separate hands-on check the Mac asked “Steve or Will?” once and the operator’s
+spoken “Steve” selected the card.
+In a follow-up using AirPods and an isolated test daemon, both samples started and ended
+as `finished`. The listener acknowledged a fresh capture directive after each sample and
+manual mute stayed off. The operator heard both samples and pressed Control + Option +
+Shift + K during the first. Speech continued and no stop request reached the daemon.
+On a separate physical retry the Mac reserved that same chord. An untimed tap before
+playback toggled mute. During audible playback the shell received both edges of a 190 ms
+tap and posted the stop. The daemon accepted the stop request and the player's
+`ended: stopped` report. Manual mute stayed off, and the listener acknowledged a fresh
+capture directive. The cause of the first missed tap remains unknown.
+
+In the disconnect-only retry, the player started on the AirPods. When the operator
+disconnected them during speech, macOS selected Mac mini Speakers. The daemon accepted
+the helper’s `ended: failed` report, manual mute stayed off, and the listener acknowledged
+a fresh capture directive. This verifies capture recovery after Bluetooth output loss.
 
 Neural preparation has a 15-second deadline per job once it reaches the front
 of the queue. If it expires, the daemon fails that job, discards late audio and
@@ -1487,3 +1608,9 @@ any different text you have typed in the report. The cancel window applies to
 inbox actions. The voice card confirms the action after the dashboard invokes the button.
 If the card closes or the control disappears before then, the voice card reports that the
 action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.
+
+### Live transcript
+
+With the Voice preview enabled, Settings > Voice lets you show the live transcript as a wrapping corner card or a bottom-center capsule. The card starts at the bottom right and can move to the bottom left. The overlay starts enabled and displays up to 20 recognized words. Set **Maximum transcript words** to any whole number from 1 to 100.
+
+Microphone ready indicates active capture. Audio detected means the listener has detected speech and is waiting for recognized words. Transcribing shows words as recognition progresses, even before a name matches. Screen readers announce the phase when it changes. The rolling words remain available to read in the overlay. Muting voice or losing capture hides the overlay. Partial words are for display only. Addressing uses the completed phrase.

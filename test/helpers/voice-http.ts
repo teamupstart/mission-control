@@ -73,7 +73,7 @@ beforeEach(async () => {
   rmSync(join(home, "voice/capture-grants"), { recursive: true, force: true });
   for (const id of [...VOICE_REQUIRED_FLAGS, "voice"] as const) applyFeatureFlagIntent({ kind: "flag", id, enabled: true });
   await app.request("/api/voice/config", { method: "PUT", headers: { host: "localhost", "content-type": "application/json" },
-    body: JSON.stringify({ muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
+    body: JSON.stringify({ listeningMode: "always-on", muted: false, cancelWindow: { enabled: true, seconds: 1 } }) });
   const hello = await post("/voice/listener/hello", { backend: "fluidaudio", version: VOICE_LISTENER_PROTOCOL_VERSION,
     devices: [], microphone: "granted", modelLoaded: true }, token);
   assert.equal(hello.status, 200);

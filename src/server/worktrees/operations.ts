@@ -222,7 +222,7 @@ function ownerView(
     const retention = retainedTask && isRetentionCandidate(retainedTask) ? getTaskWorktreeRetention(retainedTask.id) : null;
     return {
       kind, key, label: row?.title ?? `Task ${parsed?.id ?? key}`,
-      ...(retainedTask && retention?.generation === taskResourceGeneration(retainedTask)
+      ...(retainedTask && retention && retention.cleanupDueAt > 0 && retention.generation === taskResourceGeneration(retainedTask)
         ? { cleanupDueAt: retention.cleanupDueAt } : {}),
     };
   }

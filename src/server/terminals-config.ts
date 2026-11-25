@@ -1,3 +1,4 @@
+import { persistConfigPatch } from "./config-patch-storage.ts";
 import { MACOS_TERMINAL_ID } from "@shared/terminal.ts";
 import {
   TerminalsConfigSchema,
@@ -18,7 +19,7 @@ import {
   defaultTerminalTargetDeps,
   type TerminalTargetDeps,
 } from "./terminal/targets.ts";
-import { getAppConfig, setAppConfig } from "./db.ts";
+import { getAppConfig } from "./db.ts";
 
 // The "Terminals" settings blob, mirroring `harnesses.ts`: a schema-validated value over the
 // `app_config` KV, so a new key needs no migration.
@@ -42,12 +43,11 @@ export function getTerminalsConfig(): TerminalsConfig {
  */
 export function setTerminalsConfig(patch: TerminalsConfigPatch): TerminalsConfig {
   const cur = getTerminalsConfig();
-  const next = TerminalsConfigSchema.parse({
-    ...cur,
-    ...patch,
+  const merged = {
     multiplexerTerminal: { ...cur.multiplexerTerminal, ...patch.multiplexerTerminal },
-  });
-  setAppConfig(CONFIG_ENTRY, next);
+  };
+  const next = TerminalsConfigSchema.parse({ ...cur, ...patch, ...merged });
+  persistConfigPatch(CONFIG_ENTRY, cur, next, patch, Object.keys(merged));
   return next;
 }
 

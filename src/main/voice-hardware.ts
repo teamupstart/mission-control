@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { loadVoiceHostClock } from "../server/voice/native-clock.ts";
 import { formatChord } from "../shared/keyboard-chords.ts";
-import { VOICE_CALL_POLL_RETRY, VOICE_LIMITS, type VoiceCapability, type VoiceHotkeyError, type VoiceMode } from "../shared/voice.ts";
+import { VOICE_CALL_POLL_RETRY, VOICE_LIMITS, VOICE_MAX_HOLD_MS, type VoiceCapability, type VoiceHotkeyError, type VoiceMode } from "../shared/voice.ts";
 
 type Edge = (down: boolean, hostUs: number) => void;
 interface Registrar {
@@ -25,6 +25,8 @@ export class VoiceHardware {
   private suspended?: string | null;
   private registeredHotkey: string | null = null;
   private hotkeyError: VoiceHotkeyError | null = null;
+  private sessionStartedUs = 0;
+  private pushToTalkSession?: string;
   private press?: number;
   private release?: number;
   private holdTimer?: NodeJS.Timeout;
@@ -41,10 +43,15 @@ export class VoiceHardware {
     this.callCapability = activity.value ? available : unavailable(activity.reason);
   }
 
-  update(saved: string | null, mode: VoiceMode, recording: boolean | string = false, pending?: string, trialId?: string) {
+  update(saved: string | null, mode: VoiceMode, recording: boolean | string = false, pending?: string, trialId?: string, pushToTalkSession?: string) {
     const chord = pending ?? saved;
+    if (this.pushToTalkSession !== pushToTalkSession) {
+      this.cancelPress();
+      this.sessionStartedUs = this.clock();
+    }
+    this.pushToTalkSession = pushToTalkSession;
     this.mode = mode;
-    if (mode !== "auto-muted" && mode !== "push-to-talk" && this.pushToTalk) this.cancelPress();
+    if (mode !== "waiting-for-key" && mode !== "auto-muted" && mode !== "push-to-talk" && this.pushToTalk) this.cancelPress();
     if (this.activity.value && !this.poll) {
       this.sample();
       this.poll = setInterval(() => this.sample(), 500);
@@ -117,21 +124,25 @@ export class VoiceHardware {
     if (active === this.callActive && capability.reason === this.callCapability.reason) return;
     this.callActive = active;
     this.callCapability = capability;
-    if (!active && this.pushToTalk) this.cancelPress();
+    if (!active && !this.pushToTalkSession && this.pushToTalk) this.cancelPress();
     this.changed();
   }
 
   private edge: Edge = (down, eventUs) => {
     const at = Math.floor(eventUs);
     if (down) {
-      if (this.press !== undefined) return;
+      if (this.press !== undefined || at < this.sessionStartedUs) return;
       this.press = at;
       this.release = undefined;
-      if (this.canTalkThroughCall()) {
+      if (this.pushToTalkSession) {
+        if ((this.mode === "waiting-for-key" || this.mode === "push-to-talk") &&
+            !this.trialId && this.registeredHotkey && this.desired === this.registeredHotkey) {
+          this.startHold(at);
+        }
+      } else if (this.canTalkThroughCall()) {
         this.holdTimer = setTimeout(() => {
           if (!this.canTalkThroughCall()) return;
-          this.pushToTalk = true;
-          this.changed();
+          this.startHold(at);
         }, Math.max(0, 350 - (this.clock() - at) / 1000));
       }
       return;
@@ -140,9 +151,20 @@ export class VoiceHardware {
     const tap = at - this.press < 350_000;
     this.cancelPress();
     this.release = at;
-    if (tap) this.toggle();
+    if (tap && !this.pushToTalkSession) this.toggle();
     this.changed();
   };
+
+  private startHold(pressedAtUs: number) {
+    const remaining = VOICE_MAX_HOLD_MS - (this.clock() - pressedAtUs) / 1000;
+    if (remaining <= 0) return;
+    this.pushToTalk = true;
+    this.holdTimer = setTimeout(() => {
+      this.cancelPress();
+      this.changed();
+    }, remaining);
+    this.changed();
+  }
 
   private cancelPress() {
     clearTimeout(this.holdTimer);
@@ -163,6 +185,7 @@ export class VoiceHardware {
         hotkey: this.registrar.value ? { ...available, ...(this.recordingId && this.registeredHotkey === null && { recordingId: this.recordingId }) } : unavailable(this.registrar.reason),
         "call-detection": this.callCapability,
       },
+      pushToTalkSession: this.pushToTalkSession,
       reportedAtHostUs: this.clock(), registeredHotkey: this.registeredHotkey, hotkeyError: this.hotkeyError,
       callActive: this.callActive, pushToTalk: this.pushToTalk,
       pushToTalkPressedAtHostUs: this.pushToTalk ? this.press : undefined,

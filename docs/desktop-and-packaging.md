@@ -104,7 +104,7 @@ installation after verifying the exact published bytes again.
 
 A signed DMG can be downloaded manually from the canonical GitHub Release and copied to your
 personal Applications directory, `/Applications`, or a persistent custom folder. Open the
-copied app, then use **Settings > Setup > Application updates > Enroll this copied app**.
+copied app, then choose **Enroll this copied app** in the footer of **Settings → Setup**.
 Enrollment uses native `gh` to fetch and compare that exact publication, then writes a schema-2
 binary receipt under the shared writer lock. It refuses a different managed destination or
 modified copied bytes. The displayed destination makes system enrollment explicit. Launching
@@ -316,8 +316,8 @@ through [`install-identity.ts`](../src/main/install-identity.ts):
   valid. Everything proceeds as before.
 - **unmanaged**: no usable receipt, which is what the updater already reported.
 - **mismatched**: a receipt describing some other bundle, or a different build at the receipt's
-  own path. The app runs; the updater stands down and says why in **Settings → Setup →
-  Application updates**, because the only bundle it could update is not this one.
+  own path. The app runs, and the updater explains the mismatch in the **Settings → Setup**
+  footer.
 - **redirect**: the one validated exception. The exact `/Applications/Mission Control.app`, whose
   trusted receipt names this account's own `~/Applications/Mission Control.app` and matches that
   bundle's identity, opens it and exits. This happens before the single-instance lock is taken,
@@ -465,7 +465,7 @@ guidance. Missing assets, unsupported protocols or OS versions never select a so
 
 ### Alpha updates
 
-Enable **Settings → Setup → Application updates → Alpha updates** to follow signed binaries for unreleased commits
+Enable **Alpha updates** at the top of **Settings → Setup** to follow signed binaries for unreleased commits
 on `main`. The setting defaults off, persists across restarts and upgrades, and starts an
 immediate background check when changed. Alpha then checks every five minutes with up to
 30 seconds of jitter, including a check after waking if that interval has elapsed. Checks
@@ -474,7 +474,7 @@ the version number is unchanged. Multiple commits between checks produce one off
 latest tip. An older installation without source metadata is offered the latest main build
 once to establish its identity.
 
-**Check for updates** in Settings and **Check for Updates…** in the menu or tray query the
+**Check for updates** in the Setup footer and **Check for Updates…** in the menu or tray query the
 selected channel immediately. An alpha offer names the commit, shows its message, and includes
 news and notes for a newer stable release when available. Every alpha upgrade installs the
 selected main commit. A release-news lookup failure does not block a main update, while a
@@ -1028,6 +1028,14 @@ every five seconds. A verified FluidAudio model, permission to use the microphon
 packaged helper let the shell start one listener. A crash retries with increasing delays up to
 five seconds. Switching voice off, losing the model or quitting stops the owned process. On
 quit the shell waits for the listener before draining the daemon.
+
+The shell identifies each speech-capable launch to the daemon. If a stop goes
+unconfirmed for five seconds, it terminates that helper, escalates to SIGKILL after
+two seconds if needed, and waits for the OS exit and daemon acknowledgement before
+replacing it. The helper also exits when its supervisor pipe closes.
+The pinned desktop endpoint forwards the speech stop, launch reports and per-job audio
+and event routes. The development FluidAudio launcher uses the same supervision when
+its launch service provides a credential. [Credential provisioning](storage.md#voice-supervisor-credentials)
 
 The native tray retains the need-you count. While voice is on, left click toggles manual mute
 and right click opens the menu with voice status, mute and Recently Heard. The shell reports

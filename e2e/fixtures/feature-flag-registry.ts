@@ -10,6 +10,8 @@ export const PINNED_PLAN_CHANGE_FLAG_ID = "pinned-plan-change" as const;
 export const WORK_UNIT_ID_FLAG_ID = "work-unit-id" as const;
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 export const SESSION_AWAITING_FLAG_ID = "session-awaiting" as const;
+export const SHAPER_SIGN_IN_FLAG_ID = "shaper-sign-in" as const;
+export const RESIDENT_CARD_NAMES_FLAG_ID = "resident-card-names" as const;
 
 export const MCP_SCHEDULES_FLAG_ID = "mcp-schedules" as const;
 export const IDLE_RAIL_SECTION_COUNTS_FLAG_ID = "idle-rail-section-counts" as const;

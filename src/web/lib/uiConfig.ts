@@ -59,6 +59,13 @@ const SKIN_MAX_RETRY_MS = 30_000;
 let skinRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingSkinWrites = 0;
 let skinWriteTail = Promise.resolve();
+/**
+ * Resident name with call sign writes, saved in the order they were made, like skin writes. Each
+ * checkbox sends the whole style list it rebuilt from the last one drawn, and the daemon parses
+ * each body before it writes, so two overlapping requests could store the earlier list over the
+ * later one: Subtitle then Expanding chip would keep only the subtitle after a reload.
+ */
+let residentCardNameWriteTail = Promise.resolve();
 
 /** Fetch just the skin into the live store after a daemon invalidation or reconnect. */
 export async function refreshUiSkin(): Promise<void> {
@@ -83,6 +90,28 @@ async function readUiSkin(generation: number, delay: number): Promise<void> {
   skinRefreshPending = false;
   confirmedSkin = view.skin;
   if (current.skin !== confirmedSkin) commit({ ...current, skin: confirmedSkin });
+}
+
+let preferenceRevision = 0;
+let preferencesPending = false;
+let preferenceWritesPending = 0;
+let preferenceRetry: ReturnType<typeof setTimeout> | undefined;
+
+/** Reconcile ordinary preferences without disturbing skin and voice's ordered stores. */
+export async function refreshUiPreferences(delay = 1_000): Promise<void> {
+  clearTimeout(preferenceRetry);
+  const revision = ++preferenceRevision;
+  preferencesPending = true;
+  if (!hydrated || preferenceWritesPending) return;
+  const view = await fetchUiConfig(AbortSignal.timeout(5_000));
+  if (revision !== preferenceRevision) return;
+  if (!view) {
+    preferenceRetry = setTimeout(() => void refreshUiPreferences(Math.min(delay * 2, 30_000)), delay);
+    return;
+  }
+  preferencesPending = false;
+  const { skin: _skin, voice: _voice, ...preferences } = view.config;
+  commit({ ...current, ...preferences });
 }
 
 export const UI_CONFIG_HYDRATE_RETRY_MS = 1_000;
@@ -186,6 +215,7 @@ export async function hydrateUiConfig(): Promise<void> {
   hydrated = true;
   emit();
   if (skinRefreshPending) void refreshUiSkin();
+  if (preferencesPending) void refreshUiPreferences();
 }
 
 /**
@@ -202,23 +232,35 @@ export async function updateUiConfig(patch: UiConfigPatch): Promise<boolean> {
     writeGeneration.set(key, generation);
     generations.set(key, generation);
   }
+  const changesPreferences = Object.keys(patch).some(key => key !== "skin" && key !== "voice");
+  if (changesPreferences) {
+    preferenceWritesPending++;
+    preferenceRevision++;
+  }
   const skin = patch.skin;
   if (skin !== undefined) {
     pendingSkinWrites++;
     skinReadGeneration++;
   }
   commit(optimistic);
-  // Serialize skin writes from this window so rapid clicks save in the order they were made.
-  const request = skin === undefined
-    ? api.setUiConfig(patch)
-    : skinWriteTail.then(() => api.setUiConfig(patch, AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS)));
+  // Serialize skin writes from this window so rapid clicks save in the order they were made, and
+  // resident name style writes for the same reason. A failed resident name write still releases
+  // the next one.
+  const residentCardNames = skin === undefined && patch.residentCardNameStyles !== undefined;
+  const request = skin !== undefined
+    ? skinWriteTail.then(() => api.setUiConfig(patch, AbortSignal.timeout(SKIN_REQUEST_TIMEOUT_MS)))
+    : residentCardNames
+      ? residentCardNameWriteTail.then(() => api.setUiConfig(patch))
+      : api.setUiConfig(patch);
   if (skin !== undefined) skinWriteTail = request.then(() => {});
+  if (residentCardNames) residentCardNameWriteTail = request.then(() => {}, () => {});
   const res = await request;
   if (skin !== undefined) {
     pendingSkinWrites--;
     if (res.ok) confirmedSkin = skin;
     if (!pendingSkinWrites && (skinRefreshPending || !res.ok)) void refreshUiSkin();
   }
+  if (changesPreferences && --preferenceWritesPending === 0 && preferencesPending) void refreshUiPreferences();
   if (!res.ok) {
     // A later optimistic patch, including one setting this field to the same value, may have
     // already superseded this request. Roll back only fields this request still owns, never

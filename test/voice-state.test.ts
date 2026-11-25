@@ -1,6 +1,9 @@
 import { fixtureSupervisorEnv, fixtureVoiceSupervisor } from "./helpers/voice-supervisor.ts";
 // Voice state (contract B): the pure mode rule, the reasons, and the daemon's store with a fake
 // clock - a hello and a shell report lapsing, a refused protocol version, and capabilities.
+import { join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import test, { before } from "node:test";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
@@ -9,6 +12,7 @@ import {
   VOICE_CONFIG_DEFAULTS,
   VOICE_HELLO_LAPSE_MS,
   VOICE_LISTENER_PROTOCOL_VERSION,
+  VOICE_MAX_HOLD_MS,
   VOICE_MODEL_STATE_NONE,
   VOICE_SHELL_REPORT_LAPSE_MS,
   VoiceConfigSchema,
@@ -70,9 +74,11 @@ test("voiceUnavailableReasons names every reason that holds, in order", () => {
 test("the config schema holds every contract A field with its default", () => {
   assert.deepEqual(VoiceConfigSchema.parse({}), {
     muted: false,
+    listeningMode: "always-on",
     hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
     endOfSpeechMs: 2000,
+    showTranscript: true, transcriptWords: 20, transcriptStyle: "card", transcriptCorner: "bottom-right",
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show", speech: { voice: null },
     planFormsByVoice: true,
@@ -96,12 +102,13 @@ const REPORT: VoiceShellReport = {
   capabilities: {}, microphone: null, callActive: false, pushToTalk: false, hotkeyError: null,
 };
 
-function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> } = {}) {
+function harness(options: { speechDirectory?: string; flags?: Set<string>; config?: Partial<VoiceConfig> } = {}) {
   let now = 1_000_000;
   const flags = options.flags ?? new Set(ALL_FLAGS);
   let config: VoiceConfig = { ...VOICE_CONFIG_DEFAULTS, ...options.config };
   const timers: Array<{ fn: () => void; at: number }> = [];
   const store = new VoiceStateStore({
+    speechDirectory: options.speechDirectory,
     now: () => now,
     hostNowUs: () => now * 1000,
     enabled: (id) => flags.has(id),
@@ -124,6 +131,7 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
     flags,
     published,
     setConfig: (patch: Partial<VoiceConfig>) => { config = { ...config, ...patch }; },
+    elapseWithoutTimers(ms: number) { now += ms; },
     /** Move the clock and fire every timer that came due, as the real ones would. */
     advance(ms: number): void {
       now += ms;
@@ -134,6 +142,145 @@ function harness(options: { flags?: Set<string>; config?: Partial<VoiceConfig> }
     },
     timers,
   };
+}
+
+test("dedicated capture requires the current desktop registration and a fresh press after loss or mode change", () => {
+  const h = harness({ config: { listeningMode: "push-to-talk", muted: true } });
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (patch: Partial<VoiceShellReport> = {}) => {
+    h.advance(1);
+    h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: h.hostNowUs(), ...patch });
+  };
+  const press = () => report({ pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() + 1 });
+  assert.equal(h.store.directive().capture, false);
+  report();
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  press();
+  const held = h.store.directive();
+  assert.ok(held.capture);
+  report({ pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture()?.revision, held.revision);
+  press();
+  report({ registeredHotkey: null, hotkeyError: { reason: "Reserved", chordInForce: null } });
+  assert.equal(h.store.directive().capture, false);
+  assert.deepEqual(h.store.drainingRevisions(), []);
+  report();
+  press();
+  const session = h.store.state().pushToTalkSession;
+  h.advance(VOICE_SHELL_REPORT_LAPSE_MS);
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptHello(listenerId, HELLO);
+  report({ pushToTalkSession: session, pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  report();
+  press();
+  assert.ok(h.store.directive().capture);
+  h.setConfig({ listeningMode: "always-on" });
+  assert.equal(h.store.publish().mode, "muted");
+  h.setConfig({ listeningMode: "push-to-talk" });
+  assert.equal(h.store.directive().capture, false);
+  h.store.reset();
+});
+
+test("dedicated Push-to-talk captures only during the hold on an active call with auto-mute saved", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk", autoMuteDuringCalls: true } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (down: boolean) => {
+    h.advance(1);
+    const at = h.hostNowUs();
+    h.store.acceptShellReport({ ...REPORT, callActive: true, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { "call-detection": { available: true, reason: null }, hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: at, pushToTalk: down,
+      ...(down ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) });
+  };
+  report(false);
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  report(true);
+  const hold = h.store.directive();
+  assert.equal(h.store.state().mode, "push-to-talk");
+  assert.equal(hold.capture, true);
+  report(false);
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture()?.revision, hold.revision);
+});
+
+test("a late listener hello invalidates a held shortcut before renewing the lease", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const session = h.store.state().pushToTalkSession!;
+  const registration = { ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+    capabilities: { hotkey: { available: true, reason: null } } };
+  // The desktop is still live when the listener returns, before its timer gets to run.
+  h.elapseWithoutTimers(VOICE_HELLO_LAPSE_MS - 1);
+  const pressed = h.hostNowUs();
+  const held = { ...registration, pushToTalkSession: session, pushToTalk: true, pushToTalkPressedAtHostUs: pressed };
+  h.store.acceptShellReport({ ...held, reportedAtHostUs: pressed });
+  assert.ok(h.store.directive().capture);
+  h.elapseWithoutTimers(2);
+  assert.ok(h.store.acceptHello(listenerId, HELLO).ok);
+  assert.equal(h.store.directive().capture, false);
+  h.store.acceptShellReport({ ...held, reportedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.directive().capture, false);
+  const recovered = h.store.state().pushToTalkSession;
+  assert.notEqual(recovered, session);
+  h.advance(1);
+  h.store.acceptShellReport({ ...registration, pushToTalkSession: recovered, reportedAtHostUs: h.hostNowUs(),
+    pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  h.advance(1);
+  h.store.acceptShellReport({ ...held, pushToTalkSession: recovered, reportedAtHostUs: h.hostNowUs(),
+    pushToTalkPressedAtHostUs: h.hostNowUs() });
+  assert.ok(h.store.directive().capture);
+});
+
+test("a hold crossing its cutoff during publication schedules immediate capture revocation", t => {
+  const h = harness({ config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const pressed = h.hostNowUs();
+  h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+    capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
+    pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: pressed, pushToTalkPressedAtHostUs: pressed });
+  assert.ok(h.store.directive().capture);
+  const cutoff = pressed + VOICE_MAX_HOLD_MS * 1000;
+  let hostTime = cutoff - 1;
+  t.mock.method(h.store, "hostNowUs", () => hostTime);
+  h.store.onChange(() => { hostTime = cutoff + 1; });
+  assert.equal(h.store.publish().mode, "push-to-talk");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.mode, "waiting-for-key");
+  assert.equal(h.store.directive().capture, false);
+  assert.equal(h.store.releasedCapture(), undefined);
+});
+
+for (const listeningMode of ["always-on", "push-to-talk"] as const) {
+  test(`${listeningMode} expires a lost native key-up even with continuous desktop heartbeats`, () => {
+    const h = harness({ config: { listeningMode } });
+    h.store.acceptHello(listenerId, HELLO);
+    const pressed = h.hostNowUs();
+    const snapshot = { ...REPORT, callActive: true, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } }, pushToTalk: true,
+      pushToTalkSession: h.store.state().pushToTalkSession, pushToTalkPressedAtHostUs: pressed };
+    for (let seconds = 0; seconds < 120; seconds += 5) {
+      h.store.acceptHello(listenerId, HELLO);
+      h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
+      assert.equal(h.store.directive().capture, true);
+      h.advance(5000);
+    }
+    assert.equal(h.published.at(-1)?.mode, listeningMode === "always-on" ? "auto-muted" : "waiting-for-key");
+    assert.equal(h.store.directive().capture, false);
+    assert.equal(h.store.releasedCapture(), undefined);
+    h.store.acceptShellReport({ ...snapshot, reportedAtHostUs: h.hostNowUs() });
+    assert.equal(h.store.directive().capture, false);
+    h.store.reset();
+  });
 }
 
 test("with the flag off the state is off, whatever was heard", () => {
@@ -427,6 +574,11 @@ test("canonicalVoiceState ignores key order and nothing else", () => {
   const b: VoiceState = { ...a, capabilities: { hotkey: { available: false, reason: "x" }, tray: { available: true, reason: null } } };
   assert.equal(canonicalVoiceState(a), canonicalVoiceState(b));
   assert.notEqual(canonicalVoiceState(a), canonicalVoiceState({ ...a, mode: "muted" }));
+  const listener = { available: false, reason: "Listener unavailable." };
+  assert.notEqual(
+    canonicalVoiceState({ ...a, capabilities: { listener } }),
+    canonicalVoiceState({ ...a, capabilities: { listener: { ...listener, code: "speech_stop_unconfirmed" } } }),
+  );
 });
 
 test("speech output belongs to the daemon and needs a supervised, capable listener and a ready voice", () => {
@@ -445,4 +597,41 @@ test("speech output belongs to the daemon and needs a supervised, capable listen
   h.store.acceptHello(listenerId, { ...HELLO, speech: { ...speech, systemVoices: [] } }, instance);
   assert.match(capability()?.reason ?? "", /No voice is ready/);
   assert.equal(JSON.stringify(h.published).includes(instance), false);
+});
+
+test("live transcript is ephemeral, grant-bound and replaces partial hypotheses before addressing", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-voice-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const sample = { phase: "words" as const, onset: 1, text: "some unfinished words" };
+  assert.equal(h.store.reportTranscript("other", revision, sample), false);
+  assert.equal(h.store.reportTranscript(listenerId, revision, sample), true);
+  assert.equal(h.store.state().transcript?.text, sample.text);
+  h.store.reportTranscript(listenerId, revision, { ...sample, text: "the final words", final: true });
+  h.store.reportTranscript(listenerId, revision, sample);
+  assert.equal(h.store.state().transcript?.text, "the final words");
+  h.setConfig({ transcriptWords: 4 });
+  h.store.reportTranscript(listenerId, revision, { ...sample, onset: 2, text: "from another phrase" });
+  assert.equal(h.store.state().transcript?.text, "words from another phrase");
+  for (let i = 0; i < 2; i++) {
+    h.store.reportTranscript(listenerId, revision, { phase: "ready" });
+    assert.equal(h.store.state().transcript?.phase, "ready");
+    assert.equal(h.store.state().transcript?.text, "the final words");
+    h.advance(800);
+  }
+  h.advance(6100);
+  assert.equal(h.store.state().transcript, undefined);
+  h.store.reportTranscript(listenerId, revision, sample);
+  assert.equal(h.store.state().transcript, undefined, "a late partial for the finalized onset cannot revive the expired overlay");
+  h.store.reportTranscript(listenerId, revision, { ...sample, onset: 3, text: "new phrase" });
+  assert.equal(h.store.state().transcript?.text, "new phrase");
+  h.setConfig({ inputDevice: "system-default" });
+  assert.equal(h.store.publish().transcript, undefined, "the input switch clears the overlay in the published frame");
+  h.setConfig({ muted: true });
+  h.store.publish();
+  h.setConfig({ muted: false });
+  assert.equal(h.store.reportTranscript(listenerId, revision, sample), false);
+  h.store.reset();
 });

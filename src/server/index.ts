@@ -63,11 +63,7 @@ import { RESIDENT_LAUNCH_TASK_CREATE, TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
-import {
-  defaultRetentionCleanupDeps,
-  defaultRetentionObserverDeps,
-  TaskWorktreeRetentionObserver,
-} from "./task-worktree-retention.ts";
+import { createDaemonRetentionObserver } from "./task-worktree-retention.ts";
 import { SdkSupervisor } from "./sdk/supervisor.ts";
 import { startDiscoveryAfterSdkRestore } from "./sdk/startup.ts";
 import { PendingTurnManager } from "./pending-turns.ts";
@@ -705,27 +701,9 @@ setLlmSpendSink((report) => {
   if (recordSpendReport(report).kind === "recorded") registry.applyAutomationUsage();
 });
 let stopPoller = () => {};
-// The durable worktree activity clock. Non-destructive by construction: it records when each
-// terminal task's checkouts last changed in a way Git can see, and the 30-day deadline that
-// implies, and it reclaims nothing - see `task-worktree-retention.ts`.
-//
-// Started behind the discovery gate rather than here-and-now, and the ordering is the contract:
-// `onSessionsObserved` is the first COMPLETED sweep, which is when session/task reconciliation
-// has settled who owns which worktree. A pass before it would seed windows against ownership
-// that is still being rebuilt. Registered AFTER the TaskManager and workflow twins above so
-// their reconstruction runs first, exactly as ensemble recovery does.
-const retentionObserver = new TaskWorktreeRetentionObserver({
-  listTasks: () => registry.listTasks(),
-  ...defaultRetentionObserverDeps,
-  cleanup: {
-    ...defaultRetentionCleanupDeps,
-    // The single destructive capability, and it is `TaskManager`'s own guarded, queued entry
-    // rather than a provider or the allocator. Everything the sweep can delete, it deletes by
-    // asking the class that owns the task lifecycle to run its existing reclaim core.
-    reclaim: (request) => tasks.enqueueRetentionCleanup(request),
-    refreshSummary: (taskId) => registry.refreshTaskAutomaticCleanup(taskId),
-  },
-});
+// First completed discovery establishes session ownership. TaskManager, workflow and
+// ensemble recovery register before retention, so their reconciliation starts first.
+const retentionObserver = createDaemonRetentionObserver(registry, tasks);
 registry.onSessionsObserved(() => retentionObserver.start());
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);

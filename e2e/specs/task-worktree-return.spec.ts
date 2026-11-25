@@ -59,35 +59,33 @@ async function capture(page: Page, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/task-worktree-return/${name}.png`);
 }
 
-test("Complete resets and returns both owned worktrees and the next dispatch reuses them", async ({ dashboard, daemon }) => {
+test("Complete closes the session and retains both owned worktrees and their local changes", async ({ dashboard, daemon }) => {
   test.setTimeout(240_000);
   const first = await dispatch(dashboard, daemon, "Complete the multi repo return test", true);
   const paths = [first.worktreePath!, first.extraRepos[0]!.worktreePath!];
-  for (const path of paths) writeFileSync(join(path, "remaining-local-work.md"), "Completion discards this after archiving.\n");
+  for (const path of paths) writeFileSync(join(path, "remaining-local-work.md"), "Keep this work through completion.\n");
   await dashboard.locator(".console-detail").getByRole("button", { name: /^complete$/i }).click();
   const complete = dashboard.getByRole("dialog", { name: "Complete task and close session" });
-  await expect(complete).toContainText("worktrees are reset and returned");
-  await expect(complete).toContainText("local changes are discarded");
+  await expect(complete).toContainText("Task-owned worktrees and their local changes stay in place.");
+  await expect(complete).toContainText("The retention window starts when the last tracked session using the worktrees leaves.");
+  await expect(complete).toContainText("Automatic cleanup requires clean worktrees with commits published to origin.");
   await expectContentClearsBorder(complete);
   await capture(dashboard, "complete-return-confirmation");
   await complete.getByRole("button", { name: "Complete & close" }).click();
   await expect(complete).toBeHidden({ timeout: 1500 });
   await expect.poll(() => taskFor(daemon, first.intent), { timeout: 120_000 }).toMatchObject({
-    status: "done", worktreePath: null, worktreeLeaseId: null,
-    extraRepos: [{ worktreePath: null, worktreeLeaseId: null }],
+    status: "done", worktreePath: first.worktreePath, worktreeLeaseId: first.worktreeLeaseId,
+    extraRepos: [{ worktreePath: paths[1], worktreeLeaseId: first.extraRepos[0]!.worktreeLeaseId }],
   });
   for (const path of paths) {
-    expect(slotState(daemon, path)).toBe("available");
-    expect(existsSync(join(path, "remaining-local-work.md"))).toBe(false);
+    expect(slotState(daemon, path)).toBe("leased");
+    expect(readFileSync(join(path, "remaining-local-work.md"), "utf8")).toBe("Keep this work through completion.\n");
   }
-  const reused = await dispatch(dashboard, daemon, "Reuse the completed task slots", true);
-  expect([reused.worktreePath, reused.extraRepos[0]?.worktreePath]).toEqual(paths);
-  expect(reused.worktreeLeaseId).not.toBe(first.worktreeLeaseId);
-  await capture(dashboard, "completed-slots-reused");
-  console.log("OBSERVED Complete reset both repositories, returned their leases, and a new task reused both slots");
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title })).toHaveCount(0);
+  await capture(dashboard, "completed-slots-retained");
 });
 
-test("Reset retains its checkout and a later safe Kill returns it automatically", async ({ dashboard, daemon }) => {
+test("Reset and a later clean Kill both retain the checkout", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   const first = await dispatch(dashboard, daemon, "Reset then kill the clean task");
   writeFileSync(join(first.worktreePath!, "discard-on-reset.md"), "Reset removes this.\n");
@@ -98,6 +96,7 @@ test("Reset retains its checkout and a later safe Kill returns it automatically"
   await expect(reset).toBeHidden();
   await expect.poll(() => taskFor(daemon, first.intent)).toMatchObject({ status: "cancelled", sessionId: null, worktreePath: first.worktreePath });
   expect(slotState(daemon, first.worktreePath!)).toBe("leased");
+  expect(existsSync(join(first.worktreePath!, "discard-on-reset.md"))).toBe(false);
   await dashboard.locator(".console-detail").getByRole("button", { name: /kill$/i }).click();
   const kill = dashboard.getByRole("dialog", { name: "Kill session" });
   await expect(kill).toContainText("all are clean, published to origin, and unused");
@@ -106,11 +105,11 @@ test("Reset retains its checkout and a later safe Kill returns it automatically"
   await capture(dashboard, "safe-kill-confirmation");
   await kill.getByRole("button", { name: "Kill", exact: true }).click();
   await expect(kill).toBeHidden();
-  await expect.poll(() => taskFor(daemon, first.intent), { timeout: 120_000 }).toMatchObject({ status: "cancelled", worktreePath: null, worktreeLeaseId: null });
-  expect(slotState(daemon, first.worktreePath!)).toBe("available");
-  const reused = await dispatch(dashboard, daemon, "Reuse the reset and killed slot");
-  expect(reused.worktreePath).toBe(first.worktreePath);
-  console.log("OBSERVED Reset kept the lease; subsequent clean Kill returned it and dispatch reused it");
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title })).toHaveCount(0);
+  expect(await taskFor(daemon, first.intent)).toMatchObject({
+    status: "cancelled", worktreePath: first.worktreePath, worktreeLeaseId: first.worktreeLeaseId,
+  });
+  expect(slotState(daemon, first.worktreePath!)).toBe("leased");
 });
 
 test("Kill retains ignored local work and leaves manual cleanup available", async ({ dashboard, daemon }) => {
@@ -126,10 +125,8 @@ test("Kill retains ignored local work and leaves manual cleanup available", asyn
   await expectContentClearsBorder(kill);
   await kill.getByRole("button", { name: "Kill", exact: true }).click();
   await expect(kill).toBeHidden();
-  await expect.poll(() => daemon.readLog(), { timeout: 60_000 }).toContain(
-    `"taskId":"${first.id}","reason":"kill","outcome":"retained","detail":"checkout has uncommitted, untracked or ignored work"`,
-  );
-  expect(await taskFor(daemon, first.intent)).toMatchObject({
+  await expect(dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: first.title })).toHaveCount(0);
+  await expect.poll(() => taskFor(daemon, first.intent)).toMatchObject({
     status: "failed", worktreePath: path, worktreeLeaseId: first.worktreeLeaseId,
   });
   expect(slotState(daemon, path)).toBe("leased");
@@ -145,7 +142,7 @@ test("Kill retains ignored local work and leaves manual cleanup available", asyn
   console.log("OBSERVED Kill preserved ignored notes, retained the lease, and kept manual cleanup available");
 });
 
-test("Shipping explains that owned completion always returns worktrees", async ({ dashboard, daemon }) => {
+test("Shipping explains that owned completion always closes its session", async ({ dashboard, daemon }) => {
   await dashboard.goto(`${daemon.baseURL}/#/settings/shipping`);
   await expect(dashboard.getByText("Completed tasks with owned worktrees always close their sessions", { exact: false })).toBeVisible();
   await expect(dashboard.getByRole("checkbox", { name: "Close assigned sessions after their pull requests merge" })).toBeVisible();

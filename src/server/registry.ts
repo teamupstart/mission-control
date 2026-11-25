@@ -1,3 +1,4 @@
+import { noteWorktreeUse } from "./worktrees/use-reservation.ts";
 import { explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
@@ -1447,6 +1448,15 @@ export class Registry extends EventEmitter {
     this.emitEvent({ type: "session_transfers", page, ...(changed ? { changed: transferSummary(changed) } : {}) });
   }
 
+  /** Daemon inventory includes exited cards through their linger and hidden discoveries. */
+  worktreeSessionInventory(): { sessions: readonly Session[]; hiddenCwds: ReadonlySet<string> } {
+    return { sessions: [...this.sessions.values()], hiddenCwds: this.hiddenCwds };
+  }
+
+  sdkLaunchTaskId(sessionId: string): string | null {
+    return this.sdkLaunchTasks.get(sessionId)?.taskId ?? null;
+  }
+
   snapshot(): {
     sessionTransfers: SessionTransferPage;
     sessions: Session[];
@@ -1681,6 +1691,10 @@ export class Registry extends EventEmitter {
 
   emitUiSkinChanged(): void {
     this.emitEvent({ type: "ui_skin_changed" });
+  }
+
+  emitSettingsConfigChanged(domain: import("@shared/session-settings-metadata.ts").SettingsRefreshDomain): void {
+    this.emitEvent({ type: "settings_config_changed", domain });
   }
 
   emitSessionSettingsAccessChanged(): void {
@@ -2999,6 +3013,7 @@ export class Registry extends EventEmitter {
     terminals: readonly TerminalEnumeration[] = [],
     hiddenCwds: ReadonlySet<string> = new Set<string>(),
   ): void {
+    noteWorktreeUse([...hiddenCwds].filter((cwd) => !this.hiddenCwds.has(cwd)));
     this.hiddenCwds = hiddenCwds;
     this.terminalInventory = terminals;
     this.verifiedLaunchesSinceDiscovery.clear();

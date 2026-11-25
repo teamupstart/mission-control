@@ -13,7 +13,7 @@
 import { isActiveTask } from "./task-status.ts";
 import type { Session } from "./types.ts";
 import { hasBlocker, isAwaiting, reportBucket } from "./session.ts";
-import { workflowRunParkedOnSession, workflowRunResumesItself } from "./workflow.ts";
+import { workflowRunIsOpen, workflowRunParkedOnSession, workflowRunResumesItself } from "./workflow.ts";
 import type { WorkflowExternalSourceKind, WorkflowRunSummary } from "./workflow.ts";
 import { unpushedClause } from "./unpushed.ts";
 import type { UnpushedCommits } from "./unpushed.ts";
@@ -177,6 +177,16 @@ export function hasOpenStallTask(s: Session): boolean {
   if (s.task?.kind === "resident") return false;
   const st = s.task?.status;
   return st !== undefined && (st === "backlog" || isActiveTask(st));
+}
+
+/** Any open run exempts its session from stalls while the next move belongs to the workflow.
+ * A run parked on the session is waiting for the session to act. */
+export function workflowOwnsNextMove(
+  sessionId: string,
+  runs: readonly WorkflowRunSummary[] | undefined,
+): boolean {
+  return runs?.some((run) => run.sessionId === sessionId
+    && workflowRunIsOpen(run.status) && !workflowRunParkedOnSession(run.status)) ?? false;
 }
 
 /**
@@ -392,6 +402,7 @@ export function detectStall(
   // Paused on purpose: silence is the point, and a stalled-session alert would only report
   // the operator's own decision back to them.
   if (s.pause) return null;
+  if (workflowOwnsNextMove(s.id, runs)) return null;
 
   // 1. Foreman escalated a decision to you and it is still sitting there. The most
   //    certain of the three: something explicitly asked for a human and got no reply.

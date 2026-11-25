@@ -1,3 +1,4 @@
+import { invalidateSettingsConfig } from "./lib/settings-config-refresh.ts";
 import type { ReportItem, ReportMute } from "@shared/reports.ts";
 import { withReportUpserted } from "./lib/report-state.ts";
 import { FEATURE_FLAGS_DEFAULTS, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
@@ -49,7 +50,7 @@ import { dropInterrupting, reconcileInterrupting } from "./lib/interrupting.ts";
 import { dropHistory } from "./lib/transcript-history.ts";
 import { dropRunActions } from "./workflows/run-action-store.ts";
 import { fetchVoiceCardTime, forgetCachedRepos, noteRepoIndexIdentity } from "./lib/api.ts";
-import { applyVoiceIndicatorSelection, refreshUiSkin } from "./lib/uiConfig.ts";
+import { applyVoiceIndicatorSelection, refreshUiPreferences, refreshUiSkin } from "./lib/uiConfig.ts";
 import { invalidateSessionSettingsAccess } from "./lib/session-settings-access.ts";
 import type { SettingsRestoredEvent } from "@shared/settings-backups.ts";
 import {
@@ -296,7 +297,7 @@ export interface MissionState {
 function withNewerVoiceMode(base: VoiceState | null, candidate: VoiceState | null): VoiceState | null {
   if (!base?.modeVersion || !candidate?.modeVersion || base.modeVersion.source !== candidate.modeVersion.source
     || base.modeVersion.revision >= candidate.modeVersion.revision) return base;
-  return { ...base, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
+  return { ...base, transcript: undefined, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
 }
 
 /**
@@ -540,10 +541,13 @@ export function useEventStream(): MissionState {
           if (msg.changed) setLatestSessionTransfer(msg.changed);
           break;
         case "snapshot":
+          const reconnecting = windowId !== undefined;
           windowId = msg.windowId;
           setVoiceWindowId(windowId);
           void refreshUiSkin();
+          void refreshUiPreferences();
           invalidateSessionSettingsAccess();
+          if (reconnecting) invalidateSettingsConfig();
           if (msg.repoIndexIdentity) noteRepoIndexIdentity(msg.repoIndexIdentity);
           setSessionTransfers(msg.sessionTransfers ?? { transfers: [], overflow: 0 });
           setLatestSessionTransfer(null);
@@ -998,6 +1002,10 @@ export function useEventStream(): MissionState {
           break;
         case "ui_skin_changed":
           void refreshUiSkin();
+          break;
+        case "settings_config_changed":
+          if (msg.domain === "ui") void refreshUiPreferences();
+          invalidateSettingsConfig(msg.domain);
           break;
         case "session_settings_access_changed":
           invalidateSessionSettingsAccess();

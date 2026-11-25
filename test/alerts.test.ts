@@ -577,6 +577,56 @@ test("a newly-stalled session alerts once, as attention", () => {
   assert.equal(r[0]?.body, "working but silent for 10m");
 });
 
+test("a cached stall that arrives during a live workflow hold raises no stuck alert", () => {
+  const s = mkSession({ id: "a" });
+  const prev = scope([s]);
+  const next = scope([s], [], [stall({ kind: "unfinished-work" })], [
+    workflowRun({ sessionId: s.id, status: "running" }),
+  ]);
+  assert.equal(detectAlerts(prev, next).some((alert) => alert.kind === "stuck"), false);
+});
+
+test("a workflow parked on the stalled session raises a stuck alert linked to that run", () => {
+  const s = mkSession({ id: "a", state: "idle" });
+  const run = workflowRun({ sessionId: s.id, status: "waiting_for_session" });
+  const parked = stall({
+    kind: "workflow-parked",
+    reason: "idle 20m - Review flow repair round 1 never reopened",
+    workflowRunId: run.id,
+  });
+  const alerts = detectAlerts(scope([s], [], [], [run]), scope([s], [], [parked], [run]));
+  const stuck = alerts.filter((alert) => alert.kind === "stuck");
+  assert.equal(stuck.length, 1);
+  assert.equal(stuck[0]?.sessionId, s.id);
+  assert.equal(stuck[0]?.workflowRunId, run.id);
+  assert.equal(stuck[0]?.body, parked.reason);
+});
+
+test("a parked stall can arrive before its run update, but a newer running update suppresses it", () => {
+  const s = mkSession({ id: "a", state: "idle" });
+  const run = workflowRun({ sessionId: s.id, status: "running", updatedAt: 10 });
+  const parked = stall({ kind: "workflow-parked", since: 0, forMs: 60_000, workflowRunId: run.id });
+  const stuck = (runs: WorkflowRunSummary[]) => detectAlerts(
+    scope([s], [], [], runs), scope([s], [], [parked], runs),
+  ).filter((alert) => alert.kind === "stuck");
+  assert.equal(stuck([run])[0]?.workflowRunId, run.id);
+  assert.deepEqual(stuck([{ ...run, updatedAt: 60_001 }]), []);
+  assert.deepEqual(stuck([run, { ...run, id: "sibling" }]), []);
+});
+
+test("a running workflow on another session leaves the stuck alert eligible", () => {
+  const s = mkSession({ id: "a", state: "idle" });
+  const other = mkSession({ id: "other", state: "idle" });
+  const run = workflowRun({ sessionId: other.id, status: "running" });
+  const sessions = [s, other];
+  const unfinished = stall({ kind: "unfinished-work", reason: "idle 20m with work unfinished" });
+  const alerts = detectAlerts(scope(sessions, [], [], [run]), scope(sessions, [], [unfinished], [run]));
+  const stuck = alerts.filter((alert) => alert.kind === "stuck");
+  assert.equal(stuck.length, 1);
+  assert.equal(stuck[0]?.sessionId, s.id);
+  assert.equal(stuck[0]?.body, unfinished.reason);
+});
+
 test("a stall that PERSISTS does not re-alert every tick", () => {
   // The detector reports a stall as long as it lasts; without edge-triggering this
   // would fire a notification on every poll for as long as the session stayed wedged.

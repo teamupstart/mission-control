@@ -1,5 +1,7 @@
-import type { ShapingRequest } from "@shared/shaping.ts";
+import { SHAPER_SIGN_IN_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { shaperSignInTarget, SIGN_IN_REASONS, type Shaper, type ShapingRequest } from "@shared/shaping.ts";
 import { plaintextCredentialProblem } from "@shared/resident-mcp.ts";
+import { featureEnabled } from "../../feature-flags/index.ts";
 import {
   holdsResolvedValue,
   JSON_ESCAPE_LEVELS,
@@ -42,6 +44,17 @@ export function egressRefusal(url: string): string | null {
   return plaintextCredentialProblem(parsed)
     ? "The shaper's URL is plain http to a host that is not this machine, so no request was sent. Use https."
     : null;
+}
+
+/**
+ * Why a shaper whose server carries the `auth` marker is not called, or null for one with no
+ * marker, which is not touched: no flag is read and its request is today's. Nothing can sign a
+ * shaper in yet, so a marked one is always `unavailable`, before any header is resolved or any
+ * request is made. Phase 5 replaces this guard with the sign-in service's answer.
+ */
+export function signInRefusal(shaper: Shaper): string | null {
+  if (shaperSignInTarget(shaper) === null) return null;
+  return featureEnabled(SHAPER_SIGN_IN_FLAG_ID) ? SIGN_IN_REASONS.signedOut : SIGN_IN_REASONS.flagOff;
 }
 
 /**

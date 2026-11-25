@@ -1,0 +1,43 @@
+import type { IncomingHttpHeaders } from "node:http";
+
+export interface FakeOAuthRequest {
+  server: "resource" | "issuer" | "elsewhere";
+  method: string;
+  path: string;
+  query: string;
+  headers: IncomingHttpHeaders;
+  body: string;
+}
+
+export interface FakeOAuthModes {
+  refresh: "ok" | "invalid_grant" | "invalid_client" | "invalid_scope" | "503" | "close";
+  registration: "ok" | "secret" | "refuse" | "auth-method";
+  metadata: "ok" | "wrong-issuer" | "foreign-endpoint" | "no-s256" | "no-registration" | "no-code";
+  resourceMetadata: "ok" | "none" | "foreign-issuer" | "wrong-resource" | "broader" | "root-only";
+  shape: "ok" | "echo" | "error" | "unauthorized";
+  stall: string | null;
+  oversize: string | null;
+  redirect: string | null;
+  /** A path that answers 307 to `/moved<path>` on its own origin. */
+  redirectWithin: string | null;
+  /** Paths that answer an HTML status page, not an OAuth reply, repeating the request body. */
+  status: Record<string, number> | null;
+  iss: boolean | string;
+  tokens: "full" | "no-refresh" | "no-expiry" | "no-scope";
+  revoke: "ok" | "400" | "429" | "503" | "close";
+}
+
+export interface FakeOAuthServer {
+  resourceUrl: string;
+  shapeUrl: string;
+  issuer: string;
+  elsewhereUrl: string;
+  requests: FakeOAuthRequest[];
+  setMode(patch: Partial<FakeOAuthModes>): void;
+  resetModes(): void;
+  /** Holds every request to `path` until the returned function is called. */
+  hold(path: string): () => void;
+  close(): Promise<void>;
+}
+
+export function startFakeOAuthServer(options?: { separateIssuer?: boolean }): Promise<FakeOAuthServer>;

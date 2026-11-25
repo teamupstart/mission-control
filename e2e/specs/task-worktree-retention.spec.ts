@@ -7,19 +7,19 @@ import type { Page } from "@playwright/test";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { hasTmux, paneSession, PANE_AGENT_DAEMON, startPaneAgent } from "../fixtures/pane-agent.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 /**
- * The 30-day task worktree rule, both halves of it, through a real native checkout.
+ * The configured task worktree retention window through a real native checkout.
  *
  * The contract a person actually experiences is a pair, and neither half means much without
  * the other:
  *
  *  - **Work you did resets the clock.** A local commit nobody pushed is still work. The
  *    checkout stays, and the manual **Clean up** control stays with it.
- *  - **An untouched checkout is eventually taken back.** No confirmation, no click - the task
- *    update that removes the cleanup control arrives on its own, and the native slot it held
- *    is available for the next dispatch.
+ *  - **A clean, published checkout is eventually taken back.** No confirmation or click is
+ *    needed. The cleanup control disappears, and the native slot is available for dispatch.
  *
  * Everything here is real: a real native worktree from the daemon's own pool, a real git
  * commit made in it, the real observation pass, the real claim, and the real provider-aware
@@ -43,6 +43,7 @@ interface TaskSnapshot {
   title: string;
   intent: string;
   status: string;
+  sessionId: string | null;
   worktreePath: string | null;
   worktreeLeaseId: string | null;
 }
@@ -55,20 +56,20 @@ async function taskFor(daemon: DaemonHandle, intent: string): Promise<TaskSnapsh
 
 function retentionRow(daemon: DaemonHandle, taskId: string): {
   fingerprint: string;
-  lastChangedAt: number;
   cleanupDueAt: number;
-  cleanupState: string;
+  unownedSince: number | null;
+  lastError: string | null;
 } | undefined {
   return withDaemonDb(daemon, (db) =>
     db.prepare(
-      `SELECT fingerprint, last_changed_at AS lastChangedAt, cleanup_due_at AS cleanupDueAt,
-              cleanup_state AS cleanupState
+      `SELECT fingerprint, cleanup_due_at AS cleanupDueAt, unowned_since AS unownedSince,
+              last_error AS lastError
          FROM task_worktree_retention WHERE task_id = ?`,
     ).get(taskId) as {
       fingerprint: string;
-      lastChangedAt: number;
       cleanupDueAt: number;
-      cleanupState: string;
+      unownedSince: number | null;
+      lastError: string | null;
     } | undefined);
 }
 
@@ -86,9 +87,9 @@ function ageRetention(daemon: DaemonHandle, taskId: string, days: number): void 
     const changed = db.prepare(
       `UPDATE task_worktree_retention
          SET last_changed_at = last_changed_at - ?, cleanup_due_at = cleanup_due_at - ?,
-             observed_at = observed_at - ?
+             observed_at = observed_at - ?, unowned_since = unowned_since - ?
        WHERE task_id = ?`,
-    ).run(shift, shift, shift, taskId).changes;
+    ).run(shift, shift, shift, shift, taskId).changes;
     expect(Number(changed), "no retention row to age").toBe(1);
   });
 }
@@ -142,7 +143,7 @@ async function openSitrep(page: Page) {
   return page.getByRole("dialog", { name: "Sitrep" });
 }
 
-test("an edited checkout postpones automatic cleanup; an untouched one is reclaimed", async ({
+test("an edited checkout postpones automatic cleanup and is reclaimed once published and due", async ({
   dashboard,
   daemon,
 }) => {
@@ -183,8 +184,8 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
   await daemon.crash();
   await daemon.restart();
   await expect
-    .poll(() => retentionRow(daemon, dispatched.id)?.cleanupState, { timeout: 60_000 })
-    .toBe("observing");
+    .poll(() => retentionRow(daemon, dispatched.id)?.unownedSince, { timeout: 60_000 })
+    .toEqual(expect.any(Number));
   const seeded = retentionRow(daemon, dispatched.id)!;
   expect((await taskFor(daemon, INTENT))?.worktreePath, "a restart kept the checkout").toBe(worktree);
 
@@ -268,21 +269,22 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
     await dashboard.screenshot({ path: join(EVIDENCE, "retention-postponed.png"), fullPage: true });
   }
 
-  // --- half two: an untouched checkout is taken back, with no click ---
+  // --- half two: a clean, published checkout is taken back, with no click ---
   //
-  // Nothing is edited this time, and nobody presses Clean up: the daemon takes the checkout
-  // back on its own. The reclaim is asserted against the server's own state below, and then
-  // read back through a fresh page - a restarted daemon has to be reconnected to either way,
-  // so this half claims durability, not live delivery.
+  // Publish the observed commit to the fixture's local origin. The daemon must be able
+  // to verify publication before it returns the checkout after the renewed deadline.
   await dashboard.keyboard.press("Escape");
   await daemon.crash();
+  execFileSync("git", ["-C", worktree, "push", "origin", "HEAD:refs/heads/e2e-published-retention"], { stdio: "pipe" });
   ageRetention(daemon, dispatched.id, 15);
   await daemon.restart();
 
-  await expect.poll(() => taskFor(daemon, INTENT), { timeout: 60_000 }).toMatchObject({
-    status: "failed",
-    worktreePath: null,
-    worktreeLeaseId: null,
+  await expect.poll(async () => ({
+    task: await taskFor(daemon, INTENT),
+    retentionBlocker: retentionRow(daemon, dispatched.id)?.lastError ?? null,
+  }), { timeout: 60_000 }).toMatchObject({
+    task: { status: "failed", worktreePath: null, worktreeLeaseId: null },
+    retentionBlocker: null,
   });
   expect(retentionRow(daemon, dispatched.id), "the clock is dropped with the tree").toBeUndefined();
   expect(slotState(daemon, worktree)).toBe("available");
@@ -305,4 +307,71 @@ test("an edited checkout postpones automatic cleanup; an untouched one is reclai
     .poll(() => taskFor(daemon, REUSE_INTENT), { timeout: 60_000 })
     .toMatchObject({ status: "running" });
   expect((await taskFor(daemon, REUSE_INTENT))?.worktreePath).toBe(worktree);
+});
+
+test.describe("retention deadline in Worktrees", () => {
+  test.use(PANE_AGENT_DAEMON);
+  test.skip(!hasTmux(), "the returning fixture session needs tmux discovery");
+
+  test("a returning session clears the displayed deadline until verified departure", async ({ dashboard, daemon }) => {
+    const intent = "Retain this checkout for a returning session";
+    await dispatch(dashboard, daemon, intent);
+    await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({
+      status: "running", sessionId: expect.any(String), worktreePath: expect.any(String),
+    });
+    const task = (await taskFor(daemon, intent))!;
+    const worktree = task.worktreePath!;
+    const stopped = await dashboard.request.post(`${daemon.baseURL}/api/sessions/${encodeURIComponent(task.sessionId!)}/kill`);
+    expect(stopped.ok()).toBe(true);
+    await expect.poll(() => taskFor(daemon, intent), { timeout: 60_000 }).toMatchObject({
+      status: "failed", worktreePath: worktree,
+    });
+    await daemon.crash();
+    await daemon.restart();
+    await expect.poll(() => retentionRow(daemon, task.id)?.unownedSince, { timeout: 60_000 }).toEqual(expect.any(Number));
+
+    await dashboard.goto(`${daemon.baseURL}/#/settings/worktrees`);
+    const pool = dashboard.locator(".wt-pool", { hasText: "demo-repo" });
+    const disclosure = pool.getByRole("button", { name: /demo-repo/ });
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    const slot = pool.getByRole("article").filter({ hasText: worktree });
+    const deadline = slot.locator("time");
+    await expect(deadline).toBeVisible({ timeout: 60_000 });
+    const initial = Date.parse((await deadline.getAttribute("datetime"))!);
+
+    const returning = startPaneAgent(daemon, { cwd: worktree, prefix: "mc-e2e-retention" });
+    let sessionId: string;
+    try {
+      sessionId = await paneSession(daemon, returning);
+      const refreshed = dashboard.waitForResponse((response) =>
+        response.request().method() === "GET" && new URL(response.url()).pathname === "/api/worktrees");
+      await dashboard.getByRole("button", { name: "Refresh", exact: true }).click();
+      expect((await refreshed).ok()).toBe(true);
+      await expect(slot).toBeVisible();
+      await expect(slot).toContainText(task.title);
+      await expect(deadline).toHaveCount(0);
+      if (process.env.MC_E2E_EVIDENCE === "1") {
+        mkdirSync(EVIDENCE, { recursive: true });
+        await slot.screenshot({ path: join(EVIDENCE, "deadline-cleared.png"), animations: "disabled" });
+      }
+    } finally {
+      returning.cleanup();
+    }
+    await expect.poll(async () => {
+      const response = await fetch(`${daemon.baseURL}/api/sessions`);
+      return ((await response.json()) as Array<{ id: string }>).some((session) => session.id === sessionId);
+    }, { timeout: 30_000 }).toBe(false);
+
+    // The restart starts an ordinary observation without waiting for its six-hour cadence.
+    await daemon.crash();
+    await daemon.restart();
+    await expect.poll(() => retentionRow(daemon, task.id)?.cleanupDueAt ?? 0, { timeout: 60_000 }).toBeGreaterThan(initial);
+    await dashboard.reload();
+    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
+    await expect(deadline).toBeVisible({ timeout: 60_000 });
+    expect(Date.parse((await deadline.getAttribute("datetime"))!)).toBeGreaterThan(initial);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      await slot.screenshot({ path: join(EVIDENCE, "deadline-restored.png"), animations: "disabled" });
+    }
+  });
 });

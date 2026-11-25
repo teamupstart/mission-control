@@ -293,6 +293,7 @@ const uiFields = {
   taskKindHeader: "setting",
   taskKindCard: "setting",
   backgroundAgentsStyle: "setting",
+  residentCardNameStyles: "setting",
   keybindings: "setting",
   alerts: "setting",
   richText: "setting",
@@ -326,9 +327,14 @@ const uiFields = {
  */
 const voiceFields = {
   muted: "operational",
+  listeningMode: "setting",
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
   endOfSpeechMs: "setting",
+  showTranscript: "setting",
+  transcriptStyle: "setting",
+  transcriptCorner: "setting",
+  transcriptWords: "setting",
   cancelWindow: "setting",
   speech: "setting",
   whenUnsure: "setting",

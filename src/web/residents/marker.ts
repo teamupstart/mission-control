@@ -7,7 +7,7 @@ import {
   type ResidentProfile,
   type ResidentRunSummary,
 } from "@shared/residents.ts";
-import { normalizeSpokenName } from "@shared/voice-names.ts";
+import { quotedReferenceName, normalizeSpokenName } from "@shared/voice-names.ts";
 import type { Session, Task } from "@shared/types.ts";
 
 /**
@@ -47,6 +47,18 @@ export interface ResidentSessionMark extends ResidentChipMark {
   changedTo: number | null;
   /** The pinned revision's Control other sessions: whether this run asks for session control. */
   controlOtherSessions: boolean;
+}
+
+/**
+ * The profile name a resident's board card adds beside its title, or null when there is nothing
+ * to add: the card is titled by its session name (no call sign, or voice is not listening), or
+ * the call sign already says the profile name, so a second copy would only repeat it.
+ */
+export function residentCardProfileName(mark: ResidentSessionMark | null | undefined): string | null {
+  if (!mark?.listeningTitle) return null;
+  const name = mark.name.trim();
+  if (!name) return null;
+  return normalizeSpokenName(quotedReferenceName(name)) === normalizeSpokenName(mark.listeningTitle) ? null : name;
 }
 
 /** Spoken names that collide need the ordinary name on controls that open a conversation. */
@@ -155,7 +167,7 @@ export function residentSessionMark(
   const marker = residentMarker(run.settings);
   const referenceName = (profile ?? run).settings.identity.referenceName?.trim();
   return {
-    ...(listening && referenceName ? { listeningTitle: `"${referenceName}"` } : {}),
+    ...(listening && referenceName ? { listeningTitle: quotedReferenceName(referenceName) } : {}),
     runId: run.id,
     taskId: run.taskId,
     loop: run,

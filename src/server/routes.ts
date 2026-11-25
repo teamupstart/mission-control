@@ -1,3 +1,5 @@
+import { disposableWorktreeCensus } from "./worktrees/disposable-census.ts";
+import { backgroundWorktreeRetentionStatus } from "./task-worktree-retention.ts";
 import { decisionLead, formatResponse } from "@shared/review-item.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { FeatureFlagIntentSchema } from "@shared/protocol.ts";
@@ -102,6 +104,9 @@ import { dismissAttentionItems, listAttentionDismissals } from "./attention-dism
 import { ForemanHealthDismissSchema, ForemanHealthReportSchema } from "@shared/foreman-health.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { settingsRefreshDomain } from "@shared/session-settings-metadata.ts";
+import { typedSettings, type SettingsOwners } from "./session-settings-owners.ts";
+import { InvalidSettingValue } from "./settings-dispatcher.ts";
 import { registerSessionSettingsRoutes } from "./session-settings.ts";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -311,6 +316,7 @@ import {
   UpdateWorkflowCommandSchema,
   ReadWorkflowCommandOutputSchema,
   WorkflowConfigSchema,
+  WorkflowPolicyPatchSchema,
   WorkflowRunActionSchema,
   WorktreeActionExecuteSchema,
   WorktreeActionRequestSchema,
@@ -764,6 +770,7 @@ import type { WorkflowCommandMutation } from "./workflows/commands.ts";
 import { CommandArtifactReadError } from "./workflows/command-artifacts.ts";
 import {
   getWorkflowPolicy,
+  patchWorkflowPolicy,
   setWorkflowPolicy,
 } from "./workflows/config.ts";
 import { decodeWorkflowRunCursor } from "./workflows/store.ts";
@@ -2183,7 +2190,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.get("/api/worktrees", async (c) => {
     if (!worktreeOperations) return c.json({ error: "worktree operations unavailable" }, 503);
     try {
-      return c.json(await worktreeOperations.inventory());
+      const taskRows = registry.listTasks();
+      const [inventory, disposable] = await Promise.all([
+        worktreeOperations.inventory(), disposableWorktreeCensus(taskRows),
+      ]);
+      return c.json({ ...inventory, retention: backgroundWorktreeRetentionStatus(taskRows), disposable });
     } catch (error) {
       const failure = worktreeFailure(error);
       return c.json(failure.body, failure.status);
@@ -2874,7 +2885,27 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     ...getWorkflowPolicy(),
     checkCommands: legacyCheckCommands(workflowCommandManager()?.list() ?? []),
   });
+  const workflowDefaultError = (defaults: WorkflowConfig["kindWorkflowDefaults"]): string | null => {
+    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
+      const workflowId = defaults[kind];
+      if (!workflowId) continue;
+      const detail = workflowManager()?.get(workflowId) ?? null;
+      if (!detail || detail.workflow.archivedAt !== null || detail.workflow.currentVersionId === null) {
+        return `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`;
+      }
+    }
+    return null;
+  };
   app.get("/api/workflows/config", (c) => c.json(legacyWorkflowConfig()));
+  app.patch("/api/workflows/config", async c => {
+    const parsed = await parseBody(c, WorkflowPolicyPatchSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const defaults = parsed.data.kindWorkflowDefaults;
+    const error = defaults && workflowDefaultError(defaults);
+    if (error) return c.json({ error }, 409);
+    patchWorkflowPolicy(parsed.data);
+    return c.json(legacyWorkflowConfig());
+  });
   app.get("/api/workflows/status", (c) => {
     const manager = workflowManager();
     return manager
@@ -2898,20 +2929,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.put("/api/workflows/config", async (c) => {
     const parsed = await parseBody(c, WorkflowConfigSchema);
     if (!parsed.ok) return parsed.res;
-    for (const kind of HARNESS_LAUNCHED_TASK_KINDS) {
-      const workflowId = parsed.data.kindWorkflowDefaults[kind];
-      if (!workflowId) continue;
-      const detail = workflowManager()?.get(workflowId) ?? null;
-      if (
-        !detail
-        || detail.workflow.archivedAt !== null
-        || detail.workflow.currentVersionId === null
-      ) {
-        return c.json({
-          error: `The ${TASK_KIND_INFO[kind].label} dispatch default must be an active published workflow`,
-        }, 409);
-      }
-    }
+    const error = workflowDefaultError(parsed.data.kindWorkflowDefaults);
+    if (error) return c.json({ error }, 409);
     // ONE transaction over both halves, because the old route's contract is that its body is
     // one object. `checkCommands` belongs to the Command catalog now and everything else to
     // the config blob, and committing the catalog while the policy write failed would answer
@@ -7145,12 +7164,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const acceptReturn = tasks.prepareKilledSessionReturn(session);
+    // Retention observes the normal session eviction after either Kill or unrequested loss.
     // SDK teardown may spend seconds flushing its subprocess and event stream. Interactive
     // Kill and Complete need only the supervisor's accepted stop; terminal handoff and
     // daemon shutdown keep using the blocking `stopSession`/`SdkSupervisor.stop` contract.
     const r = await requestSessionStop(session, sdkSessions, undefined, pauses);
-    if (r.ok) acceptReturn();
     // The INTENT, recorded whether or not an ending follows. P2 requires the two stay
     // orthogonal: a kill the agent survives and a session that vanishes with no request are
     // both real, and neither implies the other.
@@ -7944,6 +7962,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
   // --- Foreman config + status (localhost only) ---
+  const applyForemanSettings: SettingsOwners["foreman"] = patch => {
+    const config = setForemanConfig(patch);
+    // Stacked pull requests: every cached stack standing says whether Foreman will send its
+    // prompt, so a change to Foreman's switches has to reach them now rather than at the next
+    // Inspector sweep - or Foreman reads "pending" on a session it may no longer drive, and the
+    // merge queue hides the manual send it now needs.
+    registry.refreshInspections();
+    if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
+    return config;
+  };
   app.get("/api/foreman/config", (c) => c.json(getForemanConfig()));
   app.put("/api/foreman/config", async (c) => {
     const parsed = await parseBody(c, ForemanConfigPatchSchema);
@@ -7951,14 +7979,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
       return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
     }
-    const config = setForemanConfig(parsed.data);
-    // Stacked pull requests: every cached stack standing says whether Foreman will send its
-    // prompt, so a change to Foreman's switches has to reach them now rather than at the next
-    // Inspector sweep - or Foreman reads "pending" on a session it may no longer drive, and the
-    // merge queue hides the manual send it now needs.
-    registry.refreshInspections();
-    if (config.enabled) workflowManager()?.reconcileDispatchedTaskWorkflows();
-    return c.json(config);
+    return c.json(applyForemanSettings(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
   app.post("/api/foreman/health", async (c) => {
@@ -8210,14 +8231,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   });
 
     // --- Inspector: automated review of the PRs Mission Control opened ---
-  app.get("/api/inspector/config", (c) => c.json(getInspectorConfig()));
-  app.put("/api/inspector/config", async (c) => {
-    const parsed = await parseBody(c, InspectorConfigPatchSchema);
-    if (!parsed.ok) return parsed.res;
-    if (parsed.data.effort !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
-      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
-    }
-    const next = setInspectorConfig(parsed.data);
+  const applyInspectorSettings: SettingsOwners["inspector"] = patch => {
+    const next = setInspectorConfig(patch);
     // The per-session chip bakes `mode` in when the summary is resolved, and the tick
     // that would otherwise re-resolve it only runs while the feature is ENABLED. Without
     // this, flipping live -> dry-run leaves every card claiming the last review was
@@ -8228,7 +8243,16 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // The rail dots and gear read Inspector enabled+mode off the live channel, so a write
     // that could move either has to push the new tuple (dropped downstream if unchanged).
     publishSettingsStatus(registry);
-    return c.json(next);
+    return next;
+  };
+  app.get("/api/inspector/config", (c) => c.json(getInspectorConfig()));
+  app.put("/api/inspector/config", async (c) => {
+    const parsed = await parseBody(c, InspectorConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    if (parsed.data.effort !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
+      return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
+    }
+    return c.json(applyInspectorSettings(parsed.data));
   });
   // The ledger. This is what makes dry-run legible: without somewhere to read what it
   // WOULD have said, a preview mode is indistinguishable from a broken one.
@@ -8413,6 +8437,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     }
     return { ...config, models, runners, ...(config.efforts && { efforts }) };
   };
+  const applyLlmSettings: SettingsOwners["llm"] = patch => {
+    const config = visibleLlmConfig(setLlmConfig(patch));
+    // Personas without a provider override follow this setting. Refresh their top-level SSE
+    // projections in the same mutation so the editor never advertises a stale effective model.
+    if ("runner" in patch) personas?.refreshExecution();
+    return config;
+  };
   app.get("/api/llm/config", (c) => c.json(visibleLlmConfig(getLlmConfig())));
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
@@ -8433,11 +8464,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (parsed.data.efforts !== undefined && !featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID)) {
       return c.json({ error: "This feature is disabled.", feature: BACKGROUND_REASONING_EFFORT_FLAG_ID }, 404);
     }
-    const config = visibleLlmConfig(setLlmConfig(parsed.data));
-    // Personas without a provider override follow this setting. Refresh their top-level SSE
-    // projections in the same mutation so the editor never advertises a stale effective model.
-    if ("runner" in parsed.data) personas?.refreshExecution();
-    return c.json(config);
+    return c.json(applyLlmSettings(parsed.data));
   });
   // Resolved HERE rather than in the panel, for the reason `ForemanStatus.models` documents:
   // the env layer is invisible to the browser, so a panel showing `config || default` would
@@ -8451,20 +8478,32 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // The ledger this panel reads is the Inspector's (`/api/inspector/prs` above), because
   // it is the same ledger: a PR's merge block lives on the row that says we opened it.
   // Only the config is separate, and it is separate because the grant is.
-  app.get("/api/shipping/config", (c) => c.json(getShippingConfig()));
-  app.put("/api/shipping/config", async (c) => {
-    const parsed = await parseBody(c, ShippingConfigPatchSchema);
-    if (!parsed.ok) return parsed.res;
-    const next = setShippingConfig(parsed.data);
+  const applyShippingSettings: SettingsOwners["shipping"] = patch => {
+    const next = setShippingConfig(patch);
     // The Stacked pull requests default decides which readiness stamps still stand, so a
     // dependent that would now wait for merge stops reading as ready at once.
     tasks.reconcileStackReadiness();
     // YOLO's armed state is an amber dot; a toggle here has to reach the rail and gear.
     publishSettingsStatus(registry);
-    return c.json(next);
+    return next;
+  };
+  app.get("/api/shipping/config", (c) => c.json(getShippingConfig()));
+  app.put("/api/shipping/config", async (c) => {
+    const parsed = await parseBody(c, ShippingConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(applyShippingSettings(parsed.data));
   });
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
+  const applyHarnessesSettings: SettingsOwners["harnesses"] = patch => {
+    const next = setHarnessesConfig(patch);
+    // Announced like every sibling settings route publishes its own change. Without this the
+    // settings panel learned of another tab's edit only on its next poll, and an already-open
+    // dispatch modal - which reads these defaults once, when it opens - never learned at all
+    // and went on naming a model that was no longer the default.
+    registry.emitHarnessesConfigChanged();
+    return next;
+  };
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
   // What each harness's own settings say about its advisor, so the panel can tell the
   // operator whether a dispatched session will consult one. Read-only and read fresh: the
@@ -8489,18 +8528,13 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     let next;
     try {
-      next = setHarnessesConfig(parsed.data);
+      next = applyHarnessesSettings(parsed.data);
     } catch (error) {
       // A pair only the merge can judge - a model landing on a row that inherits its agent.
       // A refusal the panel can print, not a 500.
       if (error instanceof HarnessesConfigError) return c.json({ error: error.message }, 400);
       throw error;
     }
-    // Announced like every sibling settings route publishes its own change. Without this the
-    // settings panel learned of another tab's edit only on its next poll, and an already-open
-    // dispatch modal - which reads these defaults once, when it opens - never learned at all
-    // and went on naming a model that was no longer the default.
-    registry.emitHarnessesConfigChanged();
     return c.json(next);
   });
 
@@ -9051,7 +9085,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return result.ok ? c.json(answer) : c.json(answer, result.status as 404 | 409 | 502 | 504);
   });
 
-  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings);
+
 
   // --- Dashboard UI preferences (localhost only) ---
   //
@@ -9333,6 +9367,12 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const view: StorageView = { health: storageHealth.recompute(), config: getDatabaseBackupsConfig() };
     return c.json(view);
   });
+  const saveBackupSettings = (patch: Parameters<typeof setDatabaseBackupsConfig>[0], expectRemove: string[]) => {
+    if (!databaseBackups) throw new Error("Database backup service is unavailable");
+    const saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove);
+    registry.emitStorageConfigChanged();
+    return saved;
+  };
   app.put("/api/storage/backups/config", async (c) => {
     if (!databaseBackups) return databaseBackupsUnavailable(c);
     const parsed = await parseBody(c, DatabaseBackupsSaveRequestSchema);
@@ -9346,7 +9386,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     // a list the copies no longer match.
     let saved;
     try {
-      saved = setDatabaseBackupsConfig(patch, databaseBackups, expectRemove ?? []);
+      saved = saveBackupSettings(patch, expectRemove ?? []);
     } catch (error) {
       if (error instanceof StaleBackupPreviewError) {
         return c.json(expectRemove === undefined
@@ -9362,8 +9402,6 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         message: error instanceof Error ? error.message : String(error),
       }, 500);
     }
-    // A save that prunes nothing publishes no `storage_health`, so other windows learn here.
-    registry.emitStorageConfigChanged();
     return c.json(saved);
   });
 
@@ -9478,27 +9516,63 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
 
   // Settings > Storage's own limits. Saving never deletes anything: the limits warn, and the
   // idle-cache budget only chooses what a cleanup preview offers.
+  const saveStorageLimits: NonNullable<SettingsOwners["storageLimits"]> = patch => {
+    const limits = setStorageLimitsConfig(patch);
+    // The aggregate publishes the new limits and any warning they start or end.
+    storageHealth?.recompute();
+    return limits;
+  };
   app.put("/api/storage/limits", async (c) => {
     if (!storageHealth) return storageUnavailable(c);
     const parsed = await parseBody(c, StorageLimitsConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     let limits;
     try {
-      limits = setStorageLimitsConfig(parsed.data);
+      limits = saveStorageLimits(parsed.data);
     } catch (error) {
       return c.json({
         error: "save_failed" as const,
         message: error instanceof Error ? error.message : String(error),
       }, 500);
     }
-    // The limits ride the aggregate, so this publishes them, and any warning they start or end,
-    // to every open dashboard.
-    storageHealth.recompute();
     return c.json({ limits });
   });
 
   // Measure now. The walk runs in the background and can take minutes; the answer is the state
   // it started, and the finished measurement arrives through `storage_health`.
+  const getTypedSettings = typedSettings({
+    harnesses: patch => {
+      try { return applyHarnessesSettings(patch); }
+      catch (error) {
+        if (error instanceof HarnessesConfigError) throw new InvalidSettingValue();
+        throw error;
+      }
+    },
+    foreman: applyForemanSettings,
+    inspector: applyInspectorSettings,
+    llm: applyLlmSettings,
+    shipping: applyShippingSettings,
+    cost: setCostConfig,
+    skills: patch => {
+      const result = applySkillsConfig(patch);
+      if (result.refused.length) throw new InvalidSettingValue();
+      return result.config;
+    },
+    worktrees: worktreeOperations ? patch => worktreeOperations.setConfig(patch) : undefined,
+    storageLimits: storageHealth ? saveStorageLimits : undefined,
+    backups: databaseBackups ? patch => {
+      try { return saveBackupSettings(patch, []); }
+      catch (error) {
+        if (error instanceof StaleBackupPreviewError) throw new InvalidSettingValue();
+        throw error;
+      }
+    } : undefined,
+  }, key => {
+    const domain = settingsRefreshDomain(key);
+    if (domain) registry.emitSettingsConfigChanged(domain);
+  });
+  registerSessionSettingsRoutes(app, registry, authorizeSessionSettings, getTypedSettings);
+
   app.post("/api/storage/usage/measure", (c) => {
     if (!storageUsage || !storageHealth) return storageUnavailable(c);
     void storageUsage.measure();

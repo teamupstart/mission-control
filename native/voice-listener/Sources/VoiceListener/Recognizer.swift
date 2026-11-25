@@ -1,3 +1,4 @@
+import CoreML
 import FluidAudio
 import Foundation
 
@@ -24,16 +25,35 @@ struct Recognizer {
         AppLogger.minimumLevel = .fault
         AppLogger.mirrorsToConsole = false
         asr = AsrManager()
-        let models = try AsrModels.loadLocal(from: directory.appending(path: "parakeet-tdt-0.6b-v2-coreml"), version: .v2)
+        // ANE model compilation can wait indefinitely in the confined process. Use the
+        // same installed models on the CPU without granting access to shared writable caches.
+        let confined = ProcessInfo.processInfo.environment["MISSION_VOICE_LISTENER_INSTANCE"] != nil
+        let config = AsrModels.defaultConfiguration()
+        if confined { config.computeUnits = .cpuOnly }
+        let models = try AsrModels.loadLocal(from: directory.appending(path: "parakeet-tdt-0.6b-v2-coreml"),
+                                             version: .v2, configuration: config)
         try await asr.loadModels(models)
         let ctcDirectory = directory.appending(path: "parakeet-ctc-110m-coreml")
         // The CTC loader alone also succeeds on a partial install missing the
         // tokenizer. A roster cannot be primed from that directory.
         if (try? await CtcTokenizer.load(from: ctcDirectory)) != nil {
-            ctc = try? await CtcModels.loadDirect(from: ctcDirectory)
+            if confined {
+                ctc = try? Self.localCTC(ctcDirectory, config)
+            } else {
+                ctc = try? await CtcModels.loadDirect(from: ctcDirectory)
+            }
         } else {
             ctc = nil
         }
+    }
+
+    private static func localCTC(_ directory: URL, _ config: MLModelConfiguration) throws -> CtcModels {
+        // loadDirect fixes the encoder to the Neural Engine. Construct the same CTC
+        // container from the verified local files with the supervised compute units.
+        let vocabulary = try JSONDecoder().decode([Int: String].self, from: Data(contentsOf: directory.appending(path: "vocab.json")))
+        return try CtcModels(melSpectrogram: MLModel(contentsOf: directory.appending(path: "MelSpectrogram.mlmodelc"), configuration: config),
+                             encoder: MLModel(contentsOf: directory.appending(path: "AudioEncoder.mlmodelc"), configuration: config),
+                             configuration: config, vocabulary: vocabulary, directory: directory)
     }
 
     func prime(_ roster: [String]) async throws -> VocabularyBoostingSession? {
@@ -45,6 +65,9 @@ struct Recognizer {
     static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String],
                                        text: inout String, words: inout [TimedWord]) {
         guard range.lowerBound == 0, !range.isEmpty, range.upperBound <= words.count else { return }
+        // Let the router interpret a standalone Cancel, including its original quotation marks.
+        // A roster suggestion for that one word would erase the control before routing.
+        guard text.trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines)).lowercased() != "cancel" else { return }
         let tokens = text.split(maxSplits: range.count, whereSeparator: { $0.isWhitespace }).prefix(range.count)
         guard tokens.count == range.count, let first = tokens.first, let last = tokens.last,
               let start = first.firstIndex(where: { $0.isLetter || $0.isNumber }),
@@ -95,7 +118,8 @@ struct Recognizer {
         words.replaceSubrange(range, with: corrected)
     }
 
-    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?) async throws -> Utterance? {
+    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?,
+                    onAddressSuggestion: ((String, Range<Int>) -> Void)? = nil) async throws -> Utterance? {
         var decoder = TdtDecoderState.make(decoderLayers: await asr.decoderLayerCount)
         let result = try await asr.transcribe(segment.samples, decoderState: &decoder)
         try Task.checkCancellation()
@@ -108,6 +132,7 @@ struct Recognizer {
         }
         if let boosting, let address = boosted?.replacements.first(where: { $0.shouldReplace && $0.wordRange?.lowerBound == 0 }),
            let range = address.wordRange, let name = address.replacementWord {
+            onAddressSuggestion?(name, range)
             Self.applyAddressCorrection(name, in: range, roster: boosting.vocabulary.terms.map(\.text), text: &text, words: &words)
         }
         return Utterance(text: text, words: words, capturedAt: segment.capturedAt)

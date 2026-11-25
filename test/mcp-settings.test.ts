@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -33,19 +34,26 @@ after(() => {
 });
 const { managedMissionExtension } = await import("../src/pi/extension.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
-const { getAppConfig, setAppConfig } = await import("../src/server/db.ts");
+const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
+const { DatabaseBackupService } = await import("../src/server/database-backups/service.ts");
+const { getDatabaseBackupsConfig } = await import("../src/server/database-backups/config.ts");
+const { getWorktreesConfig, setWorktreesConfig, resolveWorktreePolicy } = await import("../src/server/worktrees/config.ts");
 const { applyFeatureFlagIntent, featureEnabled, reloadFeatureFlags } = await import("../src/server/feature-flags/index.ts");
 const { maintainScoutSessionCredentials } = await import("../src/server/scouts/session-credentials.ts");
 const { sessionScoutCredentialLocator } = await import("../src/server/scouts/submission-auth.ts");
 const { onUiSkinChanged, getUiConfig } = await import("../src/server/ui-config.ts");
-const { SETTINGS_CONFIG_BACKUP_ENTRIES } = await import("../src/server/settings-backups/config-registry.ts");
+const {
+  SETTINGS_CONFIG_BACKUP_ENTRIES, captureSettingsConfig, restoreSettingsConfigInTransaction, stageSettingsConfigRestore,
+} = await import("../src/server/settings-backups/config-registry.ts");
+const { bindTypedSettings, field, choices } = await import("../src/server/typed-settings.ts");
+const { registerSessionSettingsRoutes } = await import("../src/server/session-settings.ts");
 const { dispatchSetting } = await import("../src/server/settings-dispatcher.ts");
 const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 type SettingDescriptor = import("../src/server/settings-dispatcher.ts").SettingDescriptor;
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
-type TaskManager = import("../src/server/tasks.ts").TaskManager;
 type QueueManager = import("../src/server/queue.ts").QueueManager;
 
 const find = { operation: "find", query: "theme" } as const;
@@ -58,8 +66,11 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   let changes = 0;
   t.after(onUiSkinChanged(() => changes++));
   const clicks = new Map<string, boolean>();
+  const databaseBackups = new DatabaseBackupService(openDb(), { root: join(home, "database-backups") });
   const app = buildApp({
-    registry, tasks: {} as TaskManager, reviews: {} as ReviewManager, queues: {} as QueueManager,
+    registry, tasks: new TaskManager(registry), reviews: {} as ReviewManager, queues: {} as QueueManager,
+    databaseBackups,
+    worktreeOperations: { setConfig: setWorktreesConfig } as import("../src/server/worktrees/operations.ts").WorktreeOperationsService,
     authorizeSessionSettings: async ({ requestId, enabled }) => {
       const armed = clicks.get(requestId);
       clicks.delete(requestId);
@@ -193,6 +204,212 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
     if (error) assert.deepEqual(body, settingsFailure(error, hint));
     return body;
   }
+  await t.test("a new typed field works through stdio and catalog growth leaves tools/list identical", async () => {
+    const schema = z.object({ synthetic: z.enum(["off", "on"]).optional() }).strict();
+    let config = { synthetic: "off" as "on" | "off" };
+    const fields = bindTypedSettings({
+      schema, read: () => config,
+      apply: patch => config = { synthetic: patch.synthetic ?? config.synthetic },
+    }, [field("fixture", "synthetic", "layout", { label: "Synthetic preference", choices: choices(["off", "on"]) })]);
+    const fixture = new Hono();
+    let extra: SettingDescriptor[] = [];
+    registerSessionSettingsRoutes(fixture, registry, undefined, () => [...fields, ...extra]);
+    try {
+      handleRequest = request => new URL(request.url).pathname === "/mcp/settings" ? fixture.fetch(request) : app.fetch(request);
+      const small = (await claude.listTools()).tools;
+      const names = small.map(tool => tool.name);
+      // Sorted pre-feature tools as shipped at c683881ac, before Phase 1 added the sole tool.
+      const existing = names.filter(name => name !== "mission_settings").sort();
+      assert.equal(createHash("sha256").update(existing.join("\n")).digest("hex"),
+        "a7b576876d68f5b0844dc22a7055e878be53e6bb47e2cb96b4f8fcea9ebee2b0");
+      assert.equal(names.length, existing.length + 1);
+      assert.deepEqual(await call(claude, { operation: "find", query: "synthetic preference" }), {
+        ok: true, operation: "find", matches: [{ key: "fixture.synthetic", access: "read-write", label: "Synthetic preference" }],
+      });
+      assert.equal((await call(claude, { operation: "get", key: "fixture.synthetic" }) as { value: string }).value, "off");
+      await call(claude, { operation: "set", key: "fixture.synthetic", value: "on" });
+      assert.equal(config.synthetic, "on");
+      extra = Array.from({ length: 256 }, (_, n) => ({
+        key: `fixture.extra${n}`, label: `Synthetic preference ${n}`, keywords: [],
+        access: "read-only", read: () => n,
+      }));
+      assert.equal(JSON.stringify((await claude.listTools()).tools), JSON.stringify(small));
+      const first = await call(claude, { operation: "find", query: "synthetic preference" });
+      assert.ok(first.ok && first.operation === "find" && first.nextCursor);
+      assert.equal(first.matches.length, 8);
+      const next = await call(claude, { operation: "find", query: "synthetic preference", cursor: first.nextCursor });
+      assert.ok(next.ok && next.operation === "find");
+      assert.equal(next.matches[0]?.key, "fixture.extra7");
+    } finally {
+      handleRequest = app.fetch;
+    }
+  });
+
+  await t.test("Harnesses validation and notification are shared by MCP and dashboard edits", async () => {
+    let notifications = 0;
+    const stop = registry.subscribe(event => {
+      if (event.type === "harnesses_config_changed") notifications++;
+    });
+    const put = (body: unknown) => app.request("/api/harnesses/config", {
+      method: "PUT", headers, body: JSON.stringify(body),
+    });
+    try {
+      setAppConfig(APP_CONFIG_ENTRIES.harnesses, {
+        defaultModel: { claude: "future-model-id", codex: null },
+        sessionRuntime: { claude: "future-runtime" }, futureField: { futureOption: true },
+      } as never);
+      const key = "harnesses.kindDefaults.ship.model";
+      await call(claude, { operation: "set", key, value: "claude-opus-4-8" }, "invalid_value");
+      assert.equal(notifications, 0);
+      const [mcpEdit, dashboardEdit] = await Promise.all([
+        call(claude, { operation: "set", key: "harnesses.defaultEffort.claude", value: "high" }),
+        put({ defaultModel: { codex: "gpt-5.5" } }),
+      ]);
+      assert.ok(mcpEdit.ok);
+      assert.equal(dashboardEdit.status, 200);
+      assert.equal(notifications, 2);
+      await call(claude, { operation: "set", key: "harnesses.defaultEffort.claude", value: "high" });
+      assert.equal(notifications, 2);
+      const stored = getAppConfig(APP_CONFIG_ENTRIES.harnesses);
+      assert.equal(stored?.defaultModel?.claude, "future-model-id");
+      assert.equal(stored?.defaultModel?.codex, "gpt-5.5");
+      assert.equal(stored?.sessionRuntime?.claude, "future-runtime");
+      assert.deepEqual((stored as Record<string, unknown>).futureField, { futureOption: true });
+      await call(claude, { operation: "set", key: "harnesses.defaultModel", value: { claude: null } }, "unknown_key");
+      await call(claude, { operation: "set", key: "harnesses.kindDefaults.__proto__.model", value: "x" }, "unknown_key");
+    } finally {
+      stop();
+    }
+  });
+
+  await t.test("mission_settings refuses a backup limit that would delete a copy", async () => {
+    const before = { ...getDatabaseBackupsConfig(), scheduledCount: 2 };
+    setAppConfig(APP_CONFIG_ENTRIES.backups, before);
+    const first = await databaseBackups.captureScheduled();
+    const second = await databaseBackups.captureScheduled();
+    const kept = readdirSync(databaseBackups.root).sort();
+    assert.deepEqual(kept, [first.filename, second.filename].sort());
+    const copies = [first.path, second.path].map(path => readFileSync(path));
+
+    const planned = databaseBackups.plannedRemovals({ ...before, scheduledCount: 1 });
+    assert.equal(planned.length, 1, "the proposed edit would delete an existing copy");
+    assert.ok(kept.includes(planned[0]!));
+
+    await call(claude, { operation: "set", key: "backups.scheduledCount", value: 1 }, "invalid_value");
+    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.backups), before);
+    assert.deepEqual(readdirSync(databaseBackups.root).sort(), kept);
+    assert.deepEqual([first.path, second.path].map(path => readFileSync(path)), copies);
+  });
+
+  await t.test("the Foreman automatic wrap-up exclusions stay under operator control", async () => {
+    const config = { wrapup: "pr", skipScoutWrapup: true, skipReviewArtifactWrapup: true } as const;
+    setAppConfig(APP_CONFIG_ENTRIES.foreman, config);
+    for (const key of ["foreman.skipScoutWrapup", "foreman.skipReviewArtifactWrapup"]) {
+      await call(claude, { ...set, key, value: false }, "protected", "Manage this setting in Settings > Foreman.");
+    }
+    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.foreman), config);
+  });
+
+  await t.test("free-form report guidance stays under operator control", async () => {
+    const config = { guidance: "Operator guidance for future sessions." };
+    setAppConfig(APP_CONFIG_ENTRIES.reports, config);
+    await call(claude, { ...get, key: "reports.guidance" }, "protected", "Manage this setting in Settings > Reports.");
+    await call(claude, { ...set, key: "reports.guidance", value: "Session-supplied text." },
+      "protected", "Manage this setting in Settings > Reports.");
+    assert.deepEqual(getAppConfig(APP_CONFIG_ENTRIES.reports), config);
+  });
+
+  await t.test("an explicit repository override persists even when it equals the inherited value", async () => {
+    const repo = join(home, "repository", ".git");
+    setWorktreesConfig({ enabled: true, repositories: { [repo]: { maxSlots: 2 } } });
+    const key = `worktrees.repositories.${createHash("sha256").update(repo).digest("base64url")}.enabled`;
+    assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: true, type: "boolean" });
+    assert.deepEqual(await call(claude, { ...set, key, value: true }), { ok: true, operation: "set", key, value: true });
+    assert.deepEqual(getWorktreesConfig().repositories[repo], { maxSlots: 2, enabled: true });
+    setWorktreesConfig({ enabled: false });
+    assert.equal(resolveWorktreePolicy(repo).enabled, true);
+    assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: true, type: "boolean" });
+  });
+
+  await t.test("hidden-item booleans agree with both persisted visibility lists", async () => {
+    for (const [owner, id] of [["hiddenDisplayItems", "model"], ["hiddenTopbarItems", "sessions"]] as const) {
+      const key = `ui.${owner}.${id}`;
+      for (const hidden of [true, false]) {
+        assert.deepEqual(await call(claude, { ...set, key, value: hidden }), { ok: true, operation: "set", key, value: hidden });
+        assert.equal(getUiConfig()[owner].includes(id), hidden);
+        assert.deepEqual(await call(claude, { ...get, key }), { ok: true, operation: "get", key, value: hidden, type: "boolean" });
+      }
+    }
+  });
+
+  await t.test("keyboard writes reject noncanonical chords before storing them", async () => {
+    const key = "ui.keybindings.fleet";
+    for (const value of ["meta+k", "Ctrl+M", "ctrl+M", "alt+ctrl+m", "shift+?", "ctrl+Nonsense"]) {
+      await call(claude, { ...set, key, value }, "invalid_value");
+    }
+    assert.equal(getUiConfig().keybindings.fleet, undefined);
+    assert.deepEqual(await call(claude, { ...set, key, value: "ctrl+m" }), { ok: true, operation: "set", key, value: "ctrl+m" });
+    assert.equal(getUiConfig().keybindings.fleet, "ctrl+m");
+  });
+
+  await t.test("shipping discovery lists every valid merge method", async () => {
+    const key = "shipping.method";
+    assert.deepEqual(await call(claude, { ...get, key }), {
+      ok: true, operation: "get", key, value: "squash", type: "string", constraints: { choicesOnly: true },
+      choices: ["squash", "merge", "rebase"].map(value => ({ value, label: value })),
+    });
+    assert.deepEqual(await call(claude, { ...set, key, value: "merge" }), { ok: true, operation: "set", key, value: "merge" });
+  });
+
+  await t.test("a structured Skills edit requires a fresh version after a dashboard save", async () => {
+    const key = "skills.grillFirstKinds";
+    const request = { operation: "get", key };
+    const before = await call(claude, request);
+    assert.ok(before.ok && before.operation === "get" && before.version);
+    const edit = { operation: "set", key, value: ["ship"] };
+    await call(claude, edit, "version_required");
+    const saved = await app.request("/api/skills/config", {
+      method: "PUT", headers, body: JSON.stringify({ alwaysDraftPr: true, grillFirstKinds: ["plan"] }),
+    });
+    assert.equal(saved.status, 200);
+    await call(claude, { ...edit, expectedVersion: before.version }, "stale_version");
+    const current = await call(claude, request);
+    assert.ok(current.ok && current.operation === "get" && current.version);
+    assert.deepEqual(current.value, ["plan"]);
+    await call(claude, { ...edit, value: ["not-a-kind"], expectedVersion: current.version }, "invalid_value");
+    await call(claude, { ...edit, value: { constructor: "secret" }, expectedVersion: current.version }, "invalid_value");
+    const done = await call(claude, { ...edit, expectedVersion: current.version });
+    assert.ok(done.ok && done.operation === "set");
+    assert.deepEqual(done.value, ["ship"]);
+    assert.equal(getAppConfig(APP_CONFIG_ENTRIES.skills)?.alwaysDraftPr, true);
+    await call(claude, { ...edit, expectedVersion: current.version }, "stale_version");
+  });
+
+  await t.test("a settings restore invalidates a previously read Skills version", async () => {
+    const entry = APP_CONFIG_ENTRIES.skills;
+    setAppConfig(entry, { ...getAppConfig(entry), grillFirstKinds: ["plan"] });
+    const snapshot = new Map(captureSettingsConfig().map(item => [item.domain, item.payload]));
+    setAppConfig(entry, { ...getAppConfig(entry), grillFirstKinds: ["ship"] });
+    const key = "skills.grillFirstKinds";
+    const before = await call(claude, { ...get, key });
+    assert.ok(before.ok && before.operation === "get" && before.version);
+    assert.deepEqual(before.value, ["ship"]);
+
+    const db = openDb();
+    db.exec("BEGIN");
+    try {
+      restoreSettingsConfigInTransaction(db, stageSettingsConfigRestore(snapshot));
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    await call(claude, { ...set, key, value: ["ship"], expectedVersion: before.version }, "stale_version");
+    const restored = await call(claude, { ...get, key });
+    assert.ok(restored.ok && restored.operation === "get");
+    assert.deepEqual(restored.value, ["plan"]);
+  });
+
   assert.deepEqual(await call(claude, find), {
     ok: true, operation: "find", matches: [{ key: "ui.skin", label: "Skin", access: "read-write" }],
   });
@@ -208,7 +425,7 @@ test("registered SDK and terminal callers use one real stdio tool and lose live 
   const piResult = await piTool.execute("theme", get);
   assert.match(JSON.stringify(piResult.content), /daylight/);
 
-  await call(claude, { ...get, key: "ui.layout" }, "unknown_key");
+  await call(claude, { ...get, key: "ui.hiddenDisplayItems" }, "unknown_key");
   await call(claude, { ...set, value: "invalid-private-value" }, "invalid_value");
   await call(claude, { ...set, key: "sessionSettings.access", value: true }, "protected",
     "Manage this setting in Settings > Trust.");

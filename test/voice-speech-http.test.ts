@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import { fork, spawn, spawnSync } from "node:child_process";
 import { createPublicKey, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { once } from "node:events";
+import { MessageChannel } from "node:worker_threads";
 import { Socket } from "node:net";
 import { voiceProcessBirth } from "../src/server/voice/process-birth.ts";
 import { text } from "node:stream/consumers";
-import test, { afterEach } from "node:test";
+import test, { afterEach, type TestContext } from "node:test";
 import fs, { mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -86,6 +87,91 @@ async function expectReplacementCapture(server = app) {
   assert.equal((await replacement.hello()).status, 200);
   assert.equal((await replacement.poll()).capture, true);
 }
+
+function deferredVerifierServer(t: TestContext) {
+  const { port1: daemonPort, port2: shellPort } = new MessageChannel();
+  const server = new Hono();
+  // Route registration captures the private port that Electron supplies in a utility process.
+  Object.assign(process, { parentPort: daemonPort });
+  try { registerVoiceRoutes(server, store); }
+  finally { Reflect.deleteProperty(process, "parentPort"); }
+  const originalEnv = process.env;
+  process.env = { ...originalEnv, MISSION_VOICE_DESKTOP_VERIFIER: "1" };
+  delete process.env.MISSION_VOICE_SHELL_PUBLIC_KEY;
+  t.after(() => { process.env = originalEnv; shellPort.close(); daemonPort.close(); });
+  return { server, shellPort };
+}
+
+test("an unanswered desktop verifier request returns 503 without recording a launch, then a verified retry succeeds", { timeout: 10000 }, async t => {
+  const { server, shellPort } = deferredVerifierServer(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const shell = player(listenerId, server);
+  const receipt = join(supervised, announcementName(shell.instance) + ".json");
+  const firstRequest = once(shellPort, "message");
+  let settled = false;
+  const firstStart = Promise.resolve(shell.report("started")).finally(() => { settled = true; });
+  const [first] = await firstRequest;
+  assert.equal(first.type, "mission:voice-shell-verifier");
+  t.mock.timers.tick(1999);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  const refused = await firstStart;
+  assert.equal(refused.status, 503);
+  assert.deepEqual(await refused.json(), { error: "supervisor_verifier_unavailable" });
+  assert.throws(() => statSync(receipt), { code: "ENOENT" });
+  assert.equal((await shell.hello()).status, 200);
+  const unavailable = await shell.request("/api/voice/speech/audition", {});
+  assert.equal(unavailable.status, 409);
+  assert.match((await unavailable.json()).reason, /not started by a supervisor/);
+
+  const nextRequest = once(shellPort, "message");
+  const retry = shell.report("started");
+  const [next] = await nextRequest;
+  assert.equal(next.type, first.type);
+  assert.notEqual(next.id, first.id);
+  shellPort.postMessage({ data: { ...next, key: fixtureSupervisorEnv.MISSION_VOICE_SHELL_PUBLIC_KEY } });
+  assert.equal((await retry).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(receipt, "utf8")), { instance: shell.instance });
+  assert.equal((await shell.request("/api/voice/speech/audition", {})).status, 200);
+});
+
+test("enabling Voice during exit verification preserves another helper's speaking job", async t => {
+  store.reset();
+  const { server, shellPort } = deferredVerifierServer(t);
+  const shell = player(listenerId, server);
+  toggle(false);
+  const requested = once(shellPort, "message");
+  const exit = shell.report("exited");
+  const [request] = await requested;
+
+  toggle(true);
+  const peer = player(crypto.randomUUID(), server);
+  await peer.announce();
+  assert.equal((await peer.hello()).status, 200);
+  const job = await audition();
+  assert.equal((await peer.pickup()).speak.id, job);
+  assert.equal((await peer.event(job, "started")).status, 200);
+
+  shellPort.postMessage({ data: { ...request, key: fixtureSupervisorEnv.MISSION_VOICE_SHELL_PUBLIC_KEY } });
+  assert.equal((await exit).status, 200);
+  assert.equal(store.speech.launchExited(shell.instance), true);
+  assert.equal(store.speech.live?.state, "speaking");
+  assert.equal((await peer.event(job, "ended")).status, 200);
+});
+
+test("disabling Voice during start verification refuses the launch", async t => {
+  const { server, shellPort } = deferredVerifierServer(t);
+  const shell = player(listenerId, server);
+  const requested = once(shellPort, "message");
+  const start = shell.report("started");
+  const [request] = await requested;
+  toggle(false);
+  shellPort.postMessage({ data: { ...request, key: fixtureSupervisorEnv.MISSION_VOICE_SHELL_PUBLIC_KEY } });
+  assert.equal((await start).status, 404);
+  assert.equal(store.speech.announced.has(shell.instance), false);
+});
 
 test("a signed exit revokes an outstanding directive and prevents a late hello from restoring capture", async () => {
   const holder = player();
@@ -1875,12 +1961,13 @@ test("start timeout at 2000 ms and stop-confirmation failure at 5000 ms keep cap
   assert.equal(job.state, "stopping");
   assert.equal(store.state().mode, "unavailable");
   assert.deepEqual(store.state().capabilities.listener,
-    { available: false, reason: "the listener did not confirm that speech had stopped" });
+    { available: false, reason: "the listener did not confirm that speech had stopped", code: "speech_stop_unconfirmed" });
   assert.deepEqual(await pollWhileHeld(), stop);
 
   assert.equal((await holder.event(id, "ended")).status, 200);
   assert.equal(job.state, "timed-out");
   const released = await holder.poll();
+  assert.deepEqual(store.state().capabilities.listener, { available: true, reason: null });
   assert.equal(released.capture, true);
   assert.equal(released.speak, null);
 });
@@ -1986,6 +2073,41 @@ test("a backward wall-clock step during playback excludes buffered frames under 
   assert.deepEqual(await readHeard(), recent);
   assert.deepEqual(await (await holder.request(utterancePath(fresh.revision), capture("Steve fresh"))).json(), { accepted: true });
 });
+
+for (const playing of [false, true]) {
+  test(`switching to Push-to-talk stops a ${playing ? "playing" : "ready"} Ask through the holder`, async () => {
+    const p = player();
+    await p.announce(); await p.hello();
+    const configure = async (data: object) => {
+      const response = await app.request("/api/voice/config", { method: "PUT",
+        headers: { host: "localhost", "content-type": "application/json" }, body: JSON.stringify(data) });
+      assert.equal(response.status, 200);
+    };
+    await configure({ whenUnsure: "ask" });
+    const ask = store.speech.open("ask", "Which session?", crypto.randomUUID())!;
+    assert.equal(ask.state, "ready");
+    if (playing) {
+      assert.equal((await p.pickup()).speak.id, ask.id);
+      assert.equal((await p.event(ask.id, "started")).status, 200);
+      assert.equal(ask.state, "speaking");
+    }
+    await configure({ listeningMode: "push-to-talk" });
+    assert.equal(ask.state, "stopping");
+    const { configuredHotkey, pushToTalkSession } = store.state();
+    const press = store.hostNowUs();
+    assert.equal((await post("/voice/shell-report", { registeredHotkey: configuredHotkey, pushToTalkSession,
+      capabilities: { hotkey: { available: true } }, pushToTalk: true, reportedAtHostUs: press,
+      pushToTalkPressedAtHostUs: press }, token)).status, 200);
+    const directive = await p.poll();
+    assert.deepEqual(directive.speak, { id: ask.id, stop: true });
+    assert.equal(directive.capture, false);
+    assert.ok(store.speech.held);
+    assert.equal((await p.event(ask.id, "ended")).status, 200);
+    assert.equal(ask.state, "stopped");
+    assert.equal(store.speech.held, false);
+    assert.equal((await p.poll()).capture, true, "the held shortcut captures once the player confirms silence");
+  });
+}
 
 test("a late start or a stop before pickup waits for the holder; muting permits only an audition", async t => {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
@@ -2264,7 +2386,7 @@ for (const ledgerState of ["intact", "unreadable", "missing"]) for (const proof 
     assert.equal(stop.id === original, ledgerState === "intact");
     if (ledgerState !== "intact") {
       assert.deepEqual(other.speak, { id: recovered.find((h: { instance: string }) => h.instance === second.instance).jobId, stop: true });
-      assert.equal(store.state().capabilities.listener?.reason, "the record of unfinished speech could not be read");
+      assert.deepEqual(store.state().capabilities.listener, { available: false, reason: "the record of unfinished speech could not be read" });
       await second.event(other.speak.id, "ended");
     } else assert.equal(other.speak, null);
     assert.equal((await second.event(stop.id, "ended")).status, 409);

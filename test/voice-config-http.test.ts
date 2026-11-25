@@ -125,6 +125,18 @@ test("new and existing voice profiles default to two seconds and preserve indepe
   assert.equal((await config()).endOfSpeechMs, 5000);
 });
 
+test("dedicated push-to-talk ignores mute commands and preserves the prior Always-on mute", async () => {
+  await json("/api/voice/mute", "POST", { muted: true });
+  await json("/api/voice/config", "PUT", { listeningMode: "push-to-talk" });
+  for (const command of [{ toggle: true }, { muted: false }]) {
+    const response = await json("/api/voice/mute", "POST", command);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state.muted, true);
+  }
+  const restored = await json("/api/voice/config", "PUT", { listeningMode: "always-on" });
+  assert.equal((await restored.json()).config.muted, true);
+});
+
 test("reading mute after a toggle returns the authoritative state without another write", async () => {
   await json("/api/voice/mute", "POST", { toggle: true });
   const applied = voiceStateStore.state();
@@ -828,4 +840,48 @@ test("a required flag switched off reads as the flags reason; voice off sends on
   setFlag("inbox", false);
   assert.equal(frames.length, count, "while voice is off another flag sends nothing");
   assert.equal("voice" in registry.snapshot(), false);
+});
+
+async function transcriptEndpoint() {
+  assert.equal((await hello()).status, 200);
+  const auth = { "x-harness-token": token, "x-voice-listener-id": listenerId };
+  const directive = await json("/voice/listener/directive", "GET", undefined, auth);
+  assert.equal(directive.status, 200);
+  const { revision } = await directive.json();
+  return { path: "/voice/listener/transcript?revision=" + encodeURIComponent(revision), auth };
+}
+
+test("transcript word limits 1 and 100 apply live, and out-of-range or fractional edits cannot be saved", async () => {
+  const { path, auth } = await transcriptEndpoint();
+  const words = Array.from({ length: 101 }, (_, i) => `word${i + 1}`);
+  const sample = await json(path, "POST", { phase: "words", onset: 1, text: words.join(" ") }, auth);
+  assert.deepEqual(await sample.json(), { accepted: true });
+  const save = (transcriptWords: number) => json("/api/voice/config", "PUT", { transcriptWords });
+  const saved = async () => (await (await json("/api/voice/config")).json()).config.transcriptWords;
+  for (const limit of [1, 100]) {
+    assert.equal((await save(limit)).status, 200);
+    assert.equal(await saved(), limit);
+    assert.equal(voiceStateStore.state().transcript?.text, words.slice(-limit).join(" "));
+  }
+  for (const invalid of [0, 101, 2.5]) {
+    assert.equal((await save(invalid)).status, 400);
+    assert.equal(await saved(), 100);
+    assert.equal(voiceStateStore.state().transcript?.text, words.slice(-100).join(" "));
+  }
+});
+
+test("unauthorized and malformed transcript samples leave the current words intact", async () => {
+  const { path, auth } = await transcriptEndpoint();
+  const sample = { phase: "words", onset: 1, text: "current words" };
+  assert.deepEqual(await (await json(path, "POST", sample, auth)).json(), { accepted: true });
+  const before = voiceStateStore.state().transcript;
+  assert.equal(before?.text, sample.text);
+  const unauthorized = await json(path, "POST", { ...sample, text: "replacement" }, { "x-voice-listener-id": listenerId });
+  assert.equal(unauthorized.status, 401);
+  assert.deepEqual(await unauthorized.json(), { error: "unauthorized" });
+  assert.deepEqual(voiceStateStore.state().transcript, before);
+  const malformed = await json(path, "POST", { ...sample, text: 7 }, auth);
+  assert.equal(malformed.status, 400);
+  assert.match((await malformed.json()).error, /text/);
+  assert.deepEqual(voiceStateStore.state().transcript, before);
 });

@@ -1,3 +1,4 @@
+import { reserveWorktreeUse } from "./worktrees/use-reservation.ts";
 import { taskPlanDiscovery, taskPlanInputProblem } from "./plans/inputs.ts";
 import type { ResidentMcpLaunch } from "./harness/types.ts";
 import { withWorkUnit, workUnitEnv } from "./agent-work-unit.ts";
@@ -57,6 +58,7 @@ import type { Persona } from "@shared/workflow.ts";
 import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
+import { isolatedGitEnvironment } from "./git/worktree-tree.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelContribution, systemPromptAppendArgs } from "./ask-channel.ts";
 import { withStandingInstructions } from "./instructions/compose.ts";
@@ -457,6 +459,8 @@ export class Dispatcher {
   async dispatch(taskId: string, options: TaskDispatchOptions = {}): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) return;
+    using worktreeUse = reserveWorktreeUse(taskRepoRefs(task).flatMap((ref) => ref.worktreePath ? [ref.worktreePath] : []));
+    if (!worktreeUse) return;
     // This attempt's identity, for the shaping commit: a later dispatch of the same task
     // replaces it, and an attempt that is no longer current never writes the record.
     const attempt = Symbol(taskId);
@@ -3530,7 +3534,7 @@ async function teardownOneWorktree(
       position: task.position,
       path: worktreePath,
       leaseId: task.worktreeLeaseId,
-    });
+    }, beforeReturn ? () => beforeReturn(worktreePath) : undefined);
     if (returned.outcome !== "returned") {
       throw new Error(
         `legacy Treehouse cleanup refused for ${task.repoRoot} at ${worktreePath} ` +
@@ -3539,13 +3543,16 @@ async function teardownOneWorktree(
     }
     return;
   }
-  const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
+  const removeOptions = beforeReturn ? ["--"] : ["--force"];
+  const removed = await run("git", ["-C", task.repoRoot, "worktree", "remove", ...removeOptions, worktreePath], {
+    env: beforeReturn ? isolatedGitEnvironment() : undefined,
     // Native worktree removal carries the same minute-long budget. Keep fallback teardown
     // aligned so host contention cannot turn a completed archive capture into a false reclaim
     // failure while preserving the bounded, fail-closed outcome when git never answers.
     timeoutMs: 60_000,
   });
-  if (removed.code !== 0) {
+  if (removed.code !== 0 || removed.outcomeUnknown || removed.overflowed) {
+    if (beforeReturn) throw new Error("automatic Git worktree removal could not be confirmed");
     // Same budget as the dispatch preflight, and for the same reason: on the 4s default a
     // loaded machine turned "the tree is already gone, nothing to reclaim" into a spurious
     // reclaim failure. A non-zero `code` here already covers `outcomeUnknown` (a killed
@@ -3560,7 +3567,7 @@ async function teardownOneWorktree(
   }
   // Our git-fallback trees sit on a throwaway `harness/…` branch; drop it so a
   // retry of the same task can recreate it. Never touch a non-harness branch.
-  if (task.branch && task.branch.startsWith("harness/")) {
+  if (!beforeReturn && task.branch && task.branch.startsWith("harness/")) {
     const deleted = await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], {
       timeoutMs: 15000,
     });

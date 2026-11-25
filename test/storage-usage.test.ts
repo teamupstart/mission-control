@@ -20,12 +20,12 @@ const stateHome = mkdtempSync(join(tmpdir(), "mission-storage-usage-"));
 process.env.MISSION_HOME = stateHome;
 after(() => rmSync(stateHome, { recursive: true, force: true }));
 
-const { openDb } = await import("../src/server/db.ts");
+const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { StorageHealthService } = await import("../src/server/storage-health.ts");
-const { getStorageLimitsConfig } = await import("../src/server/storage-limits.ts");
+const { getStorageLimitsConfig, setStorageLimitsConfig } = await import("../src/server/storage-limits.ts");
 const { measurementFrom, parseDiskUsage, remeasureGrowthFor, settleListing, StorageUsageMonitor } = await import("../src/server/storage-usage.ts");
 
 const GIB = 1024 ** 3;
@@ -645,6 +645,15 @@ function app(deps: Partial<Parameters<typeof buildApp>[0]> = {}) {
   });
 }
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
+
+test("an edit repairs malformed stored limits and preserves an unknown setting", () => {
+  const entry = APP_CONFIG_ENTRIES.storageLimits;
+  setAppConfig(entry, { warnAtPercent: "bad", futureSetting: true } as never);
+  const saved = setStorageLimitsConfig({ fleetBanner: false });
+  assert.equal(saved.fleetBanner, false);
+  assert.deepEqual(getStorageLimitsConfig(), saved);
+  assert.deepEqual(getAppConfig(entry), { ...saved, futureSetting: true });
+});
 
 test("PUT /api/storage/limits saves only what was sent, publishes the new thresholds, and refuses nonsense", async () => {
   const { service, published } = healthWith({ totalBytes: 55 * GIB, volume: volume(80) });

@@ -8,6 +8,7 @@ import { RecentlyHeard } from "./RecentlyHeard.tsx";
 import {
   VOICE_CANCEL_WINDOW_SECONDS,
   VOICE_END_OF_SPEECH_MS,
+  TRANSCRIPT_WORD_LIMIT,
   VOICE_CONFIG_DEFAULTS,
   VOICE_CALL_POLL_RETRY,
   VOICE_INPUT_DEVICE_BUILT_IN,
@@ -31,6 +32,7 @@ import {
 } from "@shared/voice-decide.ts";
 import {
   spokenNameWarningLabel,
+  spokenNameLabel,
   spokenNameWarningText,
   validateSpokenName,
   type SpokenName,
@@ -86,6 +88,7 @@ function modeTone(mode: VoiceMode | null): "live" | "quiet" | "warn" | "off" {
     case "push-to-talk":
       return "live";
     case "muted":
+    case "waiting-for-key":
     case "auto-muted":
       return "quiet";
     case "unavailable":
@@ -138,7 +141,7 @@ function RosterCheck({ entry, roster }: { entry: SpokenName; roster: readonly Sp
   const warnings = validateSpokenName(entry.name, rosterWithout(roster, entry.key));
   if (warnings.length === 0) return <span className="voice-roster-ok">Distinct</span>;
   return (
-    <Tooltip label={warnings.map((warning) => spokenNameWarningText(warning, entry.name)).join(" ")}>
+    <Tooltip label={warnings.map((warning) => spokenNameWarningText(warning, entry.name, entry.isReferenceName)).join(" ")}>
       <span className="voice-roster-warn">
         <span aria-hidden>⚠</span> {warnings.map(spokenNameWarningLabel).join(" · ")}
       </span>
@@ -194,7 +197,7 @@ function RosterSection({
                   </span>
                 </td>
                 <td className="voice-roster-kind">{entry.kind === "resident" ? "Resident" : "Session"}</td>
-                <td className="voice-roster-say">{entry.name}</td>
+                <td className="voice-roster-say">{spokenNameLabel(entry)}</td>
                 <td className={`voice-roster-state voice-roster-state-${entry.state}`}>{SPOKEN_NAME_STATE_LABEL[entry.state]}</td>
                 <td><RosterCheck entry={entry} roster={roster} /></td>
               </tr>
@@ -363,6 +366,8 @@ function FasterRoutingGroup({ state, keys }: {
 }
 
 function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceState | null }) {
+  const dedicated = state.config?.listeningMode === "push-to-talk";
+  const hotkeyLabel = dedicated ? "Push-to-talk hotkey" : "Mute hotkey";
   const [recordingLabel, setRecordingLabel] = useState<string | null>(null);
   const [captureError, setCaptureError] = useState("");
   const [leaseId, setLeaseId] = useState<string | null>(null);
@@ -412,11 +417,13 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
   return (
     <div className={`kb-row${error || expired ? " has-conflict" : ""}`} data-anchor="voice/hotkey">
       <div className="kb-row-text">
-        <span className="kb-row-label">Mute hotkey</span>
+        <span className="kb-row-label">{hotkeyLabel}</span>
         {recording && available ? <span className="kb-row-desc">Press the chord you want. Esc keeps {recordingLabel}.</span>
           : captureError ? <span className="kb-row-conflict" role="alert">{captureError}</span>
           : pending ? <span className="kb-row-desc" role="status">Waiting for the desktop to confirm {formatChord(pending)}.</span>
           : <>
+            {dedicated && !expired && !error &&
+              <span className="kb-row-desc">Hold to talk. Mute controls apply to Always-on.</span>}
             {expired && <span className="kb-row-conflict" role="alert">
               The desktop did not confirm {formatChord(expired)}.{" "}
               {voice.configuredHotkey ? `${formatChord(voice.configuredHotkey)} is still saved.` : "No shortcut is saved."}
@@ -429,8 +436,9 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
       </div>
       <div className="kb-row-controls">
         {available ? (
-          <Tooltip label={recording ? "Press a shortcut, or Escape to cancel" : "Record a system-wide mute shortcut"}>
-            <button type="button" aria-label="Mute hotkey" aria-pressed={!!recording} aria-busy={!!pending || (requested && !recording)}
+          <Tooltip label={recording ? "Press a shortcut, or Escape to cancel" :
+            dedicated ? "Record a system-wide push-to-talk shortcut" : "Record a system-wide mute shortcut"}>
+            <button type="button" aria-label={hotkeyLabel} aria-pressed={!!recording} aria-busy={!!pending || (requested && !recording)}
               className={`kb-capture${recording ? " is-recording" : ""}`}
               onBlur={() => setRecordingLabel(null)} onClick={() => { setCaptureError(""); setRecordingLabel(requested ? null : label); }}>
               {recording ? <span className="kb-recording">Press a key…</span> : <kbd>{label}</kbd>}
@@ -460,6 +468,7 @@ export function VoiceSettingsPanel({
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
   const { config, update, error } = state;
+  const dedicated = config?.listeningMode === "push-to-talk";
   const detection = voice?.capabilities["call-detection"];
   const pollFailed = detection?.reason?.startsWith(VOICE_CALL_POLL_RETRY) ||
     detection?.reason?.startsWith("CoreAudio input query failed"); // Older desktop shells.
@@ -467,7 +476,7 @@ export function VoiceSettingsPanel({
   const lengths = CANCEL_WINDOW_CHOICES.includes(seconds as (typeof CANCEL_WINDOW_CHOICES)[number])
     ? CANCEL_WINDOW_CHOICES
     : [...CANCEL_WINDOW_CHOICES, seconds].sort((a, b) => a - b);
-  const askReason = voice?.capabilities["speech-output"]?.available ? null : voice?.capabilities["speech-output"]?.reason ?? "No listener is running.";
+  const askReason = dedicated ? "Ask aloud requires Always-on listening." : voice?.capabilities["speech-output"]?.available ? null : voice?.capabilities["speech-output"]?.reason ?? "No listener is running.";
   const unsure = config?.whenUnsure ?? "show";
   const devices = useVoiceDevices(true);
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
@@ -478,11 +487,76 @@ export function VoiceSettingsPanel({
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />
       {error && <p className="settings-error">{error}</p>}
 
+      <div className="settings-group" role="group" aria-labelledby="voice-transcript-heading">
+        <p className="settings-group-label" id="voice-transcript-heading">Live transcript</p>
+        <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Show live transcript</span>
+          <span className="kb-row-controls skill-switch">
+            <Tooltip label="Show recognized words while the microphone is listening">
+              <input type="checkbox" disabled={!config} checked={config?.showTranscript ?? true}
+                onChange={e => void update({ showTranscript: e.target.checked })} />
+            </Tooltip>
+          </span>
+        </label>
+        <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Transcript style</span>
+          <span className="kb-row-controls">
+            <Tooltip label="Choose a wrapping corner card or a bottom-center capsule">
+              <select className="settings-select" disabled={!config} value={config?.transcriptStyle ?? "card"}
+                onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
+                <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
+              </select>
+            </Tooltip>
+          </span>
+        </label>
+        <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Maximum transcript words</span>
+          <span className="kb-row-controls sc-number">
+            <Tooltip label={`Show the latest 1 to ${TRANSCRIPT_WORD_LIMIT} words`}>
+              <input type="number" disabled={!config} min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
+                defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
+                  if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
+                  else e.target.value = String(config?.transcriptWords ?? 20);
+                }} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+            </Tooltip>
+          </span>
+        </label>
+        {config?.transcriptStyle !== "capsule" && <label className="kb-row">
+          <span className="kb-row-text kb-row-label">Corner card placement</span>
+          <span className="kb-row-controls">
+            <Tooltip label="Choose which bottom corner shows the transcript">
+              <select className="settings-select" disabled={!config} value={config?.transcriptCorner ?? "bottom-right"}
+                onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
+                <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
+              </select>
+            </Tooltip>
+          </span>
+        </label>}
+      </div>
+
       <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />
 
       <div className="settings-group">
         <p className="settings-group-label">Input</p>
 
+        <div className="kb-row" data-anchor="voice/listening-mode">
+          <div className="kb-row-text">
+            <label className="kb-row-label" htmlFor="voice-listening-mode">Listening mode</label>
+            <span className="kb-row-desc">{dedicated
+              ? "Hold the hotkey to open the microphone. Release it to finish speaking."
+              : "Listen for spoken names while Voice is unmuted."}</span>
+          </div>
+          <div className="kb-row-controls">
+            <Tooltip label="Choose when Voice opens the microphone">
+              <select className="settings-select" id="voice-listening-mode" disabled={!config}
+                value={config?.listeningMode ?? VOICE_CONFIG_DEFAULTS.listeningMode}
+                onChange={event => void update({ listeningMode: event.target.value === "push-to-talk" ? "push-to-talk" : "always-on" })}>
+                <option value="always-on">Always-on</option>
+                <option value="push-to-talk">Push-to-talk</option>
+              </select>
+            </Tooltip>
+          </div>
+        </div>
         <div className="kb-row" data-anchor="voice/input-device">
           <div className="kb-row-text">
             <span className="kb-row-label">Input device</span>
@@ -510,11 +584,11 @@ export function VoiceSettingsPanel({
         <div className="kb-row" data-anchor="voice/end-of-speech">
           <div className="kb-row-text">
             <label className="kb-row-label" htmlFor="voice-end-of-speech">End-of-speech delay</label>
-            <span className="kb-row-desc">How long to wait for more speech before submitting an automatic capture.</span>
+            <span className="kb-row-desc">{dedicated ? "Push-to-talk ends on key release." : "How long to wait for more speech before submitting an automatic capture."}</span>
           </div>
           <div className="kb-row-controls">
             <Tooltip label="Speech that resumes within this delay stays in the same utterance.">
-              <select className="settings-select" id="voice-end-of-speech" disabled={!config}
+              <select className="settings-select" id="voice-end-of-speech" disabled={!config || dedicated}
                 value={config?.endOfSpeechMs ?? VOICE_CONFIG_DEFAULTS.endOfSpeechMs}
                 onChange={event => {
                   const duration = VOICE_END_OF_SPEECH_MS.find(ms => ms === Number(event.target.value));
@@ -535,11 +609,11 @@ export function VoiceSettingsPanel({
           <div className="kb-row" data-anchor="voice/auto-mute">
             <div className="kb-row-text">
               <span className="kb-row-label">Auto-mute on calls</span>
-              <span className="kb-row-desc">{voice?.capabilities["call-detection"]?.reason}</span>
+              <span className="kb-row-desc">{dedicated ? "Applies to Always-on listening." : voice?.capabilities["call-detection"]?.reason}</span>
             </div>
             <div className="kb-row-controls">
               <ConsoleSwitch label="Auto-mute on calls" tone="ok" checked={config?.autoMuteDuringCalls ?? true}
-                disabled={!config || (detection?.available === false && !pollFailed)}
+                disabled={!config || dedicated || (detection?.available === false && !pollFailed)}
                 onChange={autoMuteDuringCalls => void update({ autoMuteDuringCalls })}
                 tooltip="Stop listening while another app is using the microphone" />
             </div>

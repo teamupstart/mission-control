@@ -81,6 +81,7 @@ export function startShellVoice(binary: string, onState: (state: TrayVoiceState)
       reportedAtHostUs: lastReportUs,
       capabilities: {
         ...controls.capabilities,
+        "floating-windows": { available: true, reason: null },
         tray: { available: true, reason: null },
         microphone: { available: microphone === "granted", reason: microphone === "granted" ? null : microphone },
       },

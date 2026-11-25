@@ -20,6 +20,7 @@ interface ReportCounts {
 
 export interface TrayHandlers {
   setMuted: (muted: boolean) => Promise<boolean>;
+  onRecentlyHeard: () => void;
   onOpen: () => void;
   onCheckForUpdates: () => void;
   onInstallIntegrations: () => void;
@@ -57,6 +58,8 @@ export function setTrayVoice(state: TrayVoiceState): void {
 let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
+
+export function voiceTrayBounds() { return tray?.getBounds(); }
 
 function trayImage(iconPath: string): Electron.NativeImage {
   if (iconPath && existsSync(iconPath)) {
@@ -122,6 +125,7 @@ function render(handlers: TrayHandlers): void {
       { label: status, enabled: false },
       ...(muteError ? [{ label: muteError, enabled: false }] : []),
       { label: action, enabled: !muteConfirmation, click: () => void requestMute(handlers, nextMuted) },
+      { label: "Recently Heard", click: handlers.onRecentlyHeard },
       { type: "separator" },
     );
   }

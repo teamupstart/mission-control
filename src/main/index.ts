@@ -238,6 +238,10 @@ function registerIpc(updateController: UpdateController): void {
     }
     return "unavailable";
   });
+  ipcMain.on("mission:voice-reveal-dashboard", event => {
+    const owner = getMainWindow()?.webContents;
+    if (owner && event.sender === owner && event.senderFrame === owner.mainFrame) showWindow(paths.preload);
+  });
   ipcMain.handle("mission:version", () => app.getVersion());
   ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
   ipcMain.handle("mission:install-integrations", () => {
@@ -468,6 +472,7 @@ app.whenReady().then(async () => {
 
   installAppMenu({ onOpenSettings: openSettings, onCheckForUpdates });
   createTray(paths.trayIcon, join(appRoot, "dist", "main"), {
+    onRecentlyHeard: () => getMainWindow()?.webContents.send("mission:recently-heard"),
     setMuted: async muted => voice?.mute(muted) ?? false,
     onOpen: () => showWindow(paths.preload),
     onCheckForUpdates,

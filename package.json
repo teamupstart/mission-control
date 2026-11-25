@@ -43,7 +43,7 @@
     "build:transcript-boundary": "esbuild src/server/transcript-boundary-worker.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/server/transcript-boundary-worker.mjs",
     "build:foreman": "esbuild src/server/foreman/worker.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"import{createRequire as __mcCreateRequire}from'node:module';const require=__mcCreateRequire(import.meta.url);\" --outfile=dist/server/foreman-worker.mjs",
     "prebuild:main": "mkdir -p dist/main && cp build/voice-*Template*.png dist/main/",
-    "build:main": "esbuild src/main/index.ts src/main/update-binary-worker.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
+    "build:main": "esbuild src/main/index.ts src/main/update-binary-worker.ts src/preload/index.ts src/preload/voice-surface.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
     "build:cli": "esbuild src/cli/main.ts --bundle --platform=node --format=esm --target=node22 --main-fields=module,main --alias:@shared=./src/shared --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli/mctl.mjs",
     "build:mod": "node --import tsx scripts/build-mod.ts",

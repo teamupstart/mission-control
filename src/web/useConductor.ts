@@ -24,10 +24,10 @@ import { readIsCurrent } from "./harnesses-reconcile.ts";
 const POLL_MS = 4000;
 
 /** Flatten a rejection to one clamped sentence. Mirrors `useTaskSources`'s twin. */
-function whyItFailed(error: string | undefined): string {
+function whyItFailed(error: string | undefined, message = "That change didn't stick."): string {
   const flat = (error ?? "").replace(/\s+/g, " ").trim();
-  if (!flat) return "That change didn't stick.";
-  return `That change didn't stick: ${flat.length > 120 ? `${flat.slice(0, 119)}…` : flat}`;
+  if (!flat) return message;
+  return `${message} ${flat.length > 120 ? `${flat.slice(0, 119)}…` : flat}`;
 }
 
 function pipelineConsent({ enabled, foremanMechanicalTriage, repos }: PipelinesConfig) {
@@ -100,6 +100,7 @@ export function useConductor(active: boolean): ConductorState {
   const [view, setViewState] = useState<PipelinesView | null>(null);
   const [workspaceRepos, setWorkspaceRepos] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [setup, setSetup] = useState<ConductorState["setup"]>(null);
   const [setupNotice, setSetupNotice] = useState<ConductorSetupNotice | null>(null);
@@ -225,9 +226,12 @@ export function useConductor(active: boolean): ConductorState {
         // wire. A later optimistic edit owns the screen now, so this response may invalidate
         // old polls but must never replace or roll back that newer state.
         if (res.ok) writeGen.current += 1;
+        if (options?.includeRuntime) {
+          setRuntimeError(res.ok ? null : whyItFailed(res.error, "The Engineer runtime choice wasn't saved."));
+        }
         if (!readIsCurrent(seq, editSeq.current)) return res.ok;
         if (!res.ok) {
-          setError(whyItFailed(res.error));
+          if (!options?.includeRuntime) setError(whyItFailed(res.error));
           setView(before);
           return false;
         }
@@ -426,6 +430,6 @@ export function useConductor(active: boolean): ConductorState {
     openingInstaller,
     installerNotice,
     openInstaller,
-    error,
+    error: [runtimeError, error].filter(Boolean).join(" ") || null,
   };
 }

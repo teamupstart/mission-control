@@ -298,6 +298,49 @@ test("Conductor keeps a newer runtime through delayed reads and consent-only sav
   await expect(terminal).toBeChecked();
 });
 
+test("Conductor reports a failed runtime change after a later consent save", async ({ page, daemon }) => {
+  await openConductor(page, daemon.baseURL);
+  const sdk = page.getByRole("radio", { name: /Managed Agent SDK/ });
+  const terminal = page.getByRole("radio", { name: /Terminal/ });
+  const observe = page.getByRole("checkbox", { name: "Observe conductor pipelines" });
+  await expect(sdk).toBeChecked();
+  await expect(observe).not.toBeChecked();
+
+  const path = "/api/pipelines/config";
+  let releaseRuntime!: () => void;
+  let runtimeSent!: () => void;
+  const hold = new Promise<void>(resolve => { releaseRuntime = resolve; });
+  const sent = new Promise<void>(resolve => { runtimeSent = resolve; });
+  let refused = false;
+  await page.route(`**${path}`, async route => {
+    if (route.request().method() !== "PUT" || refused) return route.continue();
+    expect(route.request().postDataJSON()).toMatchObject({ launchRuntime: "terminal" });
+    refused = true;
+    runtimeSent();
+    await hold;
+    await route.fulfill({ status: 503, json: { error: "fixture runtime save refused" } });
+  });
+  await terminal.check();
+  await sent;
+  const consent = page.waitForResponse(response => response.url().endsWith(path)
+    && response.request().method() === "PUT" && response.request().postDataJSON().enabled === true);
+  await observe.check();
+  releaseRuntime();
+  expect(await (await consent).json()).toMatchObject({ config: { enabled: true, launchRuntime: "agent-sdk" } });
+  await expect(sdk).toBeChecked();
+  await expect(observe).toBeChecked();
+  const failure = page.getByText(/Engineer runtime choice wasn't saved.*fixture runtime save refused/);
+  await expect(failure).toBeVisible();
+  await shoot(page, "coderabbit-conductor-runtime-save-refused");
+
+  const retry = page.waitForResponse(response => response.url().endsWith(path)
+    && response.request().method() === "PUT" && response.request().postDataJSON().launchRuntime === "terminal");
+  await terminal.check();
+  expect((await retry).ok()).toBe(true);
+  await expect(failure).toHaveCount(0);
+  await expect(terminal).toBeChecked();
+});
+
 test("an open Dispatch modal changes only after exact observation succeeds", async ({
   dashboard,
   daemon,

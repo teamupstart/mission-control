@@ -225,6 +225,7 @@ export function ReviewCard({
     const result = await api.voiceAnswerAction(originId, "cancel", undefined, review.id);
     if (!result.ok) setEditCancel(current => current === attempt ? { ...attempt, status: "failed" } : current);
   }, [review.id]);
+  const [voiceError, setVoiceError] = useState<{ id: string; message: string } | null>(null);
   const revision = pendingAnswer?.id;
   useEffect(() => {
     // A correction may overtake cancellation. The draft keeps the input and the
@@ -235,7 +236,7 @@ export function ReviewCard({
     if (!pendingAnswer) return;
     if (manualEdit && action === "cancel") return cancelEdited(pendingAnswer.id, origin!);
     const result = await api.voiceAnswerAction(pendingAnswer.id, action, voiceAnswers?.windowId);
-    if (!result.ok) setErr(result.error ?? "This answer is no longer pending.");
+    if (!result.ok) setVoiceError({ id: pendingAnswer.id, message: result.error ?? "This answer is no longer pending." });
   };
   function cancelForManualEdit() {
     if (!preview || !origin) return;
@@ -418,7 +419,7 @@ export function ReviewCard({
           footer={footer}
           answers={displayedAnswers}
           onAnswersChange={(change) => {
-            updateDraft((d) => ({ ...d, decisions: change(voiceSelection ? displayedAnswers : d.decisions) }));
+            updateDraft((d) => ({ ...d, decisions: change(d.decisions) }));
             cancelForManualEdit();
           }}
           besideSubmit={
@@ -506,6 +507,7 @@ export function ReviewCard({
         </div>
       )}
       {voiceQuestion && !pendingAnswer && <QuestionVoiceHint name={spokenName} decision={decisions?.[0]} />}
+      {voiceError && voiceError.id === revision && <p className="review-err">{voiceError.message}</p>}
       {err && <p className="review-err">{err}</p>}
       {foremanOpen && foremanAvailable && foremanNote && (
         <ForemanRecommendationSidecar

@@ -29,6 +29,7 @@ import {
 import { ResidentMcpServerError } from "./residents/mcp-store.ts";
 import { redeemResidentMcpTicket } from "./residents/mcp-launch.ts";
 import { registerResidentInstructionRoutes, registerResidentLoopRoutes } from "./residents/routes.ts";
+import { createReviewResolver } from "./resolve-review.ts";
 import { ResidentInstructionChanges } from "./residents/instruction-changes.ts";
 import type { ResidentLoop } from "./residents/loop.ts";
 import { UpdateResidentSkillSourcesSchema, RescanResidentSkillsSchema } from "@shared/protocol.ts";
@@ -59,19 +60,15 @@ import {
   validatePlanReview,
   bindPlanReview,
   finalBundleDecision,
-  assertStandingApprovalGrantable,
-  grantStandingBundleApproval,
   hasStandingBundleApproval,
-  isStandingFollowUp,
   recordStandingFollowUp,
   reusableStandingApproval,
   standingBundleAnswer,
   unbindPlanReview,
-  STANDING_FOLLOW_UP_NOTE,
   filedPlanIdentityNote,
 } from "./plans/publication.ts";
 import { validatePlanInputs, taskPlanDependencyRequirements } from "./plans/inputs.ts";
-import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION, approvesFinalBundle } from "@shared/managed-plans.ts";
+import { PlanReviewInputSchema, PLAN_APPROVAL_DECISION } from "@shared/managed-plans.ts";
 import { SessionTransferCoordinator } from "./session-transfers/coordinator.ts";
 import { getSessionTransfer, latestTransferForSource, runtimeTransferPredecessors, sessionTransferPage, transferSummary, transferForNote, transferForSource, transferRetiredSource } from "./session-transfers/store.ts";
 import { InspectorPrsStateSchema, RecheckSessionTransferSchema, ResolveSessionTransferSchema, SessionTransferQuerySchema } from "@shared/protocol.ts";
@@ -204,7 +201,7 @@ import {
   RenameSchema,
   ReorderQueueSchema,
   ResetSchema,
-  ResolveReviewSchema, type ResolveReview,
+  ResolveReviewSchema,
   SnoozeReviewSchema,
   ArchiveScheduleSchema,
   CreateScheduleSchema,
@@ -6330,81 +6327,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(response.body, response.status);
   });
 
-  // The click and the voice deadline enter the same synchronous resolution transaction.
-  function resolveReview(id: string, resolution: ResolveReview, by: ReviewActor): {
-    body: ReviewItem | { error: string }; status: ContentfulStatusCode;
-  } {
-    // The fourth Foreman-marked write, and the one the phase plan left as a judgment call
-    // on whether its session could be resolved cheaply. It can: a review record names its
-    // `sessionId`, so this is two map lookups and no I/O.
-    //
-    // Refused only on a POSITIVE answer - the session is here and uninvited. A review
-    // whose session has been evicted resolves normally: there is no pane left to type
-    // into, so this stops being a typing act and becomes the bookkeeping that settles a
-    // dangling row, and refusing it would strand the review instead of protecting anyone.
-    const owner = registry.getReview(id)?.sessionId;
-    const ownerSession = owner ? registry.getSession(owner) : undefined;
-    const refusal = ownerSession
-      ? foremanWriteRefusal(registry, composerActivity, ownerSession, by, true)
-      : null;
-    if (refusal) {
-      return { body: { error: refusal.error }, status: refusal.status };
-    }
-    // "Approve all future bundles for this task" is the operator's standing grant. Checked
-    // before resolving, so a grant that cannot be kept leaves the question open to retry.
-    // Only an answer that approves this bundle grants it: "Needs revision" with the box ticked
-    // must not approve the next one.
-    const grant = resolution.action === "answer" && resolution.approveFutureBundles === true
-      && approvesFinalBundle(resolution.selections);
-    if (grant) {
-      if (by !== "human") return { body: { error: "Only the operator can approve future plan bundles" }, status: 403 };
-      if (registry.getReview(id)?.status !== "pending") return { body: { error: "This review is already settled" }, status: 409 };
-      try {
-        assertStandingApprovalGrantable(id);
-      } catch (error) { return planFailureResult(error); }
-    }
-    // A resident's proposed instruction changes: only a person's answer applies them, and the
-    // write commits with the answer. Refused before anything settles when the answer is not
-    // the operator's, so the question stays open for them.
-    const instructionChange = residentInstructions?.resolution(
-      id,
-      resolution.action,
-      by,
-      resolution.selections ?? null,
-    ) ?? null;
-    if (instructionChange && "refusal" in instructionChange) {
-      return { body: { error: instructionChange.refusal.error }, status: instructionChange.refusal.status };
-    }
-    if (grant && instructionChange) {
-      return { body: { error: "A plan bundle grant cannot answer a resident instruction proposal" }, status: 409 };
-    }
-    try {
-      // An answer to the questions left beside an auto-approved bundle tells the agent the
-      // bundle is already approved, because this form no longer asked about it.
-      // Every answer gets the note, including one sent with selections and no response text.
-      const response = resolution.action === "answer" && isStandingFollowUp(id)
-        ? [STANDING_FOLLOW_UP_NOTE, resolution.response].filter(Boolean).join("\n\n")
-        : resolution.response;
-      const updated = reviews.resolve(
-        id,
-        resolution.action,
-        response,
-        by,
-        resolution.selections,
-        // Committed with the answer, so a failed grant leaves the review pending to retry.
-        grant
-          ? () => grantStandingBundleApproval(id)
-          : instructionChange?.persist,
-      );
-      if (!updated) return { body: { error: "no such review" }, status: 404 };
-      instructionChange?.publish();
-      return { body: updated, status: 200 };
-    } catch (error) {
-      if (error instanceof ReviewResolutionError) return { body: { error: error.message }, status: 400 };
-      if (error instanceof PlanStoreError) return planFailureResult(error);
-      throw error;
-    }
-  }
+  const resolveReview = createReviewResolver(registry, reviews, residentInstructions,
+    (session, by) => foremanWriteRefusal(registry, composerActivity, session, by, true));
   app.post("/api/reviews/:id/resolve", async (c) => {
     const parsed = await parseBody(c, ResolveReviewSchema);
     if (!parsed.ok) return parsed.res;
@@ -6424,7 +6348,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!complete) return c.json({ error: "Answer every decision first." }, 400);
     }
     const result = resolveReview(id, parsed.data, by);
-    return c.json(result.body, result.status);
+    return result.kind === "committed" ? c.json(result.review) : c.json({ error: result.error }, result.status);
   });
 
   // Who is asking to snooze or wake a question: the operator, a session acting through session
@@ -9508,7 +9432,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       if (!featureEnabled(VOICE_FLAG) || review?.kind !== "input" || review.status !== "pending") return false;
       const response = answer.selections ? formatResponse(review.decisions!, answer.selections, decisionLead("input")) : answer.text;
       const resolution = ResolveReviewSchema.safeParse({ action: "answer", by: "human", response, selections: answer.selections });
-      return resolution.success && resolveReview(review.id, resolution.data, "human").status === 200;
+      return resolution.success && resolveReview(review.id, resolution.data, "human").kind === "committed";
     },
   });
 

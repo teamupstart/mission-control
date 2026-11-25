@@ -104,6 +104,7 @@ test("answer, correct, cancel and submit through a question card or its countdow
     const stale = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/send-now"));
     release.resolve();
     expect((await stale).status()).toBe(409);
+    await expect(card.locator(".review-err")).toHaveCount(0);
     expect((await read(id)).status).toBe("pending");
   } finally {
     release.resolve();
@@ -295,7 +296,7 @@ for (const scenario of [
     const report = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
       r.request().postDataJSON().cards.some((card: { id: string }) => card.id === id));
     await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
-    await report;
+    const ownerWindow = (await report).request().postDataJSON().windowId as string;
     const inbox = page.getByRole("dialog", { name: "Attention inbox" });
     await expectContentClearsBorder(inbox);
     const card = inbox.locator(".review").filter({ hasText: title });
@@ -349,7 +350,7 @@ for (const scenario of [
       const response = await cancelled;
       await expect(footer).toHaveCount(0);
       // A late submit of the original voice answer can no longer reach the review.
-      expect((await page.request.post(response.url().replace(/\/cancel$/, "/send-now"))).status()).toBe(409);
+      expect((await page.request.post(response.url().replace(/\/cancel$/, "/send-now?windowId=" + encodeURIComponent(ownerWindow)))).status()).toBe(409);
       if (!withOptions) {
         const late = page.waitForResponse(r => r.url() === response.url());
         release();
@@ -412,11 +413,14 @@ test("a spoken correction during manual cancellation leaves the draft visible an
   });
   expect(filed.ok()).toBe(true);
   const { id } = await filed.json();
+  const reported = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
+    r.request().postDataJSON().cards.some((c: { id: string }) => c.id === id));
   await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
   await expectContentClearsBorder(inbox);
   const card = inbox.locator(".review").filter({ hasText: title });
   const input = card.getByRole("textbox");
+  await reported;
   await say(daemon, "reply, tomorrow", { id: "before-manual-edit" });
   await expect(input).toHaveValue("tomorrow");
   const first = Promise.withResolvers<void>();
@@ -480,9 +484,36 @@ test("a fresh spoken answer survives the previous draft’s delayed cancellation
     const stale = page.waitForResponse(r => r.url().endsWith("/first-dictation/cancel"));
     release.resolve();
     expect((await stale).status()).toBe(409);
+    const submitted = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/fresh-dictation/send-now"));
     await card.getByRole("button", { name: "Submit now" }).click();
+    expect((await submitted).ok()).toBe(true);
     await expect.poll(async () => (await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).response).toBe("tonight");
   } finally {
     release.resolve();
   }
+});
+
+test("selecting an option during voice dictation preserves the operator's parked Other text", async ({ dashboard: page, daemon }) => {
+  await setupCards(page, daemon);
+  const steve = await runningAgent(page, daemon, "Steve");
+  const title = "When should we run it?";
+  const filed = await page.request.post(daemon.baseURL + "/mcp/reviews", {
+    headers: { "x-harness-token": voiceToken(daemon) }, data: { env: {}, cwd: steve.cwd, kind: "input", title, body: title,
+      decisions: [{ id: "when", question: title, allowOther: true, options: [{ id: "now", label: "Now" }] }] },
+  });
+  expect(filed.ok()).toBe(true);
+  const { id } = await filed.json();
+  const report = page.waitForResponse(r => r.ok() && r.url().endsWith("/api/voice/open-cards") &&
+    r.request().postDataJSON().cards.some((c: { id: string }) => c.id === id));
+  await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
+  await report;
+  const inbox = page.getByRole("dialog", { name: "Attention inbox" });
+  await expectContentClearsBorder(inbox);
+  const other = inbox.getByRole("textbox").first();
+  await other.fill("after lunch");
+  await say(daemon, "reply, tomorrow");
+  await expect(other).toHaveValue("tomorrow");
+  await inbox.getByRole("radio", { name: /Now/ }).check();
+  await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
+  await expect(other).toHaveValue("after lunch");
 });

@@ -4,7 +4,7 @@ import { INBOX_ACTIONS } from "../src/shared/inbox.ts";
 import { spokenInboxAction } from "../src/shared/voice-inbox.ts";
 import type { DrawnVoiceCard, VoiceInboxEvent } from "../src/shared/voice-answers.ts";
 import { act, cards, post, registry, reports, say } from "./helpers/voice-http.ts";
-import { put } from "./helpers/voice-question.ts";
+import { mockCaptureClock, put } from "./helpers/voice-question.ts";
 
 test("all declared spoken forms map to their click action and click-only controls have no mapping", () => {
   for (const { id, spoken, label } of INBOX_ACTIONS) {
@@ -16,7 +16,7 @@ test("all declared spoken forms map to their click action and click-only control
 });
 
 test("named commands and follow-up dictation select their unique offer and use focus for competing offers", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const windowId = "mixed-inbox";
   const router = registry.voiceRouter!;
   t.after(router.openCards.connect(windowId));
@@ -54,7 +54,7 @@ test("named commands and follow-up dictation select their unique offer and use f
 });
 
 test("mark read cancels, refuses ambiguity, requests the drawn button, and reads the sole report with the inbox closed", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const steve = registry.getSession("sdk:Steve")!;
   const first = await reports.post(steve, { title: "First report", body: "Ready." });
   await say("Steve, mark read");
@@ -98,7 +98,7 @@ test("mark read cancels, refuses ambiguity, requests the drawn button, and reads
 });
 
 test("an accepted inbox claim whose dashboard never confirms invocation expires and refuses a late success", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const windowId = "unresponsive-dashboard";
   const router = registry.voiceRouter!;
   t.after(router.openCards.connect(windowId));

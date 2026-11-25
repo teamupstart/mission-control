@@ -2,7 +2,7 @@ import { PLAN_APPROVAL_DECISION } from "../src/shared/managed-plans.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { cards, post, queued, registry, reviews, say, readHeard, act } from "./helpers/voice-http.ts";
-import { put, question, answers } from "./helpers/voice-question.ts";
+import { mockCaptureClock, put, question, answers } from "./helpers/voice-question.ts";
 
 async function form(count = 3) {
   const review = reviews.create("sdk:Steve", "plan-decisions", "Cache plan", "Choose settings",
@@ -17,7 +17,7 @@ async function form(count = 3) {
 }
 
 test("fill-only ordinals include the appended approval. Submit requires an open dashboard and a live single-use id", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const { review, show, fill } = await form();
   let submitId = "";
   t.after(registry.subscribe(event => { if (event.type === "voice_form_submit") submitId = event.submitId; }));
@@ -69,9 +69,9 @@ test("resolve refuses an incomplete selection payload with a live voice submit I
   assert.equal(registry.getReview(review.id)?.status, "pending");
 });
 
-test("fills stay outside cancel and correction order, expire ten minutes from last report, and clear on opt-out", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
-  const { show, fill } = await form(2);
+test("fills stay outside cancel and correction order and clear on opt-out", async t => {
+  mockCaptureClock(t);
+  const { fill } = await form(2);
   await say("Will, check the build");
   await say("Steve first one B second one A");
   assert.deepEqual(fill()?.selections.map(s => s.selected), [["b"], ["a"]]);
@@ -85,20 +85,24 @@ test("fills stay outside cancel and correction order, expire ten minutes from la
   await say("no, A");
   assert.equal(answers()[0]?.text, "SQLite");
   assert.deepEqual(fill()?.selections.map(s => s.selected), [["b"], ["b"]]);
+  await put("/api/voice/config", { planFormsByVoice: false });
+  assert.equal(fill(), undefined);
+  await say("Steve, first one B", "ordinary");
+  assert.equal(registry.voiceRouter!.activeCards().find(c => c.id === "ordinary")?.parts[0]?.text, "first one B");
+  await put("/api/voice/config", { planFormsByVoice: true });
+});
+
+test("a fill expires ten minutes after the dashboard last reported the form open", async t => {
+  mockCaptureClock(t);
+  const { show, fill } = await form(2);
+  await say("Steve, first one B");
+  assert.ok(fill());
   t.mock.timers.tick(599_000);
   await show(true);
   t.mock.timers.tick(599_999);
   assert.ok(fill());
   t.mock.timers.tick(1);
   assert.equal(fill(), undefined);
-  await show(true);
-  await say("Steve, first one B");
-  assert.ok(fill());
-  await put("/api/voice/config", { planFormsByVoice: false });
-  assert.equal(fill(), undefined);
-  await say("Steve, first one B", "ordinary");
-  assert.equal(registry.voiceRouter!.activeCards().find(c => c.id === "ordinary")?.parts[0]?.text, "first one B");
-  await put("/api/voice/config", { planFormsByVoice: true });
 });
 
 test("a slow option lookup preserves later picks and cannot repopulate a retired form", async () => {

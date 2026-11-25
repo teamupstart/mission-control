@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { act, app, applyFeatureFlagIntent, post, registry, say } from "./helpers/voice-http.ts";
-import { answers, put, question, show } from "./helpers/voice-question.ts";
+import { answers, mockCaptureClock, put, question, show } from "./helpers/voice-question.ts";
 
 test("the deadline resolves through the human click path, correction restarts it", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const q = question();
   await show([q.id]);
   await say("Steve, option B", "answer");
@@ -49,7 +49,7 @@ test("a wall-clock jump during the countdown preserves a correction until its mo
 });
 
 test("window off resolves immediately, a competing human answer survives a late send", async t => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  mockCaptureClock(t);
   const first = question();
   await say("Steve, option B", "late");
   await post("/api/reviews/" + first.id + "/resolve", { action: "answer", response: "by click" });
@@ -72,7 +72,7 @@ test("disconnected windows cannot claim cards and the disabled preview refuses r
 });
 
 test("a closed stream loses its open cards after the disconnect grace period", async t => {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  mockCaptureClock(t);
   const q = question();
   const windows = registry.voiceRouter!.openCards;
   const close = windows.connect("dashboard");

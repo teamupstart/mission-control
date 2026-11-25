@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach } from "node:test";
+import { afterEach, beforeEach, type TestContext } from "node:test";
 import type { OpenCardsReport } from "../../src/shared/voice-answers.ts";
 import { app, registry, reviews } from "./voice-http.ts";
+
+export function mockCaptureClock(t: TestContext): number {
+  const now = Date.now();
+  const elapsed = performance.now();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
+  t.mock.method(performance, "now", () => elapsed + (Date.now() - now));
+  return now;
+}
 
 const windowId = "voice-question-test";
 export function question(title = "Which database?", sessionId = "sdk:Steve") {
@@ -48,13 +56,16 @@ export async function put(path: string, data: unknown, headers: Record<string, s
   return response;
 }
 
+let disconnect: (() => void) | undefined;
 export async function show(ids: string[], focused?: string) {
-  registry.voiceRouter!.openCards.connect(windowId);
+  disconnect ??= registry.voiceRouter!.openCards.connect(windowId);
   assert.equal((await put("/api/voice/open-cards", { windowId, focused: true,
     cards: ids.map(id => ({ kind: "question", id, focused: id === focused })) })).status, 200);
 }
 
 export const answers = () => registry.voiceRouter!.activeAnswers();
 afterEach(() => {
+  disconnect?.();
+  disconnect = undefined;
   for (const q of registry.pendingReviews()) reviews.resolve(q.id, "dismiss", null);
 });

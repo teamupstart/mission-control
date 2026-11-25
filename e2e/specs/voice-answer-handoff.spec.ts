@@ -47,7 +47,8 @@ test("a stalled card report cannot block a newer report after the question close
     !r.request().postDataJSON().cards.length && openRequests > 0);
   await page.route("**/api/voice/open-cards", async route => {
     if (route.request().postDataJSON().cards.length) {
-      await route.fetch();
+      const result = await route.fetch();
+      expect(result.ok()).toBe(true);
       openRequests++;
       received.resolve();
       await release.promise;
@@ -443,7 +444,9 @@ test("a focused multi-decision form blocks replies to its single-decision neighb
   await expectContentClearsBorder(inbox);
   const manual = inbox.locator(".review").filter({ hasText: title });
   await manual.getByRole("radio").first().focus();
-  await say(daemon, "reply, tomorrow");
+  const heard = await say(daemon, "reply, tomorrow");
+  expect(heard.ok).toBe(true);
+  expect((await heard.json()).accepted).toBe(true);
   await expect(inbox.locator('[data-voice-question="' + neighbor + '"]').getByRole("textbox")).toBeEmpty();
   await expect(inbox.getByRole("button", { name: "Submit now" })).toHaveCount(0);
   expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + neighbor)).json()).status).toBe("pending");
@@ -490,13 +493,17 @@ test("a companion identifies its destination and hands its calibrated countdown 
   await expect(build).toContainText("When should the build start?");
   await expect(pending.filter({ hasText: "Will" })).toContainText("When should the tests start?");
   await captureCard(build, "companion-destination-round12");
-  await expect(build.locator(".vc-seconds")).toHaveText(/^≤?(?:[1-9]|1\d|2[0-8])s$/);
+  const seconds = build.locator(".vc-seconds");
+  await expect(seconds).toHaveText(/^≤?(?:[1-9]|1\d|2[0-8])s$/);
+  const before = Number((await seconds.innerText()).match(/\d+/)![0]);
   await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
   const inbox = page.getByRole("dialog", { name: "Attention inbox" });
   await expectContentClearsBorder(inbox);
   const card = inbox.locator(".review").filter({ hasText: "When should the build start?" });
   const footer = card.getByRole("status");
   await expect(footer).toContainText(/submits in ≤?(?:[1-9]|1\d|2[0-8])s/);
+  const after = Number((await footer.innerText()).match(/submits in ≤?(\d+)s/)![1]);
+  expect(after).toBeLessThanOrEqual(before + 1);
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   await page.route("**/api/voice/cards/*/send-now*", async route => {
@@ -573,6 +580,7 @@ test(closing ? "a footer submit that overtakes the card’s close report leaves 
     if (closing) await expect(companion).toContainText("tomorrow");
     else await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
     await owner.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(owner.getByRole("button", { name: "Submit now" })).toHaveCount(0);
     expect((await (await page.request.get(daemon.baseURL + "/api/reviews/" + id)).json()).status).toBe("pending");
   } finally {
     send.resolve();
@@ -712,8 +720,10 @@ test("a suspended dashboard releases a confirmed foreground reply without waitin
     await active.locator("button.pulse-seg", { hasText: "to answer" }).click();
     const inbox = active.getByRole("dialog", { name: "Attention inbox" });
     await expectContentClearsBorder(inbox);
+    const started = performance.now();
     await say(daemon, "reply, tomorrow");
-    await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow");
+    await expect(inbox.getByRole("textbox")).toHaveValue("tomorrow", { timeout: VOICE_DASHBOARD_CONFIRM_MS });
+    expect(performance.now() - started).toBeLessThan(VOICE_DASHBOARD_CONFIRM_MS);
     await expect.poll(() => probes.size).toBe(2);
     await captureCard(inbox.locator(".review").filter({ hasText: title }), "active-answer-suspended-window-r35");
     await inbox.getByRole("button", { name: "Cancel", exact: true }).click();

@@ -72,6 +72,17 @@ html:has(.voice-standalone), body:has(.voice-standalone), #root:has(.voice-stand
   .voice-card[data-fading] { animation: voice-card-fade .3s ease-in both; }
 }
 
+.vc-ask {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: color-mix(in oklab, var(--working) 9%, transparent);
+  border: 1px solid color-mix(in oklab, var(--working) 30%, var(--border));
+  border-radius: 8px;
+  padding: 5px 9px;
+}
+.vc-ask .vc-icon { color: var(--working); }
+
 /* Question card, countdown footer variant. */
 .av-grow { flex: 1; min-width: 0; }
 .av-key { flex: none; width: 17px; height: 17px; margin-top: 1px; display: grid; place-items: center; font: 700 10px var(--mono); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; }

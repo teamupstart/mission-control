@@ -41,17 +41,16 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       WHEN OLD.spoken_words IS NOT NULL BEGIN SELECT RAISE(ABORT, 'receipt deliberately delayed'); END`));
     const words = "inspect the red build";
     expect(await (await say(daemon, "Steve, " + words)).json()).toEqual({ accepted: true });
-    await expect.poll(() => pane.turns().find(text => text.startsWith(words)), { timeout: 30_000 }).toContain("post a report");
-    const payload = pane.turns().find(text => text.startsWith(words))!;
-    appendFileSync(path, line("spoken-native", payload));
+    await expect.poll(() => pane.turns(), { timeout: 30_000 }).toContain(words);
+    appendFileSync(path, line("spoken-native", words));
     const actual = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: words });
-    await expect(actual).toContainText("When you have finished this, post a report.");
+    await expect(actual.getByText(words, { exact: true })).toBeVisible();
     await expect(actual.getByText("Spoken", { exact: true })).toHaveCount(0);
     withDaemonDb(daemon, db => db.exec("DROP TRIGGER delay_spoken_receipt"));
     await expect(actual.getByText("Spoken", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(actual).toHaveCount(1);
     await actual.getByText("What the agent received", { exact: true }).click();
-    await expect(actual.locator(".review-received-text")).toHaveText(payload);
+    await expect(actual.locator(".review-received-text")).toHaveText(words);
     if (process.env.MC_E2E_EVIDENCE === "1") {
       const dir = artifactsDir("voice-spoken-delayed-receipt");
       mkdirSync(dir, { recursive: true });
@@ -67,7 +66,7 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     writeFileSync(pauseProof, "");
     writeFileSync(path, readFileSync(path));
     await expect(actual.getByText("Spoken", { exact: true })).toHaveCount(0);
-    await expect(actual).toContainText(payload);
+    await expect(actual).toContainText(words);
     const progressWhileDeferred = "New terminal output while proof is unavailable";
     appendFileSync(path, line("while-proof-paused", progressWhileDeferred));
     await expect(dashboard.getByText(progressWhileDeferred, { exact: true })).toBeVisible();
@@ -75,7 +74,7 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     unlinkSync(pauseProof);
     await expect(actual.getByText("Spoken", { exact: true })).toBeVisible({ timeout: 20_000 });
     await actual.getByText("What the agent received", { exact: true }).click();
-    await expect(actual.locator(".review-received-text")).toHaveText(payload);
+    await expect(actual.locator(".review-received-text")).toHaveText(words);
     await dashboard.mouse.move(0, 0);
     await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
@@ -83,14 +82,13 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
 
     const second = "inspect the green build";
     expect(await (await say(daemon, "Steve, " + second)).json()).toEqual({ accepted: true });
-    await expect.poll(() => pane.turns().find(text => text.startsWith(second)), { timeout: 30_000 }).toContain("post a report");
-    const secondPayload = pane.turns().find(text => text.startsWith(second))!;
+    await expect.poll(() => pane.turns(), { timeout: 30_000 }).toContain(second);
     // More than one forward scan page. The binder has already passed the provisional
     // record by the time the runtime rewrites it, keeping the same inode and file size.
     const provisional = "inspect the black build";
     const filler = Array.from({ length: 65 }, (_, i) => JSON.stringify({ type: "user", uuid: "later-" + i,
       timestamp: new Date().toISOString(), padding: "x".repeat(9000), message: { role: "user", content: "Later turn " + i } })).join("\n") + "\n";
-    appendFileSync(path, line("second-native", secondPayload.replace(second, provisional)) + filler);
+    appendFileSync(path, line("second-native", provisional) + filler);
     await expect(dashboard.locator("article.turn-user").filter({ hasText: provisional })).toBeVisible();
     writeFileSync(path, readFileSync(path, "utf8").replace(provisional, second));
     const green = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: second });
@@ -99,7 +97,7 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       const dir = artifactsDir("voice-spoken-rewritten-suffix");
       mkdirSync(dir, { recursive: true });
       await green.getByText("What the agent received", { exact: true }).click();
-      await expect(green.locator(".review-received-text")).toHaveText(secondPayload);
+      await expect(green.locator(".review-received-text")).toHaveText(second);
       await dashboard.mouse.move(0, 0);
       await dashboard.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await expect(dashboard.getByRole("tooltip")).toHaveCount(0);
@@ -109,7 +107,7 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     // while the first record and its handoff prefix are still intact.
     writeFileSync(path, readFileSync(path, "utf8").replace(second, words) + "\n\n\n\n");
     await expect(actual).toHaveCount(2);
-    await expect(actual.last()).toContainText("When you have finished this, post a report.");
+    await expect(actual.last().getByText(words, { exact: true })).toBeVisible();
     await expect(actual.last().getByText("Spoken", { exact: true })).toHaveCount(0);
     await expect(actual.first().getByText("Spoken", { exact: true })).toBeVisible();
     if (process.env.MC_E2E_EVIDENCE === "1") {
@@ -140,26 +138,25 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
       WHEN NEW.message_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'native binding delayed'); END`));
     const lateWords = "inspect the final build";
     expect(await (await say(daemon, "Steve, " + lateWords)).json()).toEqual({ accepted: true });
-    await expect.poll(() => pane.turns().find(text => text.startsWith(lateWords)), { timeout: 30_000 }).toContain("post a report");
-    const latePayload = pane.turns().find(text => text.startsWith(lateWords))!;
+    await expect.poll(() => pane.turns(), { timeout: 30_000 }).toContain(lateWords);
     await expect.poll(() => withDaemonDb(daemon, db => db.prepare(
       "SELECT runtime_confirmed_at FROM session_spoken_turns WHERE spoken_words = ?").get(lateWords)?.runtime_confirmed_at)).toBeTruthy();
     // Neither an old buffered repeat nor a clock beyond the delivery window establishes
     // the turn. A receipt with an eligible timestamp can still follow both in the file.
-    appendFileSync(path, line("buffered-older", latePayload, Date.now() - 60_000)
-      + line("future-repeat", latePayload, Date.now() + 25 * 60 * 60_000) + line("late-native-binding", latePayload));
+    appendFileSync(path, line("buffered-older", lateWords, Date.now() - 60_000)
+      + line("future-repeat", lateWords, Date.now() + 25 * 60 * 60_000) + line("late-native-binding", lateWords));
     const repeated = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: lateWords });
     await expect(repeated).toHaveCount(3);
     const late = repeated.last();
-    await expect(late).toContainText("When you have finished this, post a report.");
+    await expect(late.getByText(lateWords, { exact: true })).toBeVisible();
     await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
     withDaemonDb(daemon, db => db.exec("DROP TRIGGER delay_native_binding"));
     await expect(late.getByText("Spoken", { exact: true })).toBeVisible();
     await expect(repeated.first().getByText("Spoken", { exact: true })).toHaveCount(0);
     await expect(repeated.nth(1).getByText("Spoken", { exact: true })).toHaveCount(0);
-    await expect(repeated.first()).toContainText(latePayload);
+    await expect(repeated.first()).toContainText(lateWords);
     await late.getByText("What the agent received", { exact: true }).click();
-    await expect(late.locator(".review-received-text")).toHaveText(latePayload);
+    await expect(late.locator(".review-received-text")).toHaveText(lateWords);
     await repeated.first().screenshot({ path: test.info().outputPath("buffered-typed-turn.png") });
     await late.screenshot({ path: test.info().outputPath("matching-spoken-turn.png") });
     if (process.env.MC_E2E_EVIDENCE === "1") {
@@ -172,34 +169,31 @@ test("a terminal conversation restores late spoken receipts and rechecks rewritt
     writeFileSync(path + ".next", readFileSync(path));
     renameSync(path + ".next", path);
     await expect(late.getByText("Spoken", { exact: true })).toHaveCount(0);
-    await expect(late).toContainText(latePayload);
+    await expect(late).toContainText(lateWords);
     await late.screenshot({ path: test.info().outputPath("reused-native-id.png") });
 
     const oversizedWords = "check the archived build";
     // The typed record already exists at handoff, even though its timestamp and payload
     // will be identical to the native delivery. Its author clock runs one minute ahead.
     const timestamp = Date.now() + 60_000;
-    const expectedPayload = latePayload.replace(lateWords, oversizedWords);
-    appendFileSync(path, line("archived-before-handoff", expectedPayload, timestamp));
+    appendFileSync(path, line("archived-before-handoff", oversizedWords, timestamp));
     expect(await (await say(daemon, "Steve, " + oversizedWords)).json()).toEqual({ accepted: true });
-    await expect.poll(() => pane.turns().find(text => text.startsWith(oversizedWords)), { timeout: 30_000 }).toContain("post a report");
-    const oversizedPayload = pane.turns().find(text => text.startsWith(oversizedWords))!;
-    expect(oversizedPayload).toBe(expectedPayload);
+    await expect.poll(() => pane.turns(), { timeout: 30_000 }).toContain(oversizedWords);
     const prefix = readFileSync(path, "utf8");
-    const original = line("archived-original", oversizedPayload, timestamp);
-    const copy = line("archived-typed-copy", oversizedPayload, timestamp + 1);
+    const original = line("archived-original", oversizedWords, timestamp);
+    const copy = line("archived-typed-copy", oversizedWords, timestamp + 1);
     appendFileSync(path, JSON.stringify({ ...JSON.parse(original), padding: "x".repeat(17 * 1024 * 1024) }) + "\n" + copy);
     const archived = dashboard.locator("article.turn-user:not(.pending-turn)").filter({ hasText: oversizedWords });
-    await expect(archived.last()).toContainText(oversizedPayload);
+    await expect(archived.last()).toContainText(oversizedWords);
     await expect(archived.getByText("Spoken", { exact: true })).toHaveCount(0);
     writeFileSync(path, prefix + original + copy);
     await expect(archived).toHaveCount(3);
     await expect(archived.nth(1).getByText("Spoken", { exact: true })).toBeVisible();
-    await expect(archived.last()).toContainText(oversizedPayload);
+    await expect(archived.last()).toContainText(oversizedWords);
     await expect(archived.last().getByText("Spoken", { exact: true })).toHaveCount(0);
     writeFileSync(path, prefix);
     await expect(archived).toHaveCount(1);
-    await expect(archived).toContainText(oversizedPayload);
+    await expect(archived).toContainText(oversizedWords);
     await expect(archived.getByText("Spoken", { exact: true })).toHaveCount(0);
   } finally {
     pane.cleanup();

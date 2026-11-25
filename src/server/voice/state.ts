@@ -8,7 +8,7 @@ import { watchCaptureProcess } from "./capture-process.ts";
 import { SpeechHolds } from "./speech-holds.ts";
 import { randomInt, randomUUID } from "node:crypto";
 import type { FeatureFlagId } from "@shared/feature-flags.ts";
-import type { VoiceMicrophoneReading } from "@shared/voice-models.ts";
+import { VOICE_SPEECH_NEURAL_VOICES, type VoiceMicrophoneReading } from "@shared/voice-models.ts";
 import {
   knownVoiceCapabilities,
   VOICE_FLAG,
@@ -19,8 +19,10 @@ import {
   VoiceListenerIdSchema,
   VOICE_REQUIRED_FLAGS,
   VOICE_SHELL_REPORT_LAPSE_MS,
+  VOICE_MAX_HOLD_MS,
   voiceMode,
   voiceCaptures,
+  awaitingVoiceHold,
   type VoiceListenerDirective,
   voiceProtocolMajor,
   voiceStateOff,
@@ -36,9 +38,10 @@ import {
 } from "@shared/voice.ts";
 import type { SpokenName } from "@shared/voice-names.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../feature-flags/index.ts";
-import { getVoiceConfig, onVoiceConfigChanged } from "./config.ts";
+import { getVoiceConfig, onVoiceConfigChanged, setVoiceConfig } from "./config.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
-import { voiceModelManager, type VoiceModelManager } from "./models.ts";
+import { NeuralSynthesizer } from "./synthesizer.ts";
+import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
 
 /** What the store reads. The defaults are the daemon's; a test hands in its own. */
 export interface VoiceStateDeps {
@@ -49,6 +52,7 @@ export interface VoiceStateDeps {
   speechBackend?: { neural(): VoiceSpeechCatalog["neural"]; model(): VoiceModelState; synthesizer: VoiceSynthesizer };
   enabled(id: FeatureFlagId): boolean;
   config(): VoiceConfig;
+  saveHotkey?(chord: string): void;
   /** The speech model's state (contract H's manager). Absent, the model reads as nothing known. */
   model?(): VoiceModelState;
   /** Schedules the recompute that publishes a lapse. Unref'd, so it never holds the process. */
@@ -64,12 +68,36 @@ export type VoiceHelloResult =
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
  * listener hello and the latest shell report, and published to whoever subscribes.
  *
+ * Readings and shortcut trials are transient. Only a confirmed shortcut edit is saved.
  * Microphone grants outlive a daemon restart. A hello counts for `VOICE_HELLO_LAPSE_MS` and a shell report for
  * `VOICE_SHELL_REPORT_LAPSE_MS`; a timer set at the next lapse publishes the change a lapse
  * makes, so a listener that stops sending turns the mode to `unavailable` with no request.
  */
 export class VoiceStateStore {
+  private recorder?: string;
+  private hotkeyTrial?: { id: string; chord: string; previous: string | null; requestedAtUs: number; expiresAt: number };
+
+  proposeHotkey(chord: string | null) {
+    const previous = this.deps.config().hotkey;
+    this.hotkeyTrial = chord && chord !== previous ? {
+      id: randomUUID(), chord, previous, requestedAtUs: this.hostNowUs(), expiresAt: this.deps.now() + VOICE_SHELL_REPORT_LAPSE_MS,
+    } : undefined;
+    this.publish();
+  }
+
+  beginHotkeyRecording() {
+    if (this.recorder || !this.deps.enabled(VOICE_FLAG)) return;
+    this.hotkeyTrial = undefined;
+    const id = this.recorder = randomUUID();
+    this.publish();
+    return { id, end: () => {
+      if (this.recorder !== id) return;
+      this.recorder = undefined;
+      this.publish();
+    } };
+  }
   private readonly source = randomUUID();
+  private pushToTalkSession?: string;
   private lastMode: VoiceState["mode"] = "off";
   private modeRevision = 0;
   private hello: { at: number; ownerId: string | null; speechInstance?: string; captureProof?: { pid: number; offset: number }; hello: VoiceListenerHello } | null = null;
@@ -85,7 +113,9 @@ export class VoiceStateStore {
    */
   private microphone: Partial<Record<VoiceMicrophoneReading["source"], { at: number; reading: VoiceMicrophoneReading }>> = {};
   private readonly listeners = new Set<(state: VoiceState) => void>();
-  private lastDirective?: { issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private lastDirective?: { pushToTalkSession?: string; issuedAt?: number; holderRevision: string; speechKey: string; directive: VoiceListenerDirective; recipients: string; mode: VoiceState["mode"]; granted: boolean; press: number | null };
+  private cancelWindowOpen = false;
+  private timingRevision = 0;
   private releases = new Map<string, { issuedAt?: number; pressedAtUs: number; at: number }>();
   private latestRelease?: string;
   // Heartbeat expiry transfers the lease but cannot close a previous owner's microphone.
@@ -105,6 +135,13 @@ export class VoiceStateStore {
     const manager = this.speech;
     manager.setEnabled(false);
     return manager;
+  }
+
+  warmForAsk(): void {
+    const state = this.state();
+    if (state.speech.voice?.engine === "neural" && askAloudPossible(this.deps.config(), state)) {
+      this.deps.speechBackend?.synthesizer.warm();
+    }
   }
 
   get speech(): VoiceSpeechManager {
@@ -140,27 +177,51 @@ export class VoiceStateStore {
     return id !== undefined && this.liveHello()?.ownerId === id;
   }
 
+  setCancelWindowOpen(open: boolean): void {
+    if (this.cancelWindowOpen === open) return;
+    this.cancelWindowOpen = open;
+    this.publish();
+  }
+
   /** A fresh revision for each transition, even a mute/unmute between two GETs. */
   directive(state = this.state()): VoiceListenerDirective {
-    const granted = this.liveHello()?.hello.microphone === "granted";
+    const hello = this.liveHello()?.hello;
+    const granted = hello?.microphone === "granted";
     const speechKey = this.manager?.directiveKey ?? "";
     const capture = voiceCaptures(state.mode) && granted && !this.manager?.held;
     // Only names travel to the recognizer. Also bind the revision to the destinations
     // those names address, including a new session or run for the same resident.
     const recipients = JSON.stringify(state.roster.map(({ name, key, taskId, sessionId }) => [name, key, taskId, sessionId]));
-    const inputDevice = this.deps.config().inputDevice;
+    const { inputDevice, endOfSpeechMs: configuredDelay } = this.deps.config();
+    const automaticDelay = this.cancelWindowOpen ? 500 : configuredDelay;
+    // An automatic timing edit must not interrupt a hold or revoke its pending key-up delivery.
+    const endOfSpeechMs = state.mode === "push-to-talk" || awaitingVoiceHold(state.mode) ? 800 : automaticDelay;
     const press = state.mode === "push-to-talk" ? this.report?.keyChangedHostUs ?? null : null;
     const last = this.lastDirective;
-    if (last && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted && last.directive.inputDevice === inputDevice &&
-      last.recipients === recipients && last.press === press) return last.directive;
-    const directive = { capture, speak: null, inputDevice, roster: state.roster.map(entry => entry.name), pauseMs: null, revision: randomUUID() };
+    const sameSession = last && last.pushToTalkSession === state.pushToTalkSession;
+    const sameCapture = sameSession && last.speechKey === speechKey && last.mode === state.mode && last.granted === granted &&
+      last.directive.capture === capture && last.directive.inputDevice === inputDevice && last.recipients === recipients && last.press === press;
+    // Protocol 4.0 reopens its microphone on every revision, dropping the unfinished phrase.
+    const canUpdateTiming = Number(hello?.version.split(".")[1] ?? 0) >= 1;
+    if (sameCapture && (!canUpdateTiming || last.directive.endOfSpeechMs === endOfSpeechMs)) return last.directive;
+    // A timing edit wakes pollers but keeps the same authorization for automatic audio already captured.
+    const automatic = capture && state.mode === "listening";
+    const previousGrant = sameCapture ? last.directive.captureRevision : undefined;
+    const captureRevision = automatic ? previousGrant ?? randomUUID() : undefined;
+    this.timingRevision = sameCapture ? this.timingRevision + 1 : 0;
+    const directive = { capture, speak: null, inputDevice, endOfSpeechMs, roster: state.roster.map(entry => entry.name),
+      pauseMs: null, revision: captureRevision ? `${captureRevision}:${this.timingRevision}` : randomUUID(),
+      ...(captureRevision && { captureRevision }) };
     // Only successive key presses and releases share pending delivery rights.
-    const keyTransition = ((last?.mode === "auto-muted" || last?.mode === "push-to-talk") && state.mode === "push-to-talk") ||
-      (last?.mode === "push-to-talk" && state.mode === "auto-muted");
+    const keyTransition = sameSession && (
+      (state.mode === "push-to-talk" && (awaitingVoiceHold(last.mode) || last.mode === "push-to-talk")) ||
+      (last.mode === "push-to-talk" && awaitingVoiceHold(state.mode))
+    );
     if (!keyTransition || last?.speechKey !== speechKey || last?.granted !== granted || last.directive.inputDevice !== inputDevice ||
         last.recipients !== recipients) this.releases.clear();
     this.latestRelease = undefined;
-    this.lastDirective = { holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press };
+    this.lastDirective = { pushToTalkSession: state.pushToTalkSession, holderRevision: randomUUID(), speechKey, directive, recipients, mode: state.mode, granted, press,
+      issuedAt: automatic && sameCapture ? last.issuedAt : undefined };
     return directive;
   }
 
@@ -170,6 +231,18 @@ export class VoiceStateStore {
     const base = this.directive(state);
     return speak && ("stop" in speak || !this.capturePausePending)
       ? { ...base, speak, revision: this.lastDirective!.holderRevision } : base;
+  }
+
+  /** Older listeners submit the poll revision. Timing edits share one capture grant until capture is revoked. */
+  resolveCaptureRevision(submitted: string | undefined, directive: VoiceListenerDirective): string | undefined {
+    const grant = directive.captureRevision;
+    if (!submitted || !grant) return submitted;
+    if (submitted === grant) return directive.revision;
+    const index = Number(submitted.slice(grant.length + 1));
+    if (submitted === `${grant}:${index}` && Number.isSafeInteger(index) && index >= 0 && index <= this.timingRevision) {
+      return directive.revision;
+    }
+    return submitted;
   }
 
   drainingRevisions() { return [...this.releases.keys()]; }
@@ -275,11 +348,16 @@ export class VoiceStateStore {
   /** The state now. Lapsed readings are dropped here, so a read never returns a stale mode. */
   state(): VoiceState {
     if (!this.deps.enabled(VOICE_FLAG)) {
+      this.recorder = undefined;
+      this.hotkeyTrial = undefined;
       this.lastMode = "off";
+      this.pushToTalkSession = undefined;
       return voiceStateOff();
     }
     const now = this.deps.now();
     const config = this.deps.config();
+    if (this.hotkeyTrial && this.hotkeyTrial.previous !== config.hotkey) this.hotkeyTrial = undefined;
+    const trial = this.hotkeyTrial;
     const listener = this.liveHello();
     const hello = listener?.hello ?? null;
     const refused = this.refused && now - this.refused.at < VOICE_HELLO_LAPSE_MS ? this.refused : null;
@@ -315,19 +393,36 @@ export class VoiceStateStore {
     capabilities["speech-output"] = { available: !!resolved.voice, reason: resolved.reason };
     const live = manager.live;
     const job = live ? { id: live.id, purpose: live.purpose, state: live.state, cardId: live.cardId } : null;
+    const dedicated = config.listeningMode === "push-to-talk";
+    if (dedicated) this.pushToTalkSession ??= randomUUID();
+    else this.pushToTalkSession = undefined;
+    const confirmed = config.hotkey && report?.registeredHotkey === config.hotkey && report.capabilities.hotkey?.available &&
+      (!report.hotkeyError || report.hotkeyError.chordInForce === config.hotkey);
+    if (dedicated && (!confirmed || report?.pushToTalkSession !== this.pushToTalkSession ||
+        this.recorder || (trial && now < trial.expiresAt))) reasons.push("shortcut");
+    // A snapshot without a native stamp is dated at the first observed transition.
+    const press = this.report?.keyChangedHostUs;
+    const validPress = press != null && (!dedicated || press === report?.pushToTalkPressedAtHostUs) &&
+      this.hostNowUs() - press < VOICE_MAX_HOLD_MS * 1000;
     const mode = voiceMode({
+      listeningMode: config.listeningMode,
       enabled: true,
       reasons,
       muted: config.muted,
       callActive: report?.callActive ?? false,
       autoMuteDuringCalls: config.autoMuteDuringCalls,
-      pushToTalk: report?.pushToTalk ?? false,
+      pushToTalk: !!report?.pushToTalk && report.pushToTalkSession === this.pushToTalkSession &&
+        validPress,
     });
     if (mode !== this.lastMode) {
+      // A recovered desktop or listener must observe the new session and a new key-down.
+      if (dedicated && mode === "unavailable") this.pushToTalkSession = randomUUID();
       this.lastMode = mode;
       this.modeRevision++;
     }
     return {
+      ...(this.pushToTalkSession && { pushToTalkSession: this.pushToTalkSession }),
+      planFormsByVoice: config.planFormsByVoice,
       muted: config.muted,
       mode,
       speech: { ...resolved, job, lastAudition: manager.lastAudition, catalog, model },
@@ -335,6 +430,13 @@ export class VoiceStateStore {
       reasons,
       capabilities,
       configuredHotkey: config.hotkey,
+      ...(trial && (now < trial.expiresAt
+        ? { pendingHotkey: trial.chord, pendingHotkeyId: trial.id }
+        : { expiredHotkey: trial.chord })),
+      ...(this.recorder && {
+        recordingHotkey: true, recordingHotkeyId: this.recorder,
+        ...(report?.registeredHotkey === null && report.capabilities.hotkey?.recordingId === this.recorder && { recordingHotkeyReady: true }),
+      }),
       registeredHotkey: report?.registeredHotkey ?? null,
       hotkeyError: report?.hotkeyError ?? null,
       model: this.deps.model?.() ?? { ...VOICE_MODEL_STATE_NONE },
@@ -346,7 +448,7 @@ export class VoiceStateStore {
     const { mode, roster } = this.state();
     const reported = this.liveHello()?.hello.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
-    return { mode, roster, backend };
+    return { mode, roster, backend, reportsSpeechOnset: this.liveHello()?.hello.reportsSpeechOnset === true };
   }
 
   /**
@@ -409,6 +511,8 @@ export class VoiceStateStore {
     if (ownerId && ownerId !== id && !takesOver) {
       return { ok: false, error: "listener_in_use", reason: "Another voice listener is active.", protocol };
     }
+    // Observe a missed listener lapse before renewal can reuse the desktop's held key.
+    if (this.hello && !live) this.directive();
     // A denied helper exits immediately. Keep its permission reading but release its capture.
     const nextOwnerId = hello.microphone === "denied" ? null : id;
     if (!ownerId || ownerId !== nextOwnerId || live?.hello.backend !== hello.backend) {
@@ -466,7 +570,8 @@ export class VoiceStateStore {
     if (eventAt !== undefined && (!staleKey || ambiguousRelease)) this.lastPhysicalKeyHostUs = eventAt;
     this.report = { at: observedAt, keyChangedHostUs, report: { ...report, pushToTalk: down } };
     if (report.microphone) this.microphone.shell = { at: observedAt, reading: { permission: report.microphone, source: "shell" } };
-    if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined && this.state().mode === "auto-muted") {
+    if (held?.capture && !staleKey && heldSince !== null && eventAt !== undefined &&
+        report.pushToTalkSession === this.pushToTalkSession && awaitingVoiceHold(this.state().mode)) {
       const issuedAt = this.lastDirective!.issuedAt;
       this.directive();
       // Keep the wire header and drain backlog bounded even if a client never posts.
@@ -474,6 +579,15 @@ export class VoiceStateStore {
       // Only the wire cutoff rounds down. Event ordering keeps the full host timestamp.
       this.releases.set(held.revision, { issuedAt, pressedAtUs: heldSince, at: Math.floor(eventAt / 1000) });
       this.latestRelease = held.revision;
+    }
+    const trial = this.hotkeyTrial;
+    if (trial && !this.recorder && order !== undefined && order > trial.requestedAtUs &&
+        this.state().pendingHotkey === trial.chord && report.capabilities.hotkey?.available) {
+      if (report.hotkeyError?.trialId === trial.id) this.hotkeyTrial = undefined;
+      else if (!report.hotkeyError && report.registeredHotkey === trial.chord) {
+        this.deps.saveHotkey?.(trial.chord);
+        this.hotkeyTrial = undefined;
+      }
     }
     this.publish();
   }
@@ -486,19 +600,23 @@ export class VoiceStateStore {
     }
     const enabled = this.deps.enabled(VOICE_FLAG);
     this.manager?.setEnabled(enabled);
-    const muted = enabled && this.deps.config().muted;
+    const config = enabled ? this.deps.config() : undefined;
+    const automatic = config?.listeningMode === "always-on";
+    const muted = automatic && config.muted;
     const becomingMuted = muted && !this.muted;
     this.muted = muted;
     if (becomingMuted) this.manager?.stopAll();
-    else if (enabled && this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS &&
-        this.deps.config().autoMuteDuringCalls) this.manager?.stopAll("ask");
+    else if (config?.listeningMode === "push-to-talk" || (automatic && config.autoMuteDuringCalls &&
+        this.report?.report.callActive && this.deps.now() - this.report.at < VOICE_SHELL_REPORT_LAPSE_MS)) {
+      this.manager?.stopAll("ask");
+    }
     const state = this.state();
     if (this.lastDirective) this.directive(state);
     for (const listener of Array.from(this.listeners)) {
       try { listener(state); }
       catch (error) { console.warn("[voice] state listener failed:", error); }
     }
-    this.arm();
+    this.arm(state);
     return state;
   }
 
@@ -509,15 +627,20 @@ export class VoiceStateStore {
 
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
-    this.manager?.dispose();
+    this.recorder = undefined;
+    this.hotkeyTrial = undefined;
+    if (this.manager) this.manager.dispose();
+    else this.deps.speechBackend?.synthesizer.stop();
     this.manager = undefined;
     this.muted = false;
+    this.pushToTalkSession = undefined;
     this.lastReportHostUs = -1;
     this.lastPhysicalKeyHostUs = -1;
     this.releases.clear();
     this.latestRelease = undefined;
     this.lastDirective = undefined;
     this.grants?.close();
+    this.cancelWindowOpen = false;
     this.grants = undefined;
     this.hello = null;
     this.refused = null;
@@ -526,18 +649,24 @@ export class VoiceStateStore {
     this.disarm();
   }
 
-  private arm(): void {
+  private arm(state: VoiceState): void {
     this.disarm();
     if (!this.deps.enabled(VOICE_FLAG)) return;
     const now = this.deps.now();
     const waitingForProcess = this.manager?.live?.state === "ready" &&
       (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
     const lapses = [
+      this.hotkeyTrial?.expiresAt,
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,
-    ].filter((at): at is number => at !== null && at > now);
+    ].filter((at): at is number => at != null && at > now);
+    const press = this.report?.keyChangedHostUs;
+    if (state.mode === "push-to-talk" && press != null) {
+      // Publication may have crossed the cutoff. Recompute immediately in that case.
+      lapses.push(now + Math.max(0, VOICE_MAX_HOLD_MS - (this.hostNowUs() - press) / 1000));
+    }
     if (lapses.length === 0) return;
     const wait = Math.min(...lapses) - now;
     const set = this.deps.setTimer ?? ((fn: () => void, ms: number) => {
@@ -563,7 +692,13 @@ export const voiceStateStore = new VoiceStateStore({
   now: () => performance.now(),
   enabled: featureEnabled,
   config: getVoiceConfig,
+  saveHotkey: hotkey => { setVoiceConfig({ hotkey }); },
   model: () => voiceModelManager.state(),
+  speechBackend: {
+    model: () => speechModelManager.state(),
+    neural: () => VOICE_SPEECH_NEURAL_VOICES.map(({ id, name, detail }) => ({ id, name, detail })),
+    synthesizer: new NeuralSynthesizer(() => speechModelManager.state().directory),
+  },
 });
 
 /**
@@ -578,19 +713,24 @@ export function wireVoiceStateEvents(
   emit: (state: VoiceState) => void,
   store: VoiceStateStore = voiceStateStore,
   models: VoiceModelManager = voiceModelManager,
+  speechModels: VoiceModelManager = speechModelManager,
 ): () => void {
   const stopStore = store.onChange(emit);
   const stopModels = models.onChange(() => { store.publish(); });
-  const stopFlags = onFeatureFlagsChanged(() => { models.sync(); store.publish(); });
+  const stopSpeechModels = speechModels.onChange(() => { store.publish(); });
+  const stopFlags = onFeatureFlagsChanged(() => { models.sync(); speechModels.sync(); store.publish(); });
   const stopConfig = onVoiceConfigChanged(() => { models.sync(); store.publish(); });
   models.sync();
+  speechModels.sync();
   store.publish();
   return () => {
     stopStore();
     stopModels();
+    stopSpeechModels();
     stopFlags();
     stopConfig();
     store.reset();
     void models.stop();
+    void speechModels.stop();
   };
 }

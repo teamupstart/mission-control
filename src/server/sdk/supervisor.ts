@@ -117,21 +117,25 @@ function requiresInstalledMissionTools(agent: AgentType, taskId: string | null):
   return taskId !== null && capabilitiesFor(agent).missionTools?.mechanism === "installed-extension";
 }
 
+function missionToolCaller(sessionId: string) {
+  return { sessionId, locator: sessionScoutCredentialLocator(sessionId) };
+}
+
 /** Bind one launch-scoped MCP process to the SDK session Mission Control registered. */
 function missionMcpForSession(
   descriptor: MissionMcpDescriptor | null,
   sessionId: string,
 ): MissionMcpDescriptor | null {
-  return descriptor
-    ? {
-        ...descriptor,
-        env: {
-          ...descriptor.env,
-          [MISSION_SESSION_ID_ENV]: sessionId,
-          [SCOUT_SESSION_LOCATOR_ENV]: sessionScoutCredentialLocator(sessionId),
-        },
-      }
-    : null;
+  if (!descriptor) return null;
+  const caller = missionToolCaller(sessionId);
+  return {
+    ...descriptor,
+    env: {
+      ...descriptor.env,
+      [MISSION_SESSION_ID_ENV]: caller.sessionId,
+      [SCOUT_SESSION_LOCATOR_ENV]: caller.locator,
+    },
+  };
 }
 
 /** The block a pair with an out-of-band channel carries there, or `""` for one without. */
@@ -588,6 +592,8 @@ export class SdkSupervisor {
         permissionMode: input.permissionMode,
         mcp: missionMcpForSession(input.mcp, id),
         ...(requiresInstalledMissionTools(input.agent, input.taskId) ? { missionToolsRequired: true } : {}),
+        ...(capabilitiesFor(input.agent).missionTools?.mechanism === "installed-extension"
+          ? { missionToolCaller: missionToolCaller(id) } : {}),
         residentMcp: input.residentMcp ?? null,
         extraDirs: input.extraDirs ?? [],
         standingInstructions: outOfBandStanding,
@@ -1773,6 +1779,8 @@ export class SdkSupervisor {
         permissionMode: row.permissionMode,
         mcp: missionMcpForSession(mcp, row.id),
         ...(requiresInstalledMissionTools(row.agent, row.taskId) ? { missionToolsRequired: true } : {}),
+        ...(capabilitiesFor(row.agent).missionTools?.mechanism === "installed-extension"
+          ? { missionToolCaller: missionToolCaller(row.id) } : {}),
         // A resident's MCP set comes from its run's snapshot, never from native configuration,
         // so a restart resumes exactly the servers it launched with.
         residentMcp: task ? this.residentMcp?.(task) ?? null : null,

@@ -132,6 +132,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "reports",
       "residents.mcpServers",
       "residents.skillSources",
+      "sessionSettings.access",
       "setup.banner",
       // Task shaping's registered shapers and settings, edited in Settings > Task shaping.
       "shaping",
@@ -210,6 +211,8 @@ test("the initial app_config key and value-class partition is pinned", () => {
   assert.equal(APP_CONFIG_ENTRIES.foremanLease.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.classification.valueClass, "operational");
   assert.equal(APP_CONFIG_ENTRIES.backupsStatus.backupDomain, null);
+  assert.equal(APP_CONFIG_ENTRIES.sessionSettingsAccess.classification.valueClass, "operational");
+  assert.equal(APP_CONFIG_ENTRIES.sessionSettingsAccess.backupDomain, null);
   assert.equal(APP_CONFIG_ENTRIES.backlogPlan.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costTelemetryEnabledAt.classification.valueClass, "derived");
   assert.equal(APP_CONFIG_ENTRIES.costOtelLastSeen.classification.valueClass, "operational");
@@ -224,8 +227,10 @@ test("the initial app_config key and value-class partition is pinned", () => {
   );
   assert.deepEqual(APP_CONFIG_ENTRIES.voice.classification.fields, {
     muted: "operational",
+    listeningMode: "setting",
     hotkey: "setting",
     autoMuteDuringCalls: "setting",
+    endOfSpeechMs: "setting",
     cancelWindow: "setting",
     whenUnsure: "setting",
     speech: "setting",

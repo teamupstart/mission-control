@@ -31,6 +31,9 @@ import type { ReviewItem } from "../src/shared/types.ts";
 import { FeatureFlagsContext } from "../src/web/useFeatureFlag.ts";
 import { ResidentNamesContext, VoiceHintsContext } from "../src/web/lib/agent-names.ts";
 import { InboxActionButton, SpokenHint } from "../src/web/components/AgentName.tsx";
+import { VoiceAnswersContext } from "../src/web/lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../src/web/lib/voice-roster.ts";
+import type { SpokenName } from "../src/shared/voice-names.ts";
 import { ReviewCard } from "../src/web/components/ReviewModal.tsx";
 import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 
@@ -164,10 +167,14 @@ function card(review: ReviewItem, flags: { inbox: boolean; voice?: boolean; resi
   const runs = flags.resident
     ? [{ taskId: "t1", settings: { identity: { name: "Linter watcher" }, board: { colorId: "violet" } } }]
     : [];
+  const roster: SpokenName[] = flags.resident ? [{ kind: "resident", key: "resident:lint", name: "Linter watcher",
+    role: "Watch the linter", colorId: "violet", state: "running", sessionId: review.sessionId, taskId: "t1", agent: "claude" }] : [];
+  const questionCard = createElement(VoiceRosterContext.Provider, { value: roster },
+    createElement(VoiceAnswersContext.Provider, { value: flags.voice ? { answers: new Map() } : null }, createElement(ReviewCard, { review, session })));
   return renderToStaticMarkup(
     createElement(FeatureFlagsContext.Provider, { value: config },
       createElement(ResidentNamesContext.Provider, { value: runs },
-        voice(flags.voice ?? false, createElement(ReviewCard, { review, session })))),
+        voice(flags.voice ?? false, questionCard))),
   );
 }
 
@@ -188,11 +195,15 @@ test("a resident's name on a question card is drawn in its board colour", () => 
 });
 
 test("a question card's spoken hints address the agent, and stay hidden until voice turns them on", () => {
-  for (const review of [question, withOptions]) assert.doesNotMatch(card(review, { inbox: true }), /spoken-hint/);
+  for (const review of [question, withOptions]) assert.doesNotMatch(card(review, { inbox: true }), /vh-foot|av-key/);
   const open = card(question, { inbox: true, voice: true, resident: true });
-  assert.match(open, /data-spoken-action="answer">&quot;Linter watcher, \.\.\.&quot; or &quot;reply, \.\.\.&quot;</);
+  assert.match(open, /Say <q>Linter watcher, my answer is …<\/q> to answer in your own words/);
   const options = card(withOptions, { inbox: true, voice: true, resident: true });
-  assert.match(options, /data-spoken-action="answer-option">&quot;Linter watcher, option B&quot;</);
+  assert.match(options, /Say <q>Linter watcher, option B<\/q> to select an option/);
+  assert.doesNotMatch(options, /in your own words/);
+  const other = { ...withOptions, decisions: withOptions.decisions!.map(d => ({ ...d, allowOther: true })) };
+  assert.match(card(other, { inbox: true, voice: true, resident: true }), /option B<\/q> to answer, or <q>Linter watcher, my answer is …/);
+  assert.match(card(withOptions, { inbox: true, voice: true }), /with this card open, say <q>reply, option A<\/q>/);
 });
 
 // ---- card files: every control is a declared action ----

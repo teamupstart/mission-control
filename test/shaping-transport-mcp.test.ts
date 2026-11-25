@@ -14,7 +14,9 @@ import { z } from "zod";
 
 const home = mkdtempSync(join(tmpdir(), "mission-shaping-mcp-"));
 process.env.MISSION_HOME = home;
-const { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingContextSchema } = await import("../src/shared/shaping.ts");
+const { SHAPING_CONFIG_DEFAULTS, ShaperSchema, ShapingContextSchema, SIGN_IN_REASONS } = await import("../src/shared/shaping.ts");
+const { SHAPER_SIGN_IN_FLAG_ID } = await import("../src/shared/feature-flag-registry.ts");
+const { applyFeatureFlagIntent } = await import("../src/server/feature-flags/index.ts");
 const { callMcp, foldedContextBlock, mcpToolArguments, sseResumeTracker } = await import("../src/server/shaping/transports/mcp.ts");
 const { runScope, shapeTask } = await import("../src/server/shaping/engine.ts");
 const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
@@ -1525,4 +1527,70 @@ test("a selector and a router on one server share the run's connection", async (
     assert.equal(data(await callMcp(routeRequest(), router, run)).guidance[0].id, "raw");
     assert.equal(raw.initializes(), 1, "keyed by the server definition, not by the shaper");
   } finally { await raw.close(); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Shaper sign-in, phase 3: a marked shaper is never called, and an unmarked one is unchanged.
+
+function setSignIn(enabled: boolean): void {
+  assert.equal(applyFeatureFlagIntent({ kind: "flag", id: SHAPER_SIGN_IN_FLAG_ID, enabled }).ok, true);
+}
+
+test("an MCP server that signs in answers unavailable with the flag off and on, and receives nothing", async () => {
+  const http = await startGuidanceHttp({ mode: "ok" });
+  try {
+    // An unset reference proves the guard runs before any header is resolved.
+    const marked = ShaperSchema.parse({
+      id: "signed", label: "Signed", stage: "select",
+      transport: {
+        type: "mcp", tool: "get_guidance",
+        server: { type: "http", url: http.url, headers: { "x-api-key": "{env:SHAPING_MCP_UNSET_KEY}" }, auth: { type: "oauth", scope: "mcp:context" } },
+      },
+    }) as ShaperOf<"mcp">;
+    for (const [enabled, reason] of [[false, SIGN_IN_REASONS.flagOff], [true, SIGN_IN_REASONS.signedOut]] as const) {
+      setSignIn(enabled);
+      const reply = await callMcp(request(false), marked, ctx({ trace: TRACE, workUnitId: "wu_1" }));
+      assert.deepEqual(reply, { kind: "unavailable", reason }, `flag ${enabled ? "on" : "off"}`);
+    }
+    assert.equal(http.requests.length, 0, "no request at all");
+  } finally {
+    setSignIn(false);
+    await http.close();
+  }
+});
+
+test("an unmarked MCP server is sent the same requests with the flag off and on, and no authorization header", async () => {
+  // Which requests the SDK makes, and what the client library adds to each, is not Mission
+  // Control's to pin. What is: the flag changes nothing, and the headers this code sets.
+  type Seen = { method: string; headers: Record<string, unknown> };
+  const http = await startGuidanceHttp({ mode: "ok" });
+  const capture = async (enabled: boolean): Promise<Seen[]> => {
+    setSignIn(enabled);
+    const from = http.requests.length;
+    const run = ctx({ trace: TRACE, workUnitId: "wu_1" });
+    try {
+      data(await callMcp(request(false), shaper({ type: "http", url: http.url, headers: { "x-caller": "{caller.user}" } }), run));
+    } finally { (run.scope as ReturnType<typeof runScope>).close(); }
+    return http.requests.slice(from).map(({ method, headers }) => ({ method: String(method), headers: headers as Record<string, unknown> }));
+  };
+  // The SDK opens its event-stream GET beside the call without waiting for it, so whether it
+  // has arrived when the call returns is timing. The POSTs, which carry the call, are compared.
+  const posts = (requests: Seen[]) => requests.filter(({ method }) => method === "POST");
+  try {
+    const off = await capture(false);
+    const on = await capture(true);
+    assert.ok(posts(off).length > 0, "the call was made");
+    assert.deepEqual(posts(on), posts(off), "the flag changes nothing an unmarked MCP server is sent");
+    for (const { method, headers } of [...off, ...on]) {
+      assert.equal(headers.authorization, undefined, `${method} carries no authorization header`);
+      assert.deepEqual(
+        Object.fromEntries(["x-caller", "traceparent", "tracestate", "x-work-unit-id"].map((name) => [name, headers[name]])),
+        { "x-caller": "declared-user", traceparent: TRACE.traceparent, tracestate: TRACE.tracestate, "x-work-unit-id": "wu_1" },
+        `${method} carries the configured header, the trace context and the work unit id`,
+      );
+    }
+  } finally {
+    setSignIn(false);
+    await http.close();
+  }
 });

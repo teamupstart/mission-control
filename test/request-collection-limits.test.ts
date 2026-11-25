@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { z } from "zod";
 import { ENSEMBLE_LIMITS } from "../src/shared/ensemble.ts";
+import { PLAN_APPROVAL_DECISION } from "../src/shared/managed-plans.ts";
 import { LLM_JOB_IDS } from "../src/shared/llm-jobs.ts";
 import {
   BacklogPlanSchema,
@@ -16,6 +17,7 @@ import {
   OTLP_METRICS_LIMITS,
   OtlpMetricsSchema,
   PLAN_DECISION_LIMITS,
+  MAX_PLAN_DECISIONS_WITH_APPROVAL,
   PlanDecisionAnswerSchema,
   PlanDecisionSchema,
   QUEUE_REORDER_MAX,
@@ -64,7 +66,14 @@ interface Limit {
 const option = (i: number, valid: boolean) => (valid ? { id: `o${i}`, label: `Option ${i}` } : { garbage: i });
 const decision = (i: number, valid: boolean) =>
   valid ? { id: `d${i}`, question: `Question ${i}?`, options: [option(0, true)] } : { garbage: i };
-const answer = (i: number, valid: boolean) => (valid ? { decisionId: `d${i}`, selected: [] } : { garbage: i });
+const answer = (i: number, valid: boolean) => (valid ? {
+  decisionId: i === PLAN_DECISION_LIMITS.decisions ? PLAN_APPROVAL_DECISION : `d${i}`, selected: [],
+} : { garbage: i });
+
+test("only final-bundle approval can extend a plan resolution beyond the agent decision limit", () => {
+  const selections = times(MAX_PLAN_DECISIONS_WITH_APPROVAL, i => ({ decisionId: `d${i}`, selected: [] }));
+  assert.equal(ResolveReviewSchema.safeParse({ action: "answer", selections }).success, false);
+});
 
 /** An OTLP export with one of everything, and `n` elements at the named level. */
 function otlp(level: keyof typeof OTLP_METRICS_LIMITS, n: number, valid: boolean): unknown {
@@ -105,7 +114,7 @@ const LIMITS: Limit[] = [
   {
     name: "answers in one resolution",
     schema: ResolveReviewSchema,
-    max: PLAN_DECISION_LIMITS.decisions,
+    max: MAX_PLAN_DECISIONS_WITH_APPROVAL,
     path: "selections",
     build: (n, valid) => ({ action: "answer", selections: times(n, (i) => answer(i, valid)) }),
   },

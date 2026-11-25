@@ -193,7 +193,7 @@ body.mk {
 <header class="mk-top">
   <h1>Voice settings panel</h1>
   <p>Where the operator sets the system-wide mute hotkey, auto-mute during calls, the cancel window before routing and auto-submit, and what happens when routing is unsure (ask aloud, or show on screen). The panel also points at where spoken names are set (a resident's reference name on its profile, a session's call sign in dispatch Advanced) and at the Recently heard list.</p>
-  <p class="mk-spec">Fixed in every variant: the Voice preview flag itself stays in the Feature flags list like every preview, the five settings and their defaults are the spec's, and the hotkey uses the capture control Keyboard settings already has. What varies is <b>what the panel leads with</b> and <b>where it lives</b>. Each variant shows the normal panel, the hotkey being captured and refused, and voice unavailable. <code>⌃⌥M</code> is an example chord only.</p>
+  <p class="mk-spec">Fixed in every variant: the Voice preview flag itself stays in the Feature flags list like every preview, the five settings and their defaults are the spec's, and the hotkey uses the capture control Keyboard settings already has. What varies is <b>what the panel leads with</b> and <b>where it lives</b>. Each variant shows the normal panel, the hotkey being captured and refused, and voice unavailable. <code>⌘⌃⌥V</code> is an example chord only.</p>
   <nav class="mk-toc"><a href="#e"><b>E</b>Roster first</a></nav>
 <p class="mk-spec"><b>Selected by the operator on 2026-11-22: variant E.</b> This page holds the selected design; the variants that were not adopted are left out. Implementation detail is in the phase documents beside this file.</p>
 </header>
@@ -222,7 +222,7 @@ body.mk {
         </div>
         <div class="settings-group vs-lean"><p class="settings-group-label">Behaviour</p>
           <div class="vs-grid2">
-            <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span></div><div class="kb-row-controls"><button class="kb-capture" style="min-width:66px"><kbd>⌃⌥M</kbd></button></div></div>
+            <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span></div><div class="kb-row-controls"><button class="kb-capture" style="min-width:66px"><kbd>⌘⌃⌥V</kbd></button></div></div>
             <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Auto-mute on calls</span></div><div class="kb-row-controls"><label class="sc-switch sc-switch-ok"><input type="checkbox" aria-label="Auto-mute on calls" checked><span class="sc-switch-track"></span></label></div></div>
             <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Cancel window</span></div><div class="kb-row-controls"><select class="settings-select" aria-label="Cancel window"><option>4 s</option><option>Off</option></select></div></div>
             <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Unsure</span></div><div class="kb-row-controls"><div class="display-choice-options"><label class="display-choice-option"><input type="radio" name="vse-unsure">Ask</label><label class="display-choice-option is-on"><input type="radio" name="vse-unsure" checked>Show</label></div></div></div>
@@ -233,8 +233,8 @@ body.mk {
     <div class="mk-state vs-side">
       <span class="mk-cap"><b>2</b> Capturing, then refused</span>
       <div class="vs-pane vs-stack">
-        <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span><span class="kb-row-desc">Press the chord you want. Esc keeps ⌃⌥M.</span></div><div class="kb-row-controls"><button class="kb-capture is-recording"><span class="kb-recording">Press a key…</span></button></div></div>
-        <div class="kb-row has-conflict"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span><span class="kb-row-conflict">macOS refused ⌥Space: another app already owns it. ⌃⌥M is still your hotkey.</span></div><div class="kb-row-controls"><button class="kb-capture"><kbd>⌃⌥M</kbd></button></div></div>
+        <div class="kb-row"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span><span class="kb-row-desc">Press the chord you want. Esc keeps ⌘⌃⌥V.</span></div><div class="kb-row-controls"><button class="kb-capture is-recording"><span class="kb-recording">Press a key…</span></button></div></div>
+        <div class="kb-row has-conflict"><div class="kb-row-text"><span class="kb-row-label">Mute hotkey</span><span class="kb-row-conflict">macOS refused ⌥Space: another app already owns it. ⌘⌃⌥V is still your hotkey.</span></div><div class="kb-row-controls"><button class="kb-capture"><kbd>⌘⌃⌥V</kbd></button></div></div>
       </div>
     </div>
     <div class="mk-state vs-side">

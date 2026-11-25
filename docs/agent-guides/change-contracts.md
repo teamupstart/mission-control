@@ -215,14 +215,19 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   transport ids (`SHAPING_TRANSPORTS`), built-in ids (`SHAPING_BUILTINS`), outcomes
   (`SHAPING_OUTCOMES`), origins (`SHAPING_ORIGINS`), reference kinds
   (`SHAPING_REFERENCE_KINDS`), routed-skill lifecycle points (`SHAPING_LIFECYCLE_POINTS`),
-  skill states (`SHAPING_SKILL_STATES`) and after-work prompt states (`SHAPING_PROMPT_STATES`),
-  each with its retired tuple where it has one. `route` was appended to the stages after `select`;
-  the after-work prompt's outbox id prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in
-  `pending_turns` and is final. Stage, transport and
-  built-in ids are stored inside `app_config.shaping` and in shaper manifests; the rest are
-  recorded with launches. A stored shaper whose stage or transport this build does not know is
-  kept unchanged and listed as unsupported, never reinterpreted. The `shaping` settings backup
-  domain id is final; its surface is `runtime` until the Settings panel moves it to `settings`.
+  skill states (`SHAPING_SKILL_STATES`), after-work prompt states (`SHAPING_PROMPT_STATES`),
+  sign-in marker kinds (`SHAPING_AUTH_KINDS`), sign-in states (`SHAPING_SIGN_IN_STATES`) and
+  sign-in storage kinds (`SHAPING_SIGN_IN_STORAGE`), each with its retired tuple where it has
+  one. `route` was appended to the stages after `select`; the after-work prompt's outbox id
+  prefix `AFTER_WORK_SKILLS_TURN_PREFIX` is persisted in `pending_turns` and is final. Stage,
+  transport, built-in and sign-in marker kind ids are stored inside `app_config.shaping` and in
+  shaper manifests. Sign-in states and storage kinds are recorded with no launch and stored in
+  no config: they are values of the published sign-in view (`ShapingSignInView`), which the
+  dashboard reads by exact value, so they are append-only all the same. The other
+  vocabularies are recorded with launches. A stored shaper whose stage, transport or sign-in
+  marker kind this build does not know is kept unchanged and listed as unsupported, never
+  reinterpreted. The `shaping` settings backup domain id is final, and its surface is
+  `settings` (`src/shared/settings-backup-domains.ts`).
   See [Task shaping](../task-shaping.md)
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
@@ -1136,8 +1141,9 @@ place the engine's control verbs go; filling it must not restructure the header 
 A session Goal's `objective`, `text`, `source` and `objectiveVersion` have exactly two writers.
 `Registry.captureAcceptedPrompt` seeds a provisional objective (`source: "heuristic"`, version 1)
 from the first substantive instruction, and only while the Goal has no objective yet. After that,
-only the goal refiner changes them, and only when it resolves an `initial`, `amend` or `replace`
-relationship. `steer` and `unclear` never change them, and no other writer does.
+only the goal refiner changes them. Adopting a different deliverable requires an `initial`,
+`amend` or `replace` relationship. The refiner can also record an explicit operator handoff
+restriction and advance the objective version while the relationship stays `unclear`.
 `openingPrompt` is write-once.
 
 `POST /api/sessions/:id/goal/accept` (`Registry.acceptGoalObjective`) is a person's exit from a
@@ -1147,7 +1153,8 @@ rationale prefix `Accepted by you:`, and sets `relationship: "steer"` and
 `resolvedPromptRevision = promptRevision`. Its patch must never name `objective`, `text`,
 `source`, `objectiveVersion` or `openingPrompt`, so the frozen run contract and
 `resolvedSessionIntent` see the same objective and version as before it ran. Its answers are a
-contract a later caller relies on: 404 without a Goal, 409 without an objective, 200 with the
+contract a later caller relies on: 404 without a Goal, 409 without an objective or while an
+unapplied instruction changes handoff authority, 200 with the
 full `SessionGoal`, idempotent on a Goal that is already settled. A "replace the objective"
 action, if one is ever wanted, is a separate route with its own review, not a body on this one.
 

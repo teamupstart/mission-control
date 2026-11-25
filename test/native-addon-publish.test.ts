@@ -120,7 +120,7 @@ test("every native builder publishes through the one place that knows why", () =
   // Both addons are loaded by the daemon at startup, so both carry the same consequence for
   // getting this wrong. `keep-awake` did not, for as long as it published its own output, and
   // nothing failed until a developer restarted the stack at the wrong moment.
-  for (const script of ["build-state-lock-native.mjs", "build-keep-awake-native.mjs"]) {
+  for (const script of ["build-state-lock-native.mjs", "build-keep-awake-native.mjs", "build-keychain-native.mjs", "build-voice-hardware.mjs"]) {
     const { imports, calls, copies } = publishesThroughTheHelper(script);
     assert.ok(imports, `${script} must import the shared publisher`);
     assert.ok(calls, `${script} must publish through publishNativeAddon`);

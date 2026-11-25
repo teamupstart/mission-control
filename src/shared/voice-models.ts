@@ -220,6 +220,35 @@ export const VOICE_TEST_MODEL: VoiceModelManifest = {
   ],
 };
 
+const supertonic = {
+  repository: "csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11",
+  commit: "cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4",
+  basedOn: "Supertone/supertonic-3",
+  license: "OpenRAIL-M",
+};
+const speechFile = (name: string, bytes: number, sha256: string) =>
+  pinned(supertonic.repository, supertonic.commit, name, bytes, sha256);
+
+export const VOICE_SPEECH_MODELS = {
+  "supertonic-3": {
+    revision: "supertonic-3-cca5a0e6",
+    label: "Supertonic 3 (int8)",
+    sources: [supertonic],
+    files: [
+      speechFile("duration_predictor.int8.onnx", 3700147, "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db"),
+      speechFile("text_encoder.int8.onnx", 36416150, "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff"),
+      speechFile("vector_estimator.int8.onnx", 78400833, "20cd86fa5c6effedfda0e7cffe5b0569ca401c440a0c3a1d72bf39286c0db3fd"),
+      speechFile("vocoder.int8.onnx", 25991073, "e923d60f53f95eb1ce235f1dc33ec56d9c057823c96fa6f8acf98f32b0da6152"),
+      speechFile("tts.json", 8253, "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09"),
+      speechFile("unicode_indexer.bin", 262144, "8402ca48e5189a8950138580b0fff64db6f072f24ac07cd54ba8b2fbb9883b30"),
+      speechFile("voice.bin", 517168, "67d5209b0ee8ce6c74105ffbe12fe6a7628aea3b4ba2fcb308a4a67938a93ce8"),
+    ],
+  },
+} satisfies Record<string, VoiceModelManifest>;
+
+export const VOICE_SPEECH_NEURAL_VOICES = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"]
+  .map((name, index) => ({ id: `supertonic-3/${name}`, name, index, detail: "Supertonic 3" }));
+
 export const VOICE_MODELS: VoiceModelManifests = Object.freeze({
   fluidaudio: FLUIDAUDIO_PARAKEET_V2,
   "sherpa-onnx": SHERPA_PARAKEET,

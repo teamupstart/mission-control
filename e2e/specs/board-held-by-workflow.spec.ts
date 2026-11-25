@@ -193,9 +193,9 @@ test("the idle column separates the agents you can dispatch to from the ones a r
   await expect(idle.locator(".fleet-section-held"))
     .toContainText("Open its run for the current step and available actions");
 
-  // The count stops being a single number that means neither thing. This is the assertion the
-  // whole change exists for: 2 sessions, and only 1 of them can take work.
-  await expect(idle.locator(".board-col-n")).toHaveText(["1 free", "1 held"]);
+  await expect(idle.locator(".fleet-section-free .fleet-section-n")).toHaveText("1");
+  await expect(idle.locator(".fleet-section-held .fleet-section-n")).toHaveText("1");
+  await expect(idle.locator(".board-col-head").getByText(/\d+ (free|held)/)).toHaveCount(0);
 
   // Free above the rule, held below it - the order the arrow keys walk, since `orderSessions`
   // decides both. Identified by the tile's accessible name rather than by position alone, so
@@ -216,13 +216,11 @@ test("the idle column separates the agents you can dispatch to from the ones a r
   await shoot(dashboard, "idle-column-split");
 });
 
-test("At the top of Idle counts the blocked frame in a split idle header", async ({
+test("At the top of Idle shows the blocked frame and the Idle section counts", async ({
   dashboard,
   daemon,
 }) => {
-  // The split head counts the Idle group's own free and held agents. With the Blocked frame drawn
-  // at the top of Idle, its cards sit in the same column, so the head has to count them too or a
-  // held agent beside them makes the frame vanish from the column's numbers.
+  // Free and Held each show their own count alongside the Blocked frame at the top of Idle.
   await dispatchIdleAgent(dashboard, daemon, "stay free beside the frame");
   const held = await dispatchIdleAgent(dashboard, daemon, "get held beside the frame");
   const blocked = await dispatchIdleAgent(dashboard, daemon, "get blocked into the frame");
@@ -247,8 +245,9 @@ test("At the top of Idle counts the blocked frame in a split idle header", async
   const idle = dashboard.locator("section.board-col.tone-idle");
   const frame = idle.getByRole("group", { name: "Blocked" });
   await expect(frame.locator(".tile.is-blocked")).toHaveCount(1);
-  await expect(idle.locator(".fleet-section-held")).toBeVisible();
-  await expect(idle.locator(".board-col-head .board-col-n")).toHaveText(["1 blocked", "1 free", "1 held"]);
+  await expect(idle.locator(".fleet-section-free .fleet-section-n")).toHaveText("1");
+  await expect(idle.locator(".fleet-section-held .fleet-section-n")).toHaveText("1");
+  await expect(idle.locator(".board-col-head .board-col-n")).toHaveText(["1 blocked"]);
 
   await shoot(dashboard, "idle-split-with-blocked-frame");
 
@@ -380,8 +379,8 @@ test("a run that reaches a terminal status releases its session back to free", a
 
   await useBoardLayout(dashboard, daemon);
   const idle = dashboard.locator("section.board-col.tone-idle");
-  await expect(idle.locator(".fleet-section-held")).toBeVisible();
-  await expect(idle.locator(".board-col-n")).toHaveText(["1 held"]);
+  await expect(idle.locator(".fleet-section-held .fleet-section-n")).toHaveText("1");
+  await expect(idle.locator(".board-col-head").getByText(/\d+ held/)).toHaveCount(0);
   // Every session in the column is held, so there is no free side and no rule labelling one.
   await expect(idle.locator(".fleet-section-free")).toHaveCount(0);
 

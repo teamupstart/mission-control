@@ -263,7 +263,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       await release.promise;
       await route.fulfill({ response: earlier });
     });
-    const length = panel(page).getByRole("combobox", { name: "Cancel window length" });
+    const length = panel(page).getByRole("combobox", { name: "Cancel window", exact: true });
     const previousResponse = page.waitForResponse(r => r.url().endsWith("/api/voice/config") &&
       r.request().method() === "PUT" && Boolean(r.request().postDataJSON().cancelWindow));
     try {
@@ -965,7 +965,7 @@ test.describe("with OPENAI_API_KEY in the daemon's environment", () => {
       await openVoiceSettings(other, daemon);
       await page.clock.install();
       await openVoiceSettings(page, daemon);
-      const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window length" });
+      const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window", exact: true });
       await expect(length(page)).toHaveValue("4");
       const stalled = await holdProviderRequest(page, stage);
       try {
@@ -1066,7 +1066,7 @@ test("an expired config write cannot restore an older cancel window", async ({ d
   await turnVoiceOn(daemon);
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
   await openVoiceSettings(page, daemon);
-  const length = panel(page).getByRole("combobox", { name: "Cancel window length" });
+  const length = panel(page).getByRole("combobox", { name: "Cancel window", exact: true });
   await expect(length).toHaveValue("4");
   const stalled = Promise.withResolvers<Route>();
   await page.route("**/api/voice/config", route => {
@@ -1092,7 +1092,7 @@ test("a fresh edit keeps its deadline after a slow config snapshot", async ({ da
   await turnVoiceOn(daemon);
   await api(daemon, "/api/voice/config", { cancelWindow: { enabled: true, seconds: 4 } }, "PUT");
   await openVoiceSettings(page, daemon);
-  const length = panel(page).getByRole("combobox", { name: "Cancel window length" });
+  const length = panel(page).getByRole("combobox", { name: "Cancel window", exact: true });
   await expect(length).toHaveValue("4");
   await expect(line(page)).toHaveText(NOT_SET);
   await api(daemon, "/api/voice/config", { cancelWindow: { seconds: 6 } }, "PUT");
@@ -1134,7 +1134,7 @@ test("a delayed config poll shows the newer cancel window when it reaches the da
   await page.clock.install({ time: new Date("2026-01-01T12:00:00Z") });
   await page.clock.pauseAt(new Date("2026-01-01T12:00:01Z"));
   await openVoiceSettings(page, daemon);
-  const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window length" });
+  const length = (tab: Page) => panel(tab).getByRole("combobox", { name: "Cancel window", exact: true });
   await expect(length(page)).toHaveValue("4");
 
   const held = Promise.withResolvers<void>();

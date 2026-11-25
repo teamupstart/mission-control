@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { InboxVoiceFoot } from "./InboxVoiceFoot.tsx";
+import { VoiceAnswersContext } from "../lib/voice-open-cards.ts";
+import { VoiceRosterContext } from "../lib/voice-roster.ts";
+import { useContext, useEffect, useRef, useState } from "react";
 import { canMessage } from "@shared/pane.ts";
 import { canInterruptSession } from "@shared/session.ts";
 import type { Stall, StallFacts } from "@shared/stall.ts";
@@ -85,9 +88,18 @@ export function StuckCard({
   }, [messageable]);
 
   const disabled = busy !== null;
+  const voice = !!useContext(VoiceAnswersContext);
+  const speaker = useContext(VoiceRosterContext).find(r => r.sessionId === session.id);
+  const sendMessage = (text: string) => {
+    if (!text.trim()) return;
+    const editsAtSend = draftEdits.current;
+    run("message", () => api.sendText(session.id, text.trim(), true), () => {
+      if (text === draft && draftEdits.current === editsAtSend) setDraft("");
+    })();
+  };
 
   return (
-    <section className="inbox-item inbox-stuck" aria-label={`${name} is stuck`}>
+    <section data-voice-kind={voice ? "stuck" : undefined} data-voice-id={session.id} data-voice-session={session.id} data-voice-key={speaker?.key} className="inbox-item inbox-stuck" aria-label={`${name} is stuck`}>
       <div className="inbox-head">
         <AgentDot agent={session.agent} />
         <AgentName view={subject} />
@@ -210,14 +222,9 @@ export function StuckCard({
             label={facts?.kind === "escalated" ? "Reply" : undefined}
             tooltip="Send this to the agent as your message"
             disabled={disabled || draft.trim() === ""}
-            onClick={() => {
-              const text = draft.trim();
-              if (!text) return;
-              const editsAtSend = draftEdits.current;
-              run("message", () => api.sendText(session.id, text, true), () => {
-                if (draftEdits.current === editsAtSend) setDraft("");
-              })();
-            }}
+            onDictate={sendMessage}
+            dictateDisabled={disabled}
+            onClick={() => sendMessage(draft)}
           />
         </div>
       )}
@@ -231,6 +238,7 @@ export function StuckCard({
           {done}
         </p>
       )}
+      {voice && <InboxVoiceFoot name={speaker?.name} />}
     </section>
   );
 }

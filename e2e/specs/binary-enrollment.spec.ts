@@ -20,6 +20,42 @@ function mountedImage(bundle: string): boolean {
   finally { childProcess.execFileSync = exec; syncBuiltinESMExports(); }
 }
 
+for (const operation of ['read installation state', 'enroll the copied app'] as const) {
+  test(`failure to ${operation} appears in the Setup footer`, async ({dashboard}) => {
+    const readFails = operation === 'read installation state';
+    const failure = readFails ? 'Could not read the installation receipt' : 'Could not enroll the copied app';
+    const home = '/Users/operator';
+    const state = binaryEnrollmentChoice({bundle: `${home}/Applications/Agent Mission Control.app`, home, managedPath: null});
+    await dashboard.addInitScript(({readFails, failure, state, reason}) => {
+      const snapshot = {phase: 'disabled', reason, lastOutcome: null};
+      Object.defineProperty(window, 'missionDesktop', {value: {
+        isDesktop: true, version: async () => '1.2.3', onOpenSettings: () => () => {},
+        binaryInstallation: {
+          getState: async () => {
+            if (readFails) throw new Error(failure);
+            return state;
+          },
+          enroll: async () => { throw new Error(failure); },
+        },
+        updates: {getState: async () => snapshot, setAlpha: async () => snapshot, onState: () => () => {}},
+      }});
+    }, {readFails, failure, state, reason: BINARY_UPDATE_UNAVAILABLE});
+    await dashboard.reload();
+    await dashboard.getByRole('button', {name: 'Settings'}).click();
+    await dashboard.getByRole('tab', {name: 'Setup'}).click();
+    const tab = dashboard.getByRole('tabpanel');
+    const footer = tab.getByRole('region', {name: 'Application updates'});
+    const enroll = footer.getByRole('button', {name: 'Enroll this copied app'});
+    if (!readFails) await enroll.click();
+    const alert = footer.getByRole('alert').filter({hasText: failure});
+    await expect(alert).toBeVisible();
+    const setup = tab.getByRole('navigation', {name: 'Setup families'});
+    expect((await alert.boundingBox())!.y).toBeGreaterThan((await setup.boundingBox())!.y);
+    if (readFails) await expect(enroll).toHaveCount(0);
+    else await expect(enroll).toBeEnabled();
+  });
+}
+
 for (const kind of ['copied', 'mounted', 'custom-mounted', 'conflict'] as const) {
   test(`binary installation ${kind} presents the safe action and recovery route`, async ({dashboard}) => {
     const mounted = kind === 'mounted' || kind === 'custom-mounted';

@@ -128,7 +128,9 @@ test("an active workflow moves an idle task from Stalled to Held until the run e
   await stalled(daemon, session);
   await expect(facts(page, session)).toBeVisible();
   const idle = idleColumn(page);
-  await expect(idle.getByText("1 stalled", { exact: true })).toBeVisible();
+  const stalledSection = idle.locator(".fleet-section-stalled");
+  const heldSection = idle.locator(".fleet-section-held");
+  await expect(stalledSection.locator(".fleet-section-n")).toHaveText("1");
 
   const { run } = await api<{ run: { id: string } }>(
     daemon, `/api/workflow-bindings/${binding.id}/submit`, { requestId: "idle-stall-review" });
@@ -136,9 +138,9 @@ test("an active workflow moves an idle task from Stalled to Held until the run e
     daemon, `/api/workflow-runs/${run.id}`)).run.status;
   try {
     await expect.poll(runStatus).toBe("running");
-    await expect(idle.getByText("held by a workflow", { exact: true })).toBeVisible();
-    await expect(idle.getByText("1 held", { exact: true })).toBeVisible();
-    await expect(idle.getByText("1 stalled", { exact: true })).toHaveCount(0);
+    await expect(heldSection.getByText("held by a workflow", { exact: true })).toBeVisible();
+    await expect(heldSection.locator(".fleet-section-n")).toHaveText("1");
+    await expect(stalledSection).toHaveCount(0);
     await expect(facts(page, session)).toHaveCount(0);
     await expect.poll(async () => {
       const stalls = await api<Array<{ sessionId: string }>>(daemon, "/api/away/stalls");
@@ -151,8 +153,8 @@ test("an active workflow moves an idle task from Stalled to Held until the run e
   }
 
   await expect.poll(runStatus).toBe("completed");
-  await expect(idle.getByText("held by a workflow", { exact: true })).toHaveCount(0);
-  await expect(idle.getByText("1 stalled", { exact: true })).toBeVisible();
+  await expect(heldSection).toHaveCount(0);
+  await expect(stalledSection.locator(".fleet-section-n")).toHaveText("1");
 });
 
 test("an idle stall sits in Idle's Stalled section with what is open and the fix in place", async ({ dashboard: page, daemon }) => {
@@ -172,7 +174,7 @@ test("an idle stall sits in Idle's Stalled section with what is open and the fix
   await expect(rule).toContainText("stalled");
   await expect(rule).toContainText("Went quiet with work still open.");
   await expect(rule.locator(".fleet-section-n")).toHaveText("2");
-  await expect(idle.locator(".board-col-n.n-stalled")).toHaveText("2 stalled");
+  await expect(idle.locator(".board-col-head").getByText(/\d+ stalled/)).toHaveCount(0);
 
   // Each card says what is open and what it last did, and offers the fixes for open work.
   const factsA = facts(page, a.session);

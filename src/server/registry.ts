@@ -1,3 +1,4 @@
+import { explicitHandoffRestriction, isStandaloneHandoffRelease, withoutHandoffRestrictions } from "./goal/handoff-restrictions.ts";
 import { resolveFeatureFlag, sameFeatureFlagsConfig, type FeatureFlagsConfig } from "@shared/feature-flags.ts";
 import { featureEnabled, getFeatureFlagsConfig } from "./feature-flags/index.ts";
 import { INBOX_FLAG } from "@shared/inbox.ts";
@@ -123,7 +124,7 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
 import { agentActive, hasBlocker, isAwaiting, reportBucket } from "@shared/session.ts";
-import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
+import { GOAL_ACCEPTED_RATIONALE, GOAL_KEPT_AS_STEERING_RATIONALE, goalLine, hasOperatorHandoffHold, isHandoffReleaseOnlyGoal, resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs, repoChangeVerdict } from "@shared/task-repos.ts";
 import { isActiveTask, isTerminalTask } from "@shared/task-status.ts";
@@ -1477,6 +1478,7 @@ export class Registry extends EventEmitter {
     voiceIndicators?: string[];
     voiceIndicatorVersion?: ReturnType<typeof voiceIndicatorVersion>;
     voiceCards?: VoiceCard[];
+    voiceAnswers?: import("@shared/voice-answers.ts").VoiceAnswer[];
     settingsStatus: SettingsStatus;
     keepAwake: KeepAwakeStatus;
     pause: PauseState;
@@ -1530,6 +1532,7 @@ export class Registry extends EventEmitter {
       // Behind its flag, like the routes: computed now, so lapsed readings are already dropped.
       ...(voiceUi ? {
         voice: this.voiceStateForSnapshot(), voiceCards: this.voiceRouter?.activeCards() ?? [],
+        voiceAnswers: this.voiceRouter?.activeAnswers() ?? [],
         voiceConfirmation: voiceUi.confirmation, voiceIndicators: voiceUi.indicators, voiceIndicatorVersion: voiceIndicatorVersion(voiceUi),
       } : {}),
       // Composed fresh for the same reason: the rail dots and gear must be right on the
@@ -1676,10 +1679,22 @@ export class Registry extends EventEmitter {
     return hasDeliveredSpokenHold(noteKeyFor(session));
   }
 
+  emitUiSkinChanged(): void {
+    this.emitEvent({ type: "ui_skin_changed" });
+  }
+
+  emitSessionSettingsAccessChanged(): void {
+    this.emitEvent({ type: "session_settings_access_changed" });
+  }
+
   emitVoiceIndicators(indicators: string[]): void {
     if (!featureEnabled(VOICE_FLAG)) return;
     const selection = { confirmation: storedVoiceUi().confirmation, indicators };
     this.emitEvent({ type: "voice_indicators", ...selection, voiceIndicatorVersion: voiceIndicatorVersion(selection) });
+  }
+
+  emitQuestionEvent(event: Extract<ServerEvent, { type: "voice_form_fill" | "voice_form_submit" | "voice_inbox_action" | "voice_answer" | "voice_open_question" | "voice_confirm_focus" | "voice_card_remove" }>): void {
+    if (featureEnabled(VOICE_FLAG)) this.emitEvent(event);
   }
 
   emitVoiceCard(card: VoiceCard): void {
@@ -1694,6 +1709,7 @@ export class Registry extends EventEmitter {
    */
   emitVoiceState(state: VoiceState): void {
     if (state.mode === "off") this.voiceRouter?.clearActionsAndHistory();
+    if (state.planFormsByVoice === false) this.voiceRouter?.forms.clear();
     const key = canonicalVoiceState(state);
     if (key === this.lastVoice) return;
     this.lastVoice = key;
@@ -7798,18 +7814,27 @@ export class Registry extends EventEmitter {
 
   /** Make the whole committed batch visible before synchronous listeners can answer any member. */
   upsertReviews(reviews: ReviewItem[]): void {
-    for (const review of reviews) this.reviews.set(review.id, review);
+    for (const review of reviews) this.storeReview(review);
     for (const review of reviews) {
       if (this.reviews.get(review.id) === review) this.publishReview(review);
     }
   }
 
   upsertReview(review: ReviewItem): void {
-    this.reviews.set(review.id, review);
+    this.storeReview(review);
     this.publishReview(review);
   }
 
+  private storeReview(review: ReviewItem): void {
+    const previous = this.reviews.get(review.id);
+    this.reviews.set(review.id, review);
+    if (this.voiceRouter && review.kind === "input" && featureEnabled(VOICE_FLAG)) {
+      this.voiceRouter.observeQuestion(review, previous);
+    }
+  }
+
   private publishReview(review: ReviewItem): void {
+    if (review.status !== "pending") this.voiceRouter?.reviewSettled(review.id);
     this.emitEvent({ type: "review_upsert", review });
     this.refreshPendingCount(review.sessionId);
     // A pending question for the operator must never sit behind a declared wait: the session
@@ -7906,9 +7931,8 @@ export class Registry extends EventEmitter {
   /**
    * Every review this daemon holds for one session, settled ones included.
    *
-   * A read for the one caller that must see an ANSWER rather than an open question: a
-   * session-configured workflow Command is accepted only when its operator picked that exact
-   * argv on one of this session's `request_input` cards (`workflows/commands.ts`).
+   * Workflow commands read the operator's answer. Voice routing also needs questions
+   * that settled after the operator started speaking.
    */
   reviewsFor(sessionId: string): ReviewItem[] {
     const out: ReviewItem[] = [];
@@ -11017,6 +11041,10 @@ export class Registry extends EventEmitter {
     if (!text) return null;
     const raw = clampPrompt(text);
     const prev = this.getGoal(id);
+    const releasesHandoff = isStandaloneHandoffRelease(raw);
+    if (releasesHandoff && (!prev || isHandoffReleaseOnlyGoal(prev))) {
+      return this.mergeGoal(id, { handoffReleasedAt: now }, now);
+    }
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
     // An `unclear` verdict resolved its revision without incorporating it anywhere, and this
@@ -11026,9 +11054,12 @@ export class Registry extends EventEmitter {
     const unclearHead = prev && prev.relationship === "unclear" && prev.prompt &&
       prev.promptRevision >= 1 && prev.resolvedPromptRevision === prev.promptRevision &&
       prev.pendingPrompts.length === 0
-      ? { revision: prev.promptRevision, prompt: prev.prompt }
+      ? { revision: prev.promptRevision, prompt: prev.prompt,
+          ...(prev.latestPromptAcceptedAt === undefined ? {} : { acceptedAt: prev.latestPromptAcceptedAt }) }
       : null;
     return this.mergeGoal(id, {
+      ...(releasesHandoff ? { handoffReleasedAt: now } : {}),
+      latestPromptAcceptedAt: now,
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -11037,7 +11068,7 @@ export class Registry extends EventEmitter {
       ...(unclearHead ? { resolvedPromptRevision: unclearHead.revision - 1 } : {}),
       pendingPrompts: [
         ...(unclearHead ? [unclearHead] : prev?.pendingPrompts ?? []),
-        { revision, prompt: raw },
+        { revision, prompt: raw, acceptedAt: now },
       ],
       ...(firstObjective
         ? {
@@ -11096,8 +11127,8 @@ export class Registry extends EventEmitter {
     if (!session) return null;
     // An `unclear` verdict while newer instructions already wait is this instruction's last
     // chance to be kept: the next resolution replaces the goal's `prompt`, and nothing else
-    // holds its text. Keep it as steering, which never changes the objective (the refiner's
-    // unclear patch already carries the current objective and version). A final `unclear`,
+    // holds its text. Keep it as steering without adopting a different deliverable.
+    // The patch can already carry an explicit operator handoff restriction. A final `unclear`,
     // with nothing newer queued, still pauses wrap-up; capture re-queues it if a newer
     // instruction arrives later.
     if (patch.relationship === "unclear" && (patch.pendingPrompts?.length ?? 0) > 0) {
@@ -11118,7 +11149,11 @@ export class Registry extends EventEmitter {
       ? { revision, instruction: clampPrompt(instruction.trim()), relationship: "steer",
           rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
       : undefined;
-    return this.mergeGoal(id, patch, now, steering);
+    const goal = this.getGoal(id);
+    const acceptedAt = goal?.pendingPrompts.find((p) => p.revision === revision)?.acceptedAt;
+    // Legacy prompts may lack a capture time. Keep the prior
+    // deliverable cutoff rather than treating the later model write as a new instruction.
+    return this.mergeGoal(id, patch, now, steering, acceptedAt ?? goal?.deliverableUpdatedAt ?? goal?.updatedAt);
   }
 
   /**
@@ -11140,7 +11175,7 @@ export class Registry extends EventEmitter {
   acceptGoalObjective(
     id: string,
     now = Date.now(),
-  ): { accepted: true; goal: SessionGoal } | { accepted: false } | null {
+  ): { accepted: true; goal: SessionGoal } | { accepted: false; reason?: "handoff_pending" } | null {
     const goal = this.getGoal(id);
     if (!goal) return null;
     if (!goal.objective?.trim()) return { accepted: false };
@@ -11157,6 +11192,13 @@ export class Registry extends EventEmitter {
     const accepted = pending.length > 0
       ? pending
       : [{ revision: goal.promptRevision, prompt: goal.prompt }];
+    const held = hasOperatorHandoffHold(goal.objective) || explicitHandoffRestriction(goal.objective);
+    // Acceptance cannot change the contract. Leave authority-changing instructions
+    // pending for reconciliation so the previous objective cannot ship in the meantime.
+    if (accepted.some(({ prompt }) => prompt &&
+      (isStandaloneHandoffRelease(prompt) || (!held && explicitHandoffRestriction(prompt))))) {
+      return { accepted: false, reason: "handoff_pending" };
+    }
     const notes: WorkflowSteeringNote[] = accepted.map((p) => ({
       revision: p.revision,
       instruction: p.prompt?.trim() ? clampPrompt(p.prompt.trim()) : "(not captured)",
@@ -11190,9 +11232,10 @@ export class Registry extends EventEmitter {
   /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
   private mergeGoal(
     id: string,
-    patch: SetGoal & { openingPrompt?: string },
+    patch: SetGoal & { openingPrompt?: string; handoffReleasedAt?: number; latestPromptAcceptedAt?: number },
     now: number,
     steering?: WorkflowSteeringNote | WorkflowSteeringNote[],
+    acceptedAt = now,
   ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
@@ -11201,6 +11244,11 @@ export class Registry extends EventEmitter {
     const text = patch.text !== undefined ? patch.text : prev?.text ?? null;
     const objective = patch.objective !== undefined ? patch.objective : prev?.objective ?? null;
     const changed = text !== (prev?.text ?? null) || objective !== (prev?.objective ?? null);
+    const handoffReleasedAt = patch.handoffReleasedAt ?? prev?.handoffReleasedAt;
+    const latestPromptAcceptedAt = patch.latestPromptAcceptedAt
+      ?? (patch.prompt === undefined || patch.prompt === prev?.prompt ? prev?.latestPromptAcceptedAt : undefined);
+    const deliverableChanged = objective !== (prev?.objective ?? null)
+      && withoutHandoffRestrictions(objective ?? "") !== withoutHandoffRestrictions(prev?.objective ?? "");
     const next: SessionGoal = {
       noteKey: key,
       text,
@@ -11226,6 +11274,9 @@ export class Registry extends EventEmitter {
         patch.pendingPrompts !== undefined
           ? patch.pendingPrompts
           : prev?.pendingPrompts ?? [],
+      ...(handoffReleasedAt === undefined ? {} : { handoffReleasedAt }),
+      ...(latestPromptAcceptedAt === undefined ? {} : { latestPromptAcceptedAt }),
+      deliverableUpdatedAt: deliverableChanged ? acceptedAt : prev?.deliverableUpdatedAt ?? prev?.updatedAt ?? now,
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
     if (Array.isArray(steering)) upsertSessionGoalWithSteeringNotes(next, steering);

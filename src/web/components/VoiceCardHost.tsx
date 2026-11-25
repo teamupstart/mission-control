@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
-import { voiceCardDeadline, voiceCardRetryDelay, voiceCountdownSeconds, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
+import { voiceCardDeadline, voiceCardRetryDelay, type DashboardVoiceCard } from "../lib/voice-card-clock.ts";
 import { Tooltip } from "./Tooltip.tsx";
-import { VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
+import { CountdownAnnouncement, VoiceCardView, type VoiceCardActions } from "./VoiceCardView.tsx";
 import { api, type ActionResult } from "../lib/api.ts";
 import { playChime } from "../lib/chime.ts";
 import { newRequestId } from "../lib/request-id.ts";
 
-function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
-  card: DashboardVoiceCard; actions: VoiceCardActions; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
+function Card({ card, actions, surface, hidden, fading, notify, sound, notifications }: {
+  card: DashboardVoiceCard; actions: VoiceCardActions; surface?: "pill" | "popover"; hidden: boolean; fading: boolean; notify: boolean; sound: boolean; notifications: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ state: DashboardVoiceCard["state"]; message: string } | null>(null);
@@ -42,7 +42,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       }
     }
   }, [card.state]);
-  const { id: cardId, state } = card;
+  const { id: cardId, state, reason } = card;
   const deadline = voiceCardDeadline(card);
   const wireDeadline = card.deadline;
   const announced = useRef<number | null>(null);
@@ -72,9 +72,8 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
     const showNotice = () => {
       try {
         const remaining = Math.max(0, deadline - performance.now());
-        const seconds = voiceCountdownSeconds(remaining, card.windowMs);
-        if (seconds === 0) return;
-        const title = recipient + (card.provisionalDeadline ? " · up to " + seconds + "s to cancel" : " · sending in " + seconds + "s");
+        if (!remaining) return;
+        const title = recipient + (reason === "voice-answer" ? " · voice answer pending" : " · voice message pending");
         const shell = window.missionDesktop;
         if (shell?.showVoiceCardNotice) {
           const id = newRequestId();
@@ -94,7 +93,7 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
             const pending = pendingNotice.current;
             if (!pending || pending.wireDeadline !== wireDeadline) return;
             const label = choice === "cancel" ? "Cancel" : "Send now";
-            void run(() => api.voiceCardAction(cardId, choice, { deadline: pending.deadline }), "",
+            void run(() => api.voiceCardAction(cardId, choice, { deadline: pending.deadline, answerCompanion: reason === "voice-answer" }), "",
               `Desktop ${label} was not confirmed. `, voiceCardRetryDelay(pending.deadline));
           }, allowRetry);
           return () => { active = false; shell.dismissVoiceCardNotice?.(id); };
@@ -128,8 +127,8 @@ function Card({ card, actions, hidden, fading, notify, sound, notifications }: {
       document.removeEventListener("visibilitychange", notifyWhenAway);
       dismiss?.();
     };
-  }, [cardId, wireDeadline, deadline, card.windowMs, card.provisionalDeadline, state, waiting.length, recipient, body, scope, notify, notifications, run]);
-  return <VoiceCardView card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
+  }, [cardId, wireDeadline, deadline, card.windowMs, card.provisionalDeadline, state, reason, waiting.length, recipient, body, scope, notify, notifications, run]);
+  return <VoiceCardView surface={surface} card={card} actions={actions} hidden={hidden} fading={fading} operation={{ busy, feedback, run }} />;
 }
 
 export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, notifications }: {
@@ -164,13 +163,16 @@ export function VoiceCardHost({ cards, fadingCards, actions, surface, sound, not
     return () => window.clearTimeout(timer);
   }, [nextDeadline]);
   return <div className={surface ? "voice-card-surface" : "voice-card-stack"}>
-    {pending.concat(others).map(card => <Card key={card.id} card={card} actions={actions} hidden={!!selected && card !== selected}
+    <div className="sr-only" role="region" aria-live="polite" aria-relevant="additions" aria-label="Voice countdown">
+      {pending.filter(card => !selected || card === selected).map(card => <CountdownAnnouncement key={JSON.stringify([card.id, card.deadline])} card={card} deadline={voiceCardDeadline(card)!} />)}
+    </div>
+    {pending.concat(others).map(card => <Card surface={surface} key={JSON.stringify([card.id, card.deadline])} card={card} actions={actions} hidden={!!selected && card !== selected}
       fading={fadingCards.has(card.id)} notify={!surface} sound={sound} notifications={notifications} />)}
     {choices.length > 1 && selected && <label className="vc-switch">Voice message
       <Tooltip label="Choose which message to view and act on"><select value={selected.id} onChange={event =>
         setSelection({ id: event.target.value, openWindows: new Map(pending.map(card => [card.id, card.deadline])) })}>
         {choices.map(card => <option key={card.id} value={card.id}>
-          {card.parts.map(part => [part.target?.name ?? part.restoredSession?.name, part.text].filter(Boolean).join(": ")).join(" · ")}
+          {card.parts.map(part => [part.target?.name ?? part.restoredSession?.name, card.questionTitle, part.text].filter(Boolean).join(": ")).join(" · ")}
         </option>)}
       </select></Tooltip>
     </label>}

@@ -32,6 +32,11 @@ export const REPORT_LIMITS = {
 export const REPORT_READ_BY = ["mark-read", "reply", "follow-up", "mark-all"] as const;
 export type ReportReadBy = (typeof REPORT_READ_BY)[number];
 
+/** The operator's Mark read action, also available for a sole unread report without a drawn card. */
+export function markReportRead<T>(id: string, post: (path: string) => T): T {
+  return post(`/api/reports/${encodeURIComponent(id)}/read`);
+}
+
 /** What kind of document a report may attach. */
 export const REPORT_DOCUMENT_KINDS = ["html", "markdown"] as const;
 export type ReportDocumentKind = (typeof REPORT_DOCUMENT_KINDS)[number];
@@ -229,11 +234,6 @@ export function reportReceipt(report: Pick<ReportItem, "id" | "version">): strin
 }
 
 // ---- replying to a report, and following one up (Phase 3) ----
-//
-// The text builders below are a fixed contract: the voice plan calls `reportReplyText`,
-// `unseenReportsNote`, `POST_REPORT_LINE` and `resolveMarkReadTarget` with these signatures.
-// Nothing here appends anything to a typed message; only voice appends the note and the line,
-// and only to spoken ones.
 
 /** How long ago a report was posted, as the reply names it: "just now", "12 minutes ago". */
 export function reportAgeText(createdAt: number, now: number): string {
@@ -283,9 +283,6 @@ export function unseenReportsNote(
     ? `Your operator has not read your report ${listed} yet.`
     : `Your operator has not read ${unseen.length} of your reports yet: ${listed}.`;
 }
-
-/** The line voice adds to a spoken instruction. */
-export const POST_REPORT_LINE = "When you have finished this, post a report.";
 
 /**
  * Which report "{name}, mark read" means: the report open on screen when it is that author's,

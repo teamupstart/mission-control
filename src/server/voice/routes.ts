@@ -1,3 +1,5 @@
+import { OpenCardsSchema, VOICE_CALIBRATING_HEADER, VOICE_CONFIRM_FOCUS_HEADER, VOICE_CARDS_EARLIEST_HEADER, VOICE_CARDS_OBSERVED_HEADER, VOICE_FOCUS_TIME_HEADER, VOICE_MONOTONIC_TIME_HEADER, VOICE_OBSERVATION_ID_HEADER, VOICE_REPORT_REVISION_HEADER } from "@shared/voice-answers.ts";
+import type { VoiceQuestions } from "./questions.ts";
 import { verifySupervisorReport, VOICE_SUPERVISOR_PROOF_HEADER } from "./supervisor-auth.ts";
 import { askAloudPossible, askSentence, SpeechInstanceSchema, VOICE_INSTANCE_HEADER } from "@shared/voice-speech.ts";
 import { z } from "zod";
@@ -14,6 +16,9 @@ import {
 } from "@shared/voice-decide.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { streamSSE } from "hono/streaming";
+import { endedOnShutdown } from "../http-shutdown.ts";
+import { trustedLoopbackJsonRequest } from "../loopback.ts";
 import { createMiddleware } from "hono/factory";
 import {
   VOICE_FLAG,
@@ -26,6 +31,7 @@ import {
   VOICE_LISTENER_ID_HEADER,
   VOICE_RELEASE_REVISION_HEADER,
   VOICE_RELEASE_TIME_HEADER,
+  VOICE_RECORDING_ID_HEADER,
   VOICE_SPEECH_START_HEADER,
   VoiceUiConfigPatchSchema,
   VoiceConfigPatchSchema,
@@ -43,7 +49,7 @@ import { disabledFeatureResponse, featureEnabled, requireFeature } from "../feat
 import { parseBody } from "../http-body.ts";
 import { setUiConfig, setVoiceIndicator, storedVoiceUi, voiceIndicatorVersion } from "../ui-config.ts";
 import { getVoiceConfig, providerIntentReceipt, providerIntentWindow, providerRevision, reserveProviderWrite, setVoiceConfig } from "./config.ts";
-import { voiceModelManager, type VoiceModelManager } from "./models.ts";
+import { speechModelManager, voiceModelManager, type VoiceModelManager } from "./models.ts";
 import { voiceStateStore, type VoiceStateStore } from "./state.ts";
 
 /**
@@ -52,6 +58,14 @@ import { voiceStateStore, type VoiceStateStore } from "./state.ts";
  * disabled route still answers 404 before any body is read.
  */
 const VOICE_BODY_MAX_BYTES = 128 * 1024;
+
+function speechCaptureKey(owner: string | undefined, revision: string | undefined, onsetUs: number): string {
+  return JSON.stringify([owner, revision, onsetUs]);
+}
+
+function withinReleasedHold(timeUs: number, release: { pressedAtUs: number; at: number }): boolean {
+  return timeUs >= release.pressedAtUs && timeUs < release.at * 1000;
+}
 
 function writeExpired(value?: string): boolean {
   if (value === undefined) return false;
@@ -98,6 +112,7 @@ function waitForDirective(store: VoiceStateStore, revision: string, signal: Abor
  * Dashboard routes live under `/api/voice/`, behind the loopback gate every `/api/*` route has:
  * - `GET /api/voice/config` returns `{ config }`; `PUT` applies a patch and returns `{ config }`.
  * - `POST /api/voice/mute { muted }` mutes or unmutes and returns `{ state }`.
+ * - `GET /api/voice/mute` reads the current state after an unconfirmed shortcut.
  * - `GET /api/voice/devices` returns `{ devices, listener }`: the input devices the live listener
  *   listed in its hello, which Voice settings offers beside the built-in microphone and the
  *   system default, and whether a listener is live at all.
@@ -127,6 +142,7 @@ export function registerVoiceRoutes(
   app: Hono,
   store: VoiceStateStore = voiceStateStore,
   models: VoiceModelManager = voiceModelManager,
+  speechModels: VoiceModelManager = speechModelManager,
 ): void {
   const gate = requireFeature(VOICE_FLAG);
   const authed = (header: string | undefined): boolean => checkToken(header);
@@ -162,6 +178,7 @@ export function registerVoiceRoutes(
     c.header("Cache-Control", "no-store");
     if (c.req.method === "HEAD") {
       c.header("X-Voice-Server-Time-Ms", String(Date.now()));
+      c.header(VOICE_MONOTONIC_TIME_HEADER, String(performance.now()));
       return c.body(null);
     }
     return c.json({ config: getVoiceConfig(), ...(c.req.header("x-voice-provider-revision") === "read" && dashboardSnapshot()) });
@@ -178,6 +195,7 @@ export function registerVoiceRoutes(
     if (!task) return c.json({ error: "The finished task could not be found." }, 404);
     return c.json({ repoRoot: task.repoRoot });
   });
+  let lastPlacementWrite: { id: string; revision: number } | undefined;
   // Older callers omit the version. Capture theirs before even the body limiter can wait for bytes.
   const observePlacement = createMiddleware<{ Variables: { placementVersion: VoiceRevision } }>(async (c, next) => {
     c.set("placementVersion", voiceIndicatorVersion(storedVoiceUi()));
@@ -186,6 +204,7 @@ export function registerVoiceRoutes(
   app.put("/api/voice/confirmation", gate, observePlacement, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceUiConfigPatchSchema.pick({ confirmation: true }).extend({
       expectedVersion: VoiceRevisionSchema.optional(),
+      writeId: z.uuid().optional(),
     }));
     if (!parsed.ok) return parsed.res;
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
@@ -193,10 +212,13 @@ export function registerVoiceRoutes(
     const version = voiceIndicatorVersion(current);
     const expected = parsed.data.expectedVersion ?? c.get("placementVersion");
     if (expected.source !== version.source || expected.revision !== version.revision) {
-      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version }, 409);
+      const writeId = lastPlacementWrite?.revision === version.revision ? lastPlacementWrite.id : undefined;
+      return c.json({ error: "The voice selection changed before this placement was saved.", ...current, voiceIndicatorVersion: version, writeId }, 409);
     }
     const { voice } = setUiConfig({ voice: { ...current, confirmation: parsed.data.confirmation } });
-    return c.json({ ok: true, ...voice, voiceIndicatorVersion: voiceIndicatorVersion(voice) });
+    const saved = voiceIndicatorVersion(voice);
+    lastPlacementWrite = parsed.data.writeId ? { id: parsed.data.writeId, revision: saved.revision } : undefined;
+    return c.json({ ok: true, ...voice, voiceIndicatorVersion: saved });
   });
   app.put("/api/voice/indicators", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceIndicatorSelectionSchema, { strict: true });
@@ -214,13 +236,48 @@ export function registerVoiceRoutes(
       return c.json({ error: "The settings change expired.", config: getVoiceConfig() }, 409);
     }
     const ticket = c.req.header("x-voice-provider-ticket");
-    const config = setVoiceConfig(parsed.data, ticket);
+    const { hotkey, ...settings } = parsed.data;
+    // Removing a shortcut needs no OS reservation. A replacement is committed only
+    // when a fresh shell report confirms that exact chord.
+    const patch = hotkey === null ? parsed.data : settings;
+    const config = Object.keys(patch).length || ticket ? setVoiceConfig(patch, ticket) : getVoiceConfig();
+    if (config && hotkey !== undefined) store.proposeHotkey(hotkey);
     return config ? c.json({ config, ...(ticket && { providerRevision: providerRevision() }) }) : c.json(providerConflict(), 409);
+  });
+  // The browser owns the reservation only while this request is open. Closing the
+  // window, cancelling capture, or a lost client releases it without another PUT.
+  app.post("/api/voice/hotkey-recording", gate, c => {
+    if (!trustedLoopbackJsonRequest(c)) return c.json({ error: "forbidden" }, 403);
+    const recording = store.beginHotkeyRecording();
+    if (!recording) return c.json({ error: "Another window is recording a shortcut." }, 409);
+    c.header(VOICE_RECORDING_ID_HEADER, recording.id);
+    return streamSSE(c, endedOnShutdown(async stream => {
+      let finish!: () => void;
+      const done = new Promise<void>(resolve => { finish = resolve; });
+      stream.onAbort(finish);
+      const timeout = setTimeout(finish, 60_000);
+      const unsubscribe = store.onChange(state => { if (!state.recordingHotkey) finish(); });
+      try {
+        await stream.writeSSE({ data: "recording" });
+        if (!stream.aborted && store.state().recordingHotkey) await done;
+      } finally {
+        unsubscribe();
+        clearTimeout(timeout);
+        recording.end();
+      }
+    }));
+  });
+  // A lost reply to a toggle is ambiguous. The desktop reads the authoritative
+  // state through the same pinned endpoint without issuing a second toggle.
+  app.get("/api/voice/mute", gate, c => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ state: store.state() });
   });
   app.post("/api/voice/mute", gate, limitBody, async (c) => {
     const parsed = await parseBody(c, VoiceMuteRequestSchema, { strict: true });
     if (!parsed.ok) return parsed.res;
-    setVoiceConfig({ muted: parsed.data.muted });
+    if (getVoiceConfig().listeningMode === "push-to-talk" || ("toggle" in parsed.data && store.state().recordingHotkey)) return c.json({ state: store.state() });
+    setVoiceConfig({ muted: "toggle" in parsed.data ? !getVoiceConfig().muted : parsed.data.muted });
     return c.json({ state: store.state() });
   });
   app.get("/api/voice/devices", gate, (c) => {
@@ -237,12 +294,15 @@ export function registerVoiceRoutes(
     if (model && !store.backendSelected(model.backend)) return c.json({ error: "backend_not_selected" }, 409);
     return model ? c.json(model) : c.json({ error: "Select the backend and verify its model in Voice Setup before launching." }, 409);
   });
-  app.post("/api/voice/model/download", gate, (c) => {
-    const result = models.download();
+  const download = (manager: VoiceModelManager) => (c: Context) => {
+    const result = manager.download();
     if (!result.ok) return c.json({ error: "model_unavailable", reason: result.reason, model: result.model }, 409);
     return c.json({ model: result.model }, 202);
-  });
-  app.delete("/api/voice/model/download", gate, async (c) => c.json({ model: await models.cancel() }));
+  };
+  app.post("/api/voice/model/download", gate, download(models));
+  app.delete("/api/voice/model/download", gate, async c => c.json({ model: await models.cancel() }));
+  app.post("/api/voice/speech/model/download", gate, download(speechModels));
+  app.delete("/api/voice/speech/model/download", gate, async c => c.json({ model: await speechModels.cancel() }));
 
   const keyReport = (availability: VoiceKeyAvailability) => voiceDecisionKeyReport(getVoiceConfig(), availability);
   app.get("/api/voice/decision-key", gate, (c) => {
@@ -262,6 +322,7 @@ export function registerVoiceRoutes(
     // Parsed here rather than through `parseBody`, whose 400 echoes the issues: a rejected key
     // must not come back in the answer.
     let body: unknown;
+    // oxlint-disable-next-line repository/parse-request-body -- Credential input uses redacted errors and a dedicated malformed-JSON reply.
     try { body = await c.req.json(); }
     catch { return c.json({ error: "invalid_body", reason: "The body is not JSON." }, 400); }
     if (!featureEnabled(VOICE_FLAG)) return c.json({ error: "This feature is disabled.", feature: VOICE_FLAG }, 404);
@@ -421,17 +482,91 @@ export function registerVoiceUtteranceRoutes(
   deliverer: VoiceDeliverer,
   publish: (card: VoiceCard) => void,
   decider: VoiceDecider = defaultVoiceDecider(),
+  questions?: VoiceQuestions,
 ): VoiceRouter {
   const gate = requireFeature(VOICE_FLAG);
   const router = new VoiceRouter(() => voiceStateStore.routingState(), () => getVoiceConfig().cancelWindow, deliverer, publish, decider,
-    () => voiceStateStore.hostNowUs(), {
+    () => voiceStateStore.hostNowUs(), questions, {
+      resolving() { voiceStateStore.warmForAsk(); },
       unsure(card) {
         if (!featureEnabled(VOICE_FLAG) || !askAloudPossible(getVoiceConfig(), voiceStateStore.state())) return;
         const sentence = askSentence(card.candidates.map(c => c.title));
         if (sentence) voiceStateStore.speech.open("ask", sentence, card.id);
       },
       stop(cardId) { if (featureEnabled(VOICE_FLAG)) voiceStateStore.speech.stopCard(cardId); },
-    });
+    }, open => voiceStateStore.setCancelWindowOpen(open));
+  app.post("/api/voice/form-submit/:id/refuse", gate, limitBody, async c => {
+    const parsed = await parseBody(c, z.object({ missing: z.int().positive() }).strict());
+    if (!parsed.ok) return parsed.res;
+    const ok = router.forms.refuse(c.req.param("id"), parsed.data.missing);
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/api/voice/inbox-actions/:id/claim", gate, c => {
+    const ok = router.claimInbox(c.req.param("id"));
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/api/voice/inbox-actions/:id/complete", gate, limitBody, async c => {
+    const parsed = await parseBody(c, z.object({ invoked: z.boolean() }).strict());
+    if (!parsed.ok) return parsed.res;
+    const ok = router.completeInbox(c.req.param("id"), parsed.data.invoked);
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.put("/api/voice/open-cards", gate, limitBody, async c => {
+    const parsed = await parseBody(c, OpenCardsSchema, { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const stamp = c.req.header(VOICE_FOCUS_TIME_HEADER);
+    const focusAtUs = stamp === undefined ? undefined : Number(stamp);
+    if (stamp !== undefined && (!/^\d+$/.test(stamp) || !Number.isSafeInteger(focusAtUs))) {
+      return c.json({ error: "Invalid focus timestamp." }, 400);
+    }
+    const version = c.req.header(VOICE_REPORT_REVISION_HEADER);
+    const revision = version === undefined ? undefined : Number(version);
+    if (version !== undefined && (!/^\d+$/.test(version) || !Number.isSafeInteger(revision))) {
+      return c.json({ error: "Invalid report revision." }, 400);
+    }
+    const observed = c.req.header(VOICE_CARDS_OBSERVED_HEADER);
+    const observedAt = observed === undefined ? undefined : Number(observed);
+    if (observed !== undefined && (!/^\d+$/.test(observed) || !Number.isSafeInteger(observedAt))) {
+      return c.json({ error: "Invalid card observation time." }, 400);
+    }
+    const lower = c.req.header(VOICE_CARDS_EARLIEST_HEADER);
+    const earliest = lower === undefined ? observedAt : Number(lower);
+    if (lower !== undefined && (!/^\d+$/.test(lower) || !Number.isSafeInteger(earliest) || observedAt === undefined || earliest! > observedAt)) {
+      return c.json({ error: "Invalid card observation interval." }, 400);
+    }
+    const bounds = observedAt !== undefined && earliest !== undefined ? { earliest, latest: observedAt } : undefined;
+    const id = c.req.header(VOICE_OBSERVATION_ID_HEADER);
+    const observationId = id === undefined ? undefined : Number(id);
+    if (id !== undefined && (!/^\d+$/.test(id) || !Number.isSafeInteger(observationId))) return c.json({ error: "Invalid observation ID." }, 400);
+    const calibrating = c.req.header(VOICE_CALIBRATING_HEADER) === "1";
+    if (calibrating && observationId === undefined) return c.json({ error: "Calibration requires an observation ID." }, 400);
+    const echo = c.req.header(VOICE_CONFIRM_FOCUS_HEADER);
+    const confirmed = echo === undefined ? undefined : Number(echo);
+    if (echo !== undefined && (!/^\d+$/.test(echo) || !Number.isSafeInteger(confirmed))) return c.json({ error: "Invalid focus confirmation." }, 400);
+    const ok = router.openCards.report(parsed.data, { focusAtUs, revision, withdraw: c.req.query("withdraw") === "1",
+      observation: bounds, observationId, calibrating, confirmed });
+    return c.json({ ok }, ok ? 200 : 409);
+  });
+  app.post("/voice/listener/speech", gate, limitBody, async c => {
+    if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, z.object({ speechStartUs: z.number().int().nonnegative(), phase: z.enum(["start", "finish"]) }), { strict: true });
+    if (!parsed.ok) return parsed.res;
+    const owner = c.req.header(VOICE_LISTENER_ID_HEADER);
+    if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
+    const revision = c.req.query("revision");
+    const key = speechCaptureKey(owner, revision, parsed.data.speechStartUs);
+    if (parsed.data.phase === "finish") router.speechFinished(key);
+    else {
+      const directive = voiceStateStore.directive();
+      if (!featureEnabled(VOICE_FLAG)) return c.json({ accepted: false });
+      if (!directive.capture || voiceStateStore.resolveCaptureRevision(revision, directive) !== directive.revision) {
+        const release = revision && voiceStateStore.releasedCapture(revision);
+        if (!release || !withinReleasedHold(parsed.data.speechStartUs, release)) return c.json({ accepted: false });
+      }
+      router.speechStarted(key, parsed.data.speechStartUs);
+    }
+    return c.json({ accepted: true });
+  });
   app.post("/voice/utterances", gate, limitBody, async (c) => {
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, VoiceUtteranceSchema, { strict: true });
@@ -443,7 +578,8 @@ export function registerVoiceUtteranceRoutes(
     if (!voiceStateStore.ownsCapture(owner)) return c.json({ accepted: false });
     const state = voiceStateStore.state();
     let directive = voiceStateStore.directive(state);
-    const revision = c.req.query("revision");
+    const submitted = c.req.query("revision");
+    const revision = voiceStateStore.resolveCaptureRevision(submitted, directive);
     const conflict = voiceStateStore.speech.captureConflict(parsed.data.capturedAt, voiceStateStore.captureGrantTime(revision));
     if (conflict === "stale") return c.json({ accepted: false });
     if (conflict === "while-speaking") {
@@ -477,7 +613,7 @@ export function registerVoiceUtteranceRoutes(
     if (onsetUs !== undefined && (!onsetHeader?.trim() || !Number.isSafeInteger(onsetUs) || startUs === undefined ||
         onsetUs < startUs || !Number.isSafeInteger(end) || onsetUs >= end * 1000)) return c.json({ accepted: false });
     if (heldBeforeRelease) {
-      if (startUs === undefined || startUs < release.pressedAtUs ||
+      if (startUs === undefined || !withinReleasedHold(startUs, release) ||
           !Number.isSafeInteger(end) || end > release.at || startUs >= end * 1000) {
         c.header(VOICE_RELEASE_REVISION_HEADER, release.revision);
         c.header(VOICE_RELEASE_TIME_HEADER, String(release.at));
@@ -485,7 +621,13 @@ export function registerVoiceUtteranceRoutes(
       }
     }
     if (!heldBeforeRelease && !(directive.capture && revision === directive.revision)) return c.json({ accepted: false });
-    return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs }) });
+    // Match the revision the listener used for this segment's onset, even after a timing edit.
+    const captureKey = onsetUs === undefined ? undefined : speechCaptureKey(owner, submitted, onsetUs);
+    try {
+      return c.json({ accepted: await router.accept(parsed.data, { heldBeforeRelease, startHostUs: startUs, speechStartHostUs: onsetUs, captureKey }) });
+    } finally {
+      if (captureKey) router.speechFinished(captureKey);
+    }
   });
   app.get("/api/voice/heard", gate, (c) => {
     c.header("Cache-Control", "no-store");
@@ -496,11 +638,13 @@ export function registerVoiceUtteranceRoutes(
     return c.body(null, 204);
   });
   app.post("/api/voice/cards/:id/cancel", gate, (c) => {
-    const ok = router.cancel(c.req.param("id"));
+    const id = c.req.param("id");
+    const edited = c.req.header("x-voice-edit-review");
+    const ok = edited ? router.cancelEditedAnswer(edited, id) : router.cancel(id);
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/send-now", gate, async (c) => {
-    const ok = await router.sendNow(c.req.param("id"));
+    const ok = await router.sendNow(c.req.param("id"), { companion: c.req.query("source") === "card", windowId: c.req.query("windowId") });
     return c.json({ ok }, ok ? 200 : 409);
   });
   app.post("/api/voice/cards/:id/pick", gate, limitBody, async (c) => {

@@ -50,14 +50,16 @@ export interface VoiceAskOptions {
 }
 
 export interface VoiceDecider {
-  ask(questions: readonly VoiceQuestion[], options?: VoiceAskOptions): Promise<VoiceDecisionResult>;
+  ask(questions: readonly VoiceQuestion[], options?: VoiceAskOptions): Promise<VoiceDecisionResult & { failed?: true }>;
 }
 
 export { VOICE_ROUTING_JOB_RUNGS };
 
 /** The provider the job runs on for these agents: theirs when they share one, else the job's. */
 export function voiceRoutingRunner(agents: readonly AgentType[], jobRunner: LlmRunnerId): LlmRunnerId {
+  // oxlint-disable-next-line repository/agent-comparison -- The decision service preserves provider selection for a homogeneous roster.
   if (agents.length > 0 && agents.every((agent) => agent === "claude")) return "claude";
+  // oxlint-disable-next-line repository/agent-comparison -- The decision service preserves provider selection for a homogeneous roster.
   if (agents.length > 0 && agents.every((agent) => agent === "codex")) return "codex";
   return jobRunner;
 }
@@ -222,8 +224,9 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
       const runner = voiceRoutingRunner(options.agents, deps.jobRunner());
       const rung = rungs[runner];
       if (!rung.enabled) {
+        const failed = !!(provider && key); // The configured provider failed before this disabled fallback.
         notes.push(`job on ${runner} not run: ${rung.why}`);
-        return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; ") };
+        return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; "), ...(failed && { failed: true }) };
       }
       try {
         const raw = await withinVoiceDeadline(jobSignal => deps.job(questions, {
@@ -233,7 +236,7 @@ export function createVoiceDecider(deps: VoiceDeciderDeps): VoiceDecider {
         return { rung: "job", answers: accept(questions, raw, rung.floor), detail: notes.join("; ") };
       } catch (error) {
         notes.push(`job on ${runner} ${error instanceof Expired ? "timed out" : "failed"}`);
-        return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; ") };
+        return { rung: "none", answers: voiceAnswersUnsure(questions), detail: notes.join("; "), failed: true };
       }
     },
   };

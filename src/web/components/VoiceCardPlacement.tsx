@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { VOICE_CONFIRMATION_PLACEMENTS, voiceCapable, type VoiceState, type VoiceConfirmationPlacement } from "@shared/voice.ts";
+import { VOICE_CONFIRMATION_PLACEMENTS, type VoiceConfirmationPlacement } from "@shared/voice.ts";
 import { updateVoicePlacement, useUiConfig } from "../lib/uiConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 const choices = { pill: "Floating pill", toast: "Corner toast", popover: "Tray popover" } as const;
-export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
+export function VoiceCardPlacement() {
   const { voice } = useUiConfig();
   const [saving, setSaving] = useState<VoiceConfirmationPlacement | null>(null);
   const [error, setError] = useState("");
@@ -23,7 +23,6 @@ export function VoiceCardPlacement({ state }: { state: VoiceState | null }) {
           onClick={() => { if (error && id === voice.confirmation) void save(id); }}
           onChange={() => void save(id)} />
       </Tooltip> {choices[id]}</span>
-      {id !== "toast" && !voiceCapable(state, "floating-windows") && <small>Needs the desktop app</small>}
     </label>)}</div>{error && <p role="alert">{error}</p>}
   </fieldset>;
 }

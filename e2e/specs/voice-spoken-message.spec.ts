@@ -58,6 +58,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
 
   expect(await (await say(daemon, "Steve, check the build")).json()).toEqual({ accepted: true });
   await expect.poll(async () => (await (await request.get(`${daemon.baseURL}/api/voice/heard`)).json()).entries[0]?.outcome).toBe("sent");
+  const expectedPayload = `check the build\n\nYour open questions:\n- ${ask.id}: ${title}\nWithdraw any question this message settles, with a reason.`;
   for (const view of ["chat", "terminal"]) {
     expect((await request.put(`${daemon.baseURL}/api/ui/config`, { data: { conversationView: view } })).ok()).toBe(true);
     const voice = (enabled: boolean) => request.put(`${daemon.baseURL}/api/feature-flags`, {
@@ -75,8 +76,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
     }
     await page.reload();
     await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row", { hasText: session.name }).first().click();
-    const raw = page.getByRole("article").filter({ hasText: "check the build" })
-      .filter({ hasText: "When you have finished this, post a report." });
+    const raw = page.getByRole("article", { name: "you", exact: true }).filter({ hasText: ask.id });
     if (view === "terminal") {
       const older = page.getByRole("button", { name: "Load older messages" });
       await expect(older).toBeVisible();
@@ -85,7 +85,8 @@ test("spoken words and the exact delivered payload in both conversation views", 
       await page.locator(".transcript-log").hover();
       await page.mouse.wheel(0, -100_000);
     }
-    await expect(raw.first()).toBeVisible();
+    await expect(raw).toBeVisible();
+    await expect(raw).not.toContainText("When you have finished this, post a report.");
     await expect(raw.getByText("Spoken", { exact: true })).toHaveCount(0);
     expect((await voice(true)).ok()).toBe(true);
     const turn = page.getByRole("article").filter({ has: page.getByText("Spoken", { exact: true }), hasText: "check the build" });
@@ -104,7 +105,7 @@ test("spoken words and the exact delivered payload in both conversation views", 
     };
     await capture("closed");
     await turn.getByText("What the agent received", { exact: true }).click();
-    await expect(payload).toHaveText(`check the build\n\nYour open questions:\n- ${ask.id}: ${title}\nWithdraw any question this message settles, with a reason.\n\nWhen you have finished this, post a report.`);
+    await expect(payload).toHaveText(expectedPayload);
     // Match the existing review-answer disclosure in both conversation renderings.
     await expect(payload).toHaveCSS("padding", "8px 10px");
     await expect(payload).toHaveCSS("font-size", "12px");
@@ -238,7 +239,7 @@ test("a spoken message waiting behind a compatible question moves from the visib
   await expect(reply).toBeVisible({ timeout: 30_000 });
   const spoken = page.getByRole("article").filter({ has: page.getByText("Spoken", { exact: true }), hasText: "verify the release" });
   await spoken.getByText("What the agent received", { exact: true }).click();
-  await expect(spoken.locator(".review-received-text")).toContainText(`- ${review.id}: ${title}`);
+  await expect(spoken.locator(".review-received-text")).toHaveText(`verify the release\n\nYour open questions:\n- ${review.id}: ${title}\nWithdraw any question this message settles, with a reason.`);
   if (process.env.MC_E2E_EVIDENCE === "1") {
     const dir = artifactsDir("voice-question-conversion");
     mkdirSync(dir, { recursive: true });

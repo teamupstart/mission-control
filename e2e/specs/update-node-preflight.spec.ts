@@ -34,7 +34,7 @@ for (const kind of ["legacy source", "binary"] as const) {
       await dashboard.getByRole("button", {name: "Settings"}).click();
       await dashboard.getByRole("tab", {name: "Setup"}).click();
       await expect(dashboard.getByRole("checkbox", {name: "Alpha updates"})).toBeEnabled();
-      await expect(dashboard.getByRole("region", {name: "Application updates"})).toContainText("Signed binaries download while you work");
+      await expect(dashboard.getByRole("region", {name: "Application updates"}).getByRole("button", {name: "Check for updates"})).toBeEnabled();
       await banner.getByRole("button", {name: "Update Now"}).click();
       await expect(banner).toContainText("1.2.4 is ready to install");
       await banner.getByRole("button", {name: "Restart and Install"}).click();

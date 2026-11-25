@@ -9106,6 +9106,8 @@ export class WorkflowStore {
    * excluded because an infrastructure failure is the same execution asked again rather than a
    * second one, and its retry must not be refused a budget the first try never really spent;
    * `cancelled` is excluded because a submission that stopped discards the answer it bought.
+   * CodeRabbit keeps charged claims even on error or cancellation. Its runner explicitly
+   * releases claims for infrastructure failures, while vendor failures can still spend a slot.
    *
    * `round >= epoch` implements the two operator escape hatches. A null epoch counts the whole
    * run, which is both the pre-column behaviour and the behaviour of a run nobody intervened in.
@@ -9139,7 +9141,7 @@ export class WorkflowStore {
     });
   }
 
-  /** Return this attempt's claim after the executor reports that no Command could start. */
+  /** Return a claim the check runner determined did not consume an execution slot. */
   releaseCheckRun(attemptId: string, slot: string): boolean {
     return this.db.prepare(
       `UPDATE workflow_node_attempts

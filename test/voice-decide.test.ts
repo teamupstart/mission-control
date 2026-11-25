@@ -189,6 +189,11 @@ test("a provider error falls to the job, and its detail never carries the key", 
   assert.match(result.detail, /OpenAI Decisions request failed|OpenAI Decisions HTTP 401/);
   assert.ok(!result.detail.includes(OPENAI_ENV));
 
+  const unavailable = rig({ env: { OPENAI_API_KEY: OPENAI_ENV }, reply: () => json({}, 503),
+    rungs: { ...VOICE_ROUTING_JOB_RUNGS, claude: { enabled: false, floor: 1, why: "disabled for test" } } });
+  assert.equal((await unavailable.ask()).failed, true);
+  assert.equal(result.failed, undefined);
+
   const jev = rig({ env: { TYPESAFE_API_KEY: JEV_ENV }, reply: () => json(recorded.jev.validation, 422) });
   assert.equal((await jev.ask()).rung, "job");
 });
@@ -230,6 +235,7 @@ test("a job past the deadline is not sure, and its late answer is never used", a
   assert.equal(result.rung, "none");
   assert.deepEqual(result.answers, [{ choice: null, confidence: 0 }]);
   assert.match(result.detail, /job on claude timed out/);
+  assert.equal(result.failed, true);
 });
 
 test("an answer that settles after the absolute deadline is discarded even before the timeout callback runs", async () => {
@@ -410,6 +416,7 @@ test("the job runs on the candidates' provider, or the background-job provider f
   assert.equal(codex.rung, "job");
   if (!VOICE_ROUTING_JOB_RUNGS.claude.enabled) {
     assert.equal(claude.rung, "none");
+    assert.equal(claude.failed, undefined);
     assert.deepEqual(claude.answers, [{ choice: null, confidence: 0 }]);
   }
 });

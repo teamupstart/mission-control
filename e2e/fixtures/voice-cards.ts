@@ -5,7 +5,7 @@ import type { Session } from "../../src/shared/types.ts";
 import type { DaemonHandle } from "./daemon.ts";
 import { expect } from "./test.ts";
 import { artifactsDir } from "./artifacts.ts";
-import { enableVoice } from "./voice.ts";
+import { enableVoice, voiceToken } from "./voice.ts";
 
 export async function setupCards(page: Page, daemon: DaemonHandle, seconds = 30) {
   await enableVoice(daemon);
@@ -18,15 +18,19 @@ export async function allowStreamDisconnect(page: Page) {
     window.EventSource = class extends EventSource {
       constructor(url: string | URL, init?: EventSourceInit) {
         super(url, init);
-        window.addEventListener("disconnect-fixture-stream", () => this.close(), { once: true });
+        window.addEventListener("disconnect-fixture-stream", () => {
+          if (this.readyState !== EventSource.OPEN) return;
+          this.close();
+          document.documentElement.dataset.fixtureStreamClosed = "true";
+        }, { once: true });
       }
     };
   });
 }
 
-export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: string) {
+export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: string, repoRoot = daemon.repo) {
   const created = await page.request.post(daemon.baseURL + "/api/tasks", { data: {
-    repoRoot: daemon.repo, intent: "Inspect the build", title: callSign + " on builds", callSign,
+    repoRoot, intent: "Inspect the build", title: callSign ? callSign + " on builds" : "Inspect the build", ...(callSign && { callSign }),
     kind: "ship", agent: "claude", runtime: "sdk", workflowId: null,
   } });
   expect(created.ok(), await created.text()).toBe(true);
@@ -38,6 +42,19 @@ export async function runningAgent(page: Page, daemon: DaemonHandle, callSign: s
     return session?.agentSessionId && session.state;
   }, { timeout: 60_000 }).toBe("idle");
   return session;
+}
+
+export async function postCachePlan(daemon: DaemonHandle, session: Session): Promise<string> {
+  const response = await fetch(daemon.baseURL + "/mcp/reviews", { method: "POST",
+    headers: { "content-type": "application/json", "x-harness-token": voiceToken(daemon) },
+    body: JSON.stringify({ kind: "plan-decisions", env: {}, cwd: session.cwd, title: "Cache layer plan", body: "Choose the cache settings.",
+      decisions: [["Where does the cache live?", "SQLite", "Postgres"], ["How are entries invalidated?", "TTL only", "Write-through"],
+        ["Ship it behind a preview flag?", "Yes", "No"]].map(([question, a, b], i) => ({
+        id: "d" + i, question, options: [{ id: "a", label: a }, { id: "b", label: b }],
+      })) }),
+  });
+  expect(response.ok, await response.clone().text()).toBe(true);
+  return (await response.json()).id;
 }
 
 export async function captureCard(target: Page | Locator, name: string) {
@@ -52,6 +69,8 @@ export async function readTranscriptWithKeyboard(transcript: Locator, adjacentCo
   await adjacentControl.focus();
   await adjacentControl.press(direction);
   await expect(transcript).toBeFocused();
+  await transcript.press("Home");
+  await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeGreaterThan(2);
   await transcript.press("End");
   await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
 }

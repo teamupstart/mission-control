@@ -481,23 +481,37 @@ export function VoiceSettingsPanel({
 
       <fieldset className="settings-group" disabled={!config}>
         <legend className="settings-group-label">Live transcript</legend>
-        <label className="kb-row"><span>Show live transcript</span><input type="checkbox" checked={config?.showTranscript ?? true}
-          onChange={e => void update({ showTranscript: e.target.checked })} /></label>
-        <label className="kb-row"><span>Transcript style</span><select className="settings-select" value={config?.transcriptStyle ?? "card"}
-          onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
-          <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
-        </select></label>
-        <label className="kb-row"><span>Maximum transcript words</span><input type="number" className="settings-select"
-          min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
-          defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
-            if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
-            else e.target.value = String(config?.transcriptWords ?? 20);
-          }} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} /></label>
-        {config?.transcriptStyle !== "capsule" && <label className="kb-row"><span>Corner card placement</span><select
-          className="settings-select" value={config?.transcriptCorner ?? "bottom-right"}
-          onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
-          <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
-        </select></label>}
+        <label className="kb-row"><span>Show live transcript</span>
+          <Tooltip label="Show recognized words while the microphone is listening">
+            <input type="checkbox" checked={config?.showTranscript ?? true}
+              onChange={e => void update({ showTranscript: e.target.checked })} />
+          </Tooltip>
+        </label>
+        <label className="kb-row"><span>Transcript style</span>
+          <Tooltip label="Choose a wrapping corner card or a bottom-center capsule">
+            <select className="settings-select" value={config?.transcriptStyle ?? "card"}
+              onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
+              <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
+            </select>
+          </Tooltip>
+        </label>
+        <label className="kb-row"><span>Maximum transcript words</span>
+          <Tooltip label={`Show the latest 1 to ${TRANSCRIPT_WORD_LIMIT} words`}>
+            <input type="number" className="settings-select" min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
+              defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
+                if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
+                else e.target.value = String(config?.transcriptWords ?? 20);
+              }} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+          </Tooltip>
+        </label>
+        {config?.transcriptStyle !== "capsule" && <label className="kb-row"><span>Corner card placement</span>
+          <Tooltip label="Choose which bottom corner shows the transcript">
+            <select className="settings-select" value={config?.transcriptCorner ?? "bottom-right"}
+              onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
+              <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
+            </select>
+          </Tooltip>
+        </label>}
       </fieldset>
 
       <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />

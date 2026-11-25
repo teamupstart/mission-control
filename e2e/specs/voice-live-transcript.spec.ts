@@ -22,6 +22,9 @@ test("live capture shows readiness, onset and rolling words in the saved overlay
   await expect(style).toHaveValue("card");
   await expect(corner).toHaveValue("bottom-right");
   await expect(limit).toHaveValue("20");
+  await style.hover();
+  await expect(page.locator(".tooltip").filter({ hasText: "Choose a wrapping corner card or a bottom-center capsule" })).toBeVisible();
+  await page.mouse.move(1, 1);
   await expect(overlay).toHaveCount(0);
   const listener = await beListener(daemon);
   try {

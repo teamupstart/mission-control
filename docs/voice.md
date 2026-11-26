@@ -23,7 +23,8 @@ an editor to address a session. Names and commands such as “cancel” are ordi
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
-recognizes speech locally. The standalone sherpa-onnx listener recognizes recordings on macOS
+recognizes speech locally. You can speak for up to a minute, then pause or release push-to-talk
+to review the complete message. The standalone sherpa-onnx listener recognizes recordings on macOS
 and Linux. The corner confirmation card names the recipient and shows the spoken words.
 Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now.
 Tab to an overflowing transcript and use the arrow keys or End to read it. The countdown bar and
@@ -188,7 +189,11 @@ closed. Run the development command from a terminal app that already has microph
 An explicit denial is sent in the hello and exits with status 2. The first-time consent
 prompt belongs to the desktop launcher in [phase 10](plans/voice-addressing-for-agents/phase-10-shell-and-tray.md).
 
-On startup and every ten seconds, the helper posts protocol 4.1 to `/voice/listener/hello`.
+On startup and every ten seconds, the helper posts protocol 4.2 to `/voice/listener/hello`.
+The response carries the daemon's protocol version. With 4.2 on both sides, FluidAudio
+can capture a minute and report overflow. Against a 4.0 or 4.1 daemon, the helper keeps
+the 30-second total buffer limit, including closing silence, and settles a dropped
+phrase with the legacy `finish` report.
 Version 4 requires both monotonic capture bounds for released holds. Earlier protocols receive HTTP 409 at hello.
 Standalone listeners generate a UUID per process. The desktop supervisor generates its own
 UUID and passes it to each managed helper after the previous child exits. This lets its
@@ -310,11 +315,15 @@ a hold. Legacy Unix key timestamps are accepted as input and have no delivery au
 The default-input audio engine runs with voice processing off. It converts input to mono
 16 kHz samples. A local WebRTC voice activity detector classifies 20 ms frames so
 steady background noise can continue between utterances. Parakeet transcribes each segment
-after the silence interval specified by the directive’s `endOfSpeechMs`. If the 30-second buffer fills
-before that boundary, the listener discards the whole utterance, including any further
-speech before the next silence boundary. During a key hold, the prefix remains recoverable
-for two more seconds of capture in case a delayed key-up timestamp falls within the limit.
-When CTC is available, the helper uses the directive's roster to rescore those same samples.
+after the silence interval specified by the directive’s `endOfSpeechMs`. On macOS,
+one addressed phrase can span up to 60 seconds from speech onset through the last voiced
+frame, including pauses inside the phrase. The lead-in and closing silence have separate
+budgets. FluidAudio processes the complete phrase in overlapping encoder windows, one at
+a time, and merges their timed tokens before routing. Exceeding the limit produces a voice
+card asking you to repeat the message in shorter parts. The same explanation appears in
+Recently heard. Capture resumes after silence. During a key hold, the prefix remains
+recoverable for two more seconds in case a delayed key-up timestamp falls within the limit.
+When CTC is available, the helper uses the directive's roster to rescore the opening encoder window.
 Only a correction aligned to the leading address can change the transcript and its timing
 labels. The helper preserves a standalone “cancel” and its punctuation even when CTC suggests a roster name.
 The rest of the decoder transcript, including its punctuation, passes through verbatim.
@@ -395,11 +404,14 @@ listener reports the first voiced sample before waiting for silence or decoding.
 daemon allows 250 ms for the final microphone buffer and its loopback onset report.
 If speech began during the countdown, delivery of the selected message waits for
 that segment's result. A bare “cancel” cancels that message even if recognition
-finishes after the countdown. Other speech releases the message for delivery.
-If the listener drops a segment or capture closes before the segment is complete,
-the listener promptly reports completion so the daemon can release that reservation.
-If no completion arrives, the reservation expires 35 seconds after the daemon
-creates it. Send now still claims the message immediately.
+finishes after the countdown. If that follow-up exceeds the FluidAudio capture limit,
+the daemon cancels the reserved message and displays the retry notice. Other recognized
+speech releases the message for delivery.
+For other dropped or interrupted segments, the listener promptly reports completion
+so the daemon can release the reservation.
+If no completion arrives, the reservation expires after 90 seconds for negotiated
+long capture or 35 seconds for older FluidAudio listeners and Sherpa. Send now still
+claims the message immediately.
 
 “Will, grab the door” and “Will you grab the door” both address Will. Voice compares the whole
 first word after normalizing case and boundary punctuation. The exact first word takes priority
@@ -1245,6 +1257,21 @@ The dashboard and the desktop shell follow the state through the `voice` snapsho
 [the event stream](event-stream.md#voice).
 
 ## Tests
+
+On November 25, 2026, the macOS long-message test ran under the installed Mission Control
+2.3.0 desktop runtime with the release Swift listener and local CPU-only FluidAudio models
+(`parakeet-v2-ee09c569-ctc110m-accdafd8`). It fed 60 seconds of synthesized speech
+(960,000 samples at 16 kHz) into the microphone tap in real time. With either three
+seconds of closing silence or a push-to-talk release, the dashboard showed one pending
+message and the addressed SDK test session received all 197 message words in order
+exactly once.
+
+No-Mistakes Review run `a34548e5-84be-44e2-b104-df06c5fa0eff` retains the result as
+`desktop-delivery-command-output.txt` (SHA-256
+`7a37037f2d4076584e643d8460e75fbd3a2a5903208d3342817b9bdfb0d9f676`).
+To repeat the measurement, follow
+[macOS voice build and tests](../CONTRIBUTING.md#macos-voice-build-and-tests) and run the
+[long-capture spec](../e2e/specs/voice-long-capture.spec.ts).
 
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.

@@ -59,8 +59,9 @@ export interface PendingVoiceAction extends ActionTime {
 
 // Allow a final Core Audio tap, its 20 ms VAD frame and a loopback POST to arrive.
 const ONSET_TRANSIT_MS = 250;
-// The microphone drops unfinished segments at 30 s. Leave a bounded decoder budget.
+// A missing Cancel result must eventually release its countdown reservation.
 const SPEECH_RESULT_TIMEOUT_MS = 35_000;
+const FLUID_SPEECH_RESULT_TIMEOUT_MS = 90_000; // One minute of speech, closing silence and CPU decoding.
 
 const HISTORY_LIMIT = 50;
 // At most HISTORY_LIMIT reservations can time out per 35 s. Two batches cover
@@ -335,7 +336,7 @@ export class VoiceRouter {
   private readonly resolutions = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean },
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean; longCapture?: boolean },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly emitCard: (card: VoiceCard) => void,
@@ -345,6 +346,17 @@ export class VoiceRouter {
     private readonly speech?: { resolving?(): void; unsure(card: VoiceCard): void; stop(cardId: string): void },
     private readonly onCancelWindowChange?: (open: boolean) => void,
   ) {}
+
+  captureLimit(key: string): void {
+    const id = randomUUID();
+    const detail = "Voice capture exceeded 60 seconds. Repeat the message in shorter parts.";
+    // The discarded phrase may have been Cancel. Settle only the card it reserved at onset.
+    const capture = this.speechCaptures.get(key);
+    if (capture) this.cancel(capture.cardId, detail, undefined, key);
+    this.heard.record({ id, time: Date.now(), text: "", outcome: "ignored", matchedName: null,
+      rule: "capture-limit", pauseMs: null, detail });
+    this.publish({ id, state: "cancelled", reason: "capture-limit", detail, deadline: null, candidates: [], parts: [], openQuestions: 0 });
+  }
 
   private publish(card: VoiceCard): void {
     this.heard.recordCard(card);
@@ -493,7 +505,7 @@ export class VoiceRouter {
           this.expiredSpeechKeys.delete(this.expiredSpeechKeys.values().next().value!);
         }
         this.releaseSpeechReservation(key);
-      }, SPEECH_RESULT_TIMEOUT_MS);
+      }, this.state().longCapture ? FLUID_SPEECH_RESULT_TIMEOUT_MS : SPEECH_RESULT_TIMEOUT_MS);
       timeout.unref();
       this.speechCaptures.set(key, { cardId: action.id, timeout });
       return;

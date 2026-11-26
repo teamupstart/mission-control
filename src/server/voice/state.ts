@@ -488,9 +488,11 @@ export class VoiceStateStore {
 
   routingState() {
     const { mode, roster } = this.state();
-    const reported = this.liveHello()?.hello.backend ?? null;
+    const hello = this.liveHello()?.hello;
+    const reported = hello?.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
-    return { mode, roster, backend, reportsSpeechOnset: this.liveHello()?.hello.reportsSpeechOnset === true };
+    const longCapture = backend === "fluidaudio" && Number(hello?.version.split(".")[1] ?? 0) >= 2;
+    return { mode, roster, backend, longCapture, reportsSpeechOnset: hello?.reportsSpeechOnset === true };
   }
 
   /**

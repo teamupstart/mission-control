@@ -369,7 +369,10 @@ test("a hello with an unknown major version is refused, and the state says why",
   h.store.acceptHello(listenerId, HELLO);
   const refused = h.store.acceptHello(listenerId, { ...HELLO, version: "1.0" });
   assert.equal(refused.ok, false);
-  if (!refused.ok) assert.match(refused.reason, /protocol 1\.0.*4\.1/);
+  if (!refused.ok) {
+    assert.match(refused.reason, /protocol 1\.0/);
+    assert.ok(refused.reason.includes(`Mission Control speaks ${VOICE_LISTENER_PROTOCOL_VERSION}`));
+  }
   const state = h.store.state();
   assert.equal(state.mode, "unavailable", "the refused listener replaces the one heard before");
   assert.deepEqual(state.reasons, ["listener"]);

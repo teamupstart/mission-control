@@ -1498,6 +1498,32 @@ test("a sign-in whose write lands but whose sign-out entry cannot be cleared is 
   assert.deepEqual(second.svc.accessToken(a), { ok: true, token: kept.accessToken });
 });
 
+test("an expired record removed while its replacement is being written: the replacement is reported as memory-only, as the next start removes it", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const h = await harness(t, { store });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  h.fake.setMode({ tokens: "no-refresh" });
+  const { id } = await signIn(h, a);
+  // The held record expires; it has no refresh token, so reading it removes it. Jumped before
+  // the new sign-in begins, so its own pending sign-in is still live.
+  h.clock.jump(2 * HOUR);
+  const back = await authorize((await begun(h, a)).authorizationUrl);
+  const writes = store.holdWrites();
+  const completing = h.svc.complete(callback(back));
+  await writes.started;
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" }, "the expired record is removed during the write");
+  writes.release();
+  assert.deepEqual(await completing, { ok: true, connection: id }, "the removal does not cancel the completion");
+  await settle(h);
+  assert.ok(h.svc.accessToken(a).ok, "the replacement is held");
+  assert.deepEqual(signedOutOf(h.regs), [id], "the removal's entry stays, and its skipped removal cannot clear it");
+  assert.equal(viewOf(h, id)?.reason, SIGN_IN_REASONS.memoryOnly, "so the replacement is reported as memory-only");
+  const second = await restarted(t, h, records, [use(a)]);
+  assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" }, "as the restart shows");
+});
+
 test("accepted limit: app_config and the store both refuse, and the daemon restarts before either recovers", async (t) => {
   const records = createMemorySignInStore();
   const store = controlledStore("memory", records);

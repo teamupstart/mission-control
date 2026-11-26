@@ -515,9 +515,13 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   };
 
   /** Clears the connection's entry after a confirmed store call that began at mark count `since`. */
-  /** False when the key may still list the connection: it could not be read, or refused the write. */
+  /**
+   * False when the key may still list the connection: a sign-out was marked since the store
+   * call began (its entry stays, and its own removal may be skipped for a newer record), the
+   * key could not be read, it refused the write, or the overflow mark covers every record.
+   */
   const clearSignedOut = (id: string, since: number | undefined): boolean => {
-    if (marks.get(id) !== since) return true;
+    if (marks.get(id) !== since) return false;
     // The store confirmed it: an entry not saved yet no longer needs saving.
     unsaved.delete(id);
     const value = readConfig();

@@ -3,9 +3,9 @@ import { SHAPER_SIGN_IN_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { PORT } from "@shared/harness-runtime.mjs";
 import {
   classifyShapers, shaperSignInTarget, ShapingSignInConfigSchema,
-  type DiscoveredShaper, type ShapingConfig, type ShapingSignInClient, type SignInTarget,
+  type DiscoveredShaper, type ShapingConfig, type ShapingSignInConfig, type SignInTarget,
 } from "@shared/shaping.ts";
-import { getAppConfig, setAppConfig } from "../../db.ts";
+import { getAppConfig, hasAppConfigRow, setAppConfig } from "../../db.ts";
 import { featureEnabled, onFeatureFlagsChanged } from "../../feature-flags/index.ts";
 import { discoverShapers } from "../discovery.ts";
 import { getShapingConfig, onShapingConfigChanged } from "../index.ts";
@@ -28,17 +28,19 @@ export function shaperSignInEnabled(): boolean {
 }
 
 /**
- * The client registrations in `app_config` key `shaping.signIn`. A value this build cannot read
- * is taken as none: it holds no token, and losing it costs only reuse, so the next sign-in
- * registers again and its write replaces it.
+ * `app_config` key `shaping.signIn`: the client registrations and the signed-out connections.
+ * A missing row is the empty value. A row that is not JSON, or does not match the schema, is
+ * unreadable (null), never empty: it may list sign-outs, so the service fails closed on it.
  */
 export const appConfigSignInRegistrations: SignInRegistrations = {
-  read(): ShapingSignInClient[] {
-    const parsed = ShapingSignInConfigSchema.safeParse(getAppConfig(APP_CONFIG_ENTRIES.shapingSignIn) ?? {});
-    return parsed.success ? parsed.data.clients : [];
+  read(): ShapingSignInConfig | null {
+    const raw = getAppConfig(APP_CONFIG_ENTRIES.shapingSignIn);
+    if (raw === undefined) return hasAppConfigRow(APP_CONFIG_ENTRIES.shapingSignIn) ? null : ShapingSignInConfigSchema.parse({});
+    const parsed = ShapingSignInConfigSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
   },
-  write(clients) {
-    setAppConfig(APP_CONFIG_ENTRIES.shapingSignIn, ShapingSignInConfigSchema.parse({ clients }));
+  write(value) {
+    setAppConfig(APP_CONFIG_ENTRIES.shapingSignIn, ShapingSignInConfigSchema.parse(value));
   },
 };
 

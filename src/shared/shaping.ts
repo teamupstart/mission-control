@@ -973,13 +973,24 @@ export const ShapingSignInClientSchema = z.strictObject({
 });
 export type ShapingSignInClient = z.output<typeof ShapingSignInClientSchema>;
 
+/** The most signed-out connections `app_config` key `shaping.signIn` lists before it fails closed. */
+export const SHAPING_SIGNED_OUT_CONNECTIONS = 64;
+
 /**
  * `app_config.shaping.signIn`: the client registrations the sign-in service keeps, at most
- * `SHAPING_SIGN_IN_CLIENTS`. Its own key, because `ShapingConfigSchema` drops unknown keys and
+ * `SHAPING_SIGN_IN_CLIENTS`, and the connections signed out whose stored record the store has
+ * not yet confirmed removed. Its own key, because `ShapingConfigSchema` drops unknown keys and
  * an older build would delete it on its next write. It holds no token.
+ *
+ * `signedOut` lists connection ids (`connectionId`), with no time: a listed id's stored record
+ * is never loaded, whenever it was written, until a removal or a later sign-in's write is
+ * confirmed. `signedOutOverflow` is set when a sign-out finds the list full, and then no stored
+ * record is loaded at all until a start lists the store and removes every one.
  */
 export const ShapingSignInConfigSchema = z.object({
   clients: z.array(ShapingSignInClientSchema).max(SHAPING_SIGN_IN_CLIENTS).default([]),
+  signedOut: z.array(z.string().regex(/^[0-9a-f]{32}$/)).max(SHAPING_SIGNED_OUT_CONNECTIONS).default([]),
+  signedOutOverflow: z.boolean().default(false),
 }).prefault({});
 export type ShapingSignInConfig = z.output<typeof ShapingSignInConfigSchema>;
 

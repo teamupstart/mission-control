@@ -108,15 +108,21 @@ test("the setting accepts one word and refuses phrases, punctuation and voice co
 const agent = (name: string): SpokenName => ({ key: `task:${name.toLowerCase()}`, name, kind: "session", sessionId: name.toLowerCase(),
   taskId: name.toLowerCase(), role: "", colorId: null, agent: "codex", state: "running" });
 
-function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions; cancelWindow?: boolean } = {}) {
+function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode; separatorWord?: string | null; roster?: SpokenName[]; questions?: VoiceQuestions; cancelWindow?: boolean;
+  /** Delays one delivery until the returned promise settles, to observe what waits behind it. */
+  holdDelivery?: (text: string, command?: string) => Promise<void> | undefined } = {}) {
   const cards = new Map<string, VoiceCard>();
-  const delivered: { name: string; text: string }[] = [];
+  const delivered: { name: string; text: string; command?: string }[] = [];
   let hostNow = 1_000_000;
   const state = { mode: options.mode ?? "listening", separatorWord: options.separatorWord === undefined ? "bagel" : options.separatorWord,
     roster: options.roster ?? [agent("Steve"), agent("Carol")] };
   const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: state.mode, roster: state.roster, separatorWord: state.separatorWord }),
     () => ({ enabled: options.cancelWindow ?? true, seconds: 30 }), {
-      deliver: async (target, text) => { delivered.push({ name: target.name, text }); return "queued"; },
+      deliver: async (target, text, _id, command) => {
+        delivered.push({ name: target.name, text, ...(command && { command }) });
+        await options.holdDelivery?.(text, command);
+        return "queued";
+      },
     }, card => cards.set(card.id, card), undefined, () => hostNow, options.questions);
   t.after(() => router.reset());
   let sequence = 0;
@@ -166,6 +172,20 @@ test("with the Cancel window Off, a Cancel after the separator stops the message
     ["Steve", "check the build"],
     ["Carol", "give me a report on the status of some project"],
   ]);
+});
+
+test("with the Cancel window Off, a separated Stop is sent only after the message spoken before it", async t => {
+  let release!: () => void;
+  const testsDelivered = new Promise<void>(resolve => { release = resolve; });
+  const { say, delivered } = harness(t, { cancelWindow: false,
+    holdDelivery: text => text === "run the tests" ? testsDelivered : undefined });
+  assert.equal(await say("Steve, run the tests, bagel, Steve, stop"), true);
+  await new Promise(resolve => setImmediate(resolve));
+  // The test request is being delivered; Stop waits behind it instead of overtaking it.
+  assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests"]);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop"]);
 });
 
 test("a Cancel after a part that opened no message cancels nothing and leaves earlier messages pending", async t => {

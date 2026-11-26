@@ -126,6 +126,29 @@ test("a refusal of an earlier separator save does not mark a newer saved word in
   expect(puts).toBe(2);
 });
 
+test("a refusal that arrives while a newer separator draft is being typed leaves that draft unmarked", async ({ dashboard: page, daemon }) => {
+  await enableVoice(daemon);
+  await page.goto(daemon.baseURL + "/#/settings/voice");
+  const row = page.locator('[data-anchor="voice/separator"]');
+  const field = page.getByRole("textbox", { name: "Separator word" });
+  await expect(field).toHaveValue("bagel");
+  const held = Promise.withResolvers<Route>();
+  await page.route("**/api/voice/config", async route => {
+    if (route.request().method() !== "PUT") return route.continue();
+    return held.resolve(route);
+  }, { times: 1 });
+  await field.fill("waffle");
+  await field.press("Enter");
+  const first = await held.promise;
+  // The operator starts a new draft, not yet saved, while the first save is pending.
+  await field.fill("crumpet");
+  await first.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "save_failed" }) });
+  await expect(page.getByText("That change didn't stick: save_failed")).toBeVisible();
+  await expect(row.getByRole("alert"), "the refusal belonged to the earlier save").toHaveCount(0);
+  await expect(field).not.toHaveAttribute("aria-invalid", "true");
+  await expect(field).toHaveValue("crumpet");
+});
+
 test("one Always-on capture with the separator shows two confirmations, each with its own Cancel", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await runningAgent(page, daemon, "Steve");

@@ -690,8 +690,13 @@ export class VoiceRouter {
       return await this.routeSeparatedParts(utterance, split, heldSends);
     } finally {
       this.activeHolds.delete(heldSends);
-      for (const cardId of heldSends) if (this.open.has(cardId)) void this.sendNow(cardId);
+      if (heldSends.size) void this.sendHeldInOrder([...heldSends]);
     }
+  }
+
+  /** Sends a separated capture's held cards one after another, so a later Stop never overtakes. */
+  private async sendHeldInOrder(cardIds: string[]): Promise<void> {
+    for (const cardId of cardIds) if (this.open.has(cardId)) await this.sendNow(cardId);
   }
 
   private async routeSeparatedParts(utterance: VoiceUtterance, split: SeparatedCapture, heldSends: Set<string>): Promise<boolean> {
@@ -774,9 +779,9 @@ export class VoiceRouter {
       rule: decision.kind, matchedName: null, pauseMs: null, detail: "" };
     this.heard.record(entry);
     if (this.questions) {
-      const inbox = this.routeInbox(utterance, decision, entry, time);
+      const inbox = this.routeInbox(utterance, decision, entry, time, options.heldSends);
       if (inbox !== false) return inbox;
-      const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards);
+      const routed = this.routeQuestion(utterance, decision, entry, time, unsureCards, options.heldSends);
       if (routed !== false) return routed;
     }
     if (decision.kind === "ignored") {
@@ -815,7 +820,8 @@ export class VoiceRouter {
     return true;
   }
 
-  private routeInbox(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry, time: ActionTime): boolean | Promise<boolean> {
+  private routeInbox(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry, time: ActionTime,
+    heldSends?: Set<string>): boolean | Promise<boolean> {
     const inbox = this.questions?.inbox;
     if (!inbox || decision.kind === "control") return false;
     const reply = /^reply(?:,\s*|\s+)(.+)$/iu.exec(utterance.text.trim());
@@ -828,7 +834,7 @@ export class VoiceRouter {
     const candidates = addressedCards(report?.cards ?? [], address);
     const card = focusedVoiceCard(candidates);
     const owner = target ?? (card && this.state().roster.find(r => r.sessionId === card.sessionId || (card.kind !== "question" && r.key === card.agentKey))) ?? null;
-    const item: OpenCard = { time, entry, message: body, card: { id: utterance.id, state: "pending", reason: "inbox-action",
+    const item: OpenCard = { time, entry, message: body, heldSends, card: { id: utterance.id, state: "pending", reason: "inbox-action",
       parts: [{ target: owner, text: body }], deadline: null, openQuestions: 0, candidates: [] } };
     const notice = (detail: string, reason: string) => {
       entry.rule = reason;
@@ -964,7 +970,7 @@ export class VoiceRouter {
   }
 
   private routeQuestion(utterance: VoiceUtterance, decision: VoiceRouteDecision, entry: HeardEntry,
-    time: ActionTime, unsure: VoiceCard[]): boolean | Promise<boolean> {
+    time: ActionTime, unsure: VoiceCard[], heldSends?: Set<string>): boolean | Promise<boolean> {
     const words = utterance.text.trim();
     const correction = /^no(?:,\s*|\s+)(.+)$/iu.exec(words);
     if (correction) {
@@ -1005,7 +1011,7 @@ export class VoiceRouter {
     const monotonicMs = this.questionTime(time);
     if (this.open.size + this.delivering.size >= MAX_ACTIVE_CARDS) return true;
     const content = explicit ? answer ?? body : body;
-    const item: OpenCard = { entry, time, message: body, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
+    const item: OpenCard = { entry, time, message: body, heldSends, answerCapture: { ...time, monotonicMs, sequence: ++this.answerSequence },
       card: { id: utterance.id, reason: "answer", state: "pending", parts: [{ target, text: body }],
         openQuestions: 0, deadline: null, candidates: [] } };
     if (!Number.isFinite(monotonicMs)) {
@@ -1322,6 +1328,14 @@ export class VoiceRouter {
     if (card.state === "pending") {
       const window = this.window();
       card.openQuestions = this.openQuestionCount(card);
+      if (!window.enabled && item.heldSends && this.activeHolds.has(item.heldSends)) {
+        // A separated capture is still routing. Nothing it opens is sent yet, Stop included: a
+        // Cancel later in the capture must reach its card first, and every action then goes out
+        // in spoken order once the capture's parts are done.
+        item.heldSends.add(card.id);
+        this.publish(card);
+        return;
+      }
       if (card.parts.length > 1 && item.commands?.includes("stop")) {
         card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
         const delivery = this.newDelivery(item);
@@ -1336,13 +1350,6 @@ export class VoiceRouter {
         item.splitStops = { delivery, done };
       }
       const stopsOnly = card.parts.every((_, index) => item.commands?.[index] === "stop");
-      if (!window.enabled && !stopsOnly && item.heldSends && this.activeHolds.has(item.heldSends)) {
-        // A separated capture is still routing: a Cancel spoken after the separator must reach
-        // this card before it is sent. The capture sends what remains when its parts are done.
-        item.heldSends.add(card.id);
-        this.publish(card);
-        return;
-      }
       if (stopsOnly || !window.enabled) { void this.sendNow(card.id); return; }
       const ms = window.seconds * 1000;
       card.windowMs = ms;

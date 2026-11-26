@@ -19,9 +19,9 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
   const [editing, setEditing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const discard = useRef(false);
-  // Each edit that reports back (a refusal of the word, or a save) takes a ticket. Only the latest
-  // one's save may report a failure, so a refusal that arrives after a newer word was entered
-  // cannot mark that newer word invalid.
+  // Typing, a refusal of the word and a save each take a ticket. Only a save still holding the
+  // latest ticket may report a failure, so a refusal that arrives after a newer draft was started
+  // cannot mark that draft invalid.
   const latestEdit = useRef(0);
   useEffect(() => { if (!editing) setDraft(saved); }, [saved, editing]);
 
@@ -67,7 +67,11 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
             autoComplete="off" spellCheck={false} maxLength={64} disabled={!state.config || dedicated}
             value={draft} aria-invalid={problem ? true : undefined}
             onFocus={() => setEditing(true)}
-            onChange={event => { setEditing(true); setDraft(event.target.value); setProblem(null); }}
+            onChange={event => {
+              // A newer draft supersedes any save still pending: its failure must not mark this word.
+              latestEdit.current++;
+              setEditing(true); setDraft(event.target.value); setProblem(null);
+            }}
             onBlur={() => void commit()}
             onKeyDown={event => {
               if (event.key === "Enter") event.currentTarget.blur();

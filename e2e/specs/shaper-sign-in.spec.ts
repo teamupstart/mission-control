@@ -59,7 +59,7 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
 
-  // 1. Import a manifest that carries `auth`. Its row reads "Not signed in".
+  // Phase file step 1.
   await panel(page).getByRole("button", { name: "Import manifest…" }).click();
   const dialog = page.getByRole("dialog", { name: "Import a shaper" });
   await dialog.getByRole("textbox", { name: "Manifest" }).fill(JSON.stringify({
@@ -94,18 +94,15 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel sign-in for Signed guidance" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toHaveCount(0);
-  // The tab is on the authorization server's page, with the browser's half of PKCE and the scope.
   await held.waitForURL(`${authorizeUrl}?**`);
   // The tab cannot reach back into the dashboard: its opener was cut before the page ran.
   expect(await held.evaluate(() => window.opener === null)).toBe(true);
   const opened = new URL(held.url());
   expect(opened.searchParams.get("code_challenge_method")).toBe("S256");
   expect(opened.searchParams.get("scope")).toBe("mcp:context");
-  // Copy link puts that same link on the clipboard, and says so.
   await page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" }).click();
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveText("Copied");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(held.url());
-  // Open the sign-in page opens the same link in another tab.
   const again = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Open the sign-in page for Signed guidance" }).click();
   const reopened = await again;
@@ -113,7 +110,7 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   expect(await reopened.evaluate(() => window.opener === null)).toBe(true);
   await capture(page, "2-pending-here");
 
-  // A reload drops the link: the row still waits, and offers only what needs no link.
+  // A reload drops the link this window held.
   await page.reload();
   await expect(signIn(page)).toContainText("Waiting for the browser. Started in another window, or before this page was reloaded.");
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeVisible();
@@ -122,8 +119,6 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveCount(0);
   await capture(page, "2-pending-elsewhere");
 
-  // Sign in on that pending row starts a replacement: a new tab opens on a new authorization URL,
-  // and this window, which now holds that link, offers it again.
   const restartTab = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
   const restarted = await restartTab;
@@ -153,24 +148,23 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await reopened.close();
   await restarted.close();
   await page.context().unroute(`${authorizeUrl}?**`);
-  // Nothing reached the authorization server's `/authorize` while it was stubbed.
   expect(fake.requests.some((request) => request.path === "/authorize")).toBe(false);
 
-  // 3. Sign in again: the new tab is sent back to the daemon's callback, which says it is done.
+  // Phase file step 3.
   const signInTab = page.waitForEvent("popup");
   await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
   const tab = await signInTab;
   await expect(tab.getByRole("heading", { name: "Signed in. You can close this tab and go back to Mission Control." })).toBeVisible();
   expect(tab.url().startsWith(`${daemon.baseURL}/api/shaping/sign-in/callback?`)).toBe(true);
 
-  // 4. Back in Settings, with no reload, the row reads Signed in and offers Sign out.
+  // Phase file step 4: no reload.
   await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
   await expect(page.getByRole("button", { name: "Sign out Signed guidance" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toHaveCount(0);
   await capture(page, "3-signed-in");
   await tab.close();
 
-  // 5. A dry run reaches the protected tool with the token and shows its guidance.
+  // Phase file step 5.
   const signedRun = await dryRun(page, daemon);
   await expect(signedRun.result).toContainText("OK", { timeout: 45_000 });
   await expect(signedRun.result.getByRole("article", { name: "Guide" })).toContainText("guidance for");
@@ -178,7 +172,7 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await expect(signedRun.dialog).toHaveCount(0);
   expect(fake.requests.some((request) => request.path === "/mcp" && String(request.headers.authorization ?? "").startsWith("Bearer "))).toBe(true);
 
-  // 6. Sign out: the row reads Not signed in, and a dry run says where to sign in.
+  // Phase file step 6.
   await page.getByRole("button", { name: "Sign out Signed guidance" }).click();
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeVisible();
@@ -188,7 +182,7 @@ test("an operator signs a shaper in and out from Settings, sees each state live,
   await signedOutRun.dialog.getByRole("button", { name: "Close" }).click();
   await expect(signedOutRun.dialog).toHaveCount(0);
 
-  // 7. Switch shaper-sign-in off through the API: in this open window the controls go and the row says why.
+  // Phase file step 7.
   await setFlag(daemon, "shaper-sign-in", false);
   await expect(signIn(page)).toContainText("Sign-in is switched off");
   await expect(signIn(page)).toContainText("(shaper-sign-in)");
@@ -217,7 +211,6 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   page.on("popup", () => { tabs++; });
   const signInButton = page.getByRole("button", { name: "Sign in Signed guidance" });
 
-  // The daemon refuses the start: its fixed reason is shown in the row, as an alert.
   await page.route("**/api/shaping/sign-in", (route) => route.fulfill({
     status: 409, contentType: "application/json",
     body: JSON.stringify({ error: "registration_limit", reason: "Refused for this test: sign out of another sign-in first." }),
@@ -228,7 +221,6 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   await expect(signInButton).toBeEnabled();
   await page.unroute("**/api/shaping/sign-in");
 
-  // The reply's link is plain http to another host: the dashboard refuses to open it.
   await page.route("**/api/shaping/sign-in", (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ authorizationUrl: "http://login.attacker.example/authorize?state=fake-state", expiresAt: Date.now() + 600_000, connection: "0".repeat(32) }),
@@ -241,8 +233,7 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   await page.unroute("**/api/shaping/sign-in");
   expect(tabs).toBe(0);
 
-  // A new tab that the browser blocks: the sign-in started, so the row waits for the browser,
-  // says the page did not open, and offers the two controls that give the link again.
+  // A blocked new tab: window.open returns null.
   await page.evaluate(() => {
     const blocked = window as unknown as { realOpen?: typeof window.open };
     blocked.realOpen = window.open;
@@ -262,8 +253,6 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
     window.open = blocked.realOpen!;
   });
 
-  // Open the sign-in page opens it once tabs are allowed: the real sign-in completes from the same
-  // row, and the earlier refusal is gone.
   const signInTab = page.waitForEvent("popup");
   await openAgain.click();
   const tab = await signInTab;
@@ -272,7 +261,6 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
 
-  // The daemon refuses the sign-out: the reason is shown, and the sign-in is still held and offered.
   await page.route("**/api/shaping/sign-out", (route) => route.fulfill({
     status: 404, contentType: "application/json",
     body: JSON.stringify({ error: "unknown_connection", reason: "Refused for this test: no sign-in has that connection id." }),
@@ -288,8 +276,7 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   const held = listed.signIns.find((entry) => entry.shapers.includes("signed-guidance"));
   expect(held?.state).toBe("signed_in");
 
-  // Another window signs the shaper out. The row follows the event, and the refusal it showed no
-  // longer describes it, so it goes with no click here.
+  // Another window signs the shaper out.
   const elsewhere = await fetch(`${daemon.baseURL}/api/shaping/sign-out`, {
     method: "POST", headers: json, body: JSON.stringify({ connection: held!.id }),
   });
@@ -330,7 +317,7 @@ test("Sign out on a sign-in no shaper uses ends that connection's sign-in only, 
   await expect(panel(page).getByRole("group", { name: "Sign-in for context-guidance" })).toContainText("Signed in");
   await expect(unused).toHaveCount(0);
 
-  // Removing both shapers leaves both sign-ins held and named by no shaper: listed apart, live.
+  // Removing both shapers leaves both sign-ins held and named by no shaper.
   for (const id of Object.keys(scopes)) {
     const removed = await fetch(`${daemon.baseURL}/api/shaping`, { method: "PUT", headers: json, body: JSON.stringify({ kind: "remove", id }) });
     expect(removed.status).toBe(200);
@@ -344,8 +331,6 @@ test("Sign out on a sign-in no shaper uses ends that connection's sign-in only, 
     await unused.screenshot({ path: `${EVIDENCE}6-unused-two.png` });
   }
 
-  // The daemon refuses the mcp:other sign-out: its reason shows in that entry alone, both entries
-  // stay, and its Sign out is still offered.
   const otherEntry = unused.getByRole("listitem").filter({ hasText: "Scope mcp:other" });
   const contextEntry = unused.getByRole("listitem").filter({ hasText: "Scope mcp:context" });
   const otherSignOut = page.getByRole("button", { name: `Sign out ${fake.resourceUrl} (mcp:other)` });
@@ -368,8 +353,6 @@ test("Sign out on a sign-in no shaper uses ends that connection's sign-in only, 
   const held = await (await fetch(`${daemon.baseURL}/api/shaping`)).json() as { signIns: Array<{ id: string }> };
   expect(held.signIns.map((entry) => entry.id).sort()).toEqual([connections["mcp:context"], connections["mcp:other"]].sort());
 
-  // Sign out the mcp:other one again: it goes through, the alert clears with it, and the daemon no
-  // longer holds that connection.
   await otherSignOut.click();
   await expect(unused.getByRole("listitem")).toHaveCount(1);
   await expect(unused).toContainText("Scope mcp:context");
@@ -379,7 +362,6 @@ test("Sign out on a sign-in no shaper uses ends that connection's sign-in only, 
   expect(listed.signIns[0]!.state).toBe("signed_in");
   if (EVIDENCE) await unused.screenshot({ path: `${EVIDENCE}6-unused-one.png` });
 
-  // Signing out the last one removes the list.
   await page.getByRole("button", { name: `Sign out ${fake.resourceUrl} (mcp:context)` }).click();
   await expect(unused).toHaveCount(0);
   const after = await (await fetch(`${daemon.baseURL}/api/shaping`)).json() as { signIns: unknown[] };
@@ -406,7 +388,7 @@ test("a sign-out refusal that lands after another window signed the connection o
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
 
-  // This window's Sign out is held in flight, and will be refused when it is let go.
+  // This window's Sign out is held in flight, to be refused when released.
   let release!: () => void;
   const held = new Promise<void>((done) => { release = done; });
   let seen!: () => void;
@@ -422,13 +404,12 @@ test("a sign-out refusal that lands after another window signed the connection o
   await page.getByRole("button", { name: "Sign out Signed guidance" }).click();
   await arrived;
 
-  // Meanwhile another window signs the connection out. The row follows the event at once.
+  // Meanwhile another window signs the connection out.
   const elsewhere = await fetch(`${daemon.baseURL}/api/shaping/sign-out`, { method: "POST", headers: json, body: JSON.stringify({ connection }) });
   expect(elsewhere.status).toBe(200);
   await expect(signIn(page)).toContainText("Not signed in.");
 
-  // The held request is refused only now. Its refusal is about a moment that has passed, so the
-  // row stays signed out with no alert, and Sign in is offered once the request is done.
+  // The held request is refused only now.
   release();
   const signInButton = page.getByRole("button", { name: "Sign in Signed guidance" });
   await expect(signInButton).toBeEnabled();
@@ -475,8 +456,6 @@ test("in the desktop app the sign-in page goes to the desktop bridge, and a brid
   const recovery = "The sign-in page did not open. Use Open the sign-in page to try again, or Copy link to open it in another browser.";
   const authorizeUrl = `${new URL(fake.issuer).origin}/authorize`;
 
-  // Sign in hands the authorization URL to the bridge, which opens it outside the dashboard: no tab
-  // opens in this browser, and nothing reaches the authorization server from here.
   await bridge("record");
   await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
   await expect(signIn(page)).toContainText("Waiting for the browser.");
@@ -486,7 +465,6 @@ test("in the desktop app the sign-in page goes to the desktop bridge, and a brid
   expect(`${url.origin}${url.pathname}`).toBe(authorizeUrl);
   expect(url.searchParams.get("code_challenge_method")).toBe("S256");
   expect(url.searchParams.get("scope")).toBe("mcp:context");
-  // It is the same link the row offers to copy.
   await page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" }).click();
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveText("Copied");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(handed);
@@ -494,8 +472,6 @@ test("in the desktop app the sign-in page goes to the desktop bridge, and a brid
   expect(tabs).toBe(0);
   expect(fake.requests.some((request) => request.path === "/authorize")).toBe(false);
 
-  // The bridge now fails. Open the sign-in page passes it the same link, and the rejection shows
-  // the recovery message with Open and Copy still offered.
   await bridge("reject");
   await page.getByRole("button", { name: "Open the sign-in page for Signed guidance" }).click();
   await expect(signIn(page).getByRole("alert")).toHaveText(recovery);
@@ -504,7 +480,6 @@ test("in the desktop app the sign-in page goes to the desktop bridge, and a brid
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toBeVisible();
   await capture(page, "8-desktop-bridge-failed");
 
-  // A fresh Sign in whose bridge call fails says the same, right after the start.
   await page.getByRole("button", { name: "Cancel sign-in for Signed guidance" }).click();
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
@@ -553,19 +528,17 @@ test("a sign-in reply that lands after shaper-sign-in was switched off opens no 
   await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
   await daemonAnswered;
 
-  // Another window switches the feature off: the row says so and offers no control.
   await setFlag(daemon, "shaper-sign-in", false);
   await expect(signIn(page)).toContainText("Sign-in is switched off");
   await expect(signIn(page).getByRole("button")).toHaveCount(0);
 
-  // The reply lands now. It belongs to controls that are gone: no tab opens.
+  // The reply lands after the flag went off.
   const delivered = page.waitForResponse((response) => response.url().endsWith("/api/shaping/sign-in"));
   release();
   expect((await delivered).status()).toBe(200);
   await page.unroute("**/api/shaping/sign-in");
 
-  // Switched on again, the row has no link from that reply: neither Open nor Copy is offered,
-  // and its Sign in is free, so the reply has been handled.
+  // Switched on again: Sign in is free only once the reply has been handled.
   await setFlag(daemon, "shaper-sign-in", true);
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Open the sign-in page for Signed guidance" })).toHaveCount(0);
@@ -609,7 +582,7 @@ test("a desktop bridge failure that lands after another window cancelled the sig
   expect(cancelled.status).toBe(200);
   await expect(signIn(page)).toContainText("Not signed in.");
 
-  // Only now does the bridge fail. The sign-in it was opening is over, so the row shows no alert.
+  // Only now does the bridge fail.
   await page.evaluate(() => (window as unknown as { failBridge: () => Promise<void> }).failBridge());
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
@@ -624,7 +597,7 @@ test("a sign-in refusal that lands after the flag went off and on again is not s
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(signIn(page)).toContainText("Not signed in.");
 
-  // The Sign in is held in flight, and will be refused when it is let go.
+  // The Sign in is held in flight, to be refused when released.
   let release!: () => void;
   const held = new Promise<void>((done) => { release = done; });
   let seen!: () => void;
@@ -645,7 +618,6 @@ test("a sign-in refusal that lands after the flag went off and on again is not s
   await setFlag(daemon, "shaper-sign-in", true);
   await expect(signIn(page)).toContainText("Not signed in.");
 
-  // The refusal lands now. It answers controls from before the flag changed, so the row shows no alert.
   release();
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
   await expect(signIn(page)).toContainText("Not signed in.");
@@ -665,7 +637,7 @@ test("a sign-out refusal that lands after another window changed the shaper's sc
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
 
-  // This window's Sign out is held in flight, and will be refused when it is let go.
+  // This window's Sign out is held in flight, to be refused when released.
   let release!: () => void;
   const held = new Promise<void>((done) => { release = done; });
   let seen!: () => void;
@@ -679,8 +651,6 @@ test("a sign-out refusal that lands after another window changed the shaper's sc
   await page.getByRole("button", { name: "Sign out Signed guidance" }).click();
   await arrived;
 
-  // Another window changes the shaper's scope: the row now names a new connection, not signed in,
-  // and the old sign-in is listed as one no shaper uses.
   const rescoped = await fetch(`${daemon.baseURL}/api/shaping`, {
     method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
       id: "signed-guidance", label: "Signed guidance", stage: "select",
@@ -693,8 +663,6 @@ test("a sign-out refusal that lands after another window changed the shaper's sc
   const unused = panel(page).getByRole("group", { name: "Sign-ins no shaper uses" });
   await expect(unused).toContainText("Scope mcp:context");
 
-  // The refusal lands now. It was about the old connection, so the row on its new one shows no
-  // alert, and neither does the old sign-in's entry, which no control there asked about.
   // The old connection's entry waits on the same request, so its Sign out comes free only once
   // the refusal has been handled.
   const oldSignOut = unused.getByRole("button", { name: `Sign out ${fake.resourceUrl} (mcp:context)` });
@@ -747,7 +715,6 @@ test("a sign-in reply that lands after another window changed the shaper's scope
     return { arrived, release };
   };
 
-  // A refusal for the old scope, landing after the scope changed, is not shown on the row's new one.
   const refused = await holdSignIn({ refuse: "Refused for this test: about the old scope." });
   await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
   await refused.arrived;
@@ -815,8 +782,7 @@ test("a desktop bridge failure that lands after another window changed the shape
   await expect.poll(() => page.evaluate(() => (window as unknown as { bridgeCalls?: number }).bridgeCalls)).toBe(1);
   await page.unroute("**/api/shaping/sign-in");
 
-  // Another window changes the shaper's scope while the bridge call is still open. The row now
-  // signs in to mcp:other, not signed in; the old mcp:context sign-in stays pending, listed as unused.
+  // Another window changes the shaper's scope while the bridge call is open; the old connection stays pending.
   const rescoped = await fetch(`${daemon.baseURL}/api/shaping`, {
     method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
       id: "signed-guidance", label: "Signed guidance", stage: "select",
@@ -827,8 +793,7 @@ test("a desktop bridge failure that lands after another window changed the shape
   await expect(row(page)).toContainText("Signs in: OAuth, scope mcp:other");
   await expect(signIn(page)).toContainText("Not signed in.");
 
-  // Only now does the bridge fail. It was opening the old connection's page, so the row on its new
-  // connection shows no alert.
+  // Only now does the bridge fail.
   await page.evaluate(() => (window as unknown as { failBridge: () => Promise<void> }).failBridge());
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
@@ -843,7 +808,6 @@ test("a refusal shown on a row goes once another window changes what the shaper 
   await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
   await expect(signIn(page)).toContainText("Not signed in.");
 
-  // The daemon refuses this window's Sign in, and the row shows why.
   await page.route("**/api/shaping/sign-in", (route) => route.request().method() !== "POST" ? route.fallback()
     : route.fulfill({ status: 409, contentType: "application/json",
       body: JSON.stringify({ error: "registration_limit", reason: "Refused for this test: about mcp:context." }) }));
@@ -851,8 +815,6 @@ test("a refusal shown on a row goes once another window changes what the shaper 
   await expect(signIn(page).getByRole("alert")).toHaveText("Refused for this test: about mcp:context.");
   await page.unroute("**/api/shaping/sign-in");
 
-  // Another window changes the shaper's scope. The row now signs in to mcp:other, and the refusal
-  // about mcp:context is gone from it, with no click here.
   const rescoped = await fetch(`${daemon.baseURL}/api/shaping`, {
     method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
       id: "signed-guidance", label: "Signed guidance", stage: "select",
@@ -864,4 +826,53 @@ test("a refusal shown on a row goes once another window changes what the shaper 
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(signIn(page).getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+});
+
+test("the row shows a sign-in kept in the Keychain, and one being renewed with its reason", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  const started = await fetch(`${daemon.baseURL}/api/shaping/sign-in`, { method: "POST", headers: json, body: JSON.stringify({ shaper: "signed-guidance" }) });
+  expect(started.status).toBe(200);
+  const { authorizationUrl } = await started.json() as { authorizationUrl: string };
+  expect((await fetch(authorizationUrl)).status).toBe(200);
+
+  // The browser suite's daemon keeps sign-ins in memory, and renewing needs a server that
+  // refuses a held token. Both states are shown by handing the page's own event stream one
+  // sign-in list frame, built from the daemon's real entry for this connection: the real panel
+  // renders it, and no Keychain is touched.
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        if (String(url) === "/events") (window as unknown as { signInStream: EventSource }).signInStream = this;
+      }
+    };
+  });
+  // A hash-only navigation keeps the document, so reload for the init script to take hold.
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await page.reload();
+  await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
+  await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { signInStream?: EventSource }).signInStream))).toBe(true);
+  const listed = await (await fetch(`${daemon.baseURL}/api/shaping`)).json() as { signIns: Array<Record<string, unknown> & { shapers: string[] }> };
+  const entry = listed.signIns.find((candidate) => candidate.shapers.includes("signed-guidance"))!;
+  const deliver = (signIns: unknown[]) => page.evaluate((frame) => {
+    const stream = (window as unknown as { signInStream: EventSource }).signInStream;
+    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
+  }, { type: "shaping_sign_ins", signIns });
+
+  await deliver([{ ...entry, state: "signed_in", storage: "keychain", reason: null }]);
+  await expect(signIn(page)).toContainText("Signed in. Kept in the macOS Keychain.");
+  await expect(signIn(page).getByRole("button")).toHaveText(["Sign out"]);
+  await capture(page, "3-signed-in-keychain");
+
+  // The daemon's fixed sentence for a token the server refused (SIGN_IN_REASONS.refused).
+  const refused = "This shaper's server refused its sign-in, so its reply was not used. The sign-in is being renewed; if it does not recover, sign in again at Settings > Task shaping.";
+  await deliver([{ ...entry, state: "renewing", storage: "keychain", reason: refused }]);
+  await expect(signIn(page)).toContainText("Renewing the sign-in.");
+  await expect(signIn(page)).toContainText(refused);
+  await expect(signIn(page).getByRole("button")).toHaveText(["Sign in", "Sign out"]);
+  await capture(page, "3-renewing");
 });

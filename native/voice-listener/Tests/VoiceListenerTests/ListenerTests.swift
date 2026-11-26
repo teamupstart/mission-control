@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import XCTest
 @testable import VoiceListener
 
@@ -215,6 +216,54 @@ final class ListenerTests: XCTestCase {
         words = [TimedWord(text: "bagle,", startMs: 0, endMs: 250), TimedWord(text: "run", startMs: 300, endMs: 400), TimedWord(text: "it", startMs: 450, endMs: 500)]
         Recognizer.applyAddressCorrection("Bagel", in: 0..<1, roster: ["Bagel"], separator: "bagel", text: &text, words: &words)
         XCTAssertEqual(text, "Bagel, run it")
+    }
+
+    @MainActor func testSeparatorEditWhileListeningReachesTheNextDecodeAndKeepsTheMicrophoneOpen() async throws {
+        // Records the separator each decode is given, standing in for the speech model.
+        final class RecordingTranscriber: SegmentTranscriber, @unchecked Sendable {
+            var separators: [String?] = []
+            func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String?) async throws -> Utterance? {
+                separators.append(separator)
+                return Utterance(text: "Steve, check the build", words: [], capturedAt: segment.capturedAt)
+            }
+        }
+        let token = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("test".utf8).write(to: token)
+        defer { try? FileManager.default.removeItem(at: token) }
+        let daemon = Daemon(environment: ["MISSION_VOICE_DAEMON_URL": "http://127.0.0.1",
+                                          "MISSION_VOICE_TOKEN_FILE": token.path, "MISSION_VOICE_MODEL_DIR": token.deletingLastPathComponent().path])
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let engine = TapFixtureEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 1024)
+        XCTAssertTrue(engine.inputNode.setManualRenderingInputPCMFormat(format) { _ in nil })
+        engine.connect(engine.inputNode, to: engine.mainMixerNode, format: format)
+        let mic = try Microphone(selection: "system-default", endOfSpeechMs: 500, devices: [], engine: engine)
+        XCTAssertTrue(mic.isRunning)
+
+        // An Always-on capture opened with the default word, as the directive loop opens it.
+        let capture = Capture("capture-1", daemon: daemon)
+        capture.separator = "bagel"
+        capture.mic = mic
+        let recognizer = RecordingTranscriber()
+        let segment = Segment(samples: [Float](repeating: 0, count: 160), startNs: 0, capturedAt: 0, firstVoicedSample: 0)
+        _ = try await capture.transcribe(segment, using: recognizer, boosting: nil)
+
+        // The operator edits the word while the same capture is listening.
+        XCTAssertTrue(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "pineapple"))
+        XCTAssertTrue(mic.isRunning, "a live edit must not close the microphone")
+        XCTAssertTrue(capture.mic === mic, "a live edit keeps the same open input")
+        _ = try await capture.transcribe(segment, using: recognizer, boosting: nil)
+        XCTAssertEqual(recognizer.separators, ["bagel", "pineapple"], "the decode after the edit uses the edited word")
+
+        // A directive for another capture, or a held capture, reopens instead and leaves the word alone.
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-2", held: false, endOfSpeechMs: 800, separator: "kiwi"))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: true, endOfSpeechMs: 800, separator: "kiwi"))
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: nil, held: false, endOfSpeechMs: 800, separator: "kiwi"))
+        XCTAssertEqual(capture.separator, "pineapple")
+        mic.stop()
+        XCTAssertFalse(capture.applyLiveEdit(captureRevision: "capture-1", held: false, endOfSpeechMs: 800, separator: "kiwi"),
+                       "a stopped microphone cannot take a live edit")
+        XCTAssertEqual(capture.separator, "pineapple")
     }
 
     func testMultiWordRosterCorrectionAlignsTimingLabelsWithinDecoderSpan() {

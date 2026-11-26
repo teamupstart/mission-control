@@ -6,6 +6,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { beListener, enableVoice, say } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 const EXAMPLE = "Steve, check the build, bagel, Carol, give me a report on the status of some project";
 
@@ -21,7 +22,7 @@ async function heard(page: Page, daemon: DaemonHandle): Promise<{ id: string; te
   return (await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json()).entries;
 }
 
-test("the separator word is an Input setting that persists, validates and is disabled in Push-to-talk", async ({ dashboard: page, daemon }) => {
+test("the separator word is a Listening setting that persists, validates and is disabled in Push-to-talk", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/fleet");
   await page.keyboard.press("Meta+k");
@@ -121,7 +122,7 @@ test("one Always-on capture with the separator shows two confirmations, each wit
 
     // A capture of only the separator routes nothing and says why.
     expect(await (await say(daemon, "Bagel.")).json()).toEqual({ accepted: true });
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Recently heard", daemon.baseURL);
     const history = page.getByRole("region", { name: "Recently heard" });
     await expect(history.getByRole("row").filter({ hasText: "separator word only" })).toContainText("Bagel.");
     await expect(history.getByRole("row").filter({ hasText: "Steve, check the build" })).toContainText("Cancelled");

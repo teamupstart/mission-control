@@ -4,6 +4,7 @@ import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expect, test as base } from "../fixtures/test.ts";
 import { beSpeaker, enableVoice, startModelServer, type ModelServer } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 const test = base.extend<{ models: ModelServer }>({
   // eslint-disable-next-line no-empty-pattern -- Playwright requires a destructured fixture argument.
@@ -29,7 +30,7 @@ test("selecting F4 starts the shared download and preserves the choice across ca
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { holdPlayback: true });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const select = group.getByLabel("Voice", { exact: true });
     const status = group.getByRole("status");
@@ -51,6 +52,7 @@ test("selecting F4 starts the shared download and preserves the choice across ca
     await group.getByRole("button", { name: "Cancel" }).click();
     await expect(group.getByRole("button", { name: /^Download/ })).toBeVisible();
     await page.reload();
+    await openVoiceTab(page, "Spoken replies");
     await expect(select.locator("option:checked")).toHaveText("F4, not available");
     await expect(status).toContainText("Download the Mission Control voices");
     await capture(group, "f4-after-cancel");
@@ -74,7 +76,7 @@ test("an uninterrupted download makes the chosen voice ready without another cli
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon);
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     models.serve(models.largeFile, "hold");
     await group.getByRole("link", { name: "What it restricts" }).focus();
@@ -91,7 +93,7 @@ test("an uninterrupted download makes the chosen voice ready without another cli
 
 test("Automatic downloads only on request and the listener plays Willow when Automatic would choose Fixture", async ({ dashboard: page, daemon, models }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Spoken replies", daemon.baseURL);
   const group = page.getByRole("region", { name: "Spoken replies" });
   const select = group.getByRole("combobox", { name: "Voice", exact: true });
   const play = group.getByRole("button", { name: "Play sample" });
@@ -130,11 +132,12 @@ test("a Linux player omits the Mac group and keeps a restored missing system voi
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { systemVoices: [] });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     await expect(group.getByRole("status")).toContainText("No voice is ready.");
     expect((await page.request.put(daemon.baseURL + "/api/voice/config", { data: { speech: { voice: { engine: "system", id: "Ava" } } } })).ok()).toBe(true);
     await page.reload();
+    await openVoiceTab(page, "Spoken replies");
     await expect(group.getByRole("combobox").locator("option:checked")).toHaveText("Ava, not available");
     await expect(group.locator("optgroup[label=\"This Mac's voices\"]")).toHaveCount(0);
     await expect(group.getByRole("status")).toContainText("System Settings > Accessibility > Read & Speak");
@@ -148,7 +151,7 @@ test("the shipping Mac listener keeps questions on screen even with F4 downloade
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { audio: false, systemVoices: [] });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const play = group.getByRole("button", { name: "Play sample" });
     const picker = group.getByRole("combobox");
@@ -157,7 +160,9 @@ test("the shipping Mac listener keeps questions on screen even with F4 downloade
     await expect(group.getByText("Mission Control voices are not downloaded.")).toHaveCount(0);
     await expect(play).toBeDisabled();
     await expect(play).toHaveAccessibleDescription(/This listener cannot play speech. Questions appear on screen/);
+    await openVoiceTab(page, "Names & routing");
     await expect(page.getByRole("radio", { name: "Ask aloud" })).toBeDisabled();
+    await openVoiceTab(page, "Spoken replies");
     await expect(group.locator("optgroup[label=\"This Mac's voices\"]")).toHaveCount(0);
     expect((await speaker.poll()).speak).toBeNull();
     await capture(group, "shipping-fallback");
@@ -168,7 +173,7 @@ test("Play sample sends the selected ready F4 audition to the listener as audio"
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { holdPlayback: true });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const select = group.getByRole("combobox");
     const play = group.getByRole("button", { name: "Play sample" });
@@ -200,7 +205,7 @@ test("a refused voice save restores the standard Mac voice; a refused download k
     { id: "samantha", name: "Samantha", language: "en-US", quality: "default" },
   ] });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const select = group.getByRole("combobox");
     const saved = async () => (await (await page.request.get(daemon.baseURL + "/api/voice/config")).json()).config.speech.voice;
@@ -236,7 +241,7 @@ test("a refused audition leaves Play sample available; a refused stop keeps the 
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { holdPlayback: true });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const play = group.getByRole("button", { name: "Play sample" });
     const stop = group.getByRole("button", { name: "Stop" });
@@ -266,7 +271,7 @@ test("Stop interrupts a playing sample while the audition response is stalled", 
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { holdPlayback: true });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const accepted = Promise.withResolvers<string>();
     await page.route("**/api/voice/speech/audition", async route => {
@@ -295,7 +300,7 @@ test("a stalled download request releases the picker and can be retried", async 
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon);
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const download = group.getByRole("button", { name: /^Download/ });
     await page.route("**/api/voice/speech/model/download", () => {}, { times: 1 });
@@ -311,7 +316,7 @@ test("a stalled download request releases the picker and can be retried", async 
 test("a refused cancellation keeps the F4 download in progress and allows Cancel again", async ({ dashboard: page, daemon, models }) => {
   await enableVoice(daemon);
   models.serve(models.largeFile, "hold");
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Spoken replies", daemon.baseURL);
   const group = page.getByRole("region", { name: "Spoken replies" });
   const progress = group.getByRole("progressbar");
   const cancel = group.getByRole("button", { name: "Cancel" });
@@ -340,7 +345,7 @@ test("an audition that fails during playback reports the failure and can play ag
   await enableVoice(daemon);
   const speaker = await beSpeaker(daemon, { holdPlayback: true });
   try {
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "Spoken replies", daemon.baseURL);
     const group = page.getByRole("region", { name: "Spoken replies" });
     const play = group.getByRole("button", { name: "Play sample" });
     await play.click();

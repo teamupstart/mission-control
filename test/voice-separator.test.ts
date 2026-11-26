@@ -60,7 +60,7 @@ test("a leading call sign spelled like the separator is kept for addressing", ()
 
 test("a timing group that does not spell its part's words leaves only that part unmeasured", () => {
   // The decoder timed "bagel" but dropped the call sign after it.
-  const words = timed("Steve, go, bagel, give me a report").map((word, i) => i === 3 ? { ...word } : word);
+  const words = timed("Steve, go, bagel, give me a report");
   const spoken = "Steve, go, bagel, Carol, give me a report";
   const parts = splitAtSeparator(spoken, words, "bagel");
   assert.deepEqual(texts(parts), ["Steve, go", "Carol, give me a report"]);

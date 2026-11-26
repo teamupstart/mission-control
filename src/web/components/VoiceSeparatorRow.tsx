@@ -6,7 +6,7 @@ import type { VoiceConfigState } from "../useVoiceConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
- * Settings > Voice > Input: the word that ends one Always-on message and starts the next.
+ * Settings > Voice > Listening > Ending a message: the word that ends one Always-on message and starts the next.
  * One self-contained row, so the Voice settings layout can place it beside End-of-speech delay.
  */
 export function SeparatorWordRow({ state, dedicated, roster = [] }: {

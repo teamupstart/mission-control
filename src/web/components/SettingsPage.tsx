@@ -689,6 +689,8 @@ export function SettingsPage({
             sessions={sessions}
             residentProfiles={residentProfiles}
             onNavigate={navigateWithAnchor}
+            jumpAnchor={unhandledJump?.anchor ?? null}
+            jumpRequestId={unhandledJump?.id ?? null}
           />
         );
       case "conductor":

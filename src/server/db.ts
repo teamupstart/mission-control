@@ -1,5 +1,5 @@
 import { workflowGraphFingerprint } from "./workflows/graph-fingerprint.ts";
-import { RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
+import { RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import type { SdkUsage, TranscriptBoundary, TranscriptSession } from "./harness/types.ts";
 import { cumulativeUsageBaseline, cumulativeUsageDelta, cumulativeUsageReset, cumulativeModelUsageReset } from "./sdk/cumulative-usage.ts";
 import { randomUUID } from "node:crypto";
@@ -10111,11 +10111,12 @@ export function recordTaskWorktreeObservation(
       const fresh = outcome === "seeded" || outcome === "changed" || outcome === "replaced";
       const windowChanged = existing && existing.retention_ms !== retentionMs;
       if (fresh || windowChanged) {
-        const lastChanged = fresh ? now : Math.max(existing!.last_changed_at, existing!.unowned_since ?? 0);
-        const due = fresh ? lastChanged + retentionMs
+        const cutoff = fresh ? worktreeRetentionCutoff(now, null, retentionMs)
+          : worktreeRetentionCutoff(existing!.last_changed_at, existing!.unowned_since, retentionMs);
+        const due = fresh ? cutoff
           : retentionMs < existing!.retention_ms
-            ? Math.max(lastChanged + retentionMs, now + RETENTION_OBSERVE_INTERVAL_MS)
-            : Math.max(lastChanged + retentionMs, existing!.cleanup_due_at);
+            ? Math.max(cutoff, now + RETENTION_OBSERVE_INTERVAL_MS)
+            : Math.max(cutoff, existing!.cleanup_due_at);
         d.prepare(`UPDATE task_worktree_retention SET cleanup_due_at = ?, retention_ms = ? WHERE task_id = ?`)
           .run(due, retentionMs, taskId);
       }

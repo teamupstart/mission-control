@@ -797,12 +797,16 @@ Git removal also preserves the local branch. Native leases return under the slot
 Explicit Cancel, Clean up and Delete keep their own rules. Workflow checks release their
 own attempt leases after proving the process group empty.
 
-The daemon-only preview setting `MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` records
-seven-day deadlines and evaluates due checkouts against read-only evidence, including locally
-available origin refs. Set it to `enforce` to enable seven-day automatic return with fresh
-publication checks. When the setting is unset, retention uses the existing
-[configured window](configuration.md#task-worktree-retention), with the same safety checks.
-An unrecognized nonempty value selects report-only. These modes leave stored settings intact.
+**Settings > Feature flags > Seven-day worktree cleanup** selects seven-day automatic return
+with fresh publication checks. The preview is off by default. Off uses the
+[configured window](configuration.md#task-worktree-retention) with the same safety checks.
+The worker adopts the setting on its next successful observation and checks the current
+window again before returning a checkout. A provider operation already issued can finish.
+
+The daemon environment setting `MISSION_WORKTREE_CLEANUP_PREVIEW=report-only` overrides the flag
+and evaluates due checkouts against read-only evidence, including locally available origin refs.
+An unrecognized nonempty value also selects report-only. The old `enforce` value defers to the
+feature flag. The modes preserve the stored Worktrees retention setting.
 
 The existing local `GET /api/worktrees` diagnostics include `retention` with eligibility times
 and blockers, and `disposable` with a bounded, read-only census of the task and check roots.

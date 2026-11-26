@@ -35,6 +35,8 @@ export const PERSONA_REPOSITORY_ACCESS_FLAG_ID = "persona-repository-access" as 
 
 export const BUG_FIX_INSPECTOR_FLAG_ID = "bug-fix-inspector" as const;
 
+export const SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID = "seven-day-worktree-cleanup" as const;
+
 export const LOCAL_INSPECTOR_FLAG_ID = "local-inspector" as const;
 export const SESSION_SETTINGS_FLAG_ID = "session-settings-mcp" as const;
 
@@ -285,6 +287,14 @@ export const FEATURE_FLAGS = [
     stage: "preview",
     sessionSetting: "read-write",
     keywords: ["request_input", "question", "context", "markdown", "bullets", "inbox"],
+  },
+  {
+    id: SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID,
+    label: "Seven-day worktree cleanup",
+    description: "Use seven days for automatic task worktree cleanup when the checkout is safe to return. Turning this off uses the configured retention window.",
+    stage: "preview",
+    sessionSetting: "Controls when unattended worktree deletion can occur.",
+    keywords: ["worktrees", "cleanup", "retention", "disk space"],
   },
 ] as const satisfies readonly (FeatureFlagDefinition & { sessionSetting: string })[];
 

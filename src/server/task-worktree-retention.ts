@@ -1,8 +1,10 @@
 import type { Registry } from "./registry.ts";
 import type { TaskManager } from "./tasks.ts";
+import { SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { featureEnabled } from "./feature-flags/index.ts";
 import { envVar } from "./config.ts";
 import { getWorktreesConfig } from "./worktrees/config.ts";
-import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS } from "@shared/worktree-retention.ts";
+import { RETENTION_DAY_MS, TASK_RETENTION_DEFAULT_DAYS, RETENTION_OBSERVE_INTERVAL_MS, worktreeRetentionCutoff } from "@shared/worktree-retention.ts";
 import {
   claimTaskWorktreeCleanup,
   completeTaskWorktreeCleanup,
@@ -73,8 +75,8 @@ export { isRetentionCandidate, taskResourceGeneration };
 export const SEVEN_DAY_RETENTION_MS = 7 * RETENTION_DAY_MS;
 
 export function backgroundWorktreeCleanupMode(value = envVar("WORKTREE_CLEANUP_PREVIEW")) {
-  if (!value) return "configured";
-  return value === "enforce" ? "enforce" : "report-only";
+  if (value && value !== "enforce") return "report-only";
+  return featureEnabled(SEVEN_DAY_WORKTREE_CLEANUP_FLAG_ID) ? "enforce" : "configured";
 }
 
 /** Existing Worktrees diagnostics, with bounded output and no private claim data. */
@@ -234,7 +236,8 @@ export interface RetentionObserverDeps {
   departure?: {
     useBlocker: (task: Task) => string | null;
     occupancyBlocker: (task: Task) => Promise<string | null>;
-    reportOnlyBlocker?: (task: Task, path: string) => Promise<string | null>;
+    canReclaim?: (row: TaskWorktreeRetentionRow) => boolean;
+    readonly reportOnlyBlocker?: (task: Task, path: string) => Promise<string | null>;
   };
   cleanup?: RetentionCleanupDeps;
 }
@@ -255,23 +258,30 @@ export const defaultRetentionObserverDeps: Omit<RetentionObserverDeps, "listTask
   },
 };
 
-/** Resolve the rollout once when the daemon assembles its retention worker. */
+/** Read live rollout settings during observation and before provider return. */
 export function createDaemonRetentionObserver(
   registry: Pick<Registry, "listTasks" | "refreshTaskAutomaticCleanup">,
   tasks: Pick<TaskManager, "backgroundWorktreeUseBlocker" | "backgroundWorktreeOccupancyBlocker" |
     "backgroundWorktreeSafety" | "enqueueRetentionCleanup">,
   now = Date.now,
 ): TaskWorktreeRetentionObserver {
-  const mode = backgroundWorktreeCleanupMode();
+  const retentionMs = () => backgroundWorktreeCleanupMode() === "configured"
+    ? defaultRetentionObserverDeps.retentionMs() : SEVEN_DAY_RETENTION_MS;
+  const reportOnlyBlocker = (task: Task, path: string) => tasks.backgroundWorktreeSafety(task, path, false);
   return new TaskWorktreeRetentionObserver({
     ...defaultRetentionObserverDeps,
     listTasks: () => registry.listTasks(),
     now,
-    retentionMs: mode === "configured" ? defaultRetentionObserverDeps.retentionMs : () => SEVEN_DAY_RETENTION_MS,
+    retentionMs,
     departure: {
       useBlocker: (task) => tasks.backgroundWorktreeUseBlocker(task),
       occupancyBlocker: (task) => tasks.backgroundWorktreeOccupancyBlocker(task),
-      reportOnlyBlocker: mode === "report-only" ? (task, path) => tasks.backgroundWorktreeSafety(task, path, false) : undefined,
+      canReclaim: (row) => backgroundWorktreeCleanupMode() !== "report-only"
+        && row.unownedSince !== null
+        && worktreeRetentionCutoff(row.lastChangedAt, row.unownedSince, retentionMs()) <= now(),
+      get reportOnlyBlocker() {
+        return backgroundWorktreeCleanupMode() === "report-only" ? reportOnlyBlocker : undefined;
+      },
     },
     cleanup: {
       ...defaultRetentionCleanupDeps,
@@ -482,12 +492,13 @@ export class TaskWorktreeRetentionObserver {
     // generation that moved under the pass - yields no candidate at all, which is what makes
     // "we could not look" structurally unable to authorize a deletion.
     const row = result.row;
-    if (departure?.reportOnlyBlocker && row && fingerprint.kind === "known" &&
+    const reportOnlyBlocker = departure?.reportOnlyBlocker;
+    if (departure && reportOnlyBlocker && row && fingerprint.kind === "known" &&
         row.unownedSince !== null && row.cleanupDueAt <= now) {
       let reason = await departure.occupancyBlocker(current);
       for (const ref of taskRepoRefs(current)) {
         if (reason) break;
-        if (ref.worktreePath) reason = await departure.reportOnlyBlocker(current, ref.worktreePath);
+        if (ref.worktreePath) reason = await reportOnlyBlocker(current, ref.worktreePath);
       }
       const protectedAgain = departure.useBlocker(current);
       if (protectedAgain) return hold(protectedAgain);
@@ -552,6 +563,9 @@ export class TaskWorktreeRetentionObserver {
   private async reclaimDue(due: DueCleanup): Promise<string | null> {
     const cleanup = this.deps.cleanup;
     if (!cleanup || this.stopped) return null;
+    const departure = this.deps.departure;
+    const policyAllowsReturn = () => departure?.canReclaim?.(due.row) ?? true;
+    if (!policyAllowsReturn()) return null;
     const token = cleanup.mintToken();
     const claim = cleanup.claim({
       taskId: due.taskId,
@@ -571,7 +585,7 @@ export class TaskWorktreeRetentionObserver {
       fingerprint: due.fingerprint,
       probe: (task) => this.deps.probe(task),
       abandoned: () => this.stopped,
-      claimIsCurrent: this.deps.departure ? () => cleanup.readRow(due.taskId)?.claimToken === token : undefined,
+      claimIsCurrent: departure ? () => policyAllowsReturn() && cleanup.readRow(due.taskId)?.claimToken === token : undefined,
     });
 
     const now = this.deps.now();

@@ -1139,8 +1139,10 @@ refresh that fails and an expiry show with no reload.
 - **Sign in** on a pending row starts a new sign-in, which replaces the pending one, so the
   link the earlier one opened stops working. The sign-in list does not say which attempt a
   pending sign-in is, so a window whose sign-in another window replaced still offers its own
-  link. That link then ends on the callback's "The sign-in did not finish." page, and
-  **Sign in** starts again.
+  link, with **Open the sign-in page**, **Copy link** and **Cancel sign-in** but no
+  **Sign in**. That link ends on the callback's "The sign-in did not finish." page. To start
+  again from that window, reload it, which offers **Sign in**, or select **Cancel sign-in**,
+  which also ends the other window's attempt, and then **Sign in**.
 - **Cancel sign-in** and **Sign out** end the connection's sign-in: a pending one is dropped,
   and a held one's tokens are removed from where they are kept and revoked at the server.
   Every shaper that shares the connection is signed out with it.

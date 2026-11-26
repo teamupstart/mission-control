@@ -457,7 +457,7 @@ function ShaperSignIn({ id, label, row, signIn }: {
   if (row.kind === "off") {
     return (
       <div className="shaping-sign-in is-off" role="group" aria-label={name}>
-        <p className="shaping-sign-in-state">{row.text}</p>
+        <p className="shaping-sign-in-state" role="status">{row.text}</p>
       </div>
     );
   }
@@ -512,7 +512,7 @@ function ShaperSignIn({ id, label, row, signIn }: {
   };
   return (
     <div className={`shaping-sign-in is-${row.state}`} role="group" aria-label={name}>
-      <p className="shaping-sign-in-state">{row.text}</p>
+      <p className="shaping-sign-in-state" role="status">{row.text}</p>
       {row.reason && <p className="shaping-sign-in-reason">{row.reason}</p>}
       <div className="shaping-sign-in-actions">{row.controls.map(control)}</div>
       {error && <p role="alert">{error}</p>}

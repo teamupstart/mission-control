@@ -1029,7 +1029,7 @@ test("a marked row states its sign-in for every state, with the controls each of
     const signsIn = row.indexOf("Signs in: OAuth, scope mcp:context, at https://tools.acme.example");
     assert.notEqual(signsIn, -1, entry.name);
     assert.ok(row.indexOf('aria-label="Sign-in for Signed MCP"') > signsIn, entry.name);
-    assert.ok(row.includes(`<p class="shaping-sign-in-state">${entry.text}</p>`), `${entry.name}: ${row}`);
+    assert.ok(row.includes(`<p class="shaping-sign-in-state" role="status">${entry.text}</p>`), `${entry.name}: ${row}`);
     if (entry.reason) assert.ok(row.includes(`<p class="shaping-sign-in-reason">${entry.reason.replaceAll("'", "&#x27;").replaceAll(">", "&gt;")}</p>`), entry.name);
     else assert.doesNotMatch(row, /shaping-sign-in-reason/, entry.name);
     assert.deepEqual(signInControls(row), entry.controls, entry.name);
@@ -1048,7 +1048,7 @@ test("a pending row with no link offers neither Open nor Copy, and a link held f
 
 test("with shaper-sign-in off a marked row says sign-in is switched off and names the flag, with no control", () => {
   const row = rowMarkup(renderSignIn([signInEntry({ state: "signed_in" })], { enabled: false }), "Signed MCP");
-  assert.ok(row.includes(`<p class="shaping-sign-in-state">${SIGN_IN_OFF_TEXT}</p>`), row);
+  assert.ok(row.includes(`<p class="shaping-sign-in-state" role="status">${SIGN_IN_OFF_TEXT}</p>`), row);
   assert.match(SIGN_IN_OFF_TEXT, /\(shaper-sign-in\)/);
   assert.deepEqual(signInControls(row), []);
   assert.doesNotMatch(row, /Signed in\.|Not signed in/);

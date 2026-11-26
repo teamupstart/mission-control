@@ -9,7 +9,7 @@ import {
   REPOSITORY_EVIDENCE_CAPABILITY,
   PersonaWorkloadRequestSchema,
   PersonaWorkloadResultSchema,
-  PersonaWorkloadVerdictSchema,
+  parseRepositoryWorkloadVerdict,
   RepositoryViewDescriptorSchema,
   type PersonaWorkloadEvent,
   type PersonaWorkloadRequest,
@@ -162,6 +162,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let auditTimer: ReturnType<typeof setInterval> | undefined;
     let auditFailed = false;
     let usage: Record<string, number> | undefined;
+    let providerRunId: string | undefined;
     let result: PersonaWorkloadResult = {
       status: "failed",
       code: "artifact_unavailable",
@@ -213,6 +214,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           budgets: request.budgets,
           auditPath,
           deadline: request.deadline,
+          ...(request.accounting.purpose === "inspector_review" ? { verifyWorktreeAbsenceByDefault: true } : {}),
         }),
         { mode: 0o600 },
       );
@@ -276,17 +278,19 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       usage = PersonaWorkloadResultSchema.options[0].shape.usage.parse(
         output.usage,
       );
+      providerRunId = output.providerRunId;
       // The provider owns the MCP child and closes it before returning. Drain only complete records.
       result = { status: "failed", code: "audit_unavailable" };
       clearInterval(auditTimer);
       auditTimer = undefined;
       await journal.finish(job.controller.signal);
       result = { status: "failed", code: "invalid_verdict" };
-      const verdict = PersonaWorkloadVerdictSchema.parse(output.verdict);
-      const evidence =
-        verdict.verdict === "pass"
-          ? verdict.approvalDetails.evidence
-          : verdict.requestedChanges.flatMap((c) => c.evidence);
+      const parsed = parseRepositoryWorkloadVerdict(request.accounting.purpose, output.verdict);
+      if (!parsed.success) throw parsed.error;
+      const verdict = parsed.data.kind === "persona_verdict" ? parsed.data.verdict : null;
+      const evidence = !verdict ? [] : verdict.verdict === "pass"
+        ? verdict.approvalDetails.evidence
+        : verdict.requestedChanges.flatMap(c => c.evidence);
       const handles = journal.handles;
       for (const reference of evidence)
         if (
@@ -300,11 +304,9 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           throw Error("Invalid repository evidence reference");
       result = PersonaWorkloadResultSchema.parse({
         status: "completed",
-        result: {
-          kind: "persona_verdict",
-          verdict: PersonaWorkloadVerdictSchema.parse(output.verdict),
-        },
-        usage: output.usage,
+        result: parsed.data,
+        usage,
+        ...(providerRunId ? { providerRunId } : {}),
       });
     } catch (error) {
       if (error instanceof ProviderFailure) result = { status: "failed", code: "provider_unavailable", providerFailure: error.kind };
@@ -343,7 +345,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         };
       }
       if (auditFailed) result = { status: "failed", code: "audit_unavailable" };
-      if (result.status === "failed" && usage) result = { ...result, usage };
+      if (result.status === "failed" && usage) result = { ...result, usage, ...(providerRunId ? { providerRunId } : {}) };
       emit({ type: "terminal", capability: request.requiredCapability, result });
       job.terminal = true;
     }

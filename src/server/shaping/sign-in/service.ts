@@ -945,15 +945,16 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
     planPending(conn);
   };
 
-  const beginNow = async (target: SignInTarget, abandoned: () => boolean): Promise<BeginAnswer> => {
+  const beginNow = async (target: SignInTarget, abandoned: () => boolean, own: number): Promise<BeginAnswer> => {
     // Timed out while waiting its turn: no request at all.
     if (abandoned()) return refusal("timeout");
-    if (!active) return refusal("flag_off");
-    // Bound to this activation: a flag reset since means another load decides what is named.
-    const own = activation;
+    // Bound to the activation it was requested in: a flag reset since, even one that turned the
+    // flags back on while it waited its turn, ends it, and another load decides what is named.
     const reset = () => !active || activation !== own;
+    if (reset()) return refusal("flag_off");
     const found = await deps.flow.discover(target, flowOptions());
-    if (!found.ok) return { ok: false, code: found.code, reason: found.reason };
+    // A reset while discovery ran outranks its failure: the caller learns the sign-in was switched off.
+    if (!found.ok) return reset() ? refusal("flag_off") : { ok: false, code: found.code, reason: found.reason };
     if (reset()) return refusal("flag_off");
     const discovery = found.discovery;
     const conn = ensure(connectionId(target), target);
@@ -992,9 +993,10 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
         if (!writeConfig({ ...current, clients: [...kept, { ...result.client }] })) return refusal("store_unread");
       }
     }
-    if (!result.ok) return { ok: false, code: result.code, reason: result.reason };
+    if (!result.ok) return reset() ? refusal("flag_off") : { ok: false, code: result.code, reason: result.reason };
     if (abandoned()) return refusal("timeout");
-    if (!active) return refusal("flag_off");
+    // Either branch, reused client or new: a flag reset while the flow ran leaves nothing pending.
+    if (reset()) return refusal("flag_off");
     const at = now();
     setPending(conn, {
       state: result.state, codeVerifier: result.codeVerifier, client: result.client, discovery,
@@ -1007,9 +1009,10 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
   const begin = (target: SignInTarget): Promise<BeginAnswer> => {
     if (!active) return Promise.resolve(refusal("flag_off"));
     let gaveUp = false;
+    const requestedIn = activation;
     // One at a time, after the load: two sign-ins started together cannot register twice for
     // the same issuer, redirect URI and scope, or both take the last place.
-    const work = beginTail.then(loaded).then(() => beginNow(target, () => gaveUp));
+    const work = beginTail.then(loaded).then(() => beginNow(target, () => gaveUp, requestedIn));
     beginTail = work.catch(() => undefined);
     void track(beginTail);
     let timer: TimerHandle | null = null;

@@ -1,3 +1,4 @@
+import { resolveMaxDiffBytes, runInspectorReview, INSPECTOR_VERDICT_JSON_SCHEMA } from "./review-core.ts";
 import { INSPECTOR_DENY_PATHS } from "@shared/repository-policy.ts";
 import { codeRabbitEnabled } from "../shipping/config.ts";
 import { observeCodeRabbit } from "./code-rabbit.ts";
@@ -21,7 +22,6 @@ import { llmRunner } from "../llm/index.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
 import type { LlmSpendRole } from "@shared/llm-spend.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
-import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import {
   INSPECTOR_LIMITS,
@@ -40,7 +40,7 @@ import type { InspectorConfig } from "@shared/protocol.ts";
 import { getInspectorConfig, inspectorExecution } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
-import { buildReplyPrompt, buildReviewPrompt, promptedOpenRows } from "./prompt.ts";
+import { buildReplyPrompt, promptedOpenRows } from "./prompt.ts";
 import {
   CLEAN_REVIEW_FINGERPRINT,
   formatMarker,
@@ -54,7 +54,7 @@ import { reviewBaseChanged } from "@shared/shipping.ts";
 import { activeStackGitHub, useStackGitHub, type StackGitHub } from "../stacking/github.ts";
 import { adoptStackLineage, correctStackBase, refreshStackRelease, reviewedStackBase } from "../stacking/lineage.ts";
 import { observeClosedStackChildren, observeStackLifecycle, type StackLifecycleContext } from "../stacking/state.ts";
-import { InspectorReplySchema, InspectorVerdictSchema, planReview } from "./verdict.ts";
+import { InspectorReplySchema, planReview } from "./verdict.ts";
 import type { InspectorReply, InspectorVerdict, OurThread } from "./verdict.ts";
 import {
   authenticatedLogin,
@@ -88,7 +88,6 @@ import type {
   ThreadSnapshot,
 } from "./github.ts";
 
-const INSPECTOR_VERDICT_JSON_SCHEMA = providerJsonSchema(InspectorVerdictSchema);
 const INSPECTOR_REPLY_JSON_SCHEMA = providerJsonSchema(InspectorReplySchema);
 
 // The Inspector's tick: review the pull requests we opened, answer follow-ups in our own
@@ -158,25 +157,7 @@ export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 1_200_000);
  * marked as such rather than dressed up.
  */
 export const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 300_000);
-/**
- * Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway.
- *
- * BYTES, and `fetchDiff` applies it as such - it read as UTF-16 code units, which let a
- * diff of CJK or box-drawing content through at ~3x this.
- *
- * `INSPECTOR_MAX_DIFF_BYTES` is the documented override and is read BARE, with the
- * `MISSION_` / `FLEET_` / `HARNESS_` spellings `envVar` resolves still winning ahead of
- * it so no existing setting stops working. The bare alias is granted HERE, on this one
- * setting, and deliberately NOT added to `envVar`'s chain: that chain also serves
- * `envVar("HOME")` and `envVar("PORT")`, so a bare tier in it would let the `HOME` every
- * shell exports relocate the state directory and a stray `PORT` move the daemon off
- * 7317. This name is specific enough to carry no such collision.
- */
-export function resolveMaxDiffBytes(): number {
-  return Number(
-    envVar("INSPECTOR_MAX_DIFF_BYTES") ?? process.env.INSPECTOR_MAX_DIFF_BYTES ?? 400_000,
-  );
-}
+export { resolveMaxDiffBytes } from "./review-core.ts";
 const MAX_DIFF_BYTES = resolveMaxDiffBytes();
 /**
  * Replies we will write in one thread before we stop.
@@ -1163,31 +1144,14 @@ async function reviewRound(
   }
 
   const open = [...rows.values()].filter((c) => c.status !== "resolved");
-  const prompt = buildReviewPrompt({
-    brief: readBrief(pr.repoRoot),
-    standards: readStandards(pr.repoRoot, paths),
-    prTitle: s.title,
-    prBody: s.body,
-    diff,
-    diffTruncated: truncated,
-    changedPaths: paths,
-    open,
-    round: pr.round + 1,
+  let invocation: ReturnType<typeof inspectorRunOptions> | undefined;
+  const result = await runInspectorReview({
+    repoRoot: pr.repoRoot, prTitle: s.title, prBody: s.body,
+    diff, diffTruncated: truncated, changedPaths: paths, open, round: pr.round + 1,
+  }, (prompt) => {
+    const run = invocation ??= inspectorRunOptions(cfg, TIMEOUT_MS, dir, "inspector:review", INSPECTOR_VERDICT_JSON_SCHEMA);
+    return run.runner.run(prompt, run.options);
   });
-
-  const run = inspectorRunOptions(
-    cfg,
-    TIMEOUT_MS,
-    dir,
-    "inspector:review",
-    INSPECTOR_VERDICT_JSON_SCHEMA,
-  );
-  const result = await runStructured<typeof InspectorVerdictSchema>(
-    (p) => run.runner.run(p, run.options),
-    prompt,
-    (raw) => parseModelReply(raw, InspectorVerdictSchema),
-    "The inspector",
-  );
   if (result.kind !== "ok") {
     // A transient failure must NEVER advance the head sha: doing so would record this
     // push as reviewed and the PR would never be looked at again.

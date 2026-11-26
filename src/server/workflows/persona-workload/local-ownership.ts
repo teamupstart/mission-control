@@ -48,8 +48,9 @@ export class LocalRepositoryWorkloadOwnership {
     if (truncatedBytes || outcome.result.kind !== "exited" || outcome.result.exitCode !== 0)
       throw new Error("Repository provider worker did not return a complete result");
     const result = PersonaWorkloadResultSchema.parse(JSON.parse(text));
-    if (result.status === "completed") return { verdict: result.result.verdict, usage: result.usage ?? {} };
-    if (result.code === "invalid_verdict") return { verdict: null, usage: result.usage ?? {} };
+    const accounting = { usage: result.usage ?? {}, providerRunId: result.providerRunId };
+    if (result.status === "completed") return { verdict: result.result.verdict, ...accounting };
+    if (result.code === "invalid_verdict") return { verdict: null, ...accounting };
     if (result.providerFailure) throw new ProviderFailure(result.code, null, result.providerFailure);
     if (result.capabilityReason) throw new RepositoryCapabilityError(result.capabilityReason);
     throw new Error(result.code);

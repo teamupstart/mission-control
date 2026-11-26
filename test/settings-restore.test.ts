@@ -753,6 +753,31 @@ test("a Persona's effort survives capture and restore, and a pre-effort backup r
   assert.equal(workflowStore.getPersona("persona-one")!.effort, null);
 });
 
+test("a Local Inspector backup with omitted severity restores the major default", async () => {
+  const legacy = resign(snapshot(), (body) => {
+    const rows = body.domains.find((entry) => entry.domain === "workflow-commands")!.payload as
+      Array<Record<string, unknown>>;
+    const inspector = rows.find(row => row.slot === "inspector");
+    assert.ok(inspector);
+    delete inspector.inspectorSeverity;
+  });
+  const root = join(home, "inspector-severity-restore");
+  const backupStore = new SettingsBackupStore(root);
+  backupStore.write(legacy);
+  const inspector = workflowStore.getWorkflowCommand("inspector")!;
+  assert.ok(workflowStore.replaceWorkflowCommandCas("inspector", inspector.revision, {
+    ...inspector, inspectorSeverity: "minor",
+  }, 100).ok);
+
+  const restore = service(root, {}, backupStore);
+  const preview = restore.previewRestore(legacy.id);
+  assert.equal(preview.status, "ready");
+  assert.equal(preview.preview.workflowCommandsChanged, 1);
+  const result = await restore.restore(legacy.id, legacy.digest);
+  assert.equal(result.status, "restored");
+  assert.equal(workflowStore.getWorkflowCommand("inspector")?.inspectorSeverity, "major");
+});
+
 test("restore preview and mutation preserve installed built-in catalog rows", async () => {
   seedBaseline();
   const root = join(home, "builtins");

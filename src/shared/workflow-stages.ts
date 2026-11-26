@@ -1,3 +1,4 @@
+import { workflowCommandName } from "./workflow.ts";
 import { withExecutionOverride, withRecheckAfterRepair } from "./workflow.ts";
 import type {
   Persona,
@@ -272,7 +273,7 @@ function baseLabel(
  * graph's vocabulary for no reader's benefit. What a person sees is what changed.
  */
 export function checkLabel(slot: WorkflowCheckSlot): string {
-  return `Command · ${slot}`;
+  return `Command · ${workflowCommandName(slot)}`;
 }
 
 /** Published snapshots win over the live list, which is empty for a published graph anyway. */

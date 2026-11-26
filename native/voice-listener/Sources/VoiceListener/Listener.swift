@@ -4,6 +4,19 @@ import Security
 
 enum CaptureError: Error { case device, format, listenerInUse }
 
+enum SpeechDrop { case interrupted, queueFull, captureLimit }
+typealias SegmentDropped = (Int64, SpeechDrop) -> Void
+
+enum CaptureLimit: Int {
+    case legacy = 30, oneMinute = 60
+    var samples: Int { rawValue * 16_000 }
+
+    init(daemonProtocol: String?) {
+        let version = daemonProtocol?.components(separatedBy: ".") ?? []
+        self = version.count >= 2 && version[0] == "4" && (Int(version[1]) ?? 0) >= 2 ? .oneMinute : .legacy
+    }
+}
+
 struct Directive: Decodable {
     static let defaultEndOfSpeechMs = 2000
     let revision: String
@@ -13,11 +26,13 @@ struct Directive: Decodable {
     let inputDevice: String
     let speak: Speak?
     let roster: [String]
+    /// The Always-on separator word. Absent for held capture and from older daemons.
+    let separator: String?
 }
 
 struct Hello: Encodable {
     var speech: SpeechHello?
-    let version = "4.1"
+    let version = "4.2"
     let reportsSpeechOnset = true
     let backend = "fluidaudio"
     let devices = Array(Device.inputs().prefix(64))
@@ -216,14 +231,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
         }
     }
 
-    func settleSpeech(_ onset: Int64, revision: String, accepted: Bool = false) {
+    func settleSpeech(_ onset: Int64, revision: String, accepted: Bool = false, exceededLimit: Bool = false) {
         let key = SpeechKey(revision: revision, onset: onset)
         speechLock.withLock {
             dictating.remove(key)
             guard let start = starts.removeValue(forKey: key), !accepted else { return }
             finishes[key] = Task {
                 await start.value
-                await sendSpeech(key, phase: "finish")
+                await sendSpeech(key, phase: exceededLimit ? "capture-limit" : "finish")
                 speechLock.withLock { finishes[key] = nil }
             }
         }
@@ -341,6 +356,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     var releasedAt: Int64?
     var releasedSegments: [Segment] = []
     var onInputClosed: (() -> Void)?
+    /// Follows live directive edits, like the end-of-speech delay.
+    var separator: String?
 
     let daemon: Daemon
 
@@ -375,12 +392,27 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor final class Listener {
-    let daemon = Daemon()
+    typealias OpenInput = @MainActor (String, Bool, Int, CaptureLimit, @escaping (Int64) -> Void, @escaping SegmentDropped,
+                           @escaping @MainActor (Microphone) -> Void) throws -> Microphone
+    let daemon: Daemon
+    private let microphonePermission: () -> String
+    private let openInput: OpenInput
+
+    init(daemon: Daemon = Daemon(), microphonePermission: @escaping () -> String = permission,
+         openInput: @escaping OpenInput = { selection, held, delay, limit, start, drop, stop in
+             try Microphone(selection: selection, held: held, endOfSpeechMs: delay, limit: limit, onSpeechStart: start,
+                            onSegmentDropped: drop, onStopped: stop)
+         }) {
+        self.daemon = daemon
+        self.microphonePermission = microphonePermission
+        self.openInput = openInput
+    }
     var recognizer: Recognizer?
     private var current: Capture?
     private var draining: [Capture] = []
     private var directivePoll: Task<Daemon.Response, Error>?
     private var pendingHello: Task<Void, Error>?
+    private var captureLimit = CaptureLimit.legacy
 
     private lazy var playback = Playback(player: MacSpeechPlayer(), fetch: { [daemon] id in
         try await daemon.request("voice/speech/jobs/\(id)/audio").data
@@ -402,7 +434,7 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
     }
 
     private func sendHello(first: Bool) async throws {
-        let status = permission()
+        let status = microphonePermission()
         if status != "granted" { close(); await daemon.drainSpeechFinishes() }
         if first && status == "not-determined" {
             fputs("Microphone access is undetermined for the launching app. Run the listener from a terminal app that already has microphone access.\n", stderr)
@@ -414,8 +446,18 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 exit(2)
             }
         }
-        let (_, response) = try await daemon.request("voice/listener/hello", body: JSONEncoder().encode(body))
+        struct Welcome: Decodable { let `protocol`: String? }
+        let (data, response) = try await daemon.request("voice/listener/hello", body: JSONEncoder().encode(body))
         try daemon.applyCaptureChallenge(response.value(forHTTPHeaderField: "x-voice-capture-lock"))
+        let limit = CaptureLimit(daemonProtocol: try JSONDecoder().decode(Welcome.self, from: data).protocol)
+        if captureLimit != limit {
+            close()
+            directivePoll?.cancel()
+            captureLimit = limit
+        }
+        if first && limit == .legacy {
+            fputs("This daemon supports 30-second voice capture. Update the daemon for longer messages and capture-limit notices.\n", stderr)
+        }
     }
 
     func close() {
@@ -466,14 +508,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
             if next.speak != nil && daemon.speechInstance == nil { throw URLError(.badServerResponse) }
             if next.speak != nil || playback.busy { close() }
             try await playback.apply(next.speak)
-            let capture = next.speak == nil && !playback.busy && next.capture && permission() == "granted"
+            let capture = next.speak == nil && !playback.busy && next.capture && microphonePermission() == "granted"
             if next.revision != revision || capture != (current?.mic?.isRunning == true) {
                 let releasedRevision = http.value(forHTTPHeaderField: "x-voice-release-revision")
                 var allowed = Set((http.value(forHTTPHeaderField: "x-voice-draining-revisions") ?? "")
                     .split(separator: ",").map(String.init))
                 if let releasedRevision { allowed.insert(releasedRevision) }
                 draining.removeAll { previous in
-                    if allowed.contains(previous.revision) && permission() == "granted" { return false }
+                    if allowed.contains(previous.revision) && microphonePermission() == "granted" { return false }
                     previous.cancel()
                     return true
                 }
@@ -484,11 +526,12 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                     if !held, let authorization = next.captureRevision, current?.revision == authorization,
                        let mic = current?.mic, mic.isRunning {
                         mic.updateEndOfSpeechMs(duration)
+                        current?.separator = next.separator
                         revision = next.revision
                         continue
                     }
                 }
-                if let current, permission() == "granted", releasedRevision == current.revision,
+                if let current, microphonePermission() == "granted", releasedRevision == current.revision,
                    let time = http.value(forHTTPHeaderField: "x-voice-release-host-ms").flatMap(Int64.init) {
                     current.release(at: time)
                     draining.append(current)
@@ -503,12 +546,14 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                 } else if capture {
                     let captureRevision = held ? next.revision : next.captureRevision ?? next.revision
                     let batch = Capture(captureRevision, daemon: daemon)
+                    batch.separator = held ? nil : next.separator
                     current = batch
-                    let microphone = try Microphone(selection: next.inputDevice, held: held, endOfSpeechMs: duration, onSpeechStart: { [daemon] onset in
+                    let limit = captureLimit
+                    let microphone = try openInput(next.inputDevice, held, duration, limit, { [daemon] onset in
                         daemon.startSpeech(onset, revision: captureRevision)
-                    }, onSegmentDropped: { [daemon] onset in
-                        daemon.settleSpeech(onset, revision: captureRevision)
-                    }, onStopped: { [weak self] stopped in
+                    }, { [daemon] onset, reason in
+                        daemon.settleSpeech(onset, revision: captureRevision, exceededLimit: limit == .oneMinute && reason == .captureLimit)
+                    }, { [weak self] stopped in
                         guard let self, self.current?.mic === stopped else { return }
                         self.current?.cancel()
                         self.current = nil
@@ -548,7 +593,8 @@ final class Daemon: NSObject, URLSessionTaskDelegate {
                                         guard let clipped = segment.through(cutoff) else { return }
                                         segment = clipped
                                     }
-                                    let words = try await recognizer.transcribe(segment, boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting)
+                                    let words = try await recognizer.transcribe(segment, boosting: daemon.isDictating(segment.speechStartHostUs, revision: batch.revision) ? nil : boosting,
+                                                                                separator: batch.separator)
                                     try Task.checkCancellation()
                                     // Key-up may have arrived during this very decode.
                                     if let releasedAt = batch.releasedAt, segment.endedAt > releasedAt { continue }

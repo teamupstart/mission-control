@@ -11,7 +11,7 @@ import { getSessionTransfer, runtimeTransferConnects, transferForNote, transferP
 import { isActiveTask } from "@shared/task-status.ts";
 import { featureEnabled } from "../feature-flags/index.ts";
 import { PERSONA_REPOSITORY_ACCESS_FLAG_ID } from "@shared/feature-flag-registry.ts";
-import { workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
+import { checkBlockedReason, workflowCapturedLocalInspector, workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
 import type { WorkflowRepositoryArtifactCandidate } from "./repository-artifact/service.ts";
 import type { WorkflowRawCaptureRead, RawWorkflowContext } from "./context.ts";
 import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
@@ -789,6 +789,7 @@ export class WorkflowManager {
       (runId) => this.publishRun(runId),
       {
         ...options.engine,
+        commandArtifacts: options.commandArtifacts ?? options.engine?.commandArtifacts,
         schedule: this.schedule,
         // After the spread, for `schedule`'s reason: a caller must not be able to hand the
         // engine a second check budget alongside the daemon's - nor a second execution
@@ -2374,7 +2375,7 @@ export class WorkflowManager {
           && existingRun.status === "waiting_for_session"
         ) {
           const version = this.store.getWorkflowVersionById(existingRun.workflowVersionId);
-          if (!version || (workflowRequiresRepositoryCapture(version.graph) && !this.store.hasActiveRepositoryClaim(existing.id))) {
+          if (!version || (workflowRequiresRepositoryCapture(version.graph, workflowCapturedLocalInspector(existing.evidence)) && !this.store.hasActiveRepositoryClaim(existing.id))) {
             return { ok: false, reason: "conflict", message: "The original submitted checkout is unavailable. Submit a new capture." };
           }
           const revived = this.store.reviveFailedSubmission(
@@ -7576,8 +7577,15 @@ export class WorkflowManager {
       const version = this.store.getWorkflowVersionById(runRow.workflowVersionId);
       const recovered = submission.refinementReason === "evidence_recovery"
         ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
-      const needsRepository = version && workflowRequiresRepositoryCapture(version.graph);
-      if (needsRepository && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) {
+      const priorCapture = WorkflowContextSnapshotSchema.safeParse(submission.context);
+      const hasLocalInspector = version?.graph.nodes.some(n => n.kind === "check" && n.slot === "inspector");
+      const localInspectorEnabled = hasLocalInspector ? priorCapture.data?.evidence.localInspectorEnabled
+        ?? this.captureLocalInspector() : undefined;
+      // Preserve the submitted setting on a permission denial so the stage can block.
+      const canCaptureForInspector = localInspectorEnabled
+        && !checkBlockedReason(getWorkflowPolicy(), binding.sessionCwd, binding.sessionRepoRoot);
+      const needsRepository = version && workflowRequiresRepositoryCapture(version.graph, canCaptureForInspector);
+      if (version && workflowRequiresRepositoryCapture(version.graph) && !featureEnabled(PERSONA_REPOSITORY_ACCESS_FLAG_ID)) {
         sealing = true;
         throw new Error("Persona repository access preview is off");
       }
@@ -7726,6 +7734,10 @@ export class WorkflowManager {
         artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
+      if (localInspectorEnabled !== undefined) {
+        captured.context.evidence.localInspectorEnabled = localInspectorEnabled;
+        captured.raw.evidence.localInspectorEnabled = localInspectorEnabled;
+      }
       if (needsRepository) {
         sealing = true;
         if (candidate) {
@@ -7737,7 +7749,6 @@ export class WorkflowManager {
         releaseClaim = true;
         sealing = false;
       }
-      const priorCapture = WorkflowContextSnapshotSchema.safeParse(submission.context);
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(captured.context),
@@ -8536,6 +8547,11 @@ export class WorkflowManager {
     await this.captureSessionActionContinuation(attemptId, Date.now());
   }
 
+  private captureLocalInspector(): boolean {
+    const inspector = getInspectorConfig();
+    return inspector.enabled && inspector.localReview;
+  }
+
   /**
    * Finish a continuation whose evidence survived but whose receipt did not.
    *
@@ -8551,7 +8567,7 @@ export class WorkflowManager {
     if (!resolved) return false;
     const { attempt, snapshot, state, binding, version, node } = resolved;
     if (!WorkflowContextSnapshotSchema.safeParse(child.context).success) return false;
-    if (workflowRequiresRepositoryCapture(version.graph) && !this.store.hasActiveRepositoryClaim(child.id)) return false;
+    if (workflowRequiresRepositoryCapture(version.graph, workflowCapturedLocalInspector(child.evidence)) && !this.store.hasActiveRepositoryClaim(child.id)) return false;
     const seal = await this.prepareSessionActionContinuation({
       attempt,
       snapshot,

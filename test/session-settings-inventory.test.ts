@@ -74,6 +74,7 @@ function assertControlsCovered(controls: readonly { id: string }[], catalog: rea
 
 const dispositions = {
   away: { away: "Live presence", awaySince: "Derived timestamp" },
+  inspector: { localReview: "Operator preference in Inspector settings while the preview is enabled" },
   skills: { defaultSkillEnabled: "Inherited catalog seed", generation: "Derived watermark", generationAt: "Derived timestamp" },
   ui: { announcedTours: "Onboarding state", guidedTour: "Onboarding state", hiddenDisplayItemsSeed: "Migration marker", trustStaged: "Operator staging" },
   residents: { skillSources: "Controls instructions loaded by future residents", mcpServers: "Controls executable programs and environment" },
@@ -166,6 +167,7 @@ test("the live owner catalog and explicit dispositions cover every indexed contr
     ["dispatch.launcher.prompt", "read-write"], ["ui.showToursOnStartup", "read-write"],
     ["foreman.autoApproveAccess", "protected"], ["harnesses.autoModeOnDispatch", "protected"],
     ["sessionSettings.access", "protected"], ["updates.alpha", "protected"], ["reports.muted", "protected"],
+    ["featureFlags.local-inspector", "protected"],
     ["telemetry.user", "protected"], ["telemetry.product", "protected"], ["telemetry.identity", "protected"],
   ]) {
     assert.equal(catalog.find(setting => setting.key === key)?.access, access, key);
@@ -173,4 +175,5 @@ test("the live owner catalog and explicit dispositions cover every indexed contr
   for (const key of ["ui.voice", "harnesses.advisor", "taskSources.sources", "featureFlags", "telemetry", "workflows.retention"]) {
     assert.ok(!keys.has(key), `No bulk setting for ${key}`);
   }
+  assert.ok(!keys.has("inspector.localReview"), "Local Inspector enablement stays in Inspector settings");
 });

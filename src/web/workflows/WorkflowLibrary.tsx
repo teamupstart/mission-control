@@ -1,3 +1,5 @@
+import { workflowCommandName } from "@shared/workflow.ts";
+import { useWorkflowCommandSlots } from "./useWorkflowCommandSlots.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addableSessionActions,
@@ -391,7 +393,9 @@ export function WorkflowLibrary({
     : undefined;
   const [confirm, setConfirm] = useState<WorkflowConfirmRequest | null>(null);
   const [palettePersona, setPalettePersona] = useState(activePersonas[0]?.id ?? "");
-  const [paletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const visibleCommandSlots = useWorkflowCommandSlots();
+  const [requestedPaletteSlot, setPaletteSlot] = useState<WorkflowCheckSlot>(WORKFLOW_CHECK_SLOTS[0]);
+  const paletteSlot = visibleCommandSlots.find(slot => slot === requestedPaletteSlot) ?? visibleCommandSlots[0]!;
   // Held as a raw id and RESOLVED against the addable list at render, not seeded from it: the
   // catalog and the capability answer both arrive after first paint, so a `useState`
   // initializer would pin an empty string and never recover.
@@ -894,7 +898,7 @@ export function WorkflowLibrary({
             </Tooltip>
             <Tooltip label="Which deterministic gate a new Command node runs">
               <select aria-label="Slot for new Command node" disabled={transitioning} value={paletteSlot} onChange={(event) => setPaletteSlot(event.target.value as WorkflowCheckSlot)}>
-                {WORKFLOW_CHECK_SLOTS.map((slot) => <option key={slot} value={slot}>{slot}</option>)}
+                {visibleCommandSlots.map((slot) => <option key={slot} value={slot}>{workflowCommandName(slot)}</option>)}
               </select>
             </Tooltip>
             <Tooltip label="Add a gate on whatever this machine configures for that Command - or drag it onto the canvas">
@@ -908,6 +912,7 @@ export function WorkflowLibrary({
               {workflowCommandStatusSentence(
                 workflowCommands.find((view) => view.slot === paletteSlot),
                 hasSnapshot,
+                paletteSlot,
               )}{" "}
               <Tooltip label={`Set what the ${paletteSlot} Command runs on this machine`}>
                 <a

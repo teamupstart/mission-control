@@ -1,4 +1,4 @@
-import { PersonaWorkloadRequestSchema, PersonaWorkloadVerdictSchema, type PersonaWorkloadResult } from "@shared/repository-access.ts";
+import { PersonaWorkloadRequestSchema, parseRepositoryWorkloadVerdict, type PersonaWorkloadResult } from "@shared/repository-access.ts";
 import { ProviderFailure } from "../server/llm/provider-failure.ts";
 import { REPOSITORY_PROVIDERS, RepositoryCapabilityError, type RepositoryProviderLaunch } from "../server/workflows/persona-workload/providers.ts";
 
@@ -13,9 +13,10 @@ try {
     ...input, request, cwd: process.cwd(), env: process.env as Record<string, string>,
     signal: AbortSignal.timeout(Math.max(1, request.deadline - Date.now())),
   });
-  const verdict = PersonaWorkloadVerdictSchema.safeParse(output.verdict);
-  result = verdict.success ? { status: "completed", result: { kind: "persona_verdict", verdict: verdict.data }, usage: output.usage }
-    : { status: "failed", code: "invalid_verdict", usage: output.usage };
+  const verdict = parseRepositoryWorkloadVerdict(request.accounting.purpose, output.verdict);
+  const accounting = { usage: output.usage, ...(output.providerRunId ? { providerRunId: output.providerRunId } : {}) };
+  result = verdict.success ? { status: "completed", result: verdict.data, ...accounting }
+    : { status: "failed", code: "invalid_verdict", ...accounting };
 } catch (error) {
   result = error instanceof ProviderFailure ? { status: "failed", code: "provider_unavailable", providerFailure: error.kind }
     : error instanceof RepositoryCapabilityError ? { status: "failed", code: "capability_mismatch", capabilityReason: error.reason }

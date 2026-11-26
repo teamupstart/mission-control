@@ -2482,6 +2482,35 @@ export const ShapingTestRequestSchema = z.object({
 });
 export type ShapingTestRequest = z.infer<typeof ShapingTestRequestSchema>;
 
+/** `POST /api/shaping/sign-in`: start a sign-in for the shaper with this id. */
+export const ShaperSignInRequestSchema = z.strictObject({ shaper: ShaperIdSchema });
+export type ShaperSignInRequest = z.infer<typeof ShaperSignInRequestSchema>;
+
+/** A connection id, as `ShapingSignInView.id` carries it: 32 lower-case hex digits. */
+export const ShapingSignInIdSchema = z.string().regex(/^[0-9a-f]{32}$/, { message: "A connection id is 32 lower-case hex digits." });
+
+/** `POST /api/shaping/sign-out`: end the sign-in of this connection, pending or held. */
+export const ShaperSignOutRequestSchema = z.strictObject({ connection: ShapingSignInIdSchema });
+export type ShaperSignOutRequest = z.infer<typeof ShaperSignOutRequestSchema>;
+
+/**
+ * What `POST /api/shaping/sign-in` answers. `authorizationUrl` carries the client id, the
+ * `state` and the PKCE challenge for the browser to present, and appears in this reply only:
+ * never in the sign-in list, the event or the snapshot.
+ */
+export interface ShaperSignInReply {
+  authorizationUrl: string;
+  /** Epoch milliseconds when the pending sign-in lapses. */
+  expiresAt: number;
+  /** The connection id the sign-in is for. */
+  connection: string;
+}
+
+/** What `POST /api/shaping/sign-out` answers: the sign-in list after it. */
+export interface ShaperSignOutReply {
+  signIns: ShapingSignInView[];
+}
+
 /**
  * The header a dashboard tab sends with each shaping write: `<window> <sequence> <controls> [<instance>]`.
  * The tab's id, kept across its reloads and copied by its duplicates, the write's number, the

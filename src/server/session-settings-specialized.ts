@@ -135,7 +135,7 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
       })));
   };
   return [
-    scalarIntent("voice.speech.voice", "voice-mode", z.string().max(264).nullable(), {
+    scalarIntent("voice.speech.voice", "voice-spoken-replies", z.string().max(264).nullable(), {
       label: "Voice used for spoken replies",
       read: () => voiceId(getVoiceConfig().speech.voice),
       choices: () => [{ value: null, label: "Automatic" }, ...speechChoices()],
@@ -167,6 +167,7 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
       }),
       field("voice", "transcriptWords", "voice-mode", { label: "Live voice transcript word limit" }),
       field("voice", "endOfSpeechMs", "voice-end-of-speech"),
+      field("voice", "separatorWord", "voice-separator"),
       field("voice", "cancelWindow.enabled", "voice-cancel-window", { label: "Enable voice cancel window" }),
       field("voice", "cancelWindow.seconds", "voice-cancel-window", { label: "Voice cancel window in seconds" }),
       field("voice", "whenUnsure", "voice-when-unsure", { choices: choices(VOICE_WHEN_UNSURE) }),

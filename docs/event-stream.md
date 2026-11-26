@@ -167,6 +167,24 @@ windows through it. Identical frames are suppressed by canonical JSON. The confi
 maximum. It is not a `LINE_INPUT_EVENTS` member: shapers are read at dispatch, and no Line stage
 folds them. See [Task shaping](task-shaping.md#settings).
 
+`shaping_sign_ins` carries `{ signIns }`, shaper sign-in's list: one
+`{ id, url, scope, issuer, state, storage, expiresAt, reason, shapers }` per connection, where
+`state` is the connection's status (`signed_out`, `pending`, `signed_in` or `renewing`). It never
+holds a token, a code, the OAuth `state` parameter, a verifier or an authorization URL. The event
+and the reconnect snapshot's `shapingSignIns` field are both behind `task-shaping` and
+`shaper-sign-in`. While both are on, the list is sent on every change to it, such as a sign-in started, completed, renewed or
+ended. While either is off the snapshot has no field. A flag change sends the list only when it
+differs from the last list sent, and the daemon counts the empty list as already sent. Turning
+either flag off sends one empty list, which clears every window, unless the last list sent was
+already empty, when every window already holds an empty list and nothing is sent. Likewise a
+daemon that starts with a flag off sends nothing, and turning both flags on while no connection
+is listed sends nothing. Repeats are
+suppressed by canonical JSON. `wireShapingSignInEvents` in
+`src/server/shaping/sign-in/events.ts` is the one bridge, and `MissionState.shapingSignIns` the
+only browser owner, empty before the snapshot and while a flag is off. It is not a
+`LINE_INPUT_EVENTS` member. See
+[Signing in over the API](task-shaping.md#signing-in-over-the-api).
+
 ## Voice
 
 While voice is enabled, `voiceIndicators` in the snapshot carries the saved indicator IDs.

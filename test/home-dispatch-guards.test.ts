@@ -85,16 +85,19 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // The listener reports speech onset and completion through one additional voice-gated route.
   // Session settings adds the MCP entry point, the operator access pair and the skin refresh read.
   // Foreman's guarded POST /api/sessions/:id/queue/wrapup/drain returns 404 for a missing session.
+  // GET /api/inspector/config now includes localReview: false with the Local Inspector preview off.
   // Typed settings adds PATCH /api/workflows/config for field-scoped policy saves.
   // POST /voice/listener/transcript also returns 404 with the voice preview off.
   // GET /api/ui/config's default body gains `residentCardNameStyles: []` (no new route).
   // Repository Index and Task Sources views carry config revisions for conditional writes.
   // A Task Sources replacement without a revision now answers 400.
   // PATCH /api/pipelines/config accepts only the Engineer runtime.
+  // Shaper sign-in adds POST /api/shaping/sign-in, POST /api/shaping/sign-out and
+  // GET /api/shaping/sign-in/callback, which answer 404 with task-shaping off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 498);
+  assert.equal(others.length, 501);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "5fc82612c4747adbec2984d43a46bf57424ee94a0262ab09d6e474e0cca9afac");
+    "100b5af0097f4b852a83025816ba537343872fc76da009f3c5c559913e82188a");
 });
 
 function sourceFiles(dir: string): string[] {

@@ -57,8 +57,10 @@ follow the dashboard's feature and build gates.
 | `voice-auto-mute` | 3 | Read/write | `voice.autoMuteDuringCalls` can enable call auto-mute. Disabling it requires the operator because that can resume microphone capture. |
 | `voice-listening-mode` | 3 | Protected | Switching between automatic and held microphone capture changes when the workstation listens. |
 | `voice-end-of-speech` | 3 | Read/write | `voice.endOfSpeechMs` updates automatic capture timing. |
+| `voice-separator` | 3 | Read/write | `voice.separatorWord` sets the standalone word that splits an Always-on capture into separate messages. |
 | `voice-cancel-window` | 3 | Read/write | `voice.cancelWindow.enabled` and `voice.cancelWindow.seconds` update delivery timing. |
 | `voice-when-unsure` | 3 | Read/write | `voice.whenUnsure` selects routing behavior when confidence is low. |
+| `voice-spoken-replies` | 3 | Read/write and actions | `voice.speech.voice` stores the choice. Sample playback and the model download are operator actions. |
 | `voice-plan-forms` | 3 | Read/write | `voice.planFormsByVoice` controls form filling. Submission still requires a separate operator gesture. |
 | `grill-first-defaults` | 2 | Read/write | `skills.grillFirstKinds`, a versioned replacement of the task-kind list |
 | `worktree-policy` | 2 | Read/write | `worktrees.enabled`, `worktrees.taskRetentionDays` and `worktrees.maxSlots`. Existing repository records expose their enabled and slot-cap leaves under a stable hashed repository key. |
@@ -137,6 +139,7 @@ follow the dashboard's feature and build gates.
 | Foreman | 2 | Read/write | `triage`, `maxFixAttempts`, `maxFixRounds`, `wrapupTriggers`, per-harness backlog model and `maxSessions`. |
 | Foreman | 3 | Protected | `enabled`, action `mode`, `autoApproveAccess`, repository grants and standing instructions confer authority. |
 | Inspector | 2 | Read/write and operational | `maxCommentsPerRound` is a preference. Per-PR review, posting and resolution are actions. |
+| Local Inspector | 3 | Protected | Manage `localReview` in Inspector settings while the Local Inspector preview is enabled. |
 | Foreman automation | 2 | Protected | `wrapup`, `trackReviewFeedback`, `trackCiFailures`, `keepShipTasksMoving`, `autoBacklog` and `backlogRespectOpenPrs` can enable unattended actions. |
 | Repository worktree overrides | 3 | Read/write and protected | Per-repository enabled and slot limits are writable for registered pools and existing overrides. Resetting an entire override can remove setup argv and dependency claims, which are operator-controlled. |
 | Shipping | 3 | Read/write and protected | `shipping.closeSessionAfterMerge` sets lifecycle behavior after a completed merge. CodeRabbit follow-up and merge grants require the operator. |

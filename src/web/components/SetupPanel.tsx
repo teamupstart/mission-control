@@ -23,7 +23,8 @@ import { visibleSetupFamilyIds } from "@shared/conductor-integration.ts";
 import { resolveFeatureFlag, type FeatureFlagId } from "@shared/feature-flags.ts";
 import { FEATURE_FLAGS } from "@shared/feature-flag-registry.ts";
 import { formatBytes } from "@shared/format-bytes.ts";
-import type { VoiceModelState, VoiceState } from "@shared/voice.ts";
+import { VoiceModelProgress } from "./VoiceModelProgress.tsx";
+import type { VoiceState } from "@shared/voice.ts";
 import { formatChord } from "@shared/keyboard-chords.ts";
 import { confirmedVoiceHotkey } from "./VoiceIndicators.tsx";
 import { voiceModelSetupStatus } from "@shared/voice-models.ts";
@@ -624,20 +625,6 @@ function FeatureFlagsRemedy({
  */
 const SetupVoiceContext = createContext<VoiceState | null>(null);
 
-/** "45 s left", "3 min left". */
-function timeLeft(seconds: number): string {
-  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} s left`;
-  return `${Math.round(seconds / 60)} min left`;
-}
-
-export function voiceModelProgressText(model: Pick<VoiceModelState, "status" | "doneBytes" | "totalBytes" | "bytesPerSecond">): string {
-  const amount = `${formatBytes(model.doneBytes)} of ${formatBytes(model.totalBytes)}`;
-  if (model.status === "verifying") return `Checked ${amount}`;
-  if (model.bytesPerSecond === null || model.bytesPerSecond <= 0) return amount;
-  const left = Math.max(0, model.totalBytes - model.doneBytes) / model.bytesPerSecond;
-  return `${amount} · ${formatBytes(model.bytesPerSecond)}/s · ${timeLeft(left)}`;
-}
-
 /**
  * The daemon owns the download; this draws `VoiceState.model` as the event stream delivers it, so
  * every window shows the same bar.
@@ -671,33 +658,7 @@ function VoiceModelRemedy({ label, note }: { label: string; note: string }): Rea
   if (model && model.status === "missing" && model.revision === null) return null;
   const notice = error && <RemedyNotice tone="error" detail={error} hint="Press Re-check, then try again." />;
   if (model && (model.status === "downloading" || model.status === "verifying")) {
-    const downloading = model.status === "downloading";
-    const percent = model.totalBytes > 0 ? Math.min(100, Math.floor((model.doneBytes / model.totalBytes) * 100)) : 0;
-    const figures = voiceModelProgressText(model);
-    return (
-      <div className="setup-remedy-actions voice-model-progress">
-        <div
-          className="app-banner-progress"
-          role="progressbar"
-          aria-label={downloading ? "Downloading the speech model" : "Checking the speech model"}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percent}
-          aria-valuetext={figures}
-        >
-          <span className="app-banner-progress-fill" style={{ width: `${percent}%` }} />
-        </div>
-        <div className="voice-model-progress-line">
-          <span className="voice-model-figures">{figures}</span>
-          {downloading && (
-            <Tooltip label="Stop the download and delete what it has written">
-              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void cancel()}>Cancel</button>
-            </Tooltip>
-          )}
-        </div>
-        {notice}
-      </div>
-    );
+    return <><VoiceModelProgress model={model} busy={busy} onCancel={() => void cancel()} />{notice}</>;
   }
   const failed = model?.status === "failed";
   return (

@@ -258,12 +258,9 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   durable records the sign-out and the next start loads the record again. A test pins this, and
   it is logged. Value class `operational`, in no backup domain, so a settings snapshot never carries it;
   it holds no token and no secret. The sign-in service in `src/server/shaping/sign-in/service.ts`
-  is its only writer. A registration is reused only by a sign-in with the same issuer, redirect
-  URI and scope, so the key never holds two with the same three values. One that a held record or
-  a pending sign-in names is never dropped to make room: at the limit `begin` drops the oldest
-  that nothing names, refuses with `registration_limit` when every one is named, and with
-  `store_unread` when the last load of the store was incomplete. A registration also leaves the
-  key when the authorization server rejects its client. The connection id
+  is its only writer. The rules for when a registration is reused, kept, dropped, refused or
+  removed belong to the [phased plan](../plans/shaper-oauth-sign-in/phased-plan.md): its "Client
+  registration" contract row and decision 17. The connection id
   (`connectionId` in `src/server/shaping/sign-in/connection.ts`, the first 32 hex characters of
   the SHA-256 of the target's canonical JSON) names each stored sign-in and is final too
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with

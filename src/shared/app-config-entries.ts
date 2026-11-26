@@ -257,6 +257,7 @@ const standingFields = {
 } satisfies Record<keyof StandingInstructionsConfig, AppConfigValueClass>;
 
 const inspectorFields = {
+  localReview: "setting",
   runner: "setting",
   enabled: "setting",
   mode: "setting",
@@ -331,6 +332,7 @@ const voiceFields = {
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
   endOfSpeechMs: "setting",
+  separatorWord: "setting",
   showTranscript: "setting",
   transcriptStyle: "setting",
   transcriptCorner: "setting",

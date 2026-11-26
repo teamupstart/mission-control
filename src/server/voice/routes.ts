@@ -571,7 +571,7 @@ export function registerVoiceUtteranceRoutes(
     if (!checkToken(c.req.header("x-harness-token"))) return c.json({ error: "unauthorized" }, 401);
     const onset = z.number().int().nonnegative();
     const parsed = await parseBody(c, z.discriminatedUnion("phase", [
-      z.object({ speechStartUs: onset, phase: z.enum(["start", "focus", "finish"]) }).strict(),
+      z.object({ speechStartUs: onset, phase: z.enum(["start", "focus", "finish", "capture-limit"]) }).strict(),
       z.object({ speechStartUs: onset, phase: z.literal("preview"), text: VoiceUtteranceSchema.shape.text }).strict(),
     ]), { strict: true });
     if (!parsed.ok) return parsed.res;
@@ -584,9 +584,15 @@ export function registerVoiceUtteranceRoutes(
       if (!voiceStateStore.ownsCapture(owner) || !featureEnabled(VOICE_FLAG)) return false;
       const directive = voiceStateStore.directive();
       if (directive.capture && voiceStateStore.resolveCaptureRevision(revision, directive) === directive.revision) return true;
-      const release = phase === "start" && revision && voiceStateStore.releasedCapture(revision);
+      const release = (phase === "start" || phase === "capture-limit") && revision && voiceStateStore.releasedCapture(revision);
       return !!release && withinReleasedHold(speechStartUs, release);
     };
+    if (phase === "capture-limit") {
+      const accepted = authorized();
+      if (accepted) router.captureLimit(key);
+      router.speechFinished(key);
+      return c.json({ accepted });
+    }
     if (phase === "preview" || phase === "focus") {
       const claimed = await router.probeDictationCapture(key, authorized, parsed.data.phase === "preview" ? parsed.data.text : undefined);
       if (claimed) c.header("x-voice-dictation", "1");

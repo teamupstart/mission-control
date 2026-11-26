@@ -312,6 +312,19 @@ async function signIn(h: Harness, signInTarget: SignInTarget): Promise<{ id: str
   return { id: answer.connection, back, authorizationUrl: answer.authorizationUrl };
 }
 
+/**
+ * Waits for `done()` to hold, polling every 5 ms. It fails within `ms` with the condition it was
+ * waiting on, so a regression shows up as a named failure, not a test that runs to the runner's
+ * timeout.
+ */
+async function waitFor(done: () => boolean, waitingWhile: string, ms = 5_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!done()) {
+    if (Date.now() > deadline) assert.fail(`timed out after ${ms} ms while waiting: ${waitingWhile}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 /** A server's refusal of the token the connection holds now, read from the store, which every write keeps in step with memory. */
 const refuse = async (h: Harness, signInTarget: SignInTarget) => {
   const record = await h.store.records.read(connectionId(signInTarget));
@@ -511,6 +524,33 @@ test("at the registration limit: refused while every one is named, and room made
   assert.deepEqual(clientsOf(regs), keyNow);
 });
 
+test("one stored sign-in that cannot be read refuses at the limit with store_unread, and drops no registration it may name", async (t) => {
+  const records = createMemorySignInStore();
+  const fake = await startFakeOAuthServer();
+  t.after(() => fake.close());
+  // Sixteen registrations, each named by a stored record.
+  const seeded = await seed(fake, SHAPING_SIGN_IN_CLIENTS, records);
+  const regs = memoryRegistrations(seeded.clients);
+  // Every read succeeds but one: its record, and so the registration it names, stays unknown.
+  const store = controlledStore("memory", records);
+  const unread = seeded.ids[0]!;
+  const readRecord = store.store.read.bind(store.store);
+  store.store.read = async (id) => {
+    if (id === unread) throw new SignInStoreError("read", -25308);
+    return readRecord(id);
+  };
+  const h = await harness(t, { fake, store, regs });
+  assert.equal(h.svc.view().length, SHAPING_SIGN_IN_CLIENTS - 1, "the fifteen readable sign-ins are loaded");
+  assert.ok(h.warnings.some((warning) => warning.includes("could not be read")));
+
+  const keyBefore = regs.read();
+  const refused = await h.svc.begin(target(fake, { scope: "mcp:fresh" }));
+  assert.deepEqual(refused, { ok: false, code: "store_unread", reason: SIGN_IN_BEGIN_REFUSALS.store_unread });
+  assert.equal(registrationsSeen(fake).length, 0, "no registration request");
+  assert.deepEqual(regs.read(), keyBefore, "the registration the unread record names is kept");
+  assert.ok(await records.read(unread), "and its stored sign-in is untouched");
+});
+
 test("a store that could not be read refuses at the limit with store_unread, and a store that reads makes room", async (t) => {
   const records = createMemorySignInStore();
   const fake = await startFakeOAuthServer();
@@ -651,9 +691,7 @@ test("a begin held past its 20 second deadline answers timeout, makes nothing pe
   const release = h.fake.hold("/.well-known/oauth-authorization-server");
   const answer = h.svc.begin(a);
   // Discovery is waiting on the held metadata request.
-  while (!h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server")) {
-    await new Promise((done) => setTimeout(done, 5));
-  }
+  await waitFor(() => h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server"), "!h.fake.requests.some((request) => request.path === \"/.well-known/oauth-authorization-server\")");
   h.clock.fireDue(BEGIN_DEADLINE_MS - 1);
   h.clock.fireDue(1);
   assert.deepEqual(await answer, { ok: false, code: "timeout", reason: SIGN_IN_BEGIN_REFUSALS.timeout });
@@ -823,7 +861,7 @@ test("stop waits for a held refresh only until its 10 second deadline", async (t
   const release = held.holdRefreshReplies();
   // The 75% refresh starts, and its reply is held after the fixture answered.
   h.clock.fireDue(46 * MINUTE);
-  while (held.replies.length === 0) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(held.replies.length === 0), "held.replies.length === 0");
 
   let stopped = false;
   const stopping = h.svc.stop().then(() => { stopped = true; });
@@ -881,7 +919,7 @@ test("signOut resolves at the 5 second revoke deadline when revocation is held, 
   const release = h.fake.hold("/revoke");
   let resolved: boolean | null = null;
   const signingOut = h.svc.signOut(id).then((answer) => { resolved = answer; });
-  while (!h.fake.requests.some((request) => request.path === "/revoke")) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => h.fake.requests.some((request) => request.path === "/revoke"), "!h.fake.requests.some((request) => request.path === \"/revoke\")");
   await new Promise((done) => setTimeout(done, 20));
   assert.equal(resolved, null, "signOut waits on the revocation");
   assert.equal(viewOf(h, id)?.state, "signed_out", "memory was cleared before the revocation");
@@ -905,7 +943,7 @@ test("a sign-out while the code is being exchanged: the completion keeps nothing
   const back = await authorize((await begun(h, a)).authorizationUrl);
   const release = h.fake.hold("/token");
   const completing = h.svc.complete(callback(back));
-  while (tokenRequests(h.fake, 0, "authorization_code").length === 0) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(tokenRequests(h.fake, 0, "authorization_code").length === 0), "tokenRequests(h.fake, 0, \"authorization_code\").length === 0");
   // The pending sign-in was already taken; the exchange is in flight.
   assert.equal(await h.svc.signOut(connectionId(a)), true, "a completion in flight is something to sign out of");
   const from = h.fake.requests.length;
@@ -948,9 +986,7 @@ test("a begin abandoned at its deadline makes no registration request and saves 
   const a = target(h.fake, { scope: "mcp:other" });
   const release = h.fake.hold("/.well-known/oauth-authorization-server");
   const answer = h.svc.begin(a);
-  while (!h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server")) {
-    await new Promise((done) => setTimeout(done, 5));
-  }
+  await waitFor(() => h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server"), "!h.fake.requests.some((request) => request.path === \"/.well-known/oauth-authorization-server\")");
   h.clock.fireDue(BEGIN_DEADLINE_MS);
   assert.equal((await answer as { code: string }).code, "timeout");
   release();
@@ -1489,7 +1525,7 @@ test("stop waits for a code exchange in flight, so the tokens it receives are st
   const back = await authorize((await begun(h, a)).authorizationUrl);
   const release = h.fake.hold("/token");
   const completing = h.svc.complete(callback(back));
-  while (tokenRequests(h.fake, 0, "authorization_code").length === 0) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(tokenRequests(h.fake, 0, "authorization_code").length === 0), "tokenRequests(h.fake, 0, \"authorization_code\").length === 0");
   let stopped = false;
   const stopping = h.svc.stop().then(() => { stopped = true; });
   await new Promise((done) => setTimeout(done, 30));
@@ -1531,7 +1567,7 @@ test("a sign-out while a second, overlapping load is still reading keeps that re
   const flags = flagSwitch(true);
   const second = await harness(t, { fake: first.fake, clock: first.clock, store, flags, inUse: [use(a)], start: false });
   second.svc.start();
-  while (reads === 0) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(reads === 0), "reads === 0");
   flags.set(false);
   flags.set(true);
   await secondReading;
@@ -1609,7 +1645,7 @@ test("idle waits for a revoke that outlasts signOut's 5 second bound", async (t)
   const { id } = await signIn(h, a);
   const release = h.fake.hold("/revoke");
   const signingOut = h.svc.signOut(id);
-  while (!h.fake.requests.some((request) => request.path === "/revoke")) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => h.fake.requests.some((request) => request.path === "/revoke"), "!h.fake.requests.some((request) => request.path === \"/revoke\")");
   h.clock.fireDue(REVOKE_DEADLINE_MS);
   assert.equal(await signingOut, true, "signOut answers at its bound");
   let idle = false;
@@ -1633,7 +1669,7 @@ test("a refresh that falls due while an older refresh is still running is starte
   try {
     // The first record's 75% refresh starts and its reply is held.
     h.clock.fireDue(46 * MINUTE);
-    while (held.replies.length === 0) await new Promise((done) => setTimeout(done, 5));
+    await waitFor(() => !(held.replies.length === 0), "held.replies.length === 0");
     // A new sign-in replaces the record while that refresh runs; its own refresh then falls due.
     const back = await authorize((await begun(h, a)).authorizationUrl);
     assert.equal((await h.svc.complete(callback(back))).ok, true);
@@ -1678,9 +1714,7 @@ test("a begin that timed out while queued makes no request, and one whose flag w
   const release = h.fake.hold("/.well-known/oauth-authorization-server");
   const first = h.svc.begin(target(h.fake));
   const queued = h.svc.begin(target(h.fake, { url: h.fake.shapeUrl, scope: "mcp:other" }));
-  while (!h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server")) {
-    await new Promise((done) => setTimeout(done, 5));
-  }
+  await waitFor(() => h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server"), "!h.fake.requests.some((request) => request.path === \"/.well-known/oauth-authorization-server\")");
   h.clock.fireDue(BEGIN_DEADLINE_MS);
   assert.equal((await first as { code: string }).code, "timeout");
   assert.equal((await queued as { code: string }).code, "timeout");
@@ -1694,9 +1728,7 @@ test("a begin that timed out while queued makes no request, and one whose flag w
   const holdAgain = h.fake.hold("/.well-known/oauth-authorization-server");
   const from = h.fake.requests.length;
   const offDuring = h.svc.begin(target(h.fake, { scope: "mcp:third" }));
-  while (!since(h.fake, from).some((request) => request.path === "/.well-known/oauth-authorization-server")) {
-    await new Promise((done) => setTimeout(done, 5));
-  }
+  await waitFor(() => since(h.fake, from).some((request) => request.path === "/.well-known/oauth-authorization-server"), "!since(h.fake, from).some((request) => request.path === \"/.well-known/oauth-authorization-server\")");
   flags.set(false);
   holdAgain();
   assert.equal((await offDuring as { code: string }).code, "flag_off");
@@ -1736,11 +1768,11 @@ test("a load whose activation ended publishes nothing, so its late failure canno
   const flags = flagSwitch(true);
   const h = await harness(t, { fake, store, regs, flags, start: false });
   h.svc.start();
-  while (listings === 0) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(listings === 0), "listings === 0");
   // Off and on: the second load lists the store, which reads fully.
   flags.set(false);
   flags.set(true);
-  while (listings < 2) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(listings < 2), "listings < 2");
   await new Promise((done) => setTimeout(done, 10));
   // The first load's listing now fails, after its activation ended.
   failFirst();
@@ -1750,7 +1782,7 @@ test("a load whose activation ended publishes nothing, so its late failure canno
   assert.equal(registrationsSeen(fake).length, 1);
 });
 
-test("a begin queued across a flag reset waits for the new load, so it never drops a registration an unread record names", async (t) => {
+test("a begin queued across a flag reset is refused, and never drops a registration an unread record names", async (t) => {
   const records = createMemorySignInStore();
   const fake = await startFakeOAuthServer();
   t.after(() => fake.close());
@@ -1778,7 +1810,7 @@ test("a begin queued across a flag reset waits for the new load, so it never dro
   let answer: Promise<BeginAnswer>;
   let keyBefore: ShapingSignInClient[];
   try {
-    while (reads === 0) await new Promise((done) => setTimeout(done, 5));
+    await waitFor(() => !(reads === 0), "reads === 0");
     // Queued behind the first load, for a scope that needs a new registration.
     answer = h.svc.begin(target(fake, { scope: "mcp:fresh" }));
     // Let it start waiting on the first load before the flags are reset.
@@ -1796,7 +1828,7 @@ test("a begin queued across a flag reset waits for the new load, so it never dro
     releaseFirst();
     releaseSecond();
   }
-  assert.equal((await answer as { code: string }).code, "registration_limit", "every registration is named once the load has read them");
+  assert.equal((await answer as { code: string }).code, "flag_off", "requested before the reset, it is refused when its turn comes");
   assert.equal(registrationsSeen(fake).length, 0);
   assert.deepEqual(clientsOf(regs), keyBefore, "no registration a stored sign-in names was dropped");
 });
@@ -1843,6 +1875,130 @@ test("a late refusal never removes a replacement that has no refresh token", asy
   h.svc.noteRefused(a, tokenB);
   await settle(h);
   assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" }, "refusing B itself still ends a sign-in with no refresh token");
+});
+
+test("a begin that reuses a client and is still running when the flags reset leaves nothing pending", async (t) => {
+  let gate: Promise<void> | null = null;
+  let entered!: () => void;
+  const flowEntered = new Promise<void>((done) => { entered = done; });
+  const held: SignInFlow = {
+    ...realFlow,
+    async begin(...args) {
+      if (gate) { entered(); await gate; }
+      return realFlow.begin(...args);
+    },
+  };
+  const flags = flagSwitch(true);
+  const h = await harness(t, { flow: held, flags });
+  // The first sign-in registers the mcp:context client; a second connection with that scope reuses it.
+  await signIn(h, target(h.fake));
+  const other = target(h.fake, { url: h.fake.shapeUrl });
+  h.svc.setInUse([use(other)]);
+  let release!: () => void;
+  gate = new Promise<void>((done) => { release = done; });
+  const answer = h.svc.begin(other);
+  await flowEntered;
+  // Off and on again while the flow's begin is still running.
+  flags.set(false);
+  flags.set(true);
+  release();
+  assert.deepEqual(await answer, { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off });
+  await settle(h);
+  assert.equal(registrationsSeen(h.fake).length, 1, "the client was reused, not registered again");
+  assert.equal(viewOf(h, connectionId(other))?.state, "signed_out", "nothing is pending");
+});
+
+test("a begin requested before a flag reset is refused when its turn comes, even though the flags are back on", async (t) => {
+  const flags = flagSwitch(true);
+  const h = await harness(t, { flags });
+  const queuedTarget = target(h.fake, { url: h.fake.shapeUrl });
+  h.svc.setInUse([use(queuedTarget)]);
+  // An earlier begin holds the queue in discovery; a second is requested behind it.
+  const release = h.fake.hold("/.well-known/oauth-authorization-server");
+  const earlier = h.svc.begin(target(h.fake));
+  await waitFor(() => h.fake.requests.some((request) => request.path === "/.well-known/oauth-authorization-server"), "!h.fake.requests.some((request) => request.path === \"/.well-known/oauth-authorization-server\")");
+  const queued = h.svc.begin(queuedTarget);
+  // Off and on again while the second waits its turn; the queue is then released.
+  flags.set(false);
+  flags.set(true);
+  release();
+  assert.equal((await earlier as { code: string }).code, "flag_off");
+  assert.deepEqual(await queued, { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off });
+  await settle(h);
+  assert.equal(registrationsSeen(h.fake).length, 0, "neither begin registered a client");
+  assert.equal(viewOf(h, connectionId(queuedTarget))?.state, "signed_out", "nothing from the earlier activation is pending");
+  // A begin requested after the reset works.
+  assert.equal((await h.svc.begin(queuedTarget)).ok, true);
+});
+
+test("a begin whose discovery or flow fails after a flag reset answers flag_off, and keeps its own error without one", async (t) => {
+  // Each step can be held, then made to fail, with or without a reset while it was held.
+  let gate: Promise<void> | null = null;
+  let entered!: () => void;
+  let failDiscover = false;
+  let failBegin = false;
+  const failure = { ok: false as const, code: "failed" as const, reason: "fake: the server refused this step." };
+  const held: SignInFlow = {
+    ...realFlow,
+    async discover(...args) {
+      if (gate) { entered(); await gate; }
+      return failDiscover ? failure : realFlow.discover(...args);
+    },
+    async begin(...args) {
+      if (gate) { entered(); await gate; }
+      return failBegin ? failure : realFlow.begin(...args);
+    },
+  };
+  const flags = flagSwitch(true);
+  const h = await harness(t, { flow: held, flags });
+  // A first sign-in registers the mcp:context client, so the shape connection below reuses it.
+  await signIn(h, target(h.fake));
+  const hold = (step: "discover" | "begin") => {
+    failDiscover = step === "discover";
+    failBegin = step === "begin";
+    let release!: () => void;
+    const own: Promise<void> = new Promise<void>((done) => {
+      // Clears the gate only while it is still this one, so releasing discovery keeps the flow's begin held.
+      release = () => { if (gate === own) gate = null; done(); };
+    });
+    gate = own;
+    const reached = new Promise<void>((done) => { entered = done; });
+    return { release, reached };
+  };
+  const run = async (signInTarget: SignInTarget, step: "discover" | "begin", reset: boolean) => {
+    const { release, reached } = hold(step);
+    const answer = h.svc.begin(signInTarget);
+    if (step === "begin") {
+      // Discovery passes through the gate first; let it, then hold the flow's begin.
+      await reached;
+      const next = hold(step);
+      release();
+      await next.reached;
+      if (reset) { flags.set(false); flags.set(true); }
+      next.release();
+    } else {
+      await reached;
+      if (reset) { flags.set(false); flags.set(true); }
+      release();
+    }
+    const result = await answer;
+    failDiscover = false;
+    failBegin = false;
+    return result;
+  };
+  const reused = target(h.fake, { url: h.fake.shapeUrl });
+  const fresh = target(h.fake, { url: h.fake.shapeUrl, scope: "mcp:other" });
+  h.svc.setInUse([use(reused), use(fresh)]);
+  const flagOff = { ok: false, code: "flag_off", reason: SIGN_IN_BEGIN_REFUSALS.flag_off };
+  assert.deepEqual(await run(fresh, "discover", true), flagOff, "a reset during a discovery that fails");
+  assert.deepEqual(await run(reused, "begin", true), flagOff, "a reset during a reused-client flow begin that fails");
+  assert.deepEqual(await run(fresh, "begin", true), flagOff, "a reset during a new-client flow begin that fails");
+  // Without a reset the step's own error is returned unchanged.
+  assert.deepEqual(await run(fresh, "discover", false), failure, "a discovery failure with no reset");
+  assert.deepEqual(await run(reused, "begin", false), failure, "a flow begin failure with no reset");
+  await settle(h);
+  assert.equal(viewOf(h, connectionId(reused))?.state, "signed_out");
+  assert.equal(viewOf(h, connectionId(fresh))?.state, "signed_out");
 });
 
 test("every row of the accessToken table", async (t) => {
@@ -2097,7 +2253,7 @@ test("a refresh and a new sign-in that cross: the new sign-in stands, and the he
   const release = held.holdRefreshReplies();
   const from = h.fake.requests.length;
   const advancing = h.clock.advance(46 * MINUTE);
-  while (held.replies.length === 0) await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => !(held.replies.length === 0), "held.replies.length === 0");
 
   // The new sign-in completes while the refresh's reply is still held.
   const answer = await begun(h, a);

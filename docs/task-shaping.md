@@ -1140,7 +1140,9 @@ refresh that fails and an expiry show with no reload.
   link the earlier one opened stops working. The sign-in list does not say which attempt a
   pending sign-in is, so a window whose sign-in another window replaced still offers its own
   link, with **Open the sign-in page**, **Copy link** and **Cancel sign-in** but no
-  **Sign in**. That link ends on the callback's "The sign-in did not finish." page. To start
+  **Sign in**. Only the link is affected, never a token: the other window's sign-in works, and
+  the daemon's callback refuses the replaced `state`, so the old link ends on the page "The
+  sign-in did not finish." with "Start again from Settings > Task shaping." To start
   again from that window, reload it, which offers **Sign in**, or select **Cancel sign-in**,
   which also ends the other window's attempt, and then **Sign in**.
 - **Cancel sign-in** and **Sign out** end the connection's sign-in: a pending one is dropped,

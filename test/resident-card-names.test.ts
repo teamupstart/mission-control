@@ -40,6 +40,7 @@ const { residentCardProfileName } = await import("../src/web/residents/marker.ts
 const { FeatureFlagsContext } = await import("../src/web/useFeatureFlag.ts");
 const { BoardCardPanel } = await import("../src/web/components/BoardCardPanel.tsx");
 const { SessionTile } = await import("../src/web/components/layouts/SessionTile.tsx");
+const { RailRow } = await import("../src/web/components/layouts/RailRow.tsx");
 const { mkSession } = await import("./helpers/session-fixture.ts");
 
 type Style = (typeof RESIDENT_CARD_NAME_STYLES)[number];
@@ -63,7 +64,7 @@ async function withStyles<T>(styles: Style[], fn: () => T): Promise<T> {
   }
 }
 
-function tile(resident: Mark | null, flag = true): string {
+function tile(resident: Mark | null, flag = true, callSign?: string): string {
   return withFlags(
     flag,
     createElement(SessionTile, {
@@ -74,8 +75,19 @@ function tile(resident: Mark | null, flag = true): string {
       onDropError: () => {},
       onDropConfirm: () => {},
       resident,
+      callSign,
     }),
   );
+}
+
+function railRow(resident: Mark | null, callSign?: string): string {
+  return withFlags(true, createElement(RailRow, {
+    session: mkSession({ name: "triage-loop", state: "idle" }),
+    selected: false,
+    onSelect: () => {},
+    resident,
+    callSign,
+  }));
 }
 
 function head(html: string): string {
@@ -207,4 +219,20 @@ test("the panel offers two checkboxes only while the flag is on, and its preview
   assert.equal((checked.slice(0, checked.indexOf("</div>")).match(/checked=""/g) ?? []).length, 2, "both checkboxes are not checked");
   assert.ok(both.includes('<span class="tile-name-sub">Triage Bot</span>'), "the preview has no subtitle");
   assert.ok(both.includes("resident-chip has-expanded-name"), "the preview chip does not expand");
+});
+
+test("a card's title, its Open label and its rail row name an agent by one precedence: listening title, call sign, ordinary name", () => {
+  const cases: [Mark | null, string | undefined, string][] = [
+    // A resident task never carries a call sign today (`sessionCallSign`); if one ever did, every
+    // surface would still agree on the resident's listening title.
+    [CALLED, "Atlas", "&quot;Scout&quot;"],
+    [null, "Atlas", "Atlas"],
+    [null, undefined, "triage-loop"],
+  ];
+  for (const [resident, callSign, name] of cases) {
+    const card = tile(resident, true, callSign);
+    assert.match(card, new RegExp(`<span class="tile-name"[^>]*>${name}</span>`), `tile title for ${callSign ?? "no call sign"}`);
+    assert.match(card, new RegExp(`aria-label="Open ${name}"`), `Open label for ${callSign ?? "no call sign"}`);
+    assert.match(railRow(resident, callSign), new RegExp(`aria-label="${name}"`), `rail row for ${callSign ?? "no call sign"}`);
+  }
 });

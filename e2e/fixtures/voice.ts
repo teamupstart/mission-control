@@ -127,7 +127,12 @@ export async function beVoiceShortcut(daemon: VoiceDaemon, state: VoiceState): P
       clearInterval(timer);
     },
   };
-  await shortcut.set(false);
+  try {
+    await shortcut.set(false);
+  } catch (error) {
+    shortcut.stop();
+    throw error;
+  }
   return shortcut;
 }
 

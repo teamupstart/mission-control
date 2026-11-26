@@ -32,7 +32,7 @@ export class TranscriptPreview {
   private latestOnset = -1;
   private finalizedThrough = -1;
   // A final decode can arrive after audio or partials for the next onset.
-  private readonly partials = new Map<number, { highestCounts: Map<string, number>; visible: boolean }>();
+  private readonly onsets = new Map<number, { highestCounts: Map<string, number>; visible: boolean; freshUntil: number }>();
 
   constructor(readonly grant: string, readonly owner: string) {}
 
@@ -45,7 +45,7 @@ export class TranscriptPreview {
     this.interim = "";
     this.interimOnset = -1;
     // Remember what was recognized even after the rolling display is cleared.
-    for (const partial of this.partials.values()) partial.visible = false;
+    for (const partial of this.onsets.values()) partial.visible = false;
   }
 
   observe(sample: TranscriptSample, now: number) {
@@ -56,50 +56,52 @@ export class TranscriptPreview {
     }
     if (sample.onset <= this.finalizedThrough) return;
     if (sample.onset < this.latestOnset && !(sample.phase === "words" && sample.final)) return;
+    const superseded = sample.onset < this.latestOnset;
+    let onset = this.onsets.get(sample.onset);
+    if (!superseded && !onset) {
+      // Audio opens a short window for a final-only decode, once per onset.
+      onset = { highestCounts: new Map(), visible: false, freshUntil: now + VISIBLE_MS };
+      this.onsets.set(sample.onset, onset);
+      if (this.onsets.size > MAX_UNFINISHED_ONSETS) {
+        this.finalizedThrough = this.onsets.keys().next().value!;
+        this.onsets.delete(this.finalizedThrough);
+      }
+    }
     this.latestOnset = Math.max(this.latestOnset, sample.onset);
     if (sample.phase === "audio") {
       this.phase = this.interimOnset === sample.onset ? "words" : "audio";
       return;
     }
 
-    const partial = this.partials.get(sample.onset);
     const words = recognizedWords(sample.text);
     if (sample.final) {
       this.finalizedThrough = sample.onset;
-      for (const onset of this.partials.keys()) {
-        if (onset <= sample.onset) this.partials.delete(onset);
+      for (const id of this.onsets.keys()) {
+        if (id <= sample.onset) this.onsets.delete(id);
       }
       if (this.interimOnset <= sample.onset) {
         this.interim = "";
         this.interimOnset = -1;
       }
-      // A superseded final can correct words still in this display window.
-      // Only the current onset can start or renew the window.
-      if (sample.onset < this.latestOnset) {
-        if (partial?.visible && words.length) this.committed = transcriptTail(this.committed + " " + sample.text);
-        return;
-      }
+      // Always retire a final, even if its words are too late for display.
+      // A different onset's audio or words cannot extend this onset's deadline.
+      if (superseded && (!onset || now >= onset.freshUntil)) return;
     }
-    if (!words.length) return;
-    const highestCounts = partial?.highestCounts ?? new Map<string, number>();
-    const fresh = recordWordCounts(words, highestCounts);
-    const visible = fresh || partial?.visible === true;
+    if (!words.length || !onset) return;
+    const fresh = recordWordCounts(words, onset.highestCounts);
+    if (fresh) {
+      onset.visible = true;
+      onset.freshUntil = now + VISIBLE_MS;
+      this.expiresAt = onset.freshUntil;
+      this.phase ??= "words";
+    }
+    const visible = onset.visible;
     if (visible && sample.onset === this.latestOnset) this.phase = "words";
-    if (fresh) this.expiresAt = now + VISIBLE_MS;
-    if (fresh) this.phase ??= "words";
     if (sample.final) {
       if (visible) this.committed = transcriptTail(this.committed + " " + sample.text);
-    } else {
-      if (fresh) this.partials.set(sample.onset, { highestCounts, visible });
-      // Bound unfinished decodes if a listener never sends finals.
-      if (this.partials.size > MAX_UNFINISHED_ONSETS) {
-        this.finalizedThrough = this.partials.keys().next().value!;
-        this.partials.delete(this.finalizedThrough);
-      }
-      if (visible) {
-        this.interim = sample.text;
-        this.interimOnset = sample.onset;
-      }
+    } else if (visible) {
+      this.interim = sample.text;
+      this.interimOnset = sample.onset;
     }
   }
 }

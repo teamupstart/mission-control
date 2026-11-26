@@ -773,6 +773,9 @@ test("delayed finals from expired onsets cannot reopen or extend the live transc
   h.advance(1);
   assert.equal(h.published.at(-1)?.transcript, undefined);
   send({ phase: "audio", onset: 4 });
+  h.advance(4999);
+  send({ phase: "audio", onset: 4 }); // Audio heartbeats cannot renew this onset.
+  h.advance(1);
   send({ phase: "audio", onset: 5 });
   send({ phase: "words", onset: 4, text: "another delayed final", final: true });
   assert.equal(h.store.state().transcript?.text, "");
@@ -781,4 +784,25 @@ test("delayed finals from expired onsets cannot reopen or extend the live transc
   send({ phase: "words", onset: 5, text: "...", final: true });
   send({ phase: "words", onset: 5, text: "delayed partial" });
   assert.equal(h.store.state().transcript, undefined);
+});
+
+test("a recent final-only onset shows the live transcript after the next audio onset", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-final-only-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (sample: TranscriptSample) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, sample), true);
+
+  send({ phase: "audio", onset: 1 });
+  h.advance(4999);
+  send({ phase: "audio", onset: 2 });
+  send({ phase: "words", onset: 1, text: "short phrase", final: true });
+  assert.equal(h.store.state().transcript?.text, "short phrase");
+  h.advance(4999);
+  assert.equal(h.store.state().transcript?.text, "short phrase");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
 });

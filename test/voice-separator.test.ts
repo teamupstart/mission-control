@@ -188,6 +188,21 @@ test("with the Cancel window Off, a separated Stop is sent only after the messag
   assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop"]);
 });
 
+test("with the Cancel window on, a separated Stop followed by Cancel never interrupts the agent", async t => {
+  const { say, cards, delivered, pending } = harness(t);
+  assert.equal(await say("Steve, stop, bagel, cancel"), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered, [], "the capture already held the Cancel when the Stop was routed");
+  assert.deepEqual([...cards.values()].map(card => [card.parts[0]?.target?.name, card.state]), [["Steve", "cancelled"]]);
+  // Without a Cancel, Stop still acts as soon as the capture has routed, and a message after it
+  // keeps its own countdown.
+  assert.equal(await say("Steve, stop, bagel, Carol, run the tests"), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(delivered.map(({ name, text, command }) => [name, command ?? text]), [["Steve", "stop"]]);
+  assert.deepEqual(pending().map(card => [card.parts[0]?.target?.name, card.parts[0]?.text, card.deadline !== null]),
+    [["Carol", "run the tests", true]]);
+});
+
 test("a Cancel after a part that opened no message cancels nothing and leaves earlier messages pending", async t => {
   const { router, say, pending } = harness(t);
   await say("Steve, check the build, bagel, then report status, bagel, cancel");

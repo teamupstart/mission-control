@@ -694,9 +694,15 @@ export class VoiceRouter {
     }
   }
 
-  /** Sends a separated capture's held cards one after another, so a later Stop never overtakes. */
+  /** Releases a separated capture's held cards one after another, so a later Stop never overtakes. */
   private async sendHeldInOrder(cardIds: string[]): Promise<void> {
-    for (const cardId of cardIds) if (this.open.has(cardId)) await this.sendNow(cardId);
+    for (const cardId of cardIds) {
+      const item = this.open.get(cardId);
+      if (!item) continue;
+      const sent = this.releasePending(item);
+      if (sent) await sent;
+      else this.publish(item.card);
+    }
   }
 
   private async routeSeparatedParts(utterance: VoiceUtterance, split: SeparatedCapture, heldSends: Set<string>): Promise<boolean> {
@@ -1328,36 +1334,48 @@ export class VoiceRouter {
     if (card.state === "pending") {
       const window = this.window();
       card.openQuestions = this.openQuestionCount(card);
-      if (!window.enabled && item.heldSends && this.activeHolds.has(item.heldSends)) {
-        // A separated capture is still routing. Nothing it opens is sent yet, Stop included: a
-        // Cancel later in the capture must reach its card first, and every action then goes out
-        // in spoken order once the capture's parts are done.
+      // A separated capture is still routing. Nothing it opens may act yet - an immediate Stop
+      // or, with the Cancel window Off, an immediate send: a Cancel later in the capture must
+      // reach its card first. The capture releases its held cards in spoken order when done.
+      const actsNow = !window.enabled || !!item.commands?.includes("stop");
+      if (actsNow && item.heldSends && this.activeHolds.has(item.heldSends)) {
         item.heldSends.add(card.id);
         this.publish(card);
         return;
       }
-      if (card.parts.length > 1 && item.commands?.includes("stop")) {
-        card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
-        const delivery = this.newDelivery(item);
-        const { signal } = this.lifetime;
-        const stops = card.parts.flatMap((_, index) => item.commands?.[index] === "stop"
-          ? [this.deliverPart(delivery, index, "stop", () => !signal.aborted)] : []);
-        const done = Promise.all(stops).then(() => {
-          if (this.open.get(card.id) !== item) return;
-          item.card = { ...card, parts: delivery.card.parts.map((part, index) => ({ ...part, ...delivery.results[index] })) };
-          this.publish(item.card);
-        });
-        item.splitStops = { delivery, done };
-      }
-      const stopsOnly = card.parts.every((_, index) => item.commands?.[index] === "stop");
-      if (stopsOnly || !window.enabled) { void this.sendNow(card.id); return; }
-      const ms = window.seconds * 1000;
-      card.windowMs = ms;
-      card.deadline = Date.now() + ms;
-      this.armCountdown(item, ms);
+      if (this.releasePending(item, window)) return;
     }
     this.publish(card);
     if (card.state === "unsure" && !item.questionPick && this.open.get(card.id) === item) this.speech?.unsure(card);
+  }
+
+  /**
+   * Starts what an open pending card does now: deliver its Stop parts, send it at once (only
+   * Stops, or the Cancel window Off), or arm its countdown. Returns the send when it went out at
+   * once; otherwise the caller publishes the card with its countdown.
+   */
+  private releasePending(item: OpenCard, window = this.window()): Promise<boolean> | undefined {
+    const { card } = item;
+    if (card.parts.length > 1 && item.commands?.includes("stop")) {
+      card.parts = card.parts.map((part, i) => item.commands?.[i] === "stop" ? { ...part, immediateStop: true } : part);
+      const delivery = this.newDelivery(item);
+      const { signal } = this.lifetime;
+      const stops = card.parts.flatMap((_, index) => item.commands?.[index] === "stop"
+        ? [this.deliverPart(delivery, index, "stop", () => !signal.aborted)] : []);
+      const done = Promise.all(stops).then(() => {
+        if (this.open.get(card.id) !== item) return;
+        item.card = { ...card, parts: delivery.card.parts.map((part, index) => ({ ...part, ...delivery.results[index] })) };
+        this.publish(item.card);
+      });
+      item.splitStops = { delivery, done };
+    }
+    const stopsOnly = card.parts.every((_, index) => item.commands?.[index] === "stop");
+    if (stopsOnly || !window.enabled) return this.sendNow(card.id);
+    const ms = window.seconds * 1000;
+    card.windowMs = ms;
+    card.deadline = Date.now() + ms;
+    this.armCountdown(item, ms);
+    return undefined;
   }
 
   // Claim synchronously before delivery can yield, so a timer and a button can't both send.

@@ -61,10 +61,12 @@ export function RailRow({
   pipelineCommission = null,
   pipelineCommissionRun = null,
   onOpenPipelineCommission,
+  callSign,
   resident = null,
   stall = null,
 }: {
   session: Session;
+  callSign?: string;
   /**
    * The ⌘-number jump chord this rail POSITION answers to, or null when it holds no slot -
    * a thirteenth row, or an operator with the display item switched off.
@@ -166,7 +168,7 @@ export function RailRow({
   // The priority mark is aria-hidden, and the state word says only "working", so the priority
   // session is named here, or a screen reader cannot tell it from the rest of the rail.
   const ordinaryName = session.name || resident?.name || "(unnamed)";
-  const cardName = residentActionName(resident, ordinaryName);
+  const cardName = callSign ?? residentActionName(resident, ordinaryName);
   const description = `${cardName} - ${st.label}${priority ? ". Priority session" : ""}${
     residentMark ? `. ${residentMarkTitle(residentMark)}` : ""
   }${sectionNavigation ? ". Press Home to focus the section heading." : ""}`;

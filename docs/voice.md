@@ -1062,6 +1062,14 @@ annotation, like priority: nothing is provisioned from it, so an update may set 
 the agent runs. `POST /api/tasks` and `POST /api/tasks/:id/update` accept it, and so do the MCP
 `create_task` and `update_task` tools; `get_task` and `list_tasks` report it.
 
+While Voice can hear you, a session with a call sign is titled by it on its Board card and its
+Console rail row, and its Open button and the fleet filter use the same name. That is while
+Always-on is listening, and in Push-to-talk both while waiting for the shortcut and while it is
+held, since the next hold may address any agent. Muted, auto-muted for a call, not listening and
+Voice off keep the session's ordinary title, as does a session without a call sign. Resident
+cards follow the same rule with their [reference names](#reference-names)
+(`voiceCardsShowSpokenNames` in `src/shared/voice.ts`).
+
 A resident's task takes no call sign: the resident answers to its profile's names, and the roster
 would leave a call sign out while its card printed it. Creating or updating one with a call sign
 is refused (`taskKindTakesCallSign` in `src/shared/voice-names.ts`), and the display name never

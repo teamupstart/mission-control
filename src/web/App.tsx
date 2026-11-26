@@ -15,7 +15,7 @@ import { useVoiceSurface, VoiceCardOutlet, voicePortal } from "./components/Voic
 import { VoiceCardHost } from "./components/VoiceCardHost.tsx";
 import { launchResident } from "./residents/launch.ts";
 import { VoiceIndicator, VoiceWindowProvider } from "./components/VoiceIndicators.tsx";
-import { VOICE_FLAG, voiceCapable } from "@shared/voice.ts";
+import { VOICE_FLAG, voiceCapable, voiceCardsShowSpokenNames } from "@shared/voice.ts";
 import { mutedAuthorKeys, replyTarget, reportToRead, type ReportItem as AgentReport } from "@shared/reports.ts";
 import type { ReportEntryControls } from "./lib/sessionReports.ts";
 import { clearReportDraft } from "./lib/reportDrafts.ts";
@@ -23,7 +23,7 @@ import { ResidentNamesContext } from "./lib/agent-names.ts";
 import { useVoiceOpenCards, VoiceAnswersContext } from "./lib/voice-open-cards.ts";
 import { VoiceHintsContext } from "./lib/agent-names.ts";
 import { NO_SPOKEN_NAMES, VoiceRosterContext } from "./lib/voice-roster.ts";
-import { withCurrentReferenceNames } from "@shared/display-name.ts";
+import { sessionCallSign, withCurrentReferenceNames } from "@shared/display-name.ts";
 
 import { isFrozen } from "@shared/pause.ts";
 import { taskHasRepository } from "@shared/task.ts";
@@ -1514,18 +1514,27 @@ export function App(): React.JSX.Element {
    * The live residents in the order the drawer, the dock and `⌥1`…`⌥9` share. One derivation
    * for the drawer's cards, the jump keys and the palette's resident rows.
    */
-  const listening = voice?.mode === "listening";
+  const spokenCardNames = voiceCardsShowSpokenNames(voice);
   // Which sessions are residents, joined through their task to the live run that launched
   // them: the marker and pin from that run's pinned revision. One join, handed to every
   // layout, and its pins reach `orderSessions` here and in both views from the same map.
   const residentBySession = useMemo(
-    () => residentMarksBySession(sessions, residentRuns, residentProfiles, listening),
-    [sessions, residentRuns, residentProfiles, listening],
+    () => residentMarksBySession(sessions, residentRuns, residentProfiles, spokenCardNames),
+    [sessions, residentRuns, residentProfiles, spokenCardNames],
   );
   const residentEntries = useMemo(
-    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, listening, residentBySession),
-    [residentRuns, residentProfiles, sessions, listening, residentBySession],
+    () => residentDrawerEntries(residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession),
+    [residentRuns, residentProfiles, sessions, spokenCardNames, residentBySession],
   );
+  const cardCallSigns = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!spokenCardNames) return out;
+    for (const session of sessions) {
+      const callSign = sessionCallSign(session);
+      if (callSign) out.set(session.id, callSign);
+    }
+    return out;
+  }, [sessions, spokenCardNames]);
   // The filter and both card surfaces share each run's feedback across menu and card unmounts.
   const [residentLoopFeedback, setResidentLoopFeedback] = useState<ReadonlyMap<string, ResidentLoopFeedback>>(() => new Map());
   const updateResidentLoopFeedback = useCallback((runId: string, feedback: ResidentLoopFeedback) => {
@@ -3056,7 +3065,7 @@ export function App(): React.JSX.Element {
       : sessions;
     const matched = !fleetQuery ? placed : placed.filter((session) => {
       const mark = residentBySession.get(session.id);
-      if (!mark) return matchesSessionFilter(session, fleetQuery);
+      if (!mark) return matchesSessionFilter(session, fleetQuery, [cardCallSigns.get(session.id)]);
       const residentFields = [mark.listeningTitle ?? "", mark.name, mark.label, residentMarkTitle(mark), mark.pin ? "⤒" : null];
       if (placement.visitors.has(session.id)) {
         residentFields.push(RESIDENT_VISITOR_NOTE, "needs you");
@@ -3079,7 +3088,7 @@ export function App(): React.JSX.Element {
       matched, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey, pinnedResidents, blockedPlacement,
       awaitingIds, stalledById,
     );
-  }, [sessions, placement, fleetQuery, residentBySession, residentSearchNow, residentActiveHours,
+  }, [sessions, placement, fleetQuery, cardCallSigns, residentBySession, residentSearchNow, residentActiveHours,
     residentLoopFeedback, layout, heldIds, groupByRepo, pipelineCommissionById, pipelineRunByKey,
     pinnedResidents, blockedPlacement, awaitingIds, stalledById]);
   const visible = fleet.sessions;
@@ -4044,6 +4053,7 @@ export function App(): React.JSX.Element {
     pipelineRunByKey,
     pipelineCommissionById,
     cardShortcutBySession: cardShortcuts,
+    cardCallSignBySession: cardCallSigns,
     residentBySession,
     residentLoopFeedbackFor: (runId) => ({
       value: residentLoopFeedback.get(runId),

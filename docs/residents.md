@@ -224,7 +224,8 @@ is already running.
 - **Hiding the marker.** **Settings → Display → Session display → Resident marker** takes the
   glow and chip off cards and rail rows. The pin still applies, and the Console band and the
   dock still name the resident.
-- **Resident name beside the call sign (preview).** While voice is listening, a resident with a
+- **Resident name beside the call sign (preview).** While voice can hear you (Always-on listening,
+  or Push-to-talk waiting for the shortcut or held), a resident with a
   [reference name](voice.md#reference-names) is titled on its Board card by that call sign in
   double quotes. With the **Resident names on cards** preview (`resident-card-names`) on,
   **Settings → Display → Board card → Resident name with call sign** offers two checkboxes
@@ -270,7 +271,8 @@ and count.
   **Manage residents**, which opens the Residents page to author, edit and archive profiles.
 - **Cards.** One card per live resident, in its marker color, in the order the dock uses. The
   top line holds the chip, the name, a state dot, the resident's **⌥**-number and a fold caret.
-  While voice is listening, a configured reference name appears in double quotes as the card title.
+  While voice can hear you (Always-on listening, or Push-to-talk waiting for the shortcut or held),
+  a configured reference name appears in double quotes as the card title.
   When live residents share a reference name, their drawer and Console entries include the ordinary
   title in parentheses. Board Open buttons announce the same distinction.
   Without a reference name, the card keeps its usual title.

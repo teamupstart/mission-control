@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
 import { test, expect } from "../fixtures/test.ts";
-import { beListener, enableVoice, voiceToken } from "../fixtures/voice.ts";
+import { beListener, enableVoice, reportVoiceHold, voiceToken } from "../fixtures/voice.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { openVoiceTab } from "../fixtures/voice-settings.ts";
@@ -22,16 +22,7 @@ test("Push-to-talk indicators show hold and release guidance with or without the
     const { state } = await (await page.request.get(daemon.baseURL + "/api/voice/mute")).json();
     await page.goto(daemon.baseURL);
     const indicator = page.locator(".app > .vi-floating");
-    const report = async (held: boolean) => {
-      const at = voiceHostTimeUs();
-      const response = await page.request.post(daemon.baseURL + "/voice/shell-report", {
-        headers: { "x-harness-token": voiceToken(daemon) },
-        data: { registeredHotkey: state.configuredHotkey, pushToTalkSession: state.pushToTalkSession,
-          capabilities: { hotkey: { available: true } }, reportedAtHostUs: at, pushToTalk: held,
-          ...(held ? { pushToTalkPressedAtHostUs: at } : { pushToTalkReleasedAtHostUs: at }) },
-      });
-      expect(response.ok()).toBe(true);
-    };
+    const report = (held: boolean) => reportVoiceHold(daemon, state, held);
     for (const held of [false, true, false]) {
       await report(held);
       await expect(indicator.getByText(held ? "Listening while held" : "Waiting for hotkey", { exact: true })).toBeVisible();

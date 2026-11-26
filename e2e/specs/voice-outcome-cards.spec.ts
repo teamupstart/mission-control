@@ -655,6 +655,6 @@ test("a nonblocking question after daemon restart leaves the spoken turn queued 
     const session = sessions.find(s => s.id === steve.id);
     return [session?.pendingReviews, session?.openQuestions, session?.pendingTurns.map(turn => turn.spokenWords)];
   }).toEqual([0, 1, ["check the release"]]);
-  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: steve.name }).first()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: steve.task!.callSign! }).first()).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "Held for Steve" })).toHaveCount(0);
 });

@@ -359,7 +359,11 @@ final class InputSegmenter {
 
     func finish(at release: Int64) -> Segment? {
         expireInterrupted()
-        defer { interrupted.removeAll() }
+        // Key-up after a gap cannot recover the speech it interrupted. Report it as dropped.
+        defer {
+            for prior in interrupted where release > prior.through { prior.speech.interrupt() }
+            interrupted.removeAll()
+        }
         if let prior = interrupted.first(where: { release <= $0.through }) {
             return prior.speech.finish(at: release)
         }
@@ -490,13 +494,36 @@ final class InputSegmenter {
 // The tap owns this FIFO while the key is down. Inference and a slow daemon never
 // block its producer. Record when the first excess sample ends so the release
 // timestamp can settle overflow without ever storing more than the limit.
+//
+// One hold is one message. Silence still ends a phrase so each decode stays within the
+// recognizer's limit, but only the hold's first onset is reported, and the phrases are
+// joined into one transcript at release. Speech lost inside the hold discards all of it.
 struct HeldSpeech {
     private let limit: Int
     private var sampleCount = 0
     private var segments: [Segment] = []
     private var firstExcessEndNs: Int64?
+    /// The first voiced sample of the hold, which names its one message to the daemon.
+    private(set) var onset: Int64?
+    /// An input gap or the phrase limit discarded speech recorded during this hold.
+    private(set) var lost = false
 
     init(limit: Int = 120 * 16_000) { self.limit = limit }
+
+    var phrases: [Segment] { segments }
+
+    /// True only for the first onset. Later phrases of the same hold belong to its message.
+    mutating func begin(_ onset: Int64) -> Bool {
+        guard self.onset == nil else { return false }
+        self.onset = onset
+        return true
+    }
+
+    /// Marks the hold incomplete. Returns its onset the first time, to settle its one reservation.
+    mutating func drop() -> Int64? {
+        defer { lost = true }
+        return lost ? nil : onset
+    }
 
     mutating func append(_ segment: Segment) {
         guard firstExcessEndNs == nil else { return }
@@ -511,6 +538,7 @@ struct HeldSpeech {
     }
 
     func finish(at release: Int64) -> [Segment]? {
+        if lost { return nil }
         if let end = firstExcessEndNs, release >= (end + 999_999) / 1_000_000 { return nil }
         return segments.compactMap { $0.through(release) }
     }
@@ -519,6 +547,13 @@ struct HeldSpeech {
 final class Microphone {
     private let engine: AVAudioEngine
     var preview: Segment? { tapLock.withLock { segmenter?.preview } }
+    /// The whole hold so far, for a live preview that keeps the words before each pause.
+    var heldPreview: HeldPreview? {
+        tapLock.withLock {
+            guard let held = heldSpeech, !held.lost, let onset = held.onset else { return nil }
+            return HeldPreview(onset: onset, completed: held.phrases, open: segmenter?.preview)
+        }
+    }
     var isRunning: Bool { engine.isRunning }
     private var configurationObserver: NSObjectProtocol?
     private let tapLock = NSLock()
@@ -569,7 +604,12 @@ final class Microphone {
         let input = engine.inputNode
         let source = input.outputFormat(forBus: 0)
         guard !input.isVoiceProcessingEnabled else { throw CaptureError.format }
-        segmenter = try InputSegmenter(source: source, held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: onSegmentDropped)
+        // Every drop is reported while the tap lock is held, so the hold's state needs no other lock.
+        let dropped: SegmentDropped = held ? { [weak self] _, reason in
+            guard let self, let onset = self.heldSpeech?.drop() else { return }
+            onSegmentDropped(onset, reason)
+        } : onSegmentDropped
+        segmenter = try InputSegmenter(source: source, held: held, endOfSpeechMs: endOfSpeechMs, limit: limit, onSegmentDropped: dropped)
         input.installTap(onBus: 0, bufferSize: 1024, format: source) { [weak self] buffer, when in
             guard let self else { return }
             self.consume(buffer, at: when)
@@ -607,7 +647,10 @@ final class Microphone {
     func consume(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
         let finish = tapLock.withLock { () -> (@MainActor () -> Void)? in
             guard let segmenter else { return nil }
-            for segment in segmenter.consume(buffer, at: when, cutoff: cutoff, onSpeechStart: onSpeechStart) {
+            let started: (Int64) -> Void = heldSpeech == nil ? onSpeechStart : { onset in
+                if self.heldSpeech?.begin(onset) == true { self.onSpeechStart(onset) }
+            }
+            for segment in segmenter.consume(buffer, at: when, cutoff: cutoff, onSpeechStart: started) {
                 enqueue(segment)
             }
             guard let cutoff, segmenter.covers(cutoff) else { return nil }
@@ -655,7 +698,8 @@ final class Microphone {
             if heldSpeech == nil { return final.map { [$0] } ?? [] }
             if let final { heldSpeech?.append(final) }
             if let captured = heldSpeech?.finish(at: releasedAt) { return captured }
-            fputs("Voice listener discarded a push-to-talk hold exceeding the audio buffer limit.\n", stderr)
+            fputs(heldSpeech?.lost == true ? "Voice listener discarded a push-to-talk hold that lost speech.\n"
+                  : "Voice listener discarded a push-to-talk hold exceeding the audio buffer limit.\n", stderr)
             return []
         }
     }

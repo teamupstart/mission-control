@@ -23,8 +23,8 @@ an editor to address a session. Names and commands such as “cancel” are ordi
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
-recognizes speech locally. You can speak for up to a minute, then pause or release push-to-talk
-to review the complete message. The standalone sherpa-onnx listener recognizes recordings on macOS
+recognizes speech locally. You can speak for up to a minute, then pause in Always-on or release
+push-to-talk to review the complete message. The standalone sherpa-onnx listener recognizes recordings on macOS
 and Linux. The corner confirmation card names the recipient and shows the spoken words.
 Long transcripts scroll inside the card so you can still see the recipient and reach Cancel or Send now.
 Tab to an overflowing transcript and use the arrow keys or End to read it. The countdown bar and
@@ -79,10 +79,14 @@ waits for more speech. The default is 2 seconds. Speaking again before the delay
 the words in the same utterance. Changes take effect while listening and persist after restart.
 **Listening mode** defaults to **Always-on**. Choose **Push-to-talk** to keep the
 microphone closed between holds. Hold the configured desktop hotkey to speak and
-release it to finish the utterance, including during calls. A missing shortcut
+release it to finish the utterance, including during calls. Release is the only thing
+that ends a hold's message: a pause of any length while the key is down keeps the words before
+and after it together, in order, and nothing reaches Recently heard, a confirmation card or a
+session until key-up. Each hold is a new message, routed on its own words, so two holds can
+address two agents. A missing shortcut
 or disconnected desktop keeps capture off. A missing key-up discards the hold
-after two minutes. Tap-to-mute, manual mute, call auto-mute, and the automatic
-end-of-speech delay apply to Always-on. Switching back restores their saved values.
+after two minutes. Tap-to-mute, manual mute, call auto-mute, the automatic
+end-of-speech delay and the separator word apply to Always-on. Switching back restores their saved values.
 
 In Always-on, a **Separator word** (`separatorWord`, default **bagel**) ends one message and
 starts the next without a pause. “Steve, check the build, bagel, Carol, give me a report on the
@@ -104,7 +108,8 @@ capture that starts with it addresses that agent, and the word still separates e
 The daemon applies the separator to the final transcript, so it works with every listener
 backend and the live transcript and dictation previews show what was said, separator included.
 While a text field has focus, the word is ordinary draft text, like names and “cancel”. In
-Push-to-talk, and during a held key in a call, the separator has no control function: key
+Push-to-talk, and during a held key in a call, the separator is ordinary speech: “Steve, check the
+build, bagel, then run the tests” in one hold sends all of it, “bagel” included, to Steve. Key
 release ends the utterance and the next hold starts another.
 
 The separate **Cancel window** starts after routing.
@@ -285,8 +290,14 @@ Its final `words` update carries `final: true` to replace the last partial and r
 words when the next phrase starts.
 
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
-response header. The native helper retains completed phrases in capture order and decodes
-them after a confirmed release. It can retain up to 120 seconds of segmented PCM per hold.
+response header. During a hold the helper still ends a recognition phrase after 800 ms of
+silence, so each decode stays within the recognizer's limit, but those phrases are internal. It
+reports only the hold's first speech onset, retains the phrases in capture order, and after a
+confirmed release decodes each one and posts their joined text as a single utterance. Its word
+timings are measured from the first phrase's first sample, and its capture bounds run from that
+phrase's start through the last phrase's end. The live transcript and a dictation preview show
+the whole hold so far under that one onset: the helper decodes each completed phrase once and
+the open phrase on every pass. It can retain up to 120 seconds of segmented PCM per hold.
 The first excess sample's timestamp lets the helper apply key-up before deciding overflow.
 If the held audio exceeds the limit, the helper discards the entire hold and reports it on stderr.
 When releasing push-to-talk returns Voice to waiting for the hotkey or to call auto-mute, the capture-off response includes
@@ -308,6 +319,9 @@ During push-to-talk the helper retains the interrupted prefix for up to two seco
 If delayed key-up falls on or before the last contiguous sample boundary, the helper
 can finish the phrase using only samples through release. A key-up in the gap discards it.
 If the gap falls between utterances, the helper clears the lead-in and accepts the next phrase immediately.
+Because a hold is one message, speech a hold loses to a gap or to the per-phrase capture limit
+discards the whole hold rather than delivering the rest without it. The helper settles the
+hold's onset once, with the capture-limit notice when that was the cause, and reports the discard on stderr.
 
 The shell timestamps every snapshot, including idle heartbeats, at observation time with
 `reportedAtHostUs`. This strictly increasing integer counts microseconds on the shared
@@ -853,9 +867,10 @@ search result opens the tab that holds its control before highlighting it.
 | **Recently heard** | The utterances voice heard, how each was matched and what happened, and Clear |
 
 In Push-to-talk, End-of-speech delay, Separator word, Auto-mute on calls and Ask aloud are
-disabled, and each says why: End-of-speech delay and Separator word read “Push-to-talk ends on
-key release.”, Auto-mute on calls reads “Applies to Always-on listening.”, and Ask aloud reads
-“Ask aloud requires Always-on listening.”
+disabled and keep their saved values, and each says why: End-of-speech delay reads “Applies to
+Always-on listening. Push-to-talk ends on key release.”, Separator word reads “Applies to Always-on
+listening. In Push-to-talk the word is ordinary speech.”, Auto-mute on calls reads “Applies to
+Always-on listening.”, and Ask aloud reads “Ask aloud requires Always-on listening.”
 
 **Input device** chooses the microphone (`inputDevice`): **Built-in microphone**
 (`built-in`, the default), **macOS default input** (`system-default`), or one of the devices the
@@ -868,7 +883,7 @@ interprets the id.
 **Separator word** (`separatorWord`, default `bagel`) follows End-of-speech delay under
 **Listening > Ending a message**. In Always-on it ends one message and starts the next without a
 pause, as described at the top of this page. It is disabled in Push-to-talk, where key release ends
-the utterance.
+the utterance and the word is ordinary speech.
 
 | Row | Tab | Field | Default |
 | --- | --- | --- | --- |
@@ -1326,6 +1341,21 @@ No-Mistakes Review run `a34548e5-84be-44e2-b104-df06c5fa0eff` retains the result
 To repeat the measurement, follow
 [macOS voice build and tests](../CONTRIBUTING.md#macos-voice-build-and-tests) and run the
 [long-capture spec](../e2e/specs/voice-long-capture.spec.ts).
+
+The [push-to-talk hold spec](../e2e/specs/voice-push-to-talk-hold.spec.ts) drives the same
+release listener with two dedicated holds. The first holds through a 3.5-second pause, longer than
+the saved one-second delay, and says “bagel”; the second addresses another agent. While each key
+is down it samples Recently heard, the pending cards and the session receipts and requires that
+none changes. It then checks one message per hold with every word in order, a live transcript that
+kept the words from before the pause, delivery of each message to its own session, and the
+disabled Always-on settings still holding their saved values. A second test plays the same kind of
+audio in Always-on and checks that the delay still ends a message and the separator still splits one.
+`native/voice-listener/Tests/VoiceListenerTests/HeldMessageTests.swift` covers the hold's single
+onset, the joined message and its timings, the cached preview and the discard of a hold that lost speech
+to an input gap or to a later phrase passing the capture limit, with the hold's onset settled once.
+`test/voice-listener-lifecycle.test.ts` checks that the listener then reports the capture limit once
+for the hold and posts nothing, and `test/voice-state.test.ts` that each hold's live transcript starts
+empty, keeps its words through a pause and clears at key-up.
 
 - `test/voice-state.test.ts`: `voiceMode` for each mode, the reasons, a hello and a shell report
   lapsing, and a refused protocol version.

@@ -646,6 +646,43 @@ test("live transcript is ephemeral, grant-bound and replaces partial hypotheses 
   h.store.reset();
 });
 
+test("in Push-to-talk each hold's live transcript is its own, survives a pause and clears at key-up", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-hold-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory, config: { listeningMode: "push-to-talk" } });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const report = (patch: Partial<VoiceShellReport> = {}) => {
+    h.advance(1);
+    h.store.acceptShellReport({ ...REPORT, registeredHotkey: VOICE_CONFIG_DEFAULTS.hotkey,
+      capabilities: { hotkey: { available: true, reason: null } },
+      pushToTalkSession: h.store.state().pushToTalkSession, reportedAtHostUs: h.hostNowUs(), ...patch });
+  };
+  const press = () => report({ pushToTalk: true, pushToTalkPressedAtHostUs: h.hostNowUs() + 1 });
+  const words = (revision: string, onset: number, text: string) =>
+    h.store.reportTranscript(listenerId, revision, { phase: "words", onset, text });
+  report();
+  press();
+  const first = h.store.directive();
+  assert.ok(first.capture);
+  // The listener names a whole hold by its first onset, so words after a pause extend the same text.
+  assert.equal(words(first.revision, 1, "Steve, check the build."), true);
+  h.advance(3500);
+  assert.equal(words(first.revision, 1, "Steve, check the build. Then, bagel, run the tests"), true);
+  assert.equal(h.store.state().transcript?.text, "Steve, check the build. Then, bagel, run the tests");
+  report({ pushToTalkReleasedAtHostUs: h.hostNowUs() });
+  assert.equal(h.store.state().mode, "waiting-for-key");
+  assert.equal(h.store.state().transcript, undefined, "key-up clears the hold's words");
+  assert.equal(words(first.revision, 1, "late words"), false, "a released hold cannot write to the overlay");
+  press();
+  const second = h.store.directive();
+  assert.notEqual(second.revision, first.revision);
+  assert.equal(h.store.state().transcript, undefined, "a new hold starts with nothing on screen");
+  assert.equal(words(first.revision, 1, "late words"), false, "nor can the previous hold write into the new one");
+  assert.equal(words(second.revision, 2, "Carol, give me a report"), true);
+  assert.equal(h.store.state().transcript?.text, "Carol, give me a report");
+});
+
 test("only new recognized words move the live transcript's five-second deadline", t => {
   const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-deadline-"));
   t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));

@@ -59,7 +59,7 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
       <div className="kb-row-text">
         <label className="kb-row-label" htmlFor="voice-separator">Separator word</label>
         <span className="kb-row-desc">{dedicated
-          ? "Push-to-talk ends on key release."
+          ? "Applies to Always-on listening. In Push-to-talk the word is ordinary speech."
           : <>Say it between two messages to send both without pausing. Example: “Steve, check the build, {saved}, Carol, report status.”</>}
         {!dedicated && callSign && <> “{callSign.name}” is also a call sign, so a capture that starts with it addresses that agent.</>}</span>
         {problem && <span className="settings-error voice-separator-error" role="alert">{problem}</span>}

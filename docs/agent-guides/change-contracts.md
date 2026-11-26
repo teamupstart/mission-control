@@ -229,6 +229,19 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   reinterpreted. The `shaping` settings backup domain id is final, and its surface is
   `settings` (`src/shared/settings-backup-domains.ts`).
   See [Task shaping](../task-shaping.md)
+- Shaper sign-in's client registrations, `app_config` key `shaping.signIn`
+  (`ShapingSignInConfigSchema` in `src/shared/shaping.ts`): `{ clients: [{ issuer, clientId,
+  redirectUri, scope, registeredAt }] }`, at most `SHAPING_SIGN_IN_CLIENTS` (16). The key name is
+  final. Value class `operational`, in no backup domain, so a settings snapshot never carries it;
+  it holds no token and no secret. The sign-in service in `src/server/shaping/sign-in/service.ts`
+  is its only writer. A registration is reused only by a sign-in with the same issuer, redirect
+  URI and scope, so the key never holds two with the same three values. One that a held record or
+  a pending sign-in names is never dropped to make room: at the limit `begin` drops the oldest
+  that nothing names, refuses with `registration_limit` when every one is named, and with
+  `store_unread` when the last load of the store was incomplete. A registration also leaves the
+  key when the authorization server rejects its client. The connection id
+  (`connectionId` in `src/server/shaping/sign-in/connection.ts`, the first 32 hex characters of
+  the SHA-256 of the target's canonical JSON) names each stored sign-in and is final too
 - Telemetry export shape ids (`TELEMETRY_EXPORT_SHAPE_IDS` in `src/shared/telemetry.ts`, with
   the records in `src/shared/telemetry-export-shapes.ts`) - persisted as `exportShape` on each
   destination in the telemetry config blob and read back by exact value through the config

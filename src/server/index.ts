@@ -12,6 +12,7 @@ import { BUG_FIX_INSPECTOR_FLAG_ID, SESSION_AWAITING_FLAG_ID } from "@shared/fea
 import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
+import { startShaperSignIns } from "./shaping/sign-in/index.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
@@ -563,6 +564,9 @@ let stopSettingsBackups = () => {};
 // SQLite database through SQLite itself and are never restored by the running daemon.
 const databaseBackups = new DatabaseBackupService(database);
 let stopDatabaseBackups = async () => {};
+// Shaper sign-in: held tokens and their background refresh. It starts once this process wins
+// the port, because a refresh spends a single-use refresh token.
+let stopShaperSignIns = async () => {};
 // The storage aggregate behind Settings > Storage. It recomputes after every capture and prune,
 // and the backup loop's startup prune seeds it.
 // The state directory's measured size and its volume's free space. `storageHealth` is assigned
@@ -990,6 +994,8 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     console.warn(`[mission-control] database backup leftovers were not removed: ${reason}`);
   }
   stopDatabaseBackups = startDatabaseBackupLoop(databaseBackups);
+  // After the shaping events are wired at module load. With either flag off it reads nothing.
+  stopShaperSignIns = startShaperSignIns();
   // The first walk waits out startup's own disk work; then one every six hours, and the free
   // space every minute, which is cheap and is what a low-space warning needs to be timely.
   stopStorageUsage = storageUsage.start({
@@ -1167,6 +1173,7 @@ async function shutdown(): Promise<void> {
   const stoppingWorkflows = workflows.stop();
   await stopDatabaseBackups();
   await databaseBackups.stop();
+  await stopShaperSignIns();
   stopStorageUsage();
   stopSettingsBackups();
   stopPoller();

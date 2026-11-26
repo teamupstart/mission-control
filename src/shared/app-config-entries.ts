@@ -1,6 +1,6 @@
 import { SESSION_SETTINGS_ACCESS } from "./session-settings-metadata.ts";
 import { FeatureFlagsConfigSchema } from "./feature-flags.ts";
-import { ShapingConfigSchema } from "./shaping.ts";
+import { ShapingConfigSchema, ShapingSignInConfigSchema } from "./shaping.ts";
 import { VoiceConfigSchema, type VoiceConfig } from "./voice.ts";
 import { z } from "zod";
 import { ResidentSkillSourcesSchema } from "./resident-skills.ts";
@@ -406,6 +406,14 @@ export const APP_CONFIG_ENTRIES = {
   // an argument never hands over a credential: `credentialsAreReferences` in `shaping.ts`
   // refuses each on write, so the value stays in the daemon's environment and out of snapshots.
   shaping: { ...wholeEntry("shaping", ShapingConfigSchema, "setting", "shaping"), optionalInSnapshot: true },
+  /**
+   * Shaper sign-in's client registrations (`src/server/shaping/sign-in/service.ts`): issuer,
+   * client id, redirect URI, scope and registration time, at most 16. No token, no secret.
+   * `operational` with no backup domain: a registration names this daemon's loopback redirect
+   * URI, and a settings snapshot restored onto another installation must not hand it clients
+   * registered for another port and state home.
+   */
+  shapingSignIn: wholeEntry("shaping.signIn", ShapingSignInConfigSchema, "operational", null),
   /**
    * Voice settings (contract A of the voice plan), behind the `voice` preview flag. Every field
    * later phases read is declared here from the start, so none of them changes this entry.

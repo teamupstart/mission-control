@@ -41,7 +41,7 @@ Not here: the service, routes, the event, Settings. `carriers.ts`, `references.t
 ## Repository findings and inherited contracts
 
 - From Phase 4: `shaperSignIns.accessToken(target)`, synchronous, answers a token or a
-  reason by flag and by state, and `shaperSignIns.noteRefused(target)`. From Phase 3:
+  reason by flag and by state, and `shaperSignIns.noteRefused(target, token)`, with the token the call sent. From Phase 3:
   `shaperSignInTarget`, `SIGN_IN_REASONS`, and the guard this phase replaces. From Phase 1:
   the fixture's two protected resources, `/mcp` for the `mcp` transport and `/shape`, which
   answers a shaping result, for the `http` transport.
@@ -75,7 +75,7 @@ Not here: the service, routes, the event, Settings. `carriers.ts`, `references.t
 4. **A `401`.** Wrap the fetch each transport already builds so that it notes a response
    with status 401, read from the response itself and not from the SDK's error. When a
    marked shaper's call ends and a `401` was noted for it, during the handshake or the call,
-   it calls `noteRefused(target)` once and answers `unavailable` with
+   it calls `noteRefused(target, token)` once, with the token that call sent, and answers `unavailable` with
    `SIGN_IN_REASONS.refused`. It does not retry. A shaper with no marker is not touched: its
    `401` stays `failed`, with today's reason.
 5. **Docs.** In `docs/task-shaping.md`, under "A shaper that signs in", the table below and

@@ -952,8 +952,36 @@ export const SIGN_IN_REASONS = Object.freeze({
   signedOut: "This shaper is not signed in to its server, so it was not called. Sign in at Settings > Task shaping.",
   renewing: "This shaper's sign-in is being renewed, so it was not called. If it does not recover, sign in again at Settings > Task shaping.",
   refused: "This shaper's server refused its sign-in, so its reply was not used. The sign-in is being renewed; if it does not recover, sign in again at Settings > Task shaping.",
+  memoryOnly: "This sign-in could not be saved, so it is kept in memory only and a restart will need a new sign-in at Settings > Task shaping.",
+  signInAgain: "The authorization server ended this sign-in, so this shaper is not called until you sign in again at Settings > Task shaping.",
 } as const);
 export type SignInReason = keyof typeof SIGN_IN_REASONS;
+
+/** The most client registrations `app_config` key `shaping.signIn` keeps. */
+export const SHAPING_SIGN_IN_CLIENTS = 16;
+
+/**
+ * One dynamic registration Mission Control made with an authorization server: a public client,
+ * reused only by a sign-in with the same issuer, redirect URI and scope. Not a secret.
+ */
+export const ShapingSignInClientSchema = z.strictObject({
+  issuer: z.string().min(1).max(2048),
+  clientId: z.string().min(1).max(1024),
+  redirectUri: z.string().min(1).max(2048),
+  scope: z.string().min(1).max(256),
+  registeredAt: z.number().nonnegative(),
+});
+export type ShapingSignInClient = z.output<typeof ShapingSignInClientSchema>;
+
+/**
+ * `app_config.shaping.signIn`: the client registrations the sign-in service keeps, at most
+ * `SHAPING_SIGN_IN_CLIENTS`. Its own key, because `ShapingConfigSchema` drops unknown keys and
+ * an older build would delete it on its next write. It holds no token.
+ */
+export const ShapingSignInConfigSchema = z.object({
+  clients: z.array(ShapingSignInClientSchema).max(SHAPING_SIGN_IN_CLIENTS).default([]),
+}).prefault({});
+export type ShapingSignInConfig = z.output<typeof ShapingSignInConfigSchema>;
 
 /**
  * A manifest in the shapers folder: the strict definition plus whether it starts switched on.

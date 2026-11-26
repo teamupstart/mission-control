@@ -1786,6 +1786,42 @@ test("a hold that outlasts the decode budget keeps its reserved countdown until 
   assert.deepEqual(queued("Will"), []);
 });
 
+test("a held reservation that never gets its transcript releases the message at the hold limit plus the decode budget", async t => {
+  await setupOnsetCountdown(t);
+  const id = "abandoned-hold-target";
+  await say("Will check the build", id);
+  assert.equal(cards.at(-1)?.state, "pending");
+  t.mock.timers.tick(100);
+  const pressed = voiceStateStore.hostNowUs();
+  const reportKey = (down: boolean) => {
+    const now = voiceStateStore.hostNowUs();
+    return post("/voice/shell-report", { callActive: true, pushToTalk: down, reportedAtHostUs: now,
+      ...(down ? { pushToTalkPressedAtHostUs: pressed } : { pushToTalkReleasedAtHostUs: now }) }, token);
+  };
+  await reportKey(true);
+  const held = voiceStateStore.directive().revision;
+  t.mock.timers.tick(100);
+  const started = await post("/voice/listener/speech?revision=" + held,
+    { phase: "start", speechStartUs: voiceStateStore.hostNowUs() }, token);
+  assert.deepEqual(await started.json(), { accepted: true });
+  const deadline = 120_000 + 90_000; // VOICE_MAX_HOLD_MS plus the long-capture decode budget, from the onset.
+  for (let i = 0; i < 11; i++) {
+    t.mock.timers.tick(10_000);
+    await reportKey(true);
+  }
+  t.mock.timers.tick(20);
+  await reportKey(false);
+  // No transcript and no finish ever arrive for this hold.
+  t.mock.timers.tick(deadline - 110_020 - 1);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards?.map(card => card.id), [id], "the reservation holds until its combined deadline");
+  assert.deepEqual(queued("Will"), []);
+  t.mock.timers.tick(2);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(registry.snapshot().voiceCards ?? [], [], "at the deadline the unanswered reservation lets the message go");
+  assert.equal(queued("Will").length, 1);
+});
+
 test("an Always-on onset still releases its reserved countdown after the 90-second decode budget", async t => {
   const { revision } = await setupOnsetCountdown(t);
   const id = "automatic-budget-target";

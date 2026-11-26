@@ -206,6 +206,8 @@ import {
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
+import { captureWorktreeTree } from "../git/worktree-tree.ts";
+import { acceptedInspectorRepair, type AcceptedInspectorRepair } from "./inspector-repair-proof.ts";
 import {
   externalSourceKey,
   type EnsureExternalBindingInput,
@@ -410,6 +412,12 @@ export interface WorkflowManagerOptions {
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   resolveCommitTree?: (repoRoot: string, commitOid: string) => Promise<string>;
+  /**
+   * The checkout's HEAD and published tree with retained local artifacts set aside, for a
+   * completed run whose terminal content is an Inspector-only repair with no snapshot of its
+   * own. A seam for the same reason as `resolveCommitTree`: it shells out to git.
+   */
+  readPublishedCheckout?: typeof captureWorktreeTree;
   /**
    * Read one adopted pull request from GitHub now and signal what it said, the way a sweep
    * observation is signalled. The daemon wires `reobserveInspectorPr`; a seam rather than an
@@ -4160,10 +4168,26 @@ export class WorkflowManager {
       || source.promptRevision !== claim.expectedIntent.promptRevision
       || source.resolvedPromptRevision !== source.promptRevision) return null;
 
-    const acceptedTree = this.store.publicationHandoffTree(run.id, claim.expectedWorkCycle.generation);
-    if (!acceptedTree) return null;
-    const submission = this.store.latestSubmission(run.id);
-    if (submission?.status !== "completed") return null;
+    const handoff = this.store.publicationHandoff(run.id, claim.expectedWorkCycle.generation);
+    if (!handoff) return null;
+    const acceptedTree = handoff.treeOid;
+    const terminal = this.store.latestSubmission(run.id);
+    if (terminal?.status !== "completed") return null;
+    // A run that finished through Inspector-only repair rounds has no full snapshot of its
+    // final content. Prove the accepted repair from durable rows, then compare the checkout to
+    // that exact commit below. The reviewed publication still supplies the checkout identity
+    // and the retained artifacts the repair rounds did not re-capture.
+    const repair = terminal.mode === "inspector_only"
+      ? acceptedInspectorRepair({
+          run,
+          gate: this.gateState(run),
+          policy: this.store.getWorkflowVersionById(run.workflowVersionId)?.completionPolicy,
+          submissions: this.store.listSubmissions(run.id),
+          publishedSubmissionId: handoff.submissionId,
+        })
+      : null;
+    if (terminal.mode !== "full_workflow" && !repair) return null;
+    const submission = repair?.published ?? terminal;
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
     if (!context.success || context.data.session.cwd !== workflowCheckoutPath(binding, session)) return null;
     const evidence = context.data.evidence;
@@ -4180,6 +4204,12 @@ export class WorkflowManager {
     const revision = this.options.publicationCheckoutRevision ?? publicationCheckoutRevision;
     const before = performance.now() < deadline ? revision(checkout, retained, deadline) : null;
     const owner = { bindingId: binding.id, runId: run.id };
+    if (repair) {
+      return this.inspectorRepairMatches(checkout, evidence.headSha, repair, retained).then(
+        matches => ({ ...owner, stillMatches: (until: number) => before !== null && matches && revision(checkout, retained, until) === before }),
+        () => ({ ...owner, stillMatches: () => false }),
+      );
+    }
     return this.probeRepository(binding, submission).then(
       probe => {
         const matches = before !== null && Boolean(probe.contentTreeOid) && probeMatchesRepositoryContent(probe, evidence);
@@ -4187,6 +4217,33 @@ export class WorkflowManager {
       },
       () => ({ ...owner, stillMatches: () => false }),
     );
+  }
+
+  /**
+   * Whether the checkout is exactly the commit Inspector accepted as the terminal repair.
+   *
+   * The repair rounds captured no snapshot, so equality is to Git's own object: HEAD is the
+   * reviewed commit, and the worktree publishes nothing beyond that commit's tree once the
+   * reviewed publication's retained local artifacts, at their recorded bytes, are set aside.
+   * The first round must also have replaced the reviewed publication's own head. Any read that
+   * cannot answer is a fresh review.
+   */
+  private async inspectorRepairMatches(
+    checkout: string,
+    publishedHead: string,
+    repair: AcceptedInspectorRepair,
+    retained: readonly { path: string; sha256: string }[],
+  ): Promise<boolean> {
+    const resolve = this.options.resolveCommit ?? resolveCapturedCommit;
+    const [base, tree, current] = await Promise.all([
+      resolve(checkout, publishedHead),
+      (this.options.resolveCommitTree ?? resolveCommitTree)(checkout, repair.headSha),
+      (this.options.readPublishedCheckout ?? captureWorktreeTree)(checkout, { localArtifacts: retained }),
+    ]);
+    return base === repair.failedBaseHeadSha
+      && current.headOid === repair.headSha
+      && current.publicationTreeOid === tree
+      && current.unpublishedPaths.length === 0;
   }
 
   /**

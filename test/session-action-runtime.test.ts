@@ -49,6 +49,8 @@ const { PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGa
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+
 /** Far past every `lastActivity` this file writes, so `settledIdle` is satisfied. */
 const SETTLED = () => Date.now() + 600_000;
 
@@ -167,6 +169,8 @@ interface HarnessOptions {
   probeEvidence?: boolean;
   publicationCheckoutRevision?: WorkflowManagerOptions["publicationCheckoutRevision"];
   readEvidenceProbe?: WorkflowManagerOptions["readEvidenceProbe"];
+  readPublishedCheckout?: WorkflowManagerOptions["readPublishedCheckout"];
+  resolveCommit?: WorkflowManagerOptions["resolveCommit"];
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
   /** Exercise the published fresh-evidence preflight on every evaluator-bound submission. */
@@ -256,8 +260,14 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     }),
     adoptedPullRequests: options.realLedger ? undefined : () => adopted,
     readRepositoryId: options.readRepositoryId ?? (async root => root),
-    resolveCommit: async (_root, headSha) => full(headSha),
+    // A full id short-circuits, exactly as `resolveCapturedCommit` does: an Inspector-only
+    // round records GitHub's full head and must not be re-encoded as an abbreviation.
+    resolveCommit: options.resolveCommit ?? (async (_root, headSha) => FULL_COMMIT.test(headSha) ? headSha : full(headSha)),
     resolveCommitTree: options.resolveCommitTree ?? (async (_root, oid) => commitTrees.get(oid) ?? contentTree.oid),
+    // The checkout as a clean publication of HEAD: what it would publish is its whole tree.
+    readPublishedCheckout: options.readPublishedCheckout ?? (async () => ({
+      treeOid: contentTree.oid, headOid: full(head.sha), publicationTreeOid: contentTree.oid, unpublishedPaths: [],
+    })),
     requireSkill: options.requireSkill
       ?? (() => ({ ok: true, command: "/mission-pull-request" })),
     inject: (async (
@@ -1626,7 +1636,7 @@ test("a child captured but interrupted before its receipt is sealed, not re-capt
 // the one the pull request was proven at, and that none of it sends or completes twice.
 
 /** Publish Inspector's clean observation through its ledger and Registry notification. */
-async function observeCleanInspectorReview(h: Harness, number: number, head: string, now: number) {
+async function observeCleanInspectorReview(h: Harness, number: number, head: string, now: number, clean = true) {
   const { adoptInspectorPr, updateInspectorPr } = await import("../src/server/db.ts");
   const key = `owner/repo#${number}`;
   const url = `https://github.com/owner/repo/pull/${number}`;
@@ -1638,8 +1648,8 @@ async function observeCleanInspectorReview(h: Harness, number: number, head: str
     mergedAt: null, mergeBlock: null, observedHeadSha: head, observedState: "OPEN", observedAt: now,
     headRefName: "feature", title: "Publish", adoptedAt: now, updatedAt: now,
   });
-  updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: head, lastAttemptSha: head,
-    reviewPosture: "live", round: 1, lastReviewedAt: now }, now);
+  updateInspectorPr(key, { headSha: head, cleanReviewHeadSha: clean ? head : null, lastAttemptSha: head,
+    reviewPosture: "live", round: 1, lastReviewedAt: now, observedHeadSha: head, observedState: "OPEN", observedAt: now }, now);
   h.registry.inspectionUpdated(key, head, "OPEN", now);
 }
 
@@ -1779,6 +1789,199 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
         await waitFor(() => h.store.latestSubmission(result.runId)?.status === "waiting_for_evidence_readiness",
           "new content or intent must pass evidence readiness");
       }
+    } finally { await h.stop(); }
+  });
+}
+
+// ---- a completed publication whose terminal content is a clean Inspector-only repair ----------
+//
+// The run reviews and publishes, Inspector posts a finding on the published head, the author
+// pushes a repair that the published policy routes through Inspector alone, and Inspector
+// reviews that exact head clean. The run has no full snapshot of that final content, so the
+// author's next idle must be judged against the reviewed commit itself, across a restart.
+const INSPECTOR_REPAIR_CASES = ["unchanged", "independent later cycle", "edited after repair", "head moved after repair",
+  "human instruction", "unresolvable repair commit", "checkout edited during claim", "changed sibling",
+  "repair replaced another head"] as const;
+for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
+  test(`final idle handoff after a clean Inspector-only repair: ${next}`, async (t) => {
+    const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+    const { upsertInspectorComment } = await import("../src/server/db.ts");
+    const { enabled } = getInspectorConfig();
+    setInspectorConfig({ enabled: true });
+    t.after(() => setInspectorConfig({ enabled }));
+    const number = 1900 + index;
+    const key = `owner/repo#${number}`;
+    const url = `https://github.com/owner/repo/pull/${number}`;
+    let h!: Harness;
+    let editDuringRead = false;
+    // The reviewed publication's captured head names a different commit than the one the first
+    // Inspector-only round replaced. Everything else about the terminal repair stays clean.
+    let otherPublishedHead = false;
+    const checkoutReads: string[] = [];
+    h = await harness(`inspector-repair-handoff-${next.replaceAll(" ", "-")}`, {
+      pullRequest: true, probeEvidence: true, inspector: true, inspectorFindingsPolicy: "inspector_only",
+      resumptionPolicy: "auto", evidenceReadinessPolicy: "criterion_mapped_v1",
+      resolveCommitTree: async (_root, oid) => {
+        if (next === "unresolvable repair commit" && oid === h.full("repaired")) throw new Error("object not found");
+        return h.commitTrees.get(oid) ?? h.contentTree.oid;
+      },
+      resolveCommit: async (_root, headSha) => FULL_COMMIT.test(headSha) ? headSha
+        : h.full(otherPublishedHead && headSha === "published" ? "another-published" : headSha),
+      readPublishedCheckout: async (checkout) => {
+        checkoutReads.push(checkout);
+        const read = { treeOid: h.contentTree.oid, headOid: h.full(h.head.sha), publicationTreeOid: h.contentTree.oid, unpublishedPaths: [] };
+        // The checkout matched when read and was edited before the claim could spend it.
+        if (editDuringRead) h.contentTree.oid = h.full("edited-during-claim");
+        return read;
+      },
+    });
+    try {
+      const sibling = "/second-inspector-repair-checkout";
+      if (next === "changed sibling") {
+        const base = h.full("base");
+        const task = mkTask({
+          id: h.sessionId, sessionId: h.sessionId, status: "running", worktreePath: "/repo",
+          branch: "feature", baseSha: base, provider: "git",
+          extraRepos: [{ repoRoot: sibling, worktreePath: sibling, branch: "feature", provider: "git",
+            worktreeLeaseId: null, baseSha: base, prUrl: null, prState: null, mergedAt: null }],
+        });
+        h.registry.upsertTask(task);
+        h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
+        h.registry.recordWorktreeHeads(new Map([["/repo", h.full("primary")], [sibling, base]]));
+      }
+      // A full review through publication.
+      const runId = await runToAction(h, true);
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action");
+      h.head.sha = "published";
+      h.runActionTurn();
+      h.adoptPr({ key, url, number });
+      await h.manager.sweepSessionActions(SETTLED());
+      await waitFor(() => h.store.listEvents(runId).some(event => event.kind === "inspector_gate_entered"),
+        "publication must reach the Inspector gate");
+      const published = h.store.latestSubmission(runId)!;
+      assert.equal(published.mode, "full_workflow");
+      const reviewed = h.store.listSubmissions(runId)[0]!;
+      const retained = h.store.listSubmissionTextArtifacts(reviewed.id);
+      assert.ok(retained.length, "the reviewed submission carries its registered proof");
+
+      // Inspector finds a problem on the published head; the policy routes it Inspector-only.
+      const findingAt = Date.now();
+      upsertInspectorComment({
+        id: `repair-${number}`, prKey: key, fingerprint: `repair-${number}`, path: "src/card.ts", line: 4,
+        title: "Reference name is truncated", body: "Show the whole name.", severity: "major", round: 1,
+        status: "open", replies: 0, answeredCommentId: null, createdAt: findingAt, updatedAt: findingAt,
+        githubUrl: `${url}#discussion_r1`, postedAt: findingAt,
+      });
+      await observeCleanInspectorReview(h, number, h.full("published"), findingAt, false);
+      await waitFor(() => h.store.getRun(runId)?.status === "waiting_for_new_head", "Inspector findings must wait for a repair head");
+      await waitFor(() => h.store.listDeliveries(runId).some(d => d.kind === "inspector_feedback" && d.state === "delivered"),
+        "the Inspector-only repair packet never reached the author");
+      const packet = h.store.listDeliveries(runId).find(d => d.kind === "inspector_feedback")!;
+      assert.match(packet.payload, /Reference name is truncated/);
+
+      // The author pushes the repair; Inspector reviews that exact head clean.
+      h.head.sha = "repaired";
+      h.contentTree.oid = h.full("repaired-tree");
+      h.commitTrees.set(h.full("repaired"), h.full("repaired-tree"));
+      h.runActionTurn();
+      const cleanAt = Date.now() + 1;
+      upsertInspectorComment({
+        id: `repair-${number}`, prKey: key, fingerprint: `repair-${number}`, path: "src/card.ts", line: 4,
+        title: "Reference name is truncated", body: "Fixed in the repair.", severity: "major", round: 1,
+        status: "resolved", replies: 1, answeredCommentId: null, createdAt: findingAt, updatedAt: cleanAt,
+        githubUrl: `${url}#discussion_r1`, postedAt: findingAt,
+      });
+      await observeCleanInspectorReview(h, number, h.full("repaired"), cleanAt);
+      await waitFor(() => h.store.getRun(runId)?.status === "completed", "the clean Inspector-only repair did not complete");
+      const terminal = h.store.latestSubmission(runId)!;
+      assert.equal(terminal.mode, "inspector_only");
+      assert.equal(terminal.prHeadSha, h.full("repaired"));
+      const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+      assert.equal(gate.waitReason, null);
+      assert.equal(gate.targetHeadSha, h.full("repaired"));
+      assert.equal(h.store.listSubmissions(runId).length, 3, "review, publication continuation, Inspector-only repair");
+
+      // The daemon restarts before the author's final idle.
+      await h.restartWorkflowManager();
+      const objective = "Publish the reviewed plan";
+      const revision = next === "human instruction" ? 2 : 1;
+      if (revision === 2) {
+        h.registry.upsertGoal(h.sessionId, {
+          prompt: "Also show the alias", text: objective, objective, focus: "Also show the alias",
+          relationship: "amend", rationale: "Follow-up", objectiveVersion: 1,
+          promptRevision: revision, resolvedPromptRevision: revision, pendingPrompts: [], source: "heuristic",
+        }, Date.now());
+      }
+      if (next === "edited after repair") h.contentTree.oid = h.full("edited-after-repair");
+      if (next === "head moved after repair") h.head.sha = "unpushed-commit";
+      if (next === "changed sibling") h.registry.recordWorktreeHeads(new Map([[sibling, h.full("changed")]]));
+      editDuringRead = next === "checkout edited during claim";
+      otherPublishedHead = next === "repair replaced another head";
+      h.runActionTurn();
+      const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
+      const noteKey = h.store.getBinding(h.store.getRun(runId)!.bindingId)!.noteKey;
+      const runsForNote = () => h.store.listRuns().filter(run => h.store.getBinding(run.bindingId)?.noteKey === noteKey);
+      assert.equal(runsForNote().length, 1);
+      const claim = {
+        completionKind: "prompted" as const, marker: "b".repeat(64), summary: "Author finished follow-through",
+        evidenceFingerprint: "later-transcript", expectedWorkCycle: { logicalKey, generation },
+        expectedIntent: { objective, objectiveVersion: 1, promptRevision: revision, episodeKey: `intent:1:${revision}` },
+      };
+      const result = await h.manager.claimCompletion(h.sessionId, claim);
+      assert.ok(result.claimed);
+      assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
+      const owned = next === "unchanged" || next === "independent later cycle" || next === "changed sibling";
+      const provedFromRepository = () => assert.deepEqual(checkoutReads, next === "human instruction" ? [] : ["/repo"],
+        "only the matching intent reaches the exact-commit repository proof");
+      if (!owned) {
+        assert.notEqual(result.runId, runId, `${next} must earn an ordinary review`);
+        provedFromRepository();
+        assert.equal(h.store.latestSubmission(result.runId)?.round, 1);
+        await waitFor(() => h.store.latestSubmission(result.runId)?.status === "waiting_for_evidence_readiness",
+          "the new review must pass evidence readiness");
+        assert.equal(h.store.publicationHandoffTree(runId, generation) !== null, true,
+          "a refused proof leaves the completed run's pin unspent");
+        return;
+      }
+      // The completed run keeps its one witnessed follow-through: no new root, no new capture.
+      assert.equal(result.runId, runId, "unchanged Inspector-only follow-through must not start a new root");
+      assert.equal(result.state, "already_claimed");
+      provedFromRepository();
+      assert.equal(h.store.latestSubmission(runId)?.id, terminal.id);
+      assert.equal(h.store.listSubmissions(runId).length, 3);
+      assert.deepEqual(h.store.listSubmissionTextArtifacts(reviewed.id), retained);
+      assert.equal(h.store.publicationHandoffTree(runId, generation), null, "the follow-through was spent once");
+      if (next === "changed sibling") {
+        const runs = runsForNote();
+        assert.equal(runs.length, 2, "the same proof creates only the changed sibling's review");
+        const siblingRun = runs.find(run => run.id !== runId)!;
+        assert.equal(h.store.getBinding(siblingRun.bindingId)?.repoRoot, sibling);
+        await waitFor(() => h.store.latestSubmission(siblingRun.id)?.status === "waiting_for_evidence_readiness",
+          "the sibling review must require its own evidence");
+        return;
+      }
+      assert.equal(runsForNote().length, 1, "unchanged follow-through creates no new root");
+      assert.deepEqual(await h.manager.claimCompletion(h.sessionId, claim), result, "a replay is answered, not re-spent");
+      assert.equal(runsForNote().length, 1);
+      if (next === "independent later cycle") {
+        await h.restartWorkflowManager();
+        h.runActionTurn();
+        const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
+        assert.equal(cycle.generation, generation + 1);
+        const independent = await h.manager.claimCompletion(h.sessionId, {
+          ...claim, marker: "c".repeat(64), expectedWorkCycle: { logicalKey, generation: cycle.generation },
+        });
+        assert.ok(independent.claimed);
+        assert.notEqual(independent.runId, runId, "a later independent same-intent cycle earns a fresh review");
+        await waitFor(() => h.store.latestSubmission(independent.runId)?.status === "waiting_for_evidence_readiness",
+          "the independent cycle requires its own evidence");
+        return;
+      }
+      const again = await h.manager.submit(h.store.getRun(runId)!.bindingId, { requestId: "run-again" });
+      assert.ok(again.ok);
+      assert.notEqual(again.value.run.id, runId, "explicit Run again starts a fresh review");
+      await waitFor(() => h.store.latestSubmission(again.value.run.id)?.status === "waiting_for_evidence_readiness",
+        "Run again must require fresh evidence");
     } finally { await h.stop(); }
   });
 }

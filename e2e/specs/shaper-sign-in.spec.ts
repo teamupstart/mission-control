@@ -382,3 +382,55 @@ test("Sign out on a sign-in no shaper uses ends that connection's sign-in only, 
   const after = await (await fetch(`${daemon.baseURL}/api/shaping`)).json() as { signIns: unknown[] };
   expect(after.signIns).toEqual([]);
 });
+
+test("a sign-out refusal that lands after another window signed the connection out is not shown", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  // Signed in over the API: the fixture approves at once and fetch follows its redirect to the callback.
+  const put = await fetch(`${daemon.baseURL}/api/shaping`, {
+    method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+      id: "signed-guidance", label: "Signed guidance", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:context" } } },
+    } }),
+  });
+  expect(put.status).toBe(200);
+  const started = await fetch(`${daemon.baseURL}/api/shaping/sign-in`, { method: "POST", headers: json, body: JSON.stringify({ shaper: "signed-guidance" }) });
+  expect(started.status).toBe(200);
+  const { authorizationUrl, connection } = await started.json() as { authorizationUrl: string; connection: string };
+  expect((await fetch(authorizationUrl)).status).toBe(200);
+
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Signed in until Mission Control restarts. Kept in memory.");
+
+  // This window's Sign out is held in flight, and will be refused when it is let go.
+  let release!: () => void;
+  const held = new Promise<void>((done) => { release = done; });
+  let seen!: () => void;
+  const arrived = new Promise<void>((done) => { seen = done; });
+  await page.route("**/api/shaping/sign-out", async (route) => {
+    seen();
+    await held;
+    await route.fulfill({
+      status: 404, contentType: "application/json",
+      body: JSON.stringify({ error: "unknown_connection", reason: "Refused for this test: the late refusal." }),
+    });
+  });
+  await page.getByRole("button", { name: "Sign out Signed guidance" }).click();
+  await arrived;
+
+  // Meanwhile another window signs the connection out. The row follows the event at once.
+  const elsewhere = await fetch(`${daemon.baseURL}/api/shaping/sign-out`, { method: "POST", headers: json, body: JSON.stringify({ connection }) });
+  expect(elsewhere.status).toBe(200);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // The held request is refused only now. Its refusal is about a moment that has passed, so the
+  // row stays signed out with no alert, and Sign in is offered once the request is done.
+  release();
+  const signInButton = page.getByRole("button", { name: "Sign in Signed guidance" });
+  await expect(signInButton).toBeEnabled();
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await capture(page, "7-late-refusal-dropped");
+  await page.unroute("**/api/shaping/sign-out");
+});

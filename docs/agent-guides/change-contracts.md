@@ -253,7 +253,9 @@ Persisted ID tuples are append-only. Never rename, reorder, or reuse values. Thi
   them either. A sign-out whose entry `app_config` refuses to save is still sent to the store,
   because a confirmed removal is the other way it holds and not asking would leave the record
   certain to load. The entry is kept in memory, every later write of the key carries it, and its
-  connection's next store call and the next load try the write again first. Known limit: when
+  connection's next store call and the next load try the write again first, and that load
+  treats it as listed whether or not the write succeeds. A new client registration the key
+  refuses to save is used for that sign-in only, since the key is a reuse cache. Known limit: when
   `app_config` and the store both refuse, and the daemon stops before either recovers, nothing
   durable records the sign-out and the next start loads the record again. A test pins this, and
   it is logged. Value class `operational`, in no backup domain, so a settings snapshot never carries it;

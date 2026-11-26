@@ -829,9 +829,12 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
       warn("the sign-in settings could not be read, so no stored sign-in is loaded and every one is removed");
       writeConfig(config);
     }
-    // Sign-outs `app_config` refused earlier in this daemon's life count as listed, and are saved now if it takes the write.
+    // Sign-outs `app_config` refused earlier in this daemon's life count as listed, and are
+    // saved now if it takes the write. Taken from the merged value, not from `unsaved`, which
+    // a successful save empties.
+    config = withUnsaved(config);
     saveUnsaved(config);
-    const signedOut = new Set([...config.signedOut, ...unsaved]);
+    const signedOut = new Set(config.signedOut);
     const overflow = config.signedOutOverflow;
     let incomplete = false;
     let listed = true;
@@ -990,7 +993,9 @@ export function createShaperSignInService(deps: ShaperSignInServiceDeps): Shaper
           if (!drop) return refusal(loadIncomplete ? "store_unread" : "registration_limit");
           kept = kept.filter((client) => client !== drop);
         }
-        if (!writeConfig({ ...current, clients: [...kept, { ...result.client }] })) return refusal("store_unread");
+        // A registration the key refuses is used for this sign-in only: the key is a reuse cache, and a held
+        // record refreshes with the client it names, whatever the key holds.
+        if (!writeConfig({ ...current, clients: [...kept, { ...result.client }] })) warn("a new client registration could not be saved, so it is used for this sign-in only");
       }
     }
     if (!result.ok) return reset() ? refusal("flag_off") : { ok: false, code: result.code, reason: result.reason };

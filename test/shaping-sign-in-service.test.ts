@@ -1329,8 +1329,8 @@ test("a sign-in write in flight when a rejected client cancels it: the undo is l
   store.failRemoves = true;
   const refreshesBefore = refreshesSeen(h.fake).length;
   h.clock.fireDue(46 * MINUTE);
-  while (refreshesSeen(h.fake).length === refreshesBefore) await new Promise((done) => setTimeout(done, 5));
-  while (viewOf(h, idB)?.state !== "signed_out") await new Promise((done) => setTimeout(done, 5));
+  await waitFor(() => refreshesSeen(h.fake).length > refreshesBefore, "B's refresh request");
+  await waitFor(() => viewOf(h, idB)?.state === "signed_out", "B signed out by the rejected client");
   assert.deepEqual(signedOutOf(regs), [idB], "B's removal is listed; A held no record yet");
 
   const callsFrom = store.calls.length;
@@ -1389,6 +1389,51 @@ test("a sign-out app_config refuses to save: the store is still asked, and the e
   const second = await restarted(t, h, records, [use(a), use(b)], { failRemoves: true });
   assert.deepEqual(second.svc.accessToken(a), { ok: false, reason: "signedOut" });
   assert.deepEqual(second.svc.accessToken(b), { ok: false, reason: "signedOut" });
+});
+
+test("a sign-out app_config refused, saved by a later load in the same run: that load lists it and never installs its record", async (t) => {
+  const records = createMemorySignInStore();
+  const store = controlledStore("memory", records);
+  const regs = memoryRegistrations();
+  const flags = flagSwitch(true);
+  const h = await harness(t, { store, regs, flags });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  const { id } = await signIn(h, a);
+  regs.failWrites = true;
+  store.failRemoves = true;
+  await h.svc.signOut(id);
+  await settle(h);
+  assert.ok(await records.read(id), "the store refused the removal");
+  assert.deepEqual(signedOutOf(regs), [], "and app_config refused the entry");
+
+  // app_config recovers, and a reload runs in the same daemon: it saves the entry and treats it as listed.
+  regs.failWrites = false;
+  const callsFrom = store.calls.length;
+  flags.set(false);
+  flags.set(true);
+  await settle(h);
+  assert.deepEqual(signedOutOf(regs), [id], "the reload saved the entry");
+  assert.ok(!store.calls.slice(callsFrom).includes(`read ${id}`), "and never read the record");
+  assert.ok(store.calls.slice(callsFrom).includes(`remove ${id}`), "it queued the removal again");
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+  await h.clock.advance(2 * HOUR);
+  assert.deepEqual(h.svc.accessToken(a), { ok: false, reason: "signedOut" });
+});
+
+test("a new client registration app_config refuses to save is used for that sign-in only", async (t) => {
+  const regs = memoryRegistrations();
+  const h = await harness(t, { regs });
+  const a = target(h.fake);
+  h.svc.setInUse([use(a)]);
+  regs.failWrites = true;
+  const answer = await h.svc.begin(a);
+  assert.ok(answer.ok, `begin answered ${JSON.stringify(answer)}`);
+  assert.ok(h.warnings.some((warning) => warning.includes("used for this sign-in only")));
+  const done = await h.svc.complete(callback(await authorize(answer.authorizationUrl)));
+  assert.deepEqual(done, { ok: true, connection: connectionId(a) });
+  assert.ok(h.svc.accessToken(a).ok);
+  assert.deepEqual(clientsOf(regs), [], "nothing was saved");
 });
 
 test("accepted limit: app_config and the store both refuse, and the daemon restarts before either recovers", async (t) => {

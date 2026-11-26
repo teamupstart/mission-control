@@ -9,7 +9,7 @@
 //                 loopback origin with `{ separateIssuer: true }`
 //   elsewhereUrl  a third loopback origin nothing should reach; its requests are recorded too
 //   requests      every request: `{ server, method, path, query, headers, body }`
-//   setMode(patch), hold(path) -> release(), close()
+//   setMode(patch), hold(path, method?) -> release(), close()
 //
 // A token is accepted only by the resource its sign-in named in `resource`. Refresh tokens are
 // single use and rotate.
@@ -23,10 +23,21 @@
 //                  | "broader" (the path-aware document names the origin root, not the resource)
 //                  | "root-only" (only the root document is published, naming the resource itself)
 //   shape          "ok" | "echo" | "error" | "unauthorized"
+//   mcp            "ok" | "echo" (every header and `params._meta` the call saw, as the guidance
+//                  fixture's `echo`) | "echo-token" (a reply repeating the authorization header)
+//                  | "error" (a tool error repeating it) | "http-error" (a 500 whose body repeats it)
+//                  | "unauthorized" (every request answers the 401 challenge)
+//                  | "unauthorized-call" (only a `tools/call` does)
+//                  | "unauthorized-stream" (only the shared GET stream does; a `tools/call` is
+//                  answered once that 401 has been sent, so it is seen first)
+//                  | "unauthorized-stream-late" (only the shared GET stream does, with no wait of
+//                  its own: a test holds the GET with `hold("/mcp", "GET")` and releases it once
+//                  the call has returned, so the refusal lands between calls)
 //   stall          a path that never answers
 //   oversize       a path that answers 100 KiB
 //   redirect       a path that answers 307 to elsewhereUrl
-//   redirectWithin a path that answers 307 to `/moved<path>` on its own origin, which records and answers 200
+//   redirectWithin a path that answers 307 to `/moved<path>` on its own origin, which records and answers 200;
+//                  `/moved/mcp` and `/moved/shape` are served as the protected `/mcp` and `/shape`
 //   status         { [path]: status }: that path answers an HTML status page repeating the request body
 //   iss            true: the `/authorize` redirect carries `iss`; or a string to send instead
 //   tokens         "full" | "no-refresh" (no refresh token, and a refresh does not rotate) | "no-expiry" | "no-scope"
@@ -39,7 +50,7 @@ import { createGuidanceServer } from "./fake-guidance-mcp.mjs";
 const SCOPES_ADVERTISED = ["mcp:context", "mcp:other", "mcp", "offline_access"];
 
 const DEFAULT_MODES = {
-  refresh: "ok", registration: "ok", metadata: "ok", resourceMetadata: "ok", shape: "ok",
+  refresh: "ok", registration: "ok", metadata: "ok", resourceMetadata: "ok", shape: "ok", mcp: "ok",
   stall: null, oversize: null, redirect: null, redirectWithin: null, status: null, iss: false, tokens: "full", revoke: "ok",
 };
 
@@ -77,6 +88,9 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
   const refreshTokens = new Map();
   const counters = { client: 0, code: 0, token: 0 };
   const sockets = new Set();
+  // Settled once the shared stream's GET has been refused, in `unauthorized-stream` mode.
+  let streamRefused;
+  const streamRefusal = new Promise((done) => { streamRefused = done; });
 
   const elsewhere = await listen(async (req, res) => {
     requests.push({ server: "elsewhere", method: req.method, path: req.url, query: "", headers: { ...req.headers }, body: await readBody(req) });
@@ -153,6 +167,8 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     const path = url.pathname;
     const isIssuer = serverName === "issuer" || (!separateIssuer && serverName === "resource");
     const isResource = serverName === "resource";
+    // A protected resource reached through a same-origin redirect is served as the resource itself.
+    const served = isResource && (path === "/moved/mcp" || path === "/moved/shape") ? path.slice("/moved".length) : path;
 
     if (modes.stall === path) return new Promise(() => {});
     if (modes.oversize === path) return json(res, 200, { padding: "x".repeat(100 * 1024) });
@@ -160,14 +176,14 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
       res.writeHead(307, { location: `http://${req.headers.host}/moved${path}${url.search}` }).end();
       return;
     }
-    if (path.startsWith("/moved/")) return json(res, 200, { moved: true });
+    if (path.startsWith("/moved/") && served === path) return json(res, 200, { moved: true });
     if (modes.redirect === path) { res.writeHead(307, { location: `${elsewhere.origin}${path}${url.search}` }).end(); return; }
     // A status page that is not an OAuth reply, as a gateway or proxy answers, repeating the request it got.
     if (modes.status?.[path]) {
       res.writeHead(modes.status[path], { "content-type": "text/html" }).end(`<html><body>HTTP ${modes.status[path]} for ${path}: ${body}</body></html>`);
       return;
     }
-    const held = holds.filter((entry) => entry.path === path && !entry.released);
+    const held = holds.filter((entry) => entry.path === path && (!entry.method || entry.method === req.method) && !entry.released);
     if (held.length > 0) await Promise.all(held.map((entry) => entry.promise));
 
     // The resource a path-aware document names is the one its URL was built from, query included.
@@ -269,18 +285,38 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
       return;
     }
 
-    if (isResource && path === "/mcp") {
-      if (!bearerFor(req, urls.resourceUrl)) return challenge(res, "/mcp");
+    if (isResource && served === "/mcp") {
+      if (modes.mcp === "unauthorized" || !bearerFor(req, urls.resourceUrl)) return challenge(res, "/mcp");
+      if (modes.mcp === "unauthorized-stream-late" && req.method === "GET") return challenge(res, "/mcp");
+      if (modes.mcp === "unauthorized-stream" && req.method === "GET") {
+        challenge(res, "/mcp");
+        streamRefused();
+        return;
+      }
       if (req.method !== "POST") { res.writeHead(405).end(); return; }
-      const server = createGuidanceServer("ok");
+      const message = JSON.parse(body);
+      if (modes.mcp === "unauthorized-call" && message?.method === "tools/call") return challenge(res, "/mcp");
+      if (modes.mcp === "unauthorized-stream" && message?.method === "tools/call") {
+        // The call's reply follows the stream's refusal, with a margin for the client to read it.
+        await Promise.race([streamRefusal, new Promise((done) => setTimeout(done, 5_000))]);
+        await new Promise((done) => setTimeout(done, 100));
+      }
+      if (modes.mcp === "http-error") {
+        res.writeHead(500, { "content-type": "text/plain" }).end(`refused ${req.headers.authorization}`);
+        return;
+      }
+      const server = modes.mcp === "echo" ? createGuidanceServer("echo")
+        : modes.mcp === "echo-token" ? createGuidanceServer("echo-header", ["authorization"])
+          : modes.mcp === "error" ? createGuidanceServer("error-header", ["authorization"])
+            : createGuidanceServer("ok");
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on("close", () => { void transport.close(); void server.close(); });
       await server.connect(transport);
-      await transport.handleRequest(req, res, JSON.parse(body));
+      await transport.handleRequest(req, res, message);
       return;
     }
 
-    if (isResource && path === "/shape") {
+    if (isResource && served === "/shape") {
       if (modes.shape === "unauthorized" || !bearerFor(req, urls.shapeUrl)) return challenge(res, "/shape");
       const authorization = req.headers.authorization;
       if (modes.shape === "error") { res.writeHead(500, { "content-type": "text/plain" }).end(`refused ${authorization}`); return; }
@@ -310,10 +346,10 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     requests,
     setMode(patch) { Object.assign(modes, patch); },
     resetModes() { Object.assign(modes, DEFAULT_MODES); },
-    hold(path) {
+    hold(path, method = null) {
       let release;
       const promise = new Promise((done) => { release = done; });
-      const entry = { path, promise, released: false, release: () => { entry.released = true; release(); } };
+      const entry = { path, method, promise, released: false, release: () => { entry.released = true; release(); } };
       holds.push(entry);
       return entry.release;
     },

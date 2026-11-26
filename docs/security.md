@@ -782,10 +782,11 @@ close finishes, so a stalled close cannot make descriptors pile up.
 
 ### Where a shaper sign-in is kept
 
-**Not in use yet.** The store described here is built, but nothing in the daemon calls it:
-shaper sign-in itself arrives in a later change, and until then no sign-in is kept, no
-Keychain item is written and the switch below has no effect. What follows is the contract
-that sign-in will keep.
+**A preview.** Shaper sign-in runs only while the `task-shaping` and `shaper-sign-in` flags
+are on. A sign-in is made through the daemon's API
+([Signing in over the API](task-shaping.md#signing-in-over-the-api)); the Settings control
+arrives in a later change. A shaper that carries the sign-in marker asks the sign-in service
+for its access token on every call, from memory, and sends it only to its server's origin.
 
 A remote shaper that needs an OAuth sign-in will have its tokens kept by the daemon, one record
 per connection. A connection is one server URL, scope and authorization server. The record holds

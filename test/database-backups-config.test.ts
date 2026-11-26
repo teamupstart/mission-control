@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -215,6 +217,99 @@ test("saving over malformed backup limits prunes only the confirmed copies", asy
   } finally {
     if (previous) setAppConfig(entry, previous);
     else deleteAppConfig(entry);
+  }
+});
+
+test("a retention save cannot preserve a copy in its preview and then lose it to an older prune", async (t) => {
+  const root = join(stateHome, "prune-during-save");
+  seedScheduled(2, root);
+  const entry = APP_CONFIG_ENTRIES.backups;
+  const previous = getAppConfig(entry);
+  const service = new DatabaseBackupService(openDb(), { root });
+  t.after(() => {
+    if (previous) setAppConfig(entry, previous);
+    else deleteAppConfig(entry);
+    rmSync(root, { recursive: true, force: true });
+  });
+  setAppConfig(entry, { ...DEFAULT_DATABASE_BACKUPS_CONFIG, scheduledCount: 2 });
+
+  const oldest = readdirSync(root).sort()[0]!;
+  const sidecar = join(root, oldest + "-wal");
+  let save: Promise<string[]> | undefined;
+  const whenPruning = (path: fs.PathLike) => {
+    if (path !== sidecar || save) return;
+    // A settings request is ready to commit as the capture starts deleting its first copy.
+    save = Promise.resolve().then(() => {
+      const visible = readdirSync(root).filter(name => name.endsWith(".sqlite3")).sort();
+      assert.equal(setDatabaseBackupsConfig({ scheduledCount: 3 }, service, []).scheduledCount, 3);
+      return visible;
+    });
+  };
+  const unlink = fsPromises.unlink;
+  const unlinkSync = fs.unlinkSync;
+  const asyncUnlink = t.mock.method(fsPromises, "unlink", (path: fs.PathLike) => {
+    whenPruning(path);
+    return unlink(path);
+  });
+  const syncUnlink = t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
+    whenPruning(path);
+    unlinkSync(path);
+  });
+  syncBuiltinESMExports();
+  try {
+    const published = await service.captureScheduled();
+    assert.ok(save, "the capture started pruning its oldest copy");
+    const keptAtSave = await save;
+    assert.ok(keptAtSave.includes(published.filename));
+    assert.deepEqual(readdirSync(root).sort(), keptAtSave, "the successful save kept every copy it saw");
+  } finally {
+    asyncUnlink.mock.restore();
+    syncUnlink.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("a confirmed retention save deletes only its preview even if a copy crosses the age cutoff", (t) => {
+  const root = join(stateHome, "prune-at-age-cutoff");
+  seedScheduled(2, root);
+  const entry = APP_CONFIG_ENTRIES.backups;
+  const previous = getAppConfig(entry);
+  t.after(() => {
+    if (previous) setAppConfig(entry, previous);
+    else deleteAppConfig(entry);
+    rmSync(root, { recursive: true, force: true });
+  });
+  setAppConfig(entry, DEFAULT_DATABASE_BACKUPS_CONFIG);
+  const before = readdirSync(root).sort();
+  let milliseconds = Date.UTC(2020, 0, 2);
+  const service = new DatabaseBackupService(openDb(), { root, now: () => new Date(milliseconds++) });
+
+  assert.equal(setDatabaseBackupsConfig({ scheduledMaxAgeDays: 1 }, service, []).scheduledMaxAgeDays, 1);
+  assert.deepEqual(readdirSync(root).sort(), before);
+});
+
+test("backup listing skips a disappeared entry and propagates other inspection errors", (t) => {
+  const root = join(stateHome, "prune-missing-entry");
+  seedScheduled(2, root);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const [disappeared, retained] = readdirSync(root).sort() as [string, string];
+  const service = new DatabaseBackupService(openDb(), { root });
+  const lstat = fs.lstatSync;
+  const inspection = t.mock.method(fs, "lstatSync", (path: fs.PathLike) => {
+    if (path === join(root, disappeared)) fs.unlinkSync(path);
+    return lstat(path);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(service.keptCopies().map(copy => copy.filename), [retained]);
+    inspection.mock.mockImplementation((path: fs.PathLike) => {
+      if (path === join(root, retained)) throw Object.assign(new Error("inspection denied"), { code: "EACCES" });
+      return lstat(path);
+    });
+    assert.throws(() => service.keptCopies(), { code: "EACCES" });
+  } finally {
+    inspection.mock.restore();
+    syncBuiltinESMExports();
   }
 });
 

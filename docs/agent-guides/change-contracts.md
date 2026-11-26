@@ -1516,7 +1516,7 @@ These rules hold across phases:
    `all` widen a pinned profile, and never give a harness `allNativeSources` without saying in
    [security](../security.md#resident-mcp-secrets) what it gives up.
    Secret values are never returned by a route, published, logged, backed up or placed in an
-   argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/service.ts`) names the tables
+   argument; `WRITE_ONLY_SECRET_TABLES` (`src/server/database-backups/publication.ts`) names the tables
    a recovery point is scrubbed of, and a new secret table joins that list. See
    [security](../security.md#resident-mcp-secrets).
 7. **Built-in residents are rows the operator cannot write.** A built-in is a `residents/<slug>.md`

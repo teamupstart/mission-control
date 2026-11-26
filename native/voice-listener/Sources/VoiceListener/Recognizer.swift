@@ -64,12 +64,23 @@ struct Recognizer {
         return try await VocabularyBoostingSession(vocabulary: CustomVocabularyContext(terms: terms), ctcModels: ctc)
     }
 
-    static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String],
+    /// The spoken word without attached sentence and clause marks, compared the way the daemon
+    /// compares the separator. Quotes and brackets stay, so a quoted “"Bagel"” is ordinary text.
+    static let separatorBoundary = CharacterSet(charactersIn: ".,;:!?…").union(.whitespacesAndNewlines)
+    static func bareWord<S: StringProtocol>(_ word: S) -> String {
+        word.trimmingCharacters(in: separatorBoundary).replacingOccurrences(of: "’", with: "'").lowercased()
+    }
+
+    static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String], separator: String? = nil,
                                        text: inout String, words: inout [TimedWord]) {
         guard range.lowerBound == 0, !range.isEmpty, range.upperBound <= words.count else { return }
         // Let the router interpret a standalone Cancel, including its original quotation marks.
         // A roster suggestion for that one word would erase the control before routing.
         guard text.trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines)).lowercased() != "cancel" else { return }
+        // Likewise an Always-on capture that opens with the separator word: the daemon splits there.
+        // Only a call sign spelled the same way may claim it.
+        if let separator, let opening = text.split(whereSeparator: { $0.isWhitespace }).first,
+           bareWord(opening) == bareWord(separator), bareWord(name) != bareWord(separator) { return }
         let tokens = text.split(maxSplits: range.count, whereSeparator: { $0.isWhitespace }).prefix(range.count)
         guard tokens.count == range.count, let first = tokens.first, let last = tokens.last,
               let start = first.firstIndex(where: { $0.isLetter || $0.isNumber }),
@@ -120,7 +131,7 @@ struct Recognizer {
         words.replaceSubrange(range, with: corrected)
     }
 
-    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?,
+    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String? = nil,
                     onAddressSuggestion: ((String, Range<Int>) -> Void)? = nil) async throws -> Utterance? {
         var decoder = TdtDecoderState.make(decoderLayers: await asr.decoderLayerCount)
         let result = try await asr.transcribe(segment.samples, decoderState: &decoder)
@@ -139,8 +150,15 @@ struct Recognizer {
         if let boosting, let address = boosted?.replacements.first(where: { $0.shouldReplace && $0.wordRange?.lowerBound == 0 }),
            let range = address.wordRange, let name = address.replacementWord {
             onAddressSuggestion?(name, range)
-            Self.applyAddressCorrection(name, in: range, roster: boosting.vocabulary.terms.map(\.text), text: &text, words: &words)
+            Self.applyAddressCorrection(name, in: range, roster: boosting.vocabulary.terms.map(\.text), separator: separator,
+                                        text: &text, words: &words)
         }
         return Utterance(text: text, words: words, capturedAt: segment.capturedAt)
+    }
+}
+
+extension Recognizer: SegmentTranscriber {
+    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String?) async throws -> Utterance? {
+        try await transcribe(segment, boosting: boosting, separator: separator, onAddressSuggestion: nil)
     }
 }

@@ -332,6 +332,7 @@ const voiceFields = {
   hotkey: "setting",
   autoMuteDuringCalls: "setting",
   endOfSpeechMs: "setting",
+  separatorWord: "setting",
   showTranscript: "setting",
   transcriptStyle: "setting",
   transcriptCorner: "setting",

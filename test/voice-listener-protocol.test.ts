@@ -46,7 +46,7 @@ for (const [backend, Client] of [["fluidaudio", FakeVoiceListener], ["sherpa-onn
       setVoiceConfig({ muted: false });
       const initial = await listener.poll();
       assert.ok(initial.captureRevision && initial.captureRevision !== initial.revision);
-      assert.deepEqual(initial, { revision: initial.revision, captureRevision: initial.captureRevision, speak: null, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 2000, pauseMs: null });
+      assert.deepEqual(initial, { revision: initial.revision, captureRevision: initial.captureRevision, speak: null, capture: true, inputDevice: "built-in", roster: [], endOfSpeechMs: 2000, separator: "bagel", pauseMs: null });
       const words = [{ text: "hello", startMs: 0, endMs: 320 }];
       assert.deepEqual(await (await listener.utterance("hello", words, initial.revision)).json(), { accepted: true });
       const pending = listener.poll(initial.revision);

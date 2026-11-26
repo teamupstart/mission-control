@@ -8,6 +8,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { beListener, say, startSpeech } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 function pendingMessage(page: Page) {
   return page.getByRole("status").filter({ hasText: "To Steve" }).filter({ has: page.getByRole("button", { name: "Cancel", exact: true }) });
@@ -18,7 +19,7 @@ async function expectOverflowRecovery(page: Page, daemon: DaemonHandle, screensh
   await expect(notice).toContainText("Repeat the message in shorter parts.", { timeout: 100_000 });
   await captureCard(notice, screenshot);
   await expect(pendingMessage(page)).toHaveCount(0);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Recently heard", daemon.baseURL);
   const history = page.getByRole("region", { name: "Recently heard" });
   await expect(history.getByRole("row").filter({ hasText: "duration limit" })).toContainText("Repeat the message in shorter parts.");
   const { entries } = await (await page.request.get(daemon.baseURL + "/api/voice/heard")).json();

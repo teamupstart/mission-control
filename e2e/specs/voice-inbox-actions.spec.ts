@@ -12,6 +12,7 @@ import { say, voiceToken } from "../fixtures/voice.ts";
 import { serveStallPoll } from "../fixtures/stall-poll.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { INBOX_MESSAGES } from "../../src/shared/inbox.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 async function postReport(daemon: DaemonHandle, session: Session, title: string, file?: string): Promise<ReportItem> {
   const response = await fetch(daemon.baseURL + "/mcp/reports", { method: "POST",
@@ -225,6 +226,7 @@ test("turning off Plan forms by voice in Settings preserves manual answers while
 
   await page.getByRole("button", { name: /^Settings\b/ }).click();
   await page.getByRole("tablist", { name: "Settings categories" }).getByRole("tab", { name: "Voice" }).click();
+  await openVoiceTab(page, "Spoken replies");
   const toggle = page.getByRole("checkbox", { name: "Plan forms by voice" });
   await expect(toggle).toBeEnabled();
   await expect(toggle).toBeChecked();

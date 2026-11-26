@@ -7308,17 +7308,19 @@ a.btn {
 .storage-problem-list li div { min-width: 0; display: grid; gap: 3px; }
 .storage-problem-list li span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .storage-problem-list li.is-warn { border-color: color-mix(in srgb, var(--attention) 45%, var(--border)); }
-/* Storage is one category with five tabs. The tab strip sits on the pane's measure, and each
+/* Storage and Voice are each one category with five tabs. The tab strip sits on the pane's measure, and each
    tab's bands stack with the same air as two settings sections. */
 .storage-panel { display: grid; gap: 0; }
-.storage-tabs {
+.storage-tabs,
+.settings-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   margin: 0 0 16px;
   border-bottom: 1px solid var(--border-soft);
 }
-.storage-tab {
+.storage-tab,
+.settings-tab {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -7334,8 +7336,8 @@ a.btn {
   cursor: pointer;
   white-space: nowrap;
 }
-.storage-tab:hover { color: var(--fg); }
-.storage-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
+.storage-tab:hover, .settings-tab:hover { color: var(--fg); }
+.storage-tab.is-active, .settings-tab.is-active { color: var(--fg); border-bottom-color: var(--working); }
 .storage-tab small { font-family: var(--mono); font-size: 10.5px; font-weight: 500; color: var(--dim); }
 .storage-tab small.storage-green { color: var(--idle); }
 .storage-tab-dot {
@@ -23177,6 +23179,12 @@ button.wf-carried.is-link:focus-visible {
 }
 .voice-key-input {
   width: 190px;
+}
+.voice-separator-input {
+  width: 12ch;
+}
+.voice-separator-error {
+  display: block;
 }
 /* A spoken-name field's heard-as preview (call sign, reference name): the sentence the operator
    would say, a four-step meter that loses a step per warning, and one line per warning. Amber,
@@ -43746,15 +43754,10 @@ button.vi { cursor: pointer; }
 .topbar[data-rung~="5"]:has(.vi-topbar) .pulse-seg:has(.pulse-n) .pulse-dot,
 .topbar[data-rung~="5"]:has(.vi-topbar) .dispatch-btn .kb-hint { display: none; }
 
-.voice-hardware-settings {
-  display: grid;
-  line-height: 1.5;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px 10px;
-}
-.voice-hardware-settings .kb-row { padding: 6px 8px; }
-.voice-hardware-settings .kb-capture { min-width: 66px; }
-.voice-hardware-settings .kb-row-desc:empty { display: none; }
+/* Settings > Voice: the mode line, then a tab strip on the Storage panel's rules. */
+.voice-settings .settings-tabs { margin-top: 4px; }
+.voice-settings .kb-capture { min-width: 66px; }
+.voice-settings .kb-row-desc:empty { display: none; }
 
 .voice-spoken-replies .kb-row, .voice-spoken-replies .kb-row-controls { flex-wrap: wrap; }
 .voice-spoken-replies .kb-row-controls { min-width: 0; max-width: 100%; }
@@ -43771,9 +43774,6 @@ button.vi { cursor: pointer; }
 .voice-spoken-replies .settings-hint { margin: 4px 10px 8px; }
 
 .voice-settings { container-type: inline-size; }
-@container (max-width: 460px) {
-  .voice-hardware-settings { grid-template-columns: 1fr; }
-}
 
 /* Conversation Idle rail preview. The count stays visible when its section is collapsed. */
 .idle-rail-total {

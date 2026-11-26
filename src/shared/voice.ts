@@ -13,6 +13,7 @@ import { ASYNC_INPUT_FLAG, FILED_PLAN_DECISIONS_FLAG } from "./async-input.ts";
 import { INBOX_FLAG } from "./inbox.ts";
 import type { SpokenName } from "./voice-names.ts";
 import { boundedRecord } from "./zod-shapes.ts";
+import { SeparatorWordSchema, VOICE_SEPARATOR_DEFAULT } from "./voice-separator.ts";
 
 /** The preview flag for voice addressing. */
 export const VOICE_FLAG = "voice" as const;
@@ -107,6 +108,8 @@ export const VoiceConfigSchema = z.object({
   /** How long a routed message waits for "cancel" before it is delivered. */
   cancelWindow: CancelWindowSchema,
   endOfSpeechMs: EndOfSpeechMsSchema.default(2000),
+  /** The standalone word that splits one Always-on capture into separate messages. */
+  separatorWord: SeparatorWordSchema.default(VOICE_SEPARATOR_DEFAULT).catch(VOICE_SEPARATOR_DEFAULT),
   speech: z.object({ voice: SpeechVoiceSchema.nullable().default(null) }).prefault({}),
   whenUnsure: z.enum(VOICE_WHEN_UNSURE).default("show"),
   /** Whether speech may fill a plan-decision form. Voice stays on elsewhere when this is off. */
@@ -135,6 +138,7 @@ export const VoiceConfigPatchSchema = z.object({
   transcriptStyle: TranscriptStyle,
   transcriptCorner: TranscriptCorner,
   endOfSpeechMs: EndOfSpeechMsSchema,
+  separatorWord: SeparatorWordSchema,
   cancelWindow: z.object({
     enabled: z.boolean(),
     seconds: z.number().int().min(VOICE_CANCEL_WINDOW_SECONDS.min).max(VOICE_CANCEL_WINDOW_SECONDS.max),
@@ -241,6 +245,11 @@ export const VoiceListenerDirectiveSchema = z.object({
   roster: z.array(z.string()),
   inputDevice: z.string(),
   endOfSpeechMs: EndOfSpeechMsSchema.optional(),
+  /**
+   * The Always-on separator word, present only for automatic capture. The daemon splits at it;
+   * a listener must not rewrite it into a spoken name when it opens a capture.
+   */
+  separator: z.string().min(1).optional(),
   pauseMs: z.number().nullable().optional(),
   captureRevision: z.string().min(1).optional(),
   revision: z.string().min(1),

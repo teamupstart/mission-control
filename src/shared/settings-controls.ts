@@ -654,6 +654,16 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupDomains("voice"),
   },
   {
+    id: "voice-separator",
+    label: "Separator word",
+    description: "The word that ends one Always-on message and starts the next without a pause.",
+    category: "voice",
+    anchor: "voice/separator",
+    keywords: ["bagel", "split", "next message", "utterance", "always-on", "word"],
+    kind: "jump",
+    backup: backupDomains("voice"),
+  },
+  {
     id: "voice-hotkey",
     label: "Mute hotkey",
     description: "Record a system-wide shortcut to mute voice or hold to talk during call auto-mute.",

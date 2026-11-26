@@ -57,6 +57,7 @@ follow the dashboard's feature and build gates.
 | `voice-auto-mute` | 3 | Read/write | `voice.autoMuteDuringCalls` can enable call auto-mute. Disabling it requires the operator because that can resume microphone capture. |
 | `voice-listening-mode` | 3 | Protected | Switching between automatic and held microphone capture changes when the workstation listens. |
 | `voice-end-of-speech` | 3 | Read/write | `voice.endOfSpeechMs` updates automatic capture timing. |
+| `voice-separator` | 3 | Read/write | `voice.separatorWord` sets the standalone word that splits an Always-on capture into separate messages. |
 | `voice-cancel-window` | 3 | Read/write | `voice.cancelWindow.enabled` and `voice.cancelWindow.seconds` update delivery timing. |
 | `voice-when-unsure` | 3 | Read/write | `voice.whenUnsure` selects routing behavior when confidence is low. |
 | `voice-spoken-replies` | 3 | Read/write and actions | `voice.speech.voice` stores the choice. Sample playback and the model download are operator actions. |

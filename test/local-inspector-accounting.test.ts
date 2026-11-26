@@ -255,6 +255,12 @@ test("Local Inspector interrupted after the provider returned stays charged acro
   h.start();
   await providerReturned;
   await new Promise(resolve => setTimeout(resolve, 100));
+  // The restart must interrupt a review that is still waiting for its audit seal, not one that
+  // has already settled some other way (such as its deadline).
+  const waiting = h.latest()!;
+  assert.equal(waiting.state, "running", "the review is still active when the daemon restarts");
+  assert.equal(openDb().prepare(`SELECT w.state FROM workflow_repository_workloads w JOIN workflow_llm_calls l ON l.id = w.id
+    WHERE l.node_attempt_id = ?`).get(waiting.id)?.state, "running", "its workload is still waiting for the seal");
   await h.restart();
   await h.blocked();
   const spentAfterRestart = h.spent();
@@ -544,8 +550,13 @@ test("Local Inspector holds a concurrent reservation off before and after a retu
     state: "running", persona: null, inputFingerprint: "rival", now: Date.now() });
   h.start();
   await providerRunning;
-  const during = h.store.reserveCheckRun(h.runId, rival, "inspector", 1, null);
-  resume();
+  let during: ReturnType<typeof h.store.reserveCheckRun>;
+  try {
+    during = h.store.reserveCheckRun(h.runId, rival, "inspector", 1, null);
+  } finally {
+    // Release the held provider on every path, so a failure here is not held up by teardown.
+    resume();
+  }
   await h.blocked();
   const afterRejection = h.store.reserveCheckRun(h.runId, rival, "inspector", 1, null);
   // An explicit operator reset (a new budget epoch) is the only way to a second execution.
@@ -564,11 +575,15 @@ test("a repeated retry request is idempotent and spends nothing more", { timeout
   const requestId = randomUUID();
   const first = await h.retry(requestId);
   await h.retried();
+  const attemptsBefore = h.store.listAttempts(h.submissionId).filter(a => a.nodeId === "inspect").map(a => a.id);
   const again = h.store.manualInfrastructureRetry(h.runId, h.submissionId, h.latest()!, requestId, randomUUID(), Date.now());
+  const attemptsAfter = h.store.listAttempts(h.submissionId).filter(a => a.nodeId === "inspect").map(a => a.id);
   report("idempotent retry", { maxRuns: 1, firstIdempotent: first.idempotent, againIdempotent: again.idempotent,
     providerCalls: h.providerCalls, spent: h.spent() });
   assert.equal(first.idempotent, false);
   assert.equal(again.idempotent, true);
+  assert.deepEqual(attemptsAfter, attemptsBefore, "the replayed request inserts no further gate attempt");
+  assert.equal(attemptsBefore.length, 2);
   assert.equal(h.providerCalls, 1);
   assert.equal(h.spent(), 1);
 });

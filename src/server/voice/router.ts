@@ -45,6 +45,10 @@ interface SeparatedCapture {
   roster: SpokenName[];
   /** Parts already routed. A retry skips them however much history has been recorded since. */
   routed: Set<number>;
+  /** Wall time after which the record is dropped. A retry that late is refused before splitting. */
+  expiresAt: number;
+  /** Finished or cleared: a retry routes nothing. The parts and roster are released. */
+  retired: boolean;
 }
 
 interface ActionTime {
@@ -76,6 +80,12 @@ const SPEECH_RESULT_TIMEOUT_MS = 35_000;
 const FLUID_SPEECH_RESULT_TIMEOUT_MS = 90_000; // One minute of speech, closing silence and CPU decoding.
 
 const HISTORY_LIMIT = 50;
+/**
+ * How long a separated capture keeps its record of routed parts, from its capture time. Retries
+ * end well inside this (the listener's held-retry budget is 55 seconds). A separated capture older
+ * than this is refused rather than split again, since nothing remains to say which parts routed.
+ */
+const SEPARATED_RETRY_MS = 5 * 60_000;
 // At most HISTORY_LIMIT reservations can time out per 35 s. Two batches cover
 // the listener's 55 s held-POST retry budget even under sustained load.
 const EXPIRED_SPEECH_LIMIT = 2 * HISTORY_LIMIT;
@@ -343,8 +353,8 @@ export class VoiceRouter {
   // Retry protection for recent utterances, including controls. Clearing history releases
   // its words immediately and doesn't make a retried cancel act on another card.
   private readonly recentIds = new Set<string>();
-  // A separated capture with a refused part keeps its original split, roster and timing until every
-  // part has routed, so a retry routes the same messages after a separator or roster edit.
+  // Every separated capture keeps its original split, roster, timing and routed parts for
+  // SEPARATED_RETRY_MS, however many captures follow, so a retry resumes it exactly or does nothing.
   private readonly separatedCaptures = new Map<string, SeparatedCapture>();
 
   // The model step of each utterance still resolving, so a caller can wait for it.
@@ -625,6 +635,8 @@ export class VoiceRouter {
       if (aheadUs > MAX_CAPTURE_CLOCK_SKEW_MS * 1000) return false;
     }
     if (this.open.has(id) || this.delivering.has(id) || this.recentIds.has(id)) return true;
+    const now = Date.now();
+    for (const [key, record] of this.separatedCaptures) if (record.expiresAt <= now) this.separatedCaptures.delete(key);
     const pendingSplit = this.separatedCaptures.get(id);
     if (pendingSplit) return this.routeSeparated(utterance, pendingSplit);
     const capture = timing.captureKey ? this.dictationCaptures.get(timing.captureKey) : undefined;
@@ -647,8 +659,15 @@ export class VoiceRouter {
         leadingAddress: roster.some(name => normalizeSeparatorWord(name.name) === normalizeSeparatorWord(separatorWord)),
       }) : null;
     if (separated) {
-      return this.routeSeparated(utterance, { parts: separated, time, startHostUs, captureKey: timing.captureKey,
-        roster: roster.map(target => ({ ...target })), routed: new Set() });
+      // Any record of an earlier attempt has expired by now, so this could be a retry of parts
+      // that already routed. Refuse it rather than split it again.
+      if (now - capturedAt > SEPARATED_RETRY_MS) return false;
+      const split: SeparatedCapture = { parts: separated, time, startHostUs, captureKey: timing.captureKey,
+        roster: roster.map(target => ({ ...target })), routed: new Set(), retired: false,
+        // Outlive the refusal window above, including a capture dated slightly ahead of this clock.
+        expiresAt: Math.max(now, capturedAt) + SEPARATED_RETRY_MS + MAX_CAPTURE_CLOCK_SKEW_MS };
+      this.separatedCaptures.set(id, split);
+      return this.routeSeparated(utterance, split);
     }
     return this.route(utterance, time, timing.captureKey);
   }
@@ -660,14 +679,14 @@ export class VoiceRouter {
    *
    * Routing stops at the first refused part. The capture keeps its split, roster and timing,
    * and a retry routes from that part on, so a later part (a spoken Cancel included) never
-   * runs ahead of the message it follows.
+   * runs ahead of the message it follows. Clearing actions retires the capture, even mid-route.
    */
   private async routeSeparated(utterance: VoiceUtterance, split: SeparatedCapture): Promise<boolean> {
     const { id, capturedAt, text } = utterance;
+    if (split.retired) return true;
     if (!split.parts.length) {
-      this.rememberUtterance(id);
       this.heard.record({ id, time: capturedAt, text, outcome: "ignored", rule: "separator-only", matchedName: null, pauseMs: null, detail: "" });
-      return true;
+      return this.retireSeparated(id, split);
     }
     let previous = split.time;
     // The card the preceding part opened. A Cancel spoken after the separator addresses it alone.
@@ -675,11 +694,7 @@ export class VoiceRouter {
     // Clearing actions and history ends this capture: no later part opens a card in the new lifetime.
     const { signal } = this.lifetime;
     for (const [index, part] of split.parts.entries()) {
-      if (signal.aborted) {
-        this.separatedCaptures.delete(id);
-        this.rememberUtterance(id);
-        return true;
-      }
+      if (signal.aborted) return this.retireSeparated(id, split);
       const partId = `${id}:${index + 1}`;
       // The first part starts at the capture's onset. Later parts start at their first word.
       let at = previous;
@@ -689,25 +704,26 @@ export class VoiceRouter {
         at = offsetUs(candidate, previous) >= 0 ? candidate : previous;
       }
       previous = at;
-      const done = split.routed.has(index) || this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId);
-      if (!done && !await this.route({ ...utterance, id: partId, text: part.text, words: part.words,
-        capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
-      index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined })) {
-        this.separatedCaptures.delete(id);
-        this.separatedCaptures.set(id, split);
-        if (this.separatedCaptures.size > HISTORY_LIMIT) {
-          // Dropping a split forgets which parts were routed. Retire its capture instead of letting
-          // a retry split it again and send those parts twice.
-          const evicted = this.separatedCaptures.keys().next().value!;
-          this.separatedCaptures.delete(evicted);
-          this.rememberUtterance(evicted);
-        }
-        return false;
+      if (!split.routed.has(index)) {
+        const routed = await this.route({ ...utterance, id: partId, text: part.text, words: part.words,
+          capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
+        index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined });
+        // A clear while this part routed ends the capture, even when the part was refused:
+        // keeping it for a retry would let the cleared capture open cards in the new lifetime.
+        if (signal.aborted) return this.retireSeparated(id, split);
+        if (!routed) return false;
+        split.routed.add(index);
       }
-      split.routed.add(index);
       preceding = this.open.has(partId) || this.delivering.has(partId) ? partId : undefined;
     }
-    this.separatedCaptures.delete(id);
+    return this.retireSeparated(id, split);
+  }
+
+  /** Finish a separated capture. Its record stays until it expires, holding no speech. */
+  private retireSeparated(id: string, split: SeparatedCapture): true {
+    split.retired = true;
+    split.parts = [];
+    split.roster = [];
     this.rememberUtterance(id);
     return true;
   }
@@ -1680,6 +1696,8 @@ export class VoiceRouter {
     this.resolutions.clear();
     this.lifetime.abort();
     this.lifetime = new AbortController();
+    // A cleared capture stays retired, so a retry cannot reopen its remaining parts.
+    for (const [id, split] of this.separatedCaptures) this.retireSeparated(id, split);
     this.delivering.clear();
     this.outbox.clear();
     this.pendingVoiceActions.length = 0;

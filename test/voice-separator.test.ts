@@ -283,6 +283,40 @@ test("a retry never routes a completed part again, however much history has been
   assert.deepEqual(pending().filter(card => card.id.startsWith("evict:")).map(card => card.id), ["evict:2"]);
 });
 
+test("a completed separated capture is remembered past the recent history, and a too-late retry is refused", async t => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const { router, cards } = harness(t);
+  const utterance: VoiceUtterance = { id: "late", text: EXAMPLE, capturedAt: now, backend: "fluidaudio", words: timed(EXAMPLE) };
+  assert.equal(await router.accept(utterance), true);
+  for (const id of ["late:1", "late:2"]) assert.equal(router.cancel(id), true);
+  // Push the capture and its parts out of the bounded recent history.
+  for (let i = 0; i < 60; i++) {
+    assert.equal(await router.accept({ id: `noise-${i}`, text: "morning everyone", capturedAt: now, backend: "fluidaudio", words: [] }), true);
+  }
+  // Within the retry window the record answers the retry, and nothing is sent again.
+  now += 4 * 60_000;
+  assert.equal(await router.accept(utterance), true);
+  assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
+  // Past it the record is gone, and the capture is refused instead of split again.
+  now += 2 * 60_000;
+  assert.equal(await router.accept(utterance), false);
+  assert.deepEqual([cards.get("late:1")?.state, cards.get("late:2")?.state], ["cancelled", "cancelled"]);
+});
+
+test("a clear while a part is refused retires the capture instead of keeping it for a retry", async t => {
+  const { router, cards } = harness(t);
+  await fill(router, 50);
+  const utterance: VoiceUtterance = { id: "raced", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
+  // Steve's part is refused at capacity; the clear runs before routing resumes.
+  const first = router.accept(utterance);
+  router.clearActionsAndHistory();
+  assert.equal(await first, true);
+  // The slots are free again, but the cleared capture opens nothing on retry.
+  assert.equal(await router.accept(utterance), true);
+  assert.equal([...cards.keys()].some(id => id.startsWith("raced:")), false);
+});
+
 const ONE_NAME = "Steve, check the build, bagel, then report status";
 
 test("Push-to-talk keeps the separator as ordinary text in one message", async t => {

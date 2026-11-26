@@ -130,6 +130,42 @@ test("one Always-on capture with the separator shows two confirmations, each wit
   } finally { listener.stop(); }
 });
 
+test("turning Voice off ends a separated capture whose later message was waiting for a slot", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(120_000);
+  await setupCards(page, daemon);
+  await runningAgent(page, daemon, "Steve");
+  await runningAgent(page, daemon, "Carol");
+  const listener = await beListener(daemon);
+  try {
+    // 49 open confirmations leave one slot: Steve's message takes it and Carol's is refused.
+    for (let i = 0; i < 49; i++) expect(await (await say(daemon, `Steve, task ${i}`)).json()).toEqual({ accepted: true });
+    expect(await (await say(daemon, EXAMPLE, { id: "waiting" })).json()).toEqual({ accepted: false });
+    await expect(pending(page, "Steve").filter({ hasText: "check the build" })).toHaveCount(1);
+    await expect(pending(page, "Carol")).toHaveCount(0);
+
+    // The operator turns Voice off, which clears every pending action, and back on.
+    await page.goto(daemon.baseURL + "/#/settings/feature-flags");
+    const toggle = page.getByRole("button", { name: /^Voice addressing:/ });
+    await toggle.click();
+    await expect(toggle).toHaveAccessibleName("Voice addressing: off");
+    await expect(page.getByRole("status").filter({ hasText: "To Steve" })).toHaveCount(0);
+    await toggle.click();
+    await expect(toggle).toHaveAccessibleName("Voice addressing: on");
+
+    // Back on the dashboard, which confirms focus for routing, a retry of the same capture now
+    // has free slots but opens none of its messages.
+    await page.goto(daemon.baseURL + "/#/fleet");
+    await expect(page.getByRole("button", { name: "Voice: listening. Mute" })).toBeVisible();
+    expect(await (await say(daemon, EXAMPLE, { id: "waiting" })).json()).toEqual({ accepted: true });
+    await expect(page.getByRole("status").filter({ hasText: /To (Steve|Carol)/ })).toHaveCount(0);
+    expect((await heard(page, daemon)).some(entry => entry.id.startsWith("waiting:"))).toBe(false);
+    // Fresh speech still separates normally after the clear.
+    expect(await (await say(daemon, EXAMPLE)).json()).toEqual({ accepted: true });
+    await expect(pending(page, "Carol")).toContainText("give me a report on the status of some project");
+    await captureCard(page, "separator-cleared-capture");
+  } finally { listener.stop(); }
+});
+
 const execute = promisify(execFile);
 
 async function synthesize(daemon: DaemonHandle, name: string, words: string): Promise<string> {

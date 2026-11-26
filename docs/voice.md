@@ -389,6 +389,9 @@ part's timings spell its words, otherwise from the part before it. Parts route i
 stop at the first refused one, so a spoken “cancel” after the separator always follows the
 message it cancels. The response is then `accepted: false`, and a retry of the same capture ID
 routes from the refused part on with the original split, even if the separator word has changed.
+The daemon keeps each separated capture's record of routed parts for five minutes from capture,
+so a retry never sends a part twice. A separated capture older than that is refused rather than
+split again. Turning Voice off ends a separated capture: a later retry opens none of its parts.
 Every part is bound to the sessions on the roster when the capture arrived; if another session
 takes over a call sign before a later part is delivered, that part reports `not-running`.
 The response is `{ accepted }`. A terminal refusal produces a diagnostic without the

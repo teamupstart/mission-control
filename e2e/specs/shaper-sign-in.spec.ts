@@ -517,3 +517,101 @@ test("in the desktop app the sign-in page goes to the desktop bridge, and a brid
   await page.getByRole("button", { name: "Cancel sign-in for Signed guidance" }).click();
   await expect(signIn(page)).toContainText("Not signed in.");
 });
+
+async function registerSignedGuidance(daemon: DaemonHandle): Promise<void> {
+  const put = await fetch(`${daemon.baseURL}/api/shaping`, {
+    method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+      id: "signed-guidance", label: "Signed guidance", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:context" } } },
+    } }),
+  });
+  expect(put.status).toBe(200);
+}
+
+test("a sign-in reply that lands after shaper-sign-in was switched off opens no page and holds no link", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+  let tabs = 0;
+  page.on("popup", () => { tabs++; });
+
+  // The daemon answers the sign-in, but its reply is held before it reaches this window.
+  let release!: () => void;
+  const held = new Promise<void>((done) => { release = done; });
+  let answered!: () => void;
+  const daemonAnswered = new Promise<void>((done) => { answered = done; });
+  await page.route("**/api/shaping/sign-in", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const response = await route.fetch();
+    answered();
+    await held;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await daemonAnswered;
+
+  // Another window switches the feature off: the row says so and offers no control.
+  await setFlag(daemon, "shaper-sign-in", false);
+  await expect(signIn(page)).toContainText("Sign-in is switched off");
+  await expect(signIn(page).getByRole("button")).toHaveCount(0);
+
+  // The reply lands now. It belongs to controls that are gone: no tab opens.
+  const delivered = page.waitForResponse((response) => response.url().endsWith("/api/shaping/sign-in"));
+  release();
+  expect((await delivered).status()).toBe(200);
+  await page.unroute("**/api/shaping/sign-in");
+
+  // Switched on again, the row has no link from that reply: neither Open nor Copy is offered,
+  // and its Sign in is free, so the reply has been handled.
+  await setFlag(daemon, "shaper-sign-in", true);
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Open the sign-in page for Signed guidance" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveCount(0);
+  expect(tabs).toBe(0);
+  expect(fake.requests.some((request) => request.path === "/authorize")).toBe(false);
+});
+
+test("a desktop bridge failure that lands after another window cancelled the sign-in is not shown", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // A desktop bridge whose call stays open until the test fails it.
+  await page.evaluate(() => {
+    const probe = window as unknown as { failBridge?: () => Promise<void>; bridgeCalls?: number };
+    probe.bridgeCalls = 0;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<void>((_, reject) => { fail = reject; });
+    probe.failBridge = async () => {
+      fail(new Error("no registered handler"));
+      // Let the dashboard's handler for the rejection run before the test looks.
+      await new Promise((done) => setTimeout(done, 50));
+    };
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: { isDesktop: true, openExternal: () => { probe.bridgeCalls! += 1; return pending; } },
+    });
+  });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await expect(signIn(page)).toContainText("Waiting for the browser.");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { bridgeCalls?: number }).bridgeCalls)).toBe(1);
+
+  // Another window cancels the sign-in while the bridge call is still open.
+  const listed = await (await fetch(`${daemon.baseURL}/api/shaping`)).json() as { signIns: Array<{ id: string; shapers: string[] }> };
+  const connection = listed.signIns.find((entry) => entry.shapers.includes("signed-guidance"))!.id;
+  const cancelled = await fetch(`${daemon.baseURL}/api/shaping/sign-out`, { method: "POST", headers: json, body: JSON.stringify({ connection }) });
+  expect(cancelled.status).toBe(200);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // Only now does the bridge fail. The sign-in it was opening is over, so the row shows no alert.
+  await page.evaluate(() => (window as unknown as { failBridge: () => Promise<void> }).failBridge());
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+});

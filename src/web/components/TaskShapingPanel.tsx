@@ -143,6 +143,11 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
   // second render of the same list counts nothing.
   const moves = useRef<{ list: readonly ShapingSignInView[]; moves: SignInMoves }>({ list: shown, moves: {} });
   if (moves.current.list !== shown) moves.current = { list: shown, moves: signInMovesAfter(moves.current.moves, moves.current.list, shown) };
+  // Counts each time the flag changes. A reply that lands with the flag off, or after it went off
+  // and on again, belongs to controls that are gone: it keeps no link and opens nothing.
+  const activation = useRef({ enabled, count: 0 });
+  if (activation.current.enabled !== enabled) activation.current = { enabled, count: activation.current.count + 1 };
+  const stillActive = useCallback((sentIn: number): boolean => activation.current.enabled && activation.current.count === sentIn, []);
   useEffect(() => { setHeld((current) => signInLinksAfter(current, shown)); }, [shown]);
   // A refusal describes its connection as it was: once another window, a refresh or an expiry
   // moves that connection on, the row shows the new state without the old refusal beside it.
@@ -178,18 +183,31 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
    * that sign-in is pending, pointing at the two controls that offer the link again.
    */
   const open = useCallback((connection: string, url: string, key: string): void => {
+    // The desktop bridge may answer late. A failure that lands after the sign-in moved on, such
+    // as one another window cancelled or finished meanwhile, or after the flag changed, no
+    // longer describes the row and is not shown.
+    const sent = moves.current.moves;
+    const sentIn = activation.current.count;
     void openExternalChecked(url).then((opened) => {
-      if (!opened) refuse(key, SIGN_IN_TAB_NOT_OPENED, signInSubject(connection, "pending"));
+      if (opened || !stillActive(sentIn) || signInMovedSince(sent, moves.current.moves, connection)) return;
+      refuse(key, SIGN_IN_TAB_NOT_OPENED, signInSubject(connection, "pending"));
     });
-  }, [refuse]);
+  }, [refuse, stillActive]);
   const onSignIn = useCallback((shaper: string, key: string): void => {
     begin(key, key);
     // The counts as the request went out, so the reply can tell whether the sign-in moved on,
     // and perhaps back, while it was in flight.
     const sent = moves.current.moves;
+    const sentIn = activation.current.count;
     void api.signInShaper(shaper).then((reply) => {
       if (!reply.ok || !reply.authorizationUrl || !reply.connection) {
         settle(key, key, refusalText(reply, "sign-in"), sent);
+        return;
+      }
+      if (!stillActive(sentIn)) {
+        // The flag went off while the request was in flight: the row offers no sign-in now, so
+        // there is no link to hold and no page to open.
+        settle(key, key, null, sent);
         return;
       }
       const { authorizationUrl, connection } = reply;
@@ -206,7 +224,7 @@ function useShaperSignIn(signIns: readonly ShapingSignInView[]): ShaperSignInPro
       // A sign-in that is already over has no page worth opening.
       if (link) open(connection, authorizationUrl, key);
     });
-  }, [begin, settle, open]);
+  }, [begin, settle, open, stillActive]);
   const onSignOut = useCallback((connection: string, key: string): void => {
     const busyKey = signInConnectionKey(connection);
     begin(busyKey, key);

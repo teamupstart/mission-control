@@ -238,9 +238,31 @@ test("a refused sign-in, an unsafe sign-in link and a refused sign-out each show
   await page.unroute("**/api/shaping/sign-in");
   expect(tabs).toBe(0);
 
-  // A real sign-in still works from the same row, and clears the earlier refusal.
-  const signInTab = page.waitForEvent("popup");
+  // A new tab that the browser blocks: the sign-in started, so the row waits for the browser,
+  // says the page did not open, and offers the two controls that give the link again.
+  await page.evaluate(() => {
+    const blocked = window as unknown as { realOpen?: typeof window.open };
+    blocked.realOpen = window.open;
+    window.open = () => null;
+  });
   await signInButton.click();
+  await expect(signIn(page)).toContainText("Waiting for the browser.");
+  await expect(signIn(page).getByRole("alert")).toHaveText(
+    "The sign-in page did not open, perhaps because a new tab was blocked. Use Open the sign-in page, or Copy link to open it in another browser.");
+  const openAgain = page.getByRole("button", { name: "Open the sign-in page for Signed guidance" });
+  await expect(openAgain).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toBeVisible();
+  expect(tabs).toBe(0);
+  await capture(page, "5-tab-blocked");
+  await page.evaluate(() => {
+    const blocked = window as unknown as { realOpen?: typeof window.open };
+    window.open = blocked.realOpen!;
+  });
+
+  // Open the sign-in page opens it once tabs are allowed: the real sign-in completes from the same
+  // row, and the earlier refusal is gone.
+  const signInTab = page.waitForEvent("popup");
+  await openAgain.click();
   const tab = await signInTab;
   await expect(tab.getByRole("heading", { name: "Signed in. You can close this tab and go back to Mission Control." })).toBeVisible();
   await tab.close();

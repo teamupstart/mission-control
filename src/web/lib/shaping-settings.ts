@@ -785,10 +785,31 @@ export function signInLinkHeld(
   return link ? { ...rest, [connection]: link } : rest;
 }
 
+const SIGN_IN_ROW_PREFIX = "row:";
+const SIGN_IN_CONNECTION_PREFIX = "connection:";
+
+/** The key of a shaper row's sign-in controls: their busy state and refusals live under it. */
+export function signInRowKey(shaper: string): string {
+  return `${SIGN_IN_ROW_PREFIX}${shaper}`;
+}
+
+/**
+ * The key of a connection's own controls: an unused entry's Sign out, and the busy state of every
+ * Cancel sign-in or Sign out of that connection, whichever row or entry sent it.
+ */
+export function signInConnectionKey(connection: string): string {
+  return `${SIGN_IN_CONNECTION_PREFIX}${connection}`;
+}
+
+/** A connection in a state, as one comparable string: what a refusal is shown against. */
+export function signInSubject(connection: string | null, state: SignInListState): string {
+  return `${connection ?? ""}|${state}`;
+}
+
 /** The connection a sign-in control acts on: a row's is the one whose `shapers` names it. */
 export function signInControlConnection(signIns: readonly ShapingSignInView[], key: string): string | null {
-  return key.startsWith("row:") ? signInForShaper(signIns, key.slice("row:".length))?.id ?? null
-    : key.startsWith("connection:") ? key.slice("connection:".length) : null;
+  return key.startsWith(SIGN_IN_ROW_PREFIX) ? signInForShaper(signIns, key.slice(SIGN_IN_ROW_PREFIX.length))?.id ?? null
+    : key.startsWith(SIGN_IN_CONNECTION_PREFIX) ? key.slice(SIGN_IN_CONNECTION_PREFIX.length) : null;
 }
 
 /**
@@ -825,7 +846,7 @@ export function signInLinksAfter(
  */
 export function signInControlSubject(signIns: readonly ShapingSignInView[], key: string): string {
   const connection = signInControlConnection(signIns, key);
-  return `${connection ?? ""}|${signInStateIn(signIns, connection)}`;
+  return signInSubject(connection, signInStateIn(signIns, connection));
 }
 
 /** A sign-in control's refusal, with the subject it was shown against. */

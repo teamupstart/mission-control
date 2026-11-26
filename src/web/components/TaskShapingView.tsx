@@ -16,6 +16,8 @@ import {
   shaperReach,
   shaperSignInRow,
   shapingList,
+  signInConnectionKey,
+  signInRowKey,
   unusedSignIns,
   shapingStageLockKey,
   type ShapingListGroup,
@@ -55,13 +57,17 @@ export interface ShaperSignInProps {
   signIns: readonly ShapingSignInView[];
   /** The authorization URL of each pending sign-in this window started, by connection id. */
   links: Readonly<Record<string, string>>;
-  /** Sign-in controls whose request awaits its answer: `row:<shaper id>` or `connection:<id>`. */
+  /**
+   * Requests awaiting their answer: a row's Sign in under `signInRowKey`, and any Cancel sign-in
+   * or Sign out under the connection's `signInConnectionKey`, whichever row or entry sent it.
+   */
   busy: ReadonlySet<string>;
-  /** The latest refusal under each sign-in control, by the same keys. */
+  /** The latest refusal under each control: a row's under its row key, an unused entry's under its connection key. */
   errors: Readonly<Record<string, string>>;
   onSignIn: (shaper: string, key: string) => void;
   onSignOut: (connection: string, key: string) => void;
-  onOpen: (url: string) => void;
+  /** Opens a held sign-in link again; a refusal for it goes under `key`. */
+  onOpen: (connection: string, url: string, key: string) => void;
 }
 
 const SIGN_IN_OFF: ShaperSignInProps = {
@@ -455,11 +461,11 @@ function ShaperSignIn({ id, label, row, signIn }: {
       </div>
     );
   }
-  const key = `row:${id}`;
+  const key = signInRowKey(id);
   const connection = row.connection;
-  const connectionKey = connection ? `connection:${connection}` : null;
-  // Signing in starts from the row; cancelling and signing out act on the connection, which an
-  // unused-list entry or another row sharing it may be acting on too.
+  const connectionKey = connection ? signInConnectionKey(connection) : null;
+  // Signing in holds the row. Cancelling and signing out hold the connection, so a request from
+  // any row sharing it makes every one of them wait.
   const busy = signIn.busy.has(key) || (connectionKey !== null && signIn.busy.has(connectionKey));
   const error = signIn.errors[key] ?? (connectionKey ? signIn.errors[connectionKey] : undefined);
   const signOut = (): void => { if (connection) signIn.onSignOut(connection, key); };
@@ -478,7 +484,7 @@ function ShaperSignIn({ id, label, row, signIn }: {
         return (
           <Tooltip key={control} label="Open the sign-in page in your browser again">
             <button type="button" className="btn" aria-label={`Open the sign-in page for ${label}`}
-              onClick={() => { if (row.link) signIn.onOpen(row.link); }}>Open the sign-in page</button>
+              onClick={() => { if (row.link && connection) signIn.onOpen(connection, row.link, key); }}>Open the sign-in page</button>
           </Tooltip>
         );
       case "copy":
@@ -527,7 +533,7 @@ function UnusedSignIns({ signIn }: { signIn: ShaperSignInProps }): React.JSX.Ele
       </div>
       <ul>
         {unused.map((entry) => {
-          const key = `connection:${entry.id}`;
+          const key = signInConnectionKey(entry.id);
           return (
             <li key={entry.id}>
               <div className="shaping-unused-copy">

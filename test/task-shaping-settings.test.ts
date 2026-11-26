@@ -44,8 +44,11 @@ import {
   shapingViewCommit,
   shapingViewReached,
   shaperSignInRow,
+  signInConnectionKey,
   signInControlConnection,
   signInControlSubject,
+  signInRowKey,
+  signInSubject,
   signInLinkFor,
   signInLinkHeld,
   signInLinksAfter,
@@ -968,14 +971,14 @@ function signInEntry(extra: Partial<ShapingSignInView> = {}): ShapingSignInView 
 
 function renderSignIn(
   signIns: ShapingSignInView[],
-  options: { enabled?: boolean; links?: Record<string, string>; shapers?: unknown[]; discovered?: unknown[] } = {},
+  options: { enabled?: boolean; links?: Record<string, string>; shapers?: unknown[]; discovered?: unknown[]; busy?: string[] } = {},
 ): string {
   return renderToStaticMarkup(createElement(TaskShapingView, {
     config: view({ shapers: options.shapers ?? [signedMcp] }), references: {}, onSet: async () => "saved" as const,
     onTest: async () => ({ ok: false as const, aborted: false, reason: "" }),
     repositories: async () => [], discovered: (options.discovered ?? []) as never,
     signIn: {
-      enabled: options.enabled ?? true, signIns, links: options.links ?? {}, busy: new Set<string>(), errors: {},
+      enabled: options.enabled ?? true, signIns, links: options.links ?? {}, busy: new Set<string>(options.busy ?? []), errors: {},
       onSignIn: () => {}, onSignOut: () => {}, onOpen: () => {},
     },
   }));
@@ -1269,4 +1272,45 @@ test("a late reply whose sign-in left pending and another attempt is pending now
   assert.equal(signInLinkFor([signInEntry({ state: "signed_in" })], CONNECTION, FAKE_LINK, 2), null);
   assert.equal(signInLinkFor(pending, CONNECTION, FAKE_LINK, 2), null);
   assert.equal(signInLinkFor(signedOut, CONNECTION, FAKE_LINK, 1), null, "one change to a state other than pending is not this sign-in's event");
+});
+
+test("sign-in control keys and refusal subjects come from one builder each, and read back", () => {
+  const list = [signInEntry({ state: "signed_in" })];
+  assert.equal(signInControlConnection(list, signInRowKey("signed-mcp")), CONNECTION);
+  assert.equal(signInControlConnection(list, signInConnectionKey(CONNECTION)), CONNECTION);
+  assert.equal(signInControlConnection(list, signInRowKey("no-such-shaper")), null);
+  assert.equal(signInControlConnection(list, "something-else"), null);
+  // The subject a control's refusal is shown against is the one `signInSubject` builds, so a refusal
+  // made with `signInSubject(connection, "pending")` survives exactly while the list shows that.
+  assert.equal(signInControlSubject(list, signInRowKey("signed-mcp")), signInSubject(CONNECTION, "signed_in"));
+  assert.equal(signInControlSubject([], signInRowKey("signed-mcp")), signInSubject(null, "absent"));
+  const key = signInRowKey("signed-mcp");
+  const refusal = { [key]: { text: "Not opened.", subject: signInSubject(CONNECTION, "pending") } };
+  assert.equal(signInRefusalsAfter(refusal, [signInEntry({ state: "pending" })]), refusal);
+  assert.deepEqual(signInRefusalsAfter(refusal, [signInEntry({ state: "signed_out" })]), {});
+});
+
+test("a Cancel or Sign out in flight on a connection makes every row and entry on it wait", () => {
+  const shared = { ...signedMcp, id: "signed-twin", label: "Signed twin" };
+  const signedIn = [signInEntry({ state: "signed_in", shapers: ["signed-mcp", "signed-twin"] })];
+  const busy = [signInConnectionKey(CONNECTION)];
+  const html = renderSignIn(signedIn, { shapers: [signedMcp, shared], busy });
+  for (const label of ["Signed MCP", "Signed twin"]) {
+    assert.match(rowMarkup(html, label), new RegExp(`aria-label="Sign out ${label}" disabled=""`), label);
+  }
+  const pending = [signInEntry({ state: "pending", shapers: ["signed-mcp", "signed-twin"] })];
+  const waiting = renderSignIn(pending, { shapers: [signedMcp, shared], busy });
+  for (const label of ["Signed MCP", "Signed twin"]) {
+    const row = rowMarkup(waiting, label);
+    assert.match(row, new RegExp(`aria-label="Cancel sign-in for ${label}" disabled=""`), label);
+    assert.match(row, new RegExp(`aria-label="Sign in ${label}" disabled=""`), label);
+  }
+  // A Sign in in flight holds its own row only.
+  const signingIn = renderSignIn([signInEntry({ shapers: ["signed-mcp", "signed-twin"] })], { shapers: [signedMcp, shared], busy: [signInRowKey("signed-mcp")] });
+  assert.match(rowMarkup(signingIn, "Signed MCP"), /aria-label="Sign in Signed MCP" disabled=""/);
+  assert.doesNotMatch(rowMarkup(signingIn, "Signed twin"), /aria-label="Sign in Signed twin" disabled=""/);
+  // The unused entry's Sign out waits on the same connection key.
+  const unusedId = "e".repeat(32);
+  const unused = renderSignIn([signInEntry({ id: unusedId, state: "signed_in", shapers: [] })], { busy: [signInConnectionKey(unusedId)] });
+  assert.match(unused, /aria-label="Sign out https:\/\/tools\.acme\.example\/mcp \(mcp:context\)" disabled=""/);
 });

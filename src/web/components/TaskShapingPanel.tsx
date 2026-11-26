@@ -15,6 +15,7 @@ import {
   signInAttemptIn,
   signInLinkFor,
   signInLinkHeld,
+  signInLinkKept,
   signInLinksAfter,
   signInLinksShown,
   signInMovedSince,
@@ -151,7 +152,16 @@ function useShaperSignIn(
   targets: Readonly<Record<string, string | null>>,
 ): ShaperSignInProps {
   const enabled = useFeatureFlag(SHAPER_SIGN_IN_FLAG_ID);
-  const [held, setHeld] = useState<Readonly<Record<string, ShaperSignInLink>>>({});
+  const [held, setHeldState] = useState<Readonly<Record<string, ShaperSignInLink>>>({});
+  // The held links as of every change made so far, ahead of the render that shows them: a reply
+  // that lands right after another, before React renders, must see the link the first one kept.
+  const heldNow = useRef(held);
+  const setHeld = useCallback((next: (current: Readonly<Record<string, ShaperSignInLink>>) => Readonly<Record<string, ShaperSignInLink>>): void => {
+    const value = next(heldNow.current);
+    if (value === heldNow.current) return;
+    heldNow.current = value;
+    setHeldState(value);
+  }, []);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [refusals, setRefusals] = useState<Readonly<Record<string, ShaperSignInRefusal>>>({});
   // A link lives only while its sign-in is pending, so each new list may end some.
@@ -172,7 +182,7 @@ function useShaperSignIn(
   const activation = useRef({ enabled, count: 0 });
   if (activation.current.enabled !== enabled) activation.current = { enabled, count: activation.current.count + 1 };
   const stillActive = useCallback((sentIn: number): boolean => activation.current.enabled && activation.current.count === sentIn, []);
-  useEffect(() => { setHeld((current) => signInLinksAfter(current, shown)); }, [shown]);
+  useEffect(() => { setHeld((current) => signInLinksAfter(current, shown)); }, [shown, setHeld]);
   // A refusal describes its connection as it was: once another window, a refresh or an expiry
   // moves that connection on, the row shows the new state without the old refusal beside it.
   // A row's refusal is about what its shaper signed in to, so a change to that from another
@@ -260,19 +270,22 @@ function useShaperSignIn(
       const link = signInLinkFor(
         latest.current, connection, { url: authorizationUrl, attempt }, signInMovesSince(sent, moves.current.moves, connection),
       );
+      // Kept only while no later attempt's link is held here: a reply that lands after the reply
+      // of the attempt that replaced it, before either list frame, opens and refuses nothing.
+      const kept = signInLinkKept(heldNow.current, connection, link);
       if (!signInUrlOpenable(authorizationUrl)) {
         // The daemon did start this sign-in, so the refusal stands while it is pending and goes
         // once it lapses or is cancelled, whichever of its event and this reply came first. One
-        // already over when the reply lands has nothing left to refuse.
-        settle(key, key, link ? SIGN_IN_URL_REFUSED : null, request, signInSubject(connection, "pending", attempt));
+        // already over or replaced when the reply lands has nothing left to refuse.
+        settle(key, key, kept ? SIGN_IN_URL_REFUSED : null, request, signInSubject(connection, "pending", attempt));
         return;
       }
       setHeld((current) => signInLinkHeld(current, connection, link));
       settle(key, key, null, request);
-      // A sign-in that is already over has no page worth opening.
-      if (link) open(connection, authorizationUrl, attempt, key);
+      // A sign-in that is already over, or already replaced, has no page worth opening.
+      if (kept) open(connection, authorizationUrl, attempt, key);
     });
-  }, [begin, settle, open, stillActive, requestState, sameTarget]);
+  }, [begin, settle, open, stillActive, requestState, sameTarget, setHeld]);
   const onSignOut = useCallback((connection: string, key: string): void => {
     const busyKey = signInConnectionKey(connection);
     begin(busyKey, key);
@@ -283,7 +296,7 @@ function useShaperSignIn(
       if (reply.ok) setHeld((current) => { const next = { ...current }; delete next[connection]; return next; });
       settle(busyKey, key, reply.ok ? null : refusalText(reply, "sign-out"), request);
     });
-  }, [begin, settle, requestState]);
+  }, [begin, settle, requestState, setHeld]);
   const onOpen = useCallback((connection: string, url: string, key: string): void => {
     setRefusals((current) => { const next = { ...current }; delete next[key]; return next; });
     // A row offers a link only while the list shows its attempt pending, so that is the attempt opened.

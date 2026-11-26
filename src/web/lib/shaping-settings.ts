@@ -825,10 +825,23 @@ export function signInLinkHeld(
   connection: string,
   link: ShaperSignInLink | null,
 ): Readonly<Record<string, ShaperSignInLink>> {
-  if (!link) return current;
+  return signInLinkKept(current, connection, link) ? { ...current, [connection]: link } : current;
+}
+
+/**
+ * Whether `signInLinkHeld` keeps `link`: there is one, and no later attempt's link is held on its
+ * connection. A reply whose link is not kept started an attempt a later one already replaced, so
+ * it opens no page and shows no refusal: its URL would end on the callback's "The sign-in did not
+ * finish." page.
+ */
+export function signInLinkKept(
+  current: Readonly<Record<string, ShaperSignInLink>>,
+  connection: string,
+  link: ShaperSignInLink | null,
+): link is ShaperSignInLink {
+  if (!link) return false;
   const held = Object.hasOwn(current, connection) ? current[connection]! : null;
-  if (held && held.attempt > link.attempt) return current;
-  return { ...current, [connection]: link };
+  return !held || held.attempt <= link.attempt;
 }
 
 const SIGN_IN_ROW_PREFIX = "row:";

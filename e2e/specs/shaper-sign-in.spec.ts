@@ -384,6 +384,9 @@ test("two sign-in replies on one connection that land before either list frame, 
   const twin = panel(page).getByRole("group", { name: "Sign-in for Signed twin" });
   await expect(signIn(page)).toContainText("Not signed in.");
   await expect(twin).toContainText("Not signed in.");
+  // Every page either reply opens: only B's may open one, since A's URL is the replaced attempt's.
+  const tabs: string[] = [];
+  page.on("popup", (popup) => { tabs.push(popup.url()); });
   await page.evaluate(() => { (window as unknown as { signInFrames: { holding: boolean } }).signInFrames.holding = true; });
   const held = () => page.evaluate(() => (window as unknown as { signInFrames: { queue: unknown[] } }).signInFrames.queue.length);
 
@@ -435,6 +438,8 @@ test("two sign-in replies on one connection that land before either list frame, 
   await page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" }).click();
   await expect(page.getByRole("button", { name: "Copy the sign-in link for Signed guidance" })).toHaveText("Copied");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(opened.url());
+  // A's reply, landing after B's, opened no page of its own: the only tab is the one B opened.
+  expect(tabs).toHaveLength(1);
 
   await page.getByRole("button", { name: "Cancel sign-in for Signed twin" }).click();
   await expect(twin).toContainText("Not signed in.");

@@ -51,6 +51,7 @@ import {
   signInSubject,
   signInLinkFor,
   signInLinkHeld,
+  signInLinkKept,
   signInLinksAfter,
   signInLinksShown,
   signInMovedSince,
@@ -1256,6 +1257,11 @@ test("two replies on one connection that land before either list frame keep the 
   const held = signInLinkHeld(signInLinkHeld({}, CONNECTION, newer), CONNECTION, older);
   assert.equal(held[CONNECTION]!.url, FAKE_LINK, "the older reply does not displace the newer attempt's link");
   assert.equal(signInLinkHeld(held, CONNECTION, older), held, "the same object: nothing changed");
+  // Only the newer reply's link is kept, so only it may open a page or show a refusal.
+  assert.equal(signInLinkKept(signInLinkHeld({}, CONNECTION, newer), CONNECTION, older), false);
+  assert.equal(signInLinkKept({}, CONNECTION, newer), true);
+  assert.equal(signInLinkKept(signInLinkHeld({}, CONNECTION, older), CONNECTION, newer), true);
+  assert.equal(signInLinkKept(held, CONNECTION, null), false);
   // In the other order the newer reply replaces the older one's link.
   assert.equal(signInLinkHeld(signInLinkHeld({}, CONNECTION, older), CONNECTION, newer)[CONNECTION]!.url, FAKE_LINK);
   // The daemon's frames then arrive in the order it began the attempts: A's first, then B's.

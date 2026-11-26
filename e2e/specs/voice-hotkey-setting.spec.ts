@@ -107,7 +107,7 @@ test("Voice settings records a chord, explains refusal, and follows call and key
       return state.pendingHotkeyId as string;
     };
     await capture.focus();
-    await expect(page.locator(".tooltip")).toHaveText("Record a system-wide mute shortcut");
+    await expect(page.locator(".tooltip").filter({ hasText: /^Record a system-wide mute shortcut$/ })).toBeVisible();
     await beginRecording();
     await expect(capture).toHaveAccessibleDescription("Press a shortcut, or Escape to cancel");
     await expect(capture).toHaveText("Press a key…");

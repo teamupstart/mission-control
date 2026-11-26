@@ -91,10 +91,12 @@ test("guard 2: the regenerated oracle adds /dispatch entries and changes no othe
   // Repository Index and Task Sources views carry config revisions for conditional writes.
   // A Task Sources replacement without a revision now answers 400.
   // PATCH /api/pipelines/config accepts only the Engineer runtime.
+  // Shaper sign-in adds POST /api/shaping/sign-in, POST /api/shaping/sign-out and
+  // GET /api/shaping/sign-in/callback, which answer 404 with task-shaping off.
   const others = Object.entries(oracle).filter(([key]) => !isDispatch(key)).sort(([a], [b]) => (a < b ? -1 : 1));
-  assert.equal(others.length, 498);
+  assert.equal(others.length, 501);
   assert.equal(createHash("sha256").update(JSON.stringify(others)).digest("hex"),
-    "5fc82612c4747adbec2984d43a46bf57424ee94a0262ab09d6e474e0cca9afac");
+    "483013e6b0895c56b27f0a22b365a27b79a67cb2e71722a6575c5130f876c550");
 });
 
 function sourceFiles(dir: string): string[] {

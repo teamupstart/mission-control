@@ -261,13 +261,13 @@ A registered shaper is stored switched off. Dry-run it before you switch it on.
 
 ## The shaping API
 
-All three routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
+All of these routes are behind the flag and answer 404 while it is off. `PUT /api/shaping` and
 `POST /api/shaping/test` also answer 403 `forbidden` unless the body is declared
 `application/json` and any `Origin` is a loopback `http:` origin, the check other browser-write
 routes use, so a page on another site cannot store an intent or run a shaper. The check runs
 before the body limit, so such a request is refused as forbidden whatever its size.
 
-- **`GET /api/shaping`** returns `{ config, discovered, folder, references }`. `config` is the config
+- **`GET /api/shaping`** returns `{ config, discovered, folder, references, signIns }`. `config` is the config
   view of `app_config.shaping`: `caller`, `limits`, `shapers`, `overrides` and `order`, where
   each known shaper appears in full and an entry this build cannot run appears only as
   `{ id, label, unsupported }`, plus `replaceable: true` when an import under its id replaces
@@ -304,6 +304,10 @@ before the body limit, so such a request is refused as forbidden whatever its si
   Control's own token and state directory, an empty value and a value carrying the daemon's
   token read `unset`. A variable named only in a header the transport replaces, such as
   `Accept`, or in a trace or work unit header, is never needed by a call and is not listed.
+  `signIns` is [the sign-in list](#signing-in-over-the-api) while `shaper-sign-in` is on, and
+  an empty list while it is off. Reading it also tells the sign-in service which connections the
+  registered shapers and the folder's valid manifests name, so a connection no shaper names any
+  more is listed as unused.
 - **`PUT /api/shaping`** takes one intent and returns `{ config }`:
   - `{ "kind": "upsert", "shaper": {...} }` creates or replaces a registered shaper. Either
     way it is stored off, as an explicit `false` in `overrides`: a choice to run it applies to the definition the operator reviewed,
@@ -1052,9 +1056,10 @@ shaper calls: the import review and the shaper's row show **Signs in** with the 
 authorization server's origin, and "What it is sent" names the access token and that it goes
 only to the server's origin.
 
-A marked shaper asks Mission Control's sign-in service for its token on every call. The
-answer is read from the daemon's memory, so a call never waits on the network or the
-Keychain for it, and the call never starts a sign-in. What the call does, for every state of
+A sign-in is made through [the API](#signing-in-over-the-api), and a marked shaper asks
+Mission Control's sign-in service for its token on every call. The answer is read from the
+daemon's memory, so a call never waits on the network or the Keychain for it, and the call
+never starts a sign-in. What the call does, for every state of
 its connection. Dispatch continues in every row:
 
 | The shaper's connection | Requests made | Outcome |
@@ -1095,6 +1100,55 @@ accepts the marker whatever the flag says.
 
 An older build that reads a marked shaper does not know `auth`, so it lists the shaper as
 unsupported, keeps it on every write and never calls it.
+
+#### Signing in over the API
+
+Three routes start, finish and end a sign-in. Each is behind `task-shaping` and then
+`shaper-sign-in`, and answers 404 while either is off. Like every `/api` route they answer 403
+to a `Host` that is not loopback. The two `POST` routes also answer 403 unless the body is
+declared `application/json` and any `Origin` is a loopback `http:` origin, and 413 past 4 KiB.
+A body that is not exactly the one field each takes is 400 `invalid_request`, with a fixed
+reason that repeats no key or value it was sent.
+
+- **`POST /api/shaping/sign-in`** takes `{ shaper }`, the id of a registered shaper this build
+  can run or of a valid manifest in the shapers folder, a registered one first. It starts a
+  sign-in for the shaper's connection and answers `{ authorizationUrl, expiresAt, connection }`:
+  the link to open in a browser, when the pending sign-in lapses (10 minutes), and the
+  connection id. The link carries the client id, the OAuth `state` parameter and the PKCE
+  challenge, which the browser must present, and this reply is the only place it appears. An unknown id is 404
+  `unknown_shaper`, and a shaper with no `auth` marker is 400 `no_sign_in`. A refusal that is
+  Mission Control's own is 409: `registration_limit` when all 16 client registrations are
+  named by a sign-in, `store_unread` when the stored sign-ins could not be read, and
+  `flag_off` when the flag went off meanwhile. A start that took more than 20 seconds is 504
+  `timeout`. Any other failure is 502, with the code `refused`, `client_rejected`,
+  `sign_in_again`, `retry` or `failed`: the server or its authorization server could not be
+  reached at all, or was reached and refused or answered something unusable. Every failure's
+  `reason` is a fixed sentence for its code, never text a server sent; the daemon's log keeps
+  the detail.
+- **`GET /api/shaping/sign-in/callback`** is the redirect URI every registration names,
+  `http://127.0.0.1:PORT/api/shaping/sign-in/callback` with the daemon's port. It reads
+  `state`, `code`, `error` and `iss` from the query, each at most 2 KiB, and nothing else. It
+  hands them to the sign-in service, which holds them in memory for the one exchange; nothing
+  persists them. A `state` works once, and a daemon that restarted since the sign-in began has
+  none waiting. It answers a static page with no script that loads nothing: 200 "Signed in. You
+  can close this tab and go back to Mission Control.", or 400 "The sign-in did not finish." with
+  one fixed sentence chosen by the kind of failure, ending "Start again from Settings > Task
+  shaping." The page never shows the code, the OAuth `state` parameter, a token or text the
+  authorization server sent. It carries `cache-control: no-store`, `referrer-policy: no-referrer`,
+  `x-content-type-options: nosniff` and
+  `content-security-policy: default-src 'none'; style-src 'unsafe-inline'`.
+- **`POST /api/shaping/sign-out`** takes `{ connection }` and ends that connection's sign-in,
+  pending or held: it drops the pending one, removes the stored tokens and revokes them. It
+  answers `{ signIns }`. An id with nothing to end is 404 `unknown_connection`.
+
+The sign-in list, in `GET /api/shaping`, the sign-out reply and
+[the `shaping_sign_ins` event](event-stream.md#task-shaping), has one entry per connection:
+`{ id, url, scope, issuer, state, storage, expiresAt, reason, shapers }`, where `state` is the
+connection's status, `signed_out`, `pending`, `signed_in` or `renewing`, `storage` is `keychain`
+or `memory`, and `shapers` lists the ids of the known shapers that name it, empty for an unused
+one. It never holds a token, a code, the OAuth `state` parameter, a verifier or an authorization
+URL, so a pending entry has no link: a window without one starts the sign-in again. A sign-in whose shaper is removed before
+the callback still completes and is then listed as unused.
 
 ## The built-in gatherer
 

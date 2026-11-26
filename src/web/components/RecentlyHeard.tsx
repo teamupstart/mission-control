@@ -12,7 +12,7 @@ const HISTORY_REQUEST_TIMEOUT_MS = 5000;
 const ruleLabels: Record<string, string> = {
   exact: "exact first word", phonetic: "sounds like", "near-miss": "near miss rejected",
   "no-name": "no opening name", "no-message": "name without a message",
-  "nothing-pending": "nothing to cancel", "ambiguous-name": "ambiguous name",
+  "capture-limit": "duration limit", "nothing-pending": "nothing to cancel", "ambiguous-name": "ambiguous name",
   "second-name": "second name", cancel: "spoken cancel", pick: "spoken selection",
 };
 const outcomes: Record<HeardEntry["outcome"], string> = {

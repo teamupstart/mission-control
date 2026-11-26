@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { stateDir } from "../../shared/harness-runtime.mjs";
 import { askAloudPossible, resolveSpeechVoice, type VoiceSpeechCatalog } from "@shared/voice-speech.ts";
 import { VoiceSpeechManager, type VoiceSynthesizer } from "./speech.ts";
+import { TranscriptPreview } from "./transcript.ts";
 import { CaptureGrants } from "./capture-grants.ts";
 import { voiceProcessBirth } from "./process-birth.ts";
 import { watchCaptureProcess } from "./capture-process.ts";
@@ -28,6 +29,7 @@ import {
   voiceStateOff,
   voiceUnavailableReasons,
   type VoiceBackend,
+  type VoiceCapability,
   type VoiceCapabilities,
   transcriptTail, type TranscriptSample,
   type VoiceConfig,
@@ -64,6 +66,15 @@ export interface VoiceStateDeps {
 export type VoiceHelloResult =
   | { ok: true; protocol: string; captureOffset?: number }
   | { ok: false; error: "unsupported_protocol" | "listener_in_use" | "invalid_listener_id" | "backend_not_selected" | "listener_exited" | "launch_unavailable"; reason: string; protocol: string };
+
+function speechListenerBlock(hello: VoiceListenerHello | null, supervised: boolean, hasSystemVoice: boolean): VoiceCapability | null {
+  if (!hello) return { available: false, reason: "No listener is running." };
+  if (hello.speech && !supervised) return { available: false, reason: "this listener was not started by a supervisor" };
+  if (!hello.speech?.audio && !hasSystemVoice) {
+    return { available: false, code: "speech_playback_unsupported", reason: "This listener cannot play speech." };
+  }
+  return null;
+}
 
 /**
  * The daemon's voice state (contract B): computed from the flags, the voice config, the latest
@@ -178,49 +189,22 @@ export class VoiceStateStore {
     return id !== undefined && this.liveHello()?.ownerId === id;
   }
 
-  private preview?: { grant: string; owner: string; at: number; committed: string; interim: string; onset: number;
-    phase: TranscriptSample["phase"]; text: string };
-  // A delayed partial can outlive the visible words within the same capture.
-  private finalizedTranscript?: { grant: string; owner: string; onset: number };
+  private preview?: TranscriptPreview;
 
   reportTranscript(owner: string | undefined, revision: string | undefined, sample: TranscriptSample) {
     const directive = this.directive();
     if (!owner || !this.ownsCapture(owner) || !directive.capture ||
         this.resolveCaptureRevision(revision, directive) !== directive.revision || !this.deps.config().showTranscript) return false;
     const grant = directive.captureRevision ?? directive.revision;
-    const finalized = this.finalizedTranscript;
-    if (sample.phase !== "ready" && finalized?.grant === grant && finalized.owner === owner && sample.onset <= finalized.onset) return true;
-    const now = this.deps.now();
-    const previous = this.preview;
-    const preview = previous?.grant === grant && previous.owner === owner ? previous :
-      { grant, owner, at: now, committed: "", interim: "", onset: -1, phase: "ready" as TranscriptSample["phase"], text: "" };
-    const previousText = previous?.text;
-    const previousPhase = previous?.phase;
-    if (sample.phase === "ready") {
-      preview.interim = "";
-      preview.phase = "ready";
-    } else if (sample.phase === "words" && sample.final) {
-      // The next onset can arrive while the previous phrase's final decode is pending.
-      preview.committed = transcriptTail(preview.committed + " " + sample.text);
-      this.finalizedTranscript = { grant, owner, onset: sample.onset };
-      if (sample.onset >= preview.onset) {
-        preview.interim = "";
-        preview.onset = sample.onset;
-        preview.phase = "words";
-      }
-    } else if (sample.onset >= preview.onset) {
-      if (sample.onset !== preview.onset) preview.interim = "";
-      preview.onset = sample.onset;
-      if (sample.phase === "words") preview.interim = sample.text;
-      preview.phase = preview.interim ? "words" : "audio";
-    } else {
-      return true;
+    if (this.preview?.grant !== grant || this.preview.owner !== owner) {
+      this.preview = new TranscriptPreview(grant, owner);
     }
-    preview.text = transcriptTail(preview.committed + " " + preview.interim);
-    preview.at = now;
-    this.preview = preview;
-    if (previousText === preview.text && previousPhase === preview.phase) this.arm(this.state());
-    else this.publish();
+    const preview = this.preview;
+    const before = preview.text;
+    const phase = preview.phase;
+    const deadline = preview.expiresAt;
+    preview.observe(sample, this.deps.now());
+    if (before !== preview.text || phase !== preview.phase || deadline !== preview.expiresAt) this.publish();
     return true;
   }
 
@@ -434,11 +418,11 @@ export class VoiceStateStore {
       system: (output?.systemVoices ?? []).filter(v => /^en(?:[-_]|$)/iu.test(v.language))
         .map(({ id, name, quality }) => ({ id, name, detail: quality })),
     };
-    const unavailable = failure?.reason ?? (!hello ? "No listener is running." : !output ? "This listener cannot play speech."
-      : !listener?.speechInstance || !manager.announced.has(listener.speechInstance) ? "this listener was not started by a supervisor"
-      : !output.audio && !catalog.system.length ? "This listener cannot play speech." : null);
-    const resolved = unavailable ? { reason: unavailable, voice: null } : resolveSpeechVoice(config, catalog);
-    capabilities["speech-output"] = { available: !!resolved.voice, reason: resolved.reason };
+    const supervised = !!listener?.speechInstance && manager.announced.has(listener.speechInstance);
+    const blocked = failure ?? speechListenerBlock(hello, supervised, catalog.system.length > 0);
+    const resolved = blocked ? { voice: null, reason: blocked.reason } : resolveSpeechVoice(config, catalog);
+    capabilities["speech-output"] = blocked ?? (resolved.voice ? { available: true, reason: null }
+      : { available: false, code: "speech_voice_unavailable", reason: resolved.reason });
     const live = manager.live;
     const job = live ? { id: live.id, purpose: live.purpose, state: live.state, cardId: live.cardId } : null;
     const dedicated = config.listeningMode === "push-to-talk";
@@ -469,13 +453,15 @@ export class VoiceStateStore {
       this.modeRevision++;
     }
     const preview = this.preview;
-    if (preview && (!voiceCaptures(mode) || !config.showTranscript || manager.held ||
-        listener?.ownerId !== preview.owner || now - preview.at >= 6000 ||
+    if (preview && (!voiceCaptures(mode) || manager.held ||
+        listener?.ownerId !== preview.owner ||
         preview.grant !== (this.lastDirective?.directive.captureRevision ?? this.lastDirective?.directive.revision))) {
       this.preview = undefined;
+    } else if (preview?.phase && (!config.showTranscript || (preview.expiresAt && now >= preview.expiresAt))) {
+      preview.hide();
     }
     return {
-      ...(this.preview && { transcript: { style: config.transcriptStyle, corner: config.transcriptCorner,
+      ...(this.preview?.phase && { transcript: { style: config.transcriptStyle, corner: config.transcriptCorner,
         phase: this.preview.phase, text: transcriptTail(this.preview.text, config.transcriptWords) } }),
       ...(this.pushToTalkSession && { pushToTalkSession: this.pushToTalkSession }),
       planFormsByVoice: config.planFormsByVoice,
@@ -502,9 +488,11 @@ export class VoiceStateStore {
 
   routingState() {
     const { mode, roster } = this.state();
-    const reported = this.liveHello()?.hello.backend ?? null;
+    const hello = this.liveHello()?.hello;
+    const reported = hello?.backend ?? null;
     const backend = reported && this.backendSelected(reported) ? reported : null;
-    return { mode, roster, backend, reportsSpeechOnset: this.liveHello()?.hello.reportsSpeechOnset === true };
+    const longCapture = backend === "fluidaudio" && Number(hello?.version.split(".")[1] ?? 0) >= 2;
+    return { mode, roster, backend, longCapture, reportsSpeechOnset: hello?.reportsSpeechOnset === true };
   }
 
   /**
@@ -690,7 +678,6 @@ export class VoiceStateStore {
   /** Drop every reading and timer. For a test's teardown and the daemon's shutdown. */
   reset(): void {
     this.preview = undefined;
-    this.finalizedTranscript = undefined;
     this.recorder = undefined;
     this.hotkeyTrial = undefined;
     if (this.manager) this.manager.dispose();
@@ -720,13 +707,13 @@ export class VoiceStateStore {
     const waitingForProcess = this.manager?.live?.state === "ready" &&
       (!this.captureGrants.load() || [...this.captureGrants.entries.values()].some(grant => grant.process));
     const lapses = [
-      this.preview && this.preview.at + 6000,
       this.hotkeyTrial?.expiresAt,
       waitingForProcess ? now + 100 : null,
       this.hello ? this.hello.at + VOICE_HELLO_LAPSE_MS : null,
       this.refused ? this.refused.at + VOICE_HELLO_LAPSE_MS : null,
       this.report ? this.report.at + VOICE_SHELL_REPORT_LAPSE_MS : null,
     ].filter((at): at is number => at != null && at > now);
+    if (this.preview?.expiresAt) lapses.push(Math.max(now, this.preview.expiresAt));
     const press = this.report?.keyChangedHostUs;
     if (state.mode === "push-to-talk" && press != null) {
       // Publication may have crossed the cutoff. Recompute immediately in that case.

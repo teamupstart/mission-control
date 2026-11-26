@@ -135,7 +135,7 @@ function voiceSettings(changed: (key: string) => void): SettingDescriptor[] {
       })));
   };
   return [
-    scalarIntent("voice.speech.voice", "voice-mode", z.string().max(264).nullable(), {
+    scalarIntent("voice.speech.voice", "voice-spoken-replies", z.string().max(264).nullable(), {
       label: "Voice used for spoken replies",
       read: () => voiceId(getVoiceConfig().speech.voice),
       choices: () => [{ value: null, label: "Automatic" }, ...speechChoices()],

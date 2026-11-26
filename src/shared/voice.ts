@@ -276,8 +276,8 @@ export interface VoiceCapability {
   available: boolean;
   /** Why it is not available, when it is not; null when it is. */
   reason: string | null;
-  /** Set by the daemon when the listener misses a speech stop confirmation. */
-  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED;
+  /** Daemon-owned reason for a specific recovery action. The reason text is for display. */
+  code?: typeof VOICE_SPEECH_STOP_UNCONFIRMED | "speech_playback_unsupported" | "speech_voice_unavailable";
 }
 
 /** A capability that was reported. One that was not is absent, which is not the same as false. */
@@ -540,8 +540,8 @@ export function voiceStateOff(): VoiceState {
 
 /** The listener protocol this daemon speaks. A hello naming another major version is refused. */
 export const VOICE_LISTENER_PROTOCOL_MAJOR = 4;
-// Starting with 4.1, listeners apply timing-only directives to an open capture in place.
-export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.1`;
+// 4.1 adds in-place timing edits. At 4.2 both peers support long FluidAudio captures.
+export const VOICE_LISTENER_PROTOCOL_VERSION = `${VOICE_LISTENER_PROTOCOL_MAJOR}.2`;
 export const VOICE_RECORDING_ID_HEADER = "x-voice-recording-id";
 export const VOICE_LISTENER_ID_HEADER = "x-voice-listener-id";
 /** A capture-only listener's process and the byte it must lock before opening the microphone. */

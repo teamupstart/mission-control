@@ -41,6 +41,13 @@ export const model = { decide: (questions: readonly VoiceQuestion[]): VoiceDecis
 export const reports = new ReportManager(registry);
 const app = buildApp({ registry, reports, pendingTurns: pending, sdkSessions: sdk, reviews,
   tasks: new TaskManager(registry), queues: new QueueManager(registry), voiceDecider: { ask: async questions => model.decide(questions) } });
+// Stand in for the live DOM response from browser streams used by the routing tests.
+registry.subscribe(event => {
+  if (event.type !== "voice_dictation_probe") return;
+  const cards = registry.voiceRouter!.openCards;
+  const report = cards.current;
+  cards.acknowledgeDictation(event.windowId, event.sequence, report?.windowId === event.windowId ? report.dictationTarget : undefined);
+});
 const cards: VoiceCard[] = [];
 registry.subscribe((event) => { if (event.type === "voice_card") cards.push(event.card); });
 const stop = wireVoiceStateEvents((state) => registry.emitVoiceState(state));

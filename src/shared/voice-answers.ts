@@ -24,6 +24,7 @@ export function voiceFocusClockSkewMs(previous = 0): number {
 export const OpenCardsSchema = z.object({
   windowId: z.string().min(1).max(128),
   focused: z.boolean(),
+  dictationTarget: z.string().uuid().optional(),
   cards: z.array(z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("question"), sessionId: z.string().optional(), id: z.string().min(1), focused: z.boolean() }).strict(),
     z.object({ kind: z.enum(["plan", "report", "stuck"]), id: z.string().min(1), focused: z.boolean(),

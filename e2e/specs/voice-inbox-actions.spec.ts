@@ -71,7 +71,7 @@ test("Steve's Nudge runs from Report focus, Open report runs from Stuck focus, a
   }).toBe(true);
   expect((await storedReport(daemon, report.id)).readAt).toBeNull();
   const stuckFocused = focusReported(steve.id);
-  await row.getByRole("textbox", { name: "Message Steve" }).focus();
+  await row.getByRole("button", { name: "Nudge", exact: true }).focus();
   await stuckFocused;
   const openReportId = crypto.randomUUID();
   const response = await say(daemon, "Steve, open report", { id: openReportId });
@@ -130,12 +130,12 @@ test("named plan fills and submit use the visible plan while Steve's Report has 
     return cards.some(c => c.id === planId) && cards.some(c => c.id === report.id && c.focused);
   });
   const card = await openReportCard(page, report);
-  await card.getByRole("textbox").focus();
-  await expect(card.getByRole("textbox")).toBeFocused();
+  await card.getByRole("button", { name: report.title }).focus();
+  await expect(card.getByRole("button", { name: report.title })).toBeFocused();
   await focused;
   await say(daemon, "Steve, first one B, second one A, third one A");
   await expect(form.locator(".pd-ord.is-voice")).toHaveCount(3);
-  await expect(card.getByRole("textbox")).toBeFocused();
+  await expect(card.getByRole("button", { name: report.title })).toBeFocused();
   await expect(form.locator(".pd-ord").first()).toBeInViewport();
   await captureCard(dialog, "named-plan-from-report-focus");
   await say(daemon, "Steve, first one A");
@@ -160,7 +160,7 @@ test("an unavailable named Publish action leaves the focused report unread and s
     (r.request().postDataJSON() as OpenCardsReport).cards.some(c => c.id === report.id && c.focused));
   const card = await openReportCard(page, report);
   await expect(card.getByRole("button", { name: "Publish as scout" })).toHaveCount(0);
-  await card.getByRole("textbox").focus();
+  await card.getByRole("button", { name: report.title }).focus();
   await focused;
   await say(daemon, "Steve, publish as scout");
   const notice = page.getByRole("status").filter({ hasText: "The inbox action is no longer available." });
@@ -184,7 +184,7 @@ test("a bare answer command opens Steve's question picker while his Report has f
   const focused = page.waitForResponse(r => r.ok() && r.url().endsWith("/api/voice/open-cards") &&
     (r.request().postDataJSON() as OpenCardsReport).cards.some(c => c.id === report.id && c.focused));
   const card = await openReportCard(page, report);
-  await card.getByRole("textbox").focus();
+  await card.getByRole("button", { name: report.title }).focus();
   await focused;
   await say(daemon, "Steve, answer");
   const picker = page.getByRole("status").filter({ hasText: "Which question?" });
@@ -349,6 +349,7 @@ test("overlapping dictated replies claim one button, preserve its typed draft, a
   const card = await openReportCard(page, report);
   const typed = "Keep these notes for later";
   await card.getByRole("textbox").fill(typed);
+  await card.getByRole("button", { name: report.title }).focus();
   const warnings: string[] = [];
   page.on("console", msg => { if (msg.type() === "warning") warnings.push(msg.text()); });
   const path = "**/api/voice/inbox-actions/*/";
@@ -474,6 +475,7 @@ test("dictated follow-up instructions start a new task for an ended session's re
   const textbox = card.getByRole("textbox", { name: "Instructions for the follow-up task" });
   const parked = "Investigate the separate packaging failure";
   await textbox.fill(parked);
+  await card.getByRole("button", { name: report.title }).focus();
   // Hold the report in the inbox for one accepted response, then exercise the real follow-up.
   const followUpPath = `**/api/reports/${report.id}/follow-up`;
   await page.route(followUpPath, route => route.fulfill({ json: { ok: true } }), { times: 1 });

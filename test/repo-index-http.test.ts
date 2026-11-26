@@ -77,10 +77,11 @@ async function getView(): Promise<RepoIndexView> {
 }
 
 async function putDirectories(paths: string[]): Promise<Response> {
+  const { revision } = await getView();
   return app.request("/api/repo-index", {
     method: "PUT",
     headers: HEADERS,
-    body: JSON.stringify({ directories: paths.map((path) => ({ path })) }),
+    body: JSON.stringify({ revision, directories: paths.map((path) => ({ path })) }),
   });
 }
 

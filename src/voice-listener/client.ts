@@ -3,8 +3,9 @@ import { dirname, join } from "node:path";
 import { closeSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  type TranscriptSample,
   VOICE_CAPTURE_LOCK_HEADER, VOICE_CAPTURE_PID_HEADER,
-  VOICE_CAPTURE_END_HEADER, VOICE_CAPTURE_START_HEADER, VOICE_HELD_REVISION_HEADER,
+  VOICE_SPEECH_START_HEADER, VOICE_CAPTURE_END_HEADER, VOICE_CAPTURE_START_HEADER, VOICE_HELD_REVISION_HEADER,
   VOICE_LISTENER_ID_HEADER, VOICE_LISTENER_PROTOCOL_VERSION,
   VoiceListenerDirectiveSchema, type VoiceListenerDirective, type VoiceListenerHello,
 } from "../shared/voice.ts";
@@ -12,7 +13,7 @@ import { VOICE_INSTANCE_HEADER } from "../shared/voice-speech.ts";
 import type { VoiceUtterance } from "../shared/voice-routing.ts";
 import { loopbackDaemonUrl } from "./daemon-url.ts";
 
-export type CaptureBounds = { startUs: number; endMs: number };
+export type CaptureBounds = { startUs: number; endMs: number; speechStartUs?: number };
 
 /** Loopback contract I client. A process keeps the same lease ID for its lifetime. */
 export class ListenerClient {
@@ -42,6 +43,7 @@ export class ListenerClient {
     return this.send(new URL(path, this.url).href, {
       headers: { ...this.processHeaders, "x-harness-token": readFileSync(this.tokenFile, "utf8").trim(),
         [VOICE_LISTENER_ID_HEADER]: this.id, "content-type": "application/json",
+        ...(capture?.speechStartUs !== undefined && { [VOICE_SPEECH_START_HEADER]: String(capture.speechStartUs) }),
         ...(capture && { [VOICE_CAPTURE_START_HEADER]: String(capture.startUs), [VOICE_CAPTURE_END_HEADER]: String(capture.endMs) }) },
       redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
       ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),
@@ -65,6 +67,19 @@ export class ListenerClient {
     return response;
   }
 
+  async transcript(sample: TranscriptSample, revision: string, signal: AbortSignal): Promise<boolean> {
+    try {
+      const deadline = AbortSignal.any([signal, AbortSignal.timeout(1000)]);
+      const response = await this.request("/voice/listener/transcript?revision=" + encodeURIComponent(revision), sample, deadline);
+      if (response.ok) return (await response.json()).accepted === true;
+      await response.body?.cancel();
+    } catch {
+      signal.throwIfAborted();
+      // The overlay is optional. A missing endpoint or a missed sample must not stop delivery.
+    }
+    return false;
+  }
+
   async poll(revision?: string, signal?: AbortSignal): Promise<VoiceListenerDirective & { held?: true }> {
     const path = "/voice/listener/directive" + (revision ? "?revision=" + encodeURIComponent(revision) : "");
     let response = await this.request(path, undefined, signal);
@@ -81,6 +96,13 @@ export class ListenerClient {
     if (!directive.success) throw new Error("Invalid voice listener directive");
     return response.headers.get(VOICE_HELD_REVISION_HEADER) === directive.data.revision
       ? { ...directive.data, held: true } : directive.data;
+  }
+
+  async speech(revision: string, speechStartUs: number, event: { phase: "start" | "focus" | "finish" } | { phase: "preview"; text: string }, signal: AbortSignal) {
+    const response = await this.request("/voice/listener/speech?revision=" + encodeURIComponent(revision), { ...event, speechStartUs }, signal);
+    await response.body?.cancel();
+    if (!response.ok) throw new Error("Listener speech HTTP " + response.status);
+    return response.headers.get("x-voice-dictation") === "1";
   }
 
   utterance(text: string, words: VoiceUtterance["words"], revision: string, capturedAt?: number, signal?: AbortSignal): Promise<Response>;

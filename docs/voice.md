@@ -4,6 +4,22 @@ Voice addressing is being built in phases behind the **Voice addressing** previe
 When it is finished, the operator will talk to an agent by name, with speech recognized on this
 machine; the plan is in [`docs/plans/voice-addressing-for-agents/`](plans/voice-addressing-for-agents/plan.md).
 
+While listening, Voice types into the focused text field in the active dashboard. This works in
+Dispatch, session messages, comments, search and other editable fields. The live microphone
+updates the draft as you speak, including while you hold push-to-talk. Email and numeric
+fields accept live updates using their native editing rules. Before routing unclaimed speech,
+the daemon asks connected dashboards which field currently has focus. A confirmed editor can receive
+dictation while a background dashboard is unresponsive. Routing to a session requires every connected
+dashboard to confirm that no editor has focus. Dictation replaces selected
+text at the caret. You can focus a field after you start speaking or switch fields mid-phrase.
+The next update puts the phrase so far in the focused field. The previous field keeps its last
+preview. The final transcript goes to the field focused at recognition. Each phrase replaces
+its own preview, even when the next phrase has already started. If you correct a preview,
+later recognition for that phrase preserves your edit, including after you return to the field.
+Once a field has claimed
+a phrase, leaving the field keeps that phrase out of session routing. Start a new phrase outside
+an editor to address a session. Names and commands such as “cancel” are ordinary draft text while editing.
+
 The daemon accepts text captures from a token-authenticated listener. It resolves spoken names,
 settles ambiguous sentences with a model, holds each message for the configured cancel window,
 and queues it to the addressed agent. On supported Apple silicon Macs, FluidAudio captures and
@@ -222,6 +238,23 @@ Sherpa reprocesses unfinished recording audio with the new delay. During silence
 only the onset lead-in for replay. A change in capture
 authorization discards that audio, including a mute and unmute between polls.
 `pauseMs` is optional and unused. This daemon sends null.
+
+The live microphone helper posts display updates to `/voice/listener/transcript?revision=...`
+with the same token and listener ID. It reports `ready` while the input is open and quiet,
+`audio` with the detected onset in host microseconds, and `words` with that onset and the
+current recognized text. Each update for an unfinished phrase replaces its previous words.
+The daemon publishes the configured word window in voice state. Muting, disabling the overlay,
+or losing the capture grant clears it. Six seconds without a fresh reading also clears it.
+Quiet readings discard unfinished words and keep finalized words. In a short window, tab to
+the overflowing text and scroll to read it while the status stays visible.
+Only the completed utterance goes to the address router.
+
+The Sherpa listener uses the same overlay protocol while reading its supported WAV input on
+Linux and macOS. Quiet input reports ready. During detected speech it decodes growing PCM
+prefixes for the display in the background, keeping only the latest waiting prefix.
+The completed segment goes directly to recognition with the spoken roster for addressing.
+Its final `words` update carries `final: true` to replace the last partial and retain those
+words when the next phrase starts.
 
 A push-to-talk capture directive identifies its revision in the `x-voice-held-revision`
 response header. The native helper retains completed phrases in capture order and decodes
@@ -661,7 +694,10 @@ credential. Use a 16 kHz mono WAV with 8-, 16- or 32-bit integer PCM or 32-bit f
 The 32 MiB file limit includes the header and metadata, allowing about 17 minutes at 16 bits.
 The listener validates the recording before claiming
 the daemon lease, so a rejected file can be corrected and retried immediately. With capture
-permission from the daemon, it detects speech, applies roster hotwords and posts timed utterances.
+permission from the daemon, it detects speech and posts timed utterances. When a field has
+focus, Sherpa decodes the growing phrase during playback and replaces the preview with the
+final transcript. Outside a field, it applies roster hotwords and routes the completed phrase.
+If the daemon cannot confirm editor focus, Sherpa skips that phrase and continues listening to the recording.
 The selected pause still applies after 20 seconds of speech. If a command exceeds the 30-second
 capture limit before the pause completes, Sherpa drops the command and resumes at the next phrase. During
 playback the development listener reports its file input as granted and enumerates
@@ -833,6 +869,10 @@ never wrote needs no migration.
 | `planFormsByVoice` | `true` | Whether speech may fill a plan-decision form |
 | `inputDevice` | `built-in` | `built-in`, `system-default`, or a device id from a listener |
 | `decisionProvider` | `null` | Null for automatic, or `off`, `openai`, `jev` |
+| `showTranscript` | `true` | Show the live transcript during capture |
+| `transcriptStyle` | `card` | `card` or `capsule` |
+| `transcriptCorner` | `bottom-right` | `bottom-left` or `bottom-right` |
+| `transcriptWords` | `20` | Whole number from 1 to 100 |
 | `backend` | `auto` | `auto`, `fluidaudio` or `sherpa-onnx` |
 
 The settings snapshot backs them up under the `voice` domain, except `muted`.
@@ -1140,10 +1180,13 @@ Token routes live under `/voice/` and check `x-harness-token`, as the hook inges
   major version from this daemon's (`4`) is refused with 409 `unsupported_protocol`.
   If there is no other active owner, the state's `listener` capability says why.
 - `POST /voice/listener/speech?revision=…` accepts `{ phase, speechStartUs }` from the
-  listener that owns capture. A `start` reports the first voiced sample. After push-to-talk
+  listener that owns capture. A `start` reports speech onset. After push-to-talk
   release, the daemon still accepts an onset from that hold's revision if the sample falls
-  between key-down (inclusive) and the release cutoff (exclusive). The listener waits up to
-  one second for the onset acknowledgment before posting its transcript with the same onset and revision.
+  between key-down (inclusive) and the release cutoff (exclusive). FluidAudio waits up to
+  one second for the onset acknowledgment. During speech, a `focus` request lets either listener
+  discover an editor that gained focus after onset. When the acknowledgment includes
+  `x-voice-dictation: 1`, the listener can send `preview` updates with the current transcript in `text`.
+  The final utterance carries the same onset and capture revision.
   A `finish` releases a segment that produced no accepted transcript, including overlong
   audio once it can no longer be recovered at key-up.
 - `POST /voice/shell-report { capabilities, microphone, callActive, pushToTalk, pushToTalkSession?, reportedAtHostUs?, pushToTalkPressedAtHostUs?, pushToTalkReleasedAtHostUs?, registeredHotkey, hotkeyError }`,
@@ -1616,3 +1659,9 @@ any different text you have typed in the report. The cancel window applies to
 inbox actions. The voice card confirms the action after the dashboard invokes the button.
 If the card closes or the control disappears before then, the voice card reports that the
 action is unavailable. “Steve, stop” keeps its immediate interrupt behavior.
+
+### Live transcript
+
+With the Voice preview enabled, Settings > Voice lets you show the live transcript as a wrapping corner card or a bottom-center capsule. The card starts at the bottom right and can move to the bottom left. The overlay starts enabled and displays up to 20 recognized words. Set **Maximum transcript words** to any whole number from 1 to 100.
+
+Microphone ready indicates active capture. Audio detected means the listener has detected speech and is waiting for recognized words. Transcribing shows words as recognition progresses, even before a name matches. Screen readers announce the phase when it changes. The rolling words remain available to read in the overlay. Muting voice or losing capture hides the overlay. Partial words are for display only. Addressing uses the completed phrase.

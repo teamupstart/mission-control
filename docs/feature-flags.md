@@ -8,6 +8,7 @@ The flag core stores one set of operator choices for this machine. The registry 
 [Shaper sign-in](task-shaping.md#a-shaper-that-signs-in) (`shaper-sign-in`),
 [Session control requests](sessions.md#when-a-session-asks-for-control),
 [Fold the drawer's Profiles](residents.md#the-residents-drawer),
+[Resident names on cards](residents.md#finding-a-resident) (`resident-card-names`),
 [Ask without stopping](sessions.md#asking-without-stopping) (`async-input`),
 [File plan decisions](sessions.md#filed-plan-decisions) (`filed-plan-decisions`),
 [MCP call attribution](work-units.md#the-launch-environment) (`work-unit-id`),
@@ -46,10 +47,10 @@ in every open window, with no Save button or restart. A refused write rolls back
 inline error. Preview features are off until enabled individually or through the master switch.
 With no preview declared the panel shows its empty state instead of a list.
 
-**Headless mode** (`headless-mode`) is a preview scaffold for dispatching work to Mission Control from
-a Claude Code terminal session. It ships off until chosen. With it on, every `/dispatch/*` route
-answers 501 `not implemented` until later phases fill the routes. With it off, every `/dispatch/*`
-route answers 404 and the `home-dispatch-v1` health capability is absent.
+**Headless mode** (`headless-mode`) enables the Claude Code session control preview. It ships off
+until chosen. [Setup and doctor](headless-mode.md) enable the flag, install the mod, and report
+problems. `mctl setup --off` disables the flag without uninstalling the mod. With it off, every
+`/dispatch/*` route answers 404 and the `home-dispatch-v1` health capability is absent.
 
 **Hibernate tasks** adds [Hibernate](sessions.md#hibernate-a-task-and-resume-it-later) to a
 task session's pause menu. Turning it off hides Hibernate. Tasks already hibernated stay in the
@@ -184,6 +185,12 @@ operator must turn on **Allow sessions to access Mission Control settings** in *
 in the desktop app. Trust starts off when there is no saved choice and remains independent of the
 rollout flag, including after the flag retires.
 
+A permitted session can change individual flags whose registry entries allow session writes.
+For example, setting `featureFlags.idle-rail-section-counts` to `true` updates every open
+dashboard. Enable all, override resets, workstation capture flags and flags that confer
+authority require an operator. Each new feature flag declares its session policy in the
+[flag registry](../src/shared/feature-flag-registry.ts).
+
 ## Shipped flags
 
 | Id | Stage | Gates | Guide |
@@ -196,6 +203,7 @@ rollout flag, including after the flag retires.
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
 | `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until the sign-in arrives in later releases. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
+| `resident-card-names` | preview | The Resident name with call sign checkboxes in Settings > Display and the profile name they add to a resident's Board card beside its call sign. Off, the card shows the call sign alone and the stored styles are kept | [Residents](residents.md#finding-a-resident) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the inbox Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |
 | `work-unit-id` | preview | `WORK_UNIT_ID` in the environment of an agent started for a task with a work unit, its launch record, and the `work_unit_id` attribute on that session's exported spans ([Telemetry](work-units.md#telemetry)). The id is tracked, never shown in the dashboard. Read once per launch, in `launchWorkUnitId`; work already in flight keeps what it was started with until its next start | [Work units](work-units.md#the-launch-environment) |

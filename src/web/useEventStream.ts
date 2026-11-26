@@ -297,7 +297,7 @@ export interface MissionState {
 function withNewerVoiceMode(base: VoiceState | null, candidate: VoiceState | null): VoiceState | null {
   if (!base?.modeVersion || !candidate?.modeVersion || base.modeVersion.source !== candidate.modeVersion.source
     || base.modeVersion.revision >= candidate.modeVersion.revision) return base;
-  return { ...base, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
+  return { ...base, transcript: undefined, mode: candidate.mode, reasons: candidate.reasons, modeVersion: candidate.modeVersion };
 }
 
 /**
@@ -909,6 +909,12 @@ export function useEventStream(): MissionState {
           break;
         case "voice_open_question":
           if (msg.windowId === windowId) setOpenVoiceQuestion(msg);
+          break;
+        case "voice_dictation":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-dictation", { detail: msg }));
+          break;
+        case "voice_dictation_probe":
+          if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-dictation-probe", { detail: msg }));
           break;
         case "voice_confirm_focus":
           if (msg.windowId === windowId) window.dispatchEvent(new CustomEvent("voice-confirm-focus", { detail: msg }));

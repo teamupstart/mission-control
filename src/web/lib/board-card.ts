@@ -1,9 +1,23 @@
 import { useCallback } from "react";
-import { BACKGROUND_AGENTS_STYLES, TASK_KIND_CARD_STYLES, TASK_KIND_HEADER_STYLES } from "@shared/protocol.ts";
-import type { BackgroundAgentsStyle, TaskKindCardStyle, TaskKindHeaderStyle, UiConfig } from "@shared/protocol.ts";
+import { RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import {
+  BACKGROUND_AGENTS_STYLES,
+  RESIDENT_CARD_NAME_STYLES,
+  residentCardNameStylesOf,
+  TASK_KIND_CARD_STYLES,
+  TASK_KIND_HEADER_STYLES,
+} from "@shared/protocol.ts";
+import type {
+  BackgroundAgentsStyle,
+  ResidentCardNameStyle,
+  TaskKindCardStyle,
+  TaskKindHeaderStyle,
+  UiConfig,
+} from "@shared/protocol.ts";
 import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
 
-import type { DisplayItemId, DisplayItemGroup } from "@shared/board-card-settings.ts";
+import { RESIDENT_CARD_NAME_COPY, type DisplayItemId, type DisplayItemGroup } from "@shared/board-card-settings.ts";
 export * from "@shared/board-card-settings.ts";
 
 /**
@@ -199,4 +213,28 @@ export function setDisplayChoice<K extends DisplayChoiceKey>(key: K, value: Disp
   // A computed key widens to an index signature, so the patch is re-narrowed to the one key
   // it holds; the signature above is what keeps the value paired with that key.
   void updateUiConfig({ [key]: value } as Pick<DisplayChoiceValues, K>);
+}
+
+/** Not a `DisplayChoice`: those are one-of-N, and these styles combine. */
+export const RESIDENT_CARD_NAME_SETTING = {
+  flag: RESIDENT_CARD_NAMES_FLAG_ID,
+  label: "Resident name with call sign",
+  description:
+    "Also show a resident's profile name on its card while the card is titled by the call sign it answers to. The call sign stays the title. Turn on either style, or both.",
+  options: RESIDENT_CARD_NAME_STYLES.map((id) => ({ id, ...RESIDENT_CARD_NAME_COPY[id] })),
+} as const;
+
+export function useResidentCardNameStyles(): ReadonlySet<ResidentCardNameStyle> {
+  const offered = useFeatureFlag(RESIDENT_CARD_NAMES_FLAG_ID);
+  const styles = useUiConfig().residentCardNameStyles;
+  return new Set(offered ? styles : []);
+}
+
+export function setResidentCardNameStyle(
+  current: readonly ResidentCardNameStyle[],
+  style: ResidentCardNameStyle,
+  on: boolean,
+): void {
+  const next = on ? [...current, style] : current.filter((candidate) => candidate !== style);
+  void updateUiConfig({ residentCardNameStyles: residentCardNameStylesOf(next) });
 }

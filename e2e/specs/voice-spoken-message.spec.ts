@@ -269,6 +269,7 @@ test("speech releases the SDK agent's own request_input call and reaches its nex
   const composer = detail.getByPlaceholder(/^Reply to this session/);
   await composer.fill("ask me which linter to use");
   await composer.press("Enter");
+  await composer.blur();
   let question: ReviewItem | undefined;
   await expect.poll(async () => {
     const reviews = await (await request.get(`${daemon.baseURL}/api/reviews`)).json() as ReviewItem[];

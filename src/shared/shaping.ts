@@ -1359,6 +1359,12 @@ export interface ShapingReply {
 /** A stored shaper's revision, as `shapingConfigView` reports it: 16 lowercase hex digits. */
 const ShapingRevisionSchema = z.string().regex(/^[0-9a-f]{16}$/, { message: "A revision is 16 hexadecimal digits." });
 
+export const ShapingSettingsIntentSchema = z.object({
+  kind: z.literal("settings"),
+  caller: partialPatch(ShapingCallerObjectSchema).optional(),
+  limits: partialPatch(ShapingLimitsObjectSchema).optional(),
+});
+
 export const ShapingIntentSchema = z.discriminatedUnion("kind", [
   /** Create or replace a registered shaper. Only a definition this build understands. */
   z.object({ kind: z.literal("upsert"), shaper: ShaperSchema }),
@@ -1396,11 +1402,7 @@ export const ShapingIntentSchema = z.discriminatedUnion("kind", [
     kind: z.literal("place"), id: z.string().min(1).max(64), after: z.string().min(1).max(64).nullable(),
     expect: ShapingRevisionSchema,
   }),
-  z.object({
-    kind: z.literal("settings"),
-    caller: partialPatch(ShapingCallerObjectSchema).optional(),
-    limits: partialPatch(ShapingLimitsObjectSchema).optional(),
-  }),
+  ShapingSettingsIntentSchema,
 ]);
 export type ShapingIntent = z.infer<typeof ShapingIntentSchema>;
 

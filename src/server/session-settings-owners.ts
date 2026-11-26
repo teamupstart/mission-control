@@ -1,8 +1,13 @@
-import { createHash } from "node:crypto";
+import { advisorOverrideKey } from "@shared/advisor.ts";
+import { modelChoicesFor } from "@shared/model.ts";
+import { skillEnabled } from "@shared/skills.ts";
+import { readCatalog } from "./skills/catalog.ts";
+import { operatorSetting } from "./session-settings-protected.ts";
+import { settingTargetId } from "./session-settings-specialized.ts";
 import { z } from "zod";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { DISPLAY_ITEMS } from "@shared/board-card-settings.ts";
+import { DISPLAY_ITEMS, RESIDENT_CARD_NAME_COPY } from "@shared/board-card-settings.ts";
 import { capabilitiesFor, resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import { ACTIONS, bindingValidationError, resolveKeybindings } from "@shared/keyboard-settings.ts";
 import { isCanonicalChord } from "@shared/keyboard-chords.ts";
@@ -11,8 +16,8 @@ import { LLM_JOB_IDS, LLM_JOB_SPECS } from "@shared/llm-jobs.ts";
 import { PAUSE_CARD_CONTROLS, PAUSE_CONSOLE_CONTROLS } from "@shared/pause.ts";
 import {
   BackgroundAgentsStyleSchema, BlockedPlacementSchema, ConversationViewSchema, CostConfigPatchSchema,
-  ForemanConfigPatchSchema, HarnessesConfigPatchSchema, InspectorConfigPatchSchema, LayoutModeSchema,
-  LineDensitySchema, LlmConfigPatchSchema, ResidentPlacementSchema,
+  ForemanConfigPatchSchema, ForemanConfigSchema, HarnessesConfigPatchSchema, InspectorConfigPatchSchema, LayoutModeSchema,
+  LineDensitySchema, LlmConfigPatchSchema, RESIDENT_CARD_NAME_STYLES, ResidentPlacementSchema,
   ShippingConfigPatchSchema, ShippingConfigSchema, SkillsConfigPatchSchema, TaskKindCardStyleSchema, TaskKindHeaderStyleSchema,
   TerminalsConfigPatchSchema, UiConfigPatchSchema, WorkflowPolicyPatchSchema, WorktreesConfigPatchSchema,
   type UiConfig,
@@ -21,10 +26,10 @@ import { DatabaseBackupsConfigPatchSchema } from "@shared/database-backups.ts";
 import { StorageLimitsConfigPatchSchema } from "@shared/storage-limits.ts";
 import { EMULATOR_IDS, MULTIPLEXER_IDS } from "@shared/terminal.ts";
 import { TOPBAR_ITEMS } from "@shared/topbar-items-settings.ts";
-import { AGENT_TYPES } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
 import { HARNESS_LAUNCHED_TASK_KINDS, TASK_KIND_INFO } from "@shared/task.ts";
 import { appConfigRevision } from "./db.ts";
-import { BACKGROUND_REASONING_EFFORT_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { BACKGROUND_REASONING_EFFORT_FLAG_ID, RESIDENT_CARD_NAMES_FLAG_ID } from "@shared/feature-flag-registry.ts";
 import { featureEnabled } from "./feature-flags/index.ts";
 import { getCostConfig } from "./cost.ts";
 import { getForemanConfig } from "./foreman/config.ts";
@@ -36,7 +41,7 @@ import { getSkillsConfig } from "./skills/config.ts";
 import { getTerminalsConfig, setTerminalsConfig } from "./terminals-config.ts";
 import { getUiConfig, setUiConfig } from "./ui-config.ts";
 import { getWorktreesConfig } from "./worktrees/config.ts";
-import { getWorkflowPolicy, patchWorkflowPolicy } from "./workflows/config.ts";
+import { getWorkflowPolicy } from "./workflows/config.ts";
 import { getDatabaseBackupsConfig } from "./database-backups/config.ts";
 import { getStorageLimitsConfig } from "./storage-limits.ts";
 import { binUnsupportedReason } from "./terminal/bin.ts";
@@ -44,12 +49,16 @@ import { EMULATORS, MULTIPLEXERS } from "./terminal/registry.ts";
 import { InvalidSettingValue, type SettingDescriptor } from "./settings-dispatcher.ts";
 import { bindTypedSettings, choices, field } from "./typed-settings.ts";
 
+const inspectorIsPrivate = () => getInspectorConfig().mode !== "live";
 const effortEnabled = () => featureEnabled(BACKGROUND_REASONING_EFFORT_FLAG_ID);
+const residentCardNamesEnabled = () => featureEnabled(RESIDENT_CARD_NAMES_FLAG_ID);
 
 type Apply<Schema extends z.ZodType, Read extends () => unknown> = (patch: z.output<Schema>) => ReturnType<Read>;
 
 /** Application effects shared with the dashboard routes, assembled with the owning services. */
 export interface SettingsOwners {
+  advisorModelIds?: (agent: AgentType) => readonly string[];
+  worktreePoolRoots?: () => readonly string[];
   harnesses: Apply<typeof HarnessesConfigPatchSchema, typeof getHarnessesConfig>;
   foreman: Apply<typeof ForemanConfigPatchSchema, typeof getForemanConfig>;
   inspector: Apply<typeof InspectorConfigPatchSchema, typeof getInspectorConfig>;
@@ -59,6 +68,7 @@ export interface SettingsOwners {
   cost: Apply<typeof CostConfigPatchSchema, typeof getCostConfig>;
   worktrees?: Apply<typeof WorktreesConfigPatchSchema, typeof getWorktreesConfig>;
   storageLimits?: Apply<typeof StorageLimitsConfigPatchSchema, typeof getStorageLimitsConfig>;
+  workflows: Apply<typeof WorkflowPolicyPatchSchema, typeof getWorkflowPolicy>;
   backups?: Apply<typeof DatabaseBackupsConfigPatchSchema, typeof getDatabaseBackupsConfig>;
 }
 
@@ -68,15 +78,16 @@ function uiField(path: string, control: string, options?: Parameters<typeof fiel
 
 function membership(
   path: keyof Pick<UiConfig, "hiddenDisplayItems" | "hiddenTopbarItems" | "compactTopbarItems"
-    | "pauseCardControls" | "pauseConsoleControls" | "collapsedBoardColumns">,
-  id: string, control: string, label: string,
+    | "pauseCardControls" | "pauseConsoleControls" | "collapsedBoardColumns" | "residentCardNameStyles">,
+  id: string, control: string, label: string, available?: () => boolean,
 ) {
   return uiField(`${path}.${id}`, control, {
     label,
-    read: config => config[path].includes(id),
+    available,
+    read: config => (config[path] as readonly string[]).includes(id),
     patch: (config, value) => {
       if (typeof value !== "boolean") throw new InvalidSettingValue();
-      const without = config[path].filter(item => item !== id);
+      const without = (config[path] as readonly string[]).filter(item => item !== id);
       return { [path]: value ? [...without, id] : without };
     },
   });
@@ -99,12 +110,15 @@ const uiFields = [
   uiField("conversationView", "conversation-view", { choices: choices(ConversationViewSchema.options) }),
   uiField("richText", "format-messages"),
   uiField("guidedDispatch", "guided-dispatch"),
+  uiField("showToursOnStartup", "setup-checks", { label: "Show tours on startup" }),
   uiField("taskKindCard", "board-card", { label: "Task kind on cards", choices: choices(TaskKindCardStyleSchema.options) }),
   uiField("taskKindHeader", "conversation-header", { label: "Task kind in conversation header", choices: choices(TaskKindHeaderStyleSchema.options) }),
   uiField("backgroundAgentsStyle", "board-card", { label: "Background agents style", choices: choices(BackgroundAgentsStyleSchema.options) }),
   ...DISPLAY_ITEMS.map(item => membership("hiddenDisplayItems", item.id,
     item.group === "card" ? "board-card" : item.group === "conversation" ? "conversation-header" : "working-indicator",
     `Hide ${item.label}`)),
+  ...RESIDENT_CARD_NAME_STYLES.map(id => membership("residentCardNameStyles", id, "board-card",
+    `Resident name: ${RESIDENT_CARD_NAME_COPY[id].label}`, residentCardNamesEnabled)),
   ...TOPBAR_ITEMS.map(item => item.kind === "optional"
     ? membership("hiddenTopbarItems", item.id, "topbar", `Hide ${item.label} in the top bar`)
     : membership("compactTopbarItems", item.id, "topbar", `Compact ${item.label} in the top bar`)),
@@ -198,7 +212,8 @@ export function typedSettings(
   }, [
     field("foreman", "shipRecoveryMinutes", "foreman-ship-recovery-minutes"),
     field("foreman", "wrapupTriggers", "foreman-tuning", { label: "Foreman wrap-up triggers", replacement: "composite" }),
-    ...["triage", "maxFixAttempts", "maxFixRounds", "maxSessions"].map(id =>
+    field("foreman", "triage", "foreman-tier", { choices: choices(ForemanConfigSchema.shape.triage.unwrap().options) }),
+    ...["maxFixAttempts", "maxFixRounds", "maxSessions"].map(id =>
       field("foreman", id, "foreman-tuning", { label: `Foreman ${id}` })),
     field("foreman", "runner", "foreman-models", { label: "Foreman default runner" }),
     ...FOREMAN_MODEL_ROLES.flatMap(role => [
@@ -214,6 +229,8 @@ export function typedSettings(
     schema: SkillsConfigPatchSchema, read: getSkillsConfig, apply: owners.skills, changed,
     revision: () => appConfigRevision(APP_CONFIG_ENTRIES.skills),
   }, [
+    field("skills", "enabled", "skills-enabled"),
+    field("skills", "planStorage", "skills-plan-storage", { choices: choices(["repository", "local"]) }),
     field("skills", "commitPlanHtml", "skills-plan-html"),
     field("skills", "alwaysDraftPr", "skills-always-draft-pr"),
     field("skills", "grillFirstKinds", "grill-first-defaults", { replacement: "composite" }),
@@ -243,6 +260,7 @@ export function typedSettings(
       field("inspector", "maxCommentsPerRound", "inspector-tuning", { label: "Inspector maximum comments per round" }),
     ]),
     ...bindTypedSettings({ schema: ShippingConfigPatchSchema, read: getShippingConfig, apply: owners.shipping, changed }, [
+      field("shipping", "closeSessionAfterMerge", "shipping-lifecycle", { label: "Close the session after merge" }),
       field("shipping", "soakMinutes", "soak"),
       field("shipping", "method", "merge-method", { choices: choices(ShippingConfigSchema.shape.method.unwrap().options) }),
       field("shipping", "stacking", "stacked-pull-requests"),
@@ -256,6 +274,7 @@ export function typedSettings(
       })),
     ]),
     ...bindTypedSettings({ schema: CostConfigPatchSchema, read: getCostConfig, apply: owners.cost, changed }, [
+      field("cost", "exportIntervalMs", "cost-interval"),
       field("cost", "view", "cost-view"),
     ]),
     {
@@ -263,8 +282,11 @@ export function typedSettings(
       keywords: ["reports", "post_report"], access: "protected" as const,
       destination: "Settings > Reports", available: () => featureEnabled("inbox"),
     },
-    ...bindTypedSettings({ schema: WorkflowPolicyPatchSchema, read: getWorkflowPolicy, apply: patchWorkflowPolicy, changed }, [
+    ...bindTypedSettings({ schema: WorkflowPolicyPatchSchema, read: getWorkflowPolicy, apply: owners.workflows, changed }, [
       field("workflows", "skipPassedJudges", "workflow-judge-passes"),
+      ...(["rawEvidenceDays", "completedRunDays", "maxCompletedRuns"] as const).map(id =>
+        field("workflows", `retention.${id}`, "workflow-retention", { label: `Workflow retention ${id}` })),
+
     ]),
     ...worktrees ? bindTypedSettings(worktrees, ["enabled", "taskRetentionDays", "maxSlots"].map(id =>
       field("worktrees", id, "worktree-policy", { label: `Worktrees ${id}` }))) : [],
@@ -280,9 +302,21 @@ export function typedSettings(
 
   return () => [
     ...descriptors,
-    ...worktrees ? bindTypedSettings(worktrees, worktreeRepositoryKeys().flatMap(repo =>
+    ...inspectorIsPrivate() ? bindTypedSettings({
+      schema: InspectorConfigPatchSchema, read: getInspectorConfig, apply: owners.inspector, changed,
+    }, [field("inspector", "enabled", "inspector-enabled")]) : [
+      operatorSetting("inspector.enabled", "inspector-enabled", "Enabling live Inspector can post publicly on GitHub."),
+    ],
+    ...bindTypedSettings({ schema: SkillsConfigPatchSchema, read: getSkillsConfig, apply: owners.skills, changed },
+      readCatalog().skills.map(skill => field("skills", `skills.${skill.id}`, "skills-catalog", {
+        label: `Enable ${skill.name} skill`,
+        read: config => skillEnabled(config, skill.id),
+      }))),
+    ...bindTypedSettings({ schema: HarnessesConfigPatchSchema, read: getHarnessesConfig, apply: owners.harnesses },
+      advisorOverrides(owners.advisorModelIds)),
+    ...worktrees ? bindTypedSettings(worktrees, worktreeRepositoryKeys(owners.worktreePoolRoots).flatMap(repo =>
       (["enabled", "maxSlots"] as const).map(id => field("worktrees", `repositories.${id}`, "worktree-policy", {
-        key: `worktrees.repositories.${createHash("sha256").update(repo).digest("base64url")}.${id}`,
+        key: `worktrees.repositories.${settingTargetId(repo)}.${id}`,
         label: `Worktree ${id} for ${repo.split(/[/\\]/).filter(Boolean).slice(-2).join("/")}`,
         read: config => config.repositories[repo]?.[id] ?? config[id],
         storedValue: config => config.repositories[repo]?.[id],
@@ -291,7 +325,26 @@ export function typedSettings(
   ];
 }
 
-function worktreeRepositoryKeys(): string[] {
-  try { return Object.keys(getWorktreesConfig().repositories); }
-  catch { return []; }
+function worktreeRepositoryKeys(poolRoots?: () => readonly string[]): string[] {
+  return [...new Set([...Object.keys(getWorktreesConfig().repositories), ...(poolRoots?.() ?? [])])];
+}
+
+function advisorOverrides(modelIds?: (agent: AgentType) => readonly string[]) {
+  const { advisor, defaultModel } = getHarnessesConfig();
+  return AGENT_TYPES.flatMap(agent => {
+    const capability = capabilitiesFor(agent).advisor;
+    if (!capability) return [];
+    const models = new Set([
+      ...Object.keys(advisor[agent].overrides),
+      ...modelChoicesFor(agent, defaultModel[agent]).map(model => advisorOverrideKey(model.id)),
+      ...(modelIds?.(agent) ?? []).map(advisorOverrideKey),
+    ]);
+    return [...models].map(model => field<ReturnType<typeof getHarnessesConfig>>("harnesses", `advisor.${agent}.overrides`, `harness-${agent}`, {
+      key: `harnesses.advisor.${agent}.overrides.${settingTargetId(model)}`,
+      label: `${AGENT_IDENTITY[agent].label} advisor for ${model.slice(0, 80)}`,
+      choices: choices([null, ...capability.values]),
+      read: config => config.advisor[agent].overrides[model] ?? null,
+      patch: (_config, value) => ({ advisor: { [agent]: { overrides: { [model]: value } } } }),
+    }));
+  });
 }

@@ -1,6 +1,6 @@
 import { useSettingsConfigRevision } from "./lib/settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
+import type { WorkflowSettingsPatch } from "@shared/protocol.ts";
 import type {
   TestEvidenceAuditAggregate,
   WorkflowConfig,
@@ -36,7 +36,7 @@ export interface WorkflowSettingsState {
    */
   testEvidenceAudit: TestEvidenceAuditAggregate | null;
   /** Save the fields the operator edited, resolving to whether the daemon accepted them. */
-  update: (patch: WorkflowPolicyPatch) => Promise<boolean>;
+  update: (patch: WorkflowSettingsPatch) => Promise<boolean>;
   /** Why the last write didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -217,7 +217,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
    * must not leave the optimistic value on screen.
    */
   const update = useCallback(
-    async (patch: WorkflowPolicyPatch): Promise<boolean> => {
+    async ({ retentionConfirmation, ...patch }: WorkflowSettingsPatch): Promise<boolean> => {
       const before = configRef.current;
       if (!before) return false;
       // Marked in flight BEFORE the request goes out, which is the whole point: the window
@@ -227,7 +227,7 @@ export function useWorkflowSettings(): WorkflowSettingsState {
       try {
         const saved = await workflowRequest<WorkflowConfig>("/api/workflows/config", {
           method: "PATCH",
-          body: JSON.stringify(patch),
+          body: JSON.stringify({ ...patch, retentionConfirmation }),
         });
         setConfig(saved);
         setError(null);

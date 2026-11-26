@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { TaskSourcesView } from "../src/shared/task-source.ts";
 import { ensureNativeStateLockAddon } from "./helpers/native-state-lock.ts";
 import { createResumeLease, resumeLeaseRoot, resumeLeaseStatus } from "../src/server/terminal/resume-lease.ts";
 
@@ -145,12 +146,13 @@ async function waitForListening(daemon: RunningDaemon): Promise<void> {
  * lost that race (`EADDRINUSE`, and only that) is tried again on a fresh port. Any other failure
  * is this test's to report.
  */
-async function startListeningDaemon(home: string): Promise<RunningDaemon> {
+async function startListeningDaemon(home: string): Promise<RunningDaemon & { port: number }> {
   for (let attempt = 1; ; attempt++) {
-    const daemon = startDaemon(home, await unusedPort());
+    const port = await unusedPort();
+    const daemon = startDaemon(home, port);
     try {
       await waitForListening(daemon);
-      return daemon;
+      return { ...daemon, port };
     } catch (error) {
       if (attempt >= 3 || !daemon.output().includes("EADDRINUSE")) throw error;
       await daemon.exit;
@@ -221,6 +223,45 @@ test("ordinary restart works and stale ownership recovers after a crash", async 
 
   const restarted = startDaemon(home, await unusedPort());
   await waitForListening(restarted);
+  await stopDaemon(restarted.child);
+});
+
+test("a Task Sources revision from a prior daemon is refused after restart on the same state", async () => {
+  const home = join(root, "task-source-restart");
+  const url = (port: number) => `http://127.0.0.1:${port}/api/task-sources/config`;
+  const readSources = async (port: number): Promise<TaskSourcesView> => {
+    const response = await fetch(url(port));
+    assert.equal(response.status, 200);
+    return await response.json() as TaskSourcesView;
+  };
+  const replaceSources = (port: number, revision: string, sources: unknown[]) => fetch(url(port), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ revision, sources }),
+  });
+
+  const seed = await startListeningDaemon(home);
+  const source = { id: "restart-fixture", kind: "github-issues", repoRoot: repo, config: { repo: "fixture/issues" } };
+  const saved = await replaceSources(seed.port, (await readSources(seed.port)).revision, [source]);
+  assert.equal(saved.status, 200, await saved.text());
+  await stopDaemon(seed.child);
+  await seed.exit;
+
+  // Both reads happen on fresh starts with no source writes, so their in-process
+  // generation would coincide if revisions were based only on the write count.
+  const first = await startListeningDaemon(home);
+  const before = await readSources(first.port);
+  assert.deepEqual(before.sources.map(source => source.id), ["restart-fixture"]);
+  await stopDaemon(first.child);
+  await first.exit;
+
+  const restarted = await startListeningDaemon(home);
+  const stale = await replaceSources(restarted.port, before.revision, []);
+  assert.equal(stale.status, 409);
+  assert.match((await stale.json() as { error: string }).error, /Task sources changed/);
+  const after = await readSources(restarted.port);
+  assert.deepEqual(after.sources, before.sources);
+  assert.notEqual(after.revision, before.revision);
   await stopDaemon(restarted.child);
 });
 

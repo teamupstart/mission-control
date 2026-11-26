@@ -75,6 +75,7 @@ export async function streamRegistryEvents(
   let wake: (() => void) | null = null;
   let subscribed = true;
   const unsub = registry.subscribe((event) => {
+    if ((event.type === "voice_dictation" || event.type === "voice_dictation_probe") && event.windowId !== windowId) return;
     // Capture the cursor with the frame, before a slow write can let later receipts arrive.
     queue.push({ event, id: event.type === "voice_card" ? registry.voiceRouter?.heard.receiptCursor : undefined });
     wake?.();

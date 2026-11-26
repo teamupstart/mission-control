@@ -48,8 +48,9 @@ const createVad = (endOfSpeechMs: number) => new Vad({
 }, 60);
 
 const hostNowUs = loadVoiceHostClock(fileURLToPath(new URL("../native/state-lock.node", import.meta.url)));
-await playRecording(client, signal => recordingSegments(mono, createVad, signal, hostNowUs), async (samples, roster) => {
+function decode(samples: Float32Array, roster: string[]) {
   const stream = recognizer.createStream(rosterHotwords(roster, vocabulary));
   stream.acceptWaveform({ samples, sampleRate: 16000 });
   return recognizer.decodeAsync(stream);
-});
+}
+await playRecording(client, signal => recordingSegments(mono, createVad, signal, hostNowUs), decode, samples => decode(samples, []));

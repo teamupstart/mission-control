@@ -71,7 +71,7 @@ test("schemas bound keys and entries while accepting future ids", () => {
 });
 test("shipped registry is data-only, well formed, and disjoint from append-only tombstones", () => {
   assert.deepEqual(Object.keys(registry).sort(), [
-    "BACKGROUND_REASONING_EFFORT_FLAG_ID", "BUG_FIX_INSPECTOR_FLAG_ID", "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "IDLE_RAIL_SECTION_COUNTS_FLAG_ID", "IDLE_STALLED_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PERSONA_REPOSITORY_ACCESS_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
+    "BACKGROUND_REASONING_EFFORT_FLAG_ID", "BUG_FIX_INSPECTOR_FLAG_ID", "FEATURE_FLAGS", "HEADLESS_MODE_FLAG_ID", "IDLE_RAIL_SECTION_COUNTS_FLAG_ID", "IDLE_STALLED_FLAG_ID", "MACOS_TERMINAL_FLAG_ID", "MARKDOWN_QUESTIONS_FLAG_ID", "MCP_SCHEDULES_FLAG_ID", "PERSONA_REPOSITORY_ACCESS_FLAG_ID", "PINNED_PLAN_CHANGE_FLAG_ID", "RESIDENT_CARD_NAMES_FLAG_ID", "RETIRED_FEATURE_FLAG_IDS", "SESSION_AWAITING_FLAG_ID",
     "SESSION_SETTINGS_FLAG_ID", "SHAPER_SIGN_IN_FLAG_ID", "WORK_UNIT_ID_FLAG_ID",
   ]);
   assert.equal(registry.FEATURE_FLAGS.find((flag) => flag.id === registry.BUG_FIX_INSPECTOR_FLAG_ID)?.stage, "preview");
@@ -95,6 +95,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Headless mode",
     description: "Dispatch work to Mission Control from a Claude Code terminal session.",
     stage: "preview",
+    sessionSetting: "Enables terminal dispatch authority.",
     keywords: ["headless", "terminal", "cli", "dispatch"],
   });
   // Session control requests ships off until the operator opts in.
@@ -109,6 +110,7 @@ test("shipped registry is data-only, well formed, and disjoint from append-only 
     label: "Shaper sign-in",
     description: "Sign a remote shaper in to an OAuth-protected server from Settings > Task shaping.",
     stage: "preview",
+    sessionSetting: "Enables credential enrollment for remote shapers.",
     keywords: ["shaping", "shaper", "oauth", "sign-in", "login", "token"],
   });
   assert.equal(registry.SHAPER_SIGN_IN_FLAG_ID, "shaper-sign-in");

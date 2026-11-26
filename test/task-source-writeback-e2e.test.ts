@@ -130,6 +130,11 @@ function ledger(): Array<{ action: string; state: string; last_detail: string | 
 
 // ---- 1. the consent rides the route that already exists ----
 
+async function taskSourcesRevision(app: ReturnType<typeof buildApp>): Promise<string> {
+  const res = await app.request("/api/task-sources/config", { headers: HEADERS });
+  return (await res.json()).revision;
+}
+
 test("write-back consent stores and reads back through the config route", async () => {
   const { app } = daemon();
   const body = {
@@ -147,7 +152,7 @@ test("write-back consent stores and reads back through the config route", async 
   const res = await app.request("/api/task-sources/config", {
     method: "PUT",
     headers: HEADERS,
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, revision: await taskSourcesRevision(app) }),
   });
   assert.equal(res.status, 200);
   const view = (await res.json()) as {
@@ -188,6 +193,7 @@ test("the config route refuses auto-resolve with no completion trigger", async (
     method: "PUT",
     headers: HEADERS,
     body: JSON.stringify({
+      revision: await taskSourcesRevision(app),
       sources: [
         {
           id: "src-1",
@@ -214,6 +220,7 @@ test("an unchanged missing repository cannot block task-source repairs", async (
     method: "PUT",
     headers: HEADERS,
     body: JSON.stringify({
+      revision: await taskSourcesRevision(app),
       sources: [
         { id: "stale", kind: "jira", label: "renamed repo", repoRoot: missing },
         { id: "new", kind: "jira", label: "new source", repoRoot: repo },
@@ -231,6 +238,7 @@ test("an unchanged missing repository cannot block task-source repairs", async (
     method: "PUT",
     headers: HEADERS,
     body: JSON.stringify({
+      revision: await taskSourcesRevision(app),
       sources: [
         { id: "stale", kind: "jira", label: "renamed repo", repoRoot: typo },
         { id: "new", kind: "jira", label: "new source", repoRoot: repo },

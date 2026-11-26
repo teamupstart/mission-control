@@ -267,16 +267,17 @@ test("a reply cannot reach the old question while a new focus is calibrating", a
     await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
     const inbox = page.getByRole("dialog", { name: "Attention inbox" });
     await expectContentClearsBorder(inbox);
-    const card = (id: string) => inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+    const questionCard = (id: string) => inbox.locator('[data-voice-question="' + id + '"]');
+    const card = (id: string) => questionCard(id).getByRole("textbox");
     const focused = (id: string, calibrating: boolean) => page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
       Boolean(r.request().headers()["x-voice-calibrating"]) === calibrating &&
       r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === id));
     const firstReport = focused(first, false);
-    await card(first).focus();
+    await questionCard(first).focus();
     await firstReport;
     hold = true;
     const secondReport = focused(second, true);
-    await card(second).focus();
+    await questionCard(second).focus();
     await Promise.all([probing.promise, secondReport]);
     // Capture strictly after the new focus is visible to the daemon, while the probe is held.
     const received = Date.now();
@@ -304,10 +305,11 @@ for (const [name, phrase] of [["reply", "reply, tomorrow"], ["named answer", "St
     await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
     const inbox = page.getByRole("dialog", { name: "Attention inbox" });
     await expectContentClearsBorder(inbox);
-    const field = (id: string) => inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+    const questionCard = (id: string) => inbox.locator('[data-voice-question="' + id + '"]');
+    const field = (id: string) => questionCard(id).getByRole("textbox");
     const firstReport = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
       !r.request().headers()["x-voice-calibrating"] && r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.focused && c.id === first));
-    await field(first).focus();
+    await questionCard(first).focus();
     await firstReport;
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -317,7 +319,7 @@ for (const [name, phrase] of [["reply", "reply, tomorrow"], ["named answer", "St
       await route.continue().catch(() => {});
     });
     try {
-      await field(second).focus();
+      await questionCard(second).focus();
       await held.promise;
       const focusedAt = Date.now();
       await expect.poll(() => Date.now(), { intervals: [10] }).toBeGreaterThan(focusedAt + 30);
@@ -377,7 +379,8 @@ test("a previously background dashboard receives a reply before the focus handof
   const release = Promise.withResolvers<void>();
   const observed = Promise.withResolvers<number>();
   const inbox = (page: Page) => page.getByRole("dialog", { name: "Attention inbox" });
-  const field = (page: Page, id: string) => inbox(page).locator('[data-voice-question="' + id + '"]').getByRole("textbox");
+  const questionCard = (page: Page, id: string) => inbox(page).locator('[data-voice-question="' + id + '"]');
+  const field = (page: Page, id: string) => questionCard(page, id).getByRole("textbox");
   // Set the OS focus reported by each test page independently of Playwright's
   // own tab activation. The production listeners still read the real card DOM.
   const focus = (page: Page, active: boolean) => page.evaluate(active => {
@@ -390,14 +393,14 @@ test("a previously background dashboard receives a reply before the focus handof
       await page.locator("button.pulse-seg", { hasText: "to answer" }).click();
       await expectContentClearsBorder(inbox(page));
     }
-    await field(second, newQuestion).focus();
+    await questionCard(second, newQuestion).focus();
     const background = second.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && !r.request().postDataJSON().focused);
     await focus(second, false);
     await background;
     const foreground = first.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() && r.request().postDataJSON().focused &&
       r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.id === oldQuestion && c.focused));
     await focus(first, true);
-    await field(first, oldQuestion).focus();
+    await questionCard(first, oldQuestion).focus();
     await foreground;
     for (const page of [first, second]) {
       await page.route("**/api/voice/open-cards", async route => {
@@ -466,7 +469,7 @@ test("choosing a question in an older picker keeps the newer dictated answer", a
   const field = inbox.locator('[data-voice-question="' + id + '"]').getByRole("textbox");
   const focused = page.waitForResponse(r => r.url().endsWith("/api/voice/open-cards") && r.ok() &&
     !r.request().headers()["x-voice-calibrating"] && r.request().postDataJSON().cards.some((c: { id: string; focused: boolean }) => c.id === id && c.focused));
-  await field.focus();
+  await inbox.locator('[data-voice-question="' + id + '"]').focus();
   await focused;
   await say(daemon, "reply, SQLite");
   await expect(field).toHaveValue("SQLite");

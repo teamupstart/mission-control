@@ -387,6 +387,15 @@ export function createFakeDaemon(options: FakeDaemonOptions = {}): FakeDaemon {
       status, text: JSON.stringify(value), contentType: "application/json",
     });
 
+    if (path === "/api/feature-flags" && method === "PUT") {
+      requests.push({ method, path, pattern: path, params: {}, query: {}, body, headers: lower, at: Date.now() });
+      if (token !== null && lower["x-harness-token"] !== token) return reply(401, { error: "unauthorized" });
+      const intent = body as { kind?: unknown; id?: unknown; enabled?: unknown };
+      if (intent?.kind !== "flag" || intent.id !== "headless-mode" || typeof intent.enabled !== "boolean") return reply(400, { error: "invalid" });
+      flag = intent.enabled;
+      return reply(200, { config: { enableAll: false, overrides: { "headless-mode": flag } } });
+    }
+
     for (const candidate of compiled()) {
       if (!candidate.key.startsWith(`${method} `)) continue;
       const match = candidate.regex.exec(path);

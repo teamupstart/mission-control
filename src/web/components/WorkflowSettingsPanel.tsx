@@ -1,3 +1,5 @@
+import { retentionShortens } from "@shared/workflow.ts";
+export { retentionShortens };
 import { useEffect, useState } from "react";
 import type {
   WorkflowConfig,
@@ -5,7 +7,7 @@ import type {
   WorkflowSummary,
 } from "@shared/workflow.ts";
 import type { WorkflowSettingsState } from "../useWorkflowSettings.ts";
-import type { WorkflowPolicyPatch } from "@shared/protocol.ts";
+import type { WorkflowSettingsPatch } from "@shared/protocol.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TrustGrantSummary } from "./TrustPanel.tsx";
@@ -193,14 +195,6 @@ export function readRetention(
   return { ok: true, value: out };
 }
 
-/** Whether the new limits would let the next sweep remove more than the current ones. */
-export function retentionShortens(
-  next: WorkflowConfig["retention"],
-  current: WorkflowConfig["retention"],
-): boolean {
-  return RETENTION_FIELDS.some((field) => next[field.key] < current[field.key]);
-}
-
 /**
  * The health strip's tiles: which `WorkflowStatus` scalar each shows, and which view of the
  * REAL run list reading it continues in.
@@ -361,7 +355,7 @@ export function WorkflowSettingsPanel({
   const allowlist = config?.repoAllowlist ?? [];
   const checksEnabled = config?.checksEnabled ?? false;
 
-  const save = async (patch: WorkflowPolicyPatch): Promise<void> => {
+  const save = async (patch: WorkflowSettingsPatch): Promise<void> => {
     setBusy(true);
     setLocalError(null);
     try {
@@ -439,7 +433,10 @@ export function WorkflowSettingsPanel({
       confirmLabel: "Shorten retention",
       confirmHint: "Save the shorter limits and let the next sweep act on them",
       danger: true,
-      onConfirm: () => void save(patch),
+      onConfirm: () => void save({
+        ...patch,
+        retentionConfirmation: { current: config.retention, proposed: read.value },
+      }),
     });
   };
 

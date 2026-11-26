@@ -4189,6 +4189,7 @@ export type TerminalsConfigPatch = z.infer<typeof TerminalsConfigPatchSchema>;
  * quietly on a background tick nobody is watching.
  */
 export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
+export const TaskSourcesUpdateSchema = TaskSourcesConfigSchema.extend({ revision: z.string().max(80) });
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 /**
@@ -4218,9 +4219,17 @@ export type TaskSourceWritebackRetry = z.infer<typeof TaskSourceWritebackRetrySc
  * and bounded by its schema. The master switch rides the same write because a panel that
  * could save one without the other would let a browser hold a picture in which the master
  * is off and a repository is on, which is not a state the daemon can be in.
+ * Existing callers may include an explicit Engineer runtime in a full replacement.
  */
-export const PipelinesConfigPatchSchema = PipelinesConfigSchema;
+export const PipelinesConfigPatchSchema = PipelinesConfigSchema.extend({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap().optional(),
+});
 export type PipelinesConfigPatch = z.infer<typeof PipelinesConfigPatchSchema>;
+
+/** A runtime-only edit has no authority over observation or Foreman consent. */
+export const PipelineRuntimePatchSchema = z.strictObject({
+  launchRuntime: PipelinesConfigSchema.shape.launchRuntime.unwrap(),
+});
 
 /** Register one canonical repository with its provider. Observation consent is a later write. */
 export const PipelineRepoRegistrationSchema = z.object({
@@ -4418,6 +4427,19 @@ export type TaskKindCardStyle = (typeof TASK_KIND_CARD_STYLES)[number];
 export const BACKGROUND_AGENTS_STYLES = ["nested", "chip"] as const;
 export const BackgroundAgentsStyleSchema = z.enum(BACKGROUND_AGENTS_STYLES);
 export type BackgroundAgentsStyle = (typeof BACKGROUND_AGENTS_STYLES)[number];
+
+/**
+ * Resident name with call sign styles (`docs/residents.md`). Persisted on operators' machines, so
+ * append-only for the reason `TASK_KIND_HEADER_STYLES` is. The order is the panel's order, and
+ * the one a stored list is kept in.
+ */
+export const RESIDENT_CARD_NAME_STYLES = ["subtitle", "chip"] as const;
+export const ResidentCardNameStyleSchema = z.enum(RESIDENT_CARD_NAME_STYLES);
+export type ResidentCardNameStyle = (typeof RESIDENT_CARD_NAME_STYLES)[number];
+
+export function residentCardNameStylesOf(list: readonly unknown[]): ResidentCardNameStyle[] {
+  return RESIDENT_CARD_NAME_STYLES.filter((style) => list.includes(style));
+}
 
 /**
  * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
@@ -4624,6 +4646,7 @@ export const UI_CONFIG_DEFAULTS = {
   taskKindCard: "tab",
   /** Nested sub-cards, the recommended treatment, for a fresh install and an upgrade alike. */
   backgroundAgentsStyle: "nested",
+  residentCardNameStyles: [] as readonly ResidentCardNameStyle[],
   keybindings: {},
   /**
    * `notify` and `reportsInInbox` are the `inbox` flag's "What notifies you" switches. Every one
@@ -4796,6 +4819,16 @@ export const UiConfigSchema = z.object({
   backgroundAgentsStyle: BackgroundAgentsStyleSchema
     .default(UI_CONFIG_DEFAULTS.backgroundAgentsStyle)
     .catch(UI_CONFIG_DEFAULTS.backgroundAgentsStyle),
+  /**
+   * Read leniently: a style a newer build added is dropped after a downgrade while the ones this
+   * build knows are kept, and anything that is not a list reads as none, rather than failing the
+   * whole `ui` record. The patch schema below is strict.
+   */
+  residentCardNameStyles: z
+    .array(z.unknown())
+    .transform(residentCardNameStylesOf)
+    .default([...UI_CONFIG_DEFAULTS.residentCardNameStyles])
+    .catch([...UI_CONFIG_DEFAULTS.residentCardNameStyles]),
   /**
    * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
    * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
@@ -5046,6 +5079,13 @@ export const UiConfigPatchSchema = z.preprocess(
     blockedPlacement: BlockedPlacementSchema.optional(),
     // Strict for the same reason: a bad write is a 400, never a stored Nested sub-cards.
     backgroundAgentsStyle: BackgroundAgentsStyleSchema.optional(),
+    // Strict for the same reason: an unknown style is a 400, never silently dropped. Stored
+    // once each, in the panel's order.
+    residentCardNameStyles: z
+      .array(ResidentCardNameStyleSchema)
+      .max(RESIDENT_CARD_NAME_STYLES.length * 2)
+      .transform(residentCardNameStylesOf)
+      .optional(),
     // Strict for the same reason: an unknown confirmation placement is a 400.
     voice: VoiceUiConfigPatchSchema.optional(),
   }).refine(
@@ -8024,6 +8064,21 @@ export const WorkflowPolicyPatchSchema = partialPatch(WorkflowPolicySchema).stri
   retention: partialPatch(WorkflowPolicySchema.shape.retention.unwrap()).strict().optional(),
 }).refine(patch => Object.keys(patch).length > 0, { message: "Supply at least one Workflow policy field" });
 export type WorkflowPolicyPatch = z.output<typeof WorkflowPolicyPatchSchema>;
+
+const WorkflowRetentionLimitsSchema = z.strictObject({
+  rawEvidenceDays: WorkflowPolicySchema.shape.retention.unwrap().shape.rawEvidenceDays.unwrap(),
+  completedRunDays: WorkflowPolicySchema.shape.retention.unwrap().shape.completedRunDays.unwrap(),
+  maxCompletedRuns: WorkflowPolicySchema.shape.retention.unwrap().shape.maxCompletedRuns.unwrap(),
+});
+export const WorkflowSettingsPatchSchema = WorkflowPolicyPatchSchema.safeExtend({
+  retentionConfirmation: z.strictObject({
+    current: WorkflowRetentionLimitsSchema,
+    proposed: WorkflowRetentionLimitsSchema,
+  }).optional(),
+}).refine(patch => !patch.retentionConfirmation || patch.retention !== undefined, {
+  message: "Retention confirmation requires proposed limits",
+});
+export type WorkflowSettingsPatch = z.output<typeof WorkflowSettingsPatchSchema>;
 
 /**
  * Carry a blob written before per-kind defaults into `kindWorkflowDefaults.ship`.

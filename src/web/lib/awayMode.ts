@@ -1,3 +1,4 @@
+import { useSettingsConfigRevision } from "./settings-config-refresh.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AwayConfig } from "@shared/protocol.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
@@ -77,6 +78,7 @@ export function useAwayMode(): {
    */
   returning: boolean;
 } {
+  const settingsRevision = useSettingsConfigRevision("away");
   const [away, setAwayState] = useState<AwayConfig | null>(null);
   const [digest, setDigest] = useState<AwayDigest | null>(null);
   const [buffered, setBuffered] = useState<AwayBufferSummary | null>(null);
@@ -136,7 +138,7 @@ export function useAwayMode(): {
       alive = false;
       clearInterval(id);
     };
-  }, [claimIfReturned]);
+  }, [claimIfReturned, settingsRevision]);
 
   const setAway = useCallback(
     async (patch: Partial<AwayConfig>) => {

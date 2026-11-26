@@ -543,8 +543,13 @@ and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/c
 
 **Settings > Worktrees > Task worktree retention** stores `worktrees.taskRetentionDays` in the
 daemon-owned configuration. It defaults to **30 days** and accepts whole days from **7 to 90**,
-with no off switch. Invalid writes are rejected; out-of-range numeric stored values are clamped,
-and missing or nonnumeric stored values use 30. It is independent of `MISSION_WORKTREE_SWEEP_MS`.
+when the daemon preview is unset. Invalid writes are rejected, out-of-range numeric stored
+values are clamped, and missing or nonnumeric stored values use 30. The observation cadence is
+independent of `MISSION_WORKTREE_SWEEP_MS`.
+
+Set the daemon environment variable `MISSION_WORKTREE_CLEANUP_PREVIEW` to `report-only` to
+observe seven-day retention without automatic task checkout removal, or to `enforce` to
+enable it. The preview does not change the persisted retention setting.
 
 See [task worktree retention](worktrees-and-checks.md#task-worktree-retention) for deadline
 recomputation, grace periods, and the destructive cleanup boundary.

@@ -1490,18 +1490,20 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
   // Same stale-closure guard as the Foreman panel's: `add` does a server round-trip while
   // the view polls underneath it, so the write must extend whatever is in force when it
   // lands rather than what was on screen when the button was clicked.
-  const sourcesRef = useRef(sources);
-  sourcesRef.current = sources;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const now = Date.now();
   const kind = draftKind || kinds[0]?.kind;
   const counts = healthCounts(sources, statusesById(view?.status ?? []));
 
   function replace(next: TaskSourceInstance): void {
-    void save(sourcesRef.current.map((s) => (s.id === next.id ? next : s)));
+    if (!view) return;
+    void save(view.sources.map((s) => (s.id === next.id ? next : s)), view.revision);
   }
 
   function remove(id: string): void {
-    void save(sourcesRef.current.filter((s) => s.id !== id));
+    if (!view) return;
+    void save(view.sources.filter((s) => s.id !== id), view.revision);
   }
 
   async function add(): Promise<void> {
@@ -1544,7 +1546,9 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       writeback: { onPrOpened: false, onCompleted: false, resolve: false },
       config: {},
     };
-    const saved = await save([...sourcesRef.current, added]);
+    const current = viewRef.current;
+    if (!current) return;
+    const saved = await save([...current.sources, added], current.revision);
     if (saved) {
       setShowAdd(false);
       // Straight into the editor beside the list: what you just added is off, unlabelled

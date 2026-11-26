@@ -239,7 +239,7 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "board-card",
     label: "Board card",
-    description: "Choose which items a session card draws in every Board column, and how a session shows its background sub-agents.",
+    description: "Choose which items a session card draws in every Board column, how a session shows its background sub-agents, and how a resident's card shows its name.",
     category: "display",
     anchor: "display/board-card",
     // "hide"/"show"/"customize" are what an operator types who wants the panel and has not
@@ -282,6 +282,12 @@ export const ALL_SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "task type",
       "task kind",
       "kind",
+      "resident name",
+      "call sign",
+      "reference name",
+      "profile name",
+      "subtitle",
+      "expanding chip",
       // The Background sub-agents picker: what the operator saw, or wants to see, under or on
       // a card while a session's agents run.
       "sub-agents",

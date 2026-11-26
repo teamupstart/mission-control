@@ -34,6 +34,9 @@ import { prCreationFixture } from "./helpers/pr-creation-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "session-action-runtime-"));
 process.env.MISSION_HOME = home;
+// The Foreman worker reads its settle window at import. Its own decision still requires a
+// settled idle; this file states that idle through hooks rather than waiting ten seconds.
+process.env.FOREMAN_QUEUE_SETTLE_MS = "0";
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -42,11 +45,18 @@ const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { SessionActionManager } = await import("../src/server/workflows/session-actions.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
+const { ReviewManager } = await import("../src/server/reviews.ts");
+const { TaskManager } = await import("../src/server/tasks.ts");
+const { buildApp } = await import("../src/server/routes.ts");
+const { processPromptedWrapup } = await import("../src/server/foreman/worker.ts");
+const { ForemanClient } = await import("../src/server/foreman/client.ts");
+const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const { boundedWorkflowTranscript, fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { LocalArtifactChangedError } = await import("../src/server/git/worktree-tree.ts");
 const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
-const { PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
+const { ForemanConfigSchema, PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -200,7 +210,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
           { id: "second", prompt: "# Second\n\nDo the second thing.\n" },
         ]
       : [{ id: "act", prompt: "# Tidy\n\nRun the tidy pass.\n" }]);
-  const registry = new Registry();
+  let registry = new Registry();
   registry.applyDiscovery([discovered(sessionId)]);
   const personas = new PersonaManager(registry);
   const store = personas.store;
@@ -596,14 +606,38 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     });
   };
 
+  let app: ReturnType<typeof buildApp> | null = null;
   return {
-    registry,
+    get registry() { return registry; },
     store,
     get manager() { return manager; },
+    /** The daemon's HTTP surface, present once `restartDaemon` has booted one. */
+    get app() { return app; },
     restartWorkflowManager: async () => {
       await manager.stop();
       manager = new WorkflowManager(registry, new WorkflowStore(), managerOptions);
       manager.start();
+    },
+    /**
+     * Stop and boot the whole daemon composition over the same isolated state home.
+     *
+     * Every in-memory object is discarded: the Registry, its sessions and work cycles, the
+     * queues, Personas and the workflow store and manager. The new ones read SQLite through
+     * their ordinary boot path, discovery finds the same live pane again, and the HTTP routes
+     * are the daemon's real `buildApp`. Only what was durable survives.
+     */
+    restartDaemon: async () => {
+      await manager.stop();
+      registry = new Registry();
+      registry.applyDiscovery([discovered(sessionId)]);
+      const queues = new QueueManager(registry);
+      const restartedPersonas = new PersonaManager(registry);
+      manager = new WorkflowManager(registry, restartedPersonas.store, managerOptions);
+      manager.start();
+      app = buildApp({
+        registry, reviews: new ReviewManager(registry), tasks: new TaskManager(registry),
+        queues, personas: restartedPersonas, workflows: manager,
+      });
     },
     injected,
     head,
@@ -1800,6 +1834,69 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
 // pushes a repair that the published policy routes through Inspector alone, and Inspector
 // reviews that exact head clean. The run has no full snapshot of that final content, so the
 // author's next idle must be judged against the reviewed commit itself, across a restart.
+/**
+ * Drive one workflow run to a clean Inspector-only repair: a full review publishes, Inspector
+ * posts a finding on the published head, the published policy routes it Inspector-only, the
+ * author pushes a repair, and Inspector reviews that exact head clean.
+ */
+async function reachCleanInspectorOnlyRepair(h: Harness, number: number) {
+  const { upsertInspectorComment } = await import("../src/server/db.ts");
+  const key = `owner/repo#${number}`;
+  const url = `https://github.com/owner/repo/pull/${number}`;
+  // A full review through publication.
+  const runId = await runToAction(h, true);
+  await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action");
+  h.head.sha = "published";
+  h.runActionTurn();
+  h.adoptPr({ key, url, number });
+  await h.manager.sweepSessionActions(SETTLED());
+  await waitFor(() => h.store.listEvents(runId).some(event => event.kind === "inspector_gate_entered"),
+    "publication must reach the Inspector gate");
+  const published = h.store.latestSubmission(runId)!;
+  assert.equal(published.mode, "full_workflow");
+  const reviewed = h.store.listSubmissions(runId)[0]!;
+  const retained = h.store.listSubmissionTextArtifacts(reviewed.id);
+  assert.ok(retained.length, "the reviewed submission carries its registered proof");
+
+  // Inspector finds a problem on the published head; the policy routes it Inspector-only.
+  const findingAt = Date.now();
+  upsertInspectorComment({
+    id: `repair-${number}`, prKey: key, fingerprint: `repair-${number}`, path: "src/card.ts", line: 4,
+    title: "Reference name is truncated", body: "Show the whole name.", severity: "major", round: 1,
+    status: "open", replies: 0, answeredCommentId: null, createdAt: findingAt, updatedAt: findingAt,
+    githubUrl: `${url}#discussion_r1`, postedAt: findingAt,
+  });
+  await observeCleanInspectorReview(h, number, h.full("published"), findingAt, false);
+  await waitFor(() => h.store.getRun(runId)?.status === "waiting_for_new_head", "Inspector findings must wait for a repair head");
+  await waitFor(() => h.store.listDeliveries(runId).some(d => d.kind === "inspector_feedback" && d.state === "delivered"),
+    "the Inspector-only repair packet never reached the author");
+  const packet = h.store.listDeliveries(runId).find(d => d.kind === "inspector_feedback")!;
+  assert.match(packet.payload, /Reference name is truncated/);
+
+  // The author pushes the repair; Inspector reviews that exact head clean.
+  h.head.sha = "repaired";
+  h.contentTree.oid = h.full("repaired-tree");
+  h.commitTrees.set(h.full("repaired"), h.full("repaired-tree"));
+  h.runActionTurn();
+  const cleanAt = Date.now() + 1;
+  upsertInspectorComment({
+    id: `repair-${number}`, prKey: key, fingerprint: `repair-${number}`, path: "src/card.ts", line: 4,
+    title: "Reference name is truncated", body: "Fixed in the repair.", severity: "major", round: 1,
+    status: "resolved", replies: 1, answeredCommentId: null, createdAt: findingAt, updatedAt: cleanAt,
+    githubUrl: `${url}#discussion_r1`, postedAt: findingAt,
+  });
+  await observeCleanInspectorReview(h, number, h.full("repaired"), cleanAt);
+  await waitFor(() => h.store.getRun(runId)?.status === "completed", "the clean Inspector-only repair did not complete");
+  const terminal = h.store.latestSubmission(runId)!;
+  assert.equal(terminal.mode, "inspector_only");
+  assert.equal(terminal.prHeadSha, h.full("repaired"));
+  const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
+  assert.equal(gate.waitReason, null);
+  assert.equal(gate.targetHeadSha, h.full("repaired"));
+  assert.equal(h.store.listSubmissions(runId).length, 3, "review, publication continuation, Inspector-only repair");
+  return { runId, reviewed, retained, terminal };
+}
+
 const INSPECTOR_REPAIR_CASES = ["unchanged", "independent later cycle", "edited after repair", "head moved after repair",
   "human instruction", "unresolvable repair commit", "checkout edited during claim", "changed sibling",
   "repair replaced another head", "retained report unchanged", "retained report rewritten",
@@ -1807,13 +1904,10 @@ const INSPECTOR_REPAIR_CASES = ["unchanged", "independent later cycle", "edited 
 for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
   test(`final idle handoff after a clean Inspector-only repair: ${next}`, async (t) => {
     const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
-    const { upsertInspectorComment } = await import("../src/server/db.ts");
     const { enabled } = getInspectorConfig();
     setInspectorConfig({ enabled: true });
     t.after(() => setInspectorConfig({ enabled }));
     const number = 1900 + index;
-    const key = `owner/repo#${number}`;
-    const url = `https://github.com/owner/repo/pull/${number}`;
     let h!: Harness;
     let editDuringRead = false;
     // The reviewed publication's captured head names a different commit than the one the first
@@ -1870,57 +1964,7 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
         h.registry.bindTaskToWorkEpisode(task.id, h.sessionId);
         h.registry.recordWorktreeHeads(new Map([["/repo", h.full("primary")], [sibling, base]]));
       }
-      // A full review through publication.
-      const runId = await runToAction(h, true);
-      await waitFor(() => h.store.listDeliveries(runId).some(d => d.state === "delivered"), "no PR action");
-      h.head.sha = "published";
-      h.runActionTurn();
-      h.adoptPr({ key, url, number });
-      await h.manager.sweepSessionActions(SETTLED());
-      await waitFor(() => h.store.listEvents(runId).some(event => event.kind === "inspector_gate_entered"),
-        "publication must reach the Inspector gate");
-      const published = h.store.latestSubmission(runId)!;
-      assert.equal(published.mode, "full_workflow");
-      const reviewed = h.store.listSubmissions(runId)[0]!;
-      const retained = h.store.listSubmissionTextArtifacts(reviewed.id);
-      assert.ok(retained.length, "the reviewed submission carries its registered proof");
-
-      // Inspector finds a problem on the published head; the policy routes it Inspector-only.
-      const findingAt = Date.now();
-      upsertInspectorComment({
-        id: `repair-${number}`, prKey: key, fingerprint: `repair-${number}`, path: "src/card.ts", line: 4,
-        title: "Reference name is truncated", body: "Show the whole name.", severity: "major", round: 1,
-        status: "open", replies: 0, answeredCommentId: null, createdAt: findingAt, updatedAt: findingAt,
-        githubUrl: `${url}#discussion_r1`, postedAt: findingAt,
-      });
-      await observeCleanInspectorReview(h, number, h.full("published"), findingAt, false);
-      await waitFor(() => h.store.getRun(runId)?.status === "waiting_for_new_head", "Inspector findings must wait for a repair head");
-      await waitFor(() => h.store.listDeliveries(runId).some(d => d.kind === "inspector_feedback" && d.state === "delivered"),
-        "the Inspector-only repair packet never reached the author");
-      const packet = h.store.listDeliveries(runId).find(d => d.kind === "inspector_feedback")!;
-      assert.match(packet.payload, /Reference name is truncated/);
-
-      // The author pushes the repair; Inspector reviews that exact head clean.
-      h.head.sha = "repaired";
-      h.contentTree.oid = h.full("repaired-tree");
-      h.commitTrees.set(h.full("repaired"), h.full("repaired-tree"));
-      h.runActionTurn();
-      const cleanAt = Date.now() + 1;
-      upsertInspectorComment({
-        id: `repair-${number}`, prKey: key, fingerprint: `repair-${number}`, path: "src/card.ts", line: 4,
-        title: "Reference name is truncated", body: "Fixed in the repair.", severity: "major", round: 1,
-        status: "resolved", replies: 1, answeredCommentId: null, createdAt: findingAt, updatedAt: cleanAt,
-        githubUrl: `${url}#discussion_r1`, postedAt: findingAt,
-      });
-      await observeCleanInspectorReview(h, number, h.full("repaired"), cleanAt);
-      await waitFor(() => h.store.getRun(runId)?.status === "completed", "the clean Inspector-only repair did not complete");
-      const terminal = h.store.latestSubmission(runId)!;
-      assert.equal(terminal.mode, "inspector_only");
-      assert.equal(terminal.prHeadSha, h.full("repaired"));
-      const gate = WorkflowInspectorGateStateSchema.parse(h.store.getRun(runId)?.gateState);
-      assert.equal(gate.waitReason, null);
-      assert.equal(gate.targetHeadSha, h.full("repaired"));
-      assert.equal(h.store.listSubmissions(runId).length, 3, "review, publication continuation, Inspector-only repair");
+      const { runId, reviewed, retained, terminal } = await reachCleanInspectorOnlyRepair(h, number);
 
       // The daemon restarts before the author's final idle.
       await h.restartWorkflowManager();
@@ -2012,6 +2056,114 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       assert.notEqual(again.value.run.id, runId, "explicit Run again starts a fresh review");
       await waitFor(() => h.store.latestSubmission(again.value.run.id)?.status === "waiting_for_evidence_readiness",
         "Run again must require fresh evidence");
+    } finally { await h.stop(); }
+  });
+}
+
+// ---- the same handoff across a full daemon restart, claimed by the real Foreman worker -----------
+//
+// Above, a test builds the claim and calls `claimCompletion`. Here nothing about the claim is
+// stated by the test: the whole daemon composition restarts over the same state home, the
+// author's next idle arrives as hooks on the restarted Registry, and Foreman's own
+// `processPromptedWrapup` reconstructs the candidate generation and the intent guard from the
+// daemon's HTTP routes, verifies, and posts its claim to `/api/sessions/:id/workflow-completion`.
+// Only the verifier's model result is scripted; the git reads keep the harness's stated facts.
+for (const [index, next] of (["unchanged", "edited after repair", "human instruction"] as const).entries()) {
+  test(`after a daemon restart, Foreman's next idle claim after a clean Inspector-only repair: ${next}`, async (t) => {
+    const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
+    const { enabled } = getInspectorConfig();
+    setInspectorConfig({ enabled: true });
+    t.after(() => setInspectorConfig({ enabled }));
+    const h = await harness(`foreman-restart-repair-${next.replaceAll(" ", "-")}`, {
+      pullRequest: true, probeEvidence: true, inspector: true, inspectorFindingsPolicy: "inspector_only",
+      resumptionPolicy: "auto", evidenceReadinessPolicy: "criterion_mapped_v1",
+    });
+    try {
+      const { runId, reviewed, retained, terminal } = await reachCleanInspectorOnlyRepair(h, 1950 + index);
+      const before = h.registry.getSession(h.sessionId)!.workCycle!;
+      const objective = "Publish the reviewed plan";
+
+      await h.restartDaemon();
+      const app = h.app!;
+      assert.notEqual(h.registry.getSession(h.sessionId), undefined, "discovery found the pane again after restart");
+      assert.equal(h.registry.getSession(h.sessionId)!.workCycle?.generation, before.generation,
+        "the restarted daemon recovered the durable work cycle");
+      if (next === "human instruction") {
+        h.registry.upsertGoal(h.sessionId, {
+          prompt: "Also show the alias", text: objective, objective, focus: "Also show the alias",
+          relationship: "amend", rationale: "Follow-up", objectiveVersion: 1,
+          promptRevision: 2, resolvedPromptRevision: 2, pendingPrompts: [], source: "heuristic",
+        }, Date.now());
+      }
+      if (next === "edited after repair") h.contentTree.oid = h.full("edited-after-repair");
+      // The author finishes the publication follow-through and settles idle.
+      h.runActionTurn();
+      const cycle = h.registry.getSession(h.sessionId)!.workCycle!;
+      assert.equal(cycle.generation, before.generation + 1);
+
+      const client = new ForemanClient();
+      const claims: Array<{ expectedWorkCycle: { generation: number }; expectedIntent: { promptRevision: number } }> = [];
+      t.mock.method(globalThis, "fetch", async (...[input, init]: Parameters<typeof fetch>) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname.endsWith("/workflow-completion")) claims.push(await request.clone().json());
+        request.headers.set("host", "127.0.0.1:7317");
+        return app.request(request);
+      });
+      t.mock.method(client, "diff", async () => ({
+        ok: true, error: null, base: "main", baseSha: "base", headSha: h.head.sha, repoRoot: "/repo", branch: "feature",
+        filesChanged: 1, insertions: 1, deletions: 0, truncated: false,
+        patch: "diff --git a/src/card.ts b/src/card.ts\n+++ b/src/card.ts\n+export const name = 'Reference';\n",
+      }));
+      t.mock.method(client, "transcriptSize", async () => 1);
+      t.mock.method(client, "transcript", async () => ({ messages: [], truncated: false }));
+      t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
+      t.mock.method(client, "instructions", async () => "");
+      let verifications = 0;
+      t.after(configureClaudeRunnerTransport(() => "sdk", {
+        executable: async () => "/fake/bin/claude",
+        env: () => ({ PATH: "/usr/bin" }),
+        query: async () => {
+          verifications++;
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield { type: "result", subtype: "success", is_error: false, structured_output: {
+                complete: true, confidence: 1, gaps: [], resolved: [],
+                summary: "The publication follow-through is finished and the pull request is current.",
+              } };
+            },
+          };
+        },
+      }));
+      const cfg = ForemanConfigSchema.parse({
+        enabled: true, mode: "live", repoAllowlist: ["/repo"],
+        wrapup: "pr", wrapupTriggers: ["prompted"], skipScoutWrapup: false, skipReviewArtifactWrapup: false,
+      });
+      const session = h.registry.getSession(h.sessionId)!;
+      const advanced = await processPromptedWrapup(client, cfg, session, [session], h.registry.getQueue(h.sessionId), new Set());
+      assert.equal(advanced, true, "Foreman claimed the verified idle");
+      assert.equal(verifications, 1);
+      assert.equal(claims.length, 1, "exactly one claim reached the restarted daemon");
+      assert.equal(claims[0]!.expectedWorkCycle.generation, cycle.generation, "the claim names the observed generation");
+      assert.equal(claims[0]!.expectedIntent.promptRevision, next === "human instruction" ? 2 : 1);
+      assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, cycle.generation,
+        "the generation was spent once");
+
+      const noteKey = h.store.getBinding(h.store.getRun(runId)!.bindingId)!.noteKey;
+      const runs = h.store.listRuns().filter(run => h.store.getBinding(run.bindingId)?.noteKey === noteKey);
+      if (next === "unchanged") {
+        assert.deepEqual(runs.map(run => run.id), [runId], "unchanged follow-through creates no new root");
+        assert.equal(h.store.latestSubmission(runId)?.id, terminal.id, "and no new evidence capture");
+        assert.equal(h.store.listSubmissions(runId).length, 3);
+        assert.deepEqual(h.store.listSubmissionTextArtifacts(reviewed.id), retained);
+        assert.equal(h.store.publicationHandoffTree(runId, cycle.generation), null, "the follow-through was spent");
+        return;
+      }
+      assert.equal(runs.length, 2, `${next} earns an ordinary review`);
+      const fresh = runs.find(run => run.id !== runId)!;
+      assert.equal(h.store.latestSubmission(fresh.id)?.round, 1);
+      await waitFor(() => h.store.latestSubmission(fresh.id)?.status === "waiting_for_evidence_readiness",
+        "the new review must pass evidence readiness");
+      assert.notEqual(h.store.publicationHandoffTree(runId, cycle.generation), null, "the completed run's pin stays unspent");
     } finally { await h.stop(); }
   });
 }

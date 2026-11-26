@@ -44,10 +44,21 @@ test("any other event leaves the list as it was", () => {
   assert.equal(shapingSignInsAfter(held, { type: "shaping_config", config: null }), held);
 });
 
-test("useEventStream applies shapingSignInsAfter for the snapshot and the frame, and starts empty", () => {
+/** The statements of one `case` in the hook's event switch, up to the next `case` or `default`. */
+function caseBody(source: string, type: string): string {
+  const start = source.indexOf(`case "${type}":`);
+  assert.ok(start >= 0, `useEventStream handles ${type}`);
+  const rest = source.slice(start + type.length + 8);
+  const end = rest.search(/\n\s*(case "|default:)/);
+  return end < 0 ? rest : rest.slice(0, end);
+}
+
+// The reduction is tested above; this only checks that both message types reach it, in whatever
+// form the hook spells the call. That the hook returns `shapingSignIns` is the type check's.
+test("useEventStream reduces the snapshot and the frame through shapingSignInsAfter, starting empty", () => {
   const source = readFileSync(new URL("../src/web/useEventStream.ts", import.meta.url), "utf8");
-  assert.match(source, /useState<ShapingSignInView\[\]>\(NO_SHAPING_SIGN_INS\)/);
-  assert.equal(source.match(/setShapingSignIns\(\(prev\) => shapingSignInsAfter\(prev, msg\)\);/g)?.length, 2);
-  assert.match(source, /case "shaping_sign_ins":\s*setShapingSignIns\(\(prev\) => shapingSignInsAfter\(prev, msg\)\);/);
-  assert.match(source, /\n\s+shapingSignIns,\n/, "and exposes it");
+  assert.match(source, /useState<ShapingSignInView\[\]>\(\s*NO_SHAPING_SIGN_INS\s*\)/);
+  for (const type of ["snapshot", "shaping_sign_ins"]) {
+    assert.match(caseBody(source, type), /setShapingSignIns\([^;]*shapingSignInsAfter\(/, `${type} is reduced by shapingSignInsAfter`);
+  }
 });

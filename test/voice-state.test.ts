@@ -79,6 +79,7 @@ test("the config schema holds every contract A field with its default", () => {
     hotkey: "cmd+ctrl+alt+v",
     autoMuteDuringCalls: true,
     endOfSpeechMs: 2000,
+    separatorWord: "bagel",
     showTranscript: true, transcriptWords: 20, transcriptStyle: "card", transcriptCorner: "bottom-right",
     cancelWindow: { enabled: true, seconds: 4 },
     whenUnsure: "show", speech: { voice: null },

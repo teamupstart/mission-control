@@ -185,6 +185,28 @@ final class ListenerTests: XCTestCase {
         }
     }
 
+    func testRosterCorrectionPreservesAnOpeningSeparatorWord() {
+        for original in ["Bagel.", "bagel Carol, check the build", "BAGEL, Carol"] {
+            var text = original
+            var words = original.split(separator: " ").enumerated().map {
+                TimedWord(text: String($1), startMs: Double($0) * 300, endMs: Double($0) * 300 + 250)
+            }
+            let decoded = words.map(\.text)
+            Recognizer.applyAddressCorrection("Carol", in: 0..<1, roster: ["Carol"], separator: "bagel", text: &text, words: &words)
+            XCTAssertEqual(text, original)
+            XCTAssertEqual(words.map(\.text), decoded)
+        }
+        // Without a separator, or with a call sign spelled like it, the opening word is still corrected.
+        var text = "Bagel."
+        var words = [TimedWord(text: "Bagel.", startMs: 0, endMs: 250)]
+        Recognizer.applyAddressCorrection("Carol", in: 0..<1, roster: ["Carol"], text: &text, words: &words)
+        XCTAssertEqual(text, "Carol.")
+        text = "bagle, run it"
+        words = [TimedWord(text: "bagle,", startMs: 0, endMs: 250), TimedWord(text: "run", startMs: 300, endMs: 400), TimedWord(text: "it", startMs: 450, endMs: 500)]
+        Recognizer.applyAddressCorrection("Bagel", in: 0..<1, roster: ["Bagel"], separator: "bagel", text: &text, words: &words)
+        XCTAssertEqual(text, "Bagel, run it")
+    }
+
     func testMultiWordRosterCorrectionAlignsTimingLabelsWithinDecoderSpan() {
         var text = "maryjane,  ask mare tomorrow!"
         var words = [

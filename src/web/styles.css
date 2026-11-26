@@ -23178,6 +23178,12 @@ button.wf-carried.is-link:focus-visible {
 .voice-key-input {
   width: 190px;
 }
+.voice-separator-input {
+  width: 12ch;
+}
+.voice-separator-error {
+  display: block;
+}
 /* A spoken-name field's heard-as preview (call sign, reference name): the sentence the operator
    would say, a four-step meter that loses a step per warning, and one line per warning. Amber,
    never red: a warning is advice and nothing it says blocks a save. */

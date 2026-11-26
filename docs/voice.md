@@ -84,6 +84,27 @@ or disconnected desktop keeps capture off. A missing key-up discards the hold
 after two minutes. Tap-to-mute, manual mute, call auto-mute, and the automatic
 end-of-speech delay apply to Always-on. Switching back restores their saved values.
 
+In Always-on, a **Separator word** (`separatorWord`, default **bagel**) ends one message and
+starts the next without a pause. “Steve, check the build, bagel, Carol, give me a report on the
+status of some project” sends “check the build” to Steve and “give me a report on the status of
+some project” to Carol. Each message gets its own Recently heard entry, routing, confirmation
+card and Cancel, and neither contains the separator. Set the word in **Settings > Voice > Input**
+beside End-of-speech delay. It persists with the other Voice settings. Use one word of letters,
+numbers, apostrophes or hyphens. “Cancel”, “stop”, “reply” and “submit” are refused because they
+are already voice commands. Clear the field to restore “bagel”, or press Escape to abandon an edit.
+Only the standalone word separates, in any letter case and with attached sentence marks such as
+“Bagel.”, so “bagels” and “bagel’s” stay ordinary words. A quoted “"bagel"” is also ordinary text.
+Separators at either end or next to each other leave no empty message. A capture of only the
+word sends nothing and appears in Recently heard as “separator word only”. A spoken “cancel”
+after the separator cancels the message just before it. If the word is also a call sign, a
+capture that starts with it addresses that agent, and the word still separates everywhere else.
+
+The daemon applies the separator to the final transcript, so it works with every listener
+backend and the live transcript and dictation previews show what was said, separator included.
+While a text field has focus, the word is ordinary draft text, like names and “cancel”. In
+Push-to-talk, and during a held key in a call, the separator has no control function: key
+release ends the utterance and the next hold starts another.
+
 The separate **Cancel window** starts after routing.
 While a delivery countdown is open, automatic capture uses a half-second pause so a spoken
 “cancel” can reach the router before delivery. The selected delay resumes when the last countdown closes.
@@ -326,6 +347,10 @@ recoverable for two more seconds in case a delayed key-up timestamp falls within
 When CTC is available, the helper uses the directive's roster to rescore the opening encoder window.
 Only a correction aligned to the leading address can change the transcript and its timing
 labels. The helper preserves a standalone “cancel” and its punctuation even when CTC suggests a roster name.
+For automatic capture the directive's `separator` names the Always-on separator word. The helper
+also preserves an opening separator, so “Bagel.” or “bagel Carol, check the build” reaches the
+daemon intact, unless the suggested name is a call sign spelled the same way. A separator edit
+issues a new directive revision with the same capture grant, so the open microphone keeps listening.
 The rest of the decoder transcript, including its punctuation, passes through verbatim.
 Word timings come from the decoder. When a CTC correction changes the word count, the listener
 divides the measured span evenly among the corrected words. Interior boundaries are estimates.
@@ -355,6 +380,10 @@ when it detects speech and carries that timestamp through clipping and transcrip
 A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
+An automatic capture that contains the [separator word](#voice-settings) routes as one utterance
+per part, with IDs `<id>~1`, `<id>~2` and so on. A later part is dated from its first word's
+`startMs` when the timings agree with the text, otherwise from the capture. A retried capture
+skips parts already routed, and the response is `accepted: false` if any part was refused.
 The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
 transcript, and the listener continues with later speech. While listening, the daemon can route a capture immediately.
 A POST made while push-to-talk is held waits for the shell's key-up timestamp before
@@ -814,6 +843,10 @@ says so. The one exception is a saved device that is not listed now (unplugged, 
 it stays in the menu as **Saved device (not connected)**, so the menu never shows a choice that
 was not made. `GET /api/voice/devices` returns `{ devices, listener }` for this menu; a listener
 interprets the id.
+
+**Separator word** (`separatorWord`, default `bagel`) follows End-of-speech delay. In Always-on it
+ends one message and starts the next without a pause, as described at the top of this page. It is
+disabled in Push-to-talk, where key release ends the utterance.
 
 Below that are the behavior rows:
 

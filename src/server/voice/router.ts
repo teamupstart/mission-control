@@ -20,6 +20,7 @@ import { agentDisplayName, sessionDisplayNameInput } from "@shared/display-name.
 import { VOICE_TURN_PREFIX } from "@shared/voice-delivery.ts";
 import type { Session } from "@shared/types.ts";
 import { voiceHostTimeUs } from "./host-clock.ts";
+import { normalizeSeparatorWord, splitAtSeparator } from "@shared/voice-separator.ts";
 import { awaitingVoiceHold, voiceCaptures, VOICE_MAX_HOLD_MS, type VoiceBackend, type VoiceConfig, type VoiceState } from "@shared/voice.ts";
 import { VOICE_RESOLVING_AFTER_MS, voiceAnswersUnsure, type VoiceChoice, type VoiceDecisionResult, type VoiceQuestion } from "@shared/voice-decide.ts";
 import type { VoiceDecider } from "./decide.ts";
@@ -336,7 +337,11 @@ export class VoiceRouter {
   private readonly resolutions = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & { backend: VoiceBackend | null; reportsSpeechOnset?: boolean; longCapture?: boolean },
+    private readonly state: () => Pick<VoiceState, "mode" | "roster"> & {
+      backend: VoiceBackend | null; reportsSpeechOnset?: boolean; longCapture?: boolean;
+      /** The Always-on separator word. Absent or null routes every capture whole. */
+      separatorWord?: string | null;
+    },
     private readonly window: () => VoiceConfig["cancelWindow"],
     private readonly deliverer: VoiceDeliverer,
     private readonly emitCard: (card: VoiceCard) => void,
@@ -596,7 +601,7 @@ export class VoiceRouter {
   async accept(utterance: VoiceUtterance, timing: { heldBeforeRelease?: boolean; startHostUs?: number; speechStartHostUs?: number; captureKey?: string; dictation?: { windowId: string; target: string } | null } = {}): Promise<boolean> {
     const { heldBeforeRelease, startHostUs, speechStartHostUs } = timing;
     const onsetUs = speechStartHostUs ?? startHostUs;
-    const { mode, roster, backend } = this.state();
+    const { mode, roster, backend, separatorWord } = this.state();
     if (!(voiceCaptures(mode) || (awaitingVoiceHold(mode) && heldBeforeRelease)) || backend !== utterance.backend) return false;
     const { id, capturedAt } = utterance;
     // Released holds already passed the route's monotonic key-down/key-up bounds.
@@ -619,6 +624,55 @@ export class VoiceRouter {
     if (timing.captureKey && !capture && speechStartHostUs !== undefined && speechStartHostUs <= this.expiredDictationThroughUs) return false;
     const leadMs = speechStartHostUs !== undefined && startHostUs !== undefined ? (speechStartHostUs - startHostUs) / 1000 : 0;
     const time = { openedAt: capturedAt + leadMs, openedAtHostUs: onsetUs };
+    // Only automatic capture ends at the separator. A hold ends on key release, so the word is text.
+    // A call sign spelled like the separator still addresses its agent as the capture's first word.
+    const separated = mode === "listening" && !heldBeforeRelease && separatorWord
+      ? splitAtSeparator(utterance.text, utterance.words, separatorWord, {
+        leadingAddress: roster.some(name => normalizeSeparatorWord(name.name) === normalizeSeparatorWord(separatorWord)),
+      }) : null;
+    if (separated) return this.routeSeparated(utterance, separated, time, { startHostUs, captureKey: timing.captureKey });
+    return this.route(utterance, time, timing.captureKey);
+  }
+
+  /**
+   * Route each part of a separated capture as its own utterance, in spoken order. A part keeps
+   * its own Recently heard entry, card, confirmation and Cancel. Part IDs extend the capture ID,
+   * so a retried capture skips the parts already routed and routes only the ones refused.
+   */
+  private async routeSeparated(utterance: VoiceUtterance, parts: ReturnType<typeof splitAtSeparator>, time: ActionTime,
+    timing: { startHostUs?: number; captureKey?: string }): Promise<boolean> {
+    const { id, capturedAt, text } = utterance;
+    if (!parts?.length) {
+      this.rememberUtterance(id);
+      this.heard.record({ id, time: capturedAt, text, outcome: "ignored", rule: "separator-only", matchedName: null, pauseMs: null, detail: "" });
+      return true;
+    }
+    let accepted = true;
+    let previous = time;
+    for (const [index, part] of parts.entries()) {
+      const partId = `${id}~${index + 1}`;
+      // The first part starts at the capture's onset. Later parts start at their first word.
+      let at = previous;
+      if (index > 0 && part.offsetMs !== null) {
+        const candidate = { openedAt: capturedAt + part.offsetMs,
+          openedAtHostUs: timing.startHostUs !== undefined ? timing.startHostUs + Math.round(part.offsetMs * 1000) : time.openedAtHostUs };
+        at = offsetUs(candidate, previous) >= 0 ? candidate : previous;
+      }
+      previous = at;
+      if (this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId)) continue;
+      const routed = await this.route({ ...utterance, id: partId, text: part.text, words: part.words,
+        capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
+      // A Cancel after the separator addresses the message just opened, not the card this onset reserved.
+      index === 0 ? timing.captureKey : undefined);
+      accepted &&= routed;
+    }
+    if (accepted) this.rememberUtterance(id);
+    return accepted;
+  }
+
+  private async route(utterance: VoiceUtterance, time: ActionTime, captureKey?: string): Promise<boolean> {
+    const { roster } = this.state();
+    const { id, capturedAt } = utterance;
     const unsureCards = this.picksLostThrough && offsetUs(time, this.picksLostThrough) <= 0 ? [] : Array.from(this.open.values())
       .filter(item => (item.card.state === "unsure" || item.card.state === "resolving") &&
         offsetUs(item.time, time) <= 0 && (!item.choicesOfferedAt || offsetUs(item.choicesOfferedAt, time) <= 0))
@@ -659,7 +713,7 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const cancelled = this.cancelLatestAt(time, timing.captureKey);
+        const cancelled = this.cancelLatestAt(time, captureKey);
         if (cancelled) entry.detail = cancelled;
         else entry.rule = "nothing-pending";
       } else if (!await this.pick(decision.cardId, decision.candidateId, time)) {

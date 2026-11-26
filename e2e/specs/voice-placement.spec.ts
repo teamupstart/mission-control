@@ -4,6 +4,7 @@ import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { captureCard, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 import { beSpeaker, say, startSpokenCancel, voiceToken } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 test.beforeEach(async ({ daemon, dashboard: page }) => {
   await setupCards(page, daemon);
@@ -24,6 +25,7 @@ async function desktopWith(page: Page, daemon: DaemonHandle, capability: "floati
   }, capability);
   await page.goto(daemon.baseURL + "/#/settings/voice");
   await page.reload();
+  await openVoiceTab(page, "On screen");
   expect((await page.request.post(daemon.baseURL + "/voice/shell-report", {
     headers: { "x-harness-token": voiceToken(daemon) }, data: { capabilities: capability === "both"
       ? { tray: { available: true }, "floating-windows": { available: true } } : { [capability]: { available: true } } },
@@ -38,7 +40,9 @@ test.describe("floating Ask aloud", () => {
     await runningAgent(page, daemon, "Will");
     const speaker = await beSpeaker(daemon, { holdPlayback: true, ignoreStop: true });
     try {
+      await openVoiceTab(page, "Names & routing");
       await page.getByRole("radio", { name: "Ask aloud" }).check();
+      await openVoiceTab(page, "On screen");
       const opening = page.waitForEvent("popup");
       await page.getByRole("radio", { name: /Floating pill/ }).check();
       const pill = await opening;

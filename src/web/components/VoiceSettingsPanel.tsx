@@ -1,5 +1,5 @@
 import { ConsoleSwitch } from "./settings-console.tsx";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useChordCapture } from "../lib/useChordCapture.ts";
 import { formatChord } from "../lib/keybindings.ts";
 import { VoiceCardPlacement } from "./VoiceCardPlacement.tsx";
@@ -50,6 +50,7 @@ import { residentAccentStyle } from "../residents/marker.ts";
 import { useVoiceDecisionKey, useVoiceDevices, type VoiceConfigState, type VoiceDecisionKeyState } from "../useVoiceConfig.ts";
 import { SpokenReplies } from "./SpokenReplies.tsx";
 import { SeparatorWordRow } from "./VoiceSeparatorRow.tsx";
+import { VOICE_SETTINGS_TABS, voiceTabForAnchor, type VoiceSettingsTabId } from "../lib/voice-settings-tabs.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** The lengths the cancel window offers. A stored length outside the list is offered as well. */
@@ -310,9 +311,11 @@ function DecisionKeyRow({ provider, keys }: {
  * sentence, and each provider's key. The line at the top names the provider in use and says what
  * is sent to it, so a key picked up from the environment is visible and one choice from Off.
  */
-function FasterRoutingGroup({ state, keys }: {
+function FasterRoutingGroup({ state, keys, children }: {
   state: VoiceConfigState;
   keys: VoiceDecisionKeyState;
+  /** Rows that decide an unclear sentence before a decision model is asked. */
+  children?: React.ReactNode;
 }): React.JSX.Element {
   const { config, update, confirmedDecisionProvider } = state;
   // A key report observes the selection and effective provider together, even if the
@@ -325,9 +328,10 @@ function FasterRoutingGroup({ state, keys }: {
     : keys.report === null ? "Key status unavailable"
     : confirmedDecisionProvider === "off" ? VOICE_ROUTING_WITHOUT_PROVIDER : "Reading…";
   return (
-    <div className="settings-group voice-faster-routing" data-anchor="voice/faster-routing">
-      <p className="settings-group-label">Faster routing</p>
-      <p className={`voice-routing-line${provider ? " is-on" : ""}`} role="status" aria-label="Decision model in use">
+    <div className="settings-group voice-faster-routing" role="group" aria-labelledby="voice-unclear-heading">
+      <p className="settings-group-label" id="voice-unclear-heading">When a sentence is unclear</p>
+      {children}
+      <p data-anchor="voice/faster-routing" className={`voice-routing-line${provider ? " is-on" : ""}`} role="status" aria-label="Decision model in use">
         {status}
       </p>
       {keys.error && <p className="settings-error">{keys.error}</p>}
@@ -452,9 +456,12 @@ function MuteHotkey({ state, voice }: { state: VoiceConfigState; voice: VoiceSta
   );
 }
 
+
 /**
- * Settings > Voice, behind the `voice` flag. The mode line, then who can be addressed, the input
- * device, then the behavior rows. The indicator previews and recently heard table follow the behavior rows.
+ * Settings > Voice, behind the `voice` flag. The mode line stays above five tabs, one per job:
+ * Listening, Names & routing, Spoken replies, On screen and Recently heard. A deep link shows
+ * the tab that holds its control in the same render it arrives, so the settings page's flash
+ * finds the control on the first try (the Storage panel's pattern).
  */
 export function VoiceSettingsPanel({
   state,
@@ -462,12 +469,16 @@ export function VoiceSettingsPanel({
   sessions = [],
   residentProfiles = [],
   onNavigate,
+  jumpAnchor = null,
+  jumpRequestId = null,
 }: {
   state: VoiceConfigState;
   voice: VoiceState | null;
   sessions?: readonly Session[];
   residentProfiles?: readonly ResidentProfile[];
   onNavigate: SettingsNavigate;
+  jumpAnchor?: string | null;
+  jumpRequestId?: number | null;
 }): React.JSX.Element {
   const { config, update, error } = state;
   const dedicated = config?.listeningMode === "push-to-talk";
@@ -484,222 +495,283 @@ export function VoiceSettingsPanel({
   const inputDevice = config?.inputDevice ?? VOICE_INPUT_DEVICE_BUILT_IN;
   const inputs = voiceInputChoices(devices.devices, inputDevice);
   const keys = useVoiceDecisionKey(true, state);
+
+  const [selection, setSelection] = useState<{ tab: VoiceSettingsTabId; seen: number | null }>({ tab: "listening", seen: null });
+  const jumpTab = jumpAnchor ? voiceTabForAnchor(jumpAnchor) : null;
+  const unseen = jumpRequestId !== null && jumpRequestId !== selection.seen;
+  const tab = unseen && jumpTab ? jumpTab : selection.tab;
+  useEffect(() => {
+    if (jumpRequestId === null || jumpRequestId === selection.seen) return;
+    setSelection((current) => ({ tab: jumpTab ?? current.tab, seen: jumpRequestId }));
+  }, [jumpRequestId, jumpTab, selection.seen]);
+  const tabRefs = useRef(new Map<VoiceSettingsTabId, HTMLButtonElement>());
+  const choose = (next: VoiceSettingsTabId, focus = false): void => {
+    setSelection((current) => ({ ...current, tab: next }));
+    if (focus) tabRefs.current.get(next)?.focus();
+  };
+  const onTabKey = (event: React.KeyboardEvent): void => {
+    const index = VOICE_SETTINGS_TABS.findIndex((entry) => entry.id === tab);
+    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    choose(VOICE_SETTINGS_TABS[(index + step + VOICE_SETTINGS_TABS.length) % VOICE_SETTINGS_TABS.length]!.id, true);
+  };
+
+  const listening = <>
+    <div className="settings-group" role="group" aria-labelledby="voice-microphone-heading">
+      <p className="settings-group-label" id="voice-microphone-heading">Microphone</p>
+      <div className="kb-row" data-anchor="voice/listening-mode">
+        <div className="kb-row-text">
+          <label className="kb-row-label" htmlFor="voice-listening-mode">Listening mode</label>
+          <span className="kb-row-desc">{dedicated
+            ? "Hold the hotkey to open the microphone. Release it to finish speaking."
+            : "Listen for spoken names while Voice is unmuted."}</span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label="Choose when Voice opens the microphone">
+            <select className="settings-select" id="voice-listening-mode" disabled={!config}
+              value={config?.listeningMode ?? VOICE_CONFIG_DEFAULTS.listeningMode}
+              onChange={event => void update({ listeningMode: event.target.value === "push-to-talk" ? "push-to-talk" : "always-on" })}>
+              <option value="always-on">Always-on</option>
+              <option value="push-to-talk">Push-to-talk</option>
+            </select>
+          </Tooltip>
+        </div>
+      </div>
+      <div className="kb-row" data-anchor="voice/input-device">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Input device</span>
+          <span className="kb-row-desc">
+            Voice listens on the built-in microphone unless you choose another input.
+            {!devices.listener && (
+              <span className="voice-input-device-hint"> Other inputs are listed while the listener is running.</span>
+            )}
+          </span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label="The microphone voice listens on">
+            <select
+              className="settings-select"
+              value={inputDevice}
+              disabled={!config}
+              aria-label="Input device"
+              onChange={(e) => void update({ inputDevice: e.target.value })}
+            >
+              {inputs.map((input) => <option key={input.id} value={input.id}>{input.label}</option>)}
+            </select>
+          </Tooltip>
+        </div>
+      </div>
+      <MuteHotkey state={state} voice={voice} />
+      <div className="kb-row" data-anchor="voice/auto-mute">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Auto-mute on calls</span>
+          <span className="kb-row-desc">{dedicated ? "Applies to Always-on listening." : voice?.capabilities["call-detection"]?.reason}</span>
+        </div>
+        <div className="kb-row-controls">
+          <ConsoleSwitch label="Auto-mute on calls" tone="ok" checked={config?.autoMuteDuringCalls ?? true}
+            disabled={!config || dedicated || (detection?.available === false && !pollFailed)}
+            onChange={autoMuteDuringCalls => void update({ autoMuteDuringCalls })}
+            tooltip="Stop listening while another app is using the microphone" />
+        </div>
+      </div>
+    </div>
+
+    <div className="settings-group" role="group" aria-labelledby="voice-ending-heading">
+      <p className="settings-group-label" id="voice-ending-heading">Ending a message</p>
+      <div className="kb-row" data-anchor="voice/end-of-speech">
+        <div className="kb-row-text">
+          <label className="kb-row-label" htmlFor="voice-end-of-speech">End-of-speech delay</label>
+          <span className="kb-row-desc">{dedicated ? "Push-to-talk ends on key release." : "How long to wait for more speech before submitting an automatic capture."}</span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label="Speech that resumes within this delay stays in the same utterance.">
+            <select className="settings-select" id="voice-end-of-speech" disabled={!config || dedicated}
+              value={config?.endOfSpeechMs ?? VOICE_CONFIG_DEFAULTS.endOfSpeechMs}
+              onChange={event => {
+                const duration = VOICE_END_OF_SPEECH_MS.find(ms => ms === Number(event.target.value));
+                if (duration !== undefined) void update({ endOfSpeechMs: duration });
+              }}>
+              {VOICE_END_OF_SPEECH_MS.map(ms => <option key={ms} value={ms}>{ms / 1000} s</option>)}
+            </select>
+          </Tooltip>
+        </div>
+      </div>
+      <SeparatorWordRow state={state} dedicated={dedicated} roster={voice?.roster} />
+      <div className="kb-row" data-anchor="voice/cancel-window">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Cancel window</span>
+          <span className="kb-row-desc">How long to wait for “cancel” before sending a spoken message.</span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label="How long to wait for “cancel” before sending a spoken message">
+            <select
+              className="settings-select"
+              value={config?.cancelWindow.enabled === false ? "off" : seconds}
+              disabled={!config}
+              aria-label="Cancel window"
+              onChange={({ target: { value } }) => {
+                const cancelWindow = value === "off" ? { enabled: false }
+                  : { enabled: true, seconds: Number(value) };
+                void update({ cancelWindow });
+              }}
+            >
+              {lengths
+                .filter((length) => length >= VOICE_CANCEL_WINDOW_SECONDS.min && length <= VOICE_CANCEL_WINDOW_SECONDS.max)
+                .map((length) => <option key={length} value={length}>{length} s</option>)}
+              <option value="off">Off</option>
+            </select>
+          </Tooltip>
+        </div>
+      </div>
+    </div>
+  </>;
+
+  const routing = <>
+    <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />
+    <FasterRoutingGroup state={state} keys={keys}>
+      <div className="kb-row" data-anchor="voice/when-unsure">
+        <div className="kb-row-text">
+          <span className="kb-row-label">When unsure</span>
+          <span className="kb-row-desc">{askReason ?? "Ask aloud which agent you meant, or show the agents it could have been."}</span>
+        </div>
+        <div className="kb-row-controls">
+          <div className="display-choice-options" role="radiogroup" aria-label="When routing is unsure">
+            {UNSURE_CHOICES.map((choice) => (
+              <Tooltip key={choice.id} label={choice.id === "ask" ? askReason ?? choice.description : choice.description}>
+                <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
+                  <input type="radio" name="voice-when-unsure" value={choice.id}
+                    aria-label={choice.id === "ask" ? "Ask aloud" : "Show on screen"}
+                    aria-description={choice.id === "ask" ? askReason ?? undefined : undefined}
+                    checked={unsure === choice.id} disabled={!config || (choice.id === "ask" && !!askReason)}
+                    onChange={() => void update({ whenUnsure: choice.id })} />
+                  {choice.label}
+                </label>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      </div>
+    </FasterRoutingGroup>
+  </>;
+
+  const replies = <>
+    <SpokenReplies state={state} voice={voice} />
+    <div className="settings-group" role="group" aria-labelledby="voice-answering-heading">
+      <p className="settings-group-label" id="voice-answering-heading">Answering by voice</p>
+      <div className="kb-row" data-anchor="voice/plan-forms">
+        <div className="kb-row-text">
+          <span className="kb-row-label">Plan forms by voice</span>
+          <span className="kb-row-desc">
+            Let speech fill a plan-decision form. A form still waits for you to say submit or
+            to click it. Voice keeps working everywhere else when this is off.
+          </span>
+        </div>
+        <div className="kb-row-controls">
+          <Tooltip label="Let speech fill a plan-decision form, which still waits for submit">
+            <label className="skill-switch">
+              <input
+                type="checkbox"
+                checked={config?.planFormsByVoice ?? true}
+                disabled={!config}
+                onChange={(e) => void update({ planFormsByVoice: e.target.checked })}
+                aria-label="Plan forms by voice"
+              />
+            </label>
+          </Tooltip>
+        </div>
+      </div>
+    </div>
+  </>;
+
+  const screen = <>
+    <div className="settings-group" role="group" aria-labelledby="voice-transcript-heading" data-anchor="voice/transcript">
+      <p className="settings-group-label" id="voice-transcript-heading">Live transcript</p>
+      <label className="kb-row">
+        <span className="kb-row-text kb-row-label">Show live transcript</span>
+        <span className="kb-row-controls skill-switch">
+          <Tooltip label="Show recognized words while the microphone is listening">
+            <input type="checkbox" disabled={!config} checked={config?.showTranscript ?? true}
+              onChange={e => void update({ showTranscript: e.target.checked })} />
+          </Tooltip>
+        </span>
+      </label>
+      <label className="kb-row">
+        <span className="kb-row-text kb-row-label">Transcript style</span>
+        <span className="kb-row-controls">
+          <Tooltip label="Choose a wrapping corner card or a bottom-center capsule">
+            <select className="settings-select" disabled={!config} value={config?.transcriptStyle ?? "card"}
+              onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
+              <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
+            </select>
+          </Tooltip>
+        </span>
+      </label>
+      <label className="kb-row">
+        <span className="kb-row-text kb-row-label">Maximum transcript words</span>
+        <span className="kb-row-controls sc-number">
+          <Tooltip label={`Show the latest 1 to ${TRANSCRIPT_WORD_LIMIT} words`}>
+            <input type="number" disabled={!config} min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
+              defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
+                if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
+                else e.target.value = String(config?.transcriptWords ?? 20);
+              }} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+          </Tooltip>
+        </span>
+      </label>
+      {config?.transcriptStyle !== "capsule" && <label className="kb-row">
+        <span className="kb-row-text kb-row-label">Corner card placement</span>
+        <span className="kb-row-controls">
+          <Tooltip label="Choose which bottom corner shows the transcript">
+            <select className="settings-select" disabled={!config} value={config?.transcriptCorner ?? "bottom-right"}
+              onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
+              <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
+            </select>
+          </Tooltip>
+        </span>
+      </label>}
+    </div>
+    <VoiceCardPlacement />
+    <VoiceIndicatorSettings />
+  </>;
+
+  const panels: Record<VoiceSettingsTabId, React.ReactNode> = {
+    listening,
+    routing,
+    replies,
+    screen,
+    heard: <RecentlyHeard roster={voice?.roster ?? []} />,
+  };
+
   return (
     <section className="settings-section voice-settings">
       <ModeLine voice={voice} onOpenSetup={() => onNavigate("setup", "setup/family-voice")} />
       {error && <p className="settings-error">{error}</p>}
-
-      <div className="settings-group" role="group" aria-labelledby="voice-transcript-heading">
-        <p className="settings-group-label" id="voice-transcript-heading">Live transcript</p>
-        <label className="kb-row">
-          <span className="kb-row-text kb-row-label">Show live transcript</span>
-          <span className="kb-row-controls skill-switch">
-            <Tooltip label="Show recognized words while the microphone is listening">
-              <input type="checkbox" disabled={!config} checked={config?.showTranscript ?? true}
-                onChange={e => void update({ showTranscript: e.target.checked })} />
-            </Tooltip>
-          </span>
-        </label>
-        <label className="kb-row">
-          <span className="kb-row-text kb-row-label">Transcript style</span>
-          <span className="kb-row-controls">
-            <Tooltip label="Choose a wrapping corner card or a bottom-center capsule">
-              <select className="settings-select" disabled={!config} value={config?.transcriptStyle ?? "card"}
-                onChange={e => void update({ transcriptStyle: e.target.value === "capsule" ? "capsule" : "card" })}>
-                <option value="card">Corner card</option><option value="capsule">Floating capsule</option>
-              </select>
-            </Tooltip>
-          </span>
-        </label>
-        <label className="kb-row">
-          <span className="kb-row-text kb-row-label">Maximum transcript words</span>
-          <span className="kb-row-controls sc-number">
-            <Tooltip label={`Show the latest 1 to ${TRANSCRIPT_WORD_LIMIT} words`}>
-              <input type="number" disabled={!config} min={1} max={TRANSCRIPT_WORD_LIMIT} step={1} required key={config?.transcriptWords}
-                defaultValue={config?.transcriptWords ?? 20} onBlur={e => {
-                  if (e.target.validity.valid) void update({ transcriptWords: e.target.valueAsNumber });
-                  else e.target.value = String(config?.transcriptWords ?? 20);
-                }} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }} />
-            </Tooltip>
-          </span>
-        </label>
-        {config?.transcriptStyle !== "capsule" && <label className="kb-row">
-          <span className="kb-row-text kb-row-label">Corner card placement</span>
-          <span className="kb-row-controls">
-            <Tooltip label="Choose which bottom corner shows the transcript">
-              <select className="settings-select" disabled={!config} value={config?.transcriptCorner ?? "bottom-right"}
-                onChange={e => void update({ transcriptCorner: e.target.value === "bottom-left" ? "bottom-left" : "bottom-right" })}>
-                <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option>
-              </select>
-            </Tooltip>
-          </span>
-        </label>}
+      <div className="settings-tabs voice-tabs" role="tablist" aria-label="Voice settings" onKeyDown={onTabKey}>
+        {VOICE_SETTINGS_TABS.map((entry) => (
+          <Tooltip key={entry.id} label={entry.hint}>
+            <button
+              ref={(element) => {
+                if (element) tabRefs.current.set(entry.id, element);
+                else tabRefs.current.delete(entry.id);
+              }}
+              id={`voice-tab-${entry.id}`}
+              type="button"
+              role="tab"
+              aria-selected={tab === entry.id}
+              aria-controls={`voice-tabpanel-${entry.id}`}
+              tabIndex={tab === entry.id ? 0 : -1}
+              className={`settings-tab${tab === entry.id ? " is-active" : ""}`}
+              onClick={() => choose(entry.id)}
+            >
+              {entry.label}
+            </button>
+          </Tooltip>
+        ))}
       </div>
-
-      <RosterSection roster={voice?.roster ?? []} sessions={sessions} residentProfiles={residentProfiles} />
-
-      <div className="settings-group">
-        <p className="settings-group-label">Input</p>
-
-        <div className="kb-row" data-anchor="voice/listening-mode">
-          <div className="kb-row-text">
-            <label className="kb-row-label" htmlFor="voice-listening-mode">Listening mode</label>
-            <span className="kb-row-desc">{dedicated
-              ? "Hold the hotkey to open the microphone. Release it to finish speaking."
-              : "Listen for spoken names while Voice is unmuted."}</span>
-          </div>
-          <div className="kb-row-controls">
-            <Tooltip label="Choose when Voice opens the microphone">
-              <select className="settings-select" id="voice-listening-mode" disabled={!config}
-                value={config?.listeningMode ?? VOICE_CONFIG_DEFAULTS.listeningMode}
-                onChange={event => void update({ listeningMode: event.target.value === "push-to-talk" ? "push-to-talk" : "always-on" })}>
-                <option value="always-on">Always-on</option>
-                <option value="push-to-talk">Push-to-talk</option>
-              </select>
-            </Tooltip>
-          </div>
-        </div>
-        <div className="kb-row" data-anchor="voice/input-device">
-          <div className="kb-row-text">
-            <span className="kb-row-label">Input device</span>
-            <span className="kb-row-desc">
-              Voice listens on the built-in microphone unless you choose another input.
-              {!devices.listener && (
-                <span className="voice-input-device-hint"> Other inputs are listed while the listener is running.</span>
-              )}
-            </span>
-          </div>
-          <div className="kb-row-controls">
-            <Tooltip label="The microphone voice listens on">
-              <select
-                className="settings-select"
-                value={inputDevice}
-                disabled={!config}
-                aria-label="Input device"
-                onChange={(e) => void update({ inputDevice: e.target.value })}
-              >
-                {inputs.map((input) => <option key={input.id} value={input.id}>{input.label}</option>)}
-              </select>
-            </Tooltip>
-          </div>
-        </div>
-        <div className="kb-row" data-anchor="voice/end-of-speech">
-          <div className="kb-row-text">
-            <label className="kb-row-label" htmlFor="voice-end-of-speech">End-of-speech delay</label>
-            <span className="kb-row-desc">{dedicated ? "Push-to-talk ends on key release." : "How long to wait for more speech before submitting an automatic capture."}</span>
-          </div>
-          <div className="kb-row-controls">
-            <Tooltip label="Speech that resumes within this delay stays in the same utterance.">
-              <select className="settings-select" id="voice-end-of-speech" disabled={!config || dedicated}
-                value={config?.endOfSpeechMs ?? VOICE_CONFIG_DEFAULTS.endOfSpeechMs}
-                onChange={event => {
-                  const duration = VOICE_END_OF_SPEECH_MS.find(ms => ms === Number(event.target.value));
-                  if (duration !== undefined) void update({ endOfSpeechMs: duration });
-                }}>
-                {VOICE_END_OF_SPEECH_MS.map(ms => <option key={ms} value={ms}>{ms / 1000} s</option>)}
-              </select>
-            </Tooltip>
-          </div>
-        </div>
-        <SeparatorWordRow state={state} dedicated={dedicated} roster={voice?.roster} />
+      <div className="voice-tabpanel" role="tabpanel" id={`voice-tabpanel-${tab}`} aria-labelledby={`voice-tab-${tab}`}>
+        {panels[tab]}
       </div>
-
-      <div className="settings-group">
-        <p className="settings-group-label">Behavior</p>
-
-        <div className="voice-hardware-settings">
-          <MuteHotkey state={state} voice={voice} />
-          <div className="kb-row" data-anchor="voice/auto-mute">
-            <div className="kb-row-text">
-              <span className="kb-row-label">Auto-mute on calls</span>
-              <span className="kb-row-desc">{dedicated ? "Applies to Always-on listening." : voice?.capabilities["call-detection"]?.reason}</span>
-            </div>
-            <div className="kb-row-controls">
-              <ConsoleSwitch label="Auto-mute on calls" tone="ok" checked={config?.autoMuteDuringCalls ?? true}
-                disabled={!config || dedicated || (detection?.available === false && !pollFailed)}
-                onChange={autoMuteDuringCalls => void update({ autoMuteDuringCalls })}
-                tooltip="Stop listening while another app is using the microphone" />
-            </div>
-          </div>
-
-          <div className="kb-row" data-anchor="voice/cancel-window">
-            <div className="kb-row-text"><span className="kb-row-label">Cancel window</span></div>
-            <div className="kb-row-controls">
-              <Tooltip label="How long to wait for “cancel” before sending a spoken message">
-                <select
-                  className="settings-select"
-                  value={config?.cancelWindow.enabled === false ? "off" : seconds}
-                  disabled={!config}
-                  aria-label="Cancel window"
-                  onChange={({ target: { value } }) => {
-                    const cancelWindow = value === "off" ? { enabled: false }
-                      : { enabled: true, seconds: Number(value) };
-                    void update({ cancelWindow });
-                  }}
-                >
-                  {lengths
-                    .filter((length) => length >= VOICE_CANCEL_WINDOW_SECONDS.min && length <= VOICE_CANCEL_WINDOW_SECONDS.max)
-                    .map((length) => <option key={length} value={length}>{length} s</option>)}
-                  <option value="off">Off</option>
-                </select>
-              </Tooltip>
-            </div>
-          </div>
-
-          <div className="kb-row" data-anchor="voice/when-unsure">
-            <div className="kb-row-text">
-              <span className="kb-row-label">Unsure</span>
-              {askReason && <span className="kb-row-desc">{askReason}</span>}
-            </div>
-            <div className="kb-row-controls">
-              <div className="display-choice-options" role="radiogroup" aria-label="When routing is unsure">
-                {UNSURE_CHOICES.map((choice) => (
-                  <Tooltip key={choice.id} label={choice.id === "ask" ? askReason ?? choice.description : choice.description}>
-                    <label className={`display-choice-option${unsure === choice.id ? " is-on" : ""}`}>
-                      <input type="radio" name="voice-when-unsure" value={choice.id}
-                        aria-label={choice.id === "ask" ? "Ask aloud" : "Show on screen"}
-                        aria-description={choice.id === "ask" ? askReason ?? undefined : undefined}
-                        checked={unsure === choice.id} disabled={!config || (choice.id === "ask" && !!askReason)}
-                        onChange={() => void update({ whenUnsure: choice.id })} />
-                      {choice.label}
-                    </label>
-                  </Tooltip>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <SpokenReplies state={state} voice={voice} />
-
-        <div className="kb-row" data-anchor="voice/plan-forms">
-          <div className="kb-row-text">
-            <span className="kb-row-label">Plan forms by voice</span>
-            <span className="kb-row-desc">
-              Let speech fill a plan-decision form. A form still waits for you to say submit or
-              to click it. Voice keeps working everywhere else when this is off.
-            </span>
-          </div>
-          <div className="kb-row-controls">
-            <Tooltip label="Let speech fill a plan-decision form, which still waits for submit">
-              <label className="skill-switch">
-                <input
-                  type="checkbox"
-                  checked={config?.planFormsByVoice ?? true}
-                  disabled={!config}
-                  onChange={(e) => void update({ planFormsByVoice: e.target.checked })}
-                  aria-label="Plan forms by voice"
-                />
-              </label>
-            </Tooltip>
-          </div>
-        </div>
-      </div>
-
-      <FasterRoutingGroup state={state} keys={keys} />
-      <VoiceCardPlacement />
-      <VoiceIndicatorSettings />
-      <RecentlyHeard roster={voice?.roster ?? []} />
     </section>
   );
 }

@@ -7,6 +7,8 @@
 // the daemon's: `previewShapingIntent` only draws a click before its answer arrives.
 
 import { z } from "zod";
+import { SHAPER_SIGN_IN_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { residentMcpLoopbackHost } from "@shared/resident-mcp.ts";
 import { SHAPING_STAGES } from "@shared/shaping-registry.ts";
 import {
   canonicalJson,
@@ -28,6 +30,7 @@ import {
   type ShapingIntent,
   type ShapingReferenceStatus,
   type ShapingRun,
+  type ShapingSignInView,
   type ShapingStage,
   type UnsupportedShaperView,
 } from "@shared/shaping.ts";
@@ -610,6 +613,336 @@ export function shaperReceives(shaper: Shaper): { remote: boolean; sent: string[
       + "The text it does send is passed on as written: a prompt, title, fact or summary that contains a path, "
       + "file contents or a secret sends that too.",
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signing a shaper in
+
+/** One control a marked row's sign-in offers. Each is drawn with an `aria-label` that names the shaper. */
+export type ShaperSignInControl = "sign-in" | "open" | "copy" | "cancel" | "sign-out";
+
+/** What a marked row says about its sign-in, and the controls it offers. */
+export type ShaperSignInRow =
+  /** `shaper-sign-in` is off: one sentence and no control. */
+  | { kind: "off"; text: string }
+  | {
+    kind: "status";
+    state: ShapingSignInView["state"];
+    text: string;
+    /** The daemon's fixed sentence for this state, when it gave one. */
+    reason: string | null;
+    controls: ShaperSignInControl[];
+    /** The connection the row's sign-in is, or null before the daemon lists one. */
+    connection: string | null;
+    /** The authorization URL this window holds for the pending sign-in, or null. */
+    link: string | null;
+  };
+
+export const SIGN_IN_OFF_TEXT = `Sign-in is switched off, so this shaper is not called. Turn on the Shaper sign-in feature flag (${SHAPER_SIGN_IN_FLAG_ID}) to sign in here.`;
+
+/** Each state's sentence, as the row shows it. */
+export const SIGN_IN_STATE_TEXT = Object.freeze({
+  signedOut: "Not signed in.",
+  pendingHere: "Waiting for the browser.",
+  pendingElsewhere: "Waiting for the browser. Started in another window, or before this page was reloaded.",
+  keychain: "Signed in. Kept in the macOS Keychain.",
+  memory: "Signed in until Mission Control restarts. Kept in memory.",
+  renewing: "Renewing the sign-in.",
+} as const);
+
+/** The sign-in a row shows: the entry whose `shapers` holds the row's id. */
+export function signInForShaper(signIns: readonly ShapingSignInView[], id: string): ShapingSignInView | null {
+  return signIns.find((entry) => entry.shapers.includes(id)) ?? null;
+}
+
+/**
+ * What a row says about its shaper's sign-in, or null for a shaper with no `auth` marker. A
+ * marked shaper with no entry in the list yet is signed out. A pending sign-in offers the link
+ * only to the window that started it and still holds it in `links`, since the list never
+ * carries the authorization URL; any other window offers Sign in, which starts a new sign-in
+ * that replaces the pending one, and Cancel sign-in.
+ */
+export function shaperSignInRow(
+  shaper: Shaper,
+  id: string,
+  options: { enabled: boolean; signIns: readonly ShapingSignInView[]; links: Readonly<Record<string, string>> },
+): ShaperSignInRow | null {
+  if (!shaperSignInTarget(shaper)) return null;
+  if (!options.enabled) return { kind: "off", text: SIGN_IN_OFF_TEXT };
+  const entry = signInForShaper(options.signIns, id);
+  const status = (text: string, controls: ShaperSignInControl[], link: string | null = null): ShaperSignInRow => ({
+    kind: "status", state: entry?.state ?? "signed_out", text, reason: entry?.reason ?? null, controls, connection: entry?.id ?? null, link,
+  });
+  if (!entry) return status(SIGN_IN_STATE_TEXT.signedOut, ["sign-in"]);
+  switch (entry.state) {
+    case "signed_out":
+      return status(SIGN_IN_STATE_TEXT.signedOut, ["sign-in"]);
+    case "pending": {
+      const link = Object.hasOwn(options.links, entry.id) ? options.links[entry.id]! : null;
+      return link
+        ? status(SIGN_IN_STATE_TEXT.pendingHere, ["open", "copy", "cancel"], link)
+        : status(SIGN_IN_STATE_TEXT.pendingElsewhere, ["sign-in", "cancel"]);
+    }
+    case "signed_in":
+      return status(entry.storage === "keychain" ? SIGN_IN_STATE_TEXT.keychain : SIGN_IN_STATE_TEXT.memory, ["sign-out"]);
+    case "renewing":
+      return status(SIGN_IN_STATE_TEXT.renewing, ["sign-in", "sign-out"]);
+  }
+}
+
+/** The sign-ins no known shaper names, which Settings lists apart so each can be signed out. */
+export function unusedSignIns(signIns: readonly ShapingSignInView[]): ShapingSignInView[] {
+  return signIns.filter((entry) => entry.shapers.length === 0);
+}
+
+/**
+ * Whether the dashboard may open an authorization URL the daemon sent: `https:`, or plain
+ * `http:` to this machine's loopback, the rule every sign-in URL already follows. The desktop
+ * bridge checks nothing about a URL, so this is the check before it.
+ */
+export function signInUrlOpenable(value: string): boolean {
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  return url.protocol === "https:" || (url.protocol === "http:" && residentMcpLoopbackHost(url));
+}
+
+/** A connection's state in a sign-in list, or `absent` when the list does not name it. */
+export type SignInListState = ShapingSignInView["state"] | "absent";
+
+/** The state `signIns` shows for `connection`. */
+export function signInStateIn(signIns: readonly ShapingSignInView[], connection: string | null): SignInListState {
+  return (connection === null ? undefined : signIns.find((entry) => entry.id === connection)?.state) ?? "absent";
+}
+
+/**
+ * How many times each connection's state has changed in the lists a window has seen, by
+ * connection id. A request records the counts as it is sent, and its reply compares them with
+ * the counts when it lands: a change in between is not undone by the state coming back to what
+ * it was, as a sign-in that went pending and was cancelled elsewhere comes back to signed out.
+ */
+export type SignInMoves = Readonly<Record<string, number>>;
+
+/** The counts after the list goes from `before` to `after`. Returns `moves` itself when no state changed. */
+export function signInMovesAfter(
+  moves: SignInMoves,
+  before: readonly ShapingSignInView[],
+  after: readonly ShapingSignInView[],
+): SignInMoves {
+  let next: Record<string, number> | null = null;
+  for (const id of new Set([...before, ...after].map((entry) => entry.id))) {
+    if (signInStateIn(before, id) === signInStateIn(after, id)) continue;
+    next ??= { ...moves };
+    next[id] = (next[id] ?? 0) + 1;
+  }
+  return next ?? moves;
+}
+
+/** How many times `connection` changed state between the counts a request was sent with and those now. */
+export function signInMovesSince(sent: SignInMoves, now: SignInMoves, connection: string | null): number {
+  return connection === null ? 0 : (now[connection] ?? 0) - (sent[connection] ?? 0);
+}
+
+/** Whether `connection` changed state between the counts a request was sent with and those now. */
+export function signInMovedSince(sent: SignInMoves, now: SignInMoves, connection: string | null): boolean {
+  return signInMovesSince(sent, now, connection) !== 0;
+}
+
+/**
+ * The link a window keeps when a sign-in reply hands it `url` for `connection`, or null. `moves`
+ * is how many times the connection changed state while the request was in flight. The sign-in's
+ * own event accounts for at most one of them, the change to pending, and for none when it was
+ * sent from a row already pending, since one pending sign-in replacing another shows no change:
+ *
+ * - no change: the reply came first, and the link waits for the pending event, as long as
+ *   nothing else happens to the connection first; on a row already pending it is pending now;
+ * - one change, to pending: that was this sign-in's own event, and the link counts as seen pending;
+ * - anything else: the sign-in moved on before the reply landed. It finished or was cancelled
+ *   elsewhere, even back to the state it started in, or another attempt is pending after it
+ *   left pending. There is no link to keep or open, so a later pending sign-in is never offered
+ *   a link it did not start. Only a pending sign-in replaced by another, which shows no change at
+ *   all, is out of reach here; `docs/task-shaping.md` says so.
+ */
+export function signInLinkFor(
+  signIns: readonly ShapingSignInView[],
+  connection: string,
+  url: string,
+  moves: number,
+): ShaperSignInLink | null {
+  const now = signInStateIn(signIns, connection);
+  if (moves === 0) return now === "pending" ? { url, seenPending: true, waitingIn: null } : { url, seenPending: false, waitingIn: now };
+  if (moves === 1 && now === "pending") return { url, seenPending: true, waitingIn: null };
+  return null;
+}
+
+/** The links a window keeps once a reply hands it `link` for `connection`: it replaces any earlier one. */
+export function signInLinkHeld(
+  current: Readonly<Record<string, ShaperSignInLink>>,
+  connection: string,
+  link: ShaperSignInLink | null,
+): Readonly<Record<string, ShaperSignInLink>> {
+  const rest = { ...current };
+  delete rest[connection];
+  return link ? { ...rest, [connection]: link } : rest;
+}
+
+const SIGN_IN_ROW_PREFIX = "row:";
+const SIGN_IN_CONNECTION_PREFIX = "connection:";
+
+/** The key of a shaper row's sign-in controls: their busy state and refusals live under it. */
+export function signInRowKey(shaper: string): string {
+  return `${SIGN_IN_ROW_PREFIX}${shaper}`;
+}
+
+/**
+ * The key of a connection's own controls: an unused entry's Sign out, and the busy state of every
+ * Cancel sign-in or Sign out of that connection, whichever row or entry sent it.
+ */
+export function signInConnectionKey(connection: string): string {
+  return `${SIGN_IN_CONNECTION_PREFIX}${connection}`;
+}
+
+/** The shaper id a row control's key names, or null for an unused entry's connection key. */
+export function signInRowShaper(key: string): string | null {
+  return key.startsWith(SIGN_IN_ROW_PREFIX) ? key.slice(SIGN_IN_ROW_PREFIX.length) : null;
+}
+
+/** A connection in a state, as one comparable string: what a refusal is shown against. */
+export function signInSubject(connection: string | null, state: SignInListState): string {
+  return `${connection ?? ""}|${state}`;
+}
+
+/** The connection a sign-in control acts on: a row's is the one whose `shapers` names it. */
+export function signInControlConnection(signIns: readonly ShapingSignInView[], key: string): string | null {
+  return key.startsWith(SIGN_IN_ROW_PREFIX) ? signInForShaper(signIns, key.slice(SIGN_IN_ROW_PREFIX.length))?.id ?? null
+    : key.startsWith(SIGN_IN_CONNECTION_PREFIX) ? key.slice(SIGN_IN_CONNECTION_PREFIX.length) : null;
+}
+
+/**
+ * The links a window keeps for its pending sign-ins after the list changes. A link lives while
+ * its connection is pending. One not yet seen pending is kept while the list still shows the
+ * state it was stored in, so a reply that lands before the event does not lose it, and dropped
+ * at the first other state that is not pending. Once seen pending, any other state, or none,
+ * ends it. Returns `current` itself when nothing changed.
+ */
+export function signInLinksAfter(
+  current: Readonly<Record<string, ShaperSignInLink>>,
+  signIns: readonly ShapingSignInView[],
+): Readonly<Record<string, ShaperSignInLink>> {
+  let changed = false;
+  const next: Record<string, ShaperSignInLink> = {};
+  for (const [connection, link] of Object.entries(current)) {
+    const state = signInStateIn(signIns, connection);
+    if (state === "pending") {
+      if (link.seenPending) next[connection] = link;
+      else { next[connection] = { ...link, seenPending: true, waitingIn: null }; changed = true; }
+    } else if (!link.seenPending && state === link.waitingIn) {
+      next[connection] = link;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : current;
+}
+
+/**
+ * What a sign-in control's refusal is about: the connection the control acts on and the state
+ * the list shows for it, as one comparable string. A row's control (`row:<shaper id>`) acts on
+ * the connection whose `shapers` names it; an unused entry's (`connection:<id>`) on that id.
+ */
+export function signInControlSubject(signIns: readonly ShapingSignInView[], key: string): string {
+  const connection = signInControlConnection(signIns, key);
+  return signInSubject(connection, signInStateIn(signIns, connection));
+}
+
+/**
+ * Whether a refusal that just landed still describes its row. `target` is the connection the
+ * request acted on as it was sent: a Sign out's connection, or the connection a row named when
+ * its Sign in went out, null when it named none. The refusal no longer applies once the row names
+ * another connection than the one targeted, such as after another window changed the shaper's
+ * scope, or once that connection changed state while the request was in flight.
+ */
+export function signInRefusalApplies(
+  request: { sent: SignInMoves; target: string | null },
+  now: { moves: SignInMoves; signIns: readonly ShapingSignInView[]; key: string },
+): boolean {
+  const current = signInControlConnection(now.signIns, now.key);
+  if (request.target !== null && current !== request.target) return false;
+  return !signInMovedSince(request.sent, now.moves, request.target ?? current);
+}
+
+/**
+ * What each listed shaper signs in to, by id, as one comparable string: its `auth` target's URL,
+ * scope and issuer, or null for a shaper that does not sign in. Read from the definitions the
+ * list draws, so it holds for a row whether or not the sign-in list has an entry for it. A shadowed
+ * folder shaper is left out, as its row offers no sign-in; the registered one of that id is used.
+ */
+export function signInTargetsByShaper(groups: readonly ShapingListGroup[]): Readonly<Record<string, string | null>> {
+  const targets: Record<string, string | null> = {};
+  for (const row of groups.flatMap((group) => group.rows)) {
+    if (row.duplicate || (row.origin === "discovered" && row.folderState === "shadowed") || Object.hasOwn(targets, row.id)) continue;
+    const target = row.shaper ? shaperSignInTarget(row.shaper) : null;
+    targets[row.id] = target ? canonicalJson(target) : null;
+  }
+  return targets;
+}
+
+/**
+ * Whether a shaper row still signs in to what it did when a request went out. A refusal or a
+ * link from before another window changed the shaper's URL, scope or issuer is about a
+ * connection the row no longer has, whether or not the sign-in list names either one.
+ */
+export function signInTargetUnchanged(
+  sent: Readonly<Record<string, string | null>>,
+  now: Readonly<Record<string, string | null>>,
+  shaper: string,
+): boolean {
+  return (Object.hasOwn(sent, shaper) ? sent[shaper] : null) === (Object.hasOwn(now, shaper) ? now[shaper] : null);
+}
+
+/** A sign-in control's refusal, with the subject it was shown against. */
+export interface ShaperSignInRefusal {
+  text: string;
+  /** `signInControlSubject` while the refusal still applies. */
+  subject: string;
+  /**
+   * For a row's refusal, what the shaper signed in to when it was shown, from
+   * `signInTargetsByShaper`. Absent for an unused entry's, which names its connection itself.
+   */
+  target?: string | null;
+}
+
+/**
+ * The refusals a window keeps after the list or the shaper definitions change. A refusal answers
+ * one moment of its control's connection: once the list shows that connection in another state,
+ * or the row's shaper on another connection, such as another window signing it in or out, the
+ * refusal no longer describes the row and is dropped. A row's refusal is dropped too once its
+ * shaper signs in to another URL, scope or issuer, which `targets` shows even when the list names
+ * no connection for the row at either time. Returns `current` itself when nothing changed.
+ */
+export function signInRefusalsAfter(
+  current: Readonly<Record<string, ShaperSignInRefusal>>,
+  signIns: readonly ShapingSignInView[],
+  targets?: Readonly<Record<string, string | null>>,
+): Readonly<Record<string, ShaperSignInRefusal>> {
+  let changed = false;
+  const next: Record<string, ShaperSignInRefusal> = {};
+  for (const [key, refusal] of Object.entries(current)) {
+    const shaper = signInRowShaper(key);
+    const retargeted = targets !== undefined && shaper !== null && refusal.target !== undefined
+      && !signInTargetUnchanged({ [shaper]: refusal.target }, targets, shaper);
+    if (!retargeted && signInControlSubject(signIns, key) === refusal.subject) next[key] = refusal;
+    else changed = true;
+  }
+  return changed ? next : current;
+}
+
+/** A pending sign-in's link, as the window that started it holds it. */
+export interface ShaperSignInLink {
+  url: string;
+  /** Whether the list has shown this connection pending since the link arrived. */
+  seenPending: boolean;
+  /** Before then, the state the list showed when the link arrived, which it may keep showing. */
+  waitingIn: SignInListState | null;
 }
 
 // ---------------------------------------------------------------------------------------------

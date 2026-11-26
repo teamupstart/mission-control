@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterEach, test } from "node:test";
 import { voiceHostTimeUs } from "../src/server/voice/host-clock.ts";
-import { act, app, cards, listenerId, post, queued, readHeard, token, utterancePath, voiceStateStore } from "./helpers/voice-http.ts";
+import { act, app, cards, listenerId, post, queued, readHeard, registry, token, utterancePath, voiceStateStore } from "./helpers/voice-http.ts";
 
 const EXAMPLE = "Steve, check the build, bagel, Will, give me a report on the status of some project";
 const words = (text: string) => text.split(/\s+/u).map((word, i) => ({ text: word, startMs: 300 * i, endMs: 300 * i + 250 }));
@@ -86,4 +86,25 @@ test("the listener directive carries the separator for automatic capture, and an
   assert.equal((await config({ listeningMode: "push-to-talk" })).status, 200);
   assert.equal(voiceStateStore.directive().separator, undefined);
   assert.equal((await config({ listeningMode: "always-on" })).status, 200);
+});
+
+test("DELETE /api/voice/heard also releases the speech a refused separated capture kept for its retry", async () => {
+  await config({ cancelWindow: { enabled: true, seconds: 30 } });
+  const router = registry.voiceRouter!;
+  // Fill the router to one slot below capacity, so only the first separated message fits.
+  for (let i = 0; i < 49; i++) {
+    assert.equal(await router.accept({ id: `filler-${i}`, text: `Steve, task ${i}`, capturedAt: Date.now(), backend: "fluidaudio", words: [] }), true);
+  }
+  const refused = await speak(EXAMPLE, "refused-split");
+  assert.equal(refused.accepted, false);
+  const cache = (router as unknown as { separatedCaptures: Map<string, { retired: boolean; parts: unknown[]; roster: unknown[] }> }).separatedCaptures;
+  assert.equal(cache.has("refused-split"), true, "the refused capture is kept for its retry");
+  assert.ok((await readHeard()).some(entry => entry.id === "refused-split:1"));
+
+  const cleared = await app.request("/api/voice/heard", { method: "DELETE", headers: { host: "localhost" } });
+  assert.equal(cleared.status, 204);
+  assert.deepEqual(await readHeard(), []);
+  // Each record stays, retired, so a retry of a cleared capture routes nothing, but holds no speech.
+  assert.equal([...cache.values()].every(record => record.retired && !record.parts.length && !record.roster.length), true,
+    "clearing Recently heard leaves no cached speech behind");
 });

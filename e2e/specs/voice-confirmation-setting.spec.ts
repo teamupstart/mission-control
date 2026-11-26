@@ -1,11 +1,13 @@
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { enableVoice, say, voiceToken } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 import { allowStreamDisconnect, captureCard, expectCardGeometry, runningAgent, setupCards } from "../fixtures/voice-cards.ts";
 
 test("three placement previews persist across reload, with a toast fallback and reserved card-only routes", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "On screen");
   const choices = page.getByRole("group", { name: "Confirmation card" });
   await expect(choices.getByRole("radio")).toHaveCount(3);
   await expect(choices.getByText("Needs the desktop app")).toHaveCount(0);
@@ -16,6 +18,7 @@ test("three placement previews persist across reload, with a toast fallback and 
     await expect(radio).toBeEnabled();
     await expect(radio).toBeChecked();
     await page.reload();
+    await openVoiceTab(page, "On screen");
     await expect(radio).toBeChecked();
   }
   await captureCard(choices, "placements");
@@ -80,6 +83,7 @@ test("a confirmed placement stays selected without its stream update", async ({ 
   await allowStreamDisconnect(page);
   await page.goto(daemon.baseURL + "/#/settings/voice");
   await page.reload(); // Install the disconnect listener on this document before the stream opens.
+  await openVoiceTab(page, "On screen");
   const group = page.getByRole("group", { name: "Confirmation card" });
   const pill = group.getByRole("radio", { name: /Floating pill/ });
   await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
@@ -97,6 +101,7 @@ test("a confirmed placement stays selected without its stream update", async ({ 
 test("a stalled placement save releases the controls and can be retried", async ({ dashboard: page, daemon }) => {
   await setupCards(page, daemon);
   await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "On screen");
   const group = page.getByRole("group", { name: "Confirmation card" });
   const pill = group.getByRole("radio", { name: /Floating pill/ });
   let stalled = true;
@@ -114,6 +119,7 @@ test("a stalled placement save releases the controls and can be retried", async 
   await pill.click();
   await expect(pill).toBeEnabled();
   await page.reload();
+  await openVoiceTab(page, "On screen");
   await expect(pill).toBeChecked();
 });
 
@@ -165,6 +171,7 @@ for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner
   test(`a timed-out placement save cannot overwrite the operator’s later ${placement} choice`, async ({ dashboard: page, daemon }) => {
     await setupCards(page, daemon);
     await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen");
     const group = page.getByRole("group", { name: "Confirmation card" });
     const pill = group.getByRole("radio", { name: /Floating pill/ });
     const choice = group.getByRole("radio", { name: label });
@@ -186,6 +193,7 @@ for (const [placement, label] of [["popover", /Tray popover/], ["toast", /Corner
     expect(late.status()).toBe(409);
     expect((await (await page.request.get(daemon.baseURL + "/api/ui/config")).json()).config.voice.confirmation).toBe(placement);
     await page.reload();
+    await openVoiceTab(page, "On screen");
     await expect(choice).toBeChecked();
     await expect(group.getByRole("radio")).toHaveCount(3);
     await page.mouse.move(0, 0);
@@ -333,6 +341,7 @@ for (const [placement, label] of [["pill", "Floating pill"], ["popover", "Tray p
   test(`a floating-window report keeps the ${label} preference actionable on the dashboard`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
     await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen");
     const choices = page.getByRole("group", { name: "Confirmation card" });
     const radio = choices.getByRole("radio", { name: new RegExp(label) });
     await radio.check();
@@ -533,6 +542,7 @@ for (const [scenario, title] of [
     await allowStreamDisconnect(page);
     await page.goto(daemon.baseURL + "/#/settings/voice");
     await page.reload();
+    await openVoiceTab(page, "On screen");
     const group = page.getByRole("group", { name: "Confirmation card" });
     await expect(group.getByRole("radio", { name: /Corner toast/ })).toBeChecked();
     await page.evaluate(() => window.dispatchEvent(new Event("disconnect-fixture-stream")));

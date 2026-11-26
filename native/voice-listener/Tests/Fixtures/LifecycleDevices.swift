@@ -158,7 +158,7 @@ struct FixtureUtterance: Encodable {
     let text: String
 }
 
-@MainActor struct Recognizer {
+@MainActor struct Recognizer: SegmentTranscriber {
     static var pendingDecode: CheckedContinuation<Void, Never>?
     let ctc: Bool? = nil
 
@@ -176,7 +176,11 @@ struct FixtureUtterance: Encodable {
         return nil
     }
 
-    func transcribe(_ segment: Segment, boosting: Bool?, separator: String? = nil) async throws -> FixtureUtterance? {
+    func transcribe(_ segment: Segment, boosting: Bool?, separator: String?) async throws -> FixtureUtterance? {
+        try await transcribe(segment, boosting: boosting)
+    }
+
+    func transcribe(_ segment: Segment, boosting: Bool?) async throws -> FixtureUtterance? {
         observe("decode " + segment.label)
         if segment.label == "undecodable" { throw CocoaError(.coderReadCorrupt) }
         if segment.label == "in-flight" || segment.label == "first hold" {

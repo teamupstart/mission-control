@@ -74,7 +74,7 @@ Each follow-up opens a fresh draft on the finished task’s repository. The regu
 draft stays available when the follow-up closes. If you leave the follow-up through a setup
 or launch repair link, reopening Dispatch restores its instructions and attachments.
 
-In **Settings > Voice > Input**, choose **End-of-speech delay** to set how long the listener
+In **Settings > Voice > Listening**, choose **End-of-speech delay** to set how long the listener
 waits for more speech. The default is 2 seconds. Speaking again before the delay elapses keeps
 the words in the same utterance. Changes take effect while listening and persist after restart.
 **Listening mode** defaults to **Always-on**. Choose **Push-to-talk** to keep the
@@ -88,7 +88,7 @@ In Always-on, a **Separator word** (`separatorWord`, default **bagel**) ends one
 starts the next without a pause. “Steve, check the build, bagel, Carol, give me a report on the
 status of some project” sends “check the build” to Steve and “give me a report on the status of
 some project” to Carol. Each message gets its own Recently heard entry, routing, confirmation
-card and Cancel, and neither contains the separator. Set the word in **Settings > Voice > Input**
+card and Cancel, and neither contains the separator. Set the word in **Settings > Voice > Listening**
 beside End-of-speech delay. It persists with the other Voice settings. Use one word of letters,
 numbers, apostrophes or hyphens. “Cancel”, “stop”, “reply” and “submit” are refused because they
 are already voice commands. Clear the field to restore “bagel”, or press Escape to abandon an edit.
@@ -113,7 +113,7 @@ While a delivery countdown is open, automatic capture uses a half-second pause s
 If a protocol 4.0 helper is still running during an upgrade, restart it with the updated listener
 to use live delay changes.
 
-Settings > Voice > Confirmation card previews the corner toast, floating pill and tray popover.
+Settings > Voice > On screen > Confirmation card previews the corner toast, floating pill and tray popover.
 The floating pill is the default. On macOS it appears under the menu bar on the display with
 the pointer, including while the dashboard is minimized. A floating card appears without taking
 keyboard focus. From another app, use **⌘Tab** to switch to Mission Control. Press **⌘⌥V** or
@@ -391,7 +391,8 @@ message it cancels. The response is then `accepted: false`, and a retry of the s
 routes from the refused part on with the original split, even if the separator word has changed.
 The daemon keeps each separated capture's record of routed parts for five minutes from capture,
 so a retry never sends a part twice. A separated capture older than that is refused rather than
-split again. Turning Voice off ends a separated capture: a later retry opens none of its parts.
+split again. Turning Voice off or clearing Recently heard ends a separated capture and drops the
+speech its waiting parts kept: a later retry opens none of its parts.
 Every part is bound to the sessions on the roster when the capture arrived; if another session
 takes over a call sign before a later part is delivered, that part reports `not-running`.
 The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
@@ -843,10 +844,24 @@ Two environment variables, read when the daemon starts:
 ## Voice settings
 
 **Settings > Voice** opens with the mode line: a dot, the mode in words and, when voice cannot
-listen, every reason it cannot, with **Open Setup**. Below it is **Who you can address**, the
-[roster](#who-can-be-addressed).
+listen, every reason it cannot, with **Open Setup**. The mode line stays above five tabs, one per
+job. The panel opens on **Listening**. Left and Right arrow keys move between tabs. A settings
+search result opens the tab that holds its control before highlighting it.
 
-Under **Input**, **Input device** chooses the microphone (`inputDevice`): **Built-in microphone**
+| Tab | Groups and rows |
+| --- | --- |
+| **Listening** | **Microphone**: Listening mode, Input device, Mute hotkey (Push-to-talk hotkey in Push-to-talk), Auto-mute on calls. **Ending a message**: End-of-speech delay, Separator word, Cancel window |
+| **Names & routing** | **Who you can address**, the [roster](#who-can-be-addressed). **When a sentence is unclear**: When unsure (Ask or Show), then the [decision model](#faster-routing) and its keys |
+| **Spoken replies** | **Spoken replies**: the [voice picker](#mission-control-voices), Play sample and the voice download. **Answering by voice**: Plan forms by voice |
+| **On screen** | **Live transcript**, **Confirmation card**, **In the window** (the indicators) |
+| **Recently heard** | The utterances voice heard, how each was matched and what happened, and Clear |
+
+In Push-to-talk, End-of-speech delay, Separator word, Auto-mute on calls and Ask aloud are
+disabled, and each says why: End-of-speech delay and Separator word read “Push-to-talk ends on
+key release.”, Auto-mute on calls reads “Applies to Always-on listening.”, and Ask aloud reads
+“Ask aloud requires Always-on listening.”
+
+**Input device** chooses the microphone (`inputDevice`): **Built-in microphone**
 (`built-in`, the default), **macOS default input** (`system-default`), or one of the devices the
 live listener lists in its hello. With no listener the menu offers the first two, and the row
 says so. The one exception is a saved device that is not listed now (unplugged, or no listener):
@@ -854,23 +869,23 @@ it stays in the menu as **Saved device (not connected)**, so the menu never show
 was not made. `GET /api/voice/devices` returns `{ devices, listener }` for this menu; a listener
 interprets the id.
 
-**Separator word** (`separatorWord`, default `bagel`) follows End-of-speech delay. In Always-on it
-ends one message and starts the next without a pause, as described at the top of this page. It is
-disabled in Push-to-talk, where key release ends the utterance.
+**Separator word** (`separatorWord`, default `bagel`) follows End-of-speech delay under
+**Listening > Ending a message**. In Always-on it ends one message and starts the next without a
+pause, as described at the top of this page. It is disabled in Push-to-talk, where key release ends
+the utterance.
 
-Below that are the behavior rows:
-
-| Row | Field | Default |
-| --- | --- | --- |
-| Mute hotkey / Push-to-talk hotkey | `hotkey` | Control+Command+Option+V |
-| Auto-mute on calls | `autoMuteDuringCalls` | on |
-| Cancel window (duration or Off) | `cancelWindow { enabled, seconds }` | on, 4 seconds |
-| Unsure (Ask or Show) | `whenUnsure` | `show` |
-| Plan forms by voice | `planFormsByVoice` | on |
+| Row | Tab | Field | Default |
+| --- | --- | --- | --- |
+| Mute hotkey / Push-to-talk hotkey | Listening | `hotkey` | Control+Command+Option+V |
+| Auto-mute on calls | Listening | `autoMuteDuringCalls` | on |
+| Separator word | Listening | `separatorWord` | `bagel` |
+| Cancel window (duration or Off) | Listening | `cancelWindow { enabled, seconds }` | on, 4 seconds |
+| When unsure (Ask or Show) | Names & routing | `whenUnsure` | `show` |
+| Plan forms by voice | Spoken replies | `planFormsByVoice` | on |
 
 ### Faster routing
 
-The **Faster routing** group chooses the decision model (`decisionProvider`) and holds a key for
+On the **Names & routing** tab, the **When a sentence is unclear** group chooses the decision model (`decisionProvider`) and holds a key for
 each provider, since a key belongs to a provider.
 
 - The line at the top names the provider in use. When no provider is in use, it reads
@@ -934,7 +949,7 @@ The settings snapshot backs them up under the `voice` domain, except `muted`.
 
 The dashboard's half is `ui.voice` in the UI config: `confirmation` (`pill`, `toast` or
 `popover`, default `pill`) and `indicators` (a list of indicator ids, default `["status-line"]`).
-The indicators are configured under **Settings > Voice > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator and status line display the hold hint while waiting and “Release to finish” during capture. Hover over or focus a compact indicator to read the same guidance. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
+The indicators are configured under **Settings > Voice > On screen > In the window**. Select any combination of the status line, top-bar segment, floating button, edge light and composer microphone, or clear all five. Each checkbox sends its own `{ id, enabled }` to `PUT /api/voice/indicators`, so edits to different indicators in different windows are kept. The save response, config read, reconnect snapshot and live indicator event carry the same daemon-scoped `voiceIndicatorVersion` for a given selection. Windows ignore older revisions. In Always-on, click any indicator to mute or unmute. In Push-to-talk, the floating indicator and status line display the hold hint while waiting and “Release to finish” during capture. Hover over or focus a compact indicator to read the same guidance. When voice is unavailable, the control opens Setup. A shortcut appears only while the shell reports a working hotkey.
 
 If an indicator save takes over five seconds, Settings reports that the change is unconfirmed. You can use the checkboxes again while the dashboard refreshes the saved selection. If the write commits after that refresh, the daemon sends the final selection to every connected window. Reconnecting windows receive it in their snapshot.
 

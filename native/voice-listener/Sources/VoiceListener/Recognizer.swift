@@ -156,3 +156,9 @@ struct Recognizer {
         return Utterance(text: text, words: words, capturedAt: segment.capturedAt)
     }
 }
+
+extension Recognizer: SegmentTranscriber {
+    func transcribe(_ segment: Segment, boosting: VocabularyBoostingSession?, separator: String?) async throws -> Utterance? {
+        try await transcribe(segment, boosting: boosting, separator: separator, onAddressSuggestion: nil)
+    }
+}

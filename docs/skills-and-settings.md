@@ -362,6 +362,11 @@ search and the palette of every open window the moment the flag changes, with no
 lists the registered shapers by stage, imports a reviewed manifest switched off, switches each
 on or off, orders, dry-runs and removes them, and holds the caller identity and the two shaping
 budgets. Its settings are the `shaping` backup domain. See [Task shaping](task-shaping.md#settings).
+While the `shaper-sign-in` preview flag is also on, a shaper that signs in to an OAuth-protected
+server shows its sign-in in its row, with **Sign in** and **Sign out**, and the state follows a
+sign-in finished in another tab live. With the flag off the row says sign-in is switched off and
+offers no control. Tokens are never part of a settings backup. See
+[Signing in from Settings](task-shaping.md#signing-in-from-settings).
 
 **Reports** (`#/settings/reports`) sits after Standing instructions and exists only while the
 `inbox` preview flag is on, following it live the way Task shaping follows its own. It holds the

@@ -1276,3 +1276,16 @@ test("opening a picked question cannot be acknowledged by a dashboard that has l
   assert.equal(opened, false);
   assert.equal(windows.footerOwner(q.id), "new-foreground");
 });
+
+test("with the Cancel window Off, a spoken answer followed by a separated Cancel is never submitted", async () => {
+  await put("/api/voice/config", { cancelWindow: { enabled: false } });
+  const q = question();
+  await say("Steve, option A, bagel, cancel", "answer-then-cancel");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(registry.getReview(q.id)?.status, "pending", "the capture held its Cancel before the answer was submitted");
+  // Without the Cancel, the held answer is submitted once the capture has routed.
+  await say("Steve, option A, bagel, Will, check it", "answer-then-message");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(registry.getReview(q.id)?.status, "answered");
+  assert.deepEqual(queued("Will"), ["check it"]);
+});

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { enableVoice, sendHello } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -488,7 +489,7 @@ test("a fifth pulse segment, to read, still never stacks the bar while rungs rem
 test("the edge mute tab leaves busy title-bar controls clickable on one row", async ({ dashboard, daemon }) => {
   await busyFleet(dashboard, daemon);
   await enableVoice(daemon);
-  await dashboard.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(dashboard, "On screen", daemon.baseURL);
   await dashboard.getByRole("checkbox", { name: "Status line" }).uncheck();
   await expect(dashboard.locator("button.vi-status-line")).toHaveCount(0);
   await dashboard.getByRole("checkbox", { name: "Top-bar segment" }).check();

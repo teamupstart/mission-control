@@ -1,4 +1,3 @@
-import type { Locator } from "@playwright/test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
@@ -6,17 +5,18 @@ import { openSetupFamily, setupRow } from "../fixtures/setup-panel.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { fixtureSupervisorEnv } from "../../test/helpers/voice-supervisor.ts";
 import { beSpeaker, enableVoice, voiceToken } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 import { voiceHostTimeUs } from "../../src/server/voice/host-clock.ts";
 
 test.use({ daemonEnv: fixtureSupervisorEnv });
 
-test("Voice settings records a chord, explains refusal, and follows call and key reports", async ({ dashboard: page, daemon, context }) => {
+test("Voice settings records a chord, explains refusal, and follows call and key reports", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
   const listener = await beSpeaker(daemon, { holdPlayback: true });
   try {
     await page.goto(daemon.baseURL + "/#/settings/voice");
     const row = page.locator('[data-anchor="voice/hotkey"]');
-    const controls = page.locator(".voice-hardware-settings");
+    const controls = page.getByRole("group", { name: "Microphone" });
     const capture = row.getByRole("button", { name: "Mute hotkey" });
     const mode = page.getByRole("status", { name: "Voice mode" });
     const report = async (extra = {}) => {
@@ -53,28 +53,14 @@ test("Voice settings records a chord, explains refusal, and follows call and key
     await expect(mic).toContainText("Tap ⌘⌃⌥V to mute voice from any app.");
     if (captureDir) await mic.screenshot({ path: join(captureDir, "setup.png") });
     await page.goto(daemon.baseURL + "/#/settings/voice");
-    const mock = await context.newPage();
-    await mock.goto(new URL("../../docs/plans/voice-addressing-for-agents/mockup-voice-settings.html", import.meta.url).href);
-    const approved = mock.locator("#e .vs-grid2");
-    await expect(controls.locator(".kb-row-label")).toHaveText(await approved.locator(".kb-row-label").allTextContents());
-    await expect(controls.locator(".display-choice-option")).toHaveText(await approved.locator(".display-choice-option").allTextContents());
-    // Compare all four cells at the same grid width, including their row/column offsets.
-    const width = (await controls.boundingBox())!.width;
-    await approved.evaluate((el, width) => { el.style.width = width + "px"; }, width);
-    const cells = (grid: Locator) => grid.evaluate(el => {
-      const origin = el.getBoundingClientRect();
-      return Array.from(el.children, cell => {
-        const rect = cell.getBoundingClientRect();
-        return [rect.x - origin.x, rect.y - origin.y, rect.width, rect.height].map(Math.round);
-      });
-    });
-    expect(await cells(controls)).toEqual(await cells(approved));
-    await expect(controls.getByRole("combobox", { name: "Cancel window" })).toHaveValue("4");
-    await expect(controls.getByRole("radiogroup", { name: "When routing is unsure" }).getByRole("radio", { name: "Show" })).toBeChecked();
-    for (const selector of [".kb-capture", ".sc-switch-track"]) {
-      expect((await controls.locator(selector).boundingBox())?.width).toEqual((await approved.locator(selector).boundingBox())?.width);
-    }
-    await mock.close();
+    // The operator-selected "Tabs by job" layout: the hotkey sits with the other microphone
+    // controls on the Listening tab, the cancel window ends a message, and the unsure choice
+    // moved to Names & routing.
+    await expect(controls.locator(".kb-row-label")).toHaveText(["Listening mode", "Input device", "Mute hotkey", "Auto-mute on calls"]);
+    await expect(page.getByRole("group", { name: "Ending a message" }).getByRole("combobox", { name: "Cancel window" })).toHaveValue("4");
+    await openVoiceTab(page, "Names & routing");
+    await expect(page.getByRole("radiogroup", { name: "When routing is unsure" }).getByRole("radio", { name: "Show" })).toBeChecked();
+    await openVoiceTab(page, "Listening");
     let previousRecording: string | null = null;
     const beginRecording = async () => {
       const opened = page.waitForResponse(r => r.url().endsWith("/api/voice/hotkey-recording"));

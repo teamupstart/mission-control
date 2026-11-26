@@ -12,6 +12,7 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { openRepositorySetup } from "../fixtures/setup-panel.ts";
 import { expect, test } from "../fixtures/test.ts";
 import { enableVoice } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 const ACCESS_ENDPOINT = "/api/session-settings-access";
 const ACCESS_LABEL = "Allow sessions to access Mission Control settings";
@@ -536,6 +537,7 @@ test("Voice refreshes from a session and a reaffirmation refuses an older dashbo
     await callSettings(client, { operation: "set", key: "voice.endOfSpeechMs", value });
     await expect(delay).toHaveValue(String(value));
 
+    await openVoiceTab(page, "On screen");
     const placement = page.getByRole("group", { name: "Confirmation card" });
     const toast = placement.getByRole("radio", { name: /Corner toast/ });
     await expect(toast).toBeChecked();

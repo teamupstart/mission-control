@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { test, expect } from "../fixtures/test.ts";
 import { beListener, enableVoice, sendHello, transcriptSample } from "../fixtures/voice.ts";
+import { openVoiceTab } from "../fixtures/voice-settings.ts";
 
 async function capture(page: Page, name: string) {
   if (!process.env.MC_E2E_EVIDENCE) return;
@@ -15,7 +16,7 @@ async function capture(page: Page, name: string) {
 for (const style of ["capsule", "card"] as const) {
   test(`${style} expires while listening and returns for fresh words`, async ({ dashboard: page, daemon }) => {
     await enableVoice(daemon);
-    await page.goto(daemon.baseURL + "/#/settings/voice");
+    await openVoiceTab(page, "On screen", daemon.baseURL);
     await page.getByLabel("Transcript style").selectOption(style);
     const overlay = page.getByRole("complementary", { name: "Live voice transcript" });
     const listening = page.getByRole("button", { name: "Voice: listening. Mute" });
@@ -55,7 +56,7 @@ for (const style of ["capsule", "card"] as const) {
 
 test("live capture shows rolling words in the saved overlay", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "On screen", daemon.baseURL);
   const overlay = page.getByRole("complementary", { name: "Live voice transcript" });
   const status = page.getByRole("status", { name: "Voice feedback" });
   const show = page.getByLabel("Show live transcript");
@@ -113,6 +114,7 @@ test("live capture shows rolling words in the saved overlay", async ({ dashboard
     await show.uncheck();
     await expect(overlay).toHaveCount(0);
     await page.reload();
+    await openVoiceTab(page, "On screen");
     await expect(show).not.toBeChecked();
     await expect(style).toHaveValue("capsule");
     await expect(limit).toHaveValue("7");
@@ -147,7 +149,7 @@ test("live capture shows rolling words in the saved overlay", async ({ dashboard
 
 test("all 100 long words remain readable in a short window with the status in view", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "On screen", daemon.baseURL);
   const limit = page.getByLabel("Maximum transcript words");
   await limit.fill("100");
   await limit.press("Enter");
@@ -174,17 +176,19 @@ test("all 100 long words remain readable in a short window with the status in vi
 
 test("live transcript controls use the same typography as the other settings rows", async ({ dashboard: page, daemon }) => {
   await enableVoice(daemon);
-  await page.goto(daemon.baseURL + "/#/settings/voice");
+  await openVoiceTab(page, "Listening", daemon.baseURL);
   const group = page.getByRole("group", { name: "Live transcript" });
   const font = (el: Element) => {
     const css = getComputedStyle(el);
     return { family: css.fontFamily, size: css.fontSize, weight: css.fontWeight };
   };
+  // The reference row is on Listening; the transcript rows are on On screen.
   const reference = await page.getByText("Listening mode", { exact: true }).evaluate(font);
+  const selectFont = await page.getByLabel("Listening mode", { exact: true }).evaluate(font);
+  await openVoiceTab(page, "On screen");
   for (const name of ["Show live transcript", "Transcript style", "Maximum transcript words", "Corner card placement"]) {
     expect(await group.getByText(name, { exact: true }).first().evaluate(font), name).toEqual(reference);
   }
-  const selectFont = await page.getByLabel("Listening mode", { exact: true }).evaluate(font);
   expect(await group.getByLabel("Transcript style").evaluate(font)).toEqual(selectFont);
   expect(await group.getByLabel("Corner card placement").evaluate(font)).toEqual(selectFont);
   const numberFont = await group.getByLabel("Maximum transcript words").evaluate(font);

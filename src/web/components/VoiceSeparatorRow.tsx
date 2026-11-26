@@ -6,7 +6,7 @@ import type { VoiceConfigState } from "../useVoiceConfig.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
- * Settings > Voice > Input: the word that ends one Always-on message and starts the next.
+ * Settings > Voice > Listening > Ending a message: the word that ends one Always-on message and starts the next.
  * One self-contained row, so the Voice settings layout can place it beside End-of-speech delay.
  */
 export function SeparatorWordRow({ state, dedicated, roster = [] }: {
@@ -19,7 +19,14 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
   const [editing, setEditing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const discard = useRef(false);
+  // Typing, a refusal of the word and a save each take a ticket. Only a save still holding the
+  // latest ticket may report a failure, so a refusal that arrives after a newer draft was started
+  // cannot mark that draft invalid.
+  const latestEdit = useRef(0);
   useEffect(() => { if (!editing) setDraft(saved); }, [saved, editing]);
+  // In Push-to-talk the word does nothing and the field is disabled, so a message about an
+  // Always-on edit would sit under an input the operator cannot change.
+  useEffect(() => { if (dedicated) setProblem(null); }, [dedicated]);
 
   const commit = async () => {
     setEditing(false);
@@ -32,6 +39,7 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
     const word = draft.trim() || VOICE_SEPARATOR_DEFAULT;
     const issue = separatorWordProblem(word);
     if (issue) {
+      latestEdit.current++;
       setProblem(issue);
       setDraft(saved);
       return;
@@ -39,7 +47,10 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
     setProblem(null);
     setDraft(word);
     if (word === saved) return;
-    if (!await state.update({ separatorWord: word })) setProblem("The separator word was not saved. Try again.");
+    const edit = ++latestEdit.current;
+    if (!await state.update({ separatorWord: word }) && edit === latestEdit.current) {
+      setProblem("The separator word was not saved. Try again.");
+    }
   };
 
   const callSign = roster.find(name => normalizeSeparatorWord(name.name) === normalizeSeparatorWord(saved));
@@ -59,7 +70,11 @@ export function SeparatorWordRow({ state, dedicated, roster = [] }: {
             autoComplete="off" spellCheck={false} maxLength={64} disabled={!state.config || dedicated}
             value={draft} aria-invalid={problem ? true : undefined}
             onFocus={() => setEditing(true)}
-            onChange={event => { setEditing(true); setDraft(event.target.value); setProblem(null); }}
+            onChange={event => {
+              // A newer draft supersedes any save still pending: its failure must not mark this word.
+              latestEdit.current++;
+              setEditing(true); setDraft(event.target.value); setProblem(null);
+            }}
             onBlur={() => void commit()}
             onKeyDown={event => {
               if (event.key === "Enter") event.currentTarget.blur();

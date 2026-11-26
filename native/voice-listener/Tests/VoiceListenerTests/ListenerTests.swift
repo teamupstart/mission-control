@@ -196,6 +196,16 @@ final class ListenerTests: XCTestCase {
             XCTAssertEqual(text, original)
             XCTAssertEqual(words.map(\.text), decoded)
         }
+        // A quoted opening word is ordinary text to the daemon, so CTC may still correct it.
+        for quoted in ["\"Bagel\" check it", "“Bagel” check it"] {
+            var text = quoted
+            var words = quoted.split(separator: " ").enumerated().map {
+                TimedWord(text: String($1), startMs: Double($0) * 300, endMs: Double($0) * 300 + 250)
+            }
+            Recognizer.applyAddressCorrection("Carol", in: 0..<1, roster: ["Carol"], separator: "bagel", text: &text, words: &words)
+            XCTAssertNotEqual(text, quoted, quoted)
+            XCTAssertTrue(text.contains("Carol"), text)
+        }
         // Without a separator, or with a call sign spelled like it, the opening word is still corrected.
         var text = "Bagel."
         var words = [TimedWord(text: "Bagel.", startMs: 0, endMs: 250)]

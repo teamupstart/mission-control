@@ -65,6 +65,10 @@ function tidy(text: string): string {
   return text.trim().replace(/^[\s,;:.…]+/u, "").replace(/\s*[,;:]+$/u, "").trim();
 }
 
+function letters(text: string): string {
+  return text.normalize("NFC").toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}]/gu, "");
+}
+
 function spoken(text: string): boolean {
   return /[\p{L}\p{N}]/u.test(text);
 }
@@ -77,8 +81,8 @@ function spoken(text: string): boolean {
  * leave nothing to route, so a capture of only the word returns an empty list.
  *
  * “bagels”, “bagel’s” and a quoted “"bagel"” are not the separator. Word timings are split at
- * the same occurrences when the recognizer's words agree with the text; otherwise each part gets
- * no timings, which the router already treats as unmeasured.
+ * the same occurrences, and a part keeps its group only when the group spells the part's words;
+ * otherwise that part gets no timings, which the router already treats as unmeasured.
  *
  * With `leadingAddress`, the word is also a call sign: as the capture's first word it addresses
  * that agent, and everywhere else it still separates.
@@ -106,12 +110,15 @@ export function splitAtSeparator<W extends SeparatorTiming>(
     if (isSeparatorToken(word.text.trim(), target) && !(index === 0 && options.leadingAddress)) timed.push([]);
     else timed.at(-1)!.push(word);
   }
+  // A timing group belongs to its text only when it spells the same words, so a decoder that
+  // dropped or added a word cannot date a message from the wrong one.
   const aligned = timed.length === texts.length;
   const parts: SeparatedPart<W>[] = [];
   texts.forEach((raw, index) => {
     const part = tidy(raw);
     if (!spoken(part)) return;
-    const partWords = aligned ? timed[index]! : [];
+    const group = aligned ? timed[index]! : [];
+    const partWords = letters(group.map(word => word.text).join("")) === letters(raw) ? group : [];
     parts.push({ text: part, words: partWords, offsetMs: partWords[0]?.startMs ?? null });
   });
   return parts;

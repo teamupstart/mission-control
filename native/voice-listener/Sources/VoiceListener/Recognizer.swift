@@ -64,10 +64,11 @@ struct Recognizer {
         return try await VocabularyBoostingSession(vocabulary: CustomVocabularyContext(terms: terms), ctcModels: ctc)
     }
 
-    /// The spoken word without boundary punctuation, compared the way the daemon compares the separator.
+    /// The spoken word without attached sentence and clause marks, compared the way the daemon
+    /// compares the separator. Quotes and brackets stay, so a quoted “"Bagel"” is ordinary text.
+    static let separatorBoundary = CharacterSet(charactersIn: ".,;:!?…").union(.whitespacesAndNewlines)
     static func bareWord<S: StringProtocol>(_ word: S) -> String {
-        word.trimmingCharacters(in: .punctuationCharacters.union(.whitespacesAndNewlines))
-            .replacingOccurrences(of: "’", with: "'").lowercased()
+        word.trimmingCharacters(in: separatorBoundary).replacingOccurrences(of: "’", with: "'").lowercased()
     }
 
     static func applyAddressCorrection(_ name: String, in range: Range<Int>, roster: [String], separator: String? = nil,

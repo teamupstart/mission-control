@@ -5,7 +5,7 @@ import { VoiceRouter } from "../src/server/voice/router.ts";
 import type { VoiceQuestions } from "../src/server/voice/questions.ts";
 import { applyVoiceConfigPatch, VOICE_CONFIG_DEFAULTS, VoiceConfigPatchSchema, VoiceConfigSchema, type VoiceMode } from "../src/shared/voice.ts";
 import type { SpokenName } from "../src/shared/voice-names.ts";
-import type { VoiceCard, VoiceUtterance } from "../src/shared/voice-routing.ts";
+import { VoiceUtteranceSchema, type VoiceCard, type VoiceUtterance } from "../src/shared/voice-routing.ts";
 import { separatorWordProblem, splitAtSeparator, VOICE_SEPARATOR_DEFAULT } from "../src/shared/voice-separator.ts";
 
 before(() => { ensureNativeStateLockAddon(); });
@@ -58,6 +58,15 @@ test("a leading call sign spelled like the separator is kept for addressing", ()
   assert.deepEqual(parts?.map(part => part.words.map(word => word.text)), [["Bagel,", "go,"], ["Carol,", "stay"]]);
 });
 
+test("a timing group that does not spell its part's words leaves only that part unmeasured", () => {
+  // The decoder timed "bagel" but dropped the call sign after it.
+  const words = timed("Steve, go, bagel, give me a report").map((word, i) => i === 3 ? { ...word } : word);
+  const spoken = "Steve, go, bagel, Carol, give me a report";
+  const parts = splitAtSeparator(spoken, words, "bagel");
+  assert.deepEqual(texts(parts), ["Steve, go", "Carol, give me a report"]);
+  assert.deepEqual(parts?.map(part => [part.words.map(word => word.text), part.offsetMs]), [[["Steve,", "go,"], 0], [[], null]]);
+});
+
 test("timings that disagree with the text leave the parts unmeasured", () => {
   const parts = splitAtSeparator("Steve, go, bagel, Carol, stay", timed("Steve go Carol stay"), "bagel");
   assert.deepEqual(texts(parts), ["Steve, go", "Carol, stay"]);
@@ -93,8 +102,9 @@ function harness(t: { after(fn: () => void): void }, options: { mode?: VoiceMode
   const cards = new Map<string, VoiceCard>();
   const delivered: { name: string; text: string }[] = [];
   let hostNow = 1_000_000;
-  const state = { mode: options.mode ?? "listening", separatorWord: options.separatorWord === undefined ? "bagel" : options.separatorWord };
-  const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: state.mode, roster: options.roster ?? [agent("Steve"), agent("Carol")], separatorWord: state.separatorWord }),
+  const state = { mode: options.mode ?? "listening", separatorWord: options.separatorWord === undefined ? "bagel" : options.separatorWord,
+    roster: options.roster ?? [agent("Steve"), agent("Carol")] };
+  const router = new VoiceRouter(() => ({ backend: "fluidaudio", mode: state.mode, roster: state.roster, separatorWord: state.separatorWord }),
     () => ({ enabled: true, seconds: 30 }), {
       deliver: async (target, text) => { delivered.push({ name: target.name, text }); return "queued"; },
     }, card => cards.set(card.id, card), undefined, () => hostNow, options.questions);
@@ -155,25 +165,79 @@ test("a capture whose second message is refused routes only that message on retr
     assert.equal(await router.accept({ id: `filler-${i}`, text: `Steve, task ${i}`, capturedAt: Date.now(), backend: "fluidaudio", words: [] }), true);
   }
   const utterance: VoiceUtterance = { id: "split", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) };
-  const routed = () => pending().filter(card => card.id.startsWith("split~")).map(card => [card.id, card.parts[0]?.target?.name, card.parts[0]?.text]);
+  const routed = () => pending().filter(card => card.id.startsWith("split:")).map(card => [card.id, card.parts[0]?.target?.name, card.parts[0]?.text]);
   assert.equal(await router.accept(utterance), false);
-  assert.deepEqual(routed(), [["split~1", "Steve", "check the build"]]);
-  assert.deepEqual(router.heard.list().filter(entry => entry.id.startsWith("split")).map(entry => entry.id), ["split~1"]);
+  assert.deepEqual(routed(), [["split:1", "Steve", "check the build"]]);
+  assert.deepEqual(router.heard.list().filter(entry => entry.id.startsWith("split")).map(entry => entry.id), ["split:1"]);
   // Still full: the retry is refused again and the first message is not opened twice.
   assert.equal(await router.accept(utterance), false);
-  assert.deepEqual(routed(), [["split~1", "Steve", "check the build"]]);
+  assert.deepEqual(routed(), [["split:1", "Steve", "check the build"]]);
   // A slot opens. The retry routes only the refused message.
   assert.equal(router.cancel("filler-0"), true);
   assert.equal(await router.accept(utterance), true);
   assert.deepEqual(routed(), [
-    ["split~1", "Steve", "check the build"],
-    ["split~2", "Carol", "give me a report on the status of some project"],
+    ["split:1", "Steve", "check the build"],
+    ["split:2", "Carol", "give me a report on the status of some project"],
   ]);
   // Once every part is routed the capture is settled, and a further retry changes nothing.
   const published = cards.size;
   assert.equal(await router.accept(utterance), true);
   assert.equal(cards.size, published);
-  assert.deepEqual(router.heard.list().filter(entry => entry.id.startsWith("split")).map(entry => entry.id).toSorted(), ["split~1", "split~2"]);
+  assert.deepEqual(router.heard.list().filter(entry => entry.id.startsWith("split")).map(entry => entry.id).toSorted(), ["split:1", "split:2"]);
+});
+
+async function fill(router: VoiceRouter, count: number) {
+  for (let i = 0; i < count; i++) {
+    assert.equal(await router.accept({ id: `filler-${i}`, text: `Steve, task ${i}`, capturedAt: Date.now(), backend: "fluidaudio", words: [] }), true);
+  }
+}
+
+test("part IDs cannot collide with a listener capture ID", async t => {
+  // A listener may name a capture "clip~1"; the parts of capture "clip" are "clip:1" and "clip:2".
+  assert.equal(VoiceUtteranceSchema.safeParse({ id: "clip:1", text: "x", capturedAt: 1, backend: "fluidaudio" }).success, false);
+  const { router, pending } = harness(t);
+  assert.equal(await router.accept({ id: "clip~1", text: "Steve, run the tests", capturedAt: Date.now(), backend: "fluidaudio", words: [] }), true);
+  assert.equal(await router.accept({ id: "clip", text: EXAMPLE, capturedAt: Date.now(), backend: "fluidaudio", words: timed(EXAMPLE) }), true);
+  assert.deepEqual(pending().map(card => [card.id, card.parts[0]?.text]), [
+    ["clip~1", "run the tests"],
+    ["clip:1", "check the build"],
+    ["clip:2", "give me a report on the status of some project"],
+  ]);
+});
+
+test("a Cancel after a refused part waits for it and then cancels it, not the message before", async t => {
+  const { router, pending, cards } = harness(t);
+  await fill(router, 49);
+  const utterance: VoiceUtterance = { id: "bound", text: "Steve, check the build, bagel, Carol, run the tests, bagel, cancel",
+    capturedAt: Date.now(), backend: "fluidaudio", words: [] };
+  assert.equal(await router.accept(utterance), false);
+  // Carol's message was refused, so the Cancel after it was not spoken yet as far as routing goes.
+  assert.deepEqual(pending().filter(card => card.id.startsWith("bound:")).map(card => [card.id, card.parts[0]?.text]), [["bound:1", "check the build"]]);
+  assert.equal(router.heard.list().some(entry => entry.id === "bound:3"), false);
+  assert.equal(router.cancel("filler-0"), true);
+  assert.equal(await router.accept(utterance), true);
+  assert.equal(cards.get("bound:1")?.state, "pending");
+  assert.equal(cards.get("bound:2")?.state, "cancelled");
+  assert.deepEqual(router.heard.list().find(entry => entry.id === "bound:3")?.detail, "bound:2");
+});
+
+test("a retry routes the original parts against the original sessions after a separator edit and a takeover", async t => {
+  const { router, pending, cards, state } = harness(t);
+  await fill(router, 49);
+  const spoken = "Steve, check the build, bagel, Carol, order pineapple";
+  const utterance: VoiceUtterance = { id: "kept", text: spoken, capturedAt: Date.now(), backend: "fluidaudio", words: timed(spoken) };
+  assert.equal(await router.accept(utterance), false);
+  // Before the retry, the separator becomes the word inside Carol's message and another session takes over Carol.
+  state.separatorWord = "pineapple";
+  state.roster = [agent("Steve"), { ...agent("Carol"), sessionId: "carol-replacement" }];
+  assert.equal(router.cancel("filler-0"), true);
+  assert.equal(await router.accept(utterance), true);
+  const carol = pending().find(card => card.id === "kept:2");
+  assert.deepEqual([carol?.parts[0]?.text, carol?.parts[0]?.target?.sessionId], ["order pineapple", "carol"]);
+  // Delivery refuses the destination the replacement session now holds.
+  assert.equal(await router.sendNow("kept:2"), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cards.get("kept:2")?.state, "not-running");
 });
 
 const ONE_NAME = "Steve, check the build, bagel, then report status";

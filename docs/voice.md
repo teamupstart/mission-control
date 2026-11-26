@@ -96,7 +96,7 @@ Only the standalone word separates, in any letter case and with attached sentenc
 “Bagel.”, so “bagels” and “bagel’s” stay ordinary words. A quoted “"bagel"” is also ordinary text.
 Separators at either end or next to each other leave no empty message. A capture of only the
 word sends nothing and appears in Recently heard as “separator word only”. A spoken “cancel”
-after the separator cancels the message just before it. If the word is also a call sign, a
+after the separator cancels the message just before it, not an older pending one. If the word is also a call sign, a
 capture that starts with it addresses that agent, and the word still separates everywhere else.
 
 The daemon applies the separator to the final transcript, so it works with every listener
@@ -381,9 +381,14 @@ A UUID works. IDs can contain 1 to 128 ASCII letters, digits, periods, hyphens,
 underscores or tildes. The card action routes reserve the complete segments `.` and `..`.
 Each timing is `{ text, startMs, endMs }`. Missing timings are treated as an empty array.
 An automatic capture that contains the [separator word](#voice-settings) routes as one utterance
-per part, with IDs `<id>~1`, `<id>~2` and so on. A later part is dated from its first word's
-`startMs` when the timings agree with the text, otherwise from the capture. A retried capture
-skips parts already routed, and the response is `accepted: false` if any part was refused.
+per part, with IDs `<id>:1`, `<id>:2` and so on. A capture ID cannot contain `:`, so these never
+collide with another capture. A later part is dated from its first word's `startMs` when that
+part's timings spell its words, otherwise from the part before it. Parts route in spoken order and
+stop at the first refused one, so a spoken “cancel” after the separator always follows the
+message it cancels. The response is then `accepted: false`, and a retry of the same capture ID
+routes from the refused part on with the original split, even if the separator word has changed.
+Every part is bound to the sessions on the roster when the capture arrived; if another session
+takes over a call sign before a later part is delivered, that part reports `not-running`.
 The response is `{ accepted }`. A terminal refusal produces a diagnostic without the
 transcript, and the listener continues with later speech. While listening, the daemon can route a capture immediately.
 A POST made while push-to-talk is held waits for the shell's key-up timestamp before

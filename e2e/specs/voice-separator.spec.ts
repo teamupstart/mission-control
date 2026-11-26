@@ -191,9 +191,9 @@ for (const variant of [
   expect(entries).toHaveLength(2);
   for (const entry of entries) expect(entry.text).not.toMatch(word);
   // Both messages came from one microphone segment: the listener never saw a pause.
-  const captures = new Set(entries.map(entry => entry.id.replace(/~\d+$/u, "")));
+  const captures = new Set(entries.map(entry => entry.id.replace(/:\d+$/u, "")));
   expect(captures.size).toBe(1);
-  expect(entries.map(entry => entry.id.match(/~(\d+)$/u)?.[1]).toSorted()).toEqual(["1", "2"]);
+  expect(entries.map(entry => entry.id.match(/:(\d+)$/u)?.[1]).toSorted()).toEqual(["1", "2"]);
   console.log(`${variant.word}: one capture ${[...captures][0]} became ${entries.map(e => `${e.matchedName}: "${e.text}"`).join(" and ")}`);
 });
 
@@ -220,14 +220,14 @@ test("native Always-on keeps whole words, sends no empty messages and keeps the 
   // Word boundary: "bagels" is an ordinary word, so the first capture routes whole.
   expect(whole).toMatchObject({ matchedName: "Steve", rule: "exact" });
   expect(whole!.text).toMatch(/\bbagels\b/i);
-  expect(whole!.id).not.toContain("~");
+  expect(whole!.id).not.toContain(":");
   await expect(pending(page, "Steve")).toContainText(/buy some bagels for the team/i);
   // Empty segment: the separator alone opens nothing.
   expect(alone).toMatchObject({ rule: "separator-only", matchedName: null });
   expect(alone!.text).toMatch(/^bagel\W*$/i);
   // Separators at both ends leave one message and no empty ones.
   expect(ends).toMatchObject({ matchedName: "Carol" });
-  expect(ends!.id).toMatch(/~1$/u);
+  expect(ends!.id).toMatch(/:1$/u);
   expect(ends!.text).not.toMatch(/\bbagel\b/i);
   await expect(pending(page, "Carol")).toContainText(/check the build/i);
   await expect(pending(page, "Carol")).not.toContainText(/bagel/i);
@@ -261,7 +261,7 @@ test("native Always-on applies a separator edit made while the microphone is lis
   early.catch(() => {});
   await Promise.race([early, expect.poll(async () => (await heard(page, daemon)).length, { timeout: 200_000 }).toBe(2)]);
   const first = (await heard(page, daemon)).toReversed();
-  expect(first.map(entry => [entry.matchedName, entry.id.match(/~(\d+)$/u)?.[1]])).toEqual([["Steve", "1"], ["Carol", "2"]]);
+  expect(first.map(entry => [entry.matchedName, entry.id.match(/:(\d+)$/u)?.[1]])).toEqual([["Steve", "1"], ["Carol", "2"]]);
 
   // The operator edits the word in Settings while the same microphone keeps listening.
   await page.goto(daemon.baseURL + "/#/settings/voice");
@@ -275,7 +275,7 @@ test("native Always-on applies a separator edit made while the microphone is lis
   const entries = (await heard(page, daemon)).toReversed();
   console.log(`live edit: ${entries.map(e => `${e.id} ${e.rule} ${e.matchedName}: "${e.text}"`).join(" | ")}`);
   const [, , steve, carol, alone] = entries;
-  const capture = (entry: typeof steve) => entry!.id.replace(/~\d+$/u, "");
+  const capture = (entry: typeof steve) => entry!.id.replace(/:\d+$/u, "");
   expect(steve).toMatchObject({ matchedName: "Steve" });
   expect(steve!.text).toMatch(/toast a bagel,? please\W*$/i);
   expect(carol).toMatchObject({ matchedName: "Carol" });
@@ -312,7 +312,7 @@ test("native Push-to-talk ends each utterance on key release and keeps the separ
   expect(entries.map(entry => entry.matchedName)).toEqual(["Steve", "Carol"]);
   expect(entries[0]!.text).toMatch(/\bbagel\b/i);
   // Two holds, two captures: neither was split at the separator.
-  expect(entries.every(entry => !entry.id.includes("~"))).toBe(true);
+  expect(entries.every(entry => !entry.id.includes(":"))).toBe(true);
   expect(new Set(entries.map(entry => entry.id)).size).toBe(2);
   console.log(`push-to-talk: ${entries.map(e => `${e.id} ${e.matchedName}: "${e.text}"`).join(" | ")}`);
 });

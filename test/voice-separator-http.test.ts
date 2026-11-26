@@ -47,11 +47,11 @@ test("one native Always-on capture becomes two addressed messages while the live
   assert.equal(heard.final, EXAMPLE);
   const open = cards.filter(card => card.state === "pending");
   assert.deepEqual(open.map(card => [card.id, card.parts[0]?.target?.name, card.parts[0]?.text]), [
-    ["native-capture~1", "Steve", "check the build"],
-    ["native-capture~2", "Will", "give me a report on the status of some project"],
+    ["native-capture:1", "Steve", "check the build"],
+    ["native-capture:2", "Will", "give me a report on the status of some project"],
   ]);
-  assert.equal((await act("native-capture~1", "cancel")).status, 200);
-  assert.equal((await act("native-capture~2", "send-now")).status, 200);
+  assert.equal((await act("native-capture:1", "cancel")).status, 200);
+  assert.equal((await act("native-capture:2", "send-now")).status, 200);
   assert.deepEqual(queued("Steve").slice(steve), []);
   assert.equal(queued("Will").length, will + 1);
   assert.match(queued("Will").at(-1)!, /give me a report on the status of some project/);

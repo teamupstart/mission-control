@@ -387,6 +387,8 @@ for (const replay of [
   { name: "a genuine replayed return", charged: true },
   { name: "a replayed return for another attempt", charged: false },
   { name: "a replayed return after a sequence gap", charged: false },
+  // The stream closes cleanly after the start, before the return it holds in replay.
+  { name: "a return the stream closed before delivering", charged: true },
 ] as const) {
   test(`Local Inspector return recovery ${replay.charged ? "charges" : "refuses"} ${replay.name}`, { timeout: 30_000 }, async t => {
     const { REPOSITORY_EVIDENCE_CAPABILITY } = await import("../src/shared/repository-access.ts");
@@ -404,6 +406,7 @@ for (const replay of [
           replay.name.includes("another attempt") ? event("persona_returned", 4, randomUUID())
             : replay.name.includes("gap") ? event("persona_returned", 5) : event("persona_returned", 4)];
         yield* replayed.slice(0, 3);
+        if (replay.name.includes("closed before")) return;
         yield event("persona_returned", 9);
       },
       async reconcile(workloadId, after) {
@@ -422,7 +425,8 @@ for (const replay of [
     await h.restart();
     report(`replayed return: ${replay.name}`, { maxRuns: 1, witnessRecorded: Boolean(witness), spentAfterRestart: h.spent(),
       firstError: first.error?.slice(0, 120) });
-    assert.match(first.error ?? "", /sequence mismatch/, "the live stream itself was rejected");
+    assert.match(first.error ?? "", replay.name.includes("closed before") ? /No current terminal repository verdict/ : /sequence mismatch/,
+      "the live stream itself was rejected");
     assert.equal(h.latest("inspect-again"), null, "the review never passes");
     assert.equal(Boolean(witness), replay.charged);
     assert.equal(h.spent(), replay.charged ? 1 : 0);

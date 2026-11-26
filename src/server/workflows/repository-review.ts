@@ -288,9 +288,10 @@ export class RepositoryReview {
       try {
         await this.closeDispatch(streamFinished ? undefined : events, stopping);
       } finally {
-        // An abort, a rejected event or an expired grant can stop the in-order loop after the
-        // provider returned but before that return was recorded. Its execution was still spent.
-        if (!streamFinished && !returnRecorded && !terminal) await this.keepReturnWitness(executor, request, recorded);
+        // An abort, a rejected event, an expired grant or a stream that closed before its terminal
+        // result can leave a provider return unrecorded. Its execution was still spent, so replay
+        // is asked whenever neither a return nor a terminal result was recorded.
+        if (!returnRecorded && !terminal) await this.keepReturnWitness(executor, request, recorded);
       }
       if (!this.injected) await this.finishLocal(id, service);
       else if (stopping) {
@@ -306,7 +307,8 @@ export class RepositoryReview {
   }
 
   /**
-   * Record a provider return the supervisor stopped reading before it could record in order.
+   * Record a provider return the supervisor did not record in order: it stopped reading, or the
+   * stream closed before delivering the return.
    * Best effort against the executor's replay, which a closed local stream already holds in full.
    * The replay resumes the live stream's own cursor at the last recorded event, so it is held to
    * the same identity, sequence, hash and stage rule, and it ends at a terminal result: a return

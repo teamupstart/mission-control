@@ -669,7 +669,7 @@ test("only new recognized words move the live transcript's five-second deadline"
   send(extended);
   assert.equal(h.store.state().transcript, undefined);
   send({ phase: "audio", onset: 2 });
-  send({ ...extended, text: "Start here now.", final: true });
+  send({ ...extended, text: "Start here now please.", final: true });
   assert.equal(h.store.state().transcript?.text, "");
   send({ ...extended, onset: 2 });
   assert.equal(h.store.state().transcript?.text, extended.text, "the same words in a new utterance count");
@@ -726,4 +726,26 @@ test("reordering live transcript words preserves the deadline, but another occur
   assert.equal(h.published.at(-1)?.transcript, undefined);
   send("on turn on");
   assert.equal(h.store.state().transcript?.text, "on turn on");
+});
+
+test("inline punctuation revisions cannot extend or reopen a live transcript", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-punctuation-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (text: string) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset: 1, text }), true);
+
+  send("U.S.");
+  h.advance(4999);
+  send("US");
+  assert.equal(h.store.state().transcript?.text, "US");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send("U.S.");
+  assert.equal(h.store.state().transcript, undefined);
+  send("US policy");
+  assert.equal(h.store.state().transcript?.text, "US policy");
 });

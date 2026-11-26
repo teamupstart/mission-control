@@ -4,7 +4,7 @@ const VISIBLE_MS = 5000;
 const MAX_UNFINISHED_ONSETS = 100;
 
 function recognizedWords(text: string): string[] {
-  return text.normalize("NFC").toLowerCase().match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
+  return text.normalize("NFC").toLowerCase().replace(/\p{P}+/gu, "").match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
 }
 
 // A decoder may reorder or retract words. Remember the highest count heard for
@@ -65,7 +65,10 @@ export class TranscriptPreview {
     if (!words.length) return;
     const partial = this.partials.get(sample.onset);
     const highestCounts = partial?.highestCounts ?? new Map<string, number>();
-    const fresh = recordWordCounts(words, highestCounts);
+    // An older onset can finish decoding after its display window closed.
+    // Retire it below without reviving its text or renewing the current window.
+    const expiredEarlierOnset = sample.onset < this.latestOnset && partial?.visible === false;
+    const fresh = !expiredEarlierOnset && recordWordCounts(words, highestCounts);
     const visible = fresh || partial?.visible === true;
     if (visible && sample.onset === this.latestOnset) this.phase = "words";
     if (fresh) this.expiresAt = now + VISIBLE_MS;

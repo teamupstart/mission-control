@@ -124,12 +124,14 @@ test("DELETE /api/voice/heard also releases the speech a refused separated captu
   }
   const refused = await speak(EXAMPLE, "refused-split");
   assert.equal(refused.accepted, false);
-  const cache = (router as unknown as { separatedCaptures: Map<string, unknown> }).separatedCaptures;
+  const cache = (router as unknown as { separatedCaptures: Map<string, { retired: boolean; parts: unknown[]; roster: unknown[] }> }).separatedCaptures;
   assert.equal(cache.has("refused-split"), true, "the refused capture is kept for its retry");
   assert.ok((await readHeard()).some(entry => entry.id === "refused-split:1"));
 
   const cleared = await app.request("/api/voice/heard", { method: "DELETE", headers: { host: "localhost" } });
   assert.equal(cleared.status, 204);
   assert.deepEqual(await readHeard(), []);
-  assert.equal(cache.size, 0, "clearing Recently heard leaves no cached speech behind");
+  // Each record stays, retired, so a retry of a cleared capture routes nothing, but holds no speech.
+  assert.equal([...cache.values()].every(record => record.retired && !record.parts.length && !record.roster.length), true,
+    "clearing Recently heard leaves no cached speech behind");
 });

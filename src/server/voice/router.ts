@@ -201,6 +201,9 @@ interface OutboxReceipt {
 type NeedsModel = Extract<VoiceRouteDecision, { kind: "needs-model" }>;
 
 /** A decider with no rung: every answer "not sure". Routing then shows the roster rows. */
+/** How often a held separated action checks whether the card spoken before it has settled. */
+const SETTLE_POLL_MS = 50;
+
 const NO_DECIDER: VoiceDecider = {
   ask: async (questions) => ({ rung: "none", answers: voiceAnswersUnsure(questions), detail: "no model step" }),
 };
@@ -699,19 +702,36 @@ export class VoiceRouter {
    * for it, and the hold stays active so the card it opens joins the hold too.
    */
   private async sendHeldInOrder(partIds: string[], heldSends: Set<string>): Promise<void> {
+    // Earlier parts that were not held: a message on its countdown, an unsure card, a delivery
+    // still in flight. A held action after them waits until each is sent or cancelled.
+    const earlier: string[] = [];
     try {
       for (const partId of partIds) {
         const resolving = this.resolutions.get(partId);
         if (resolving) await resolving;
-        if (!heldSends.has(partId)) continue;
+        if (!heldSends.has(partId)) {
+          earlier.push(partId);
+          continue;
+        }
+        for (const id of earlier.splice(0)) await this.untilSettled(id);
         const item = this.open.get(partId);
         if (!item) continue;
         const sent = this.releasePending(item);
         if (sent) await sent;
-        else this.publish(item.card);
+        else {
+          this.publish(item.card);
+          earlier.push(partId);
+        }
       }
     } finally {
       this.activeHolds.delete(heldSends);
+    }
+  }
+
+  /** Resolves once a card has left both the open and the delivering maps: sent, cancelled or cleared. */
+  private async untilSettled(id: string): Promise<void> {
+    while (this.open.has(id) || this.delivering.has(id)) {
+      await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS));
     }
   }
 

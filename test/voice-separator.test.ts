@@ -207,6 +207,27 @@ test("with the Cancel window Off, a separated Stop waits for an earlier part sti
   ]);
 });
 
+test("with the Cancel window on, a separated Stop waits until the message before it is sent or cancelled", async t => {
+  const { router, say, delivered, pending } = harness(t);
+  const settle = () => new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await say("Steve, run the tests, bagel, Steve, stop"), true);
+  await settle();
+  assert.deepEqual(delivered, [], "Stop does not overtake a message still on its countdown");
+  // The countdown ends (Send now does the same): the message goes first, then Stop.
+  const message = pending().find(card => card.parts[0]?.text === "run the tests")!;
+  assert.equal(await router.sendNow(message.id), true);
+  await settle();
+  assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop"]);
+
+  // Cancelling the message instead releases the Stop on its own.
+  assert.equal(await say("Steve, run the build, bagel, Steve, stop"), true);
+  await settle();
+  const build = pending().find(card => card.parts[0]?.text === "run the build")!;
+  assert.equal(router.cancel(build.id), true);
+  await settle();
+  assert.deepEqual(delivered.map(({ text, command }) => command ?? text), ["run the tests", "stop", "stop"]);
+});
+
 test("with the Cancel window on, a separated Stop followed by Cancel never interrupts the agent", async t => {
   const { say, cards, delivered, pending } = harness(t);
   assert.equal(await say("Steve, stop, bagel, cancel"), true);

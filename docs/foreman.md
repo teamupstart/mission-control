@@ -234,8 +234,8 @@ sending recovery gaps.
 Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
 and captions remain inside the untrusted evidence fence. Evidence from an older work
-generation remains usable within the same intent episode, while legacy unstamped evidence and
-evidence from another episode are excluded. For an eligible binding, a zero count explicitly leaves
+generation remains usable within the same intent episode. Unstamped evidence is excluded.
+Stamped evidence from an earlier episode requires the continuation revalidation described below. For an eligible binding, a zero count explicitly leaves
 the evidence-registration clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
 the items cover what the task requested. If the implementation is complete and every blocking gap
 only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
@@ -255,6 +255,31 @@ registration-only gaps and summaries after unbinding, while retaining implementa
 gaps. Only complete, standalone registration statements are omitted; compound or unrecognized
 legacy prose is retained for normal verification. If registration was the only gap, recovery asks
 the session to recheck the task and report completion.
+
+### Registered proof after a continuation
+
+Foreman reports how many registered items it excluded when their intent episode differs
+from the current one. Their captions and locators stay outside the verifier's evidence.
+A missing registration, an earlier registration, an unreadable source and a changed
+checkout or file have different meanings for completion.
+
+For a single-checkout ship or bugfix task awaiting its first submission, a complete
+agent registration can record a receipt for its issued checkout, task, binding, objective,
+items and criterion links. Mission Control compares the full HEAD, index and Git-visible
+worktree contents across registration using the bounded repository snapshot reader. Sparse,
+nested, unborn or unreadable checkouts use normal fresh registration. For the immediately following revision only, it
+can revalidate that packet when the accepted instruction was exactly `continue` and the
+refiner recorded it as steering on the same objective. It compares the receipt, reopens
+the scoped file sources and verifies their bytes. The daemon repeats the check for a
+completion claim. The original stamps, coverage, work generation and ownership stay on
+the registration. Normal verification, blocking standards findings and workflow gates apply.
+
+For an already-held generation, inspect the staged items and the hold's other findings.
+An older registration without a checkout receipt requires fresh verification and normal
+registration of the verified items and criterion links. Use the existing ids for identical
+proof. A normal recovery turn or the next authorized author turn supplies a new settled
+generation for Foreman to assess. The original hold remains in history and its delivery
+budget still applies. Manual bindings continue to require manual submission.
 
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,

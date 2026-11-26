@@ -4279,6 +4279,8 @@ function migrate(d: DatabaseSync): void {
   // guard falls back to the full fingerprint for those rows, which is exactly what it did
   // before, so an upgraded database keeps its historical behaviour on historical rows.
   addColumn(d, "workflow_submissions", "repository_fingerprint", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_packet", "TEXT");
+  addColumn(d, "workflow_evidence_owners", "continuation_checkout", "TEXT");
   addColumn(d, "workflow_evidence_owners", "all_generation", "INTEGER NOT NULL DEFAULT 0");
   // Existing staged rows are images. The append-only kind lets text/log evidence share the
   // reservation and generation lifecycle without changing any historical row's meaning.

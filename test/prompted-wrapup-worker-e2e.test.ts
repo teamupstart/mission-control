@@ -2383,7 +2383,7 @@ test("the verification-evidence fallback claims only at its structural and verdi
     }
     if (entry.excludes) {
       const prompt = readFileSync(result.prompt, "utf8");
-      assert.match(prompt, /No evidence is registered for this work/);
+      assert.match(prompt, /2 registered items belong to another or unknown intent episode and are excluded/);
       for (const token of entry.excludes) assert.doesNotMatch(prompt, new RegExp(token));
     }
     if (entry.heldFallback) {

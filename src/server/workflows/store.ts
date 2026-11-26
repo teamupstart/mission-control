@@ -5,6 +5,7 @@ import type { PersonaWorkloadRequest, PersonaWorkloadEvent } from "@shared/repos
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import { workflowCapturedLocalInspector, workflowRequiresRepositoryCapture } from "@shared/workflow.ts";
 import { RepositoryEvidenceHandleSchema, RepositoryQueryAuditMetadataSchema } from "@shared/repository-access.ts";
+import { packetDigest } from "./continuation-evidence.ts";
 import { workflowGraphFingerprint } from "./graph-fingerprint.ts";
 import type { InspectorBranchActivity } from "../inspector/github.ts";
 import { CodeRabbitCommandSchema, CodeRabbitTuningSchema, CodeRabbitComparisonSchema } from "@shared/protocol.ts";
@@ -2925,6 +2926,7 @@ export type WorkflowContinuationReservation =
     };
 
 export interface ForemanCompletionStoreInput {
+  continuationStillMatches?: () => boolean;
   /** Includes targets without a publication of their own when a sibling's probe yielded. */
   expectedLatestRunId?: string | null;
   /** The completed run whose checkout was probed, including a changed or unreadable checkout. */
@@ -5750,6 +5752,7 @@ export class WorkflowStore {
     episodeKey: string | null = null,
     coverage: readonly WorkflowStagedEvidenceCoverageWrite[] = [],
     withdrawClientCriterionIds: readonly string[] = [],
+    witness?: { contract: string; root: string; checkout: string },
   ): WorkflowStagedEvidenceList {
     const validatedItems = items.map((item) => ({
       ...item,
@@ -5757,6 +5760,19 @@ export class WorkflowStore {
         ? WorkflowCommandExitCodeSchema.parse(item.commandExitCode)
         : null,
     }));
+    const finishRegistration = (): WorkflowStagedEvidenceList => {
+      const tray = this.listWorkflowEvidence(noteKey);
+      if (witness) {
+        const supplied = new Set(items.map(item => item.clientItemId));
+        const claims = new Set(coverage.map(claim => claim.clientCriterionId));
+        if ([...tray.images, ...tray.artifacts].every(item => supplied.has(item.clientItemId)) &&
+            tray.coverage?.every(claim => claims.has(claim.clientCriterionId))) {
+          this.db.prepare(`UPDATE workflow_evidence_owners SET continuation_packet = ?, continuation_checkout = ?
+            WHERE note_key = ?`).run(packetDigest(witness.contract, witness.root, tray), witness.checkout, noteKey);
+        }
+      }
+      return tray;
+    };
     return transaction(this.db, () => {
       this.db.prepare(
         `INSERT OR IGNORE INTO workflow_evidence_owners (
@@ -6009,7 +6025,7 @@ export class WorkflowStore {
         row.episode_key = episodeKey ?? row.episode_key;
       }
       if (changedItems.length === 0 && changedCoverage.length === 0 && changedRetirements.size === 0) {
-        return this.listWorkflowEvidence(noteKey);
+        return finishRegistration();
       }
 
       const currentStaged = existingRows.filter((row) => row.state === "staged");
@@ -6282,7 +6298,7 @@ export class WorkflowStore {
           now,
         );
       }
-      return this.listWorkflowEvidence(noteKey);
+      return finishRegistration();
     });
   }
 
@@ -6359,6 +6375,21 @@ export class WorkflowStore {
         updatedAt: row.updated_at,
       })),
     };
+  }
+
+  /** Inspect the original staging ownership, including claims. Reservation alone does not
+   * advance the generation and public tray metadata does not expose the issue-time roots.
+   */
+  continuationReceipt(noteKey: string, source: string, root: string): { packet: string; checkout: string } | null {
+    const receipt = this.db.prepare(`SELECT continuation_packet AS packet, continuation_checkout AS checkout
+      FROM workflow_evidence_owners WHERE note_key = ? AND continuation_packet IS NOT NULL
+      AND continuation_checkout IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM workflow_evidence_staging WHERE note_key = ?
+        AND (state != 'staged' OR episode_key IS NOT ? OR source_root != ? OR repository_scope != 'repo-01'))
+      AND NOT EXISTS (SELECT 1 FROM workflow_evidence_coverage_staging WHERE note_key = ?
+        AND (state != 'staged' OR is_current != 1 OR episode_key IS NOT ? OR source_root != ? OR repository_scope != 'repo-01'))`
+    ).get(noteKey, noteKey, source, root, noteKey, source, root);
+    return receipt as { packet: string; checkout: string } | undefined ?? null;
   }
 
   /** Latest material staged-set change that applies to this one repository checkout. */
@@ -7457,6 +7488,9 @@ export class WorkflowStore {
         };
       }
 
+      if (input.continuationStillMatches && !input.continuationStillMatches()) {
+        throw new Error("Continuation evidence changed before handoff");
+      }
       if (input.completionKind === "prompted" && !expectedIntent) {
         throw new Error("Foreman prompted completion has no intent guard");
       }

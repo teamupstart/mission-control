@@ -107,10 +107,15 @@ async function scanWorking(
 const MAX_WORKTREE_READ_BYTES = 512 * 1024 ** 2;
 type SealOptions = Partial<PathBudget> & { storage?: RepositoryArtifactStorage; worktreeReadLimit?: number };
 export async function sampleCheckoutBoundary(checkout: string, signal: AbortSignal,
-  { storage = new RepositoryArtifactStorage(), worktreeReadLimit = MAX_WORKTREE_READ_BYTES, ...limits }: SealOptions = {}) {
+  { storage = new RepositoryArtifactStorage(), worktreeReadLimit = MAX_WORKTREE_READ_BYTES, requireStandaloneCommit, ...limits }:
+    SealOptions & { requireStandaloneCommit?: boolean } = {}) {
   const git = await locateExecutable("git");
   if (!git) return unavailable();
   return withCheckoutSample(git.path, checkout, signal, limits, async state => {
+    // Continuation proof needs the literal bytes of one complete checkout. A gitlink
+    // identifies a nested commit but cannot attest to uncommitted work inside it.
+    if (requireStandaloneCommit && (!state.head || state.embedded.length || state.skipWorktree.size ||
+        [...state.index.values()].some(entry => entry.mode === "160000"))) return unavailable();
     const charge = storage.requiredBlobBudget();
     const work = await scanWorking(git.path, state, signal, worktreeReadLimit, (id, bytes, key) => {
       if (pathAllowed(key)) charge(id, bytes.length);

@@ -217,15 +217,16 @@ function useShaperSignIn(
    */
   const open = useCallback((connection: string, url: string, key: string): void => {
     // The desktop bridge may answer late. A failure that lands after the sign-in moved on, such
-    // as one another window cancelled or finished meanwhile, or after the flag changed, no
-    // longer describes the row and is not shown.
-    const sent = moves.current.moves;
-    const sentIn = activation.current.count;
+    // as one another window cancelled or finished meanwhile, after the flag changed, or after
+    // another window changed what the shaper signs in to, no longer describes the row and is not
+    // shown. The last can leave the old connection pending, with no state change to notice.
+    const request = requestState(connection);
     void openExternalChecked(url).then((opened) => {
-      if (opened || !stillActive(sentIn) || signInMovedSince(sent, moves.current.moves, connection)) return;
+      if (opened || !stillActive(request.sentIn) || !sameTarget(request, key)) return;
+      if (signInMovedSince(request.sent, moves.current.moves, connection)) return;
       refuse(key, SIGN_IN_TAB_NOT_OPENED, signInSubject(connection, "pending"));
     });
-  }, [refuse, stillActive]);
+  }, [refuse, stillActive, requestState, sameTarget]);
   const onSignIn = useCallback((shaper: string, key: string): void => {
     begin(key, key);
     // The counts and the row's connection as the request went out, so the reply can tell

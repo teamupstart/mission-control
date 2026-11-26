@@ -772,3 +772,65 @@ test("a sign-in reply that lands after another window changed the shaper's scope
   expect(tabs).toBe(0);
   await page.unroute("**/api/shaping/sign-in");
 });
+
+test("a desktop bridge failure that lands after another window changed the shaper's scope is not shown on the row", async ({ dashboard: page, daemon }) => {
+  test.setTimeout(90_000);
+  await setFlag(daemon, "task-shaping", true);
+  await setFlag(daemon, "shaper-sign-in", true);
+  await registerSignedGuidance(daemon);
+  await page.goto(`${daemon.baseURL}/#/settings/task-shaping`);
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // A desktop bridge whose call stays open until the test fails it.
+  await page.evaluate(() => {
+    const probe = window as unknown as { failBridge?: () => Promise<void>; bridgeCalls?: number };
+    probe.bridgeCalls = 0;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<void>((_, reject) => { fail = reject; });
+    probe.failBridge = async () => {
+      fail(new Error("no registered handler"));
+      // Let the dashboard's handler for the rejection run before the test looks.
+      await new Promise((done) => setTimeout(done, 50));
+    };
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: { isDesktop: true, openExternal: () => { probe.bridgeCalls! += 1; return pending; } },
+    });
+  });
+
+  // The sign-in reply is held until the row already shows the sign-in pending, so the bridge call
+  // begins with the old connection pending: a later scope change leaves its state unchanged.
+  let release!: () => void;
+  const held = new Promise<void>((done) => { release = done; });
+  await page.route("**/api/shaping/sign-in", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    const response = await route.fetch();
+    await held;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "Sign in Signed guidance" }).click();
+  await expect(signIn(page)).toContainText("Started in another window, or before this page was reloaded.");
+  release();
+  await expect(signIn(page)).not.toContainText("Started in another window");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { bridgeCalls?: number }).bridgeCalls)).toBe(1);
+  await page.unroute("**/api/shaping/sign-in");
+
+  // Another window changes the shaper's scope while the bridge call is still open. The row now
+  // signs in to mcp:other, not signed in; the old mcp:context sign-in stays pending, listed as unused.
+  const rescoped = await fetch(`${daemon.baseURL}/api/shaping`, {
+    method: "PUT", headers: json, body: JSON.stringify({ kind: "upsert", shaper: {
+      id: "signed-guidance", label: "Signed guidance", stage: "select",
+      transport: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, headers: {}, auth: { type: "oauth", scope: "mcp:other" } } },
+    } }),
+  });
+  expect(rescoped.status).toBe(200);
+  await expect(row(page)).toContainText("Signs in: OAuth, scope mcp:other");
+  await expect(signIn(page)).toContainText("Not signed in.");
+
+  // Only now does the bridge fail. It was opening the old connection's page, so the row on its new
+  // connection shows no alert.
+  await page.evaluate(() => (window as unknown as { failBridge: () => Promise<void> }).failBridge());
+  await expect(signIn(page)).toContainText("Not signed in.");
+  await expect(signIn(page).getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Sign in Signed guidance" })).toBeEnabled();
+});

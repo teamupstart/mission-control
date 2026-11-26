@@ -135,7 +135,7 @@
     },
     {
       "name": "persona-operator-documents",
-      "description": "Require the operator briefs and guide in personas/ even if the directory is removed.",
+      "description": "Require the operator briefs and guide in personas/ even if the directory is removed. Keep this list aligned with NON_PERSONA_DOCUMENTS in scripts/builtin-personas.ts, which excludes the same files from the generated catalog.",
       "paths": ".",
       "must": {
         "haveFiles": ["personas/FOREMAN.md", "personas/INSPECTOR.md", "personas/README.md"]

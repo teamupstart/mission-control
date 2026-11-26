@@ -20,7 +20,7 @@ import {
 
 test("closed access, result kind and history policy remain the Phase 2/4 contracts", () => {
   assert.equal(PersonaRepositoryAccessSchema.parse(undefined), "none");
-  assert.deepEqual(PERSONA_WORKLOAD_RESULT_KINDS, ["persona_verdict"]);
+  assert.deepEqual(PERSONA_WORKLOAD_RESULT_KINDS, ["persona_verdict", "inspector_verdict"]);
   assert.equal(REPOSITORY_HISTORY_POLICY_V1.maxCommits, 2048);
   assert.equal(
     REPOSITORY_HISTORY_POLICY_V1.maxUniqueBlobBytes,
@@ -34,6 +34,11 @@ test("closed access, result kind and history policy remain the Phase 2/4 contrac
     }).success,
     false,
   );
+  const inspector = {
+    status: "completed", result: { kind: "inspector_verdict", verdict: { summary: "Reviewed", findings: [], resolved: [] } }, usage: {},
+  };
+  assert.deepEqual(PersonaWorkloadResultSchema.parse(inspector), inspector);
+  assert.equal(PersonaWorkloadResultSchema.safeParse({ ...inspector, result: { ...inspector.result, kind: "unknown" } }).success, false);
 });
 test("status-only deletions accept the union of two independently bounded layers", () => {
   const entries = Array.from({ length: MAX_REPOSITORY_VIEW_ENTRIES + 1 }, (_, i) => ({

@@ -253,6 +253,11 @@ policy and Inspector's secret scrubber. Inspector's historical deny grant remain
 Symlinks expose only their target blob bytes; submodules are metadata, never traversed.
 Binary content is metadata-only in diffs and unavailable as text. Byte reads are refused if
 scrubbing would change the immutable bytes. Multiline scrubbing preserves line coordinates.
+Worktree `read` calls can set `verifyAbsence` to confirm that an exact allowed path is
+absent from the captured view. The reader returns an `absent: true` metadata item and
+records its path in the audit. Local Inspector uses this behavior for ordinary worktree
+reads and can continue after reading a deleted path. An empty read, a denied path, or an
+unavailable blob does not confirm removal.
 
 Git receives closed argv arrays and only descriptor-derived object ids. A disposable bare
 wrapper points at the verified object directory without reading its Git configuration.

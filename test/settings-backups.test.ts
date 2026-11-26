@@ -208,6 +208,7 @@ test("daily capture includes archived operator catalogs and excludes built-ins a
   assert.equal(first.snapshot.appVersion, "1.2.3-test");
   assert.deepEqual(first.snapshot.domains.find((entry) => entry.domain === "inspector")?.payload, {
     enabled: true,
+    localReview: false,
     mode: "live",
     repoAllowlist: [],
     maxCommentsPerRound: 8,

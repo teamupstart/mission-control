@@ -27,20 +27,7 @@ export interface Brief {
   truncated: boolean;
 }
 
-/**
- * The default brief, used when a repo ships no INSPECTOR.md in either location.
- *
- * Kept deliberately short. Its job is to be a defensible reviewer on a repo nobody has
- * configured, and the biggest risk there is not missing an issue - it is a bot that
- * leaves nine style opinions on a three-line change and gets muted. So the noise floor
- * is stated as firmly as the substance.
- */
-export const DEFAULT_BRIEF = `# Inspector
-
-You are reviewing a pull request. No INSPECTOR.md was found in this repository, at
-personas/INSPECTOR.md or at the root, so apply general engineering judgement.
-
-## Care about
+const DEFAULT_REVIEW_FOCUS = `## Care about
 
 - **Correctness.** Logic that is wrong on a real input: off-by-one, an unhandled null,
   an await that was forgotten, a promise nobody catches, a race between two writers.
@@ -65,7 +52,15 @@ Raise what happens in ordinary use, and what a realistic configuration or sequen
 deliberate actions reaches. A case that needs unlikely timing, a failure of the local
 machine, malformed data from a trusted source, or two unlikely conditions together is
 remote: raise it only when its consequence cannot be undone (lost data, an exposed secret,
-a wrong irreversible action, no way to recover), and never above \`minor\` otherwise.
+a wrong irreversible action, no way to recover), and never above \`minor\` otherwise.`;
+
+/** The GitHub default brief when the repository supplies none. */
+export const DEFAULT_BRIEF = `# Inspector
+
+You are reviewing a pull request. No INSPECTOR.md was found in this repository, at
+personas/INSPECTOR.md or at the root, so apply general engineering judgement.
+
+${DEFAULT_REVIEW_FOCUS}
 Do not look for the narrower variant of an edge case a push already fixed.
 
 Severity is likelihood times consequence, not consequence alone.
@@ -85,6 +80,19 @@ One issue per comment, on the line it is about. Lead with the consequence, not t
 category. Say what would go wrong and under what input. If you are not sure it is
 wrong, say so plainly or leave it out - a confident wrong comment costs more than a
 missed one.`;
+
+export const DEFAULT_LOCAL_BRIEF = `# Inspector
+
+Apply general engineering judgement to this submitted worktree.
+
+${DEFAULT_REVIEW_FOCUS}
+Severity reflects likelihood and consequence.
+
+## What to report
+
+Report concrete defects. Leave out formatting, import order, and style preferences.
+Lead with what would go wrong and under what input. Use one finding per issue and point
+to the affected line when possible.`;
 
 /**
  * Read a repo's INSPECTOR.md from the first `BRIEF_PATHS` entry that has one, falling back

@@ -1,3 +1,4 @@
+import { InspectorVerdictSchema } from "./inspector-review.ts";
 import {
   RepositoryPathSchema,
   RepositoryGlobSchema,
@@ -48,6 +49,7 @@ export const RepositoryOperationSchemas = {
     unit: z.enum(["line", "byte"]).default("line"),
     start: count.default(0),
     length: z.number().int().min(1).max(65536).default(200),
+    verifyAbsence: z.boolean().optional().describe("When true, report exact path absence in the captured worktree."),
     cursor,
   }),
   search: z.strictObject({
@@ -346,6 +348,8 @@ export const RepositoryQueryAuditMetadataSchema = z
     attemptId: id,
     snapshotDigest: sha,
     operation: z.enum(REPOSITORY_OPERATION_IDS),
+    readLayer: z.enum(["worktree", "index"]).optional(),
+    absentWorktreePath: RepositoryPathSchema.optional(),
     inputHash: sha,
     status: z.enum(["ok", "denied", "failed", "cancelled"]),
     code: z.enum(REPOSITORY_FAILURE_CODES).nullable(),
@@ -357,6 +361,13 @@ export const RepositoryQueryAuditMetadataSchema = z
     handles: z.array(RepositoryEvidenceHandleSchema).max(1000),
   })
   .superRefine((audit, ctx) => {
+    if (audit.readLayer !== undefined && audit.operation !== "read")
+      ctx.addIssue({ code: "custom", message: "Only a read query has a checkout layer" });
+    if (audit.absentWorktreePath !== undefined && (
+      audit.operation !== "read" || audit.readLayer !== "worktree" || audit.status !== "ok"
+      || audit.code !== null || audit.items !== 1 || audit.truncated || audit.hasNextPage
+      || audit.handles.length > 0 || !approvedPath(audit.absentWorktreePath)
+    )) ctx.addIssue({ code: "custom", message: "Invalid worktree absence evidence" });
     const ids = new Set<string>();
     const ordinals = new Set<number>();
     if (audit.status !== "ok" && audit.handles.length)
@@ -434,11 +445,11 @@ export const PersonaWorkloadRequestSchema = z.strictObject({
   attemptId: id,
   submissionId: id,
   idempotencyKey: id,
-  persona: PersonaSnapshotSchema,
+  persona: PersonaSnapshotSchema.optional(),
   accounting: z.strictObject({
     callId: id,
     runId: id,
-    purpose: z.literal("persona_review"),
+    purpose: z.enum(["persona_review", "inspector_review"]),
     attempt: count.min(1),
   }),
   execution: z.strictObject({
@@ -469,7 +480,8 @@ export const PersonaWorkloadRequestSchema = z.strictObject({
   deadline: count,
   cancellationGeneration: count,
   requiredCapability: z.literal(REPOSITORY_EVIDENCE_CAPABILITY),
-});
+}).refine(request => (request.accounting.purpose === "persona_review") === Boolean(request.persona),
+  "Persona workload identity must match the review purpose");
 export type PersonaWorkloadRequest = z.infer<
   typeof PersonaWorkloadRequestSchema
 >;
@@ -520,17 +532,19 @@ export const PersonaWorkloadVerdictSchema = z
     "Persona verdict exceeds its UTF-8 budget",
   );
 // Append only: Phase 4 adds inspector_verdict at this discriminator, without a transport bump.
-export const PERSONA_WORKLOAD_RESULT_KINDS = ["persona_verdict"] as const;
+export const PERSONA_WORKLOAD_RESULT_KINDS = ["persona_verdict", "inspector_verdict"] as const;
 const capabilityReason = z.enum(["unverified_build", "tool_inventory", "unsupported_effort"]);
 export type RepositoryCapabilityReason = z.infer<typeof capabilityReason>;
 export const PersonaWorkloadResultSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("completed"),
+    providerRunId: id.optional(),
     result: z.discriminatedUnion("kind", [
       z.strictObject({
         kind: z.literal("persona_verdict"),
         verdict: PersonaWorkloadVerdictSchema,
       }),
+      z.strictObject({ kind: z.literal("inspector_verdict"), verdict: InspectorVerdictSchema }),
     ]),
     usage: boundedRecord(
       z.string().max(100),
@@ -540,6 +554,7 @@ export const PersonaWorkloadResultSchema = z.discriminatedUnion("status", [
   }),
   z.strictObject({
     status: z.literal("failed"),
+    providerRunId: id.optional(),
     capabilityReason: capabilityReason.optional(),
     providerFailure: z.enum(["retryable", "token_exhausted"]).optional(),
     usage: boundedRecord(
@@ -561,9 +576,15 @@ export const PersonaWorkloadResultSchema = z.discriminatedUnion("status", [
 ]);
 export type PersonaWorkloadResult = z.infer<typeof PersonaWorkloadResultSchema>;
 // Provider APIs require an object root; future result kinds append inside this envelope.
-export const PersonaWorkloadProviderResultSchema = z.strictObject({
-  result: PersonaWorkloadResultSchema.options[0].shape.result,
-});
+const [personaResultSchema, inspectorResultSchema] = PersonaWorkloadResultSchema.options[0].shape.result.options;
+export const PersonaWorkloadProviderResultSchema = z.strictObject({ result: personaResultSchema });
+export const InspectorWorkloadProviderResultSchema = z.strictObject({ result: inspectorResultSchema });
+
+export function parseRepositoryWorkloadVerdict(purpose: PersonaWorkloadRequest["accounting"]["purpose"], verdict: unknown) {
+  return purpose === "inspector_review"
+    ? inspectorResultSchema.safeParse({ kind: "inspector_verdict", verdict })
+    : personaResultSchema.safeParse({ kind: "persona_verdict", verdict });
+}
 const eventBase = {
   eventId: z.string().uuid(),
   workloadId: id,

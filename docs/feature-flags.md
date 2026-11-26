@@ -39,6 +39,12 @@ existing dashboard API. See [Recurring missions](recurring-missions.md#creating-
 `test/mcp-schedules.test.ts` covers tool discovery, validation, persistence and scheduled task
 creation; `e2e/specs/mcp-schedules.spec.ts` covers the flag's persisted, live dashboard toggle.
 
+**Local Inspector** (`local-inspector`) exposes the pre-PR workflow stage, its Command tuning
+and the Local review setting in GitHub Inspector. It uses the repository workload independently
+of the Persona repository access preview. Turning the flag off hides its authoring controls
+and skips the stage when a saved workflow reaches it. See
+[Local Inspector Command](workflows.md#local-inspector-command-preview).
+
 ## Operator controls
 
 Open **Settings > Feature flags**, directly after Setup. Preview features appear in one
@@ -202,7 +208,7 @@ authority require an operator. Each new feature flag declares its session policy
 | `session-settings-mcp` | preview | Let registered sessions find, read and change supported settings | [Discover and edit typed settings](skills-and-settings.md#discover-and-edit-typed-settings) |
 | `headless-mode` | preview | Dispatch from a Claude Code terminal session | [Feature flags](#feature-flags) (above) |
 | `task-shaping` | preview | `/api/shaping` and `/api/shaping/test`, the shaping engine, the Settings > Task shaping category, and the `shaping_config` event and snapshot field | [Task shaping](task-shaping.md) |
-| `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until the sign-in arrives in later releases. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
+| `shaper-sign-in` | preview | Whether a remote shaper whose server carries the `auth` marker may be called, the sign-in routes (`/api/shaping/sign-in`, its callback and `/api/shaping/sign-out`), `signIns` in `GET /api/shaping`, and the `shaping_sign_ins` event and snapshot field. While it is off such a shaper is `unavailable` and is not called; while it is on it is still `unavailable` until calls use the sign-in in a later release. The schema accepts the marker either way, so a marked shaper is always a known shaper | [A shaper that signs in](task-shaping.md#a-shaper-that-signs-in) |
 | `resident-card-names` | preview | The Resident name with call sign checkboxes in Settings > Display and the profile name they add to a resident's Board card beside its call sign. Off, the card shows the call sign alone and the stored styles are kept | [Residents](residents.md#finding-a-resident) |
 | `resident-profiles-fold` | preview | The chevron on the Residents drawer's Profiles heading that folds the launch list | [Residents](residents.md#the-residents-drawer) |
 | `session-control-requests` | preview | `request_session_control`'s `/mcp/session-control/requests` routes, the decline route and the inbox Permission card | [Sessions](sessions.md#when-a-session-asks-for-control) |

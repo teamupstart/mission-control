@@ -13,7 +13,8 @@ import { withProcessEnv } from "./helpers/process-env.ts";
 const home=mkdtempSync(join(tmpdir(),"mc-cr-integration-"));process.env.MISSION_HOME=home;
 after(()=>rmSync(home,{recursive:true,force:true}));
 const { runCheck }=await import("../src/server/workflows/checks.ts");
-const { codeRabbitReadiness, resolveCodeRabbitComparison, codeRabbitChangedPaths }=await import("../src/server/workflows/coderabbit.ts");
+const { codeRabbitReadiness, resolveCodeRabbitComparison }=await import("../src/server/workflows/coderabbit.ts");
+const { reviewChangedPaths }=await import("../src/server/workflows/review-comparison.ts");
 const { CODERABBIT_OPERATOR_ACTION }=await import("../src/server/workflows/coderabbit-result.ts");
 const { parseCodeRabbitConfig }=await import("../src/server/workflows/coderabbit-config.ts");
 const { WorkflowCommandArtifactService }=await import("../src/server/workflows/command-artifacts.ts");
@@ -268,12 +269,12 @@ test("changed paths come from git: renames and deletions are allowed, only head 
  f.git("add",".");f.git("commit","-qm","more base");const mergeBase=f.git("rev-parse","HEAD");
  f.git("mv","old-name.ts","new-name.ts");f.git("rm","-q","to-delete");writeFileSync(join(f.root,"caf\u00e9\nline.md"),"unicode and newline\n");writeFileSync(join(f.root,"keep me.txt"),"edited\n");
  f.git("add",".");f.git("commit","-qm","rename delete add");const head=f.git("rev-parse","HEAD");
- const paths=await codeRabbitChangedPaths(f.root,mergeBase,head);
+ const paths=await reviewChangedPaths(f.root,mergeBase,head);
  assert.deepEqual([...paths.required].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts"]);
  assert.deepEqual([...paths.allowed].sort(),["caf\u00e9\nline.md","keep me.txt","new-name.ts","old-name.ts","to-delete"]);
- assert.deepEqual(await codeRabbitChangedPaths(f.root,head,head),{required:[],allowed:[]});
- await assert.rejects(codeRabbitChangedPaths(f.root,"main",head),/not pinned to full commits/);
- await assert.rejects(codeRabbitChangedPaths(f.root,"f".repeat(40),head),/could not be listed/);
+ assert.deepEqual(await reviewChangedPaths(f.root,head,head),{required:[],allowed:[]});
+ await assert.rejects(reviewChangedPaths(f.root,"main",head),/not pinned to full commits/);
+ await assert.rejects(reviewChangedPaths(f.root,"f".repeat(40),head),/could not be listed/);
 });
 test("missing origin/HEAD requires explicit base tuning and resolves its tip and merge-base",async()=>{
  const f=repo("explicit-base"),head=f.git("rev-parse","HEAD");

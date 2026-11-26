@@ -139,6 +139,7 @@ follow the dashboard's feature and build gates.
 | Foreman | 2 | Read/write | `triage`, `maxFixAttempts`, `maxFixRounds`, `wrapupTriggers`, per-harness backlog model and `maxSessions`. |
 | Foreman | 3 | Protected | `enabled`, action `mode`, `autoApproveAccess`, repository grants and standing instructions confer authority. |
 | Inspector | 2 | Read/write and operational | `maxCommentsPerRound` is a preference. Per-PR review, posting and resolution are actions. |
+| Local Inspector | 3 | Protected | Manage `localReview` in Inspector settings while the Local Inspector preview is enabled. |
 | Foreman automation | 2 | Protected | `wrapup`, `trackReviewFeedback`, `trackCiFailures`, `keepShipTasksMoving`, `autoBacklog` and `backlogRespectOpenPrs` can enable unattended actions. |
 | Repository worktree overrides | 3 | Read/write and protected | Per-repository enabled and slot limits are writable for registered pools and existing overrides. Resetting an entire override can remove setup argv and dependency claims, which are operator-controlled. |
 | Shipping | 3 | Read/write and protected | `shipping.closeSessionAfterMerge` sets lifecycle behavior after a completed merge. CodeRabbit follow-up and merge grants require the operator. |

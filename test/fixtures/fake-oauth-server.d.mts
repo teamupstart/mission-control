@@ -15,6 +15,7 @@ export interface FakeOAuthModes {
   metadata: "ok" | "wrong-issuer" | "foreign-endpoint" | "no-s256" | "no-registration" | "no-code";
   resourceMetadata: "ok" | "none" | "foreign-issuer" | "wrong-resource" | "broader" | "root-only";
   shape: "ok" | "echo" | "error" | "unauthorized";
+  mcp: "ok" | "echo" | "echo-token" | "error" | "http-error" | "unauthorized" | "unauthorized-call" | "unauthorized-stream" | "unauthorized-stream-late";
   stall: string | null;
   oversize: string | null;
   redirect: string | null;
@@ -35,8 +36,8 @@ export interface FakeOAuthServer {
   requests: FakeOAuthRequest[];
   setMode(patch: Partial<FakeOAuthModes>): void;
   resetModes(): void;
-  /** Holds every request to `path` until the returned function is called. */
-  hold(path: string): () => void;
+  /** Holds every request to `path`, or only those with `method`, until the returned function is called. */
+  hold(path: string, method?: string): () => void;
   close(): Promise<void>;
 }
 

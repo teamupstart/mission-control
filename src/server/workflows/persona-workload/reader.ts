@@ -44,6 +44,11 @@ interface ScanPosition {
   index: number;
   position: number;
 }
+
+function worktreeDeletion(entry: RepositoryViewDescriptor["worktree"][number]): boolean {
+  return entry.kind === "file" && entry.blob === null && entry.classifications.includes("deleted");
+}
+
 export interface RepositoryReaderOptions {
   view: RepositoryViewDescriptor;
   objectDirectory: string;
@@ -52,6 +57,7 @@ export interface RepositoryReaderOptions {
   attemptId: string;
   budgets: z.input<typeof RepositoryBudgetsSchema>;
   signal: AbortSignal;
+  verifyWorktreeAbsenceByDefault?: boolean;
   audit: (metadata: RepositoryQueryAuditMetadata) => Promise<void>;
 }
 
@@ -309,6 +315,16 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
         const r = RepositoryOperationSchemas.read.parse(input);
         allow(r.path);
         const e = view[r.layer].find((e) => e.path === r.path);
+        if (r.layer === "worktree" && (r.verifyAbsence || options.verifyWorktreeAbsenceByDefault) && (!e || worktreeDeletion(e))) {
+          // A captured deletion can have a status entry with no blob. A replacement
+          // directory or an opaque ancestor prevents an absence proof.
+          const obscured = view.worktree.some(entry => (entry.path.startsWith(r.path + "/") && !worktreeDeletion(entry))
+            || (entry.kind !== "file" && r.path.startsWith(entry.path + "/")));
+          if (!obscured) {
+            yield { path: r.path, metadata: { absent: true } };
+            return;
+          }
+        }
         if (!e || !e.blob) throw new Refusal("unavailable");
         if (e.kind === "submodule") throw new Refusal("denied_path");
         const data = await blob(e.blob, signal);
@@ -602,6 +618,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       };
     calls++;
     let inputHash = hash(null);
+    let readLayer: "worktree" | "index" | undefined;
     const handles: RepositoryEvidenceHandle[] = [];
     try {
       if (options.signal.aborted || callSignal?.aborted)
@@ -614,6 +631,7 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       const parsed = RepositoryOperationSchemas[operation].safeParse(input);
       if (!parsed.success) throw new Refusal("invalid_request");
       const { cursor, ...shape } = parsed.data;
+      if (operation === "read" && "layer" in shape) readLayer = shape.layer;
       inputHash = hash(shape);
       let offset = 0, scanIndex = 0;
       if (cursor) {
@@ -765,12 +783,15 @@ export function createRepositoryReader(options: RepositoryReaderOptions) {
       });
       handles.length = 0;
     }
+    const first = result.items[0];
     const audit = RepositoryQueryAuditMetadataSchema.parse({
       operationId,
       operation,
       workloadId: options.workloadId,
       attemptId: options.attemptId,
       snapshotDigest: view.snapshotDigest,
+      ...(readLayer === undefined ? {} : { readLayer }),
+      ...(readLayer === "worktree" && first?.metadata?.absent === true ? { absentWorktreePath: first.path } : {}),
       inputHash,
       status: result.status,
       code: result.code,

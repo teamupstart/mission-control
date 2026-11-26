@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { LOCAL_INSPECTOR_FLAG_ID } from "@shared/feature-flag-registry.ts";
+import { useFeatureFlag } from "../useFeatureFlag.ts";
+import { useEffect, useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
 import type { InspectorState } from "../useInspector.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -238,7 +240,9 @@ export function InspectorSettingsPanel({
   state: InspectorState;
   onNavigate: SettingsNavigate;
 }): React.JSX.Element {
-  const { config, inspections, update, error } = state;
+  const { config, inspections, refresh, update, error } = state;
+  const localInspectorPreview = useFeatureFlag(LOCAL_INSPECTOR_FLAG_ID);
+  useEffect(() => { if (localInspectorPreview) void refresh(); }, [localInspectorPreview, refresh]);
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
   const allowlist = config?.repoAllowlist ?? [];
@@ -355,6 +359,29 @@ export function InspectorSettingsPanel({
               </Tooltip>
             </p>
           </ConsoleCard>
+
+          {localInspectorPreview && (
+            <ConsoleCard
+              title="Local review"
+              action={
+                <ConsoleSwitch
+                  label="Review in the workflow before the pull request opens"
+                  tooltip="Enable Local Inspector stages in workflows"
+                  tone="ok"
+                  checked={config?.localReview ?? false}
+                  disabled={!config}
+                  onChange={(localReview) => void update({ localReview })}
+                />
+              }
+            >
+              <p className="settings-hint">
+                Review in the workflow before the pull request opens. With Inspector on, workflows
+                containing a Local Inspector stage review the submitted checkout and return findings
+                to the session. Dry run and Live both allow local review. GitHub reviews continue
+                after the pull request opens.
+              </p>
+            </ConsoleCard>
+          )}
 
           <ConsoleCard title="May post in" anchor="inspector/reviewed-repos">
             {/* The consent copy stays with the count: it is about the grant, not the editor. */}

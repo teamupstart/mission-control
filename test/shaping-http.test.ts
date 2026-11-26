@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 
 const home = mkdtempSync(join(tmpdir(), "mission-shaping-http-"));
 process.env.MISSION_HOME = home;
+// The sign-in service keeps its records in memory: no Keychain item is read or written.
+process.env.MISSION_SHAPER_SIGN_IN_STORE = "memory";
 const { openDb, closeDb, setAppConfig, getAppConfig } = await import("../src/server/db.ts");
 const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
 const { SHAPING_CONFIG_DEFAULTS, credentialsWereRemoved } = await import("../src/shared/shaping.ts");
@@ -35,6 +37,8 @@ const { daemonShapingView } = await import("../src/server/shaping/revisions.ts")
 // middle of the file lets the root test finish, and run its `after` cleanup, before the tests
 // registered after it exist, which a filtered run of one of them exposes.
 const { startGuidanceHttp } = await import("./fixtures/fake-guidance-mcp.mjs");
+const { shaperSignIns } = await import("../src/server/shaping/sign-in/index.ts");
+const { signIn, signInFixture } = await import("./helpers/shaper-sign-in.ts");
 type ShapingFrame = { type: "shaping_config"; config: unknown };
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-shaper.mjs", import.meta.url));
@@ -45,7 +49,8 @@ execFileSync("git", ["init", "-q", repository]);
 const plainFolder = join(home, "not-a-checkout");
 mkdirSync(plainFolder, { recursive: true });
 const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
-after(() => { closeDb(); rmSync(home, { recursive: true, force: true }); });
+shaperSignIns.start();
+after(async () => { await shaperSignIns.stop(); closeDb(); rmSync(home, { recursive: true, force: true }); });
 
 const app = buildApp({ registry: new Registry(), reviews: new ReviewManager(new Registry()), tasks: new TaskManager(new Registry()), queues: new QueueManager(new Registry()) });
 const get = () => app.request("/api/shaping", { headers });
@@ -81,6 +86,8 @@ test("GET returns the config and the final reply shape", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], folder: { path: join(home, "shapers"), ignored: 0 }, references: {},
+    // Empty while `shaper-sign-in` is off, as it is here.
+    signIns: [],
   });
 });
 
@@ -747,6 +754,30 @@ test("a dry run or a write that is not loopback JSON is refused before anything 
     const local = await app.request("/api/shaping/test", { method: "POST", headers: { ...headers, origin: "http://127.0.0.1:7317" }, body });
     assert.equal(local.status, 200, "the dashboard's own origin still runs it");
   } finally { await server.close(); }
+});
+
+test("a dry run of a signed-in shaper returns its server's guidance, and no reply, summary or section holds the token", async (t) => {
+  const { fake, made } = await signInFixture(t);
+  fake.setMode({ mcp: "echo-token", shape: "echo" });
+  await put({ kind: "settings", limits: { deadlineMs: 60_000 } });
+  const auth = { type: "oauth", scope: "mcp:context" };
+  const shapers = [
+    { id: "signed-mcp", url: fake.resourceUrl, shaper: { type: "mcp", tool: "get_guidance", server: { type: "http", url: fake.resourceUrl, auth } } },
+    { id: "signed-http", url: fake.shapeUrl, shaper: { type: "http", url: fake.shapeUrl, auth } },
+  ];
+  for (const { id, url, shaper } of shapers) {
+    const held = await signIn({ url, scope: auth.scope, issuer: null });
+    made.push(held.id);
+    const upsert = await put({ kind: "upsert", shaper: { id, label: id, stage: "select", timeoutMs: 30_000, transport: shaper } });
+    assert.equal(upsert.status, 200, await upsert.clone().text());
+    const text = await (await dryRun({ id, repository, prompt: "Retry failed charges" })).text();
+    assert.equal(text.includes(held.token), false, `${id}: neither the entries nor the section nor the summary carry the token`);
+    const run = JSON.parse(text) as { section: string; entries: Array<{ body: string }>; summary: { shapers: Array<{ outcome: string; redacted: boolean }> } };
+    assert.deepEqual(run.summary.shapers.map((row) => [row.outcome, row.redacted]), [["ok", true]], id);
+    assert.deepEqual(run.entries.map((entry) => entry.body), ["the server received Bearer [sign-in token redacted]"], id);
+    assert.ok(run.section.includes("[sign-in token redacted]"), id);
+    assert.ok(fake.requests.some((entry) => entry.headers.authorization === `Bearer ${held.token}`), `${id}: the server was called with the token`);
+  }
 });
 
 test("GET lists every environment name a shaper references as set or unset, never a value", async () => {

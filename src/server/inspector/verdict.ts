@@ -1,3 +1,5 @@
+import type { InspectorVerdict, LocalInspectorFinding } from "@shared/inspector-review.ts";
+export { InspectorVerdictSchema, type InspectorVerdict } from "@shared/inspector-review.ts";
 import { z } from "zod";
 import { INSPECTOR_LIMITS } from "@shared/inspector.ts";
 import type { InspectorComment, InspectorMode, InspectorSeverity } from "@shared/types.ts";
@@ -19,53 +21,6 @@ const clampTo =
   (max: number) =>
   (s: string): string =>
     s.length > max ? s.slice(0, max) : s;
-
-const SEVERITIES = ["blocker", "major", "minor", "nit"] as const;
-
-export const InspectorVerdictSchema = z.object({
-  summary: z.preprocess((v) => (typeof v === "string" ? clampTo(4000)(v) : v), z.string()),
-  // `nullAsAbsent` because the provider schema carries this as a nullable required key:
-  // "I found nothing" is a verdict the model must still be able to state, and under strict
-  // Structured Outputs it states it with `null` rather than by omitting the key. Reading
-  // that back as absence keeps `.default([])` - and so the `clean: true` below - intact.
-  findings: nullAsAbsent(
-    z
-      .array(
-        z.object({
-          path: z.string().min(1),
-          // The model is asked for the NEW-file line. Null is honest and useful ("this
-          // is about the file, not a line"); a made-up number is not, so nullable rather
-          // than required.
-          line: z.number().int().positive().nullable().default(null),
-          severity: z.enum(SEVERITIES),
-          // Short, because it is half the fingerprint - a title that runs to a paragraph
-          // makes the issue's identity unstable across rounds.
-          title: z.preprocess(
-            (v) => (typeof v === "string" ? clampTo(120)(v) : v),
-            z.string().min(1),
-          ),
-          body: z.preprocess(
-            (v) => (typeof v === "string" ? clampTo(4000)(v) : v),
-            z.string().min(1),
-          ),
-        }),
-      )
-      .max(50)
-      .default([]),
-  ),
-  /**
-   * Fingerprints of previously-raised findings this push has addressed.
-   *
-   * Model-supplied, and the only model-supplied thing that closes a thread - which is
-   * why the planner treats it as strictly narrowing: it can close a thread we own and
-   * already told the model about, and it can do nothing else.
-   *
-   * `nullAsAbsent` keeps that narrowing fail-closed under a strict provider schema, where
-   * the key is always present: `null` closes nothing, exactly as omitting it did.
-   */
-  resolved: nullAsAbsent(z.array(z.string()).max(50).default([])),
-});
-export type InspectorVerdict = z.infer<typeof InspectorVerdictSchema>;
 
 /**
  * A follow-up answer in one of our own threads, and whether writing it settled the issue.
@@ -245,7 +200,7 @@ export function planReview(input: PlanInput): ReviewPlan {
   let droppedOffDiff = 0;
 
   for (const f of verdict.findings) {
-    const path = f.path.replace(/^\.?\//, "");
+    const path = findingPath(f.path);
     const fileLines = lines.get(path);
     // Layer 4. Not a warning, not a demotion - a drop.
     if (!fileLines) {
@@ -256,8 +211,8 @@ export function planReview(input: PlanInput): ReviewPlan {
     // into every published inline comment, so a credential-shaped string in a 120-char
     // title would go out verbatim while the body beside it was cleaned. Scrubbed BEFORE
     // the fingerprint so the issue's identity is the one that actually gets published.
-    const title = scrubSecrets(f.title);
-    const fp = fingerprint(path, title);
+    const normalized = normalizeFinding(f, path);
+    const { fingerprint: fp } = normalized;
     if (raised.has(fp)) continue; // the model said the same thing twice
     raised.add(fp);
 
@@ -270,12 +225,8 @@ export function planReview(input: PlanInput): ReviewPlan {
 
     candidates.push({
       id: prior?.id ?? input.newId(),
-      fingerprint: fp,
-      path,
+      ...normalized,
       line: snapToLine(fileLines, f.line),
-      severity: f.severity,
-      title,
-      body: scrubSecrets(f.body),
     });
   }
 
@@ -422,4 +373,49 @@ function reviewBody(
     parts.push("", "_(dry run - this review was not posted)_");
   }
   return parts.join("\n");
+}
+
+function findingPath(path: string): string {
+  return path.replace(/^\.?\//, "");
+}
+
+function normalizeFinding(finding: InspectorVerdict["findings"][number], path: string): LocalInspectorFinding {
+  const title = scrubSecrets(finding.title);
+  return { ...finding, path, title, body: scrubSecrets(finding.body), fingerprint: fingerprint(path, title) };
+}
+
+export function planLocalReview(input: {
+  verdict: InspectorVerdict;
+  changedPaths: ReadonlySet<string>;
+  previous: readonly LocalInspectorFinding[];
+  prompted: ReadonlySet<string>;
+  blockingSeverity: InspectorSeverity;
+}) {
+  const { verdict, changedPaths, previous, prompted, blockingSeverity } = input;
+  const resolved = new Set(verdict.resolved.filter(fp => prompted.has(fp)));
+  // The diff limits new findings. Only a verified resolution closes a carried finding.
+  const prior = new Map(previous.map(f => [f.fingerprint, f]));
+  const open = new Map([...prior].filter(([fingerprint]) => !resolved.has(fingerprint)));
+  const raised = new Map<string, LocalInspectorFinding>();
+  for (const raw of verdict.findings) {
+    const path = findingPath(raw.path);
+    const finding = normalizeFinding(raw, path);
+    if (!changedPaths.has(path) && !prior.has(finding.fingerprint)) continue;
+    const duplicate = raised.get(finding.fingerprint);
+    if (!duplicate || SEVERITY_RANK[finding.severity] < SEVERITY_RANK[duplicate.severity]) {
+      raised.set(finding.fingerprint, finding);
+    }
+  }
+  for (const [fp, finding] of raised) {
+    const earlier = prior.get(fp);
+    // Re-raising an unresolved issue cannot make an earlier blocking finding advisory.
+    open.set(fp, earlier && SEVERITY_RANK[earlier.severity] < SEVERITY_RANK[finding.severity]
+      ? { ...finding, severity: earlier.severity } : finding);
+  }
+  const findings = [...open.values()].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  return {
+    findings,
+    blocked: findings.some(f => SEVERITY_RANK[f.severity] <= SEVERITY_RANK[blockingSeverity]),
+    summary: scrubSecrets(verdict.summary).trim(),
+  };
 }

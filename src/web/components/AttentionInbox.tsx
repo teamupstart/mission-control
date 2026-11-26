@@ -20,6 +20,8 @@ import { Tooltip } from "./Tooltip.tsx";
 import { AgentDot, EnsembleProgressDots } from "./session-bits.tsx";
 import { ReviewCard } from "./ReviewModal.tsx";
 import { requestComposerFocus } from "../lib/composer-focus.ts";
+import { useWorkspacePaths, type SessionFilesController } from "../lib/sessionFiles.ts";
+import type { Session, ReviewItem } from "@shared/types.ts";
 import type { SnoozedQuestion } from "../lib/review-snooze.ts";
 import { SnoozedInboxRow } from "./ReviewSnooze.tsx";
 import { ReportCard } from "./ReportCard.tsx";
@@ -137,6 +139,8 @@ export function AttentionInbox({
   onComplete,
   onReplyBox,
   pinned = null,
+  files,
+  onOpenPath,
 }: {
   fold: AttentionFold;
   /** Session whose first visible question should receive focus when the inbox opens. */
@@ -177,6 +181,14 @@ export function AttentionInbox({
   onReplyBox?: (sessionId: string, present: boolean) => void;
   /** The report a notification opened that no section lists, drawn above them; null for none. */
   pinned?: PinnedReport | null;
+  /**
+   * The session files store, for the checkout listing that decides which paths a question's
+   * text names - the same listing the per-session review modal reads, so a question links its
+   * files the same way whichever surface the operator answers it from.
+   */
+  files?: SessionFilesController;
+  /** Open one checkout file in the session's Files tab. The inbox closes first, like every deep link. */
+  onOpenPath?: (sessionId: string, path: string) => void;
 }): React.JSX.Element {
   const reportsOn = useFeatureFlag(INBOX_FLAG);
   const [initialQuestionId] = useState(() => {
@@ -371,6 +383,8 @@ export function AttentionInbox({
                 onOpenRun={(runId) => leave(() => onOpenRun(runId))()}
                 onComplete={onComplete && ((sessionId) => leave(() => onComplete(sessionId))())}
                 onReplyBox={onReplyBox}
+                files={files}
+                onOpenPath={onOpenPath && ((sessionId, path) => leave(() => onOpenPath(sessionId, path))())}
                 onDismiss={dismiss(item)}
                 onLeave={onClose}
               />
@@ -392,6 +406,52 @@ export function AttentionInbox({
         )}
       </div>
     </Overlay>
+  );
+}
+
+/**
+ * One session's questions, drawn through the same `ReviewCard` the per-session modal draws and
+ * fed the same checkout listing, through the same hook. Without it a question opened from here
+ * printed its paths as plain text while the very same question, opened from the conversation's
+ * badge, linked them.
+ */
+function InboxReviewCards({
+  session,
+  reviews,
+  initialQuestionId,
+  questionTitleRef,
+  onOpenSession,
+  files,
+  onOpenPath,
+}: {
+  session: Session;
+  reviews: readonly ReviewItem[];
+  initialQuestionId?: string;
+  questionTitleRef: Ref<HTMLHeadingElement>;
+  onOpenSession: (sessionId: string) => void;
+  files?: SessionFilesController;
+  onOpenPath?: (sessionId: string, path: string) => void;
+}): React.JSX.Element {
+  const checkoutPaths = useWorkspacePaths(files, session.id, Boolean(session.cwd && onOpenPath));
+  const openPath = onOpenPath ? (path: string) => onOpenPath(session.id, path) : undefined;
+  return (
+    <>
+      {reviews.map((review) => (
+        <ReviewCard
+          key={review.id}
+          review={review}
+          titleRef={review.id === initialQuestionId ? questionTitleRef : undefined}
+          session={session}
+          note={session.note}
+          onMovedToChat={(sessionId) => {
+            onOpenSession(sessionId);
+            requestComposerFocus(sessionId);
+          }}
+          checkoutPaths={checkoutPaths}
+          onOpenPath={openPath}
+        />
+      ))}
+    </>
   );
 }
 
@@ -495,6 +555,8 @@ function InboxItem({
   onComplete,
   onDismiss,
   onReplyBox,
+  files,
+  onOpenPath,
   onLeave,
 }: {
   item: AttentionItem;
@@ -514,6 +576,8 @@ function InboxItem({
   /** Dismiss this row, for a card that draws its own Dismiss from the action registry. */
   onDismiss: () => void;
   onReplyBox?: (sessionId: string, present: boolean) => void;
+  files?: SessionFilesController;
+  onOpenPath?: (sessionId: string, path: string) => void;
   /** Close the inbox, for the one row whose deep link is an `href` rather than a handler. */
   onLeave: () => void;
 }): React.JSX.Element {
@@ -597,19 +661,15 @@ function InboxItem({
             </Tooltip>
             {dismissButton}
           </div>
-          {item.reviews.map((review) => (
-            <ReviewCard
-              key={review.id}
-              review={review}
-              titleRef={review.id === initialQuestionId ? questionTitleRef : undefined}
-              session={item.session}
-              note={item.session.note}
-              onMovedToChat={(sessionId) => {
-                onOpenSession(sessionId);
-                requestComposerFocus(sessionId);
-              }}
-            />
-          ))}
+          <InboxReviewCards
+            session={item.session}
+            reviews={item.reviews}
+            initialQuestionId={initialQuestionId}
+            questionTitleRef={questionTitleRef}
+            onOpenSession={onOpenSession}
+            files={files}
+            onOpenPath={onOpenPath}
+          />
         </section>
       );
     case "session_dialog":

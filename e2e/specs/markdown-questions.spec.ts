@@ -174,3 +174,38 @@ test("with the markdown-questions flag on, the conversation's entry for a filed 
   await expect(asked.locator("p.review-asked-question")).toContainText(`- ${OLD_NAME}`);
   await expect(asked.getByRole("listitem")).toHaveCount(0);
 });
+
+/*
+ * The inbox draws the same `ReviewCard` the session's own modal does, and it must link the
+ * same paths. It used to draw it without the checkout listing or a way to open a file, so a
+ * question opened from "to answer" printed its paths as plain text while the very same question
+ * opened from the conversation's "to review" badge linked them. Opened straight from the title
+ * bar on a fresh page, with no session selected first, so nothing else has warmed the listing.
+ */
+for (const markdown of [false, true]) {
+  test(`with the markdown-questions flag ${markdown ? "on" : "off"}, a question opened from the inbox links its checkout paths exactly as the session's review modal does`, async ({ dashboard: page, daemon }) => {
+    test.setTimeout(120_000);
+    if (markdown) await setFlag(daemon, "markdown-questions", true);
+    const session = await dispatch(daemon);
+    await ask(daemon, session.cwd!);
+    await page.reload();
+    await expect(page.locator("button.pulse-seg", { hasText: "to answer" }).locator(".pulse-n")).toHaveText("1");
+
+    const inbox = await openInbox(page);
+    const link = body(inbox).getByRole("link", { name: "README.md" });
+    await expect(link).toBeVisible();
+    await capture(inbox, `05-inbox-path-link-flag-${markdown ? "on" : "off"}`, page);
+    await link.click();
+    await expect(inbox).toBeHidden();
+    await expect(
+      page.getByRole("tablist", { name: "Session detail" }).getByRole("tab", { name: /Files$/ }),
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(
+      page.getByRole("listbox", { name: "Session files" }).getByRole("option", { name: "README.md" }),
+    ).toHaveAttribute("aria-selected", "true");
+
+    // The question is still owed, and the modal links the same path.
+    const modal = await openReview(page);
+    await expect(body(modal).getByRole("link", { name: "README.md" })).toBeVisible();
+  });
+}

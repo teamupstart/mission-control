@@ -5913,6 +5913,9 @@ export function App(): React.JSX.Element {
                   reports={reportControls}
                   held={attentionDismissals.dismissed === null}
                   pinned={pinnedBand}
+                  files={files}
+                  // The question stays pending; "to answer" brings the operator back to decide.
+                  onOpenPath={openSessionPath}
                 />
               )}
               {/* Open report: an agent report's attached document, from its stored copy. Opened from

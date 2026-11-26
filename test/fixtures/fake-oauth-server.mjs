@@ -36,7 +36,8 @@
 //   stall          a path that never answers
 //   oversize       a path that answers 100 KiB
 //   redirect       a path that answers 307 to elsewhereUrl
-//   redirectWithin a path that answers 307 to `/moved<path>` on its own origin, which records and answers 200
+//   redirectWithin a path that answers 307 to `/moved<path>` on its own origin, which records and answers 200;
+//                  `/moved/mcp` and `/moved/shape` are served as the protected `/mcp` and `/shape`
 //   status         { [path]: status }: that path answers an HTML status page repeating the request body
 //   iss            true: the `/authorize` redirect carries `iss`; or a string to send instead
 //   tokens         "full" | "no-refresh" (no refresh token, and a refresh does not rotate) | "no-expiry" | "no-scope"
@@ -166,6 +167,8 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
     const path = url.pathname;
     const isIssuer = serverName === "issuer" || (!separateIssuer && serverName === "resource");
     const isResource = serverName === "resource";
+    // A protected resource reached through a same-origin redirect is served as the resource itself.
+    const served = isResource && (path === "/moved/mcp" || path === "/moved/shape") ? path.slice("/moved".length) : path;
 
     if (modes.stall === path) return new Promise(() => {});
     if (modes.oversize === path) return json(res, 200, { padding: "x".repeat(100 * 1024) });
@@ -173,7 +176,7 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
       res.writeHead(307, { location: `http://${req.headers.host}/moved${path}${url.search}` }).end();
       return;
     }
-    if (path.startsWith("/moved/")) return json(res, 200, { moved: true });
+    if (path.startsWith("/moved/") && served === path) return json(res, 200, { moved: true });
     if (modes.redirect === path) { res.writeHead(307, { location: `${elsewhere.origin}${path}${url.search}` }).end(); return; }
     // A status page that is not an OAuth reply, as a gateway or proxy answers, repeating the request it got.
     if (modes.status?.[path]) {
@@ -282,7 +285,7 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
       return;
     }
 
-    if (isResource && path === "/mcp") {
+    if (isResource && served === "/mcp") {
       if (modes.mcp === "unauthorized" || !bearerFor(req, urls.resourceUrl)) return challenge(res, "/mcp");
       if (modes.mcp === "unauthorized-stream-late" && req.method === "GET") return challenge(res, "/mcp");
       if (modes.mcp === "unauthorized-stream" && req.method === "GET") {
@@ -313,7 +316,7 @@ export async function startFakeOAuthServer({ separateIssuer = false } = {}) {
       return;
     }
 
-    if (isResource && path === "/shape") {
+    if (isResource && served === "/shape") {
       if (modes.shape === "unauthorized" || !bearerFor(req, urls.shapeUrl)) return challenge(res, "/shape");
       const authorization = req.headers.authorization;
       if (modes.shape === "error") { res.writeHead(500, { "content-type": "text/plain" }).end(`refused ${authorization}`); return; }

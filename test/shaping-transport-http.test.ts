@@ -497,6 +497,20 @@ test("a signed-in shaper sends the token on its one POST, to the server's origin
     "the token reached the shaper's server, on its one request, and nothing else");
 });
 
+test("a redirect within the origin carries the token to the new location, and the call reads its guidance", async (t) => {
+  const { fake, held, shaper: marked } = await signedInShape(t);
+  fake.setMode({ redirectWithin: "/shape" });
+  const from = fake.requests.length;
+  const reply = await callHttp(request(), marked, ctx({ trace: TRACE, workUnitId: "wu_1" }));
+  assert.deepEqual(data(reply).guidance, [{ id: "fake/guide", title: "Guide", body: "guidance for the task" }]);
+  const seenHere = fake.requests.slice(from).map((entry) => [entry.server, entry.method, entry.path, entry.headers.authorization]);
+  assert.deepEqual(seenHere, [
+    ["resource", "POST", "/shape", "Bearer " + held.token],
+    ["resource", "POST", "/moved/shape", "Bearer " + held.token],
+  ], "the redirect is followed once, on the origin, and the redirected POST carries the token");
+  assert.deepEqual(toElsewhere(fake), []);
+});
+
 test("a redirect off the origin is refused for a signed-in shaper, and the other origin receives nothing", async (t) => {
   const { fake, held, shaper: marked } = await signedInShape(t);
   fake.setMode({ redirect: "/shape" });

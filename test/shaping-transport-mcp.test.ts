@@ -1624,6 +1624,19 @@ test("a signed-in call carries the trace context, the work unit id and params._m
   assert.equal(signedIn.redacted, true);
 });
 
+test("a redirect within the origin carries the token on every redirected request, and the call reads its guidance", async (t) => {
+  const { fake, held, shaper: marked } = await signedInMcp(t);
+  fake.setMode({ redirectWithin: "/mcp" });
+  const from = fake.requests.length;
+  const reply = await oneRun(marked);
+  assert.deepEqual(data(reply).guidance, [{ id: "guide/billing-api", title: "Guide", body: "guidance for billing-api" }]);
+  const moved = fake.requests.slice(from).filter((entry) => entry.path === "/moved/mcp");
+  const movedMethods = moved.map((entry) => entry.method === "POST" ? rpcMethod(entry.body) : entry.method);
+  for (const method of ["initialize", "tools/call"]) assert.ok(movedMethods.includes(method), method + " reached the redirected location: " + movedMethods.join(", "));
+  for (const entry of moved) assert.equal(entry.headers.authorization, "Bearer " + held.token, entry.method + " " + (rpcMethod(entry.body) ?? "") + " carries the token");
+  assert.deepEqual(toElsewhere(fake), []);
+});
+
 test("a redirect off the origin is refused for a signed-in MCP server, and the other origin receives nothing", async (t) => {
   const { fake, held, shaper: marked } = await signedInMcp(t);
   fake.setMode({ redirect: "/mcp" });

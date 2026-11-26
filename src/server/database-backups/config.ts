@@ -46,15 +46,16 @@ export function setDatabaseBackupsConfig(
 ): DatabaseBackupsConfig {
   const current = getDatabaseBackupsConfig();
   const next = DatabaseBackupsConfigSchema.parse({ ...current, ...patch });
-  // Checked and saved in one synchronous step, so no capture can publish or prune between the
-  // check and the prune below: what is deleted is exactly what the operator was shown.
+  // A worker can publish a copy during this save. Use the confirmed list for the
+  // deletion so neither a newly published copy nor a clock tick can expand it.
+  let confirmedRemovals: string[] | undefined;
   if (expectRemove && backups.plannedRemovals) {
-    const planned = backups.plannedRemovals(next);
-    if (!sameSet(expectRemove, planned)) throw new StaleBackupPreviewError(planned);
+    confirmedRemovals = backups.plannedRemovals(next);
+    if (!sameSet(expectRemove, confirmedRemovals)) throw new StaleBackupPreviewError(confirmedRemovals);
   }
   persistConfigPatch(CONFIG_ENTRY, current, next, patch);
   try {
-    backups.prune();
+    backups.prune(confirmedRemovals);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.warn(`[mission-control] database backup prune failed after saving: ${reason}`);

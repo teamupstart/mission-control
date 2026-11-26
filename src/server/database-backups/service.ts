@@ -370,7 +370,13 @@ export class DatabaseBackupService {
       const match = OWNED_BACKUP.exec(filename);
       if (!match) continue;
       const path = join(this.root, filename);
-      const stat = lstatSync(path);
+      let stat;
+      try {
+        stat = lstatSync(path);
+      } catch (error) {
+        ignoreMissingFile(error);
+        continue;
+      }
       if (stat.isSymbolicLink() || !stat.isFile()) continue;
       groups[KIND_BY_PREFIX.get(match[1]!)!].push({
         filename,
@@ -420,10 +426,11 @@ export class DatabaseBackupService {
    * age, then size, never the minimum recovery set), with any SQLite sidecar beside it.
    * Runs after every capture; the daemon also calls it at startup and when the limits are
    * saved, so a lowered limit takes effect without waiting for the next capture.
+   * A confirmed settings save supplies the filenames from its validated preview.
    */
-  prune(): void {
+  prune(confirmedRemovals?: readonly string[]): void {
     try {
-      this.pruneCopies();
+      if (this.pruneCopies(confirmedRemovals)) syncFile(this.root);
     } finally {
       this.notifyChange();
     }
@@ -449,29 +456,27 @@ export class DatabaseBackupService {
       .remove.map((copy) => copy.filename);
   }
 
-  private prunePaths(): string[] {
+  private pruneCopies(confirmedRemovals?: readonly string[]): boolean {
+    if (!existsSync(this.root)) return false;
     this.ensureRoot();
-    const names = this.plannedRemovals(storedDatabaseBackupsConfig(this.source));
-    return names.flatMap(filename => {
+    const names = confirmedRemovals ?? this.plannedRemovals(storedDatabaseBackupsConfig(this.source));
+    if (!names.every(filename => OWNED_BACKUP.test(filename))) {
+      throw new TypeError("Database backup prune received an invalid filename");
+    }
+    for (const filename of names) {
       const path = join(this.root, filename);
       // Sidecars first so a failure leaves the listed copy available for retry.
-      return [...SQLITE_SIDECARS.map(suffix => path + suffix), path];
-    });
-  }
-
-  private pruneCopies(): void {
-    if (!existsSync(this.root)) return;
-    for (const path of this.prunePaths()) safeUnlink(path);
-    syncFile(this.root);
+      for (const suffix of SQLITE_SIDECARS) safeUnlink(path + suffix);
+      safeUnlink(path);
+    }
+    return names.length > 0;
   }
 
   private async pruneAfterOnlinePublish(): Promise<void> {
     try {
-      // Publication is serialized. A settings prune can remove an immutable name
-      // from this plan first, in which case the same deletion has already succeeded.
-      const paths = this.prunePaths();
-      if (!paths.length) return;
-      for (const path of paths) await unlink(path).catch(ignoreMissingFile);
+      // Plan and unlink in one turn so a settings save cannot retain a copy
+      // while an asynchronous deletion of that copy is still pending.
+      if (!this.pruneCopies()) return;
       const directory = await open(this.root, "r");
       try {
         await directory.sync();
@@ -684,7 +689,7 @@ export class DatabaseBackupService {
    */
   private pruneAfterPublish(): void {
     try {
-      this.pruneCopies();
+      if (this.pruneCopies()) syncFile(this.root);
     } catch (error) {
       this.warnPruneFailure(error);
     }

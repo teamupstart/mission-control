@@ -13,6 +13,7 @@ import { ASYNC_INPUT_FLAG } from "@shared/async-input.ts";
 import { announceShaperFolder } from "./shaping/discovery.ts";
 import { wireShapingConfigEvents } from "./shaping/events.ts";
 import { startShaperSignIns } from "./shaping/sign-in/index.ts";
+import { wireShapingSignInEvents } from "./shaping/sign-in/events.ts";
 import { wireVoiceStateEvents } from "./voice/state.ts";
 import { VoiceNameRegistry, wireVoiceNameEvents } from "./voice/names.ts";
 import { VOICE_FLAG } from "@shared/voice.ts";
@@ -262,6 +263,8 @@ const stopAutomatedDeliveries = onAutomatedDelivery((delivery) =>
 const stopPersonDeliveries = onPersonDelivery((delivery) => registry.notePersonDelivery(delivery));
 // Task shaping's config reaches open windows the same way, behind its flag.
 const stopShapingConfig = wireShapingConfigEvents((config) => registry.emitShapingConfig(config));
+// And shaper sign-in's list, behind both its flags. It never carries a token or a link.
+const stopShapingSignIns = wireShapingSignInEvents((signIns) => registry.emitShapingSignIns(signIns));
 // Who can be addressed by voice, read from the Registry's own catalogs and frames. Wired before
 // the voice state, which reads its roster from it on its first publish.
 const voiceNames = new VoiceNameRegistry(registry, {
@@ -1164,6 +1167,7 @@ async function shutdown(): Promise<void> {
   stopAutomatedDeliveries();
   stopPersonDeliveries();
   stopShapingConfig();
+  stopShapingSignIns();
   registry.voiceRouter?.reset();
   stopDesktopVoice();
   stopVoiceState();

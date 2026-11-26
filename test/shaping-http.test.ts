@@ -81,6 +81,8 @@ test("GET returns the config and the final reply shape", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     config: daemonShapingView(SHAPING_CONFIG_DEFAULTS), discovered: [], folder: { path: join(home, "shapers"), ignored: 0 }, references: {},
+    // Empty while `shaper-sign-in` is off, as it is here.
+    signIns: [],
   });
 });
 

@@ -5,7 +5,7 @@
  * phase: after the executor has received that reply, before the supervisor's stream poll can
  * read it. No exit hook, cleanup or replay runs.
  *
- * argv: <id> <repo> <base> <head> <tree> [--without-sink]
+ * argv: <id> <repo> <base> <head> <tree>
  */
 const [id, repo, base, head, tree] = process.argv.slice(2) as [string, string, string, string, string];
 const { WorkflowEngine } = await import("../../src/server/workflows/engine.ts");
@@ -22,11 +22,6 @@ const executor = localExecutor(store, async launch => {
   setImmediate(() => process.kill(process.pid, "SIGKILL"));
   return { verdict: clean, usage };
 });
-if (process.argv.includes("--without-sink")) {
-  // The round-3 behavior: the executor reports its return only through the stream.
-  const dispatch = executor.dispatch.bind(executor);
-  executor.dispatch = (request, signal) => dispatch(request, signal);
-}
 const engine = new WorkflowEngine(store, undefined, {
   workflowPolicy: () => ({ ...DEFAULT_WORKFLOW_POLICY, checksEnabled: true, repoAllowlist: [repo] }),
   repositoryExecutor: executor,

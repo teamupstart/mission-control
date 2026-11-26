@@ -3177,11 +3177,11 @@ repair and resubmit before the workflow opens a pull request or runs CI. The wor
 limit applies to those rounds. A repository review spends an execution once its provider
 returns a response, even if the stage then rejects that response: a malformed verdict, a verdict
 without a verified repository query, a failed audit, an interruption, or findings that cannot be
-retained. A review that fails before its provider returns, such as an unavailable provider or a
-daemon restart mid-review, spends nothing, and its retry runs on the same allowance. If the
-allowance runs out with blocking findings still open or
-a review result that could not be processed, the stage pauses for operator action even when
-its exhaustion policy is **Skip**.
+retained. A review that fails before its provider returns spends nothing, and its retry runs on the
+same allowance: for example an unavailable provider, or a daemon restart while the provider is
+still running. A restart after the provider returned still spends the execution. If the
+allowance runs out with blocking findings still open or a review result that could not be
+processed, the stage pauses for operator action even when its exhaustion policy is **Skip**.
 
 Submission capture records whether local review is enabled. When the preview, Inspector or
 local review is off, the stage skips with a note. An enabled stage blocks for operator action

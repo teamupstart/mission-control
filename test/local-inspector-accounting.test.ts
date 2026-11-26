@@ -333,7 +333,7 @@ test("Local Inspector keeps a returned execution spent when the daemon process d
   // The child runs the review on this same state home and is SIGKILLed right after the
   // provider's reply reaches the executor. Nothing in it gets to clean up or replay.
   const child = spawnSync(process.execPath, ["--import", "tsx", "test/helpers/local-inspector-crash.ts",
-    id, source.repo, source.base, source.head, source.tree, ...(process.env.LOCAL_INSPECTOR_CRASH_WITHOUT_SINK ? ["--without-sink"] : [])],
+    id, source.repo, source.base, source.head, source.tree],
   { env: { ...process.env }, encoding: "utf8", timeout: 40_000 });
   assert.equal(child.signal, "SIGKILL", `the child died at the return boundary: ${child.status} ${child.stderr}`);
   const store = new WorkflowStore();

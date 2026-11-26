@@ -806,3 +806,41 @@ test("a recent final-only onset shows the live transcript after the next audio o
   h.advance(1);
   assert.equal(h.published.at(-1)?.transcript, undefined);
 });
+
+test("a newer wordless final preserves earlier live transcript text until its deadline", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-wordless-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (onset: number, text: string, final?: true) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset, text, final }), true);
+  send(1, "hello");
+  h.advance(4999);
+  send(2, "...", true);
+  send(2, "late partial");
+  assert.equal(h.store.state().transcript?.text, "hello");
+  h.advance(1);
+  assert.equal(h.published.at(-1)?.transcript, undefined);
+  send(3, "hello");
+  send(4, "goodbye", true);
+  assert.equal(h.store.state().transcript?.text, "goodbye");
+});
+
+test("an expired latest onset's final cannot revive the live transcript", t => {
+  const speechDirectory = mkdtempSync(join(tmpdir(), "transcript-latest-final-"));
+  t.after(() => rmSync(speechDirectory, { recursive: true, force: true }));
+  const h = harness({ speechDirectory });
+  t.after(() => h.store.reset());
+  h.store.acceptHello(listenerId, HELLO);
+  const { revision } = h.store.directive();
+  const send = (onset: number, text: string, final?: true) =>
+    assert.equal(h.store.reportTranscript(listenerId, revision, { phase: "words", onset, text, final }), true);
+  send(1, "hello");
+  h.advance(5000);
+  send(1, "hello there", true);
+  assert.equal(h.store.state().transcript, undefined);
+  send(2, "new phrase", true);
+  assert.equal(h.store.state().transcript?.text, "new phrase");
+});

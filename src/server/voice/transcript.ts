@@ -79,13 +79,12 @@ export class TranscriptPreview {
       for (const id of this.onsets.keys()) {
         if (id <= sample.onset) this.onsets.delete(id);
       }
-      if (this.interimOnset <= sample.onset) {
+      // Retire even an expired final without letting it change the display.
+      if (!onset || now >= onset.freshUntil) return;
+      if (this.interimOnset === sample.onset || (words.length > 0 && this.interimOnset < sample.onset)) {
         this.interim = "";
         this.interimOnset = -1;
       }
-      // Always retire a final, even if its words are too late for display.
-      // A different onset's audio or words cannot extend this onset's deadline.
-      if (superseded && (!onset || now >= onset.freshUntil)) return;
     }
     if (!words.length || !onset) return;
     const fresh = recordWordCounts(words, onset.highestCounts);

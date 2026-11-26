@@ -270,8 +270,11 @@ worktree contents across registration using the bounded repository snapshot read
 nested, unborn or unreadable checkouts use normal fresh registration. For the immediately following revision only, it
 can revalidate that packet when the accepted instruction was exactly `continue` and the
 refiner recorded it as steering on the same objective. It compares the receipt, reopens
-the scoped file sources and verifies their bytes. The daemon repeats the check for a
-completion claim. The original stamps, coverage, work generation and ownership stay on
+the scoped file sources and verifies their bytes. The daemon samples the checkout revision
+before validating the exact digest for a claim. Inside the completion transaction, it
+reopens the evidence files and compares the checkout revision again within the existing
+budget. A changed HEAD, index or Git-visible file prevents the claim before reservation.
+The original stamps, coverage, work generation and ownership stay on
 the registration. Normal verification, blocking standards findings and workflow gates apply.
 
 For an already-held generation, inspect the staged items and the hold's other findings.

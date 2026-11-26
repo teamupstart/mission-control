@@ -1,8 +1,9 @@
 import { after, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
-import { appendFileSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -60,6 +61,7 @@ const { ForemanClient } = await import("../src/server/foreman/client.ts");
 const { ForemanConfigSchema } = await import("../src/shared/protocol.ts");
 const { configureClaudeRunnerTransport } = await import("../src/server/llm/claude.ts");
 const { startGoalRefiner } = await import("../src/server/goal/refiner.ts");
+const { sampleCheckoutBoundary } = await import("../src/server/workflows/repository-artifact/seal.ts");
 
 /** The operator's own request. Everything else in the delivered prompt is the platform's. */
 const INTENT = "Look at the current sessions. None of them were submitted to their pipelines.";
@@ -328,7 +330,7 @@ function wrapupDecision(
   });
 }
 
-async function claim(d: Dispatched, generation: number) {
+async function claim(d: Dispatched, generation: number, expectedContinuationPacket?: string) {
   const intent = resolvedSessionIntent(d.registry.getGoal(d.sessionId));
   assert.ok(intent, "a claim cannot be built without a resolved intent");
   const body = promptedCompletionClaim({
@@ -338,6 +340,7 @@ async function claim(d: Dispatched, generation: number) {
     headSha: "abc",
     transcriptAnchor: 1,
     summary: "The requested change is implemented and verified.",
+    expectedContinuationPacket,
   });
   return await d.app.request(`/api/sessions/${d.sessionId}/workflow-completion`, {
     method: "POST",
@@ -1089,21 +1092,60 @@ for (const scenario of [
   });
 }
 
+const receiptExcludedCheckouts = ["unborn HEAD", "embedded checkout", "skip-worktree entry", "gitlink"] as const;
+
 for (const boundary of [
   "standards hold", "unverified hold", "manual", "clean handoff", "claim race",
   "historical packet", "reserved packet", "stale proof", "unreadable proof", "split registration",
+  "transaction image race", "transaction text race", "transaction packet race", "removed binding",
+  "transaction already-read source race", "transaction budget exhausted",
+  "transaction tracked-file race", "transaction head race",
+  "registration drift", "omitted existing claim", "documentation task", "multi-repository task",
+  ...receiptExcludedCheckouts,
 ] as const) {
   test(`registered 18-item packet at the 1:3 to 1:4 continuation: ${boundary}`, async (t) => {
     const repo = mkdtempSync(join(home, "packet-"));
     const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args]);
     git("init", "-q");
     writeFileSync(join(repo, ".gitignore"), "*.png\n*.log\n");
-    git("add", ".gitignore");
-    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
-    git("update-index", "--assume-unchanged", ".gitignore");
+    const unregisteredPath = join(repo, "unregistered.txt");
+    writeFileSync(unregisteredPath, "original\n");
+    git("add", ".gitignore", "unregistered.txt");
+    if (boundary !== "unborn HEAD") {
+      git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
+    }
+    git("update-index", "--assume-unchanged", ".gitignore", "unregistered.txt");
     writeFileSync(join(repo, "change.ts"), "export const repaired = true;\n");
+    if (boundary === "embedded checkout") {
+      git("init", "-q", "nested");
+      git("-C", "nested", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "--allow-empty", "-qm", "nested fixture");
+    } else if (boundary === "skip-worktree entry") {
+      git("update-index", "--no-assume-unchanged", "unregistered.txt");
+      git("update-index", "--skip-worktree", "unregistered.txt");
+      assert.equal(git("ls-files", "-v", "unregistered.txt").toString().trim(), "S unregistered.txt");
+    } else if (boundary === "gitlink") {
+      git("update-index", "--add", "--cacheinfo", `160000,${git("rev-parse", "HEAD").toString().trim()},nested`);
+    }
+    const excludedCheckout = receiptExcludedCheckouts.some(shape => shape === boundary);
+    if (excludedCheckout) {
+      // Each fixture is readable by the general sampler. Only the continuation policy excludes it.
+      assert.match(await sampleCheckoutBoundary(repo, AbortSignal.timeout(10_000)), /^[a-f0-9]{64}$/);
+    }
+    const extraRepo = boundary === "multi-repository task" ? mkdtempSync(join(home, "packet-extra-")) : null;
+    if (extraRepo) {
+      execFileSync("git", ["-C", extraRepo, "init", "-q"]);
+      execFileSync("git", ["-C", extraRepo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "--allow-empty", "-qm", "extra fixture"]);
+    }
     const d = dispatch(`evidence-continuation-${boundary.replaceAll(" ", "-")}`, {
-      kind: "bugfix", workflowId: BUG_FIX_REVIEW_WORKFLOW_ID, repoRoot: repo, worktreePath: repo,
+      kind: boundary === "documentation task" ? "document" : "bugfix",
+      workflowId: BUG_FIX_REVIEW_WORKFLOW_ID, repoRoot: repo, worktreePath: repo,
+      extraRepos: extraRepo ? [{
+        repoRoot: extraRepo, worktreePath: extraRepo, branch: "feature", provider: null, worktreeLeaseId: null,
+        baseSha: execFileSync("git", ["-C", extraRepo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        prUrl: null, prState: null, mergedAt: null,
+      }] : [],
       intent: "Implement the repair and pass the full suite",
     }, true, boundary === "manual" ? "manual" : "foreman_complete");
     const now = Date.now() - 45_000;
@@ -1166,6 +1208,9 @@ for (const boundary of [
         proofClass: "focused_execution" as const, repositoryScope, links: [{ clientItemId: `check-${i}`, role: "execution" as const }] })),
     } satisfies Parameters<typeof d.workflows.stageAgentEvidence>[1];
     const register = (input = packet) => d.workflows.stageAgentEvidence(d.sessionId, input);
+    const receipt = () => d.workflows.store.continuationReceipt(d.noteKey, "intent:1:3", realpathSync(repo));
+    const receiptIneligible = excludedCheckout || boundary === "registration drift" || boundary === "documentation task" ||
+      boundary === "multi-repository task";
     let registered;
     if (boundary === "split registration") {
       const first = await register({
@@ -1183,9 +1228,38 @@ for (const boundary of [
         artifacts: packet.artifacts, coverage: packet.coverage,
       });
       assert.ok(registered.generation > first.generation, "the second registration expands the staged packet");
+    } else if (boundary === "omitted existing claim") {
+      await register({ ...packet, images: images.slice(0, -1) });
+      const original = receipt();
+      assert.ok(original);
+      registered = await register({ ...packet, coverage: packet.coverage.slice(0, -1) });
+      const after = receipt();
+      if (after) assert.deepEqual(after, original, "the expanded packet cannot earn a receipt without all existing claims");
+    } else if (boundary === "registration drift") {
+      const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+      const open = fs.openSync.bind(fs);
+      const evidencePath = join(realpathSync(repo), images[0]!.path);
+      let changed = false;
+      const intercepted = t.mock.method(fs, "openSync", (...args: Parameters<typeof open>) => {
+        if (!changed && args[0] === evidencePath) {
+          changed = true;
+          // The first digest has returned. This source open precedes the second digest.
+          writeFileSync(join(repo, "change.ts"), "export const repaired = false;\n");
+        }
+        return open(...args);
+      });
+      syncBuiltinESMExports();
+      try {
+        registered = await register();
+      } finally {
+        intercepted.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal(changed, true, "the checkout changed during source inspection");
     } else {
       registered = await register();
     }
+    if (receiptIneligible) assert.equal(receipt(), null);
     assert.equal(registered.artifacts.length, 10);
     assert.equal(registered.images.length, 8);
     assert.equal(registered.coverage?.length, 5);
@@ -1207,6 +1281,118 @@ for (const boundary of [
     if (boundary === "stale proof") writeFileSync(logPath, "Focused tests failed\n");
     // The Git-ignored path remains in the packet, but the file cannot be reopened.
     if (boundary === "unreadable proof") unlinkSync(logPath);
+    if (boundary === "manual" || boundary === "removed binding") {
+      const before = await d.workflows.completionEvidence(d.sessionId);
+      assert.equal(before?.continuation?.status, "revalidated");
+      const expectedPacket = before.continuation.packet;
+      const queue = d.registry.getQueue(d.sessionId);
+      if (boundary === "manual") {
+        const manual = await claim(d, 8, expectedPacket);
+        assert.equal(manual.status, 200);
+        assert.deepEqual(await manual.json(), { claimed: false, reason: "manual_trigger" });
+        const assess = d.workflows.completionEvidence.bind(d.workflows);
+        t.mock.method(d.workflows, "completionEvidence", async (sessionId: string) => {
+          const evidence = await assess(sessionId);
+          assert.equal(evidence?.continuation?.status, "revalidated");
+          writeFileSync(logPath, "Focused tests failed\n");
+          return evidence;
+        }, { times: 1 });
+      } else {
+        d.workflows.archiveBinding(d.bindingId);
+      }
+      const refused = await claim(d, 8, expectedPacket);
+      assert.equal(refused.status, 409);
+      const result = await refused.json() as { error: string };
+      assert.equal(result.error, boundary === "manual"
+        ? "Continuation evidence changed before handoff" : "Continuation evidence binding changed");
+      assert.deepEqual(d.registry.getQueue(d.sessionId), queue);
+      assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      if (boundary === "removed binding") return;
+      writeFileSync(logPath, "Focused tests passed\n");
+    }
+    const budgetExhausted = boundary === "transaction budget exhausted";
+    const rejectsInTransaction = budgetExhausted || boundary === "transaction image race" || boundary === "transaction text race" ||
+      boundary === "transaction packet race" || boundary === "transaction tracked-file race" ||
+      boundary === "transaction head race" || boundary === "transaction already-read source race";
+    let reachedClaimTransaction = false;
+    let changedCheckedSource = false;
+    let matchedAfterDeadline: boolean | undefined;
+    if (rejectsInTransaction) {
+      const store = d.workflows.store;
+      const claimInStore = store.claimForemanCompletions.bind(store);
+      t.mock.method(store, "claimForemanCompletions", (...args: Parameters<typeof claimInStore>) => {
+        reachedClaimTransaction = true;
+        if (budgetExhausted) {
+          const [inputs, remainingMs] = args;
+          assert.equal(inputs.length, 1);
+          const [input] = inputs;
+          const stillMatches = input?.continuationStillMatches;
+          assert.ok(input && stillMatches);
+          assert.ok(remainingMs !== undefined && remainingMs > 0);
+          const transactionStart = performance.now();
+          let monotonic = transactionStart;
+          const clock = t.mock.method(performance, "now", () => monotonic);
+          try {
+            return claimInStore([{
+              ...input,
+              continuationStillMatches: (deadline) => {
+                assert.equal(deadline, transactionStart + remainingMs);
+                // Spend the remaining budget after the store sets its deadline.
+                monotonic = deadline;
+                matchedAfterDeadline = stillMatches(deadline);
+                return matchedAfterDeadline;
+              },
+            }], remainingMs);
+          } finally {
+            clock.mock.restore();
+          }
+        }
+        if (boundary === "transaction already-read source race") {
+          const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+          const open = fs.openSync.bind(fs);
+          const root = realpathSync(repo);
+          const imagePath = join(root, images[0]!.path);
+          let openedImage = false;
+          const intercepted = t.mock.method(fs, "openSync", (...openArgs: Parameters<typeof open>) => {
+            if (openArgs[0] === imagePath) openedImage = true;
+            if (openArgs[0] === join(root, "verification.log") && !changedCheckedSource) {
+              assert.equal(openedImage, true, "the image was read before the later text source");
+              const changed = Buffer.from(png);
+              changed[changed.length - 1] = changed.at(-1)! ^ 1;
+              writeFileSync(imagePath, changed);
+              // Keep the checkout inventory fixed and make the file identity change deterministic.
+              utimesSync(imagePath, 1, 1);
+              changedCheckedSource = true;
+            }
+            return open(...openArgs);
+          });
+          syncBuiltinESMExports();
+          try {
+            return claimInStore(...args);
+          } finally {
+            intercepted.mock.restore();
+            syncBuiltinESMExports();
+          }
+        }
+        // The manager finished async validation. Change the source or the ledger before
+        // the real transaction runs its comparison. The byte edits preserve file length.
+        if (boundary === "transaction image race") {
+          const changed = Buffer.from(png);
+          changed[changed.length - 1] = changed.at(-1)! ^ 1;
+          writeFileSync(join(repo, images[0]!.path), changed);
+        } else if (boundary === "transaction text race") {
+          writeFileSync(logPath, "Focused tests failed\n");
+        } else if (boundary === "transaction tracked-file race") {
+          writeFileSync(unregisteredPath, "modified\n");
+        } else if (boundary === "transaction head race") {
+          git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit",
+            "--allow-empty", "-qm", "changed HEAD after validation");
+        } else {
+          store.removeWorkflowEvidenceCoverage(d.noteKey, packet.coverage[0]!.clientCriterionId);
+        }
+        return claimInStore(...args);
+      });
+    }
     let reservedSubmissionId: string | undefined;
     if (boundary === "reserved packet") {
       const store = d.workflows.store;
@@ -1246,7 +1432,7 @@ for (const boundary of [
       }
       return d.app.request(request);
     });
-    t.mock.method(client, "diff", async () => ({ ok: true, headSha: git("rev-parse", "HEAD").toString().trim(),
+    t.mock.method(client, "diff", async () => ({ ok: true, headSha: boundary === "unborn HEAD" ? null : git("rev-parse", "HEAD").toString().trim(),
       filesChanged: 1, insertions: 1, deletions: 0, truncated: false, patch: "diff --git a/change.ts b/change.ts\n+export const repaired = true;" }));
     t.mock.method(client, "transcriptSize", async () => 1);
     t.mock.method(client, "standards", async () => ({ docs: [], truncated: false }));
@@ -1256,9 +1442,10 @@ for (const boundary of [
       const session = d.registry.getSession(d.sessionId)!;
       return processPromptedWrapup(client, cfg, session, [session], d.registry.getQueue(session.id), new Set());
     };
-    assert.equal(await tick(), boundary !== "claim race");
+    assert.equal(await tick(), boundary !== "claim race" && !rejectsInTransaction);
     if (boundary === "historical packet" || boundary === "reserved packet" ||
-        boundary === "stale proof" || boundary === "unreadable proof" || boundary === "split registration") {
+        boundary === "stale proof" || boundary === "unreadable proof" || boundary === "split registration" ||
+        boundary === "omitted existing claim" || receiptIneligible) {
       assert.equal(prompts.length, 1);
       const prompt = prompts[0]!;
       assert.match(prompt, /18 registered items belong to another or unknown intent episode and are excluded/);
@@ -1293,10 +1480,16 @@ for (const boundary of [
       return;
     }
     assert.match(prompts.join("\n"), /18 evidence items are registered for this work/);
-    if (boundary === "claim race") {
+    if (boundary === "claim race" || rejectsInTransaction) {
       assert.ok(capturedClaim);
+      assert.equal(reachedClaimTransaction, rejectsInTransaction);
+      assert.equal(changedCheckedSource, boundary === "transaction already-read source race");
+      assert.equal(matchedAfterDeadline, budgetExhausted ? false : undefined);
       assert.equal(d.registry.getQueue(d.sessionId)?.promptedConsumedGeneration, null);
       assert.equal(d.workflows.store.latestRunForBinding(d.bindingId), null);
+      if (rejectsInTransaction && boundary !== "transaction packet race") {
+        assert.deepEqual(d.workflows.stagedEvidence(d.bindingId), registered);
+      }
       return;
     }
     if (boundary === "unverified hold") {

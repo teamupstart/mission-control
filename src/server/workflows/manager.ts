@@ -263,6 +263,7 @@ import {
   inheritSubmissionEvidence,
   reconcileWorkflowEvidenceFiles,
   stageAgentWorkflowEvidence,
+  continuationFileBytesMatch,
   continuationFileStatus,
   stageUploadedWorkflowEvidenceSync,
   stageRetainedWorkflowEvidence,
@@ -4119,10 +4120,28 @@ export class WorkflowManager {
     return session;
   }
 
-  private async validatedContinuation(sessionId: string, claim: WorkflowCompletionClaim): Promise<string | undefined> {
+  private async validatedContinuation(sessionId: string, claim: WorkflowCompletionClaim, deadline: number) {
+    const registered = this.stagedEvidenceForSession(sessionId, "registered");
+    const candidate = this.continuationCandidate(sessionId, registered);
+    if (!candidate || candidate.packet !== claim.expectedContinuationPacket) return null;
+    // Bracket the exact asynchronous checkout digest with the bounded revision reader.
+    // Starting the revision read after the digest would let an edit between them through.
+    const checkoutRevision = publicationCheckoutRevision(candidate.root, [], deadline);
+    if (checkoutRevision === null) return null;
+    const remainingMs = Math.max(0, deadline - performance.now());
     const assessment = (await this.completionEvidence(sessionId))?.continuation;
-    return assessment?.status === "revalidated" && assessment.episodeKey === claim.expectedIntent?.episodeKey
-      ? assessment.packet : undefined;
+    return assessment?.status === "revalidated" && assessment.packet === candidate.packet &&
+      assessment.episodeKey === claim.expectedIntent?.episodeKey
+      ? { packet: assessment.packet, checkoutRevision, remainingMs } : null;
+  }
+
+  private continuationStillMatches(sessionId: string, packet: string, checkoutRevision: string, deadline: number): boolean {
+    if (performance.now() >= deadline) return false;
+    const registered = this.stagedEvidenceForSession(sessionId, "registered");
+    const current = this.continuationCandidate(sessionId, registered);
+    return registered !== null && current?.packet === packet &&
+      continuationFileBytesMatch(current.root, registered, deadline) &&
+      publicationCheckoutRevision(current.root, [], deadline) === checkoutRevision;
   }
 
   async claimCompletion(
@@ -4148,9 +4167,12 @@ export class WorkflowManager {
     }
     if (anchor.triggerMode !== "foreman_complete") {
       if (claim.expectedContinuationPacket) {
-        const validated = await this.validatedContinuation(sessionId, claim);
+        const validated = await this.validatedContinuation(sessionId, claim, performance.now() + PUBLICATION_REVISION_BUDGET_MS);
         this.currentCompletionSession(sessionId, claim);
-        if (validated !== claim.expectedContinuationPacket) throw new Error("Continuation evidence changed before handoff");
+        if (!validated || !this.continuationStillMatches(sessionId, validated.packet, validated.checkoutRevision,
+          performance.now() + validated.remainingMs)) {
+          throw new Error("Continuation evidence changed before handoff");
+        }
       }
       return { claimed: false, reason: "manual_trigger" };
     }
@@ -4168,8 +4190,8 @@ export class WorkflowManager {
     // evidence capture can legitimately take seconds on an unchanged repository.
     const remainingVerificationMs = Math.max(0, deadline - performance.now());
     const comparisons = probes.length ? await Promise.all(probes) : [];
-    const validatedPacket = claim.expectedContinuationPacket
-      ? await this.validatedContinuation(sessionId, claim) : undefined;
+    const validated = claim.expectedContinuationPacket
+      ? await this.validatedContinuation(sessionId, claim, performance.now() + remainingVerificationMs) : null;
     if (probes.length || claim.expectedContinuationPacket) {
       session = this.currentCompletionSession(sessionId, claim);
       if (session.state !== "idle" || hasBlocker(session) || isAwaiting(session)) {
@@ -4190,9 +4212,8 @@ export class WorkflowManager {
     const inputs: ForemanCompletionStoreInput[] = targets.map((binding, index) => ({
       binding,
       ...(probes.length ? { expectedLatestRunId: latestRuns[index]?.id ?? null } : {}),
-      ...(claim.expectedContinuationPacket ? { continuationStillMatches: () =>
-        validatedPacket === claim.expectedContinuationPacket &&
-        this.continuationCandidate(sessionId, this.stagedEvidenceForSession(sessionId, "registered"))?.packet === validatedPacket,
+      ...(claim.expectedContinuationPacket ? { continuationStillMatches: (deadline: number) =>
+        validated !== null && this.continuationStillMatches(sessionId, validated.packet, validated.checkoutRevision, deadline),
       } : {}),
       publicationComparison: comparisons.find(comparison => comparison.bindingId === binding.id),
       completionKind: claim.completionKind,
@@ -4210,7 +4231,7 @@ export class WorkflowManager {
       intent,
       now,
     }));
-    const reservations = this.store.claimForemanCompletions(inputs, remainingVerificationMs);
+    const reservations = this.store.claimForemanCompletions(inputs, validated?.remainingMs ?? remainingVerificationMs);
     const answer = reservations[0]?.result;
     if (!answer) throw new Error("Claimed Foreman completion produced no run");
     if (!answer.claimed) return answer;

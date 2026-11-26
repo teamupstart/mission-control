@@ -43,6 +43,7 @@ const { SessionActionManager } = await import("../src/server/workflows/session-a
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { boundedWorkflowTranscript, fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { LocalArtifactChangedError } = await import("../src/server/git/worktree-tree.ts");
 const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { getForemanConfig } = await import("../src/server/foreman/config.ts");
 const { PersonaVerdictSchema, WorkflowContextSnapshotSchema, WorkflowInspectorGateStateSchema } = await import("../src/shared/protocol.ts");
@@ -1801,7 +1802,7 @@ for (const next of ["unchanged", "edited tree", "tree edited during PR action", 
 // author's next idle must be judged against the reviewed commit itself, across a restart.
 const INSPECTOR_REPAIR_CASES = ["unchanged", "independent later cycle", "edited after repair", "head moved after repair",
   "human instruction", "unresolvable repair commit", "checkout edited during claim", "changed sibling",
-  "repair replaced another head"] as const;
+  "repair replaced another head", "retained report unchanged", "retained report rewritten"] as const;
 for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
   test(`final idle handoff after a clean Inspector-only repair: ${next}`, async (t) => {
     const { getInspectorConfig, setInspectorConfig } = await import("../src/server/inspector/config.ts");
@@ -1817,6 +1818,12 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
     // The reviewed publication's captured head names a different commit than the one the first
     // Inspector-only round replaced. Everything else about the terminal repair stays clean.
     let otherPublishedHead = false;
+    // The reviewed publication retained a local report outside Git. The checkout read below
+    // honors the artifacts the manager hands it, the way `captureWorktreeTree` does.
+    const retainsReport = next.startsWith("retained report");
+    const reportPath = "docs/reports/result/report.html";
+    let reportBytes = "report";
+    const artifactsRead: Array<Array<{ path: string; sha256: string }>> = [];
     const checkoutReads: string[] = [];
     h = await harness(`inspector-repair-handoff-${next.replaceAll(" ", "-")}`, {
       pullRequest: true, probeEvidence: true, inspector: true, inspectorFindingsPolicy: "inspector_only",
@@ -1827,9 +1834,20 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       },
       resolveCommit: async (_root, headSha) => FULL_COMMIT.test(headSha) ? headSha
         : h.full(otherPublishedHead && headSha === "published" ? "another-published" : headSha),
-      readPublishedCheckout: async (checkout) => {
+      localReport: retainsReport,
+      readPublishedCheckout: async (checkout, options) => {
         checkoutReads.push(checkout);
-        const read = { treeOid: h.contentTree.oid, headOid: h.full(h.head.sha), publicationTreeOid: h.contentTree.oid, unpublishedPaths: [] };
+        const localArtifacts = (options?.localArtifacts ?? []).map(({ path, sha256 }) => ({ path, sha256 }));
+        artifactsRead.push(localArtifacts);
+        const current = createHash("sha256").update(reportBytes).digest("hex");
+        for (const artifact of localArtifacts) {
+          if (artifact.path !== reportPath || !retainsReport || artifact.sha256 !== current) {
+            throw new LocalArtifactChangedError(artifact.path);
+          }
+        }
+        // A report present in the checkout and not set aside is work left to publish.
+        const unpublished = retainsReport && !localArtifacts.some(artifact => artifact.path === reportPath) ? [reportPath] : [];
+        const read = { treeOid: h.contentTree.oid, headOid: h.full(h.head.sha), publicationTreeOid: h.contentTree.oid, unpublishedPaths: unpublished };
         // The checkout matched when read and was edited before the claim could spend it.
         if (editDuringRead) h.contentTree.oid = h.full("edited-during-claim");
         return read;
@@ -1917,6 +1935,7 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       if (next === "changed sibling") h.registry.recordWorktreeHeads(new Map([[sibling, h.full("changed")]]));
       editDuringRead = next === "checkout edited during claim";
       otherPublishedHead = next === "repair replaced another head";
+      if (next === "retained report rewritten") reportBytes = "report rewritten after review";
       h.runActionTurn();
       const { logicalKey, generation } = h.registry.getSession(h.sessionId)!.workCycle!;
       const noteKey = h.store.getBinding(h.store.getRun(runId)!.bindingId)!.noteKey;
@@ -1930,7 +1949,12 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       const result = await h.manager.claimCompletion(h.sessionId, claim);
       assert.ok(result.claimed);
       assert.equal(h.registry.getQueue(h.sessionId)?.promptedConsumedGeneration, generation);
-      const owned = next === "unchanged" || next === "independent later cycle" || next === "changed sibling";
+      const owned = next === "unchanged" || next === "independent later cycle" || next === "changed sibling"
+        || next === "retained report unchanged";
+      if (retainsReport) {
+        assert.deepEqual(artifactsRead, [[{ path: reportPath, sha256: createHash("sha256").update("report").digest("hex") }]],
+          "the claim must set aside exactly the reviewed publication's retained report at its recorded bytes");
+      }
       const provedFromRepository = () => assert.deepEqual(checkoutReads, next === "human instruction" ? [] : ["/repo"],
         "only the matching intent reaches the exact-commit repository proof");
       if (!owned) {
@@ -1963,6 +1987,7 @@ for (const [index, next] of INSPECTOR_REPAIR_CASES.entries()) {
       assert.equal(runsForNote().length, 1, "unchanged follow-through creates no new root");
       assert.deepEqual(await h.manager.claimCompletion(h.sessionId, claim), result, "a replay is answered, not re-spent");
       assert.equal(runsForNote().length, 1);
+      if (next === "retained report unchanged") return;
       if (next === "independent later cycle") {
         await h.restartWorkflowManager();
         h.runActionTurn();

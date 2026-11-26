@@ -8,6 +8,14 @@ import type {
 import { workflowInspectorOnlyRepair } from "@shared/workflow-lifecycle.ts";
 
 /**
+ * The idempotency key an Inspector-only repair round is filed under. The submission writer and
+ * the completion proof share it, so a format change cannot quietly make every proof fail.
+ */
+export function inspectorRepairTriggerKey(runId: string, newHeadSha: string): string {
+  return `inspector-head:${runId}:${newHeadSha}`;
+}
+
+/**
  * What a completed run accepted when it finished through Inspector-only repair rounds.
  *
  * `headSha` is the full commit id Inspector reviewed clean at the exact head. `failedBaseHeadSha`
@@ -65,7 +73,7 @@ export function acceptedInspectorRepair(input: {
     if (!context.success) return null;
     const { failedHeadSha, newHeadSha } = context.data;
     if (newHeadSha !== repair.prHeadSha || newHeadSha === failedHeadSha
-      || repair.triggerKey !== `inspector-head:${run.id}:${newHeadSha}`) return null;
+      || repair.triggerKey !== inspectorRepairTriggerKey(run.id, newHeadSha)) return null;
     if (replaced === null) failedBaseHeadSha = failedHeadSha;
     else if (failedHeadSha !== replaced) return null;
     replaced = newHeadSha;

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { seedGitRepo } from "./helpers/git-fixture.ts";
 import { captureWorktreeTree, LocalArtifactChangedError } from "../src/server/git/worktree-tree.ts";
 import { resolveCommitTree } from "../src/server/workflows/commit-id.ts";
-import { acceptedInspectorRepair } from "../src/server/workflows/inspector-repair-proof.ts";
+import { acceptedInspectorRepair, inspectorRepairTriggerKey } from "../src/server/workflows/inspector-repair-proof.ts";
 import type { WorkflowCompletionPolicy, WorkflowInspectorGateState, WorkflowSubmission } from "../src/shared/workflow.ts";
 
 const RUN = "run-1";
@@ -35,7 +35,7 @@ function submission(patch: Partial<WorkflowSubmission> & Pick<WorkflowSubmission
 
 function repair(id: string, round: number, failedHeadSha: string, newHeadSha: string): WorkflowSubmission {
   return submission({
-    id, round, mode: "inspector_only", triggerSource: "manual", triggerKey: `inspector-head:${RUN}:${newHeadSha}`,
+    id, round, mode: "inspector_only", triggerSource: "manual", triggerKey: inspectorRepairTriggerKey(RUN, newHeadSha),
     prHeadSha: newHeadSha,
     context: { bypassReason: "Published GitHub Inspector-only findings policy", failedHeadSha, newHeadSha,
       priorFindingFingerprints: ["finding"] },
@@ -108,7 +108,7 @@ for (const [name, patch] of [
   ["a round skipped the head it replaced", { head: SECOND, submissions: [reviewed, published,
     repair("first", 2, PUBLISHED, FIRST), repair("second", 3, PUBLISHED, SECOND)] }],
   ["a round was not filed for its own head", { submissions: [reviewed, published,
-    { ...repair("first", 2, PUBLISHED, FIRST), triggerKey: `inspector-head:other-run:${FIRST}` }] }],
+    { ...repair("first", 2, PUBLISHED, FIRST), triggerKey: inspectorRepairTriggerKey("other-run", FIRST) }] }],
   ["a round's context disagrees with its head", { submissions: [reviewed, published,
     { ...repair("first", 2, PUBLISHED, FIRST), prHeadSha: SECOND }] }],
   ["a round's context is unreadable", { submissions: [reviewed, published,

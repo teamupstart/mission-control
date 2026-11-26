@@ -207,7 +207,7 @@ import {
 } from "./session-action-adapters.ts";
 import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
 import { captureWorktreeTree } from "../git/worktree-tree.ts";
-import { acceptedInspectorRepair, type AcceptedInspectorRepair } from "./inspector-repair-proof.ts";
+import { acceptedInspectorRepair, inspectorRepairTriggerKey, type AcceptedInspectorRepair } from "./inspector-repair-proof.ts";
 import {
   externalSourceKey,
   type EnsureExternalBindingInput,
@@ -5243,7 +5243,7 @@ export class WorkflowManager {
         const created = this.store.createInspectorOnlySubmission({
           id: randomUUID(),
           runId: run.id,
-          triggerKey: `inspector-head:${run.id}:${newHead}`,
+          triggerKey: inspectorRepairTriggerKey(run.id, newHead),
           newHeadSha: newHead,
           failedHeadSha: state.failedHeadSha,
           priorFindingFingerprints: state.findingFingerprints,

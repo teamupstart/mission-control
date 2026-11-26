@@ -11,11 +11,14 @@ const windows = [
   { name: "short", width: 900, height: 460 },
 ] as const;
 
-/** Keep the live transcript on screen: the overlay expires a few seconds after its last fresh words. */
+/**
+ * Keep the live transcript on screen. The overlay hides five seconds after the last new word
+ * occurrence, so each sample says "again" once more than the one before.
+ */
 function keepSpeaking(daemon: Parameters<typeof transcriptSample>[0]) {
   let turn = 0;
   const send = () => transcriptSample(daemon, { phase: "words", onset: 1,
-    text: turn++ % 2 ? "Will, run the release checklist and post the results" : "Will, run the release checklist and post the result" });
+    text: "Will, run the release checklist" + " again".repeat(turn++) });
   const timer = setInterval(() => void send().catch(() => {}), 700);
   return { first: send(), stop: () => clearInterval(timer) };
 }
@@ -52,7 +55,7 @@ async function expectApart(page: Page, cards: number) {
       expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("button")?.textContent,
         { x: box.x + box.width / 2, y: box.y + box.height / 2 })).toBe(await control.textContent());
     }
-    await expect(card.getByText(/^\d+s$/)).toBeVisible();
+    await expect(card.getByText(/^≤?\d+s$/)).toBeVisible();
   }
   await expect.poll(() => collisions(page)).toEqual([]);
 }

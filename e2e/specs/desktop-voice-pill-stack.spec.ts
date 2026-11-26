@@ -50,7 +50,8 @@ async function pillWindow(app: ElectronApplication) {
 
 /** The visible pending pills, top to bottom. */
 const pills = (pill: Page) => pill.getByRole("status").filter({ has: pill.getByRole("button", { name: "Cancel", exact: true }) });
-const seconds = async (card: Locator) => parseInt(await card.getByRole("button", { name: "Send now" }).innerText(), 10);
+// A provisional daemon clock shows "≤" before the seconds.
+const seconds = async (card: Locator) => parseInt((await card.getByRole("button", { name: "Send now" }).innerText()).replace("≤", ""), 10);
 
 /** Every pending pill is fully inside the native window, below the one before it, with operable controls. */
 async function expectStacked(pill: Page, win: JSHandle<Electron.BrowserWindow>, names: string[]) {
@@ -64,7 +65,7 @@ async function expectStacked(pill: Page, win: JSHandle<Electron.BrowserWindow>, 
       await expect(control).toBeEnabled();
       await expect(control).toBeInViewport({ ratio: 1 });
     }
-    await expect(card.getByRole("button", { name: "Send now" })).toHaveText(/^\d+$/);
+    await expect(card.getByRole("button", { name: "Send now" })).toHaveText(/^≤?\d+$/);
     const box = (await card.boundingBox())!;
     expect(box.y, `${name} starts below the pill above it`).toBeGreaterThanOrEqual(previousBottom);
     // Spoken "cancel" acts on the newest message, so its hint sits once, under the bottom pill.

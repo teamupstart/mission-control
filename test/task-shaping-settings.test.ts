@@ -1223,7 +1223,25 @@ test("a link is kept only for a sign-in still waiting for its event or still pen
     [CONNECTION]: { url: "https://old.example/a", attempt: OLDER_ATTEMPT, seenPending: true, waitingIn: null } }, CONNECTION, pendingLink);
   assert.equal(both[otherId]!.url, "https://x.example/a");
   assert.equal(both[CONNECTION]!.url, FAKE_LINK);
-  assert.deepEqual(signInLinkHeld(both, CONNECTION, null), { [otherId]: both[otherId] });
+  // A reply that keeps no link, as a stale one, leaves every held link as it was, the same object.
+  assert.equal(signInLinkHeld(both, CONNECTION, null), both);
+});
+
+test("an older reply on a connection two rows share keeps the newer attempt's link, and ends nothing", () => {
+  // Row A's Sign in is in flight; row B's, on the same connection, replaces it and lands first.
+  const signedOut = [signInEntry()];
+  const sent = movesThrough([signedOut]);
+  const older = [signInEntry({ state: "pending", attempt: OLDER_ATTEMPT })];
+  const newer = [signInEntry({ state: "pending" })];
+  const now = movesThrough([signedOut, older, newer]);
+  const held = signInLinkHeld({}, CONNECTION, signInLinkFor(newer, CONNECTION, REPLY, signInMovesSince(sent, movesThrough([signedOut, newer]), CONNECTION)));
+  assert.deepEqual(held, { [CONNECTION]: SEEN_LINK });
+  // Then A's reply lands: its attempt was replaced, so it keeps no link and B's stays offered.
+  const stale = signInLinkFor(newer, CONNECTION, { url: "https://tools.acme.example/authorize?state=fake-older", attempt: OLDER_ATTEMPT }, signInMovesSince(sent, now, CONNECTION));
+  assert.equal(stale, null);
+  const after = signInLinkHeld(held, CONNECTION, stale);
+  assert.equal(after, held);
+  assert.deepEqual(signInLinksShown(after, newer), { [CONNECTION]: FAKE_LINK });
 });
 
 test("a sign-in that moved on before its reply landed keeps no link, even one back in the state it started in", () => {

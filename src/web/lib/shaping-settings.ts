@@ -796,15 +796,20 @@ export function signInLinkFor(
   return moves === 0 ? { url, attempt, seenPending: false, waitingIn: now } : null;
 }
 
-/** The links a window keeps once a reply hands it `link` for `connection`: it replaces any earlier one. */
+/**
+ * The links a window keeps once a reply hands it `link` for `connection`. A link replaces any
+ * earlier one on that connection. A reply with no link, one whose attempt moved on before it
+ * landed, keeps what is held: two rows that share a connection can each send Sign in, and the
+ * older reply landing last must not take away the newer attempt's link. Whatever is held still
+ * ends through `signInLinksAfter` once the list stops showing its own attempt pending. Returns
+ * `current` itself when there is no link.
+ */
 export function signInLinkHeld(
   current: Readonly<Record<string, ShaperSignInLink>>,
   connection: string,
   link: ShaperSignInLink | null,
 ): Readonly<Record<string, ShaperSignInLink>> {
-  const rest = { ...current };
-  delete rest[connection];
-  return link ? { ...rest, [connection]: link } : rest;
+  return link ? { ...current, [connection]: link } : current;
 }
 
 const SIGN_IN_ROW_PREFIX = "row:";

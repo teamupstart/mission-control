@@ -96,7 +96,9 @@ Only the standalone word separates, in any letter case and with attached sentenc
 “Bagel.”, so “bagels” and “bagel’s” stay ordinary words. A quoted “"bagel"” is also ordinary text.
 Separators at either end or next to each other leave no empty message. A capture of only the
 word sends nothing and appears in Recently heard as “separator word only”. A spoken “cancel”
-after the separator cancels the message just before it, not an older pending one. If the word is also a call sign, a
+after the separator cancels the message just before it, never an older pending one. If the part
+before it opened no message, as in “Steve, check the build, bagel, then report status, bagel,
+cancel”, Recently heard records “nothing to cancel” and Steve's message stays pending. If the word is also a call sign, a
 capture that starts with it addresses that agent, and the word still separates everywhere else.
 
 The daemon applies the separator to the final transcript, so it works with every listener

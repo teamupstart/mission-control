@@ -143,6 +143,19 @@ test("a spoken Cancel after the separator cancels the message just opened", asyn
   assert.deepEqual([...cards.values()].map(card => [card.parts[0]?.target?.name, card.state]), [["Steve", "cancelled"]]);
 });
 
+test("a Cancel after a part that opened no message cancels nothing and leaves earlier messages pending", async t => {
+  const { router, say, pending } = harness(t);
+  await say("Steve, check the build, bagel, then report status, bagel, cancel");
+  assert.deepEqual(pending().map(card => [card.parts[0]?.target?.name, card.parts[0]?.text]), [["Steve", "check the build"]]);
+  const cancel = router.heard.list().find(entry => entry.text === "cancel");
+  assert.deepEqual([cancel?.outcome, cancel?.rule], ["control", "nothing-pending"]);
+  // A second Cancel right after a Cancel has no message of its own to cancel either.
+  await say("Carol, run the tests, bagel, cancel, bagel, cancel");
+  assert.deepEqual(pending().map(card => card.parts[0]?.target?.name), ["Steve"]);
+  const rules = new Map(router.heard.list().filter(entry => entry.text === "cancel").map(entry => [entry.id, entry.rule]));
+  assert.deepEqual(Object.fromEntries(rules), { "capture-1:3": "nothing-pending", "capture-2:2": "cancel", "capture-2:3": "nothing-pending" });
+});
+
 test("a capture of only the separator opens nothing and says why in Recently heard", async t => {
   const { router, say, cards } = harness(t);
   assert.equal(await say("Bagel."), true);

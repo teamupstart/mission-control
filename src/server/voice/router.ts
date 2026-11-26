@@ -683,7 +683,7 @@ export class VoiceRouter {
       const done = this.open.has(partId) || this.delivering.has(partId) || this.recentIds.has(partId);
       if (!done && !await this.route({ ...utterance, id: partId, text: part.text, words: part.words,
         capturedAt: index === 0 ? capturedAt : Math.round(at.openedAt) }, at,
-      index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding : undefined })) {
+      index === 0 ? split.captureKey : undefined, { roster: split.roster, cancelTarget: index > 0 ? preceding ?? null : undefined })) {
         this.separatedCaptures.delete(id);
         this.separatedCaptures.set(id, split);
         if (this.separatedCaptures.size > HISTORY_LIMIT) this.separatedCaptures.delete(this.separatedCaptures.keys().next().value!);
@@ -699,10 +699,12 @@ export class VoiceRouter {
   /**
    * `roster` pins a separated part to the sessions its capture was authorized against; delivery
    * then refuses a destination another session has since taken over. `cancelTarget` binds a
-   * bare Cancel to the card the preceding part opened; without one, Cancel takes the newest action.
+   * bare Cancel to the card the preceding part opened. It is null when that part opened no card:
+   * the Cancel then has nothing to cancel and leaves earlier cards pending. Only a capture that
+   * is not separated (`undefined`) lets Cancel take the newest pending action.
    */
   private async route(utterance: VoiceUtterance, time: ActionTime, captureKey?: string,
-    options: { roster?: SpokenName[]; cancelTarget?: string } = {}): Promise<boolean> {
+    options: { roster?: SpokenName[]; cancelTarget?: string | null } = {}): Promise<boolean> {
     const roster = options.roster ?? this.state().roster;
     const { id, capturedAt } = utterance;
     const unsureCards = this.picksLostThrough && offsetUs(time, this.picksLostThrough) <= 0 ? [] : Array.from(this.open.values())
@@ -745,9 +747,9 @@ export class VoiceRouter {
       entry.outcome = "control";
       entry.rule = decision.command;
       if (decision.command === "cancel") {
-        const cancelled = options.cancelTarget
-          ? this.cancel(options.cancelTarget, undefined, time) ? options.cancelTarget : undefined
-          : this.cancelLatestAt(time, captureKey);
+        const target = options.cancelTarget;
+        const cancelled = target === undefined ? this.cancelLatestAt(time, captureKey)
+          : target !== null && this.cancel(target, undefined, time) ? target : undefined;
         if (cancelled) entry.detail = cancelled;
         else entry.rule = "nothing-pending";
       } else if (!await this.pick(decision.cardId, decision.candidateId, time)) {
